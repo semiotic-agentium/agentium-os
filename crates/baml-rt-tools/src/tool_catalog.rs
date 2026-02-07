@@ -24,6 +24,12 @@ impl InventoryCatalog {
     }
 }
 
+impl Default for InventoryCatalog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolCatalog for InventoryCatalog {
     fn by_name(&self, name: &ToolName) -> Option<&ToolFunctionMetadata> {
         self.tools.iter().find(|tool| &tool.name == name)

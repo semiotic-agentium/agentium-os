@@ -54,6 +54,13 @@ pub enum BamlRtError {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// Invalid open_input for tool session
+    #[error("Invalid open_input for tool session")]
+    InvalidOpenInput {
+        #[source]
+        source: serde_json::Error,
+    },
+
     /// Tool execution error
     #[error("Tool execution error: {0}")]
     ToolExecution(String),

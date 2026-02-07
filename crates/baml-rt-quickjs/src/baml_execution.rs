@@ -373,11 +373,22 @@ fn parse_tool_call_object(
 mod tests {
     use super::*;
     use baml_rt_tools::BamlTool;
+    use baml_rt_tools::bundles::BundleType;
     use async_trait::async_trait;
     use serde_json::json;
     use serde::{Deserialize, Serialize};
     use schemars::JsonSchema;
     use ts_rs::TS;
+
+    // Test bundle for test tools
+    struct Test;
+
+    impl BundleType for Test {
+        const NAME: &'static str = "test";
+        fn description() -> &'static str {
+            "Test tools for unit testing"
+        }
+    }
 
     struct EchoTool;
 
@@ -396,7 +407,8 @@ mod tests {
 
     #[async_trait]
     impl BamlTool for EchoTool {
-        const NAME: &'static str = "test/echo_tool";
+        type Bundle = Test;
+        const LOCAL_NAME: &'static str = "echo_tool";
         type OpenInput = ();
         type Input = EchoInput;
         type Output = EchoOutput;

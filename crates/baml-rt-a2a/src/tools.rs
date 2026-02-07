@@ -113,7 +113,11 @@ impl ToolHandler for A2aSessionHandler {
         ToolCapability::Streaming
     }
 
-    async fn open_session(&self, ctx: ToolSessionContext) -> Result<Box<dyn ToolSession>> {
+    async fn open_session(&self, ctx: ToolSessionContext, open_input: Value) -> Result<Box<dyn ToolSession>> {
+        // For A2A session, open_input should be empty object (unit type)
+        let _: () = serde_json::from_value(open_input)
+            .map_err(|err| baml_rt_core::BamlRtError::InvalidOpenInput { source: err })?;
+        
         Ok(Box::new(A2aSession {
             ctx,
             handler: self.handler.clone(),

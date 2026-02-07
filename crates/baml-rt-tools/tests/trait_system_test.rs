@@ -25,6 +25,17 @@ use test_support::common::{
     setup_baml_runtime_default,
     setup_bridge,
 };
+use baml_rt_tools::bundles::BundleType;
+
+// Test bundle for test tools
+struct Test;
+
+impl BundleType for Test {
+    const NAME: &'static str = "test";
+    fn description() -> &'static str {
+        "Test tools for unit testing"
+    }
+}
 
 /// Test tool for arithmetic operations
 struct ArithmeticTool;
@@ -59,7 +70,8 @@ struct ArithmeticOutput {
 
 #[async_trait]
 impl BamlTool for ArithmeticTool {
-    const NAME: &'static str = "test/arithmetic";
+    type Bundle = Test;
+    const LOCAL_NAME: &'static str = "arithmetic";
     type OpenInput = ();
     type Input = ArithmeticInput;
     type Output = ArithmeticOutput;
@@ -121,7 +133,8 @@ struct StringManipulationOutput {
 
 #[async_trait]
 impl BamlTool for StringManipulationTool {
-    const NAME: &'static str = "test/string_manipulation";
+    type Bundle = Test;
+    const LOCAL_NAME: &'static str = "string_manipulation";
     type OpenInput = ();
     type Input = StringManipulationInput;
     type Output = StringManipulationOutput;

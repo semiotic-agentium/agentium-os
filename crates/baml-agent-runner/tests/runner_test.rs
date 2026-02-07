@@ -14,6 +14,17 @@ use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
 use ts_rs::TS;
 use baml_rt::tools::BamlTool;
+use baml_rt_tools::bundles::BundleType;
+
+// Test bundle for test tools
+struct Test;
+
+impl BundleType for Test {
+    const NAME: &'static str = "test";
+    fn description() -> &'static str {
+        "Test tools for unit testing"
+    }
+}
 use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest};
 use std::collections::HashSet;
 
@@ -111,7 +122,8 @@ struct AddNumbersOutput {
 
 #[async_trait]
 impl BamlTool for AddNumbersTool {
-    const NAME: &'static str = "test/add_numbers";
+    type Bundle = Test;
+    const LOCAL_NAME: &'static str = "add_numbers";
     type OpenInput = ();
     type Input = AddNumbersInput;
     type Output = AddNumbersOutput;
@@ -173,7 +185,7 @@ async fn test_manifest_allowlist_blocks_undeclared_tool() {
     manager.register_tool(CalculatorTool).await.unwrap();
 
     manager.set_tool_allowlist(HashSet::new()).await.unwrap();
-    let blocked = manager.open_tool_session("support/calculate").await;
+    let blocked = manager.open_tool_session("support/calculate", json!({})).await;
     assert!(
         blocked
             .err()
@@ -185,7 +197,7 @@ async fn test_manifest_allowlist_blocks_undeclared_tool() {
     let mut allowlist = HashSet::new();
     allowlist.insert("support/calculate".to_string());
     manager.set_tool_allowlist(allowlist).await.unwrap();
-    let session = manager.open_tool_session("support/calculate").await;
+    let session = manager.open_tool_session("support/calculate", json!({})).await;
     assert!(session.is_ok(), "Expected allowlisted tool to open");
 }
 

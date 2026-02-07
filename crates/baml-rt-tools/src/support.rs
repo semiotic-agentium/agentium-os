@@ -1,5 +1,4 @@
 use crate::tools::ToolFunctionMetadata;
-use crate::{json_schema_value, ts_decl, ts_name, ToolName, ToolTypeSpec};
 use crate::register_tool_metadata;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -41,33 +40,17 @@ pub struct CalculatorOutput {
 }
 
 pub fn support_calculate_metadata() -> ToolFunctionMetadata {
-    let name = ToolName::parse("support/calculate")
-        .expect("support/calculate must be a valid tool name");
-    let class_name = ToolFunctionMetadata::derive_class_name(name.bundle(), name.local());
-    ToolFunctionMetadata {
-        name: name.clone(),
+    use crate::{parse_tool_name_and_class, ToolMetadataBuilder, TypeBasedMetadataBuilder};
+    // This is a compile-time constant, so parsing cannot fail
+    let (name, class_name) = parse_tool_name_and_class("support/calculate")
+        .expect("support/calculate is a compile-time constant and must be valid");
+    TypeBasedMetadataBuilder::<(), CalculatorInput, CalculatorOutput>::new(
+        name.clone(),
         class_name,
-        description: "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division.".to_string(),
-        open_input_schema: json_schema_value::<()>(),
-        input_schema: json_schema_value::<CalculatorInput>(),
-        output_schema: json_schema_value::<CalculatorOutput>(),
-        open_input_type: ToolTypeSpec {
-            name: ts_name::<()>(),
-            ts_decl: ts_decl::<()>(),
-        },
-        input_type: ToolTypeSpec {
-            name: ts_name::<CalculatorInput>(),
-            ts_decl: ts_decl::<CalculatorInput>(),
-        },
-        output_type: ToolTypeSpec {
-            name: ts_name::<CalculatorOutput>(),
-            ts_decl: ts_decl::<CalculatorOutput>(),
-        },
-        tags: vec!["support".to_string(), "calculate".to_string()],
-        secret_requirements: Vec::new(),
-        // ALL Rust tools are host tools - they must be declared in manifest.json
-        origin: crate::tools::ToolOrigin::Host,
-    }
+        "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division.".to_string(),
+    )
+    .with_tags(vec!["support".to_string(), "calculate".to_string()])
+    .build_metadata()
 }
 
 register_tool_metadata!(support_calculate_metadata);

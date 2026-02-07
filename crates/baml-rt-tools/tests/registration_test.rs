@@ -15,6 +15,18 @@ use test_support::common::{
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use baml_rt_tools::bundles::BundleType;
+
+// Test bundle for test tools
+struct Test;
+
+impl BundleType for Test {
+    const NAME: &'static str = "test";
+    fn description() -> &'static str {
+        "Test tools for unit testing"
+    }
+}
+
 // Simple test tools
 struct AddNumbersTool;
 
@@ -33,7 +45,8 @@ struct AddNumbersOutput {
 
 #[async_trait]
 impl BamlTool for AddNumbersTool {
-    const NAME: &'static str = "test/add_numbers";
+    type Bundle = Test;
+    const LOCAL_NAME: &'static str = "add_numbers";
     type OpenInput = ();
     type Input = AddNumbersInput;
     type Output = AddNumbersOutput;
@@ -63,7 +76,8 @@ struct GreetOutput {
 
 #[async_trait]
 impl BamlTool for GreetTool {
-    const NAME: &'static str = "test/greet";
+    type Bundle = Test;
+    const LOCAL_NAME: &'static str = "greet";
     type OpenInput = ();
     type Input = GreetInput;
     type Output = GreetOutput;
@@ -96,7 +110,8 @@ struct StreamLettersOutput {
 
 #[async_trait]
 impl BamlTool for StreamLettersTool {
-    const NAME: &'static str = "test/stream_letters";
+    type Bundle = Test;
+    const LOCAL_NAME: &'static str = "stream_letters";
     type OpenInput = ();
     type Input = StreamLettersInput;
     type Output = StreamLettersOutput;
@@ -347,7 +362,8 @@ async fn test_js_tool_name_conflict_with_rust_tool() {
     
     #[async_trait]
     impl BamlTool for TestRustTool {
-        const NAME: &'static str = "test/conflict_tool";
+        type Bundle = Test;
+        const LOCAL_NAME: &'static str = "conflict_tool";
         type OpenInput = ();
         type Input = ConflictInput;
         type Output = ConflictOutput;
@@ -404,4 +420,68 @@ async fn test_register_multiple_js_tools() {
     assert!(js_tools.contains(&"js/tool3".to_string()));
     
     tracing::info!("✅ Multiple JavaScript tools registered successfully");
+}
+
+#[tokio::test]
+async fn test_invalid_open_input_deserialization() {
+    tracing::info!("Test: Invalid open_input deserialization preserves error source");
+    
+    let mut registry = baml_rt_tools::ToolRegistry::new();
+    registry.register(AddNumbersTool).unwrap();
+    
+    // Try to open a session with invalid open_input (should be empty object for unit type)
+    let invalid_open_input = serde_json::json!({"invalid": "data"});
+    let result = registry.open_session("test/add_numbers", invalid_open_input).await;
+    
+    assert!(result.is_err(), "Should fail with invalid open_input");
+    let error = result.unwrap_err();
+    
+    // Verify it's the InvalidOpenInput variant with source preserved
+    match error {
+        baml_rt::BamlRtError::InvalidOpenInput { source } => {
+            // Verify the source is a serde_json::Error by checking error message
+            let error_msg = source.to_string();
+            assert!(error_msg.contains("invalid") || error_msg.contains("expected"), 
+                "Source should be a serde_json::Error, got: {}", error_msg);
+            tracing::info!("✅ InvalidOpenInput error preserves serde_json::Error source: {}", error_msg);
+        }
+        _ => panic!("Expected InvalidOpenInput error, got: {:?}", error),
+    }
+}
+
+#[tokio::test]
+async fn test_open_session_with_initial_input() {
+    tracing::info!("Test: open_session with initial_input parameter");
+    
+    use baml_rt_tools::ToolRegistry;
+    use serde_json::json;
+    
+    let mut registry = ToolRegistry::new();
+    registry.register(AddNumbersTool).unwrap();
+    
+    // Test opening a session with empty initial_input (for unit type OpenInput)
+    let empty_input = json!({});
+    let session_id = registry.open_session("test/add_numbers", empty_input).await.unwrap();
+    
+    // Verify session was created
+    assert!(!session_id.as_str().is_empty(), "Session ID should not be empty");
+    
+    // Test that we can send input and get a result
+    let send_input = json!({"a": 10.0, "b": 20.0});
+    registry.session_send(&session_id, send_input).await.unwrap();
+    
+    let step = registry.session_next(&session_id).await.unwrap();
+    match step {
+        baml_rt_tools::ToolStep::Done { output } => {
+            let result = output.unwrap();
+            let result_obj = result.as_object().expect("Expected object");
+            let result_value = result_obj.get("result").and_then(|v| v.as_f64()).unwrap();
+            assert_eq!(result_value, 30.0, "Should return correct sum");
+        }
+        _ => panic!("Expected Done step"),
+    }
+    
+    registry.session_finish(&session_id).await.unwrap();
+    
+    tracing::info!("✅ open_session with initial_input works correctly");
 }

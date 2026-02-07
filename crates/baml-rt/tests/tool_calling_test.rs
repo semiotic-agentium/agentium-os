@@ -2,6 +2,17 @@
 
 use async_trait::async_trait;
 use baml_rt::tools::BamlTool;
+use baml_rt_tools::bundles::BundleType;
+
+// Test bundle for test tools
+struct Test;
+
+impl BundleType for Test {
+    const NAME: &'static str = "test";
+    fn description() -> &'static str {
+        "Test tools for unit testing"
+    }
+}
 use serde_json::json;
 use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
@@ -81,7 +92,8 @@ async fn test_llm_tool_calling_js() {
     
     #[async_trait]
     impl BamlTool for ReverseStringTool {
-        const NAME: &'static str = "test/reverse_string";
+        type Bundle = Test;
+        const LOCAL_NAME: &'static str = "reverse_string";
         type OpenInput = ();
         type Input = ReverseInput;
         type Output = ReverseOutput;

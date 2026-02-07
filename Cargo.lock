@@ -1274,6 +1274,7 @@ dependencies = [
  "genco",
  "inventory",
  "notion-client",
+ "opentelemetry",
  "schemars 1.1.0",
  "serde",
  "serde_json",

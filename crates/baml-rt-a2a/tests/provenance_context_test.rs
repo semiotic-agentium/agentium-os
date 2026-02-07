@@ -2,6 +2,17 @@ use baml_rt_a2a::a2a_types::{JSONRPCId, JSONRPCRequest, Message, MessageRole, Pa
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt::{BamlRuntimeManager, Result};
 use baml_rt::tools::BamlTool;
+use baml_rt_tools::bundles::BundleType;
+
+// Test bundle for test tools
+struct Test;
+
+impl BundleType for Test {
+    const NAME: &'static str = "test";
+    fn description() -> &'static str {
+        "Test tools for unit testing"
+    }
+}
 use baml_rt_core::ids::{ContextId, ExternalId};
 use baml_rt_a2a::a2a_types::A2aMessageId;
 use baml_rt_provenance::InMemoryProvenanceStore;
@@ -228,7 +239,8 @@ struct EchoOutput {
 
 #[async_trait]
 impl BamlTool for EchoTool {
-    const NAME: &'static str = "test/echo_tool";
+    type Bundle = Test;
+    const LOCAL_NAME: &'static str = "echo_tool";
     type OpenInput = ();
     type Input = EchoInput;
     type Output = EchoOutput;

@@ -35,7 +35,7 @@ async fn test_e2e_llm_with_tools() {
         
         // Test weather tool
         let session_id = manager
-            .open_tool_session("support/get_weather")
+            .open_tool_session("support/get_weather", json!({}))
             .await
             .expect("open tool session should succeed");
         manager
@@ -74,7 +74,7 @@ async fn test_e2e_llm_with_tools() {
         
         // Test calculator tool
         let session_id = manager
-            .open_tool_session("support/calculate")
+            .open_tool_session("support/calculate", json!({}))
             .await
             .expect("open tool session should succeed");
         manager

@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest};
 use baml_rt::tools::BamlTool;
+use baml_rt_tools::bundles::BundleType;
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::{A2aAgent, A2aRequestHandler};
 use serde_json::{json, Value};
@@ -9,6 +10,16 @@ use schemars::JsonSchema;
 use ts_rs::TS;
 use std::collections::HashMap;
 use test_support::common::CalculatorTool;
+
+// Test bundle for test tools
+struct Test;
+
+impl BundleType for Test {
+    const NAME: &'static str = "test";
+    fn description() -> &'static str {
+        "Test tools for unit testing"
+    }
+}
 
 fn fixture_js_code() -> String {
     r#"
@@ -281,7 +292,8 @@ struct AddNumbersOutput {
 
 #[async_trait]
 impl BamlTool for AddNumbersTool {
-    const NAME: &'static str = "test/add_numbers";
+    type Bundle = Test;
+    const LOCAL_NAME: &'static str = "add_numbers";
     type OpenInput = ();
     type Input = AddNumbersInput;
     type Output = AddNumbersOutput;

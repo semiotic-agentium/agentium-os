@@ -22,6 +22,14 @@ use tokio::sync::Mutex as TokioMutex;
 // in Rust, then map those function calls to QuickJS so JavaScript can invoke them.
 // use baml;
 
+/// Helper function for creating an empty open_input value.
+/// 
+/// This centralizes the pattern of using an empty JSON object as the default
+/// open_input when none is provided.
+fn empty_open_input() -> Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
 /// Manages the BAML runtime and function registry
 pub struct BamlRuntimeManager {
     function_registry: HashMap<String, FunctionSignature>,
@@ -768,7 +776,7 @@ impl BamlRuntimeManager {
                         ));
                     }
                     // For Open step, use initial_input if provided, otherwise empty object
-                    let open_input = step.initial_input.clone().unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+                    let open_input = step.initial_input.clone().unwrap_or_else(empty_open_input);
                     let session = self.open_tool_session(&tool_name, open_input).await?;
                     session_id = Some(session.clone());
                     // If Open step has initial_input, automatically Send it

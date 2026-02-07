@@ -56,10 +56,15 @@ async fn tool_index_creates_nodes_and_fulltext() {
     let name = ToolName::parse("support/get_weather").expect("valid tool name");
     let tools = vec![ToolFunctionMetadataExport {
         name: name.clone(),
+        class_name: "SupportGetWeather".to_string(),
         description: "Fetch a weather report by location".to_string(),
-        tags: vec!["weather".to_string(), "forecast".to_string()],
+        open_input_schema: json!({ "type": "object" }),
         input_schema: json!({ "type": "object", "properties": { "location": { "type": "string" } } }),
         output_schema: json!({ "type": "object", "properties": { "temperature": { "type": "number" } } }),
+        open_input_type: ToolTypeSpec {
+            name: "()".to_string(),
+            ts_decl: None,
+        },
         input_type: ToolTypeSpec {
             name: "WeatherInput".to_string(),
             ts_decl: None,
@@ -68,6 +73,7 @@ async fn tool_index_creates_nodes_and_fulltext() {
             name: "WeatherOutput".to_string(),
             ts_decl: None,
         },
+        tags: vec!["weather".to_string(), "forecast".to_string()],
         secret_requirements: vec![ToolSecretRequirement {
             name: "WEATHER_KEY".to_string(),
             description: "Weather API key".to_string(),

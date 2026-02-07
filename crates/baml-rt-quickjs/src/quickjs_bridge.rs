@@ -26,6 +26,14 @@ fn serialize_id(id: &impl Serialize) -> Result<String> {
     serde_json::to_string(id).map_err(BamlRtError::Json)
 }
 
+/// Helper function for creating an empty open_input value.
+/// 
+/// This centralizes the pattern of using an empty JSON object as the default
+/// open_input when none is provided.
+fn empty_open_input() -> Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
 fn tool_step_to_value(step: ToolStep) -> Value {
     match step {
         ToolStep::Streaming { output } => json!({ "status": "streaming", "output": output }),
@@ -490,7 +498,7 @@ impl QuickJSBridge {
                         context::with_scope(scope, async move {
                             let manager = manager_for_promise.lock().await;
                             // Default to empty object for open_input if not provided
-                            let open_input = serde_json::Value::Object(serde_json::Map::new());
+                            let open_input = empty_open_input();
                             let session_id = manager.open_tool_session(&tool_name, open_input).await;
                             match session_id {
                                 Ok(id) => Ok(JsValueFacade::new_string(id.as_str().into_owned())),

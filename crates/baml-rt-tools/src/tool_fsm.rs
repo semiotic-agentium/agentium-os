@@ -25,8 +25,8 @@ impl ToolSessionId {
     /// Parse a session ID from a string UUID
     pub fn parse(id: impl Into<String>) -> std::result::Result<Self, BamlRtError> {
         let value = id.into();
-        let uuid = Uuid::parse_str(&value).map_err(|_| {
-            BamlRtError::InvalidArgument(format!("Invalid tool session id '{}'", value))
+        let uuid = Uuid::parse_str(&value).map_err(|e| {
+            BamlRtError::InvalidArgument(format!("Invalid tool session id '{}': {}", value, e))
         })?;
         Ok(Self(uuid))
     }

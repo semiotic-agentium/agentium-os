@@ -17,6 +17,7 @@ uuid = { workspace = true }
 notion-client = "1.0.11"
 genco = { workspace = true }
 inventory = { workspace = true }
+opentelemetry = { workspace = true }
 
 [dev-dependencies]
 test-support = { path = "../test-support" }

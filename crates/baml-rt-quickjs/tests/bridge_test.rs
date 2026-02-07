@@ -5,6 +5,7 @@ use baml_rt::quickjs_bridge::QuickJSBridge;
 use baml_rt_core::context::{self, RuntimeScope};
 use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
 use baml_rt_tools::BamlTool;
+use baml_rt_tools::bundles::BundleType;
 use serde_json::{json, Value};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -13,6 +14,16 @@ use ts_rs::TS;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::LocalSet;
+
+// Test bundle for test tools
+struct Test;
+
+impl BundleType for Test {
+    const NAME: &'static str = "test";
+    fn description() -> &'static str {
+        "Test tools for unit testing"
+    }
+}
 
 #[tokio::test]
 async fn test_quickjs_bridge_creation() {
@@ -126,7 +137,7 @@ async fn test_quickjs_concurrent_scope_propagation() {
     for (context_id, message_id, task_id, result) in results.iter() {
         assert_eq!(
             result.get("context_id").and_then(Value::as_str),
-            Some(context_id.as_str())
+            Some(context_id.as_str() as &str)
         );
         assert_eq!(
             result.get("message_id").and_then(Value::as_str),
@@ -217,7 +228,7 @@ async fn test_quickjs_concurrent_stream_scope_propagation() {
             .expect("expected stream results");
         assert_eq!(
             first.get("context_id").and_then(Value::as_str),
-            Some(context_id.as_str())
+            Some(context_id.as_str() as &str)
         );
         assert_eq!(
             first.get("message_id").and_then(Value::as_str),
@@ -249,7 +260,8 @@ struct ScopeEchoOutput {
 
 #[async_trait]
 impl BamlTool for ScopeEchoTool {
-    const NAME: &'static str = "test/scope_echo";
+    type Bundle = Test;
+    const LOCAL_NAME: &'static str = "scope_echo";
     type OpenInput = ();
     type Input = ScopeEchoInput;
     type Output = ScopeEchoOutput;
@@ -259,13 +271,59 @@ impl BamlTool for ScopeEchoTool {
     }
 
     async fn execute(&self, _args: Self::Input) -> baml_rt::Result<Self::Output> {
-        let context_id = context::current_context_id().map(|id| id.as_str().to_string());
-        let message_id = context::current_message_id().map(|id| id.as_str().to_string());
-        let task_id = context::current_task_id().map(|id| id.as_str().to_string());
+        let context_id = context::current_context_id().map(|id| id.to_string());
+        let message_id = context::current_message_id().map(|id| id.to_string());
+        let task_id = context::current_task_id().map(|id| id.to_string());
         Ok(ScopeEchoOutput {
             context_id,
             message_id,
             task_id,
         })
     }
+}
+
+#[tokio::test]
+async fn test_tool_session_plan_with_initial_input() {
+    tracing::info!("Test: ToolSessionPlan open step with initial_input");
+    
+    use baml_rt::baml::BamlRuntimeManager;
+    use serde_json::json;
+    
+    let mut manager = BamlRuntimeManager::new().unwrap();
+    manager.register_tool(ScopeEchoTool).await.unwrap();
+    
+    // Create a tool session plan with initial_input in the open step
+    let plan = json!({
+        "steps": [
+            {
+                "op": "open",
+                "initial_input": {}
+            },
+            {
+                "op": "send",
+                "input": {
+                    "text": "test message"
+                }
+            },
+            {
+                "op": "next"
+            },
+            {
+                "op": "finish"
+            }
+        ]
+    });
+    
+    // Execute the plan - this should call open_tool_session with the initial_input
+    let result = manager.execute_tool_from_baml_result(plan).await;
+    
+    assert!(result.is_ok(), "Tool session plan should execute successfully");
+    let output = result.unwrap();
+    
+    // Verify the result contains the expected structure
+    let result_obj = output.as_object().expect("Expected object");
+    assert!(result_obj.contains_key("context_id") || result_obj.contains_key("message_id"), 
+        "Result should contain scope information");
+    
+    tracing::info!("✅ ToolSessionPlan with initial_input executed successfully");
 }

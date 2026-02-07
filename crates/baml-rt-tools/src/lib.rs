@@ -7,6 +7,8 @@ pub mod tools;
 pub mod ts_gen;
 pub mod tool_catalog;
 pub mod support;
+mod spans;
+mod metrics;
 
 pub use bundles::{BundleType, Support};
 pub use tool_fsm::{ToolFailure, ToolFailureKind, ToolSession, ToolSessionError, ToolSessionId, ToolStep};
@@ -23,6 +25,7 @@ pub use tools::{
     ToolExecutor,
     ToolFunctionMetadataExport,
     ToolHandler,
+    ToolMetadataBuilder,
     ToolName,
     ToolOrigin,
     ToolSessionAdvance,
@@ -30,4 +33,6 @@ pub use tools::{
     ToolRegistry,
     ToolSecretRequirement,
     ToolTypeSpec,
+    TypeBasedMetadataBuilder,
+    parse_tool_name_and_class,
 };

@@ -112,6 +112,7 @@ pub fn render_tool_typescript(tools: &[ToolFunctionMetadata]) -> Result<String> 
     tokens
         .to_file_string()
         .map_err(|e| BamlRtError::InvalidArgument(format!("TypeScript render error: {}", e)))
+        // Note: genco::Error doesn't implement std::error::Error, so we preserve message context
 }
 
 // Deprecated: Use tool.class_name instead, which is derived type-safely from Bundle + Tool types
