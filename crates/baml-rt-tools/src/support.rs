@@ -66,7 +66,7 @@ pub fn support_calculate_metadata() -> ToolFunctionMetadata {
         tags: vec!["support".to_string(), "calculate".to_string()],
         secret_requirements: Vec::new(),
         // ALL Rust tools are host tools - they must be declared in manifest.json
-        is_host_tool: true,
+        origin: crate::tools::ToolOrigin::Host,
     }
 }
 

@@ -249,8 +249,8 @@ impl BamlExecutor {
         let context_id = context_id.ok_or_else(|| {
             tracing::warn!(
                 context_id = "none",
-                message_id = %message_id.as_ref().map(|id| id.as_str()).unwrap_or("none"),
-                task_id = %task_id.as_ref().map(|id| id.as_str()).unwrap_or("none"),
+                message_id = %message_id.as_ref().map(|id| id.as_str().as_ref()).unwrap_or("none"),
+                task_id = %task_id.as_ref().map(|id| id.as_str().as_ref()).unwrap_or("none"),
                 "missing context_id for BAML context manager"
             );
             BamlRtError::InvalidArgument(

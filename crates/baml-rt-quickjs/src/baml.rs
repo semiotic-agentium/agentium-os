@@ -340,9 +340,9 @@ impl BamlRuntimeManager {
         Ok(())
     }
 
-    pub async fn open_tool_session(&self, tool_name: &str) -> Result<ToolSessionId> {
+    pub async fn open_tool_session(&self, tool_name: &str, open_input: serde_json::Value) -> Result<ToolSessionId> {
         let mut registry = self.tool_registry.lock().await;
-        let session_id = registry.open_session(tool_name).await?;
+        let session_id = registry.open_session(tool_name, open_input).await?;
         drop(registry);
         let scope = context::current_scope();
         let mut scopes = self.tool_session_scopes.lock().await;
@@ -366,7 +366,7 @@ impl BamlRuntimeManager {
         let session_scope = session_scope.ok_or_else(|| {
             BamlRtError::InvalidArgument(format!(
                 "Unknown tool session {}",
-                session_id.as_str()
+                session_id.to_string()
             ))
         })?;
 
@@ -767,7 +767,9 @@ impl BamlRuntimeManager {
                             "Tool session already open".to_string(),
                         ));
                     }
-                    let session = self.open_tool_session(&tool_name).await?;
+                    // For Open step, use initial_input if provided, otherwise empty object
+                    let open_input = step.initial_input.clone().unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+                    let session = self.open_tool_session(&tool_name, open_input).await?;
                     session_id = Some(session.clone());
                     // If Open step has initial_input, automatically Send it
                     if let Some(initial_input) = step.initial_input {

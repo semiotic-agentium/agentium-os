@@ -3,23 +3,48 @@
 use baml_rt_core::BamlRtError;
 use async_trait::async_trait;
 use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::fmt;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ToolSessionId(String);
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ToolSessionId(Uuid);
 
 impl ToolSessionId {
-    pub fn new(id: impl Into<String>) -> std::result::Result<Self, BamlRtError> {
-        let value = id.into();
-        Uuid::parse_str(&value).map_err(|_| {
-            BamlRtError::InvalidArgument(format!("Invalid tool session id '{}'", value))
-        })?;
-        Ok(Self(value))
+    /// Create a new session ID from a UUID
+    pub fn new(uuid: Uuid) -> Self {
+        Self(uuid)
     }
 
-    pub fn as_str(&self) -> &str {
-        &self.0
+    /// Generate a random session ID
+    pub fn random() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    /// Parse a session ID from a string UUID
+    pub fn parse(id: impl Into<String>) -> std::result::Result<Self, BamlRtError> {
+        let value = id.into();
+        let uuid = Uuid::parse_str(&value).map_err(|_| {
+            BamlRtError::InvalidArgument(format!("Invalid tool session id '{}'", value))
+        })?;
+        Ok(Self(uuid))
+    }
+
+    /// Get the UUID value
+    pub fn as_uuid(&self) -> Uuid {
+        self.0
+    }
+
+    /// Get the string representation as a `Cow`.
+    /// 
+    /// Since UUIDs require formatting, this always returns `Cow::Owned`.
+    /// For cases where you need a `&str`, use `.as_ref()` on the result.
+    /// For an owned `String`, use `.into_owned()` or the `Display` trait's `to_string()`.
+    pub fn as_str(&self) -> Cow<'static, str> {
+        // UUID formatting always requires allocation, so return Owned
+        // Callers can convert to &str via .as_ref() if needed
+        Cow::Owned(self.0.to_string())
     }
 }
 

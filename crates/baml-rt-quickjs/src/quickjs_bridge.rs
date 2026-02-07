@@ -489,9 +489,11 @@ impl QuickJSBridge {
                     correlation::with_correlation_id(correlation_id, async move {
                         context::with_scope(scope, async move {
                             let manager = manager_for_promise.lock().await;
-                            let session_id = manager.open_tool_session(&tool_name).await;
+                            // Default to empty object for open_input if not provided
+                            let open_input = serde_json::Value::Object(serde_json::Map::new());
+                            let session_id = manager.open_tool_session(&tool_name, open_input).await;
                             match session_id {
-                                Ok(id) => Ok(JsValueFacade::new_string(id.as_str().to_string())),
+                                Ok(id) => Ok(JsValueFacade::new_string(id.as_str().into_owned())),
                                 Err(e) => Err(quickjs_runtime::jsutils::JsError::new_str(&format!("Tool session open error: {}", e))),
                             }
                         })
@@ -514,7 +516,7 @@ impl QuickJSBridge {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Expected 2 arguments: session_id and args"));
                 }
                 let session_id = if args[0].is_string() {
-                    ToolSessionId::new(args[0].get_str())
+                    ToolSessionId::parse(args[0].get_str())
                         .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?
                 } else {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("First argument must be a string (session id)"));
@@ -551,7 +553,7 @@ impl QuickJSBridge {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Expected 1 argument: session_id"));
                 }
                 let session_id = if args[0].is_string() {
-                    ToolSessionId::new(args[0].get_str())
+                    ToolSessionId::parse(args[0].get_str())
                         .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?
                 } else {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("First argument must be a string (session id)"));
@@ -583,7 +585,7 @@ impl QuickJSBridge {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Expected 1 argument: session_id"));
                 }
                 let session_id = if args[0].is_string() {
-                    ToolSessionId::new(args[0].get_str())
+                    ToolSessionId::parse(args[0].get_str())
                         .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?
                 } else {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("First argument must be a string (session id)"));
@@ -612,7 +614,7 @@ impl QuickJSBridge {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Expected 1 argument: session_id"));
                 }
                 let session_id = if args[0].is_string() {
-                    ToolSessionId::new(args[0].get_str())
+                    ToolSessionId::parse(args[0].get_str())
                         .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?
                 } else {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("First argument must be a string (session id)"));
@@ -1018,11 +1020,11 @@ impl QuickJSBridge {
                                 {
                                     let payload = json!({
                                         "context_id": context::current_context_id()
-                                            .map(|id| id.as_str().to_string()),
+                                            .map(|id| id.to_string()),
                                         "message_id": context::current_message_id()
-                                            .map(|id| id.as_str().to_string()),
+                                            .map(|id| id.to_string()),
                                         "task_id": context::current_task_id()
-                                            .map(|id| id.as_str().to_string()),
+                                            .map(|id| id.to_string()),
                                     });
                                     if let Err(e) = tx.send(payload).await {
                                         tracing::warn!(error = ?e, "Failed to send scope probe payload");

@@ -93,7 +93,7 @@ fn a2a_session_metadata(name: &str) -> ToolFunctionMetadata {
         tags: vec!["a2a".to_string(), "session".to_string()],
         secret_requirements: Vec::new(),
         // ALL Rust tools are host tools - they must be declared in manifest.json
-        is_host_tool: true,
+        origin: baml_rt_tools::ToolOrigin::Host,
     }
 }
 

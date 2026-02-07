@@ -50,7 +50,7 @@ pub trait ToolRegistryTrait: Send + Sync {
     /// List all registered tool names
     async fn list_tools(&self) -> Vec<String>;
 
-    async fn open_tool_session(&self, tool_name: &str) -> Result<ToolSessionId>;
+    async fn open_tool_session(&self, tool_name: &str, open_input: serde_json::Value) -> Result<ToolSessionId>;
     async fn tool_session_send(&self, session_id: &ToolSessionId, input: Value) -> Result<()>;
     async fn tool_session_next(&self, session_id: &ToolSessionId) -> Result<ToolStep>;
     async fn tool_session_finish(&self, session_id: &ToolSessionId) -> Result<()>;

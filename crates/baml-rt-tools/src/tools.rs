@@ -4,7 +4,6 @@
 //! that can be called by LLMs during BAML function execution or directly from JavaScript.
 
 use baml_rt_core::{BamlRtError, Result};
-use baml_rt_core::ids::UuidId;
 use crate::bundles::BundleType;
 use crate::tool_fsm::{ToolFailure, ToolSessionError, ToolSession, ToolSessionId, ToolStep};
 use crate::tool_schema::{json_schema_value, ts_decl, ts_name, ToolType};
@@ -19,7 +18,6 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use uuid::Uuid;
 
 fn capitalize_first(s: &str) -> String {
     let mut chars = s.chars();
@@ -365,8 +363,8 @@ pub struct ToolFunctionMetadata {
     pub tags: Vec<String>,
     /// Secrets required to execute this tool
     pub secret_requirements: Vec<ToolSecretRequirement>,
-    /// Whether this tool is a host tool (manifest allowlist applies)
-    pub is_host_tool: bool,
+    /// Origin of this tool (host vs guest)
+    pub origin: ToolOrigin,
 }
 
 impl ToolFunctionMetadata {
@@ -395,7 +393,7 @@ pub struct ToolFunctionMetadataExport {
     pub output_type: ToolTypeSpec,
     pub tags: Vec<String>,
     pub secret_requirements: Vec<ToolSecretRequirement>,
-    pub is_host_tool: bool,
+    pub origin: ToolOrigin,
 }
 
 impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
@@ -412,7 +410,7 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
             output_type: metadata.output_type.clone(),
             tags: metadata.tags.clone(),
             secret_requirements: metadata.secret_requirements.clone(),
-            is_host_tool: metadata.is_host_tool,
+            origin: metadata.origin,
         }
     }
 }
@@ -431,6 +429,21 @@ pub enum ToolCapability {
     Streaming,
 }
 
+/// Origin of a tool invocation (host vs guest)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolOrigin {
+    /// Tool is a host tool (manifest allowlist applies)
+    Host,
+    /// Tool is a guest tool (no allowlist restriction)
+    Guest,
+}
+
+/// Trait for enforcing tool access policy based on origin
+pub trait ToolAccessPolicy: Send + Sync {
+    /// Ensure a tool is allowed to be executed based on its name and origin
+    fn ensure_allowed(&self, name: &ToolName, origin: ToolOrigin) -> Result<()>;
+}
+
 pub struct ToolSessionContext {
     pub session_id: ToolSessionId,
     pub tool_name: ToolName,
@@ -442,7 +455,7 @@ pub trait ToolHandler: Send + Sync {
     fn capability(&self) -> ToolCapability {
         ToolCapability::OneShot
     }
-    async fn open_session(&self, ctx: ToolSessionContext) -> Result<Box<dyn ToolSession>>;
+    async fn open_session(&self, ctx: ToolSessionContext, open_input: Value) -> Result<Box<dyn ToolSession>>;
 }
 
 pub trait ToolBundle: Send + Sync {
@@ -474,16 +487,33 @@ pub struct AwaitingInput;
 pub struct Ready;
 pub struct Closed;
 
+/// Trait marker for session state - indicates whether the session is closed
+pub trait SessionState {
+    /// Whether this state represents a closed session
+    const IS_CLOSED: bool;
+}
+
+impl SessionState for AwaitingInput {
+    const IS_CLOSED: bool = false;
+}
+
+impl SessionState for Ready {
+    const IS_CLOSED: bool = false;
+}
+
+impl SessionState for Closed {
+    const IS_CLOSED: bool = true;
+}
+
 pub enum ToolSessionAdvance {
     Streaming { output: Value, session: ToolSessionHandle<Ready> },
     Done { output: Option<Value>, session: ToolSessionHandle<Closed> },
     Error { error: ToolFailure, session: ToolSessionHandle<Closed> },
 }
 
-pub struct ToolSessionHandle<State> {
+pub struct ToolSessionHandle<State: SessionState> {
     id: ToolSessionId,
     registry: Arc<Mutex<ToolRegistry>>,
-    closed: bool,
     _state: PhantomData<State>,
 }
 
@@ -491,15 +521,15 @@ impl ToolSessionHandle<AwaitingInput> {
     pub async fn open(
         registry: Arc<Mutex<ToolRegistry>>,
         name: &str,
+        open_input: Value,
     ) -> Result<ToolSessionHandle<AwaitingInput>> {
         let session_id = {
             let mut guard = registry.lock().await;
-            guard.open_session(name).await?
+            guard.open_session(name, open_input).await?
         };
         Ok(ToolSessionHandle {
             id: session_id,
             registry,
-            closed: false,
             _state: PhantomData,
         })
     }
@@ -518,7 +548,6 @@ impl ToolSessionHandle<AwaitingInput> {
         Ok(ToolSessionHandle {
             id,
             registry,
-            closed: false,
             _state: PhantomData,
         })
     }
@@ -553,7 +582,6 @@ impl ToolSessionHandle<Ready> {
                 session: ToolSessionHandle {
                     id,
                     registry: registry_handle,
-                    closed: false,
                     _state: PhantomData,
                 },
             }),
@@ -563,7 +591,6 @@ impl ToolSessionHandle<Ready> {
                     session: ToolSessionHandle {
                         id,
                         registry: registry_handle,
-                        closed: true,
                         _state: PhantomData,
                     },
                 })
@@ -574,7 +601,6 @@ impl ToolSessionHandle<Ready> {
                     session: ToolSessionHandle {
                         id,
                         registry: registry_handle,
-                        closed: true,
                         _state: PhantomData,
                     },
                 })
@@ -592,7 +618,6 @@ impl ToolSessionHandle<Ready> {
         Ok(ToolSessionHandle {
             id,
             registry,
-            closed: true,
             _state: PhantomData,
         })
     }
@@ -607,7 +632,6 @@ impl ToolSessionHandle<Ready> {
         Ok(ToolSessionHandle {
             id,
             registry,
-            closed: true,
             _state: PhantomData,
         })
     }
@@ -619,9 +643,10 @@ impl ToolSessionHandle<Closed> {
     }
 }
 
-impl<State> Drop for ToolSessionHandle<State> {
+impl<State: SessionState> Drop for ToolSessionHandle<State> {
     fn drop(&mut self) {
-        if self.closed {
+        // Only abort if the session is not already closed
+        if State::IS_CLOSED {
             return;
         }
         let registry = self.registry.clone();
@@ -636,9 +661,36 @@ impl<State> Drop for ToolSessionHandle<State> {
 }
 
 /// Internal trait for executing tools (bridges trait objects to async trait)
+/// This provides a unified execution interface that can be used by sessions
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
     async fn execute(&self, args: Value) -> Result<Value>;
+}
+
+/// Adapter that implements ToolExecutor for any function-like handler
+struct ExecutorAdapter<F> {
+    executor: Arc<F>,
+}
+
+impl<F> ExecutorAdapter<F>
+where
+    F: Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value>> + Send>> + Send + Sync + 'static,
+{
+    fn new(executor: F) -> Self {
+        Self {
+            executor: Arc::new(executor),
+        }
+    }
+}
+
+#[async_trait]
+impl<F> ToolExecutor for ExecutorAdapter<F>
+where
+    F: Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value>> + Send>> + Send + Sync + 'static,
+{
+    async fn execute(&self, args: Value) -> Result<Value> {
+        (self.executor)(args).await
+    }
 }
 
 /// Wrapper that implements ToolHandler for any BamlTool
@@ -653,9 +705,14 @@ impl<T: BamlTool> ToolHandler for ToolWrapper<T> {
         &self.metadata
     }
 
-    async fn open_session(&self, ctx: ToolSessionContext) -> Result<Box<dyn ToolSession>> {
+    async fn open_session(&self, ctx: ToolSessionContext, open_input: Value) -> Result<Box<dyn ToolSession>> {
+        // Parse and validate open_input if needed
+        let _open_parsed: T::OpenInput = serde_json::from_value(open_input).map_err(|err| {
+            BamlRtError::InvalidArgument(format!("Invalid open_input: {}", err))
+        })?;
+        
         let tool = self.tool.clone();
-        Ok(Box::new(OneShotSession::new(ctx, move |input| {
+        let executor: Box<dyn ToolExecutor> = Box::new(ExecutorAdapter::new(move |input| {
             let tool = tool.clone();
             Box::pin(async move {
                 let parsed: T::Input = serde_json::from_value(input).map_err(|err| {
@@ -665,7 +722,8 @@ impl<T: BamlTool> ToolHandler for ToolWrapper<T> {
                 serde_json::to_value(output)
                     .map_err(|e| BamlRtError::InvalidArgument(format!("Invalid output: {}", e)))
             })
-        })))
+        }));
+        Ok(Box::new(OneShotSession::new(ctx, executor)))
     }
 }
 
@@ -748,7 +806,7 @@ impl ToolRegistry {
             )));
         }
         
-        self.ensure_allowed(&name, true)?;
+        self.ensure_allowed(&name, ToolOrigin::Host)?;
 
         if self.tools.contains_key(&name) {
             return Err(BamlRtError::InvalidArgument(format!(
@@ -784,7 +842,7 @@ impl ToolRegistry {
             tags: Vec::new(),
             secret_requirements: Vec::new(),
             // ALL Rust tools are host tools - they must be declared in manifest.json
-            is_host_tool: true,
+            origin: ToolOrigin::Host,
         };
 
         let tool_handler: Arc<dyn ToolHandler> = Arc::new(ToolWrapper {
@@ -809,7 +867,7 @@ impl ToolRegistry {
         metadata: ToolFunctionMetadata,
         handler: Arc<dyn ToolHandler>,
     ) -> Result<()> {
-        self.ensure_allowed(&metadata.name, metadata.is_host_tool)?;
+        self.ensure_allowed(&metadata.name, metadata.origin)?;
 
         if self.tools.contains_key(&metadata.name) {
             return Err(BamlRtError::InvalidArgument(format!(
@@ -846,7 +904,7 @@ impl ToolRegistry {
                     metadata.name, bundle_meta.name
                 )));
             }
-            self.ensure_allowed(&metadata.name, metadata.is_host_tool)?;
+            self.ensure_allowed(&metadata.name, metadata.origin)?;
             if self.tools.contains_key(&metadata.name) {
                 return Err(BamlRtError::InvalidArgument(format!(
                     "Tool '{}' is already registered",
@@ -879,7 +937,7 @@ impl ToolRegistry {
     pub fn export_metadata(&self) -> Vec<ToolFunctionMetadata> {
         self.tools
             .values()
-            .filter(|(metadata, _)| metadata.is_host_tool)
+            .filter(|(metadata, _)| metadata.origin == ToolOrigin::Host)
             .map(|(metadata, _)| metadata.clone())
             .collect()
     }
@@ -887,7 +945,7 @@ impl ToolRegistry {
     pub fn export_metadata_records(&self) -> Vec<ToolFunctionMetadataExport> {
         self.tools
             .values()
-            .filter(|(metadata, _)| metadata.is_host_tool)
+            .filter(|(metadata, _)| metadata.origin == ToolOrigin::Host)
             .map(|(metadata, _)| ToolFunctionMetadataExport::from(metadata))
             .collect()
     }
@@ -948,18 +1006,18 @@ impl ToolRegistry {
     }
 
     /// Open a tool session and return its session id.
-    pub async fn open_session(&mut self, name: &str) -> Result<ToolSessionId> {
+    pub async fn open_session(&mut self, name: &str, open_input: Value) -> Result<ToolSessionId> {
         let parsed = ToolName::parse(name)?;
         let (metadata, handler) = self.tools.get(&parsed)
             .ok_or_else(|| BamlRtError::FunctionNotFound(format!("Tool '{}' not found", parsed)))?;
-        self.ensure_allowed(&parsed, metadata.is_host_tool)?;
+        self.ensure_allowed(&parsed, metadata.origin)?;
 
-        let session_id = ToolSessionId::new(UuidId::new(Uuid::new_v4()).to_string())?;
+        let session_id = ToolSessionId::random();
         let ctx = ToolSessionContext {
             session_id: session_id.clone(),
             tool_name: metadata.name.clone(),
         };
-        let session = handler.open_session(ctx).await?;
+        let session = handler.open_session(ctx, open_input).await?;
         self.sessions.insert(session_id.clone(), Arc::new(Mutex::new(session)));
         Ok(session_id)
     }
@@ -1011,7 +1069,9 @@ impl ToolRegistry {
             )));
         }
 
-        let session_id = self.open_session(&parsed.to_string()).await?;
+        // For execute, open_input is always () (empty object)
+        let open_input = serde_json::Value::Object(serde_json::Map::new());
+        let session_id = self.open_session(&parsed.to_string(), open_input).await?;
         self.session_send(&session_id, args).await?;
         loop {
             match self.session_next(&session_id).await? {
@@ -1031,8 +1091,8 @@ impl ToolRegistry {
         }
     }
 
-    fn ensure_allowed(&self, name: &ToolName, is_host_tool: bool) -> Result<()> {
-        if is_host_tool {
+    fn ensure_allowed(&self, name: &ToolName, origin: ToolOrigin) -> Result<()> {
+        if origin == ToolOrigin::Host {
             if let Some(allowlist) = &self.allowlist {
                 if !allowlist.contains(name) {
                     return Err(BamlRtError::InvalidArgument(format!(
@@ -1093,7 +1153,7 @@ where
             tags: Vec::new(),
             secret_requirements: Vec::new(),
             // ALL Rust tools are host tools - they must be declared in manifest.json
-            is_host_tool: true,
+            origin: ToolOrigin::Host,
         };
         Self {
             metadata,
@@ -1114,9 +1174,12 @@ where
         &self.metadata
     }
 
-    async fn open_session(&self, ctx: ToolSessionContext) -> Result<Box<dyn ToolSession>> {
+    async fn open_session(&self, ctx: ToolSessionContext, open_input: Value) -> Result<Box<dyn ToolSession>> {
+        // For TypedToolFunction, open_input is ignored (it's always ())
+        let _ = open_input;
+        
         let handler = self.handler.clone();
-        Ok(Box::new(OneShotSession::new(ctx, move |input| {
+        let executor: Box<dyn ToolExecutor> = Box::new(ExecutorAdapter::new(move |input| {
             let parsed: I = match serde_json::from_value(input) {
                 Ok(value) => value,
                 Err(err) => {
@@ -1134,28 +1197,23 @@ where
                 serde_json::to_value(output)
                     .map_err(|e| BamlRtError::InvalidArgument(format!("Invalid output: {}", e)))
             })
-        })))
+        }));
+        Ok(Box::new(OneShotSession::new(ctx, executor)))
     }
 }
 
-struct OneShotSession<F>
-where
-    F: Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value>> + Send>> + Send + Sync + 'static,
-{
+struct OneShotSession {
     ctx: ToolSessionContext,
-    handler: Arc<F>,
+    executor: Box<dyn ToolExecutor>,
     input: Option<Value>,
     completed: bool,
 }
 
-impl<F> OneShotSession<F>
-where
-    F: Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value>> + Send>> + Send + Sync + 'static,
-{
-    fn new(ctx: ToolSessionContext, handler: F) -> Self {
+impl OneShotSession {
+    fn new(ctx: ToolSessionContext, executor: Box<dyn ToolExecutor>) -> Self {
         Self {
             ctx,
-            handler: Arc::new(handler),
+            executor,
             input: None,
             completed: false,
         }
@@ -1163,10 +1221,7 @@ where
 }
 
 #[async_trait]
-impl<F> ToolSession for OneShotSession<F>
-where
-    F: Fn(Value) -> Pin<Box<dyn Future<Output = Result<Value>> + Send>> + Send + Sync + 'static,
-{
+impl ToolSession for OneShotSession {
     async fn send(&mut self, input: Value) -> std::result::Result<(), ToolSessionError> {
         if self.input.is_some() {
             return Err(ToolSessionError::Tool(ToolFailure::invalid_input(
@@ -1187,7 +1242,7 @@ where
                 self.ctx.session_id
             )))
         })?;
-        let output = match (self.handler)(input).await {
+        let output = match self.executor.execute(input).await {
             Ok(value) => value,
             Err(err) => return Ok(ToolStep::Error { error: ToolFailure::from_error(&err) }),
         };

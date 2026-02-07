@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agentium</title>
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.3.1/dist/reveal.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@4.3.1/dist/theme/black.css" id="theme">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+
+    <style>
+        :root {
+            --sci-fi-primary: #00ffff;
+            --sci-fi-secondary: #00ff88;
+            --sci-fi-accent: #0088ff;
+            --sci-fi-warning: #ffaa00;
+            --sci-fi-danger: #ff0044;
+            --sci-fi-bg: #0a0a0f;
+            --sci-fi-bg-dark: #050508;
+            --sci-fi-grid: rgba(0, 255, 255, 0.1);
+        }
+
+        html, body {
+            height: 100%;
+            width: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: var(--sci-fi-bg-dark);
+            font-family: 'Share Tech Mono', 'Courier New', monospace;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-image:
+                linear-gradient(var(--sci-fi-grid) 1px, transparent 1px),
+                linear-gradient(90deg, var(--sci-fi-grid) 1px, transparent 1px);
+            background-size: 50px 50px;
+            pointer-events: none;
+            z-index: 0;
+            opacity: 0.3;
+        }
+
+        .reveal {
+            height: 100%;
+            width: 100%;
+            font-family: 'Share Tech Mono', 'Courier New', monospace;
+            position: relative;
+            z-index: 1;
+        }
+
+        .reveal .slides {
+            height: 100%;
+        }
+
+        .reveal section {
+            height: 100%;
+            box-sizing: border-box;
+            padding: 16px 0;
+            background: rgba(10, 10, 15, 0.85);
+            border-top: 1px solid var(--sci-fi-primary);
+            border-bottom: 1px solid var(--sci-fi-primary);
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.3);
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .reveal h1, .reveal h2, .reveal h3 {
+            font-family: 'Orbitron', sans-serif;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            margin: 0;
+            text-align: center;
+            color: var(--sci-fi-primary);
+            text-shadow: 0 0 12px var(--sci-fi-primary);
+        }
+
+        .reveal h1 {
+            font-size: 2.8em;
+            padding: 12px 0;
+            border: 2px solid var(--sci-fi-primary);
+            box-shadow: 0 0 12px var(--sci-fi-primary);
+        }
+
+        .reveal h2 {
+            font-size: 1.4em;
+            color: var(--sci-fi-secondary);
+            text-shadow: 0 0 10px var(--sci-fi-secondary);
+        }
+
+        .reveal h3 {
+            font-size: 1.3em;
+            color: var(--sci-fi-accent);
+            text-shadow: 0 0 8px var(--sci-fi-accent);
+        }
+
+        .title-slide .title-header {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            justify-content: center;
+            flex: 1 1 auto;
+        }
+
+        .title-slide .title-footer {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .title-footer-line {
+            width: 100%;
+            height: 2px;
+            background: var(--sci-fi-primary);
+            box-shadow: 0 0 10px var(--sci-fi-primary);
+        }
+
+        .title-footer-text {
+            color: var(--sci-fi-accent);
+            letter-spacing: 0.2em;
+            font-size: 0.7em;
+            text-transform: uppercase;
+        }
+
+        .diagram-slide {
+            justify-content: space-between;
+        }
+
+        .diagram-slide .mermaid {
+            flex: 1 1 auto;
+            width: 100%;
+            margin-top: 16px;
+            background: rgba(5, 5, 8, 0.9);
+            border-top: 2px solid var(--sci-fi-primary);
+            border-bottom: 2px solid var(--sci-fi-primary);
+            box-shadow: 0 0 20px rgba(0, 255, 255, 0.4);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .diagram-slide .mermaid svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Remove reveal.js UI chrome */
+        .reveal .controls,
+        .reveal .controls button,
+        .controls,
+        .navigate-left,
+        .navigate-right,
+        .navigate-up,
+        .navigate-down,
+        .reveal .progress,
+        .reveal .slide-number {
+            display: none !important;
+        }
+
+        .content-slide {
+            justify-content: center;
+            gap: 16px;
+        }
+
+        .icon-demo {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px;
+            justify-content: center;
+        }
+
+        .icon-demo i {
+            font-size: 2em;
+            color: var(--sci-fi-primary);
+            text-shadow: 0 0 10px var(--sci-fi-primary);
+        }
+
+        .reveal ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .reveal ul li {
+            margin: 8px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="reveal">
+        <div class="slides">
+            <section class="title-slide">
+                <div class="title-header">
+                    <h1>Agentium</h1>
+                    <h3>Presentation with Tabler Icons</h3>
+                    <p style="text-align: center; margin: 0;">
+                        <small>Press <kbd>SPACE</kbd> or arrow keys to navigate</small>
+                    </p>
+                </div>
+                <div class="title-footer">
+                    <div class="title-footer-line"></div>
+                    <div class="title-footer-text">Systems Online</div>
+                </div>
+            </section>
+
+            <section>
+                <section class="diagram-slide">
+                    <h2>Lobe Archive (Inert Source)</h2>
+                    <div class="mermaid">
+                        architecture-beta
+                            group archive(disk)[Lobe Archive (Inert Source)]
+                            service manifest(disk)[Manifest] in archive
+                            service prompts(disk)[BAML Prompts] in archive
+                            service orchestrator(server)[TypeScript Orchestrator] in archive
+                            service policy(disk)[Policy] in archive
+                            service devcontainer(disk)[Devcontainer (Optional)] in archive
+                            manifest:R -- L:orchestrator
+                            prompts:R -- L:orchestrator
+                            policy:R -- L:orchestrator
+                            devcontainer:R -- L:orchestrator
+                    </div>
+                </section>
+
+                <section class="diagram-slide">
+                    <h2>Sequence Diagram</h2>
+                    <div class="mermaid">
+                        sequenceDiagram
+                            participant A as Client
+                            participant B as Server
+                            participant C as Database
+                            A->>B: Request
+                            B->>C: Query
+                            C-->>B: Response
+                            B-->>A: Result
+                    </div>
+                </section>
+
+                <section class="diagram-slide">
+                    <h2>Class Diagram</h2>
+                    <div class="mermaid">
+                        classDiagram
+                            class Animal {
+                                +String name
+                                +int age
+                                +makeSound()
+                            }
+                            class Dog {
+                                +String breed
+                                +bark()
+                            }
+                            class Cat {
+                                +String color
+                                +meow()
+                            }
+                            Animal <|-- Dog
+                            Animal <|-- Cat
+                    </div>
+                </section>
+
+                <section class="diagram-slide">
+                    <h2>State Diagram</h2>
+                    <div class="mermaid">
+                        stateDiagram-v2
+                            [*] --> Idle
+                            Idle --> Processing: Start
+                            Processing --> Completed: Success
+                            Processing --> Error: Failure
+                            Completed --> [*]
+                            Error --> Idle: Retry
+                    </div>
+                </section>
+
+                <section class="diagram-slide">
+                    <h2>Gantt Chart</h2>
+                    <div class="mermaid">
+                        gantt
+                            title Project Timeline
+                            dateFormat YYYY-MM-DD
+                            section Phase 1
+                            Task A :a1, 2024-01-01, 30d
+                            Task B :a2, after a1, 20d
+                            section Phase 2
+                            Task C :b1, 2024-02-01, 30d
+                            Task D :b2, after b1, 25d
+                    </div>
+                </section>
+
+                <section class="diagram-slide">
+                    <h2>Git Graph</h2>
+                    <div class="mermaid">
+                        gitGraph
+                            commit id: "Initial"
+                            branch develop
+                            checkout develop
+                            commit id: "Feature A"
+                            commit id: "Feature B"
+                            checkout main
+                            merge develop
+                            commit id: "Release"
+                    </div>
+                </section>
+            </section>
+
+            <section>
+                <section class="content-slide">
+                    <h2>Tabler Icons Integration</h2>
+                    <p style="text-align:center;">Icons from Tabler icon set are available via CSS classes:</p>
+                    <div class="icon-demo">
+                        <i class="ti ti-home"></i>
+                        <i class="ti ti-user"></i>
+                        <i class="ti ti-settings"></i>
+                        <i class="ti ti-database"></i>
+                        <i class="ti ti-code"></i>
+                        <i class="ti ti-server"></i>
+                        <i class="ti ti-cloud"></i>
+                        <i class="ti ti-shield"></i>
+                        <i class="ti ti-lock"></i>
+                        <i class="ti ti-key"></i>
+                        <i class="ti ti-bolt"></i>
+                        <i class="ti ti-rocket"></i>
+                    </div>
+                    <p style="text-align:center;"><small>Use: <code>&lt;i class="ti ti-icon-name"&gt;&lt;/i&gt;</code></small></p>
+                </section>
+
+                <section class="content-slide">
+                    <h2>Icons in Content</h2>
+                    <ul>
+                        <li><i class="ti ti-check" style="color: #00ff88;"></i> Feature implemented</li>
+                        <li><i class="ti ti-x" style="color: #ff0044;"></i> Feature pending</li>
+                        <li><i class="ti ti-clock" style="color: #ffaa00;"></i> In progress</li>
+                        <li><i class="ti ti-star" style="color: #ffaa00;"></i> Priority item</li>
+                        <li><i class="ti ti-alert-triangle" style="color: #ff0044;"></i> Warning</li>
+                        <li><i class="ti ti-info-circle" style="color: #0088ff;"></i> Information</li>
+                    </ul>
+                </section>
+            </section>
+
+            <section class="diagram-slide">
+                <h2>Combined Example</h2>
+                <div class="mermaid">
+                    flowchart LR
+                        A[Client] -->|HTTP| B[API Gateway]
+                        B --> C[Service A]
+                        B --> D[Service B]
+                        C --> E[(Database)]
+                        D --> E
+                </div>
+            </section>
+
+            <section class="content-slide">
+                <h1>Thank You</h1>
+                <p style="text-align:center;"><i class="ti ti-heart" style="color: #ff0044; font-size: 2em;"></i></p>
+                <p style="text-align:center;"><small>Powered by Reveal.js, Mermaid.js, and Tabler Icons</small></p>
+            </section>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/reveal.js@4.3.1/dist/reveal.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11.1.0/dist/mermaid.min.js"></script>
+
+    <script>
+        mermaid.initialize({
+            startOnLoad: false,
+            theme: 'base',
+            themeVariables: {
+                darkMode: true,
+                background: '#050508',
+                primaryColor: '#0a0a0f',
+                primaryTextColor: '#00ffff',
+                primaryBorderColor: '#00ffff',
+                secondaryColor: '#0a0a0f',
+                secondaryTextColor: '#00ffff',
+                tertiaryColor: '#0a0a0f',
+                tertiaryTextColor: '#00ffff',
+                lineColor: '#00ffff',
+                textColor: '#e0e0e0',
+                fontFamily: 'Share Tech Mono, monospace'
+            },
+            flowchart: { useMaxWidth: true, htmlLabels: true, padding: 0 }
+        });
+
+        Reveal.initialize({
+            hash: true,
+            controls: false,
+            progress: false,
+            center: false,
+            transition: 'slide',
+            width: window.innerWidth,
+            height: window.innerHeight,
+            margin: 0,
+            minScale: 1,
+            maxScale: 1
+        });
+
+        Reveal.on('ready', () => {
+            mermaid.run();
+        });
+
+        Reveal.on('slidechanged', () => {
+            mermaid.run();
+        });
+    </script>
+</body>
+</html>

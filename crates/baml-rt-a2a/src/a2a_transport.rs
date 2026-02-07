@@ -127,7 +127,7 @@ impl A2aAgent {
             },
             tags: Vec::new(),
             secret_requirements: Vec::new(),
-            is_host_tool: false,
+            origin: baml_rt_tools::ToolOrigin::Guest,
         };
 
         let handler: Arc<dyn ToolHandler> = Arc::new(JsToolHandler {

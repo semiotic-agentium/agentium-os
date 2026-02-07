@@ -58,7 +58,7 @@ async fn upsert_tool(config: &ToolIndexConfig, tool: &ToolFunctionMetadataExport
     let input_schema = tool.input_schema.to_string();
     let output_schema = tool.output_schema.to_string();
     let secret_requirements = serde_json::to_string(&tool.secret_requirements).unwrap_or_default();
-    let is_host_tool = tool.is_host_tool;
+    let is_host_tool = tool.origin == baml_rt_tools::ToolOrigin::Host;
 
     let query = format!(
         "MERGE (t:{label} {{name: \"{name}\"}})\n\
