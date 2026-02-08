@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::quickjs_bridge::QuickJSBridge;
+use baml_rt::QuickJSConfig;
 
 pub fn fixture_path(relative_path: &str) -> PathBuf {
     workspace_root()
@@ -63,12 +64,21 @@ pub fn setup_baml_runtime_from_fixture(fixture_name: &str) -> Arc<Mutex<BamlRunt
     setup_baml_runtime(agent_dir.to_str().expect("Fixture path should be valid"))
 }
 
+/// QuickJS config for tests: short max_attempts so effect-gated poll doesn't hang (LLM fixtures).
+fn quickjs_config_for_tests() -> QuickJSConfig {
+    QuickJSConfig::new().with_max_attempts_ms(Some(15_000)) // 15s instead of 30 min
+}
+
 pub async fn setup_bridge(baml_manager: Arc<Mutex<BamlRuntimeManager>>) -> QuickJSBridge {
     use baml_rt_core::ids::AgentId;
     use uuid::Uuid;
     // Generate a temporary agent_id for test context
     let temp_agent_id = AgentId::from_uuid(baml_rt_core::ids::UuidId::new(Uuid::new_v4()));
-    let mut bridge = QuickJSBridge::new(baml_manager, temp_agent_id).await.expect("Create QuickJS bridge");
+    let config = quickjs_config_for_tests();
+    let mut bridge =
+        QuickJSBridge::new_with_config(baml_manager, temp_agent_id, config)
+            .await
+            .expect("Create QuickJS bridge");
     bridge
         .register_baml_functions()
         .await
@@ -129,7 +139,7 @@ pub async fn assert_tool_registered_in_js(bridge: &mut QuickJSBridge, tool_name:
         "#,
         tool_name, tool_name
     );
-    let result = bridge.evaluate(&js_code).await.expect("Should check tool registration");
+    let result = bridge.evaluate(None, &js_code).await.expect("Should check tool registration");
     let obj = result.as_object().expect("Expected object");
     let tool_exists = obj
         .get("toolExists")

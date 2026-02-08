@@ -73,7 +73,7 @@ pub trait BamlGateway: Send + Sync {
 #[async_trait(?Send)]
 impl JsRuntimeHost for QuickJSBridge {
     async fn eval_json(&mut self, code: &str) -> Result<Value> {
-        self.evaluate(code).await
+        self.evaluate(None, code).await
     }
 }
 

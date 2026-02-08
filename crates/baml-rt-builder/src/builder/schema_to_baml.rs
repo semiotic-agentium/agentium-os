@@ -32,7 +32,7 @@ pub fn generate_baml_types_from_schemas(
     // Generate types in dependency order (nested types first)
     // Collect all type names that need to be generated
     let mut types_to_generate: Vec<(String, String)> = Vec::new();
-    for (schema_name, _schema) in &all_schemas {
+    for schema_name in all_schemas.keys() {
         if let Some(baml_name) = type_names.get(schema_name) {
             types_to_generate.push((baml_name.clone(), schema_name.clone()));
         } else if all_nested_schemas.contains_key(schema_name) {
@@ -46,11 +46,10 @@ pub fn generate_baml_types_from_schemas(
     
     // Generate types
     for (baml_name, schema_key) in types_to_generate {
-        if !generated.contains(&baml_name) {
-            if let Some(schema) = all_schemas.get(&schema_key) {
+        if !generated.contains(&baml_name)
+            && let Some(schema) = all_schemas.get(&schema_key) {
                 generate_baml_type(&mut output, &baml_name, schema, &mut generated, &all_schemas, type_names)?;
             }
-        }
     }
     
     Ok(output)
@@ -103,20 +102,18 @@ fn generate_baml_type(
     })?;
     
     // Check if it's an enum (oneOf with const values or enum field)
-    if let Some(enum_values) = schema_obj.get("enum") {
-        if let Some(enum_array) = enum_values.as_array() {
+    if let Some(enum_values) = schema_obj.get("enum")
+        && let Some(enum_array) = enum_values.as_array() {
             generate_baml_enum(output, type_name, enum_array, schema_obj)?;
             return Ok(());
         }
-    }
     
     // Check if it's an object/class
-    if let Some(Value::String(schema_type)) = schema_obj.get("type") {
-        if schema_type == "object" {
+    if let Some(Value::String(schema_type)) = schema_obj.get("type")
+        && schema_type == "object" {
             generate_baml_class(output, type_name, schema_obj, generated, all_schemas, type_names)?;
             return Ok(());
         }
-    }
     
     // Fallback: try to infer from properties
     if schema_obj.contains_key("properties") {
@@ -208,9 +205,9 @@ fn generate_baml_class(
 /// Convert JSON schema type to BAML type string
 fn json_schema_to_baml_type(
     schema: &Value,
-    generated: &mut HashSet<String>,
-    all_schemas: &HashMap<String, Value>,
-    type_names: &HashMap<String, String>,
+    _generated: &mut HashSet<String>,
+    _all_schemas: &HashMap<String, Value>,
+    _type_names: &HashMap<String, String>,
 ) -> Result<String> {
     let schema_obj = schema.as_object().ok_or_else(|| {
         BamlRtError::InvalidArgument("Schema must be an object".to_string())
@@ -219,7 +216,7 @@ fn json_schema_to_baml_type(
     // Handle $ref - extract nested types from definitions
     if let Some(Value::String(ref_path)) = schema_obj.get("$ref") {
         // Extract type name from #/$defs/TypeName or #/definitions/TypeName
-        if let Some(type_name) = ref_path.split('/').last() {
+        if let Some(type_name) = ref_path.split('/').next_back() {
             return Ok(type_name.to_string());
         }
     }
@@ -228,21 +225,20 @@ fn json_schema_to_baml_type(
     if let Some(one_of) = schema_obj.get("oneOf").and_then(|v| v.as_array()) {
         let mut types = Vec::new();
         for variant in one_of {
-            types.push(json_schema_to_baml_type(variant, generated, all_schemas, type_names)?);
+            types.push(json_schema_to_baml_type(variant, _generated, _all_schemas, _type_names)?);
         }
         return Ok(types.join(" | "));
     }
     
     // Handle array
-    if let Some(Value::String(array_type)) = schema_obj.get("type") {
-        if array_type == "array" {
+    if let Some(Value::String(array_type)) = schema_obj.get("type")
+        && array_type == "array" {
             if let Some(items) = schema_obj.get("items") {
-                let item_type = json_schema_to_baml_type(items, generated, all_schemas, type_names)?;
+                let item_type = json_schema_to_baml_type(items, _generated, _all_schemas, _type_names)?;
                 return Ok(format!("{}[]", item_type));
             }
             return Ok("any[]".to_string());
         }
-    }
     
     // Handle primitive types
     if let Some(Value::String(primitive_type)) = schema_obj.get("type") {

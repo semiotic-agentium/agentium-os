@@ -9,6 +9,7 @@ baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 baml-rt-interceptor = { path = "../baml-rt-interceptor" }
 baml-rt-observability = { path = "../baml-rt-observability" }
+baml-rt-provenance = { path = "../baml-rt-provenance" }
 baml-runtime = { workspace = true }
 baml-types = { workspace = true }
 internal-baml-core = { workspace = true }
@@ -29,3 +30,4 @@ baml-rt = { path = "../baml-rt" }
 tokio-test = { workspace = true }
 schemars = { workspace = true }
 ts-rs = { workspace = true }
+proptest = "1.5"

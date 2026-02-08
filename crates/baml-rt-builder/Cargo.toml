@@ -27,6 +27,7 @@ tar = { workspace = true }
 regex = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }
+inquire = "0.9"
 tokio = { workspace = true }
 async-trait = { workspace = true }
 uuid = { workspace = true }

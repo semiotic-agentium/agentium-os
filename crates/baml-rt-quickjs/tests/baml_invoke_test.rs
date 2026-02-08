@@ -21,7 +21,7 @@ async fn test_js_invoke_baml_function() {
         })()
     "#;
     
-    let result = bridge.evaluate(js_code).await;
+    let result = bridge.evaluate(None, js_code).await;
     
     // The result should contain either success with result, or error info
     // Note: This may fail due to missing API keys, which is acceptable

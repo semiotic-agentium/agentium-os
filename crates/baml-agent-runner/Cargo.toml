@@ -22,6 +22,7 @@ uuid = { workspace = true }
 [dev-dependencies]
 test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
+baml-rt-tools = { path = "../baml-rt-tools" }
 async-trait = { workspace = true }
 dotenvy = { workspace = true }
 schemars = { workspace = true }

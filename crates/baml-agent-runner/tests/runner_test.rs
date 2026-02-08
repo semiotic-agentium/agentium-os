@@ -15,8 +15,14 @@ use schemars::JsonSchema;
 use ts_rs::TS;
 use baml_rt::tools::BamlTool;
 use baml_rt_tools::bundles::BundleType;
+use baml_rt_core::effects::EffectBus;
+use baml_rt_core::context::{self, InvocationScope};
+use baml_rt_core::ids::{AgentId, UuidId};
+use std::sync::Arc;
+use std::collections::HashSet;
 
 // Test bundle for test tools
+#[allow(dead_code)]
 struct Test;
 
 impl BundleType for Test {
@@ -26,13 +32,56 @@ impl BundleType for Test {
     }
 }
 use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest};
-use std::collections::HashSet;
 
 use test_support::common::{ensure_baml_src_exists, agent_fixture, workspace_root, CalculatorTool};
+use test_support::support::cli::CliHarness;
+
+/// Build fixture with baml-agent-builder, extract tar to temp dir, return path to extracted dir (has dist + baml_src).
+fn build_fixture_to_temp(fixture_name: &str) -> std::path::PathBuf {
+    let agent_dir = agent_fixture(fixture_name);
+    if !agent_dir.exists() || !agent_dir.join("baml_src").exists() {
+        panic!("Fixture {} not found or missing baml_src", fixture_name);
+    }
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let tar_path = std::env::temp_dir().join(format!("runner-test-{}-{}.tar.gz", fixture_name, unique));
+    let extract_dir = std::env::temp_dir().join(format!("runner-test-{}-extract-{}", fixture_name, unique));
+    let _ = fs::remove_dir_all(&extract_dir);
+    fs::create_dir_all(&extract_dir).expect("create extract dir");
+
+    let mut cmd = CliHarness::new().builder_command();
+    cmd.arg("package")
+        .arg("--agent-dir")
+        .arg(&agent_dir)
+        .arg("--output")
+        .arg(&tar_path)
+        .arg("--skip-lint");
+    let output = cmd.output().expect("build fixture: run builder");
+    if !output.status.success() {
+        panic!(
+            "build fixture {} failed: stdout={}, stderr={}",
+            fixture_name,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let tar_gz = fs::File::open(&tar_path).expect("open built tar");
+    let tar_dec = flate2::read::GzDecoder::new(tar_gz);
+    let mut archive = tar::Archive::new(tar_dec);
+    archive.unpack(&extract_dir).expect("unpack built tar");
+    let _ = fs::remove_file(&tar_path);
+
+    let dist_index = extract_dir.join("dist").join("index.js");
+    assert!(dist_index.exists(), "Built package must contain dist/index.js");
+    extract_dir
+}
+
 /// Create a test agent package from a fixture agent
 fn create_test_agent_package(output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    // Use the voidship-rites fixture
-    let agent_dir = agent_fixture("voidship-rites");
+    let agent_dir = agent_fixture("stream-baml-tool");
 
     if !agent_dir.exists() {
         return Err(format!("Fixture agent directory not found: {}", agent_dir.display()).into());
@@ -58,7 +107,7 @@ fn create_test_agent_package(output_path: &Path) -> Result<(), Box<dyn std::erro
         return Err("Fixture agent baml_src not found".into());
     }
 
-    // Create manifest.json
+    // Create manifest.json (stream-baml-tool fixture has support/calculate only)
     let manifest = serde_json::json!({
         "version": "1.0.0",
         "name": "test-agent",
@@ -66,10 +115,7 @@ fn create_test_agent_package(output_path: &Path) -> Result<(), Box<dyn std::erro
         "entry_point": "dist/index.js",
         "runtime_version": "0.1.0",
         "signature": "test-agent@1.0.0",
-        "tools": [
-            "test/add_numbers",
-            "support/calculate"
-        ]
+        "tools": ["support/calculate"]
     });
     fs::write(temp_dir.join("manifest.json"), serde_json::to_string_pretty(&manifest)?)?;
 
@@ -105,6 +151,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
+#[allow(dead_code)]
 struct AddNumbersTool;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -156,24 +203,30 @@ fn user_message(message_id: &str, text: &str) -> Message {
     }
 }
 
-async fn setup_voidship_agent() -> baml_rt::A2aAgent {
-    let agent_dir = agent_fixture("voidship-rites");
+async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
+    let built = build_fixture_to_temp("stream-baml-tool");
     let mut manager = BamlRuntimeManager::new().unwrap();
-    manager.load_schema(agent_dir.to_str().unwrap()).unwrap();
-    {
-        manager.register_tool(AddNumbersTool).await.unwrap();
-        manager.register_tool(CalculatorTool).await.unwrap();
-    }
-    let dist_path = agent_dir.join("dist").join("index.js");
-    let src_path = agent_dir.join("src").join("index.ts");
-    let agent_code = if dist_path.exists() {
-        std::fs::read_to_string(dist_path).expect("voidship-rites JS should be readable")
-    } else {
-        std::fs::read_to_string(src_path).expect("voidship-rites JS should be readable")
-    };
+    manager.load_schema(built.to_str().unwrap()).unwrap();
+    manager.register_tool(CalculatorTool).await.unwrap();
+    let agent_code = fs::read_to_string(built.join("dist").join("index.js")).expect("stream-baml-tool dist/index.js");
     baml_rt::A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
+        .with_effect_emitter(Arc::new(EffectBus::new()))
+        .build()
+        .await
+        .unwrap()
+}
+
+async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
+    let built = build_fixture_to_temp("stream-js-tool");
+    let mut manager = BamlRuntimeManager::new().unwrap();
+    manager.load_schema(built.to_str().unwrap()).unwrap();
+    let agent_code = fs::read_to_string(built.join("dist").join("index.js")).expect("stream-js-tool dist/index.js");
+    baml_rt::A2aAgent::builder()
+        .with_runtime_manager(manager)
+        .with_init_js(agent_code)
+        .with_effect_emitter(Arc::new(EffectBus::new()))
         .build()
         .await
         .unwrap()
@@ -184,8 +237,13 @@ async fn test_manifest_allowlist_blocks_undeclared_tool() {
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.register_tool(CalculatorTool).await.unwrap();
 
+    let agent_id = AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000020").unwrap());
+    let scope = InvocationScope::standalone(agent_id);
+
     manager.set_tool_allowlist(HashSet::new()).await.unwrap();
-    let blocked = manager.open_tool_session("support/calculate", json!({})).await;
+    let blocked = context::with_scope(scope.as_scope().clone(), async {
+        manager.open_tool_session("support/calculate", json!({})).await
+    }).await;
     assert!(
         blocked
             .err()
@@ -197,7 +255,9 @@ async fn test_manifest_allowlist_blocks_undeclared_tool() {
     let mut allowlist = HashSet::new();
     allowlist.insert("support/calculate".to_string());
     manager.set_tool_allowlist(allowlist).await.unwrap();
-    let session = manager.open_tool_session("support/calculate", json!({})).await;
+    let session = context::with_scope(scope.as_scope().clone(), async {
+        manager.open_tool_session("support/calculate", json!({})).await
+    }).await;
     assert!(session.is_ok(), "Expected allowlisted tool to open");
 }
 
@@ -375,105 +435,16 @@ fn agent_runner_command() -> Command {
     command
 }
 
+/// Fixture: stream-baml-tool. Tests async streaming of a BAML tool (FSM) result via message.sendStream.
+/// Requires .env with OPENROUTER_API_KEY (source .env or set in test env).
 #[tokio::test]
-async fn test_e2e_voidship_agent_features() {
-    let agent = setup_voidship_agent().await;
+async fn test_e2e_stream_baml_tool() {
+    let _ = dotenvy::dotenv();
 
-    // BAML tool calling driven via message interface
-    let params = SendMessageRequest {
-        message: user_message("vox-baml", "baml-tool: perform the rite"),
-        configuration: None,
-        metadata: None,
-        tenant: None,
-        extra: std::collections::HashMap::new(),
-    };
-    let request = JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "message.send".to_string(),
-        params: Some(serde_json::to_value(params).unwrap()),
-        id: Some(JSONRPCId::String("corr-1-1".to_string())),
-    };
-    let responses = agent
-        .handle_a2a(serde_json::to_value(request).unwrap())
-        .await
-        .unwrap();
-    let text = responses[0]
-        .get("result")
-        .and_then(|result| result.get("message"))
-        .and_then(|message| message.get("parts"))
-        .and_then(|parts| parts.as_array())
-        .and_then(|parts| parts.first())
-        .and_then(|part| part.get("text"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    assert!(
-        text.contains("sum=5"),
-        "Expected BAML tool result in response, got: {}",
-        text
-    );
+    let agent = setup_stream_baml_tool_agent().await;
 
-    // Deterministic task creation
     let params = SendMessageRequest {
-        message: user_message("vox-1", "long-rite: awaken the engines"),
-        configuration: None,
-        metadata: None,
-        tenant: None,
-        extra: std::collections::HashMap::new(),
-    };
-    let request = JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "message.send".to_string(),
-        params: Some(serde_json::to_value(params).unwrap()),
-        id: Some(JSONRPCId::String("corr-1-2".to_string())),
-    };
-    let responses = agent
-        .handle_a2a(serde_json::to_value(request).unwrap())
-        .await
-        .unwrap();
-    let task_id = responses[0]
-        .get("result")
-        .and_then(|result| result.get("task"))
-        .and_then(|task| task.get("id"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    assert_eq!(task_id, "rite-task-vox-1");
-
-    // Direct TS tool invocation via invokeTool
-    let params = SendMessageRequest {
-        message: user_message("vox-2", "tool-call: add numbers"),
-        configuration: None,
-        metadata: None,
-        tenant: None,
-        extra: std::collections::HashMap::new(),
-    };
-    let request = JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "message.send".to_string(),
-        params: Some(serde_json::to_value(params).unwrap()),
-        id: Some(JSONRPCId::String("corr-1-3".to_string())),
-    };
-    let responses = agent
-        .handle_a2a(serde_json::to_value(request).unwrap())
-        .await
-        .unwrap();
-    let text = responses[0]
-        .get("result")
-        .and_then(|result| result.get("message"))
-        .and_then(|message| message.get("parts"))
-        .and_then(|parts| parts.as_array())
-        .and_then(|parts| parts.first())
-        .and_then(|part| part.get("text"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
-    assert!(
-        text.contains("sum=5"),
-        "Expected tool-call sum in response, got: {}",
-        text
-    );
-
-    // Streaming response includes status + artifact updates
-    let params = SendMessageRequest {
-        message: user_message("vox-3", "ignite the void seals"),
+        message: user_message("vox-1", "compute 2+3"),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -483,12 +454,82 @@ async fn test_e2e_voidship_agent_features() {
         jsonrpc: "2.0".to_string(),
         method: "message.sendStream".to_string(),
         params: Some(serde_json::to_value(params).unwrap()),
-        id: Some(JSONRPCId::String("corr-1-4".to_string())),
+        id: Some(JSONRPCId::String("corr-1-1".to_string())),
     };
     let responses = agent
         .handle_a2a(serde_json::to_value(request).unwrap())
         .await
         .unwrap();
+    let text = responses
+        .iter()
+        .filter_map(|r| r.get("result").and_then(|res| res.get("chunk").or(Some(res))))
+        .filter_map(|chunk| {
+            chunk
+                .get("message")
+                .and_then(|m| m.get("parts"))
+                .and_then(|p| p.as_array())
+                .and_then(|p| p.first())
+                .and_then(|part| part.get("text"))
+                .and_then(|v| v.as_str())
+        })
+        .find(|t| t.contains("sum=5"))
+        .unwrap_or("");
+    assert!(
+        !text.is_empty(),
+        "Expected BAML tool result (sum=5) in stream. Source .env for OPENROUTER_API_KEY. Message texts: {:?}. Raw: {}",
+        responses.iter().filter_map(|r| {
+            r.get("result").and_then(|res| res.get("chunk").or(Some(res)))
+                .and_then(|c| c.get("message"))
+                .and_then(|m| m.get("parts"))
+                .and_then(|p| p.as_array())
+                .and_then(|p| p.first())
+                .and_then(|part| part.get("text"))
+                .and_then(|v| v.as_str())
+        }).collect::<Vec<_>>(),
+        serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+    );
+}
+
+/// Fixture: stream-js-tool. Tests streaming of a JS-only result (statusUpdate, artifactUpdate, message) and tasks.cancel.
+#[tokio::test]
+async fn test_e2e_stream_js_tool() {
+    let agent = setup_stream_js_tool_agent().await;
+
+    let params = SendMessageRequest {
+        message: user_message("vox-1", "stream-task: run"),
+        configuration: None,
+        metadata: None,
+        tenant: None,
+        extra: std::collections::HashMap::new(),
+    };
+    let request = JSONRPCRequest {
+        jsonrpc: "2.0".to_string(),
+        method: "message.sendStream".to_string(),
+        params: Some(serde_json::to_value(params).unwrap()),
+        id: Some(JSONRPCId::String("corr-1-1".to_string())),
+    };
+    let responses = agent
+        .handle_a2a(serde_json::to_value(request).unwrap())
+        .await
+        .unwrap();
+    let task_id = responses
+        .iter()
+        .filter_map(|r| r.get("result").and_then(|res| res.get("chunk").or(Some(res))))
+        .find_map(|chunk| {
+            chunk
+                .get("task")
+                .and_then(|t| t.get("id"))
+                .and_then(|v| v.as_str())
+                .or_else(|| {
+                    chunk
+                        .get("statusUpdate")
+                        .and_then(|s| s.get("taskId"))
+                        .and_then(|v| v.as_str())
+                })
+        })
+        .unwrap_or("");
+    assert_eq!(task_id, "task-vox-1");
+
     let mut saw_status = false;
     let mut saw_artifact = false;
     for response in &responses {
@@ -507,12 +548,11 @@ async fn test_e2e_voidship_agent_features() {
     assert!(saw_status, "Expected statusUpdate in streaming chunks");
     assert!(saw_artifact, "Expected artifactUpdate in streaming chunks");
 
-    // Subscribe stream includes incremental updates
     let subscribe_request = JSONRPCRequest {
         jsonrpc: "2.0".to_string(),
         method: "tasks.subscribe".to_string(),
-        params: Some(json!({ "id": "rite-task-vox-1", "stream": true })),
-        id: Some(JSONRPCId::String("corr-1-5".to_string())),
+        params: Some(json!({ "id": "task-vox-1", "stream": true })),
+        id: Some(JSONRPCId::String("corr-1-2".to_string())),
     };
     let responses = agent
         .handle_a2a(serde_json::to_value(subscribe_request).unwrap())
@@ -529,12 +569,11 @@ async fn test_e2e_voidship_agent_features() {
         "Expected task snapshot in subscribe stream"
     );
 
-    // Cancel task yields canceled update in subscribe stream
     let cancel_request = JSONRPCRequest {
         jsonrpc: "2.0".to_string(),
         method: "tasks.cancel".to_string(),
-        params: Some(json!({ "id": "rite-task-vox-1" })),
-        id: Some(JSONRPCId::String("corr-1-6".to_string())),
+        params: Some(json!({ "id": "task-vox-1" })),
+        id: Some(JSONRPCId::String("corr-1-3".to_string())),
     };
     let _ = agent
         .handle_a2a(serde_json::to_value(cancel_request).unwrap())
@@ -544,8 +583,8 @@ async fn test_e2e_voidship_agent_features() {
     let subscribe_request = JSONRPCRequest {
         jsonrpc: "2.0".to_string(),
         method: "tasks.subscribe".to_string(),
-        params: Some(json!({ "id": "rite-task-vox-1", "stream": true })),
-        id: Some(JSONRPCId::String("corr-1-7".to_string())),
+        params: Some(json!({ "id": "task-vox-1", "stream": true })),
+        id: Some(JSONRPCId::String("corr-1-4".to_string())),
     };
     let responses = agent
         .handle_a2a(serde_json::to_value(subscribe_request).unwrap())

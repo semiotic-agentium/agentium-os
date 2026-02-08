@@ -2,6 +2,9 @@
 //!
 //! Provides production-grade abstractions for building, linting, and packaging
 //! BAML agent applications.
+//!
+//! **Tool catalogue:** Tool list composition for bootstrap is done in the binary,
+//! not in the lib. See [`bootstrap`].
 
 pub mod types;
 pub mod traits;
@@ -13,6 +16,7 @@ pub mod baml_gen;
 pub mod schema_to_baml;
 pub mod packager;
 pub mod service;
+pub mod bootstrap;
 
 pub use types::{AgentDir, PackagePath, FunctionName, BuildDir};
 pub use traits::{

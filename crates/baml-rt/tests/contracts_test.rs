@@ -1,14 +1,25 @@
 //! Contract tests for BAML function invocation results
-//! 
+//!
 //! These tests assert on the actual structure and content of results,
 //! ensuring the contract between JavaScript/BAML functions and the runtime is correct.
+//!
+//! Use short max_attempts_ms so tests fail fast when LLM-backed fixtures (e.g. VoidshipGreeting)
+//! don't complete (e.g. missing API key); otherwise the effect-gated poller would wait 30 minutes.
 
+use std::fs;
+use std::sync::Arc;
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::A2aAgent;
+use baml_rt::QuickJSConfig;
+use baml_rt_core::context::InvocationScope;
 use serde_json::json;
-use std::fs;
 
 use test_support::common::agent_fixture;
+
+/// QuickJS config for tests: short max_attempts so effect-gated poll doesn't hang (LLM fixtures).
+fn test_quickjs_config() -> QuickJSConfig {
+    QuickJSConfig::new().with_max_attempts_ms(Some(15_000)) // 15s instead of 30 min
+}
 
 #[tokio::test]
 async fn test_baml_function_returns_string_result() {
@@ -20,6 +31,8 @@ async fn test_baml_function_returns_string_result() {
     baml_manager.load_schema(agent_dir.to_str().unwrap()).unwrap();
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
+        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_quickjs_config(test_quickjs_config())
         .build()
         .await
         .unwrap();
@@ -74,15 +87,18 @@ async fn test_js_function_invocation_returns_actual_result() {
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_init_js(agent_code)
+        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_quickjs_config(test_quickjs_config())
         .build()
         .await
         .unwrap();
     let bridge_handle = agent.bridge();
     let mut bridge = bridge_handle.lock().await;
+    let scope = InvocationScope::standalone(agent.agent_id().clone());
 
     // Invoke riteBlessing - this should return the actual greeting string
     let result = bridge
-        .invoke_js_function("riteBlessing", json!({"name": "ContractTest"}))
+        .invoke_js_function(&scope, "riteBlessing", json!({"name": "ContractTest"}))
         .await;
     
     // Contract assertion: Should return the actual greeting string, not {"success": true}
@@ -138,14 +154,17 @@ async fn test_invoke_function_api_contract() {
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_init_js(agent_code)
+        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_quickjs_config(test_quickjs_config())
         .build()
         .await
         .unwrap();
     let bridge_handle = agent.bridge();
     let mut bridge = bridge_handle.lock().await;
+    let scope = InvocationScope::standalone(agent.agent_id().clone());
 
     let result = bridge
-        .invoke_js_function("riteBlessing", json!({"name": "APIContractTest"}))
+        .invoke_js_function(&scope, "riteBlessing", json!({"name": "APIContractTest"}))
         .await;
     
     // Contract assertion: Result MUST be the actual string, not wrapped
@@ -217,15 +236,18 @@ async fn test_loaded_agent_invoke_function_contract() {
     let agent = A2aAgent::builder()
         .with_runtime_manager(runtime_manager)
         .with_init_js(agent_code)
+        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_quickjs_config(test_quickjs_config())
         .build()
         .await
         .unwrap();
     let bridge_handle = agent.bridge();
     let mut bridge = bridge_handle.lock().await;
+    let scope = InvocationScope::standalone(agent.agent_id().clone());
     
     // Use the ACTUAL invoke_function logic from LoadedAgent (lines 257-290)
     let result = bridge
-        .invoke_js_function("riteBlessing", json!({"name": "ContractTest"}))
+        .invoke_js_function(&scope, "riteBlessing", json!({"name": "ContractTest"}))
         .await;
     
     match result {

@@ -18,7 +18,8 @@ use crate::stream_normalizer::{A2aStreamNormalizer, StreamNormalizer};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, QuickJSConfig};
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_core::correlation;
-use baml_rt_core::context;
+use baml_rt_core::context::{self, InvocationScope};
+use baml_rt_core::effects::EffectEmitter;
 use baml_rt_observability::{metrics, spans};
 use baml_rt_tools::tools::ToolFunctionMetadata;
 use baml_rt_tools::{ToolHandler, ToolName, ToolSession, ToolTypeSpec};
@@ -87,7 +88,7 @@ impl A2aAgent {
     /// Evaluate JavaScript in the agent runtime.
     pub async fn evaluate_js(&self, code: &str) -> Result<Value> {
         let mut bridge = self.bridge.lock().await;
-        bridge.evaluate(code).await
+        bridge.evaluate(None, code).await
     }
 
     /// Register a JavaScript tool and expose it to BAML-native tool calls.
@@ -160,15 +161,59 @@ impl A2aAgent {
 
 /// Builder for configuring an A2A agent and its subcomponents.
 pub struct A2aAgentBuilder {
-    runtime: Option<Arc<Mutex<BamlRuntimeManager>>>,
-    bridge: Option<Arc<Mutex<QuickJSBridge>>>,
+    runtime: RuntimeConfig,
+    bridge: BridgeConfig,
     quickjs_config: QuickJSConfig,
     register_baml_functions: bool,
     init_js: Vec<String>,
-    task_store: Option<Arc<dyn TaskStoreBackend>>,
-    provenance_writer: Option<Arc<dyn ProvenanceWriter>>,
-    agent_id: Option<baml_rt_core::ids::AgentId>,
+    task_store: TaskStoreConfig,
+    provenance_writer: ProvenanceWriterConfig,
+    agent_id: AgentIdConfig,
     register_a2a_session_tool: bool,
+}
+
+
+pub struct A2aAgentBuilderWithEffectEmitter {
+    runtime: RuntimeConfig,
+    bridge: BridgeConfig,
+    quickjs_config: QuickJSConfig,
+    register_baml_functions: bool,
+    init_js: Vec<String>,
+    task_store: TaskStoreConfig,
+    provenance_writer: ProvenanceWriterConfig,
+    agent_id: AgentIdConfig,
+    register_a2a_session_tool: bool,
+    effect_emitter: Arc<dyn EffectEmitter>, // REQUIRED - enforced by typestate
+}
+
+/// Runtime configuration: either provided or default.
+enum RuntimeConfig {
+    Provided(Arc<Mutex<BamlRuntimeManager>>),
+    Default,
+}
+
+/// Bridge configuration: either provided or auto-created.
+enum BridgeConfig {
+    Provided(Arc<Mutex<QuickJSBridge>>),
+    AutoCreate,
+}
+
+/// Task store configuration: either provided or default (InMemory).
+enum TaskStoreConfig {
+    Provided(Arc<dyn TaskStoreBackend>),
+    Default,
+}
+
+/// Provenance writer configuration: either provided or default (InMemory).
+enum ProvenanceWriterConfig {
+    Provided(Arc<dyn ProvenanceWriter>),
+    Default,
+}
+
+/// Agent ID configuration: either provided or auto-generated.
+enum AgentIdConfig {
+    Provided(baml_rt_core::ids::AgentId),
+    AutoGenerate,
 }
 
 impl Default for A2aAgentBuilder {
@@ -178,36 +223,49 @@ impl Default for A2aAgentBuilder {
 }
 
 impl A2aAgentBuilder {
-    /// Create a new builder. `agent_id` will be automatically generated during build().
+    /// Create a new builder with all defaults.
+    /// 
+    /// Defaults:
+    /// - `runtime`: Creates new `BamlRuntimeManager`
+    /// - `bridge`: Auto-created from runtime + agent_id + config
+    /// - `quickjs_config`: `QuickJSConfig::default()`
+    /// - `register_baml_functions`: `true`
+    /// - `init_js`: Empty vec
+    /// - `task_store`: `InMemoryProvenanceStore` + `ProvenanceTaskStore`
+    /// - `provenance_writer`: `InMemoryProvenanceStore`
+    /// - `agent_id`: Auto-generated UUID
+    /// 
+    /// **REQUIRED**: Call `with_effect_emitter()` before `build()`.
     pub fn new() -> Self {
         Self {
-            runtime: None,
-            bridge: None,
+            runtime: RuntimeConfig::Default,
+            bridge: BridgeConfig::AutoCreate,
             quickjs_config: QuickJSConfig::default(),
             register_baml_functions: true,
             init_js: Vec::new(),
-            task_store: None,
-            provenance_writer: None,
-            agent_id: None, // Will be generated in build()
+            task_store: TaskStoreConfig::Default,
+            provenance_writer: ProvenanceWriterConfig::Default,
+            agent_id: AgentIdConfig::AutoGenerate,
             register_a2a_session_tool: false,
         }
     }
 
-    /// Provide an existing runtime manager.
+    /// Provide an existing runtime manager (overrides default).
     pub fn with_runtime_manager(mut self, runtime: BamlRuntimeManager) -> Self {
-        self.runtime = Some(Arc::new(Mutex::new(runtime)));
+        self.runtime = RuntimeConfig::Provided(Arc::new(Mutex::new(runtime)));
         self
     }
 
-    /// Provide a shared runtime manager.
+    /// Provide a shared runtime manager (overrides default).
     pub fn with_runtime_handle(mut self, runtime: Arc<Mutex<BamlRuntimeManager>>) -> Self {
-        self.runtime = Some(runtime);
+        self.runtime = RuntimeConfig::Provided(runtime);
         self
     }
 
-    /// Provide a shared QuickJS bridge (requires a runtime handle too).
+    /// Provide a shared QuickJS bridge (overrides auto-creation).
+    /// Requires a runtime handle to be provided as well.
     pub fn with_bridge_handle(mut self, bridge: Arc<Mutex<QuickJSBridge>>) -> Self {
-        self.bridge = Some(bridge);
+        self.bridge = BridgeConfig::Provided(bridge);
         self
     }
 
@@ -229,15 +287,96 @@ impl A2aAgentBuilder {
         self
     }
 
-    /// Provide a custom task store backend.
+    /// Provide a custom task store backend (overrides default).
     pub fn with_task_store_backend(mut self, task_store: Arc<dyn TaskStoreBackend>) -> Self {
-        self.task_store = Some(task_store);
+        self.task_store = TaskStoreConfig::Provided(task_store);
         self
     }
 
-    /// Provide a custom provenance writer.
+    /// Provide a custom provenance writer (overrides default).
     pub fn with_provenance_writer(mut self, writer: Arc<dyn ProvenanceWriter>) -> Self {
-        self.provenance_writer = Some(writer);
+        self.provenance_writer = ProvenanceWriterConfig::Provided(writer);
+        self
+    }
+
+    pub fn with_a2a_session_tool(mut self, enabled: bool) -> Self {
+        self.register_a2a_session_tool = enabled;
+        self
+    }
+
+    /// Provide an agent ID (overrides auto-generation).
+    pub fn with_agent_id(mut self, agent_id: baml_rt_core::ids::AgentId) -> Self {
+        self.agent_id = AgentIdConfig::Provided(agent_id);
+        self
+    }
+
+    /// Provide an effect emitter for A2A effect tracking (host-inbound).
+    /// 
+    /// **REQUIRED**: This must be called before `build()`.
+    /// Returns a builder in a state that allows `build()` to be called.
+    pub fn with_effect_emitter(self, emitter: Arc<dyn EffectEmitter>) -> A2aAgentBuilderWithEffectEmitter {
+        A2aAgentBuilderWithEffectEmitter {
+            runtime: self.runtime,
+            bridge: self.bridge,
+            quickjs_config: self.quickjs_config,
+            register_baml_functions: self.register_baml_functions,
+            init_js: self.init_js,
+            task_store: self.task_store,
+            provenance_writer: self.provenance_writer,
+            agent_id: self.agent_id,
+            register_a2a_session_tool: self.register_a2a_session_tool,
+            effect_emitter: emitter,
+        }
+    }
+}
+
+impl A2aAgentBuilderWithEffectEmitter {
+    /// Provide an existing runtime manager (overrides default).
+    pub fn with_runtime_manager(mut self, runtime: BamlRuntimeManager) -> Self {
+        self.runtime = RuntimeConfig::Provided(Arc::new(Mutex::new(runtime)));
+        self
+    }
+
+    /// Provide a shared runtime manager (overrides default).
+    pub fn with_runtime_handle(mut self, runtime: Arc<Mutex<BamlRuntimeManager>>) -> Self {
+        self.runtime = RuntimeConfig::Provided(runtime);
+        self
+    }
+
+    /// Provide a shared QuickJS bridge (overrides auto-creation).
+    /// Requires a runtime handle to be provided as well.
+    pub fn with_bridge_handle(mut self, bridge: Arc<Mutex<QuickJSBridge>>) -> Self {
+        self.bridge = BridgeConfig::Provided(bridge);
+        self
+    }
+
+    /// Configure QuickJS runtime options used when creating the bridge.
+    pub fn with_quickjs_config(mut self, config: QuickJSConfig) -> Self {
+        self.quickjs_config = config;
+        self
+    }
+
+    /// Enable or disable registration of BAML helper functions.
+    pub fn with_baml_helpers(mut self, enabled: bool) -> Self {
+        self.register_baml_functions = enabled;
+        self
+    }
+
+    /// Add JavaScript to evaluate after the bridge is created.
+    pub fn with_init_js(mut self, code: impl Into<String>) -> Self {
+        self.init_js.push(code.into());
+        self
+    }
+
+    /// Provide a custom task store backend (overrides default).
+    pub fn with_task_store_backend(mut self, task_store: Arc<dyn TaskStoreBackend>) -> Self {
+        self.task_store = TaskStoreConfig::Provided(task_store);
+        self
+    }
+
+    /// Provide a custom provenance writer (overrides default).
+    pub fn with_provenance_writer(mut self, writer: Arc<dyn ProvenanceWriter>) -> Self {
+        self.provenance_writer = ProvenanceWriterConfig::Provided(writer);
         self
     }
 
@@ -247,55 +386,125 @@ impl A2aAgentBuilder {
     }
 
     /// Build the agent with the configured subcomponents.
+    /// 
+    /// This method is only available after `with_effect_emitter()` has been called.
+    /// The `effect_emitter` field is guaranteed to be present by the type system.
+    /// All other fields use defaults if not explicitly provided.
     pub async fn build(self) -> Result<A2aAgent> {
-        if self.bridge.is_some() && self.runtime.is_none() {
-            return Err(BamlRtError::InvalidArgument(
-                "A2aAgentBuilder requires a runtime handle when providing a bridge".to_string(),
-            ));
-        }
-
+        tracing::info!("A2aAgentBuilder::build: Starting build");
+        
+        // Resolve runtime: provided or default
+        tracing::debug!("A2aAgentBuilder::build: Resolving runtime");
         let runtime = match self.runtime {
-            Some(runtime) => runtime,
-            None => Arc::new(Mutex::new(BamlRuntimeManager::new()?)),
+            RuntimeConfig::Provided(runtime) => {
+                tracing::debug!("A2aAgentBuilder::build: Using provided runtime");
+                runtime
+            }
+            RuntimeConfig::Default => {
+                tracing::debug!("A2aAgentBuilder::build: Creating default runtime");
+                Arc::new(Mutex::new(BamlRuntimeManager::new()?))
+            }
         };
 
-        // Generate agent_id if not provided (REQUIRED for QuickJS bridge)
+        // Resolve agent_id: provided or auto-generated
+        tracing::debug!("A2aAgentBuilder::build: Resolving agent_id");
         use uuid::Uuid;
-        let agent_id = self.agent_id.unwrap_or_else(|| {
-            baml_rt_core::ids::AgentId::from_uuid(baml_rt_core::ids::UuidId::new(Uuid::new_v4()))
-        });
+        let agent_id = match self.agent_id {
+            AgentIdConfig::Provided(id) => {
+                tracing::debug!("A2aAgentBuilder::build: Using provided agent_id");
+                id
+            }
+            AgentIdConfig::AutoGenerate => {
+                tracing::debug!("A2aAgentBuilder::build: Auto-generating agent_id");
+                baml_rt_core::ids::AgentId::from_uuid(baml_rt_core::ids::UuidId::new(Uuid::new_v4()))
+            }
+        };
 
+        // Resolve bridge: provided or auto-created
+        tracing::debug!("A2aAgentBuilder::build: Resolving bridge");
         let bridge = match self.bridge {
-            Some(bridge) => bridge,
-            None => {
-                let bridge =
-                    QuickJSBridge::new_with_config(runtime.clone(), agent_id.clone(), self.quickjs_config).await?;
+            BridgeConfig::Provided(bridge) => {
+                tracing::debug!("A2aAgentBuilder::build: Using provided bridge");
+                bridge
+            }
+            BridgeConfig::AutoCreate => {
+                tracing::info!("A2aAgentBuilder::build: Creating QuickJS bridge (this may take a moment)");
+                // Add timeout around bridge creation to detect hangs
+                use tokio::time::{timeout as tokio_timeout, Duration};
+                let bridge_result = tokio_timeout(
+                    Duration::from_secs(20),
+                    QuickJSBridge::new_with_config(runtime.clone(), agent_id.clone(), self.quickjs_config),
+                ).await;
+                let bridge = bridge_result
+                    .map_err(|_| BamlRtError::InvalidArgument(
+                        "QuickJS bridge creation timed out after 20 seconds - possible deadlock".to_string()
+                    ))?
+                    .map_err(|e| BamlRtError::InvalidArgument(
+                        format!("QuickJS bridge creation failed: {}", e)
+                    ))?;
+                tracing::info!("A2aAgentBuilder::build: QuickJS bridge created successfully");
                 Arc::new(Mutex::new(bridge))
             }
         };
 
         if self.register_baml_functions || !self.init_js.is_empty() {
+            tracing::debug!("A2aAgentBuilder::build: Registering BAML functions and/or evaluating init_js");
             let mut bridge_guard = bridge.lock().await;
             if self.register_baml_functions {
-                bridge_guard.register_baml_functions().await?;
+                tracing::debug!("A2aAgentBuilder::build: Calling register_baml_functions()");
+                // INVARIANT L1: Bridge initialization must terminate within bounded time
+                // Add timeout to detect hangs in function registration
+                use tokio::time::{timeout as tokio_timeout, Duration};
+                tokio_timeout(
+                    Duration::from_secs(10),
+                    bridge_guard.register_baml_functions(),
+                )
+                .await
+                .map_err(|_| BamlRtError::InvalidArgument(
+                    "register_baml_functions() timed out after 10 seconds - possible deadlock".to_string()
+                ))??;
+                tracing::debug!("A2aAgentBuilder::build: register_baml_functions() completed");
             }
             for code in self.init_js {
-                bridge_guard.evaluate(&code).await?;
+                tracing::debug!("A2aAgentBuilder::build: Evaluating init_js code");
+                // INVARIANT L2: Eval operations must yield control within bounded time
+                use tokio::time::{timeout as tokio_timeout, Duration};
+                tokio_timeout(
+                    Duration::from_secs(30), // Longer timeout for user code
+                    bridge_guard.evaluate(None, &code),
+                )
+                .await
+                .map_err(|_| BamlRtError::InvalidArgument(
+                    format!("init_js evaluation timed out after 30 seconds - code may be blocking: {}", 
+                        if code.len() > 100 { format!("{}...", &code[..100]) } else { code.clone() })
+                ))??;
+                tracing::debug!("A2aAgentBuilder::build: init_js code evaluated");
             }
         }
+        tracing::debug!("A2aAgentBuilder::build: Bridge initialization complete");
+        tracing::debug!("A2aAgentBuilder::build: Bridge initialization complete");
 
         let (update_tx, _update_rx) = broadcast::channel(256);
 
+        // Resolve task_store and provenance_writer: provided or defaults
         let (task_store, provenance_writer) = match (self.task_store, self.provenance_writer) {
-            (Some(task_store), provenance_writer) => (task_store, provenance_writer),
-            (None, None) => {
-                let writer: Arc<dyn ProvenanceWriter> =
-                    Arc::new(InMemoryProvenanceStore::new());
+            (TaskStoreConfig::Provided(task_store), ProvenanceWriterConfig::Provided(writer)) => {
+                (task_store, Some(writer))
+            }
+            (TaskStoreConfig::Provided(task_store), ProvenanceWriterConfig::Default) => {
+                // Task store provided but no writer - create default writer
+                let writer: Arc<dyn ProvenanceWriter> = Arc::new(InMemoryProvenanceStore::new());
+                (task_store, Some(writer))
+            }
+            (TaskStoreConfig::Default, ProvenanceWriterConfig::Provided(writer)) => {
+                // Writer provided but no task store - create task store with writer
                 let store: Arc<dyn TaskStoreBackend> =
                     Arc::new(ProvenanceTaskStore::new(Some(writer.clone()), agent_id.clone()));
                 (store, Some(writer))
             }
-            (None, Some(writer)) => {
+            (TaskStoreConfig::Default, ProvenanceWriterConfig::Default) => {
+                // Both default - create both
+                let writer: Arc<dyn ProvenanceWriter> = Arc::new(InMemoryProvenanceStore::new());
                 let store: Arc<dyn TaskStoreBackend> =
                     Arc::new(ProvenanceTaskStore::new(Some(writer.clone()), agent_id.clone()));
                 (store, Some(writer))
@@ -328,6 +537,8 @@ impl A2aAgentBuilder {
             task_handler.clone(),
             js_invoker,
             result_pipeline.clone(),
+            self.effect_emitter,
+            agent_id.clone(),
         ));
         let error_classifier: Arc<dyn ErrorClassifier> = Arc::new(A2aErrorClassifier);
 
@@ -418,16 +629,15 @@ impl A2aRequestHandler for A2aAgent {
                 request_message_id,
                 request_task_id,
             );
+            let invocation_scope = InvocationScope::new(scope.clone());
             context::with_scope(scope, async move {
-                if matches!(
-                    parsed_request.method,
-                    a2a::A2aMethod::MessageSend | a2a::A2aMethod::MessageSendStream
-                ) && let Ok(params) =
+                if parsed_request.method == a2a::A2aMethod::MessageSendStream
+                    && let Ok(params) =
                     serde_json::from_value::<SendMessageRequest>(parsed_request.params.clone())
                 {
                     self.task_store.insert_message(&params.message).await;
                 }
-                self.request_router.route(&parsed_request).await
+                self.request_router.route(&parsed_request, &invocation_scope).await
             })
             .await
         })
@@ -481,10 +691,8 @@ impl ToolHandler for JsToolHandler {
     }
 
     async fn open_session(&self, ctx: ToolSessionContext, open_input: Value) -> Result<Box<dyn ToolSession>> {
-        // For JS tools, open_input should be empty object (unit type)
-        let _: () = serde_json::from_value(open_input)
-            .map_err(|err| baml_rt_core::BamlRtError::InvalidOpenInput { source: err })?;
-        
+        // Registry passes empty object {} for one-shot execute; actual args come via send()
+        let _ = open_input;
         Ok(Box::new(JsToolSession {
             ctx,
             bridge: self.bridge.clone(),
@@ -565,10 +773,15 @@ impl ToolSession for JsToolSession {
 mod tests {
     use super::A2aAgent;
     use serde_json::json;
+    use std::sync::Arc;
 
     #[tokio::test]
     async fn js_tool_can_be_called_via_baml_tool_registry() {
-        let agent = A2aAgent::builder().build().await.expect("agent build");
+        let agent = A2aAgent::builder()
+            .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+            .build()
+            .await
+            .expect("agent build");
 
         agent
             .register_js_tool(

@@ -2,9 +2,8 @@
   "version": "1.0.0",
   "name": "voidship-rites",
   "description": "Grimdark voidship rite-keeper fixture agent",
-  "entry_point": "dist/index.js",
+  "entry_point": "src/index.ts",
+  "signature": "voidship-rites@1.0.0",
   "runtime_version": "0.1.0",
-  "tools": [
-    "support/calculate"
-  ]
+  "tools": ["support/calculate"]
 }

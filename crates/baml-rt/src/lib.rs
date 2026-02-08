@@ -13,8 +13,6 @@ pub mod error {
 pub mod tools {
     pub use baml_rt_tools::tools::*;
 }
-#[cfg(feature = "tools")]
-
 #[cfg(feature = "interceptor")]
 pub mod interceptor {
     pub use baml_rt_interceptor::interceptor::*;

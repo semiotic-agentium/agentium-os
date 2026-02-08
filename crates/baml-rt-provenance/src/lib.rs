@@ -15,6 +15,7 @@ pub mod falkordb_store;
 pub mod tool_index;
 pub mod vocabulary;
 pub mod id_semantics;
+pub mod effect_subscriber;
 
 pub use error::ProvenanceError;
 pub use events::{
@@ -22,6 +23,7 @@ pub use events::{
 };
 pub use store::{InMemoryProvenanceStore, ProvenanceWriter};
 pub use interceptors::ProvenanceInterceptor;
+pub use effect_subscriber::ProvenanceEffectSubscriber;
 pub use normalizer::{
     normalize_event, validate_event, A2aDerivedRelation, A2aRelationType, DefaultProvNormalizer,
     NormalizedProv, ProvNormalizer,

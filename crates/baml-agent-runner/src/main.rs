@@ -4,6 +4,8 @@
 //! Each agent package is a tar.gz containing BAML schemas, compiled TypeScript,
 //! and metadata.
 
+mod package;
+
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler, a2a};
 use baml_rt_a2a::a2a_types::{
     JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageConfiguration,
@@ -11,8 +13,8 @@ use baml_rt_a2a::a2a_types::{
 };
 use baml_rt_core::ids::{AgentId, DerivedId, ExternalId, TaskId};
 use baml_rt_a2a::a2a_types::A2aMessageId;
-use baml_rt_core::{BamlRtError, ContextId, Result};
-use baml_rt_core::context;
+use baml_rt_core::{AgentManifest, BamlRtError, ContextId, Result};
+use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_provenance::{AgentType, ProvEvent, ToolIndexConfig, index_tools};
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_provenance::{
@@ -26,26 +28,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
-/// Agent package metadata
-#[derive(Debug, Clone)]
-struct AgentManifest {
-    version: String,
-    name: String,
-    entry_point: String,
-    signature: String,
-    tools: Vec<String>,
-}
-
 /// Inert agent package - just holds package data
 struct AgentPackage {
-    name: String,
-    version: String,
-    entry_point: String,
-    signature: String,
-    tools: Vec<String>,
+    manifest: AgentManifest,
     extract_dir: PathBuf,
     baml_src: PathBuf,
 }
@@ -53,100 +42,10 @@ struct AgentPackage {
 impl AgentPackage {
     /// Load an agent package from a tar.gz file (inert - does not boot the agent)
     async fn load_from_file(package_path: &Path) -> Result<Self> {
-        let span = spans::load_agent_package(package_path);
-        let _guard = span.enter();
-
-        // Create temporary extraction directory
-        let epoch_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs();
-        let extract_dir = std::env::temp_dir().join(format!("baml-agent-{}", epoch_secs));
-        std::fs::create_dir_all(&extract_dir)
-            .map_err(BamlRtError::Io)?;
-
-        {
-            let extract_span = spans::extract_package(&extract_dir);
-            let _extract_guard = extract_span.enter();
-
-            // Extract tar.gz
-            let tar_gz = std::fs::File::open(package_path)
-                .map_err(BamlRtError::Io)?;
-            let tar = flate2::read::GzDecoder::new(tar_gz);
-            let mut archive = tar::Archive::new(tar);
-
-            archive
-                .unpack(&extract_dir)
-                .map_err(BamlRtError::Io)?;
-        }
-
-        // Load manifest
-        let manifest_path = extract_dir.join("manifest.json");
-        let manifest_content = std::fs::read_to_string(&manifest_path)
-            .map_err(BamlRtError::Io)?;
-        let manifest_json: Value = serde_json::from_str(&manifest_content)
-            .map_err(BamlRtError::Json)?;
-
-        let tools = manifest_json
-            .get("tools")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| BamlRtError::InvalidArgument(
-                "manifest.json missing 'tools' field".to_string()
-            ))?
-            .iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-            .collect::<Vec<String>>();
-
-        let manifest = AgentManifest {
-            version: manifest_json
-                .get("version")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| BamlRtError::InvalidArgument(
-                    "manifest.json missing 'version' field".to_string()
-                ))?
-                .to_string(),
-            name: manifest_json
-                .get("name")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| BamlRtError::InvalidArgument(
-                    "manifest.json missing 'name' field".to_string()
-                ))?
-                .to_string(),
-            entry_point: manifest_json
-                .get("entry_point")
-                .and_then(|v| v.as_str())
-                .unwrap_or("dist/index.js")
-                .to_string(),
-            signature: manifest_json
-                .get("signature")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| BamlRtError::InvalidArgument(
-                    "manifest.json missing 'signature' field".to_string()
-                ))?
-                .to_string(),
-            tools,
-        };
-
-        info!(
-            name = manifest.name,
-            version = manifest.version,
-            entry_point = manifest.entry_point,
-            "Agent manifest loaded"
-        );
-
-        // Validate package structure
+        let (extract_dir, manifest) = package::load_package(package_path).await?;
         let baml_src = extract_dir.join("baml_src");
-        if !baml_src.exists() {
-            return Err(BamlRtError::InvalidArgument(
-                "Package missing baml_src directory".to_string()
-            ));
-        }
-
         Ok(Self {
-            name: manifest.name,
-            version: manifest.version,
-            entry_point: manifest.entry_point,
-            signature: manifest.signature,
-            tools: manifest.tools,
+            manifest,
             extract_dir,
             baml_src,
         })
@@ -175,18 +74,19 @@ impl AgentPackage {
                     "BAML source path contains invalid UTF-8".to_string()
                 ))?;
             runtime_manager.load_schema(baml_src_str)?;
-            info!(agent = self.name, "BAML schema loaded");
+            info!(agent = self.manifest.name, "BAML schema loaded");
         }
 
         runtime_manager
-            .set_tool_allowlist(self.tools.iter().cloned().collect::<HashSet<_>>())
+            .set_tool_allowlist(self.manifest.tools.iter().cloned().collect::<HashSet<_>>())
             .await?;
 
         // Build A2aAgent - it will generate agent_id internally and create QuickJS bridge
         let runtime_manager_arc = Arc::new(Mutex::new(runtime_manager));
         let mut agent_builder = A2aAgent::builder()
             .with_runtime_handle(runtime_manager_arc.clone())
-            .with_baml_helpers(true); // Register BAML functions
+            .with_baml_helpers(true) // Register BAML functions
+            .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()));
         
         if let Some(writer) = provenance_writer.clone() {
             agent_builder = agent_builder.with_provenance_writer(writer);
@@ -195,19 +95,19 @@ impl AgentPackage {
         let agent = agent_builder.build().await?;
         
         // Load and evaluate agent JavaScript code
-        let entry_point_path = self.extract_dir.join(&self.entry_point);
+        let entry_point_path = self.extract_dir.join(&self.manifest.entry_point);
         if entry_point_path.exists() {
-            let eval_span = spans::evaluate_agent_code(&self.entry_point);
+            let eval_span = spans::evaluate_agent_code(&self.manifest.entry_point);
             let _eval_guard = eval_span.enter();
 
             let agent_code = std::fs::read_to_string(&entry_point_path)
                 .map_err(BamlRtError::Io)?;
             
-            info!(entry_point = self.entry_point, "Loading agent JavaScript code");
+            info!(entry_point = self.manifest.entry_point, "Loading agent JavaScript code");
 
             let bridge = agent.bridge();
             let mut bridge_guard = bridge.lock().await;
-            match bridge_guard.evaluate(&agent_code).await {
+            match bridge_guard.evaluate(None, &agent_code).await {
                 Ok(_) => info!("Agent code executed successfully"),
                 Err(e) => {
                     tracing::warn!(
@@ -220,7 +120,7 @@ impl AgentPackage {
             info!("Agent JavaScript code loaded and initialized");
         } else {
             info!(
-                entry_point = self.entry_point,
+                entry_point = self.manifest.entry_point,
                 "Agent entry point not found, skipping JavaScript initialization"
             );
         }
@@ -241,9 +141,9 @@ impl AgentPackage {
         // Emit AgentBooted provenance event
         if let Some(writer) = provenance_writer {
             // Use stable archive identity from manifest signature
-            let archive_path = self.signature.clone();
+            let archive_path = self.manifest.signature.clone();
             let context_id = context::generate_context_id();
-            let agent_type_parsed = AgentType::new(self.name.clone())
+            let agent_type_parsed = AgentType::new(self.manifest.name.clone())
                 .ok_or_else(|| {
                     BamlRtError::InvalidArgument("agent_type cannot be empty".to_string())
                 })?;
@@ -251,7 +151,7 @@ impl AgentPackage {
                 context_id,
                 agent_id.clone(),
                 agent_type_parsed,
-                self.version.clone(),
+                self.manifest.version.clone(),
                 archive_path,
             );
             if let Err(e) = writer.add_event(boot_event).await {
@@ -266,7 +166,7 @@ impl AgentPackage {
 
     /// Get the agent name
     fn name(&self) -> &str {
-        &self.name
+        &self.manifest.name
     }
 }
 
@@ -277,9 +177,10 @@ struct BootedAgent {
 
 impl BootedAgent {
     async fn invoke_function(&self, function_name: &str, args: Value) -> Result<Value> {
+        let scope = InvocationScope::standalone(self.agent.agent_id().clone());
         let bridge = self.agent.bridge();
         let mut js_bridge = bridge.lock().await;
-        js_bridge.invoke_js_function(function_name, args).await
+        js_bridge.invoke_js_function(&scope, function_name, args).await
     }
 
     async fn handle_a2a(&self, request: Value) -> Result<Vec<Value>> {
@@ -347,13 +248,14 @@ impl AgentRunner {
         self.agents.keys().cloned().collect()
     }
 
-    async fn run_a2a_stdio(&self) -> Result<()> {
-        use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt};
-
-        let stdin = io::stdin();
-        let mut lines = io::BufReader::new(stdin).lines();
-        let mut stdout = io::stdout();
-
+    /// Run the A2A JSON-RPC loop over the given reader/writer (one JSON-RPC request per line).
+    /// Enables tests to use in-memory buffers instead of stdin/stdout.
+    async fn run_a2a_loop<R, W>(&self, reader: R, mut writer: W) -> Result<()>
+    where
+        R: tokio::io::AsyncBufRead + Unpin,
+        W: AsyncWriteExt + Unpin,
+    {
+        let mut lines = reader.lines();
         while let Some(line) = lines.next_line().await? {
             let line = line.trim();
             if line.is_empty() {
@@ -373,9 +275,9 @@ impl AgentRunner {
                     let response = map_a2a_error(request_id, err);
                     let serialized = serde_json::to_string(&response)
                         .unwrap_or_else(|_| "{\"error\":\"serialization failed\"}".to_string());
-                    stdout.write_all(serialized.as_bytes()).await?;
-                    stdout.write_all(b"\n").await?;
-                    stdout.flush().await?;
+                    writer.write_all(serialized.as_bytes()).await?;
+                    writer.write_all(b"\n").await?;
+                    writer.flush().await?;
                     continue;
                 }
             };
@@ -391,9 +293,9 @@ impl AgentRunner {
                     );
                     let serialized = serde_json::to_string(&response)
                         .unwrap_or_else(|_| "{\"error\":\"serialization failed\"}".to_string());
-                    stdout.write_all(serialized.as_bytes()).await?;
-                    stdout.write_all(b"\n").await?;
-                    stdout.flush().await?;
+                    writer.write_all(serialized.as_bytes()).await?;
+                    writer.write_all(b"\n").await?;
+                    writer.flush().await?;
                     continue;
                 }
             };
@@ -405,13 +307,20 @@ impl AgentRunner {
             for response in responses {
                 let serialized = serde_json::to_string(&response)
                     .unwrap_or_else(|_| "{\"error\":\"serialization failed\"}".to_string());
-                stdout.write_all(serialized.as_bytes()).await?;
-                stdout.write_all(b"\n").await?;
+                writer.write_all(serialized.as_bytes()).await?;
+                writer.write_all(b"\n").await?;
             }
-            stdout.flush().await?;
+            writer.flush().await?;
         }
 
         Ok(())
+    }
+
+    async fn run_a2a_stdio(&self) -> Result<()> {
+        use tokio::io;
+        let stdin = io::stdin();
+        let stdout = io::stdout();
+        self.run_a2a_loop(io::BufReader::new(stdin), stdout).await
     }
 
     fn prepare_a2a_request(&self, request: &mut Value) -> Result<(String, Value)> {
@@ -479,11 +388,10 @@ impl AgentRunner {
             params.insert("stream".to_string(), Value::Bool(true));
         }
 
-        if method_name == "message.send" || method_name == "message.sendStream" {
-            if let Some(message_value) = params.get_mut("message")
+        if (method_name == "message.send" || method_name == "message.sendStream")
+            && let Some(message_value) = params.get_mut("message")
                 && message_value.is_object()
-            {
-                if let Some(message_obj) = message_value.as_object_mut() {
+                && let Some(message_obj) = message_value.as_object_mut() {
                     let metadata_entry = message_obj
                         .entry("metadata".to_string())
                         .or_insert_with(|| Value::Object(serde_json::Map::new()));
@@ -491,8 +399,6 @@ impl AgentRunner {
                         meta_obj.entry("agent".to_string()).or_insert_with(|| Value::String(agent_name.clone()));
                     }
                 }
-            }
-        }
 
         obj.insert("method".to_string(), Value::String(method_name));
         obj.insert("params".to_string(), Value::Object(params));

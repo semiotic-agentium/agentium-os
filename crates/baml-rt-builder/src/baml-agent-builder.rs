@@ -10,8 +10,10 @@ use baml_rt_builder::builder::{
     BuilderService, StdFileSystem, OxcLinter,
     OxcTypeScriptCompiler, RuntimeTypeGenerator, StdPackager,
     FileSystem, Linter,
+    bootstrap::{run_bootstrap, slug_from_name},
 };
 use baml_rt_core::{BamlRtError, Result};
+use baml_rt_tools::tool_catalog::all_tool_metadata;
 use baml_rt_core::ids::AgentId;
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge};
@@ -71,6 +73,22 @@ enum Commands {
         #[arg(short, long)]
         args: Option<String>,
     },
+
+    /// Bootstrap a new BAML agent package (interactive TUI, or non-interactive with --name/--description)
+    Bootstrap {
+        /// Directory to create the package in (default: current directory)
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Agent name (non-interactive: skip TUI when set with --description)
+        #[arg(long)]
+        name: Option<String>,
+        /// Description (non-interactive: skip TUI when set with --name)
+        #[arg(long)]
+        description: Option<String>,
+        /// Include no tools (non-interactive; only used when --name and --description are set)
+        #[arg(long)]
+        no_tools: bool,
+    },
 }
 
 #[tokio::main]
@@ -101,8 +119,77 @@ async fn main() -> Result<()> {
             let function_name = function.map(FunctionName::new).transpose()?;
             run_agent(&package_path, function_name.as_ref(), args.as_deref()).await?;
         }
+        Commands::Bootstrap { path, name, description, no_tools } => {
+            bootstrap_agent(&path, name.as_deref(), description.as_deref(), no_tools).await?;
+        }
     }
 
+    Ok(())
+}
+
+async fn bootstrap_agent(
+    path: &PathBuf,
+    name_arg: Option<&str>,
+    description_arg: Option<&str>,
+    _no_tools: bool,
+) -> Result<()> {
+    let is_current_dir = path.as_os_str() == "." || path == &PathBuf::from(".");
+    let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
+    let default_name = resolved
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("my-agent")
+        .to_string();
+
+    let (name, description, tool_ids): (String, String, Vec<String>) =
+        if let (Some(n), Some(d)) = (name_arg, description_arg) {
+            let tool_ids = vec![];
+            (n.to_string(), d.to_string(), tool_ids)
+        } else {
+            let name = inquire::Text::new("Agent name")
+                .with_default(&default_name)
+                .with_help_message("Display name for the agent (used for slug in manifest)")
+                .prompt()
+                .map_err(|e| BamlRtError::InvalidArgument(format!("Prompt cancelled or failed: {}", e)))?;
+
+            let description = inquire::Text::new("Description")
+                .with_help_message("Short description of the agent")
+                .prompt()
+                .map_err(|e| BamlRtError::InvalidArgument(format!("Prompt cancelled or failed: {}", e)))?;
+
+            let tool_options: Vec<(String, String)> = all_tool_metadata()
+                .into_iter()
+                .map(|m| {
+                    let id = m.name.to_string();
+                    let label = format!("{} — {}", id, m.description);
+                    (label, id)
+                })
+                .collect();
+            let tool_ids: Vec<String> = if tool_options.is_empty() {
+                Vec::new()
+            } else {
+                let choices: Vec<String> = tool_options.iter().map(|(label, _)| label.clone()).collect();
+                let raw = inquire::MultiSelect::new("Tools (space to select, type to filter)", choices)
+                    .with_help_message("Select tools to include in the agent. You can type to search.")
+                    .prompt()
+                    .map_err(|e| BamlRtError::InvalidArgument(format!("Prompt cancelled or failed: {}", e)))?;
+                raw.into_iter()
+                    .filter_map(|label| tool_options.iter().find(|(l, _)| *l == label).map(|(_, id)| id.clone()))
+                    .collect()
+            };
+            (name, description, tool_ids)
+        };
+
+    let out_path = if is_current_dir {
+        std::env::current_dir().map_err(BamlRtError::Io)?.join(slug_from_name(name.trim()))
+    } else {
+        resolved
+    };
+
+    println!("Creating package at {}...", out_path.display());
+    run_bootstrap(&out_path, name.trim(), description.trim(), &tool_ids).await?;
+    println!("✅ Bootstrap complete: {}", out_path.display());
+    println!("   Next: cd {} && baml-agent-builder lint", out_path.display());
     Ok(())
 }
 
@@ -258,6 +345,7 @@ async fn run_agent(
 // Agent package loader (reusing logic from baml-agent-runner)
 struct LoadedAgent {
     name: String,
+    agent_id: baml_rt_core::ids::AgentId,
     js_bridge: Arc<Mutex<QuickJSBridge>>,
 }
 
@@ -267,9 +355,9 @@ impl LoadedAgent {
     }
 
     async fn invoke_function(&self, function_name: &str, args: Value) -> Result<Value> {
-        // Delegate to QuickJSBridge's JS-only invocation
+        let scope = baml_rt_core::context::InvocationScope::standalone(self.agent_id.clone());
         let mut bridge_guard = self.js_bridge.lock().await;
-        bridge_guard.invoke_js_function(function_name, args).await
+        bridge_guard.invoke_js_function(&scope, function_name, args).await
     }
 }
 
@@ -326,7 +414,7 @@ async fn load_agent_package(package_path: &std::path::Path) -> Result<LoadedAgen
     let mut js_bridge = {
         let bridge_span = spans::create_js_bridge();
         let _bridge_guard = bridge_span.enter();
-        let mut bridge = QuickJSBridge::new(runtime_manager_arc.clone(), temp_agent_id).await?;
+        let mut bridge = QuickJSBridge::new(runtime_manager_arc.clone(), temp_agent_id.clone()).await?;
         bridge.register_baml_functions().await?;
         bridge
     };
@@ -338,7 +426,7 @@ async fn load_agent_package(package_path: &std::path::Path) -> Result<LoadedAgen
         let _eval_guard = eval_span.enter();
         let agent_code = fs::read_to_string(&entry_point_path).map_err(BamlRtError::Io)?;
         // Execute agent code - this should set up functions on globalThis
-        if let Err(e) = js_bridge.evaluate(&agent_code).await {
+        if let Err(e) = js_bridge.evaluate(None, &agent_code).await {
             tracing::warn!(error = ?e, "Agent init script evaluation failed");
         }
     } else {
@@ -347,6 +435,7 @@ async fn load_agent_package(package_path: &std::path::Path) -> Result<LoadedAgen
 
     Ok(LoadedAgent {
         name,
+        agent_id: temp_agent_id,
         js_bridge: Arc::new(Mutex::new(js_bridge)),
     })
 }
@@ -369,7 +458,7 @@ mod tests {
         let runtime_manager_arc = Arc::new(Mutex::new(runtime_manager));
         // Generate a temporary agent_id for test context
         let temp_agent_id = AgentId::from_uuid(baml_rt_core::ids::UuidId::new(Uuid::new_v4()));
-        let mut js_bridge = QuickJSBridge::new(runtime_manager_arc.clone(), temp_agent_id).await.unwrap();
+        let mut js_bridge = QuickJSBridge::new(runtime_manager_arc.clone(), temp_agent_id.clone()).await.unwrap();
         js_bridge.register_baml_functions().await.unwrap();
         
         // Load agent code
@@ -379,10 +468,11 @@ mod tests {
             }
             globalThis.riteBlessing = riteBlessing;
         "#;
-        let _ = js_bridge.evaluate(agent_code).await;
+        let _ = js_bridge.evaluate(None, agent_code).await;
         
         LoadedAgent {
             name: "test-agent".to_string(),
+            agent_id: temp_agent_id,
             js_bridge: Arc::new(Mutex::new(js_bridge)),
         }
     }

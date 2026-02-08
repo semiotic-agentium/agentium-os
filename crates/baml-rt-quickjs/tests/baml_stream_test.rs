@@ -1,7 +1,11 @@
 //! Tests for JavaScript streaming invocation of BAML functions
+//!
+//! Use short max_attempts so effect-gated poll doesn't hang when LLM-backed fixtures don't complete.
 
+use std::sync::Arc;
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::A2aAgent;
+use baml_rt::QuickJSConfig;
 
 #[tokio::test]
 async fn test_js_stream_baml_function() {
@@ -18,6 +22,8 @@ async fn test_js_stream_baml_function() {
     
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
+        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()
         .await
         .unwrap();
@@ -38,7 +44,7 @@ async fn test_js_stream_baml_function() {
         })()
     "#;
     
-    let result = bridge.evaluate(js_code).await;
+    let result = bridge.evaluate(None, js_code).await;
     
     // The result should contain either success with results array, or error info
     // Note: This may fail due to missing API keys, which is acceptable

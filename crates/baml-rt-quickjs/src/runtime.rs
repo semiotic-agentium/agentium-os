@@ -4,6 +4,7 @@
 
 use crate::baml::BamlRuntimeManager;
 use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::effects::{EffectBus, EffectEmitter, EffectLiveness};
 use crate::quickjs_bridge::QuickJSBridge;
 use baml_rt_interceptor::{InterceptorPipeline, LLMInterceptor, ToolInterceptor};
 use std::path::PathBuf;
@@ -27,6 +28,14 @@ pub struct QuickJSConfig {
     
     /// Garbage collection interval - triggers a full GC every set interval (None = disabled)
     pub gc_interval: Option<Duration>,
+    
+    /// Idle timeout in milliseconds when no effects are in-flight (default: 5000ms)
+    /// When effects are active, the longer max_attempts_ms timeout applies.
+    pub idle_timeout_ms: Option<u64>,
+    
+    /// Maximum timeout in milliseconds when effects are in-flight (default: 1,800,000ms = 30 minutes)
+    /// This allows long-running I/O operations (tool calls, LLM calls) to complete.
+    pub max_attempts_ms: Option<u64>,
 }
 
 impl QuickJSConfig {
@@ -60,6 +69,23 @@ impl QuickJSConfig {
         self.gc_interval = interval;
         self
     }
+
+    /// Set idle timeout in milliseconds (when no effects are in-flight)
+    /// 
+    /// Default is 5000ms. When effects are active, the longer max_attempts_ms timeout applies.
+    pub fn with_idle_timeout_ms(mut self, timeout_ms: Option<u64>) -> Self {
+        self.idle_timeout_ms = timeout_ms;
+        self
+    }
+    
+    /// Set maximum timeout in milliseconds (when effects are in-flight)
+    /// 
+    /// Default is 1,800,000ms (30 minutes). This allows long-running I/O operations
+    /// (tool calls, LLM calls, A2A requests) to complete.
+    pub fn with_max_attempts_ms(mut self, timeout_ms: Option<u64>) -> Self {
+        self.max_attempts_ms = timeout_ms;
+        self
+    }
 }
 
 /// Configuration for the BAML runtime environment
@@ -82,6 +108,9 @@ pub struct RuntimeConfig {
     
     /// Tool interceptor pipeline
     pub tool_interceptor_pipeline: Option<InterceptorPipeline<dyn ToolInterceptor>>,
+    
+    /// Provenance writer (if provided, enables effects-first system)
+    pub provenance_writer: Option<Arc<dyn baml_rt_provenance::ProvenanceWriter>>,
 }
 
 impl RuntimeConfig {
@@ -275,6 +304,14 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Set the provenance writer (enables effects-first system)
+    /// 
+    /// When provided, creates an EffectBus and wires it to provenance and liveness gating.
+    pub fn with_provenance_writer(mut self, writer: Arc<dyn baml_rt_provenance::ProvenanceWriter>) -> Self {
+        self.config.provenance_writer = Some(writer);
+        self
+    }
+
     /// Build the runtime environment
     pub async fn build(mut self) -> Result<Runtime> {
         tracing::info!("Building runtime environment");
@@ -295,6 +332,23 @@ impl RuntimeBuilder {
         // Extract pipelines before moving config
         let llm_pipeline = self.config.llm_interceptor_pipeline.take();
         let tool_pipeline = self.config.tool_interceptor_pipeline.take();
+        let provenance_writer = self.config.provenance_writer.take();
+        
+        // Create EffectBus if provenance writer is provided (effects-first system)
+        let effect_bus: Option<Arc<EffectBus>> = if let Some(ref prov_writer) = provenance_writer {
+            let bus = Arc::new(EffectBus::new());
+            // Subscribe provenance adapter
+            let subscriber = Arc::new(baml_rt_provenance::ProvenanceEffectSubscriber::new(prov_writer.clone()));
+            bus.subscribe(subscriber).await;
+            Some(bus)
+        } else {
+            None
+        };
+        
+        // Set effect emitter on BamlRuntimeManager if EffectBus exists
+        if let Some(ref bus) = effect_bus {
+            baml_manager.set_effect_emitter(bus.clone() as Arc<dyn EffectEmitter>);
+        }
         
         // Inject LLM interceptor pipeline if provided
         if let Some(llm_pipeline) = llm_pipeline {
@@ -331,8 +385,14 @@ impl RuntimeBuilder {
         let mut bridge = QuickJSBridge::new_with_config(
             baml_manager.clone(),
             agent_id,
-            quickjs_config,
+            quickjs_config.clone(),
         ).await?;
+        
+        // Set effect liveness on QuickJSBridge if EffectBus exists
+        if let Some(ref bus) = effect_bus {
+            bridge.set_effect_liveness(bus.clone() as Arc<dyn EffectLiveness>);
+        }
+        
         bridge.register_baml_functions().await?;
         let quickjs_bridge = Arc::new(Mutex::new(bridge));
 

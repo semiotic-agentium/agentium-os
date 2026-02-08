@@ -5,6 +5,7 @@
 
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_core::context;
+use baml_rt_core::effects::{EffectEmitter, LlmEffectMetadata};
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry, LLMCallContext};
 use baml_runtime::RuntimeContextManager;
 use baml_types::{BamlMap, BamlValue};
@@ -12,6 +13,18 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+// Helper function for ergonomic metadata construction
+fn llm_effect_metadata_from_context(ctx: &LLMCallContext) -> LlmEffectMetadata {
+    LlmEffectMetadata {
+        client: ctx.client.clone(),
+        model: ctx.model.clone(),
+        function_name: ctx.function_name.clone(),
+        prompt: ctx.prompt.clone(),
+        metadata: ctx.metadata.clone(),
+    }
+}
+
 
 /// Extract LLM call context from BAML's HTTPRequest
 ///
@@ -68,6 +81,9 @@ pub fn extract_context_from_http_request(
 ///
 /// This builds the HTTP request, extracts context, runs interceptors,
 /// and returns the decision. If blocked, returns an error.
+///
+/// If a collector is provided, stores the effect token for later completion.
+#[allow(clippy::too_many_arguments)]
 pub async fn intercept_llm_call_pre_execution(
     runtime: &baml_runtime::BamlRuntime,
     function_name: &str,
@@ -76,6 +92,8 @@ pub async fn intercept_llm_call_pre_execution(
     interceptor_registry: &Arc<Mutex<InterceptorRegistry>>,
     env_vars: HashMap<String, String>,
     stream: bool,
+    effect_emitter: Option<&Arc<dyn EffectEmitter>>,
+    collector: Option<&crate::baml_collector::BamlLLMCollector>,
 ) -> Result<InterceptorDecision> {
     // Build the HTTP request to get LLM call details
     // This doesn't actually send the request, just builds it
@@ -94,6 +112,24 @@ pub async fn intercept_llm_call_pre_execution(
 
     // Extract LLM call context from the HTTP request
     let context = extract_context_from_http_request(&http_request, function_name);
+
+    // Start effect and get token (type-safe start/complete pairing)
+    let effect_metadata = llm_effect_metadata_from_context(&context);
+    let context_id = context.context_id.clone();
+    
+    if let Some(emitter) = effect_emitter {
+        match emitter.start_llm(context_id.clone(), effect_metadata).await {
+            Ok(token) => {
+                // Store token in collector for later completion
+                if let Some(coll) = collector {
+                    coll.store_effect_token(context_id, token).await;
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = ?e, "Failed to start LLM effect");
+            }
+        }
+    }
 
     tracing::debug!(
         client = context.client,

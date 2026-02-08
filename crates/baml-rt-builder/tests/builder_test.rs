@@ -138,12 +138,12 @@ async fn test_full_integration_package_load_execute() {
     // Create QuickJS bridge
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000015").unwrap());
-    let mut bridge = QuickJSBridge::new(baml_manager.clone(), agent_id).await.unwrap();
+    let mut bridge = QuickJSBridge::new(baml_manager.clone(), agent_id.clone()).await.unwrap();
     bridge.register_baml_functions().await.unwrap();
     
     // Load agent's compiled JavaScript code (this is what load_agent_package does)
     let agent_code = fs::read_to_string(&dist_index).unwrap();
-    let agent_eval_result = bridge.evaluate(&agent_code).await;
+    let agent_eval_result = bridge.evaluate(None, &agent_code).await;
     
     if let Err(e) = agent_eval_result {
         panic!("Agent code failed to execute: {}", e);
@@ -158,7 +158,7 @@ async fn test_full_integration_package_load_execute() {
         })()
     "#;
     
-    let check_result = bridge.evaluate(check_code).await.unwrap();
+    let check_result = bridge.evaluate(None, check_code).await.unwrap();
     let check_obj = check_result.as_object().expect("Expected object");
     let exists_global = check_obj.get("existsGlobal").and_then(|v| v.as_bool()).unwrap_or(false);
     assert!(exists_global, 
@@ -178,7 +178,8 @@ async fn test_full_integration_package_load_execute() {
         }
     });
     
-    let result = bridge.invoke_js_function(function_name, args).await;
+    let scope = baml_rt_core::context::InvocationScope::standalone(agent_id.clone());
+    let result = bridge.invoke_js_function(&scope, function_name, args).await;
     
     // Assert the function is found and can be called
     match result {

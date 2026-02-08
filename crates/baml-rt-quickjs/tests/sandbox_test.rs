@@ -1,10 +1,15 @@
 //! Tests for QuickJS sandboxing
 
+use std::sync::Arc;
 use baml_rt::A2aAgent;
 
 #[tokio::test]
 async fn test_sandbox_prevents_require() {
-    let agent = A2aAgent::builder().build().await.unwrap();
+    let agent = A2aAgent::builder()
+        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .build()
+        .await
+        .unwrap();
     let bridge_handle = agent.bridge();
     let mut bridge = bridge_handle.lock().await;
 
@@ -23,7 +28,7 @@ async fn test_sandbox_prevents_require() {
         })()
     "#;
 
-    let result = bridge.evaluate(code).await;
+    let result = bridge.evaluate(None, code).await;
     assert!(result.is_ok(), "Code should execute");
     
     let value = result.unwrap();
@@ -33,7 +38,11 @@ async fn test_sandbox_prevents_require() {
 
 #[tokio::test]
 async fn test_sandbox_console_log_works() {
-    let agent = A2aAgent::builder().build().await.unwrap();
+    let agent = A2aAgent::builder()
+        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .build()
+        .await
+        .unwrap();
     let bridge_handle = agent.bridge();
     let mut bridge = bridge_handle.lock().await;
 
@@ -50,7 +59,7 @@ async fn test_sandbox_console_log_works() {
         })()
     "#;
 
-    let result = bridge.evaluate(code).await;
+    let result = bridge.evaluate(None, code).await;
     assert!(result.is_ok(), "Code should execute");
     
     let value = result.unwrap();
@@ -60,7 +69,11 @@ async fn test_sandbox_console_log_works() {
 
 #[tokio::test]
 async fn test_sandbox_prevents_fetch() {
-    let agent = A2aAgent::builder().build().await.unwrap();
+    let agent = A2aAgent::builder()
+        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .build()
+        .await
+        .unwrap();
     let bridge_handle = agent.bridge();
     let mut bridge = bridge_handle.lock().await;
 
@@ -78,7 +91,7 @@ async fn test_sandbox_prevents_fetch() {
         })()
     "#;
 
-    let result = bridge.evaluate(code).await;
+    let result = bridge.evaluate(None, code).await;
     assert!(result.is_ok(), "Code should execute");
     
     let value = result.unwrap();

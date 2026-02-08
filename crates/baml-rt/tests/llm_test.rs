@@ -18,7 +18,7 @@ async fn test_e2e_simple_greeting_with_llm() {
     "#;
     
     tracing::info!("Executing JavaScript that calls BAML function...");
-    let result = bridge.evaluate(js_code).await;
+    let result = bridge.evaluate(None, js_code).await;
     
     match result {
         Ok(response_value) => {
@@ -72,7 +72,7 @@ async fn test_e2e_streaming_greeting() {
     "#;
     
     tracing::info!("Executing streaming JavaScript call...");
-    let result = bridge.evaluate(js_code).await;
+    let result = bridge.evaluate(None, js_code).await;
     
     match result {
         Ok(response_value) => {

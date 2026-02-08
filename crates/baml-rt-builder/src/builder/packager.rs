@@ -1,9 +1,8 @@
 //! Packager implementation for creating tar.gz agent packages
 
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{AgentManifest, BamlRtError, Result};
 use crate::builder::traits::{Packager, FileSystem};
 use crate::builder::types::{AgentDir, BuildDir};
-use serde_json::Value;
 use std::fs;
 use std::path::Path;
 use tar::{Builder, Header};
@@ -33,19 +32,24 @@ impl<FS: FileSystem> Packager for StdPackager<FS> {
         let enc = GzEncoder::new(tar_gz, Compression::default());
         let mut tar = Builder::new(enc);
 
-        // Add manifest.json (ensure signature exists)
+        // Add manifest.json (ensure signature exists; use dist/index.js as entry_point when built)
         let manifest_path = agent_dir.as_path().join("manifest.json");
         if manifest_path.exists() {
             let content = fs::read_to_string(&manifest_path).map_err(BamlRtError::Io)?;
-            let mut manifest: Value = serde_json::from_str(&content).map_err(BamlRtError::Json)?;
-            if manifest.get("signature").and_then(|v| v.as_str()).is_none() {
-                manifest["signature"] = Value::String(Uuid::new_v4().to_string());
+            let mut manifest: AgentManifest =
+                serde_json::from_str(&content).map_err(BamlRtError::Json)?;
+            if manifest.signature.is_empty() {
+                manifest.signature = Uuid::new_v4().to_string();
+            }
+            if build_dir.join("dist").join("index.js").exists() {
+                manifest.entry_point = "dist/index.js".to_string();
             }
             let content = serde_json::to_string_pretty(&manifest).map_err(BamlRtError::Json)?;
             let mut header = Header::new_gnu();
             header.set_path("manifest.json")
                 .map_err(BamlRtError::TarHeaderPath)?;
             header.set_size(content.len() as u64);
+            header.set_mode(0o644);
             header.set_cksum();
             tar.append(&header, content.as_bytes())
                 .map_err(BamlRtError::Io)?;
@@ -59,6 +63,7 @@ impl<FS: FileSystem> Packager for StdPackager<FS> {
             header.set_path("package.json")
                 .map_err(BamlRtError::TarHeaderPath)?;
             header.set_size(content.len() as u64);
+            header.set_mode(0o644);
             header.set_cksum();
             tar.append(&header, content.as_bytes())
                 .map_err(BamlRtError::Io)?;
@@ -68,6 +73,12 @@ impl<FS: FileSystem> Packager for StdPackager<FS> {
         let baml_src_build = build_dir.join("baml_src");
         if baml_src_build.exists() {
             add_directory_to_tar(&mut tar, &baml_src_build, "baml_src", &self.filesystem)?;
+        }
+
+        // Add src (entry_point is typically src/index.ts; runner evaluates this)
+        let src_dir = agent_dir.as_path().join("src");
+        if src_dir.exists() {
+            add_directory_to_tar(&mut tar, &src_dir, "src", &self.filesystem)?;
         }
 
         // Add dist
@@ -116,6 +127,7 @@ fn add_directory_to_tar<FS: FileSystem>(
         header.set_path(&tar_path)
             .map_err(BamlRtError::TarHeaderPath)?;
         header.set_size(content.len() as u64);
+        header.set_mode(0o644);
         header.set_cksum();
         tar.append(&header, content.as_bytes())
             .map_err(BamlRtError::Io)?;

@@ -1,6 +1,6 @@
 use baml_rt_a2a::a2a_types::{JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest, ROLE_USER};
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
-use baml_rt::{BamlRuntimeManager, Result};
+use baml_rt::{BamlRuntimeManager, QuickJSConfig, Result};
 use baml_rt::tools::BamlTool;
 use baml_rt_tools::bundles::BundleType;
 
@@ -22,7 +22,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use test_support::support::a2a::A2aInMemoryClient;
 use async_trait::async_trait;
-use serde_json::json;
 use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
 use ts_rs::TS;
@@ -49,7 +48,7 @@ async fn setup_agent(writer: Arc<InMemoryProvenanceStore>) -> A2aAgent {
         globalThis.handle_a2a_request = async function(request) {
             const params = request && request.params ? request.params : {};
             const ctx = params.message && params.message.contextId ? params.message.contextId : "missing";
-            return {
+            __baml_a2a_yield({
                 task: {
                     id: "task-ctx",
                     contextId: ctx,
@@ -57,12 +56,14 @@ async fn setup_agent(writer: Arc<InMemoryProvenanceStore>) -> A2aAgent {
                     status: { state: "TASK_STATE_WORKING" },
                     history: []
                 }
-            };
+            });
         };
     "#;
     A2aAgent::builder()
         .with_provenance_writer(writer)
         .with_init_js(js_code)
+        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()
         .await
         .expect("agent build")
@@ -71,7 +72,8 @@ async fn setup_agent(writer: Arc<InMemoryProvenanceStore>) -> A2aAgent {
 fn expect_context_id(responses: Vec<Value>) -> String {
     let response = responses.into_iter().next().expect("response");
     let result = response.get("result").cloned().expect("missing result");
-    let task = result.get("task").and_then(Value::as_object).expect("task");
+    let content = result.get("chunk").cloned().unwrap_or(result);
+    let task = content.get("task").and_then(Value::as_object).expect("task");
     task.get("contextId")
         .and_then(Value::as_str)
         .expect("contextId")
@@ -94,7 +96,7 @@ async fn test_context_id_propagates_across_agents() {
     };
     let request = JSONRPCRequest {
         jsonrpc: "2.0".to_string(),
-        method: "message.send".to_string(),
+        method: "message.sendStream".to_string(),
         params: Some(serde_json::to_value(params).expect("serialize params")),
         id: Some(JSONRPCId::String("corr-2-1".to_string())),
     };
@@ -116,7 +118,7 @@ async fn test_context_id_propagates_across_agents() {
     };
     let request = JSONRPCRequest {
         jsonrpc: "2.0".to_string(),
-        method: "message.send".to_string(),
+        method: "message.sendStream".to_string(),
         params: Some(serde_json::to_value(params).expect("serialize params")),
         id: Some(JSONRPCId::String("corr-2-2".to_string())),
     };
@@ -133,6 +135,8 @@ async fn test_context_id_propagates_across_agents() {
     );
 }
 
+/// Asserts context concurrency invariants (I1–I3): request-scoped attribution, session tool count, no cross-request attribution.
+/// See baml-rt-quickjs/docs/CONTEXT_CONCURRENCY_INVARIANTS.md. No retries—failures indicate real bugs.
 #[tokio::test(flavor = "current_thread")]
 async fn test_context_id_is_task_local_under_concurrency() {
     let writer = Arc::new(InMemoryProvenanceStore::new());
@@ -142,7 +146,8 @@ async fn test_context_id_is_task_local_under_concurrency() {
             const session = await openToolSession("test/echo_tool");
             await session.send({ text });
             const step = await session.continue();
-            return step && step.output ? step.output : {};
+            const out = step && step.output ? step.output : {};
+            __baml_a2a_yield(out);
         };
     "#;
 
@@ -156,6 +161,8 @@ async fn test_context_id_is_task_local_under_concurrency() {
         .with_provenance_writer(writer.clone())
         .with_runtime_manager(runtime)
         .with_init_js(js_code)
+        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()
         .await
         .expect("agent build");
@@ -169,7 +176,7 @@ async fn test_context_id_is_task_local_under_concurrency() {
                 let agent_clone = agent.clone();
                 let request = JSONRPCRequest {
                     jsonrpc: "2.0".to_string(),
-                    method: "message.send".to_string(),
+                    method: "message.sendStream".to_string(),
                     params: Some(
                         serde_json::to_value(SendMessageRequest {
                             message: user_message(
@@ -205,7 +212,7 @@ async fn test_context_id_is_task_local_under_concurrency() {
     for context_id in context_ids {
         let (starts, completes, successes) =
             tool_event_counts(&events, "test/echo_tool", &context_id);
-        // Session-based tool calls currently emit two tool invocations per request.
+        // Session-based tool calls emit two tool invocations per request (open + execute).
         assert_eq!(
             starts, 2,
             "expected 2 tool starts for {context_id}, got {starts}"

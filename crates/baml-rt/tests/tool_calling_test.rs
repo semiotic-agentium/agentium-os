@@ -70,6 +70,7 @@ async fn test_llm_tool_calling_rust() {
 }
 
 #[tokio::test]
+#[allow(unnameable_test_items)]
 async fn test_llm_tool_calling_js() {
     // Set up BAML runtime
     let baml_manager = setup_baml_runtime_default();

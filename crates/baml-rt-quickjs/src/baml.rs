@@ -3,11 +3,12 @@
 use crate::baml_execution::BamlExecutor;
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_core::types::FunctionSignature;
+use baml_rt_core::effects::{EffectEmitter, ToolEffectMetadata};
 use baml_rt_tools::{ToolRegistry as ConcreteToolRegistry, ToolFunctionMetadataExport, ToolSessionId, ToolStep};
 use crate::traits::{BamlFunctionExecutor, SchemaLoader};
 use baml_rt_interceptor::{InterceptorRegistry, ToolCallContext};
 use baml_rt_core::correlation::current_correlation_id;
-use baml_rt_core::context;
+use baml_rt_core::context::{self, InvocationContext};
 use baml_rt_observability::metrics;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -17,6 +18,26 @@ use std::fs;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex as TokioMutex;
+
+
+// Helper function to build metadata map with correlation_id and message_id
+fn build_metadata_map() -> Value {
+    let mut map = serde_json::Map::new();
+    if let Some(correlation_id) = current_correlation_id() {
+        map.insert(
+            "correlation_id".to_string(),
+            Value::String(correlation_id.to_string()),
+        );
+    }
+    if let Some(message_id) = context::current_message_id() {
+        map.insert(
+            "message_id".to_string(),
+            Value::String(message_id.as_str().to_string()),
+        );
+    }
+    Value::Object(map)
+}
+
 
 // BAML executes in Rust. We will implement execution of BAML functions
 // in Rust, then map those function calls to QuickJS so JavaScript can invoke them.
@@ -38,6 +59,7 @@ pub struct BamlRuntimeManager {
     interceptor_registry: Arc<TokioMutex<InterceptorRegistry>>,
     tool_session_scopes: Arc<TokioMutex<HashMap<ToolSessionId, ToolSessionScope>>>,
     tool_session_states: Arc<TokioMutex<HashMap<ToolSessionId, ToolCallSessionState>>>,
+    effect_emitter: Option<Arc<dyn EffectEmitter>>,
 }
 
 #[derive(Debug, Clone)]
@@ -64,7 +86,13 @@ impl BamlRuntimeManager {
             interceptor_registry: Arc::new(TokioMutex::new(InterceptorRegistry::new())),
             tool_session_scopes: Arc::new(TokioMutex::new(HashMap::new())),
             tool_session_states: Arc::new(TokioMutex::new(HashMap::new())),
+            effect_emitter: None,
         })
+    }
+
+    /// Set the effect emitter (for effects-first liveness)
+    pub fn set_effect_emitter(&mut self, emitter: Arc<dyn EffectEmitter>) {
+        self.effect_emitter = Some(emitter);
     }
 
     /// Check if a schema is loaded
@@ -104,7 +132,12 @@ impl BamlRuntimeManager {
 
         // Load BAML IL into executor (pass tool registry)
         let tool_registry_clone = self.tool_registry.clone();
-        let executor = BamlExecutor::load_il(&baml_src_dir, tool_registry_clone)?;
+        let mut executor = BamlExecutor::load_il(&baml_src_dir, tool_registry_clone)?;
+        
+        // Set effect emitter if available
+        if let Some(ref emitter) = self.effect_emitter {
+            executor.set_effect_emitter(emitter.clone());
+        }
 
         // Discover functions from the BAML runtime
         let function_names = executor.list_functions();
@@ -285,32 +318,50 @@ impl BamlRuntimeManager {
         use std::time::Instant;
 
         let start = Instant::now();
-        let correlation_id = current_correlation_id();
-        let mut metadata_map = serde_json::Map::new();
-        if let Some(correlation_id) = correlation_id {
-            metadata_map.insert(
-                "correlation_id".to_string(),
-                Value::String(correlation_id.to_string()),
-            );
-        }
-        if let Some(message_id) = context::current_message_id() {
-            metadata_map.insert("message_id".to_string(), Value::String(message_id.as_str().to_string()));
-        }
-        let metadata = Value::Object(metadata_map);
+        let metadata = build_metadata_map();
 
         // Build context for interceptors
+        let context_id = context::current_or_new();
         let context = ToolCallContext {
             tool_name: name.to_string(),
             function_name: None, // Could be enhanced to track which function called this tool
             args: args.clone(),
-            metadata,
-            context_id: context::current_or_new(),
+            metadata: metadata.clone(),
+            context_id: context_id.clone(),
+        };
+
+        // Start effect and get token (type-safe start/complete pairing)
+        let effect_metadata = ToolEffectMetadata {
+            tool_name: name.to_string(),
+            function_name: None,
+            args: args.clone(),
+            metadata: metadata.clone(),
+        };
+        let effect_token = if let Some(emitter) = self.effect_emitter.as_ref() {
+            match emitter.start_tool(context_id.clone(), effect_metadata).await {
+                Ok(token) => Some(token),
+                Err(e) => {
+                    tracing::warn!(error = ?e, "Failed to start tool effect");
+                    None
+                }
+            }
+        } else {
+            None
         };
 
         // Run interceptors before execution
         let interceptor_registry = self.interceptor_registry.lock().await;
-        let _decision = interceptor_registry.intercept_tool_call(&context).await?;
+        let interceptor_result = interceptor_registry.intercept_tool_call(&context).await;
         drop(interceptor_registry);
+        if let Err(e) = interceptor_result {
+            if let Some(token) = effect_token
+                && let Some(emitter) = self.effect_emitter.as_ref() {
+                    let duration_ms = start.elapsed().as_millis() as u64;
+                    let _ = token.complete(emitter.as_ref(), duration_ms, false).await;
+                }
+            return Err(e);
+        }
+        let _decision = interceptor_result.unwrap();
 
         // Handle interceptor decision
         // If we get here, the decision is Allow (blocking would have returned Err)
@@ -324,6 +375,14 @@ impl BamlRuntimeManager {
         // Calculate duration
         let duration = start.elapsed();
         let duration_ms = duration.as_millis() as u64;
+        let success = result.is_ok();
+
+        // Complete effect using token (type-safe: token consumed, cannot double-complete)
+        if let Some(token) = effect_token
+            && let Some(emitter) = self.effect_emitter.as_ref()
+                && let Err(e) = token.complete(emitter.as_ref(), duration_ms, success).await {
+                    tracing::warn!(error = ?e, "Failed to complete tool effect");
+                }
 
         // Notify interceptors of completion
         let interceptor_registry = self.interceptor_registry.lock().await;
@@ -349,16 +408,48 @@ impl BamlRuntimeManager {
     }
 
     pub async fn open_tool_session(&self, tool_name: &str, open_input: serde_json::Value) -> Result<ToolSessionId> {
-        let mut registry = self.tool_registry.lock().await;
-        let session_id = registry.open_session(tool_name, open_input).await?;
-        drop(registry);
-        let scope = context::current_scope();
+        // Scope is required; missing scope is a failure (trait returns Result).
+        let scope = context::task_local_context().current_scope()?;
+        let context_id = scope.context_id.clone();
+
+        let start = Instant::now();
+        let metadata = build_metadata_map();
+        let context = ToolCallContext {
+            tool_name: tool_name.to_string(),
+            function_name: None,
+            args: open_input.clone(),
+            metadata,
+            context_id: context_id.clone(),
+        };
+
+        // Record tool call start for "open" (session-based: open + execute = 2 invocations per request)
+        let interceptor_registry = self.interceptor_registry.lock().await;
+        let _ = interceptor_registry.intercept_tool_call(&context).await?;
+        drop(interceptor_registry);
+
+        let result = {
+            let mut registry = self.tool_registry.lock().await;
+            registry.open_session(tool_name, open_input).await
+        };
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+        let completion_result: Result<Value> = match &result {
+            Ok(_) => Ok(Value::Null),
+            Err(e) => Err(BamlRtError::InvalidArgument(e.to_string())),
+        };
+        let interceptor_registry = self.interceptor_registry.lock().await;
+        interceptor_registry
+            .notify_tool_call_complete(&context, &completion_result, duration_ms)
+            .await;
+        drop(interceptor_registry);
+
+        let session_id = result?;
         let mut scopes = self.tool_session_scopes.lock().await;
         scopes.insert(
             session_id.clone(),
             ToolSessionScope {
                 tool_name: tool_name.to_string(),
-                scope,
+                scope: Some(scope),
             },
         );
         Ok(session_id)
@@ -374,7 +465,7 @@ impl BamlRuntimeManager {
         let session_scope = session_scope.ok_or_else(|| {
             BamlRtError::InvalidArgument(format!(
                 "Unknown tool session {}",
-                session_id.to_string()
+                session_id
             ))
         })?;
 
@@ -474,8 +565,8 @@ impl BamlRuntimeManager {
                 _ => None,
             };
 
-            if let Some(completion_result) = completion {
-                if let Some(state) = {
+            if let Some(completion_result) = completion
+                && let Some(state) = {
                     let mut states = self.tool_session_states.lock().await;
                     states.remove(session_id)
                 } {
@@ -495,7 +586,6 @@ impl BamlRuntimeManager {
                         state.start.elapsed(),
                     );
                 }
-            }
 
             result
         };
@@ -703,12 +793,14 @@ impl BamlRuntimeManager {
 
     async fn resolve_tool_name_from_plan_steps(
         &self,
-        steps: &[ToolSessionPlanStep],
+        steps: &[ToolSessionOp],
     ) -> Result<String> {
         let input = steps.iter().find_map(|step| {
-            step.initial_input
-                .as_ref()
-                .or_else(|| step.input.as_ref())
+            match step {
+                ToolSessionOp::Open { initial_input, .. } => initial_input.as_ref(),
+                ToolSessionOp::Send { input, .. } => Some(input),
+                _ => None,
+            }
         });
         let input = input.ok_or_else(|| {
             BamlRtError::InvalidArgument(
@@ -744,21 +836,27 @@ impl BamlRuntimeManager {
         }
     }
 
+    /// Execute a typed tool session plan.
+    /// 
+    /// The plan is a sequence of typed `ToolSessionOp` operations that must follow FSM rules:
+    /// - First operation must be Open
+    /// - Subsequent operations must be Send/Next/Finish/Abort (after Open)
+    /// - After Finish/Abort, session is closed
     async fn execute_tool_session_plan(
         &self,
         tool_name: String,
-        steps: Vec<ToolSessionPlanStep>,
+        steps: Vec<ToolSessionOp>,
     ) -> Result<Value> {
-        // Validate FSM: must start with Open before any Send
-        let first_non_open = steps.iter().position(|s| s.op != "open");
-        if let Some(pos) = first_non_open {
-            if steps[pos].op == "send" {
+        // Validate FSM: no Send before first Open
+        let first_open = steps.iter().position(|s| matches!(s, ToolSessionOp::Open { .. }));
+        let first_send = steps.iter().position(|s| matches!(s, ToolSessionOp::Send { .. }));
+        if let (Some(open_pos), Some(send_pos)) = (first_open, first_send)
+            && send_pos < open_pos {
                 return Err(BamlRtError::InvalidArgument(format!(
-                    "FSM violation: plan has '{}' step at position {} before any 'open' step. FSM requires Open before Send.",
-                    steps[pos].op, pos
+                    "FSM violation: plan has 'send' step at position {} before 'open' at {}. FSM requires Open before Send.",
+                    send_pos, open_pos
                 )));
             }
-        }
         if steps.is_empty() {
             return Err(BamlRtError::InvalidArgument("ToolSessionPlan must have at least one step".to_string()));
         }
@@ -768,42 +866,31 @@ impl BamlRuntimeManager {
         let mut streaming_outputs: Vec<Value> = Vec::new();
 
         for step in steps {
-            match step.op.as_str() {
-                "open" => {
+            match step {
+                ToolSessionOp::Open { initial_input, .. } => {
                     if session_id.is_some() {
                         return Err(BamlRtError::InvalidArgument(
                             "Tool session already open".to_string(),
                         ));
                     }
                     // For Open step, use initial_input if provided, otherwise empty object
-                    let open_input = step.initial_input.clone().unwrap_or_else(empty_open_input);
+                    let open_input = initial_input.clone().unwrap_or_else(empty_open_input);
                     let session = self.open_tool_session(&tool_name, open_input).await?;
                     session_id = Some(session.clone());
                     // If Open step has initial_input, automatically Send it
-                    if let Some(initial_input) = step.initial_input {
+                    if let Some(initial_input) = initial_input {
                         let normalized = normalize_plan_input(initial_input)?;
                         self.tool_session_send(&session, normalized).await?;
                     }
                 }
-                "send" => {
+                ToolSessionOp::Send { input, .. } => {
                     let session = session_id.as_ref().ok_or_else(|| {
                         BamlRtError::InvalidArgument("send step before open: FSM requires Open before Send".to_string())
                     })?;
-                    // Send steps must use 'input' field, not 'initial_input'
-                    // Treat null/None as missing input
-                    let input = step.input
-                        .filter(|v| !v.is_null())
-                        .ok_or_else(|| {
-                            if step.initial_input.is_some() {
-                                BamlRtError::InvalidArgument("send step must use 'input' field, not 'initial_input' (initial_input is only for Open steps)".to_string())
-                            } else {
-                                BamlRtError::InvalidArgument("send step missing input (input is null or missing)".to_string())
-                            }
-                        })?;
                     let normalized = normalize_plan_input(input)?;
                     self.tool_session_send(session, normalized).await?;
                 }
-                "next" => {
+                ToolSessionOp::Next { .. } => {
                     let session = session_id.as_ref().ok_or_else(|| {
                         BamlRtError::InvalidArgument("next step before open".to_string())
                     })?;
@@ -828,23 +915,17 @@ impl BamlRuntimeManager {
                         }
                     }
                 }
-                "finish" => {
+                ToolSessionOp::Finish { .. } => {
                     if let Some(session) = session_id.as_ref() {
                         self.tool_session_finish(session).await?;
                         session_id = None;
                     }
                 }
-                "abort" => {
+                ToolSessionOp::Abort { reason, .. } => {
                     if let Some(session) = session_id.as_ref() {
-                        self.tool_session_abort(session, step.reason).await?;
+                        self.tool_session_abort(session, reason).await?;
                         session_id = None;
                     }
-                }
-                other => {
-                    return Err(BamlRtError::InvalidArgument(format!(
-                        "Unknown tool session op '{}'",
-                        other
-                    )));
                 }
             }
         }
@@ -914,6 +995,7 @@ impl Default for BamlRuntimeManager {
             interceptor_registry: Arc::new(TokioMutex::new(InterceptorRegistry::new())),
             tool_session_scopes: Arc::new(TokioMutex::new(HashMap::new())),
             tool_session_states: Arc::new(TokioMutex::new(HashMap::new())),
+            effect_emitter: None,
         }
     }
 }
@@ -983,33 +1065,52 @@ fn input_matches_schema(input: &Value, schema: &Value) -> bool {
         Some(obj) => obj,
         None => return false,
     };
-    if let Some(Value::String(schema_type)) = schema_obj.get("type") {
-        if schema_type != "object" {
+    if let Some(Value::String(schema_type)) = schema_obj.get("type")
+        && schema_type != "object" {
             return false;
         }
-    }
     if let Some(required) = schema_obj.get("required").and_then(|v| v.as_array()) {
         for req in required {
-            if let Some(req_key) = req.as_str() {
-                if !input_obj.contains_key(req_key) {
+            if let Some(req_key) = req.as_str()
+                && !input_obj.contains_key(req_key) {
                     return false;
                 }
-            }
         }
     }
     true
 }
 
+/// Typed tool session operation (replaces stringly-typed `op` field).
+/// 
+/// This enum encodes the FSM operations at compile time, eliminating
+/// stringly-typed operations and enabling type-safe plan execution.
 #[derive(Debug, Clone)]
-struct ToolSessionPlanStep {
-    op: String,
-    initial_input: Option<Value>, // For Open step - initial input when opening session
-    input: Option<Value>,         // For Send step - subsequent inputs
-    reason: Option<String>,
+pub enum ToolSessionOp {
+    Open {
+        initial_input: Option<Value>,
+        reason: Option<String>,
+    },
+    Send {
+        input: Value,
+        reason: Option<String>,
+    },
+    Next {
+        reason: Option<String>,
+    },
+    Finish {
+        reason: Option<String>,
+    },
+    Abort {
+        reason: Option<String>,
+    },
 }
 
 
-fn extract_tool_session_plan(result: &Value) -> Result<Option<Vec<ToolSessionPlanStep>>> {
+/// Extract and convert JSON tool session plan into typed operations.
+/// 
+/// This performs one-time conversion from JSON to typed `ToolSessionOp` enum,
+/// enabling type-safe execution without stringly-typed operations.
+fn extract_tool_session_plan(result: &Value) -> Result<Option<Vec<ToolSessionOp>>> {
     let obj = match result.as_object() {
         Some(obj) => obj,
         None => return Ok(None),
@@ -1036,7 +1137,7 @@ fn extract_tool_session_plan(result: &Value) -> Result<Option<Vec<ToolSessionPla
         
         // Determine step type from __type field (BAML union type discriminator)
         let step_type = step_obj.get("__type").and_then(|v| v.as_str());
-        let op = step_obj
+        let op_str = step_obj
             .get("op")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
@@ -1044,45 +1145,44 @@ fn extract_tool_session_plan(result: &Value) -> Result<Option<Vec<ToolSessionPla
             })?
             .to_ascii_lowercase();
         
-        // Extract fields based on step type (union variant)
-        let (initial_input, input) = match step_type {
-            Some("SupportCalculateOpenStep") | Some(_) if op == "open" => {
-                // Open step: has initial_input field
-                (step_obj.get("initial_input").cloned(), None)
+        let reason = step_obj.get("reason").and_then(|v| v.as_str()).map(|s| s.to_string());
+        
+        // Convert to typed operation enum
+        let op = match op_str.as_str() {
+            "open" => {
+                let initial_input = match step_type {
+                    Some("SupportCalculateOpenStep") | Some(_) => step_obj.get("initial_input").cloned(),
+                    _ => step_obj.get("initial_input").cloned(),
+                };
+                ToolSessionOp::Open { initial_input, reason }
             }
-            Some("SupportCalculateSendStep") | Some(_) if op == "send" => {
-                // Send step: has input field (required)
-                let input_val = step_obj.get("input").cloned().ok_or_else(|| {
-                    BamlRtError::InvalidArgument("Send step missing required 'input' field".to_string())
-                })?;
-                (None, Some(input_val))
+            "send" => {
+                let input = match step_type {
+                    Some("SupportCalculateSendStep") | Some(_) => {
+                        step_obj.get("input").cloned().ok_or_else(|| {
+                            BamlRtError::InvalidArgument("Send step missing required 'input' field".to_string())
+                        })?
+                    }
+                    _ => {
+                        step_obj.get("input").cloned().ok_or_else(|| {
+                            BamlRtError::InvalidArgument("Send step missing required 'input' field".to_string())
+                        })?
+                    }
+                };
+                ToolSessionOp::Send { input, reason }
             }
-            _ if op == "next" || op == "finish" || op == "abort" => {
-                // Next/Finish/Abort steps: no input fields
-                (None, None)
-            }
-            _ => {
-                // Fallback: try to infer from op field
-                if op == "open" {
-                    (step_obj.get("initial_input").cloned(), None)
-                } else if op == "send" {
-                    let input_val = step_obj.get("input").cloned().ok_or_else(|| {
-                        BamlRtError::InvalidArgument("Send step missing required 'input' field".to_string())
-                    })?;
-                    (None, Some(input_val))
-                } else {
-                    (None, None)
-                }
+            "next" => ToolSessionOp::Next { reason },
+            "finish" => ToolSessionOp::Finish { reason },
+            "abort" => ToolSessionOp::Abort { reason },
+            other => {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "Unknown tool session op '{}'",
+                    other
+                )));
             }
         };
         
-        let reason = step_obj.get("reason").and_then(|v| v.as_str()).map(|s| s.to_string());
-        steps.push(ToolSessionPlanStep {
-            op,
-            initial_input,
-            input,
-            reason,
-        });
+        steps.push(op);
     }
 
     Ok(Some(steps))

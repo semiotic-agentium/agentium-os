@@ -1,12 +1,17 @@
 //! Integration tests for direct BAML tool execution (Rust + JS tools).
 
+use std::sync::Arc;
 use test_support::support;
 use baml_rt::A2aAgent;
 use serde_json::json;
 
 #[tokio::test]
 async fn test_direct_tool_execution_rust_and_js() {
-    let agent = A2aAgent::builder().build().await.expect("agent build");
+    let agent = A2aAgent::builder()
+        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .build()
+        .await
+        .expect("agent build");
 
     {
         let runtime = agent.runtime();

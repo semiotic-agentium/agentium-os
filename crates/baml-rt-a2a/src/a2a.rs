@@ -15,7 +15,6 @@ const JSONRPC_VERSION: &str = "2.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum A2aMethod {
-    MessageSend,
     MessageSendStream,
     TasksGet,
     TasksList,
@@ -26,7 +25,6 @@ pub enum A2aMethod {
 impl A2aMethod {
     pub fn as_str(&self) -> &'static str {
         match self {
-            A2aMethod::MessageSend => "message.send",
             A2aMethod::MessageSendStream => "message.sendStream",
             A2aMethod::TasksGet => "tasks.get",
             A2aMethod::TasksList => "tasks.list",
@@ -41,7 +39,9 @@ impl std::str::FromStr for A2aMethod {
 
     fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
         match value {
-            "message.send" => Ok(A2aMethod::MessageSend),
+            "message.send" => Err(BamlRtError::InvalidArgument(
+                "Only message.sendStream is supported".to_string(),
+            )),
             "message.sendStream" => Ok(A2aMethod::MessageSendStream),
             "tasks.get" => Ok(A2aMethod::TasksGet),
             "tasks.list" => Ok(A2aMethod::TasksList),
@@ -82,20 +82,6 @@ impl A2aRequest {
         let mut message_id = None;
         let mut task_id = None;
         let is_stream = match method {
-            A2aMethod::MessageSend => {
-                let mut params: SendMessageRequest =
-                    serde_json::from_value(params_value.clone()).map_err(BamlRtError::Json)?;
-                if params.message.context_id.is_none() {
-                    params.message.context_id = Some(context::generate_context_id());
-                }
-                context_id = params.message.context_id.clone();
-                message_id = Some(params.message.message_id.as_message_id().clone());
-                task_id = params.message.task_id.clone();
-                params_value =
-                    serde_json::to_value(&params).map_err(BamlRtError::Json)?;
-                params_value = augment_message_params(params_value, &params.message);
-                stream_from_message_request(&params, &params_value)
-            }
             A2aMethod::MessageSendStream => {
                 let mut params: SendMessageRequest =
                     serde_json::from_value(params_value.clone()).map_err(BamlRtError::Json)?;
@@ -258,7 +244,7 @@ pub fn extract_agent_name(value: &Value) -> Option<String> {
     let Ok(method) = request.method.parse::<A2aMethod>() else {
         return None;
     };
-    if method != A2aMethod::MessageSend && method != A2aMethod::MessageSendStream {
+    if method != A2aMethod::MessageSendStream {
         return None;
     }
     let params: SendMessageRequest = serde_json::from_value(request.params?).ok()?;
@@ -276,15 +262,6 @@ fn metadata_value_as_string(
         .and_then(|meta| meta.get(key))
         .and_then(|value| value.as_str())
         .map(|value| value.to_string())
-}
-
-fn metadata_value_as_bool(
-    metadata: Option<&std::collections::HashMap<String, Value>>,
-    key: &str,
-) -> Option<bool> {
-    metadata
-        .and_then(|meta| meta.get(key))
-        .and_then(|value| value.as_bool())
 }
 
 fn augment_message_params(mut params_value: Value, message: &Message) -> Value {
@@ -312,15 +289,6 @@ fn message_text(message: &Message) -> Option<String> {
     }
 }
 
-fn stream_from_message_request(params: &SendMessageRequest, params_value: &Value) -> bool {
-    params_value
-        .get("stream")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-        || metadata_value_as_bool(params.metadata.as_ref(), "stream").unwrap_or(false)
-        || metadata_value_as_bool(params.message.metadata.as_ref(), "stream").unwrap_or(false)
-}
-
 pub fn request_to_js_value(request: &A2aRequest) -> Value {
     json!({
         "jsonrpc": JSONRPC_VERSION,
@@ -340,6 +308,7 @@ fn id_to_value(value: &JSONRPCId) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use super::A2aRequest;
     use crate::a2a_types::{JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest, ROLE_USER};
     use baml_rt_core::BamlRtError;
@@ -350,7 +319,11 @@ mod tests {
     use opentelemetry_sdk::trace::TracerProvider;
     use serde_json::{json, Value};
     use std::collections::HashMap;
+    use tokio::time::{timeout, Duration};
     use tracing_subscriber::layer::SubscriberExt;
+
+    /// Watchdog timeout for agent setup and tests - ensures tests fail fast if they hang.
+    const TEST_WATCHDOG_TIMEOUT_SECS: u64 = 30; // 30 seconds for agent setup/tests
 
     struct OtelTestFixture {
         exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
@@ -408,14 +381,24 @@ mod tests {
     }
 
     async fn setup_agent_with_js() -> A2aAgent {
+        timeout(
+            Duration::from_secs(TEST_WATCHDOG_TIMEOUT_SECS),
+            setup_agent_with_js_inner(),
+        )
+        .await
+        .expect("Agent setup timed out - builder hung")
+    }
+
+    async fn setup_agent_with_js_inner() -> A2aAgent {
+        tracing::info!("setup_agent_with_js_inner: Starting agent setup");
         let js_code = r#"
             globalThis.handle_a2a_request = async function(request) {
                 const method = request && request.method;
                 const params = request && request.params ? request.params : {};
-                if (method === "message.send") {
-                    const text = params.text || (params.message && params.message.parts && params.message.parts[0] && params.message.parts[0].text) || "unknown";
+                if (method === "message.sendStream") {
+                    const text = params.text || (params.message && params.message.parts && params.message.parts[0] && params.message.parts[0].text) || "friend";
                     if (text === "task") {
-                        return {
+                        __baml_a2a_yield({
                             task: {
                                 id: "task-1",
                                 contextId: "ctx-1",
@@ -423,49 +406,43 @@ mod tests {
                                 status: { state: "TASK_STATE_WORKING" },
                                 history: []
                             }
-                        };
+                        });
+                        return;
                     }
-                    return {
+                    __baml_a2a_yield({
                         message: {
                             messageId: "resp-1",
                             role: "ROLE_AGENT",
                             parts: [{ text: `hi ${text}` }]
                         }
-                    };
-                }
-                if (method === "message.sendStream") {
-                    const text = params.text || "friend";
-                    return [
-                        {
-                            message: {
-                                messageId: "resp-1",
-                                role: "ROLE_AGENT",
-                                parts: [{ text: `hello ${text}` }]
-                            }
+                    });
+                    __baml_a2a_yield({
+                        message: {
+                            messageId: "resp-2",
+                            role: "ROLE_AGENT",
+                            parts: [{ text: "done" }]
                         },
-                        {
-                            message: {
-                                messageId: "resp-2",
-                                role: "ROLE_AGENT",
-                                parts: [{ text: "done" }]
-                            }
-                        }
-                    ];
+                        final: true
+                    });
+                    return;
                 }
-                return {
+                __baml_a2a_yield({
                     message: {
                         messageId: "resp-unknown",
                         role: "ROLE_AGENT",
                         parts: [{ text: "unknown" }]
                     }
-                };
+                });
             };
         "#;
-        A2aAgent::builder()
+        tracing::info!("setup_agent_with_js_inner: Creating builder");
+        let builder = A2aAgent::builder()
             .with_init_js(js_code)
-            .build()
-            .await
-            .expect("agent build")
+            .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()));
+        tracing::info!("setup_agent_with_js_inner: Calling build()");
+        let agent = builder.build().await.expect("agent build");
+        tracing::info!("setup_agent_with_js_inner: Agent built successfully");
+        agent
     }
 
     fn expect_success_result(responses: Vec<Value>) -> Value {
@@ -473,10 +450,12 @@ mod tests {
         if let Some(error) = response.get("error") {
             panic!("unexpected error response: {error}");
         }
-        response
-            .get("result")
+        let result = response.get("result").cloned().expect("missing result");
+        // Stream responses wrap each chunk as result: { chunk, final? }; unwrap to chunk content
+        result
+            .get("chunk")
             .cloned()
-            .expect("missing result")
+            .unwrap_or(result)
     }
 
     fn user_message(message_id: &str, text: &str) -> Message {
@@ -500,6 +479,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_a2a_jsonrpc_request_invokes_js_function() {
+        timeout(
+            Duration::from_secs(TEST_WATCHDOG_TIMEOUT_SECS),
+            test_a2a_jsonrpc_request_invokes_js_function_inner(),
+        )
+        .await
+        .expect("Test timed out - test hung");
+    }
+
+    async fn test_a2a_jsonrpc_request_invokes_js_function_inner() {
         let agent = setup_agent_with_js().await;
 
         let params = SendMessageRequest {
@@ -511,7 +499,7 @@ mod tests {
         };
         let request = JSONRPCRequest {
             jsonrpc: "2.0".to_string(),
-            method: "message.send".to_string(),
+            method: "message.sendStream".to_string(),
             params: Some(serde_json::to_value(params).expect("serialize params")),
             id: Some(JSONRPCId::String("corr-1-10".to_string())),
         };
@@ -539,6 +527,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_a2a_request_span_structure() {
+        timeout(
+            Duration::from_secs(TEST_WATCHDOG_TIMEOUT_SECS),
+            test_a2a_request_span_structure_inner(),
+        )
+        .await
+        .expect("Test timed out - test hung");
+    }
+
+    async fn test_a2a_request_span_structure_inner() {
         let _otel = OtelTestFixture::new();
         let agent = setup_agent_with_js().await;
 
@@ -551,7 +548,7 @@ mod tests {
         };
         let request = JSONRPCRequest {
             jsonrpc: "2.0".to_string(),
-            method: "message.send".to_string(),
+            method: "message.sendStream".to_string(),
             params: Some(serde_json::to_value(params).expect("serialize params")),
             id: Some(JSONRPCId::String("corr-1-19".to_string())),
         };
@@ -560,14 +557,23 @@ mod tests {
         let _ = agent.handle_a2a(request_value).await;
 
         let spans = _otel.spans();
-        let span = find_span(&spans, "baml_rt.a2a_request")
-            .expect("expected baml_rt.a2a_request span");
-        assert_eq!(attr_value(span, "method").as_deref(), Some("message.send"));
+        let span = find_span(&spans, "baml_rt.a2a_stream")
+            .expect("expected baml_rt.a2a_stream span");
+        assert_eq!(attr_value(span, "method").as_deref(), Some("message.sendStream"));
         assert_eq!(attr_value(span, "correlation_id").as_deref(), Some("corr-1-19"));
     }
 
     #[tokio::test]
     async fn test_a2a_stream_span_structure() {
+        timeout(
+            Duration::from_secs(TEST_WATCHDOG_TIMEOUT_SECS),
+            test_a2a_stream_span_structure_inner(),
+        )
+        .await
+        .expect("Test timed out - test hung");
+    }
+
+    async fn test_a2a_stream_span_structure_inner() {
         let _otel = OtelTestFixture::new();
         let agent = setup_agent_with_js().await;
 
@@ -597,6 +603,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_a2a_stream_suffix_dispatches_stream() {
+        timeout(
+            Duration::from_secs(TEST_WATCHDOG_TIMEOUT_SECS),
+            test_a2a_stream_suffix_dispatches_stream_inner(),
+        )
+        .await
+        .expect("Test timed out - test hung");
+    }
+
+    async fn test_a2a_stream_suffix_dispatches_stream_inner() {
         let agent = setup_agent_with_js().await;
 
         let params = SendMessageRequest {
@@ -631,6 +646,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_a2a_stream_param_dispatches_stream() {
+        timeout(
+            Duration::from_secs(TEST_WATCHDOG_TIMEOUT_SECS),
+            test_a2a_stream_param_dispatches_stream_inner(),
+        )
+        .await
+        .expect("Test timed out - test hung");
+    }
+
+    async fn test_a2a_stream_param_dispatches_stream_inner() {
         let agent = setup_agent_with_js().await;
 
         let params = SendMessageRequest {
@@ -646,7 +670,7 @@ mod tests {
         }
         let request = JSONRPCRequest {
             jsonrpc: "2.0".to_string(),
-            method: "message.send".to_string(),
+            method: "message.sendStream".to_string(),
             params: Some(params_value),
             id: Some(JSONRPCId::String("corr-1-12".to_string())),
         };
@@ -669,6 +693,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_tasks_get_list_cancel() {
+        timeout(
+            Duration::from_secs(TEST_WATCHDOG_TIMEOUT_SECS),
+            test_tasks_get_list_cancel_inner(),
+        )
+        .await
+        .expect("Test timed out - test hung");
+    }
+
+    async fn test_tasks_get_list_cancel_inner() {
         let agent = setup_agent_with_js().await;
 
         let params = SendMessageRequest {
@@ -680,7 +713,7 @@ mod tests {
         };
         let create_request = JSONRPCRequest {
             jsonrpc: "2.0".to_string(),
-            method: "message.send".to_string(),
+            method: "message.sendStream".to_string(),
             params: Some(serde_json::to_value(params).expect("serialize params")),
             id: Some(JSONRPCId::String("corr-1-13".to_string())),
         };
@@ -689,9 +722,9 @@ mod tests {
         let task_id = create_responses
             .iter()
             .find_map(|response| {
-                response
-                    .get("result")
-                    .and_then(|result| result.get("task"))
+                let result = response.get("result")?;
+                let chunk = result.get("chunk").or(Some(result));
+                chunk.and_then(|c| c.get("task"))
                     .and_then(|task| task.get("id"))
                     .and_then(Value::as_str)
             })
@@ -750,6 +783,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_tasks_subscribe_stream() {
+        timeout(
+            Duration::from_secs(TEST_WATCHDOG_TIMEOUT_SECS),
+            test_tasks_subscribe_stream_inner(),
+        )
+        .await
+        .expect("Test timed out - test hung");
+    }
+
+    async fn test_tasks_subscribe_stream_inner() {
         let agent = setup_agent_with_js().await;
 
         let params = SendMessageRequest {
@@ -761,7 +803,7 @@ mod tests {
         };
         let create_request = JSONRPCRequest {
             jsonrpc: "2.0".to_string(),
-            method: "message.send".to_string(),
+            method: "message.sendStream".to_string(),
             params: Some(serde_json::to_value(params).expect("serialize params")),
             id: Some(JSONRPCId::String("corr-1-17".to_string())),
         };
@@ -770,9 +812,9 @@ mod tests {
         let task_id = create_responses
             .iter()
             .find_map(|response| {
-                response
-                    .get("result")
-                    .and_then(|result| result.get("task"))
+                let result = response.get("result")?;
+                let chunk = result.get("chunk").or(Some(result));
+                chunk.and_then(|c| c.get("task"))
                     .and_then(|task| task.get("id"))
                     .and_then(Value::as_str)
             })
@@ -804,7 +846,7 @@ mod tests {
         let request = json!({
             "jsonrpc": "1.0",
             "id": "bad-1",
-            "method": "message.send",
+            "method": "message.sendStream",
             "params": {
                 "message": {
                     "messageId": "msg-4",

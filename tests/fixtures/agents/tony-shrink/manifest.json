@@ -1,9 +1,9 @@
 {
   "version": "1.0.0",
-  "name": "tony",
+  "name": "tony-shrink",
   "description": "Therapy-leaning, rambling mob-boss fixture agent",
-  "signature": "51b37927-1b7d-4de4-a812-68e479055ecd",
   "entry_point": "src/index.ts",
+  "signature": "tony-shrink@1.0.0",
   "runtime_version": "0.1.0",
   "tools": []
 }

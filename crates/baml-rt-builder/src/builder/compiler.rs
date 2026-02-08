@@ -5,6 +5,7 @@ use crate::builder::traits::{TypeScriptCompiler, TypeGenerator, FileSystem};
 use crate::builder::types::BuildDir;
 use crate::builder::ts_gen::{load_manifest_tools, render_ts_declarations};
 use crate::builder::baml_gen::render_baml_tool_interfaces;
+use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
 
@@ -87,7 +88,14 @@ impl<FS: FileSystem> TypeScriptCompiler for OxcTypeScriptCompiler<FS> {
                 )));
             }
 
-            let js_code = Codegen::new().build(&program).code;
+            let mut js_code = Codegen::new().build(&program).code;
+            // QuickJS does not support ESM; strip trailing empty export so script evaluates.
+            let trimmed = js_code.trim_end();
+            if trimmed.ends_with("export {};") {
+                js_code = trimmed.strip_suffix("export {};").unwrap_or(trimmed).trim_end().to_string();
+            } else if trimmed.ends_with("export {}") {
+                js_code = trimmed.strip_suffix("export {}").unwrap_or(trimmed).trim_end().to_string();
+            }
             let relative_path = file_path.strip_prefix(src_dir)
                 .map_err(|_| BamlRtError::InvalidArgument(
                     format!("File {} is not under src directory", file_path.display())
@@ -96,6 +104,11 @@ impl<FS: FileSystem> TypeScriptCompiler for OxcTypeScriptCompiler<FS> {
             let output_path = dist_dir.join(relative_path).with_extension("js");
             if let Some(parent) = output_path.parent() {
                 self.filesystem.create_dir_all(parent)?;
+            }
+
+            if output_path.file_name() == Some(OsStr::new("index.js")) {
+                let a2a_shim = include_str!("a2a.js");
+                js_code = format!("{}\n{}", a2a_shim.trim_end(), js_code);
             }
 
             self.filesystem.write_string(&output_path, &js_code)?;

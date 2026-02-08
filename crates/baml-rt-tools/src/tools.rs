@@ -55,10 +55,19 @@ fn serialize_tool_output<T: Serialize>(value: T) -> Result<Value> {
 /// Validate open_input by attempting to deserialize it
 /// 
 /// Centralizes the validation pattern for open_input parameters.
+/// For unit type `()`, both `null` and empty object `{}` are accepted (registry uses `{}` for one-shot execute).
 fn validate_open_input<T: for<'de> Deserialize<'de>>(open_input: Value) -> Result<()> {
-    serde_json::from_value::<T>(open_input)
-        .map_err(|err| BamlRtError::InvalidOpenInput { source: err })
-        .map(|_| ())
+    match serde_json::from_value::<T>(open_input.clone()) {
+        Ok(_) => Ok(()),
+        Err(err) => {
+            let msg = err.to_string();
+            if msg.contains("expected unit") && (open_input.is_null() || open_input.as_object().map(|m| m.is_empty()).unwrap_or(false)) {
+                Ok(())
+            } else {
+                Err(BamlRtError::InvalidOpenInput { source: err })
+            }
+        }
+    }
 }
 
 /// Parse a tool name and derive its class name
@@ -1313,9 +1322,13 @@ impl Default for ToolRegistry {
     }
 }
 
+/// Async handler: takes input I, returns a future that resolves to Result<O>.
+type TypedToolHandler<I, O> =
+    Arc<dyn Fn(I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>> + Send + Sync>;
+
 pub struct TypedToolFunction<I, O, F> {
     metadata: ToolFunctionMetadata,
-    handler: Arc<dyn Fn(I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>> + Send + Sync>,
+    handler: TypedToolHandler<I, O>,
     _phantom: std::marker::PhantomData<(I, O, F)>,
 }
 

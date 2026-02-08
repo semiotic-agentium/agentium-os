@@ -2,6 +2,8 @@
 
 use serde_json::json;
 use baml_rt_tools::ToolStep;
+use baml_rt_core::context::{self, InvocationScope};
+use baml_rt_core::ids::{AgentId, UuidId};
 
 use test_support::common::{WeatherTool, CalculatorTool, UppercaseTool, DelayedResponseTool};
 use test_support::common::{assert_tool_registered_in_js, require_api_key, setup_baml_runtime_default, setup_bridge};
@@ -29,87 +31,89 @@ async fn test_e2e_llm_with_tools() {
         tracing::info!("✅ Tools registered: {:?}", tools);
     }
     
-    // Test 2: Test tool execution directly
+    // Test 2: Test tool execution directly (run inside with_scope so open_tool_session has invocation context)
     {
-        let manager = baml_manager.lock().await;
-        
-        // Test weather tool
-        let session_id = manager
-            .open_tool_session("support/get_weather", json!({}))
-            .await
-            .expect("open tool session should succeed");
-        manager
-            .tool_session_send(&session_id, json!({"location": "San Francisco, CA"}))
-            .await
-            .expect("tool session send should succeed");
-        let weather_result = loop {
-            match manager
+        let agent_id = AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000021").unwrap());
+        let scope = InvocationScope::standalone(agent_id);
+        let baml_manager_guard = baml_manager.clone();
+
+        context::with_scope(scope.as_scope().clone(), async move {
+            let manager = baml_manager_guard.lock().await;
+
+            // Test weather tool
+            let session_id = manager
+                .open_tool_session("support/get_weather", json!({}))
+                .await
+                .expect("open tool session should succeed");
+            manager
+                .tool_session_send(&session_id, json!({"location": "San Francisco, CA"}))
+                .await
+                .expect("tool session send should succeed");
+            let weather_result = match manager
                 .tool_session_next(&session_id)
                 .await
                 .expect("tool session next should succeed")
             {
                 ToolStep::Streaming { output } => {
                     manager.tool_session_finish(&session_id).await.unwrap();
-                    break output;
+                    output
                 }
                 ToolStep::Done { output } => {
                     manager.tool_session_finish(&session_id).await.unwrap();
-                    break output.unwrap_or_else(|| json!({}));
+                    output.unwrap_or_else(|| json!({}))
                 }
                 ToolStep::Error { error } => {
                     manager.tool_session_abort(&session_id, Some(error.message)).await.unwrap();
                     panic!("Weather tool execution failed");
                 }
-            }
-        };
-        
-        let weather_obj = weather_result.as_object().expect("Expected object");
-        assert!(weather_obj.contains_key("temperature"), "Weather result should contain temperature");
-        assert!(weather_obj.contains_key("condition"), "Weather result should contain condition");
-        
-        let location = weather_obj.get("location").and_then(|g| g.as_str()).unwrap();
-        assert_eq!(location, "San Francisco, CA");
-        
-        tracing::info!("✅ Weather tool executed successfully: {:?}", weather_result);
-        
-        // Test calculator tool
-        let session_id = manager
-            .open_tool_session("support/calculate", json!({}))
-            .await
-            .expect("open tool session should succeed");
-        manager
-            .tool_session_send(
-                &session_id,
-                json!({"expression": {"left": 15, "operation": "Multiply", "right": 23}}),
-            )
-            .await
-            .expect("tool session send should succeed");
-        let calc_result = loop {
-            match manager
+            };
+
+            let weather_obj = weather_result.as_object().expect("Expected object");
+            assert!(weather_obj.contains_key("temperature"), "Weather result should contain temperature");
+            assert!(weather_obj.contains_key("condition"), "Weather result should contain condition");
+
+            let location = weather_obj.get("location").and_then(|g| g.as_str()).unwrap();
+            assert_eq!(location, "San Francisco, CA");
+
+            tracing::info!("✅ Weather tool executed successfully: {:?}", weather_result);
+
+            // Test calculator tool
+            let session_id = manager
+                .open_tool_session("support/calculate", json!({}))
+                .await
+                .expect("open tool session should succeed");
+            manager
+                .tool_session_send(
+                    &session_id,
+                    json!({"expression": {"left": 15, "operation": "Multiply", "right": 23}}),
+                )
+                .await
+                .expect("tool session send should succeed");
+            let calc_result = match manager
                 .tool_session_next(&session_id)
                 .await
                 .expect("tool session next should succeed")
             {
                 ToolStep::Streaming { output } => {
                     manager.tool_session_finish(&session_id).await.unwrap();
-                    break output;
+                    output
                 }
                 ToolStep::Done { output } => {
                     manager.tool_session_finish(&session_id).await.unwrap();
-                    break output.unwrap_or_else(|| json!({}));
+                    output.unwrap_or_else(|| json!({}))
                 }
                 ToolStep::Error { error } => {
                     manager.tool_session_abort(&session_id, Some(error.message)).await.unwrap();
                     panic!("Calculator tool execution failed");
                 }
-            }
-        };
-        
-        let calc_obj = calc_result.as_object().expect("Expected object");
-        let result = calc_obj.get("result").and_then(|v| v.as_f64()).unwrap();
-        assert_eq!(result, 345.0, "15 * 23 should equal 345");
-        
-        tracing::info!("✅ Calculator tool executed successfully: {:?}", calc_result);
+            };
+
+            let calc_obj = calc_result.as_object().expect("Expected object");
+            let result = calc_obj.get("result").and_then(|v| v.as_f64()).unwrap();
+            assert_eq!(result, 345.0, "15 * 23 should equal 345");
+
+            tracing::info!("✅ Calculator tool executed successfully: {:?}", calc_result);
+        }).await;
     }
     
     // Test 3: Test BAML function execution (this will call the LLM)

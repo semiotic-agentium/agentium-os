@@ -5,6 +5,7 @@
 
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_core::context;
+use baml_rt_core::effects::EffectEmitter;
 use baml_rt_tools::ToolRegistry;
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry};
 use crate::baml_collector::BamlLLMCollector;
@@ -22,6 +23,7 @@ use tokio::sync::Mutex;
 pub struct BamlExecutor {
     runtime: Arc<BamlRuntime>,
     tool_registry: Arc<Mutex<ToolRegistry>>,
+    effect_emitter: Option<Arc<dyn EffectEmitter>>,
 }
 
 impl BamlExecutor {
@@ -62,7 +64,13 @@ impl BamlExecutor {
         Ok(Self {
             runtime: Arc::new(runtime),
             tool_registry,
+            effect_emitter: None,
         })
+    }
+
+    /// Set the effect emitter (for effects-first liveness)
+    pub fn set_effect_emitter(&mut self, emitter: Arc<dyn EffectEmitter>) {
+        self.effect_emitter = Some(emitter);
     }
 
     /// Execute a BAML function using the compiled IL
@@ -95,16 +103,22 @@ impl BamlExecutor {
         let tags = None;
         let cancel_tripwire = baml_runtime::TripWire::new(None);
 
-        // Track execution start time for LLM interceptor callbacks
-        let _start_time = Instant::now();
+        // Track execution start time for effect completion (our clock, not BAML trace)
+        let start_time = Instant::now();
 
         // Create collector for LLM interception if registry is provided
-        let collector: Option<BamlLLMCollector> = interceptor_registry.as_ref().map(|registry| {
+        let mut collector: Option<BamlLLMCollector> = interceptor_registry.as_ref().map(|registry| {
             BamlLLMCollector::new(
                 registry.clone(),
                 function_name.to_string(),
             )
         });
+        
+        // Set effect emitter on collector if available
+        if let Some(ref mut coll) = collector
+            && let Some(ref emitter) = self.effect_emitter {
+                coll.set_effect_emitter(emitter.clone());
+            }
 
         // Pre-execution interception: intercept LLM calls before they're sent
         let ctx_manager = self.create_ctx_manager_for_current_scope()?;
@@ -117,18 +131,24 @@ impl BamlExecutor {
                 registry,
                 env_vars.clone(),
                 false, // stream = false for regular calls
+                self.effect_emitter.as_ref(),
+                collector.as_ref(),
             ).await {
                 Ok(InterceptorDecision::Allow) => {
                     // Allow the call to proceed
                 }
                 Ok(InterceptorDecision::Block(msg)) => {
-                    // Block the call - return error
+                    if let Some(ref collector) = collector {
+                        collector.complete_pending_effects(false, 0).await;
+                    }
                     return Err(BamlRtError::BamlRuntime(format!(
                         "LLM call blocked by interceptor: {}", msg
                     )));
                 }
                 Err(e) => {
-                    // Interceptor error - return it
+                    if let Some(ref collector) = collector {
+                        collector.complete_pending_effects(false, 0).await;
+                    }
                     return Err(e);
                 }
             }
@@ -154,6 +174,11 @@ impl BamlExecutor {
             tags,
             cancel_tripwire,
         ).await;
+
+        // Complete LLM effect on all paths (success or failure). No BAML trace dependency.
+        if let Some(ref collector) = collector {
+            collector.complete_pending_effects(result.is_ok(), start_time.elapsed().as_millis() as u64).await;
+        }
 
         let function_result = result
             .map_err(|e| BamlRtError::ExecutionFailed { source: e })?;
@@ -249,8 +274,8 @@ impl BamlExecutor {
         let context_id = context_id.ok_or_else(|| {
             tracing::warn!(
                 context_id = "none",
-                message_id = %message_id.as_ref().map(|id| id.as_str().as_ref()).unwrap_or("none"),
-                task_id = %task_id.as_ref().map(|id| id.as_str().as_ref()).unwrap_or("none"),
+                message_id = %message_id.as_ref().map(|id| id.as_str()).unwrap_or("none"),
+                task_id = %task_id.as_ref().map(|id| id.as_str()).unwrap_or("none"),
                 "missing context_id for BAML context manager"
             );
             BamlRtError::InvalidArgument(
@@ -341,11 +366,10 @@ fn extract_tool_call(result: &Value) -> Result<Option<(String, Value)>> {
         let (_, value) = obj.iter().next().ok_or_else(|| {
             BamlRtError::InvalidArgument("Expected non-empty tool object".to_string())
         })?;
-        if let Some(inner) = value.as_object() {
-            if let Some(tool_name) = inner.get("tool_name") {
+        if let Some(inner) = value.as_object()
+            && let Some(tool_name) = inner.get("tool_name") {
                 return Ok(Some(parse_tool_call_object(inner, tool_name)?));
             }
-        }
     }
 
     Ok(None)

@@ -1,14 +1,15 @@
+use std::collections::HashMap;
+use std::sync::Arc;
 use async_trait::async_trait;
 use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest};
 use baml_rt::tools::BamlTool;
 use baml_rt_tools::bundles::BundleType;
 use baml_rt::baml::BamlRuntimeManager;
-use baml_rt::{A2aAgent, A2aRequestHandler};
+use baml_rt::{A2aAgent, A2aRequestHandler, QuickJSConfig};
 use serde_json::{json, Value};
 use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
 use ts_rs::TS;
-use std::collections::HashMap;
 use test_support::common::CalculatorTool;
 
 // Test bundle for test tools
@@ -31,9 +32,9 @@ fn fixture_js_code() -> String {
         const messageId = message.messageId || "msg";
         const contextId = message.contextId || "ctx";
 
-        if (method === "message.send") {
+        if (method === "message.sendStream") {
             if (text.startsWith("long-rite:")) {
-                return {
+                __baml_a2a_yield({
                     task: {
                         id: `rite-task-${messageId}`,
                         contextId,
@@ -41,65 +42,56 @@ fn fixture_js_code() -> String {
                         status: { state: "TASK_STATE_WORKING" },
                         history: []
                     }
-                };
+                });
+                return;
             }
             if (text.startsWith("tool-call:")) {
                 const session = await openToolSession("test/add_numbers");
                 await session.send({ a: 2, b: 3 });
                 const step = await session.continue();
                 const result = step && step.output ? step.output : {};
-                return {
+                __baml_a2a_yield({
                     message: {
                         messageId: `resp-${messageId}`,
                         role: "ROLE_AGENT",
                         parts: [{ text: `sum=${result.result}` }]
                     }
-                };
+                });
+                return;
             }
             if (text.startsWith("baml-tool:")) {
                 const session = await openToolSession("support/calculate");
                 await session.send({ expression: { left: 2, operation: "Add", right: 3 } });
                 const step = await session.continue();
                 const result = step && step.output ? step.output : {};
-                return {
+                __baml_a2a_yield({
                     message: {
                         messageId: `resp-${messageId}`,
                         role: "ROLE_AGENT",
                         parts: [{ text: `sum=${result.result}` }]
                     }
-                };
+                });
+                return;
             }
-            return {
-                message: {
-                    messageId: `resp-${messageId}`,
-                    role: "ROLE_AGENT",
-                    parts: [{ text: "ok" }]
-                }
-            };
-        }
-
-        if (method === "message.sendStream") {
-            return [
-                { statusUpdate: { contextId, taskId: `rite-task-${messageId}`, status: { state: "TASK_STATE_WORKING" } } },
-                { artifactUpdate: { contextId, taskId: `rite-task-${messageId}`, artifact: { name: "rite-log", parts: [{ text: "sealed" }] } } }
-            ];
+            __baml_a2a_yield({ statusUpdate: { contextId, taskId: `rite-task-${messageId}`, status: { state: "TASK_STATE_WORKING" } } });
+            __baml_a2a_yield({ artifactUpdate: { contextId, taskId: `rite-task-${messageId}`, artifact: { name: "rite-log", parts: [{ text: "sealed" }] } } });
+            return;
         }
 
         if (method === "tasks.subscribe") {
             const taskId = params.id || `rite-task-${messageId}`;
-            return [
-                { statusUpdate: { contextId, taskId, status: { state: "TASK_STATE_WORKING" } } },
-                { artifactUpdate: { contextId, taskId, artifact: { name: "rite-log", parts: [{ text: "sealed" }] } } }
-            ];
+            __baml_a2a_yield({ statusUpdate: { contextId, taskId, status: { state: "TASK_STATE_WORKING" } } });
+            __baml_a2a_yield({ artifactUpdate: { contextId, taskId, artifact: { name: "rite-log", parts: [{ text: "sealed" }] } } });
+            return;
         }
 
-        return {
+        __baml_a2a_yield({
             message: {
                 messageId: `resp-${messageId}`,
                 role: "ROLE_AGENT",
                 parts: [{ text: "unknown" }]
             }
-        };
+        });
     };
     "#
     .to_string()
@@ -124,11 +116,33 @@ fn user_message(message_id: &str, text: &str) -> Message {
     }
 }
 
+/// Extract message text from the first stream chunk that has a message, across all responses.
+fn first_message_text_from_stream(responses: &[Value]) -> String {
+    for response in responses {
+        let Some(result) = response.get("result") else { continue };
+        let content = result.get("chunk").unwrap_or(result);
+        let Some(message) = content.get("message") else { continue };
+        let text = message
+            .get("parts")
+            .and_then(|parts| parts.as_array())
+            .and_then(|parts| parts.first())
+            .and_then(|part| part.get("text"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !text.is_empty() {
+            return text.to_string();
+        }
+    }
+    String::new()
+}
+
 async fn setup_agent() -> A2aAgent {
-    let mut manager = BamlRuntimeManager::new().unwrap();
+    let manager = BamlRuntimeManager::new().unwrap();
     A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(fixture_js_code())
+        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()
         .await
         .unwrap()
@@ -146,7 +160,7 @@ async fn test_message_send_deterministic_task() {
     };
     let request = JSONRPCRequest {
         jsonrpc: "2.0".to_string(),
-        method: "message.send".to_string(),
+        method: "message.sendStream".to_string(),
         params: Some(serde_json::to_value(params).unwrap()),
         id: Some(JSONRPCId::String("corr-3-1".to_string())),
     };
@@ -156,7 +170,8 @@ async fn test_message_send_deterministic_task() {
         .await
         .unwrap();
     let result = responses[0].get("result").cloned().unwrap_or(Value::Null);
-    let task_id = result
+    let content = result.get("chunk").cloned().unwrap_or(result);
+    let task_id = content
         .get("task")
         .and_then(|task| task.get("id"))
         .and_then(|value| value.as_str());
@@ -217,7 +232,7 @@ async fn test_tasks_subscribe_streams_incremental_updates() {
     };
     let create_request = JSONRPCRequest {
         jsonrpc: "2.0".to_string(),
-        method: "message.send".to_string(),
+        method: "message.sendStream".to_string(),
         params: Some(serde_json::to_value(params).unwrap()),
         id: Some(JSONRPCId::String("corr-3-3".to_string())),
     };
@@ -325,7 +340,7 @@ async fn test_message_send_tool_calling() {
     };
     let request = JSONRPCRequest {
         jsonrpc: "2.0".to_string(),
-        method: "message.send".to_string(),
+        method: "message.sendStream".to_string(),
         params: Some(serde_json::to_value(params).unwrap()),
         id: Some(JSONRPCId::String("corr-3-6".to_string())),
     };
@@ -334,15 +349,7 @@ async fn test_message_send_tool_calling() {
         .handle_a2a(serde_json::to_value(request).unwrap())
         .await
         .unwrap();
-    let result = responses[0].get("result").cloned().unwrap_or(Value::Null);
-    let text = result
-        .get("message")
-        .and_then(|message| message.get("parts"))
-        .and_then(|parts| parts.as_array())
-        .and_then(|parts| parts.first())
-        .and_then(|part| part.get("text"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
+    let text = first_message_text_from_stream(&responses);
     assert!(
         text.contains("sum=5"),
         "expected tool result in message text, got: {}",
@@ -368,7 +375,7 @@ async fn test_message_send_baml_tool_calling() {
     };
     let request = JSONRPCRequest {
         jsonrpc: "2.0".to_string(),
-        method: "message.send".to_string(),
+        method: "message.sendStream".to_string(),
         params: Some(serde_json::to_value(params).unwrap()),
         id: Some(JSONRPCId::String("corr-3-7".to_string())),
     };
@@ -377,15 +384,7 @@ async fn test_message_send_baml_tool_calling() {
         .handle_a2a(serde_json::to_value(request).unwrap())
         .await
         .unwrap();
-    let result = responses[0].get("result").cloned().unwrap_or(Value::Null);
-    let text = result
-        .get("message")
-        .and_then(|message| message.get("parts"))
-        .and_then(|parts| parts.as_array())
-        .and_then(|parts| parts.first())
-        .and_then(|part| part.get("text"))
-        .and_then(|value| value.as_str())
-        .unwrap_or("");
+    let text = first_message_text_from_stream(&responses);
     assert!(
         text.contains("sum=5"),
         "expected BAML tool result in message text, got: {}",

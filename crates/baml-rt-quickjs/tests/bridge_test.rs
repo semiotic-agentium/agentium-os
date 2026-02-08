@@ -2,7 +2,7 @@
 
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::quickjs_bridge::QuickJSBridge;
-use baml_rt_core::context::{self, RuntimeScope};
+use baml_rt_core::context::{self, InvocationScope, RuntimeScope};
 use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
 use baml_rt_tools::BamlTool;
 use baml_rt_tools::bundles::BundleType;
@@ -46,7 +46,7 @@ async fn test_quickjs_evaluate_simple_code() {
     let mut bridge = QuickJSBridge::new(baml_manager, agent_id).await.unwrap();
     
     // Execute a simple JavaScript expression
-    let result = bridge.evaluate("2 + 2").await;
+    let result = bridge.evaluate(None,"2 + 2").await;
     
     // The result might be a string representation or actual JSON
     // For now, just check that it doesn't error
@@ -62,7 +62,7 @@ async fn test_quickjs_evaluate_json() {
     let mut bridge = QuickJSBridge::new(baml_manager, agent_id).await.unwrap();
     
     // Execute code that returns a JSON object
-    let result = bridge.evaluate("({answer: 42})").await;
+    let result = bridge.evaluate(None,"({answer: 42})").await;
     
     assert!(result.is_ok(), "Should be able to execute JavaScript and get JSON");
 }
@@ -164,6 +164,7 @@ async fn test_quickjs_concurrent_stream_scope_propagation() {
 
     bridge
         .evaluate(
+            None,
             r#"
             globalThis.js_scope_stream = async function() {
                 const results = await __baml_stream(
@@ -199,11 +200,12 @@ async fn test_quickjs_concurrent_stream_scope_propagation() {
                     let task_id = TaskId::from_external(ExternalId::new(format!("task-qjs-stream-{idx}")));
                     let scope =
                         RuntimeScope::new(context_id.clone(), agent_id, Some(message_id.clone()), Some(task_id.clone()));
+                    let invocation_scope = InvocationScope::new(scope.clone());
 
                     let result = context::with_scope(scope, async move {
                         let mut bridge = bridge.lock().await;
                         bridge
-                            .invoke_js_function("js_scope_stream", json!({}))
+                            .invoke_js_function(&invocation_scope, "js_scope_stream", json!({}))
                             .await
                     })
                     .await

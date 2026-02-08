@@ -267,7 +267,7 @@ async fn test_register_js_tool() {
         }))()
     "#;
 
-    let result = bridge.evaluate(check_code).await.unwrap();
+    let result = bridge.evaluate(None, check_code).await.unwrap();
     let obj = result.as_object().unwrap();
     assert!(
         obj.get("isAsync").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -344,6 +344,7 @@ async fn test_js_tool_not_available_in_rust() {
 }
 
 #[tokio::test]
+#[allow(unnameable_test_items)]
 async fn test_js_tool_name_conflict_with_rust_tool() {
     tracing::info!("Test: JavaScript tool name conflict detection");
     
