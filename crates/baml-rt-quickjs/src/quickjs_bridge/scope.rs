@@ -34,12 +34,12 @@ pub(crate) fn resolve_scope_from_token_arg(
 ) -> std::result::Result<(RuntimeScope, usize), quickjs_runtime::jsutils::JsError> {
     if !args.is_empty()
         && let Some(token_js) = args.first()
-            && token_js.is_string()
+        && token_js.is_string()
     {
         let s = token_js.get_str().to_string();
         if !s.is_empty() {
             if let Ok(guard) = map.lock()
-                && let Some(scope) = guard.get(&InvocationToken(s)) 
+                && let Some(scope) = guard.get(&InvocationToken(s))
             {
                 return Ok((scope.clone(), 1));
             }
@@ -75,18 +75,39 @@ pub(crate) async fn run_eval_with_scope(
     let scope_runtime = scope.as_scope().clone();
     runtime
         .loop_realm(None, move |_rt, realm| {
-        WORKER_INVOCATION_SCOPE.with(|cell| {
-            let prev = cell.replace(Some(scope_runtime));
-            let res = realm.eval(script);
-            let out = match res {
-                Ok(jsvr) => realm.to_js_value_facade(&jsvr),
-                Err(e) => Err(e),
-            };
-            if clear_after {
-                cell.replace(prev);
-            }
-            out
+            WORKER_INVOCATION_SCOPE.with(|cell| {
+                let prev = cell.replace(Some(scope_runtime));
+                let res = realm.eval(script);
+                let out = match res {
+                    Ok(jsvr) => realm.to_js_value_facade(&jsvr),
+                    Err(e) => Err(e),
+                };
+                if clear_after {
+                    cell.replace(prev);
+                }
+                out
+            })
         })
-    })
-    .await
+        .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::collections::HashSet;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(8))]
+
+        #[test]
+        fn prop_invocation_tokens_unique(n in 1u32..64u32) {
+            let tokens: HashSet<_> = (0..n).map(|_| next_invocation_token()).collect();
+            assert_eq!(
+                tokens.len(),
+                n as usize,
+                "next_invocation_token must yield distinct tokens"
+            );
+        }
+    }
 }

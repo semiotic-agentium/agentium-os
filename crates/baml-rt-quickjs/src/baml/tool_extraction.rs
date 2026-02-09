@@ -199,14 +199,13 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<Vec<Too
             }
             "send" => {
                 let input = match step_type {
-                    Some("SupportCalculateSendStep") | Some(_) => step_obj
-                        .get("input")
-                        .cloned()
-                        .ok_or_else(|| {
+                    Some("SupportCalculateSendStep") | Some(_) => {
+                        step_obj.get("input").cloned().ok_or_else(|| {
                             BamlRtError::InvalidArgument(
                                 "Send step missing required 'input' field".to_string(),
                             )
-                        })?,
+                        })?
+                    }
                     _ => step_obj.get("input").cloned().ok_or_else(|| {
                         BamlRtError::InvalidArgument(
                             "Send step missing required 'input' field".to_string(),
@@ -238,5 +237,106 @@ pub(crate) fn normalize_plan_input(value: Value) -> Result<Value> {
         Value::String(raw) => serde_json::from_str(&raw)
             .map_err(|e| BamlRtError::InvalidArgument(format!("Invalid plan input JSON: {}", e))),
         other => Ok(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// Valid tool-call object: has __type, no tool_name. Optional extra keys (reserved excluded).
+    fn valid_tool_call_object() -> impl Strategy<Value = Value> {
+        let extra_keys = ["a", "b", "x", "reason", "input"];
+        let extra = prop::collection::vec(
+            (0..extra_keys.len()).prop_map(move |i| extra_keys[i].to_string()),
+            0..4,
+        )
+        .prop_map(|keys| {
+            let mut m = serde_json::Map::new();
+            for (i, k) in keys.into_iter().enumerate() {
+                m.insert(k, Value::Number(serde_json::Number::from(i as i64)));
+            }
+            m
+        });
+        extra.prop_map(|mut m| {
+            m.insert("__type".to_string(), Value::String("SomeType".to_string()));
+            Value::Object(m)
+        })
+    }
+
+    /// Single-key wrapper: { "ToolName": { __type, ... } } with no tool_name.
+    fn valid_single_key_wrapper() -> impl Strategy<Value = Value> {
+        valid_tool_call_object().prop_map(|inner| {
+            let mut outer = serde_json::Map::new();
+            outer.insert("T".to_string(), inner);
+            Value::Object(outer)
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+
+        /// Invariant: When extraction returns Some(ToolCall), args never contain "tool_name".
+        #[test]
+        fn prop_extract_tool_call_args_never_contain_tool_name(v in prop_oneof![valid_tool_call_object(), valid_single_key_wrapper()]) {
+            let res = extract_tool_call(&v).unwrap();
+            if let Some(call) = res {
+                let obj = call.args.as_object();
+                assert!(
+                    obj.map_or(true, |m| !m.contains_key("tool_name")),
+                    "extract_tool_call must not expose tool_name in args"
+                );
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        /// Invariant: normalize_plan_input(Value::String(json)) == parse(json) for valid JSON.
+        #[test]
+        fn prop_normalize_plan_input_string_roundtrip(v in prop::collection::vec(any::<i64>(), 0..8)) {
+            let value = Value::Array(
+                v.into_iter()
+                    .map(|n| Value::Number(serde_json::Number::from(n)))
+                    .collect::<Vec<_>>(),
+            );
+            let json = serde_json::to_string(&value).unwrap();
+            let normalized = normalize_plan_input(Value::String(json)).unwrap();
+            assert_eq!(normalized, value, "normalize_plan_input roundtrip");
+        }
+    }
+
+    /// Steps array with valid op values, no tool_name.
+    fn valid_steps_array() -> impl Strategy<Value = Value> {
+        let op_strategy = prop_oneof![Just("open"), Just("next"), Just("finish"), Just("abort"),];
+        prop::collection::vec(
+            op_strategy.prop_map(|op| {
+                let mut step = serde_json::Map::new();
+                step.insert("op".to_string(), Value::String(op.to_string()));
+                step.insert("__type".to_string(), Value::String("Step".to_string()));
+                Value::Object(step)
+            }),
+            1..6,
+        )
+        .prop_map(|steps| {
+            let mut obj = serde_json::Map::new();
+            obj.insert("steps".to_string(), Value::Array(steps));
+            Value::Object(obj)
+        })
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        /// Invariant: Extracted plan steps have valid op and no tool_name in payload.
+        #[test]
+        fn prop_extract_plan_steps_valid(v in valid_steps_array()) {
+            let steps = extract_tool_session_plan(&v).unwrap().expect("steps");
+            assert!(!steps.is_empty());
+            // All steps were parsed; type system enforces ToolSessionOp variants (no tool_name).
+            assert_eq!(steps.len(), v.get("steps").and_then(|a| a.as_array()).map(|a| a.len()).unwrap_or(0));
+        }
     }
 }

@@ -1,19 +1,19 @@
 //! Tests for QuickJS bridge integration
 
+use async_trait::async_trait;
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::quickjs_bridge::QuickJSBridge;
 use baml_rt_core::context::{self, InvocationScope, RuntimeScope};
 use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
 use baml_rt_tools::BamlTool;
 use baml_rt_tools::bundles::BundleType;
-use serde_json::{json, Value};
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
-use ts_rs::TS;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task::LocalSet;
+use ts_rs::TS;
 
 // Test bundle for test tools
 struct Test;
@@ -32,45 +32,39 @@ async fn test_quickjs_bridge_creation() {
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000010").unwrap());
     let bridge = QuickJSBridge::new(baml_manager, agent_id);
-    
+
     let bridge = bridge.await;
     assert!(bridge.is_ok(), "Should be able to create QuickJS bridge");
 }
 
+/// Property-style: for each of several expressions, evaluate returns Ok.
 #[tokio::test]
-async fn test_quickjs_evaluate_simple_code() {
-    // Test that we can execute simple JavaScript code
+async fn test_quickjs_evaluate_expressions() {
     let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::new().unwrap()));
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000011").unwrap());
     let mut bridge = QuickJSBridge::new(baml_manager, agent_id).await.unwrap();
-    
-    // Execute a simple JavaScript expression
-    let result = bridge.evaluate(None,"2 + 2").await;
-    
-    // The result might be a string representation or actual JSON
-    // For now, just check that it doesn't error
-    assert!(result.is_ok(), "Should be able to execute JavaScript code");
-}
 
-#[tokio::test]
-async fn test_quickjs_evaluate_json() {
-    // Test JSON stringify/parse
-    let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::new().unwrap()));
-    let agent_id =
-        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000012").unwrap());
-    let mut bridge = QuickJSBridge::new(baml_manager, agent_id).await.unwrap();
-    
-    // Execute code that returns a JSON object
-    let result = bridge.evaluate(None,"({answer: 42})").await;
-    
-    assert!(result.is_ok(), "Should be able to execute JavaScript and get JSON");
+    let expressions = ["2 + 2", "({answer: 42})", "null", "1"];
+    for (i, code) in expressions.iter().enumerate() {
+        let result = bridge.evaluate(None, code).await;
+        assert!(
+            result.is_ok(),
+            "expression[{}] {:?} should evaluate: {:?}",
+            i,
+            code,
+            result.err()
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_quickjs_concurrent_scope_propagation() {
     let mut manager = BamlRuntimeManager::new().unwrap();
-    manager.register_tool(ScopeEchoTool).await.expect("register tool");
+    manager
+        .register_tool(ScopeEchoTool)
+        .await
+        .expect("register tool");
     let manager = Arc::new(Mutex::new(manager));
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000013").unwrap());
@@ -109,10 +103,15 @@ async fn test_quickjs_concurrent_scope_propagation() {
                     let agent_id = AgentId::from_uuid(
                         UuidId::parse_str("00000000-0000-0000-0000-000000000003").unwrap(),
                     );
-                    let message_id = MessageId::from_external(ExternalId::new(format!("msg-qjs-{idx}")));
+                    let message_id =
+                        MessageId::from_external(ExternalId::new(format!("msg-qjs-{idx}")));
                     let task_id = TaskId::from_external(ExternalId::new(format!("task-qjs-{idx}")));
-                    let scope =
-                        RuntimeScope::new(context_id.clone(), agent_id, Some(message_id.clone()), Some(task_id.clone()));
+                    let scope = RuntimeScope::new(
+                        context_id.clone(),
+                        agent_id,
+                        Some(message_id.clone()),
+                        Some(task_id.clone()),
+                    );
 
                     let result = context::with_scope(scope, async move {
                         let mut bridge = bridge.lock().await;
@@ -123,7 +122,10 @@ async fn test_quickjs_concurrent_scope_propagation() {
                     .await
                     .expect("invoke js tool");
 
-                    results.lock().await.push((context_id, message_id, task_id, result));
+                    results
+                        .lock()
+                        .await
+                        .push((context_id, message_id, task_id, result));
                 }));
             }
 
@@ -195,10 +197,16 @@ async fn test_quickjs_concurrent_stream_scope_propagation() {
                     let agent_id = AgentId::from_uuid(
                         UuidId::parse_str("00000000-0000-0000-0000-000000000004").unwrap(),
                     );
-                    let message_id = MessageId::from_external(ExternalId::new(format!("msg-qjs-stream-{idx}")));
-                    let task_id = TaskId::from_external(ExternalId::new(format!("task-qjs-stream-{idx}")));
-                    let scope =
-                        RuntimeScope::new(context_id.clone(), agent_id, Some(message_id.clone()), Some(task_id.clone()));
+                    let message_id =
+                        MessageId::from_external(ExternalId::new(format!("msg-qjs-stream-{idx}")));
+                    let task_id =
+                        TaskId::from_external(ExternalId::new(format!("task-qjs-stream-{idx}")));
+                    let scope = RuntimeScope::new(
+                        context_id.clone(),
+                        agent_id,
+                        Some(message_id.clone()),
+                        Some(task_id.clone()),
+                    );
                     let invocation_scope = InvocationScope::new(scope.clone());
 
                     let result = context::with_scope(scope, async move {
@@ -210,7 +218,10 @@ async fn test_quickjs_concurrent_stream_scope_propagation() {
                     .await
                     .expect("invoke js stream");
 
-                    results.lock().await.push((context_id, message_id, task_id, result));
+                    results
+                        .lock()
+                        .await
+                        .push((context_id, message_id, task_id, result));
                 }));
             }
 
@@ -321,56 +332,53 @@ async fn test_tool_session_plan_with_initial_input() {
     tracing::info!("✅ ToolSessionPlan with initial_input executed successfully");
 }
 
-/// Tool execution without an invocation scope must fail (no implicit scope creation).
+/// Operations without an invocation scope must fail (no implicit scope creation).
+/// Property-style: for execute_tool, open_tool_session, invoke_function, each returns Err with scope message.
 #[tokio::test]
-async fn test_execute_tool_without_scope_fails() {
+async fn test_operations_without_scope_fail() {
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.register_tool(ScopeEchoTool).await.unwrap();
 
+    // execute_tool without scope
     let result = manager.execute_tool("test/scope_echo", json!({})).await;
     assert!(result.is_err(), "execute_tool without scope should fail");
-    let err = result.unwrap_err();
-    let msg = err.to_string();
+    let msg = result.unwrap_err().to_string();
     assert!(
         msg.contains("No invocation scope") || msg.contains("invocation scope"),
-        "error should mention missing scope: {}",
+        "execute_tool error should mention missing scope: {}",
         msg
     );
-}
 
-/// open_tool_session without an invocation scope must fail.
-#[tokio::test]
-async fn test_open_tool_session_without_scope_fails() {
-    let mut manager = BamlRuntimeManager::new().unwrap();
-    manager.register_tool(ScopeEchoTool).await.unwrap();
-
-    let result = manager.open_tool_session("test/scope_echo", json!({})).await;
-    assert!(result.is_err(), "open_tool_session without scope should fail");
-    let err = result.unwrap_err();
-    let msg = err.to_string();
+    // open_tool_session without scope
+    let result = manager
+        .open_tool_session("test/scope_echo", json!({}))
+        .await;
+    assert!(
+        result.is_err(),
+        "open_tool_session without scope should fail"
+    );
+    let msg = result.unwrap_err().to_string();
     assert!(
         msg.contains("No invocation scope") || msg.contains("invocation scope"),
-        "error should mention missing scope: {}",
+        "open_tool_session error should mention missing scope: {}",
         msg
     );
-}
 
-/// invoke_function without an invocation scope must fail (token cannot be set).
-#[tokio::test]
-async fn test_invoke_function_without_scope_fails() {
+    // invoke_function without scope (requires bridge)
     let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::new().unwrap()));
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000030").unwrap());
     let mut bridge = QuickJSBridge::new(baml_manager, agent_id).await.unwrap();
-    bridge.register_baml_functions().await.expect("register helpers");
-
+    bridge
+        .register_baml_functions()
+        .await
+        .expect("register helpers");
     let result = bridge.invoke_function("SomeFunction", json!({})).await;
     assert!(result.is_err(), "invoke_function without scope should fail");
-    let err = result.unwrap_err();
-    let msg = err.to_string();
+    let msg = result.unwrap_err().to_string();
     assert!(
         msg.contains("No invocation scope") || msg.contains("invocation scope"),
-        "error should mention missing scope: {}",
+        "invoke_function error should mention missing scope: {}",
         msg
     );
 }
