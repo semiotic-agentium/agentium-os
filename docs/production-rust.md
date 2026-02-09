@@ -1342,11 +1342,58 @@ tracing::info!(
 
 ---
 
+## Lint and Hygiene
+
+### ❌ Anti-Pattern: `#[allow(dead_code)]` Without Justification
+
+**In production Rust, `#[allow(dead_code)]` is always a smell.** It suppresses the compiler’s signal that something is unused. Prefer removing the code or using it; only allow when the use is explicit and documented.
+
+**Bad:**
+
+```rust
+#[allow(dead_code)]
+pub struct Config {
+    pub retries: u32,
+    legacy_timeout_ms: u64,  // ❌ Unused; allow hides it
+}
+
+#[allow(dead_code)]
+fn helper() { }  // ❌ Never called; delete or use it
+```
+
+**Good:**
+
+```rust
+// ✅ No allow: remove unused code or use it
+pub struct Config {
+    pub retries: u32,
+    pub timeout_ms: u64,  // Used at call sites
+}
+
+// ✅ If code is intentionally reserved for future/protocol use, document why
+/// Reserved for protocol extensibility (e.g. cancellation reason). In production,
+/// allow(dead_code) is a smell; prefer removing or using the code.
+#[allow(dead_code)]
+pub enum ToolSessionOp {
+    Open { reason: Option<String>, ... },
+    ...
+}
+```
+
+**Rules:**
+
+- Prefer **removing** unused code or **using** it.
+- If you keep `#[allow(dead_code)]`, add a **comment** that in production this is a smell and why the code is reserved (e.g. protocol field, future use).
+- Revisit allows periodically; remove when the code is used or deleted.
+
+---
+
 ## Checklist: Production-Ready Code
 
 Before shipping, verify:
 
 - [ ] **No unwrap/expect** in production paths (only in tests or with justification)
+- [ ] **No `#[allow(dead_code)]`** without a comment that it’s a smell and why the code is reserved
 - [ ] **Strong types** at API boundaries (no String for amounts/IDs)
 - [ ] **Invalid states unrepresentable** (use discriminated unions for structure/deps)
 - [ ] **Proper error handling** with context (which field/operation failed)

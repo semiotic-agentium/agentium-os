@@ -20,6 +20,19 @@ type InvocationScopeMap = Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>>;
 
 const EFFECT_CHECK_INTERVAL: u32 = 100;
 
+/// Parameters for promise resolution polling (keeps `poll_promise_until_result` under clippy's arg limit).
+pub(crate) struct PollPromiseParams<'a> {
+    pub runtime: &'a QuickJsRuntimeFacade,
+    pub eval_results_by_token: &'a EvalResultMap,
+    pub eval_token: &'a InvocationToken,
+    pub token_to_remove: Option<&'a InvocationToken>,
+    pub invocation_scope_by_token: &'a InvocationScopeMap,
+    pub scope: Option<&'a InvocationScope>,
+    pub effect_liveness: Option<Arc<dyn EffectLiveness>>,
+    pub idle_timeout_ms: u64,
+    pub max_attempts_ms: u64,
+}
+
 /// Poll until `__eval_result` is set for the given token or timeout.
 ///
 /// Runs `runtime.run_pending_jobs_if_any()` each iteration so promise
@@ -27,17 +40,19 @@ const EFFECT_CHECK_INTERVAL: u32 = 100;
 /// effects are in-flight, short idle timeout otherwise. When the loop
 /// exits (success or timeout), removes the invocation token from
 /// `invocation_scope_by_token` if `token_to_remove` is `Some`.
-pub(crate) async fn poll_promise_until_result(
-    runtime: &QuickJsRuntimeFacade,
-    eval_results_by_token: &EvalResultMap,
-    eval_token: &InvocationToken,
-    token_to_remove: Option<&InvocationToken>,
-    invocation_scope_by_token: &InvocationScopeMap,
-    scope: Option<&InvocationScope>,
-    effect_liveness: Option<Arc<dyn EffectLiveness>>,
-    idle_timeout_ms: u64,
-    max_attempts_ms: u64,
-) -> Result<String> {
+pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> Result<String> {
+    let PollPromiseParams {
+        runtime,
+        eval_results_by_token,
+        eval_token,
+        token_to_remove,
+        invocation_scope_by_token,
+        scope,
+        effect_liveness,
+        idle_timeout_ms,
+        max_attempts_ms,
+    } = params;
+
     let context_id = scope
         .map(|s| s.context_id.clone())
         .or_else(baml_rt_core::context::current_context_id);
@@ -73,10 +88,10 @@ pub(crate) async fn poll_promise_until_result(
         };
 
         if let Some(result_str) = result_str {
-            if let Some(t) = token_to_remove {
-                if let Ok(mut map) = invocation_scope_by_token.lock() {
-                    map.remove(t);
-                }
+            if let Some(t) = token_to_remove
+                && let Ok(mut map) = invocation_scope_by_token.lock()
+            {
+                map.remove(t);
             }
             {
                 let mut guard = eval_results_by_token
@@ -88,6 +103,8 @@ pub(crate) async fn poll_promise_until_result(
             return Ok(result_str);
         }
 
+        // Re-check effect-gated timeout periodically (every EFFECT_CHECK_INTERVAL attempts).
+        #[allow(clippy::manual_is_multiple_of)] // std has no is_multiple_of for u32
         if attempts > 0 && attempts % EFFECT_CHECK_INTERVAL == 0 {
             let new_timeout = poller.timeout_attempts().await;
             timeout_attempts = timeout_attempts.max(new_timeout);
@@ -96,10 +113,10 @@ pub(crate) async fn poll_promise_until_result(
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
         attempts += 1;
         if attempts >= timeout_attempts {
-            if let Some(t) = token_to_remove {
-                if let Ok(mut map) = invocation_scope_by_token.lock() {
-                    map.remove(t);
-                }
+            if let Some(t) = token_to_remove
+                && let Ok(mut map) = invocation_scope_by_token.lock()
+            {
+                map.remove(t);
             }
             {
                 let mut guard = eval_results_by_token

@@ -17,8 +17,8 @@ pub use tool_fsm::{
 };
 pub use tool_schema::{ToolType, json_schema_value, ts_decl, ts_name};
 pub use tools::{
-    BamlTool, BundleName, LocalToolName, ToolAccessPolicy, ToolBundle, ToolBundleMetadata,
-    ToolCapability, ToolExecutor, ToolFunctionMetadataExport, ToolHandler, ToolMetadataBuilder,
-    ToolName, ToolOrigin, ToolRegistry, ToolSecretRequirement, ToolSessionAdvance,
-    ToolSessionHandle, ToolTypeSpec, TypeBasedMetadataBuilder, parse_tool_name_and_class,
+    BamlTool, BundleName, LocalToolName, ToolBundle, ToolBundleMetadata, ToolCapability,
+    ToolExecutor, ToolFunctionMetadataExport, ToolHandler, ToolMetadataBuilder, ToolName,
+    ToolOrigin, ToolRegistry, ToolSecretRequirement, ToolSessionAdvance, ToolSessionHandle,
+    ToolTypeSpec, TypeBasedMetadataBuilder, parse_tool_name_and_class,
 };

@@ -321,16 +321,6 @@ pub struct ListTasksResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CancelTaskRequest {
-    pub id: TaskId,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tenant: Option<String>,
-    #[serde(flatten)]
-    pub extra: HashMap<String, Value>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SubscribeToTaskRequest {
     pub id: TaskId,
     #[serde(skip_serializing_if = "Option::is_none")]

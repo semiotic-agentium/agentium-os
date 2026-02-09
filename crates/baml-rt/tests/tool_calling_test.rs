@@ -1,4 +1,12 @@
 //! LLM and BAML tool calling tests.
+//!
+//! **Purpose:** Exercise tool registration, execution from Rust/JS, and the authoritative
+//! E2E vertical slice (fixture-based single-request and concurrent tool calling).
+//!
+//! **E2E authority (per testing-handbook):** Single-request tool E2E is
+//! `test_e2e_voidship_baml_tool_calling`; concurrent E2E is
+//! `test_e2e_voidship_baml_tool_calling_concurrent`. Overlapping union/LLM
+//! E2E tests have been retired in favour of this vertical slice.
 
 use async_trait::async_trait;
 use baml_rt::tools::BamlTool;
@@ -24,15 +32,15 @@ use ts_rs::TS;
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::ids::{AgentId, UuidId};
 use test_support::common::{
-    CalculatorTool, WeatherTool, agent_fixture, assert_tool_registered_in_js, require_api_key,
-    setup_baml_runtime_default, setup_baml_runtime_from_fixture, setup_bridge,
+    CalculatorTool, WeatherTool, agent_fixture, assert_tool_registered_in_js,
+    ensure_fixture_runtime_types, require_api_key, setup_baml_runtime_default,
+    setup_baml_runtime_from_fixture, setup_bridge,
 };
 
+/// **Purpose:** Verify tool registration and direct execution from Rust (execute_tool_with_scope,
+/// list_tools) under an invocation scope; no LLM call required.
 #[tokio::test]
 async fn test_llm_tool_calling_rust() {
-    // This test verifies tool registration and execution
-    // API key is optional - test focuses on tool registration infrastructure
-
     // Set up BAML runtime
     let baml_manager = setup_baml_runtime_default();
     {
@@ -95,10 +103,11 @@ async fn test_llm_tool_calling_rust() {
     // This test verifies the foundation is in place.
 }
 
+/// **Purpose:** Verify a BAML tool registered via the trait is visible in the QuickJS bridge
+/// (assert_tool_registered_in_js) and executable from Rust with scope; no LLM call.
 #[tokio::test]
 #[allow(unnameable_test_items)]
 async fn test_llm_tool_calling_js() {
-    // Set up BAML runtime
     let baml_manager = setup_baml_runtime_default();
 
     // Register a tool using the trait
@@ -169,105 +178,14 @@ async fn test_llm_tool_calling_js() {
     }
 }
 
-#[tokio::test]
-async fn test_e2e_baml_union_tool_calling() {
-    let _ = require_api_key();
-
-    tracing::info!("Starting E2E test: BAML union-based tool calling with Rust execution");
-
-    // Set up BAML runtime
-    let baml_manager = setup_baml_runtime_default();
-    {
-        let mut manager = baml_manager.lock().await;
-        manager.register_tool(WeatherTool).await.unwrap();
-        manager.register_tool(CalculatorTool).await.unwrap();
-    }
-
-    // Test 1: Weather tool via BAML union
-    {
-        let manager = baml_manager.lock().await;
-
-        tracing::info!("Testing weather tool via BAML ChooseTool function");
-        let result = manager
-            .invoke_function(
-                "ChooseTool",
-                json!({"user_message": "What's the weather in San Francisco?"}),
-            )
-            .await;
-
-        match result {
-            Ok(tool_choice) => {
-                tracing::info!("✅ BAML function returned tool choice: {:?}", tool_choice);
-
-                // Execute the chosen tool
-                let tool_result = manager
-                    .execute_tool_from_baml_result(tool_choice)
-                    .await
-                    .expect("Should execute tool from BAML result");
-
-                tracing::info!("✅ Tool executed successfully: {:?}", tool_result);
-                assert!(
-                    tool_result.as_object().is_some(),
-                    "Tool result should be an object"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "BAML function call failed (may need tool calling integration): {}",
-                    e
-                );
-            }
-        }
-    }
-
-    // Test 2: Calculator tool via BAML union
-    {
-        let manager = baml_manager.lock().await;
-
-        tracing::info!("Testing calculator tool via BAML ChooseTool function");
-        let result = manager
-            .invoke_function(
-                "ChooseTool",
-                json!({"user_message": "Calculate 15 times 23"}),
-            )
-            .await;
-
-        match result {
-            Ok(tool_choice) => {
-                tracing::info!("✅ BAML function returned tool choice: {:?}", tool_choice);
-
-                // Execute the chosen tool
-                let tool_result = manager
-                    .execute_tool_from_baml_result(tool_choice)
-                    .await
-                    .expect("Should execute tool from BAML result");
-
-                tracing::info!("✅ Tool executed successfully: {:?}", tool_result);
-
-                // Verify calculator result
-                if let Some(obj) = tool_result.as_object()
-                    && let Some(result) = obj.get("result").and_then(|v| v.as_f64())
-                {
-                    assert_eq!(result, 345.0, "15 * 23 should equal 345");
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "BAML function call failed (may need tool calling integration): {}",
-                    e
-                );
-            }
-        }
-    }
-
-    tracing::info!("🎉 E2E BAML union tool calling test completed!");
-}
-
+/// **Purpose:** Authoritative single-request E2E: load fixture `stream-baml-tool`, invoke
+/// `ChooseCalcTool`, execute the chosen tool, assert result (2+3=5). Requires API key for LLM.
 #[tokio::test]
 async fn test_e2e_voidship_baml_tool_calling() {
     let _ = require_api_key();
 
-    let baml_manager = setup_baml_runtime_from_fixture("voidship-rites");
+    ensure_fixture_runtime_types();
+    let baml_manager = setup_baml_runtime_from_fixture("stream-baml-tool");
     {
         let mut manager = baml_manager.lock().await;
         manager.register_tool(CalculatorTool).await.unwrap();
@@ -277,7 +195,7 @@ async fn test_e2e_voidship_baml_tool_calling() {
         let manager = baml_manager.lock().await;
         manager
             .invoke_function(
-                "ChooseRiteTool",
+                "ChooseCalcTool",
                 json!({"user_message": "Perform the rite of sums."}),
             )
             .await
@@ -302,6 +220,9 @@ async fn test_e2e_voidship_baml_tool_calling() {
     }
 }
 
+/// **Purpose:** Authoritative concurrent E2E: four requests with distinct agent IDs run
+/// concurrently; each invokes ChooseCalcTool and executes the tool; assert each result
+/// matches its request (no cross-contamination of scope/results).
 #[tokio::test]
 async fn test_e2e_voidship_baml_tool_calling_concurrent() {
     unsafe {
@@ -309,7 +230,8 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
     }
     let _ = require_api_key();
 
-    let agent_dir = agent_fixture("voidship-rites");
+    ensure_fixture_runtime_types();
+    let agent_dir = agent_fixture("stream-baml-tool");
     let mut manager = baml_rt::baml::BamlRuntimeManager::new().unwrap();
     manager.load_schema(agent_dir.to_str().unwrap()).unwrap();
     manager.register_tool(CalculatorTool).await.unwrap();
@@ -333,14 +255,17 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
             let scope = InvocationScope::standalone(agent_id);
             barrier.wait().await;
 
+            let left = (idx as f64) + 2.0;
+            let right = (idx as f64) + 3.0;
+            let expected = left + right;
             let result = context::with_scope(scope.as_scope().clone(), async {
                 let tool_choice = manager
                     .invoke_function(
-                        "ChooseRiteTool",
-                        json!({"user_message": format!("Perform the rite of sums. (req {})", idx)}),
+                        "ChooseCalcTool",
+                        json!({"user_message": format!("Compute {} + {} (req {})", left, right, idx)}),
                     )
                     .await?;
-                println!("ChooseRiteTool result (req {}): {:?}", idx, tool_choice);
+                println!("ChooseCalcTool result (req {}): {:?}", idx, tool_choice);
                 manager
                     .execute_tool_from_baml_result_or_value(tool_choice)
                     .await
@@ -351,10 +276,10 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
                 .get("result")
                 .and_then(|v| v.as_f64())
                 .unwrap_or_default();
-            if value != 5.0 {
+            if (value - expected).abs() > f64::EPSILON {
                 return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
-                    "Expected 2 + 3 = 5, got {}",
-                    value
+                    "Expected {} + {} = {}, got {}",
+                    left, right, expected, value
                 )));
             }
             Ok::<(), baml_rt_core::BamlRtError>(())

@@ -26,74 +26,36 @@ impl BundleType for Test {
 
 fn fixture_js_code() -> String {
     r#"
-    globalThis.handle_a2a_request = async function(request) {
-        const method = request?.method;
-        const params = request?.params || {};
-        const message = params.message || {};
-        const text = message.parts?.[0]?.text || "";
-        const messageId = message.messageId || "msg";
-        const contextId = message.contextId || "ctx";
+    globalThis.onChatMessage = async function(message) {
+        const text = message?.parts?.[0]?.text || "";
 
-        if (method === "message.sendStream") {
-            if (text.startsWith("long-rite:")) {
-                __baml_a2a_yield({
-                    task: {
-                        id: `rite-task-${messageId}`,
-                        contextId,
-                        metadata: { agent: "test-agent" },
-                        status: { state: "TASK_STATE_WORKING" },
-                        history: []
-                    }
-                });
-                return;
-            }
-            if (text.startsWith("tool-call:")) {
-                const session = await openToolSession("test/add_numbers", __baml_invocation_token);
-                await session.send({ a: 2, b: 3 });
-                const step = await session.continue();
-                const result = step && step.output ? step.output : {};
-                __baml_a2a_yield({
-                    message: {
-                        messageId: `resp-${messageId}`,
-                        role: "ROLE_AGENT",
-                        parts: [{ text: `sum=${result.result}` }]
-                    }
-                });
-                return;
-            }
-            if (text.startsWith("baml-tool:")) {
-                const session = await openToolSession("support/calculate", __baml_invocation_token);
-                await session.send({ expression: { left: 2, operation: "Add", right: 3 } });
-                const step = await session.continue();
-                const result = step && step.output ? step.output : {};
-                __baml_a2a_yield({
-                    message: {
-                        messageId: `resp-${messageId}`,
-                        role: "ROLE_AGENT",
-                        parts: [{ text: `sum=${result.result}` }]
-                    }
-                });
-                return;
-            }
-            __baml_a2a_yield({ statusUpdate: { contextId, taskId: `rite-task-${messageId}`, status: { state: "TASK_STATE_WORKING" } } });
-            __baml_a2a_yield({ artifactUpdate: { contextId, taskId: `rite-task-${messageId}`, artifact: { name: "rite-log", parts: [{ text: "sealed" }] } } });
+        if (text.startsWith("long-rite:")) {
+            __baml_chat_yield({
+                task: {
+                    metadata: { agent: "test-agent" },
+                    status: { state: "TASK_STATE_WORKING" }
+                }
+            });
             return;
         }
-
-        if (method === "tasks.subscribe") {
-            const taskId = params.id || `rite-task-${messageId}`;
-            __baml_a2a_yield({ statusUpdate: { contextId, taskId, status: { state: "TASK_STATE_WORKING" } } });
-            __baml_a2a_yield({ artifactUpdate: { contextId, taskId, artifact: { name: "rite-log", parts: [{ text: "sealed" }] } } });
+        if (text.startsWith("tool-call:")) {
+            const session = await openToolSession("test/add_numbers", __baml_invocation_token);
+            await session.send({ a: 2, b: 3 });
+            const step = await session.continue();
+            const result = step && step.output ? step.output : {};
+            __baml_chat_yield({ message: { parts: [{ text: `sum=${result.result}` }] } });
             return;
         }
-
-        __baml_a2a_yield({
-            message: {
-                messageId: `resp-${messageId}`,
-                role: "ROLE_AGENT",
-                parts: [{ text: "unknown" }]
-            }
-        });
+        if (text.startsWith("baml-tool:")) {
+            const session = await openToolSession("support/calculate", __baml_invocation_token);
+            await session.send({ expression: { left: 2, operation: "Add", right: 3 } });
+            const step = await session.continue();
+            const result = step && step.output ? step.output : {};
+            __baml_chat_yield({ message: { parts: [{ text: `sum=${result.result}` }] } });
+            return;
+        }
+        __baml_chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
+        __baml_chat_yield({ artifactUpdate: { artifact: { name: "rite-log", parts: [{ text: "sealed" }] } } });
     };
     "#
     .to_string()

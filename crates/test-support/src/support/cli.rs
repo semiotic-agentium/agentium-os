@@ -35,4 +35,17 @@ impl CliHarness {
             .arg("--");
         command
     }
+
+    pub fn regen_fixtures_command(&self) -> Command {
+        let mut command = Command::new("cargo");
+        command
+            .current_dir(&self.cargo_dir)
+            .arg("run")
+            .arg("--quiet")
+            .arg("-p")
+            .arg("baml-rt-builder")
+            .arg("--bin")
+            .arg("regen_fixtures");
+        command
+    }
 }

@@ -6,16 +6,16 @@ use quickjs_runtime::jsutils::Script;
 use serde_json::Value;
 
 impl QuickJSBridge {
-    /// Set up the A2A stream yield buffer and __baml_a2a_yield so JS can yield chunks asynchronously
-    /// instead of collecting and returning an array. Call before invoking handle_a2a_request for stream requests.
+    /// Set up the chat stream yield buffer and __baml_chat_yield so JS can yield chunks asynchronously
+    /// instead of collecting and returning an array. Call before invoking onChatMessage for stream requests.
     ///
-    /// **Liveness:** □(this returns Ok → ◇(get_a2a_yield_buffer is called after one invoke_js_function("handle_a2a_request", ·))).
+    /// **Liveness:** □(this returns Ok → ◇(get_a2a_yield_buffer is called after one invoke_js_function("onChatMessage", ·))).
     /// Use [`a2a_stream::begin_a2a_yield_session`] for a type-safe sequence.
     pub async fn setup_a2a_yield_buffer(&mut self) -> Result<()> {
         let js_code = r#"
-            globalThis.__baml_a2a_yield_buffer = [];
-            globalThis.__baml_a2a_yield = function(chunk) {
-                if (globalThis.__baml_a2a_yield_buffer) globalThis.__baml_a2a_yield_buffer.push(chunk);
+            globalThis.__baml_chat_yield_buffer = [];
+            globalThis.__baml_chat_yield = function(chunk) {
+                if (globalThis.__baml_chat_yield_buffer) globalThis.__baml_chat_yield_buffer.push(chunk);
             };
         "#;
         let script = Script::new("setup_a2a_yield.js", js_code);
@@ -38,8 +38,8 @@ impl QuickJSBridge {
     pub async fn get_a2a_yield_buffer(&mut self) -> Result<Vec<Value>> {
         let js_code = r#"
             (function() {
-                const buffer = globalThis.__baml_a2a_yield_buffer || [];
-                globalThis.__baml_a2a_yield_buffer = [];
+                const buffer = globalThis.__baml_chat_yield_buffer || [];
+                globalThis.__baml_chat_yield_buffer = [];
                 return JSON.stringify(buffer);
             })()
         "#;
@@ -68,19 +68,21 @@ impl QuickJSBridge {
 
     /// Invoke a JavaScript function for streaming (yield-based) requests.
     ///
-    /// **Scope:** Caller must pass the invocation scope; the entire JS run executes inside
-    /// `with_scope(scope, ...)` so native callbacks see the correct task-local scope.
+    /// **Scope / conversation routing:** Caller must pass the invocation scope for this request
+    /// (one scope per A2A conversation). The entire JS run executes inside that scope so yielded
+    /// chunks are attributed to the correct conversation. Multiple parallel conversations each
+    /// use their own scope when the host invokes this (per request).
     ///
     /// **INVARIANT L6 (Stream Promise Non-Termination):**
-    /// For stream requests, the promise from `handle_a2a_request()` is DESIGNED to never resolve.
-    /// It yields chunks via `__baml_a2a_yield()` and only completes on agent exit or crash.
+    /// For stream requests, the promise from `onChatMessage()` is DESIGNED to never resolve.
+    /// It yields chunks via `__baml_chat_yield()` and only completes on agent exit or crash.
     /// This method starts the async function but does NOT wait for promise resolution.
     ///
     /// **Property:**
     /// ```
     /// ∀ stream request s:
     ///   invoke_js_function_stream(s) starts async execution AND returns immediately
-    ///   The promise from handle_a2a_request() never resolves (by design)
+    ///   The promise from onChatMessage() never resolves (by design)
     ///   Chunks are collected via get_a2a_yield_buffer() after invocation
     /// ```
     pub async fn invoke_js_function_stream(
@@ -116,7 +118,7 @@ impl QuickJSBridge {
         let scope_prelude = super::build_scope_prelude(scope, &token_prelude)?;
 
         // For stream requests, we start the async function but DON'T wait for promise resolution.
-        // The function yields chunks via __baml_a2a_yield() and the promise never resolves (by design).
+        // The function yields chunks via __baml_chat_yield() and the promise never resolves (by design).
         // We just need to ensure the function starts executing and can yield chunks.
         let js_code = format!(
             r#"
@@ -128,8 +130,10 @@ impl QuickJSBridge {
                     if (func === undefined || typeof func !== 'function') {{
                         throw new Error("JS function not found: {}");
                     }}
+                    // Preserve token in args so async handlers can pass it explicitly.
+                    args.__baml_invocation_token = __baml_invocation_token;
                     // Start the async function but don't await it - it's designed to never resolve
-                    // for stream requests. Chunks are collected via __baml_a2a_yield_buffer.
+                    // for stream requests. Chunks are collected via __baml_chat_yield_buffer.
                     func(args);
                     return JSON.stringify({{ success: true }});
                 }} catch (error) {{

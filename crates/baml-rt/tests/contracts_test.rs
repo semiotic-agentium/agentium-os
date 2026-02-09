@@ -2,9 +2,9 @@
 //!
 //! These tests assert on the actual structure and content of results,
 //! ensuring the contract between JavaScript/BAML functions and the runtime is correct.
+//! Uses fixture `stream-baml-tool` and BAML function `ChooseCalcTool` (returns session plan object).
 //!
-//! Use short max_attempts_ms so tests fail fast when LLM-backed fixtures (e.g. VoidshipGreeting)
-//! don't complete (e.g. missing API key); otherwise the effect-gated poller would wait 30 minutes.
+//! Use short max_attempts_ms so effect-gated poll doesn't hang when LLM is used (e.g. missing API key).
 
 use baml_rt::A2aAgent;
 use baml_rt::QuickJSConfig;
@@ -14,7 +14,7 @@ use serde_json::json;
 use std::fs;
 use std::sync::Arc;
 
-use test_support::common::agent_fixture;
+use test_support::common::{CalculatorTool, agent_fixture, ensure_fixture_runtime_types};
 
 /// QuickJS config for tests: short max_attempts so effect-gated poll doesn't hang (LLM fixtures).
 fn test_quickjs_config() -> QuickJSConfig {
@@ -22,15 +22,17 @@ fn test_quickjs_config() -> QuickJSConfig {
 }
 
 #[tokio::test]
-async fn test_baml_function_returns_string_result() {
-    // Contract: When a BAML function returns a string, invoke_function should return that string
-    // (not wrapped in {"success": true} or any other wrapper)
+async fn test_baml_function_returns_actual_result() {
+    // Contract: invoke_function must return the actual BAML result (not wrapped in success object).
+    // Uses stream-baml-tool and ChooseCalcTool which returns a session plan object with "steps".
+    ensure_fixture_runtime_types();
 
     let mut baml_manager = BamlRuntimeManager::new().unwrap();
-    let agent_dir = agent_fixture("voidship-rites");
+    let agent_dir = agent_fixture("stream-baml-tool");
     baml_manager
         .load_schema(agent_dir.to_str().unwrap())
         .unwrap();
+    baml_manager.register_tool(CalculatorTool).await.unwrap();
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
@@ -43,31 +45,36 @@ async fn test_baml_function_returns_string_result() {
     let result = context::with_scope(scope.as_scope().clone(), async {
         let mut bridge = bridge_handle.lock().await;
         bridge
-            .invoke_function("VoidshipGreeting", json!({"name": "TestUser"}))
+            .invoke_function("ChooseCalcTool", json!({"user_message": "compute 2+3"}))
             .await
     })
     .await;
 
-    // Contract assertion: Result should be a string (the greeting), not a wrapper object
+    // Contract assertion: Result must be the actual value (plan with "steps" or tool output with "result"/"formatted"), not a wrapper
     match result {
         Ok(val) => {
-            // Should be a string, not an object with "success" field
             assert!(
-                val.is_string(),
-                "Expected string result, got: {:?}. The function should return the actual greeting string.",
+                val.is_object(),
+                "Expected object result, got: {:?}. Function must return actual result.",
                 val
             );
-
-            let greeting = val.as_str().unwrap();
+            let obj = val.as_object().unwrap();
             assert!(
-                !greeting.trim().is_empty(),
-                "Expected non-empty greeting string, got: '{}'",
-                greeting
+                !obj.contains_key("success"),
+                "CONTRACT VIOLATION: Result must not be wrapped in success object, got: {:?}",
+                val
+            );
+            let has_steps = val.get("steps").and_then(|v| v.as_array()).is_some();
+            let has_tool_output = obj.contains_key("result") || obj.contains_key("formatted");
+            assert!(
+                has_steps || has_tool_output,
+                "Expected object with 'steps' (plan) or 'result'/'formatted' (tool output), got: {:?}",
+                val
             );
         }
         Err(e) => {
             panic!(
-                "Unexpected error: {}. Contract violation: function should return string result.",
+                "Unexpected error: {}. Contract violation: function should return actual result.",
                 e
             );
         }
@@ -76,19 +83,23 @@ async fn test_baml_function_returns_string_result() {
 
 #[tokio::test]
 async fn test_js_function_invocation_returns_actual_result() {
-    // Contract: When invoking a JavaScript function that calls BAML,
-    // the result should be the actual BAML result, not a success wrapper
+    // Contract: When invoking a JS function that calls BAML, the result must be the actual BAML result, not a success wrapper.
+    ensure_fixture_runtime_types();
 
     let mut baml_manager = BamlRuntimeManager::new().unwrap();
-    let agent_dir = agent_fixture("voidship-rites");
+    let agent_dir = agent_fixture("stream-baml-tool");
     baml_manager
         .load_schema(agent_dir.to_str().unwrap())
         .unwrap();
+    baml_manager.register_tool(CalculatorTool).await.unwrap();
     let agent_code = r#"
-        async function riteBlessing(args) {
-            return await VoidshipGreeting({ name: args.name });
+        async function getCalcPlan(args) {
+            return await ChooseCalcTool({
+                user_message: args.message || "compute 2+3",
+                __baml_invocation_token: args.__baml_invocation_token
+            });
         }
-        globalThis.riteBlessing = riteBlessing;
+        globalThis.getCalcPlan = getCalcPlan;
     "#;
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
@@ -102,41 +113,34 @@ async fn test_js_function_invocation_returns_actual_result() {
     let mut bridge = bridge_handle.lock().await;
     let scope = InvocationScope::standalone(agent.agent_id().clone());
 
-    // Invoke riteBlessing - this should return the actual greeting string
     let result = bridge
-        .invoke_js_function(&scope, "riteBlessing", json!({"name": "ContractTest"}))
+        .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
         .await;
 
-    // Contract assertion: Should return the actual greeting string, not {"success": true}
     match result {
         Ok(val) => {
-            // MUST be a string (the greeting)
             assert!(
-                val.is_string(),
-                "CONTRACT VIOLATION: Expected string result from riteBlessing, got: {:?}. Actual result must be returned, not wrapped in success object.",
+                val.is_object(),
+                "CONTRACT VIOLATION: Expected actual result (object), got: {:?}. Must not be wrapped.",
                 val
             );
-
-            // MUST NOT be a success wrapper
-            if let Some(obj) = val.as_object()
-                && obj.contains_key("success")
-            {
-                panic!(
-                    "CONTRACT VIOLATION: Result contains 'success' field. Expected actual result (string), got: {:?}",
-                    val
-                );
-            }
-
-            let greeting = val.as_str().unwrap();
+            let obj = val.as_object().unwrap();
             assert!(
-                !greeting.trim().is_empty(),
-                "Expected non-empty greeting string, got: '{}'",
-                greeting
+                !obj.contains_key("success"),
+                "CONTRACT VIOLATION: Result must not contain 'success' wrapper, got: {:?}",
+                val
+            );
+            let has_steps = val.get("steps").and_then(|v| v.as_array()).is_some();
+            let has_tool_output = obj.contains_key("result") || obj.contains_key("formatted");
+            assert!(
+                has_steps || has_tool_output,
+                "Expected object with 'steps' or 'result'/'formatted', got: {:?}",
+                val
             );
         }
         Err(e) => {
             panic!(
-                "CONTRACT VIOLATION: Unexpected error: {}. Function should return string result.",
+                "CONTRACT VIOLATION: Unexpected error: {}. Function should return actual result.",
                 e
             );
         }
@@ -145,19 +149,23 @@ async fn test_js_function_invocation_returns_actual_result() {
 
 #[tokio::test]
 async fn test_invoke_function_api_contract() {
-    // Contract: The invoke_function API (from baml-agent-builder) should return the actual function result,
-    // not wrapped in any success object
+    // Contract: invoke_function API must return the actual function result, not wrapped in any success object.
+    ensure_fixture_runtime_types();
 
-    let agent_dir = agent_fixture("voidship-rites");
+    let agent_dir = agent_fixture("stream-baml-tool");
     let mut baml_manager = BamlRuntimeManager::new().unwrap();
     baml_manager
         .load_schema(agent_dir.to_str().unwrap())
         .unwrap();
+    baml_manager.register_tool(CalculatorTool).await.unwrap();
     let agent_code = r#"
-        async function riteBlessing(args) {
-            return await VoidshipGreeting({ name: args.name });
+        async function getCalcPlan(args) {
+            return await ChooseCalcTool({
+                user_message: args.message || "compute 2+3",
+                __baml_invocation_token: args.__baml_invocation_token
+            });
         }
-        globalThis.riteBlessing = riteBlessing;
+        globalThis.getCalcPlan = getCalcPlan;
     "#;
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
@@ -172,38 +180,31 @@ async fn test_invoke_function_api_contract() {
     let scope = InvocationScope::standalone(agent.agent_id().clone());
 
     let result = bridge
-        .invoke_js_function(&scope, "riteBlessing", json!({"name": "APIContractTest"}))
+        .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
         .await;
 
-    // Contract assertion: Result MUST be the actual string, not wrapped
     match result {
         Ok(val) => {
-            // CONTRACT: Must be a string (the greeting)
             assert!(
-                val.is_string(),
-                "CONTRACT VIOLATION: invoke_function API must return actual result (string), not wrapper. Got: {:?}",
+                val.is_object(),
+                "CONTRACT VIOLATION: API must return actual result (object), not wrapper. Got: {:?}",
                 val
             );
-
-            // CONTRACT: Must NOT contain "success" field
-            if let Some(obj) = val.as_object()
-                && obj.get("success").is_some()
-            {
-                panic!(
-                    "CONTRACT VIOLATION: Result contains 'success' field: {:?}. API must return actual result directly.",
-                    val
-                );
-            }
-
-            let greeting = val.as_str().unwrap();
+            let obj = val.as_object().unwrap();
             assert!(
-                !greeting.trim().is_empty(),
-                "Expected non-empty greeting string, got: '{}'",
-                greeting
+                obj.get("success").is_none(),
+                "CONTRACT VIOLATION: Result must not contain 'success' field: {:?}",
+                val
+            );
+            let has_steps = val.get("steps").and_then(|v| v.as_array()).is_some();
+            let has_tool_output = obj.contains_key("result") || obj.contains_key("formatted");
+            assert!(
+                has_steps || has_tool_output,
+                "Expected object with 'steps' or 'result'/'formatted', got: {:?}",
+                val
             );
         }
         Err(e) => {
-            // Promise resolution failures are contract violations
             let error_str = format!("{}", e);
             if error_str.contains("Promise did not resolve") {
                 panic!("CONTRACT VIOLATION: Promise resolution failed: {}", e);
@@ -215,31 +216,34 @@ async fn test_invoke_function_api_contract() {
 
 #[tokio::test]
 async fn test_loaded_agent_invoke_function_contract() {
-    // Contract: LoadedAgent::invoke_function must return the actual result, not wrapped
+    // Contract: LoadedAgent::invoke_function must return the actual result, not wrapped (same pattern as load_agent_package).
+    ensure_fixture_runtime_types();
 
-    // Load agent exactly as load_agent_package does
-    let agent_dir = test_support::common::agent_fixture("voidship-rites");
+    let agent_dir = test_support::common::agent_fixture("stream-baml-tool");
 
-    // Extract logic from load_agent_package (the actual code)
     let mut runtime_manager = BamlRuntimeManager::new().unwrap();
     runtime_manager
         .load_schema(agent_dir.to_str().unwrap())
         .unwrap();
+    runtime_manager.register_tool(CalculatorTool).await.unwrap();
 
-    // Load agent JavaScript code (actual pattern from load_agent_package)
+    // Use dist/index.js only (compiled JS). Do not load src/index.ts (TypeScript) - QuickJS cannot parse it.
     let dist_path = agent_dir.join("dist").join("index.js");
     let mut agent_code = if dist_path.exists() {
         fs::read_to_string(&dist_path).unwrap()
     } else {
         String::new()
     };
-    if !agent_code.contains("globalThis.riteBlessing") {
+    if !agent_code.contains("globalThis.getCalcPlan") {
         agent_code.push_str(
             r#"
-            async function riteBlessing(args) {
-                return await VoidshipGreeting({ name: args.name });
+            async function getCalcPlan(args) {
+                return await ChooseCalcTool({
+                    user_message: args.message || "compute 2+3",
+                    __baml_invocation_token: args.__baml_invocation_token
+                });
             }
-            globalThis.riteBlessing = riteBlessing;
+            globalThis.getCalcPlan = getCalcPlan;
         "#,
         );
     }
@@ -255,38 +259,34 @@ async fn test_loaded_agent_invoke_function_contract() {
     let mut bridge = bridge_handle.lock().await;
     let scope = InvocationScope::standalone(agent.agent_id().clone());
 
-    // Use the ACTUAL invoke_function logic from LoadedAgent (lines 257-290)
     let result = bridge
-        .invoke_js_function(&scope, "riteBlessing", json!({"name": "ContractTest"}))
+        .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
         .await;
 
     match result {
         Ok(val) => {
-            // CONTRACT: Result must be a string (the actual greeting), not {"success": true}
             assert!(
-                val.is_string(),
-                "CONTRACT VIOLATION: invoke_function must return string result, got: {:?}",
+                val.is_object(),
+                "CONTRACT VIOLATION: invoke_function must return actual result (object), got: {:?}",
                 val
             );
-
-            // CONTRACT: Must NOT be a success wrapper
-            if let Some(obj) = val.as_object() {
-                panic!(
-                    "CONTRACT VIOLATION: Result is object with 'success': {:?}. Must return actual result.",
-                    obj
-                );
-            }
-
-            let greeting = val.as_str().unwrap();
+            let obj = val.as_object().unwrap();
             assert!(
-                !greeting.trim().is_empty(),
-                "Expected non-empty greeting string, got: '{}'",
-                greeting
+                !obj.contains_key("success"),
+                "CONTRACT VIOLATION: Result must not be success wrapper: {:?}",
+                val
+            );
+            let has_steps = val.get("steps").and_then(|v| v.as_array()).is_some();
+            let has_tool_output = obj.contains_key("result") || obj.contains_key("formatted");
+            assert!(
+                has_steps || has_tool_output,
+                "Expected object with 'steps' or 'result'/'formatted', got: {:?}",
+                val
             );
         }
         Err(e) => {
             panic!(
-                "CONTRACT VIOLATION: Unexpected error: {}. Function should return string result.",
+                "CONTRACT VIOLATION: Unexpected error: {}. Function should return actual result.",
                 e
             );
         }

@@ -27,7 +27,7 @@ thread_local! {
 
 /// Resolve invocation scope from native args: first arg must be a non-empty token string;
 /// look up scope in map. Returns (scope, skip_count) where skip_count is 1 (token consumed).
-/// No worker-thread fallback; token is required so native callbacks have explicit provenance.
+/// If no valid token is in args, falls back to [`worker_thread_scope()`] when eval runs on the worker thread (scope set by run_eval_with_scope).
 pub(crate) fn resolve_scope_from_token_arg(
     map: &Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>>,
     args: &[JsValueFacade],
@@ -48,12 +48,16 @@ pub(crate) fn resolve_scope_from_token_arg(
             ));
         }
     }
+    // Fallback: native callback on worker thread may have scope set by run_eval_with_scope
+    if let Some(scope) = worker_thread_scope() {
+        return Ok((scope, 0));
+    }
     Err(quickjs_runtime::jsutils::JsError::new_str(
         "Missing or invalid invocation token (bind a token in the eval scope or pass it explicitly to __tool_invoke/__baml_invoke/__baml_stream)",
     ))
 }
 
-#[allow(dead_code)]
+/// Worker-thread invocation scope: set by [`run_eval_with_scope`]; read by native callbacks when token is not passed. Used as fallback in [`resolve_scope_from_token_arg`].
 pub(crate) fn worker_thread_scope() -> Option<RuntimeScope> {
     WORKER_INVOCATION_SCOPE.with(|cell| cell.borrow().clone())
 }

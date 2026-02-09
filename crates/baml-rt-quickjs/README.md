@@ -63,7 +63,7 @@ not fall back to globals. JS wrappers pass `__baml_invocation_token` or attach
 
 ## Streaming (A2A)
 
-- A2A streaming uses `__baml_a2a_yield_buffer` and `__baml_a2a_yield`.
+- A2A streaming uses `__baml_chat_yield_buffer` and `__baml_chat_yield`.
 - Stream invocations start an async handler but do **not** await its promise to
   completion; the stream handler typically does not terminate. Chunks are read
   from the yield buffer via `get_a2a_yield_buffer` after the host decides to

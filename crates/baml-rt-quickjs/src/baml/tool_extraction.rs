@@ -110,10 +110,10 @@ fn input_matches_schema(input: &Value, schema: &Value) -> bool {
     }
     if let Some(required) = schema_obj.get("required").and_then(|v| v.as_array()) {
         for req in required {
-            if let Some(req_key) = req.as_str() {
-                if !input_obj.contains_key(req_key) {
-                    return false;
-                }
+            if let Some(req_key) = req.as_str()
+                && !input_obj.contains_key(req_key)
+            {
+                return false;
             }
         }
     }
@@ -123,6 +123,7 @@ fn input_matches_schema(input: &Value, schema: &Value) -> bool {
 /// Typed tool session operation (replaces stringly-typed `op` field).
 ///
 /// Encodes FSM operations at compile time for type-safe plan execution.
+/// `reason` is the optional LLM-supplied explanation for the step; used in tracing and for Abort passed to `tool_session_abort`.
 #[derive(Debug, Clone)]
 pub enum ToolSessionOp {
     Open {
@@ -284,7 +285,7 @@ mod tests {
             if let Some(call) = res {
                 let obj = call.args.as_object();
                 assert!(
-                    obj.map_or(true, |m| !m.contains_key("tool_name")),
+                    !obj.is_some_and(|m| m.contains_key("tool_name")),
                     "extract_tool_call must not expose tool_name in args"
                 );
             }

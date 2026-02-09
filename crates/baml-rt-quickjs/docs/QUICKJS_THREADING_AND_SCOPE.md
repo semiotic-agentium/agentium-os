@@ -15,7 +15,7 @@ So when we do:
 ```text
 Tokio task T (handling request R):
   context::with_scope(scope_R, async {
-    bridge.invoke_js_function(scope_R, "handle_a2a_request", args).await
+    bridge.invoke_js_function(scope_R, "onChatMessage", args).await
       → with_scope(scope_R, async { self.runtime.eval(script).await })
   })
 ```

@@ -3,13 +3,15 @@
 //! This provides a thin adapter layer without adding external dependencies.
 
 use crate::a2a_types::{
-    JSONRPCError, JSONRPCErrorResponse, JSONRPCId, JSONRPCRequest, JSONRPCSuccessResponse,
-    ListTasksRequest, Message, SendMessageRequest,
+    A2aMessageId, JSONRPCError, JSONRPCErrorResponse, JSONRPCId, JSONRPCRequest,
+    JSONRPCSuccessResponse, ListTasksRequest, Message, ROLE_AGENT, SendMessageRequest,
 };
 use baml_rt_core::context;
-use baml_rt_core::ids::{ContextId, ExternalId, MessageId, TaskId};
+use baml_rt_core::context::InvocationScope;
+use baml_rt_core::ids::{ContextId, DerivedId, ExternalId, MessageId, TaskId};
 use baml_rt_core::{BamlRtError, Result};
 use serde_json::{Map, Value, json};
+use uuid::Uuid;
 
 const JSONRPC_VERSION: &str = "2.0";
 
@@ -18,7 +20,6 @@ pub enum A2aMethod {
     MessageSendStream,
     TasksGet,
     TasksList,
-    TasksCancel,
     TasksSubscribe,
 }
 
@@ -28,7 +29,6 @@ impl A2aMethod {
             A2aMethod::MessageSendStream => "message.sendStream",
             A2aMethod::TasksGet => "tasks.get",
             A2aMethod::TasksList => "tasks.list",
-            A2aMethod::TasksCancel => "tasks.cancel",
             A2aMethod::TasksSubscribe => "tasks.subscribe",
         }
     }
@@ -45,7 +45,6 @@ impl std::str::FromStr for A2aMethod {
             "message.sendStream" => Ok(A2aMethod::MessageSendStream),
             "tasks.get" => Ok(A2aMethod::TasksGet),
             "tasks.list" => Ok(A2aMethod::TasksList),
-            "tasks.cancel" => Ok(A2aMethod::TasksCancel),
             "tasks.subscribe" => Ok(A2aMethod::TasksSubscribe),
             _ => Err(BamlRtError::InvalidArgument(
                 "Unsupported A2A request method".to_string(),
@@ -95,11 +94,8 @@ impl A2aRequest {
                 params_value = augment_message_params(params_value, &params.message);
                 true
             }
-            A2aMethod::TasksGet
-            | A2aMethod::TasksList
-            | A2aMethod::TasksCancel
-            | A2aMethod::TasksSubscribe => {
-                if matches!(method, A2aMethod::TasksGet | A2aMethod::TasksCancel)
+            A2aMethod::TasksGet | A2aMethod::TasksList | A2aMethod::TasksSubscribe => {
+                if method == A2aMethod::TasksGet
                     && let Some(id) = params_value.get("id").and_then(Value::as_str)
                 {
                     task_id = Some(TaskId::from_external(ExternalId::new(id)));
@@ -298,20 +294,149 @@ fn message_text(message: &Message) -> Option<String> {
     }
 }
 
-pub fn request_to_js_value(request: &A2aRequest) -> Value {
-    json!({
-        "jsonrpc": JSONRPC_VERSION,
-        "id": request.id.as_ref().map(id_to_value).unwrap_or(Value::Null),
-        "method": request.method.as_str(),
-        "params": request.params,
-    })
+#[derive(Debug, Clone)]
+pub struct JsChunkNormalizer {
+    context_id: ContextId,
+    task_id: TaskId,
+    message_counter: u64,
 }
 
-fn id_to_value(value: &JSONRPCId) -> Value {
-    match value {
-        JSONRPCId::String(s) => Value::String(s.clone()),
-        JSONRPCId::Integer(n) => Value::Number((*n).into()),
-        JSONRPCId::Null => Value::Null,
+impl JsChunkNormalizer {
+    pub fn new(scope: &InvocationScope) -> Self {
+        let task_id = scope.task_id.clone().unwrap_or_else(|| {
+            TaskId::from_external(ExternalId::new(format!("js-task-{}", Uuid::new_v4())))
+        });
+        Self {
+            context_id: scope.context_id.clone(),
+            task_id,
+            message_counter: 0,
+        }
+    }
+
+    pub fn normalize_value(&mut self, value: Value) -> Result<Value> {
+        if let Some(map) = value.as_object() {
+            let is_wrapped = map.contains_key("message")
+                || map.contains_key("task")
+                || map.contains_key("statusUpdate")
+                || map.contains_key("artifactUpdate");
+            if !is_wrapped && map.contains_key("parts") {
+                let mut message_value = value;
+                self.ensure_message_fields(&mut message_value)?;
+                return Ok(json!({ "message": message_value }));
+            }
+        }
+
+        let mut value = value;
+        if let Some(map) = value.as_object_mut() {
+            if let Some(message) = map.get_mut("message") {
+                self.ensure_message_fields(message)?;
+            }
+            if let Some(task) = map.get_mut("task") {
+                self.ensure_task_fields(task)?;
+            }
+            if let Some(status_update) = map.get_mut("statusUpdate") {
+                self.ensure_status_update_fields(status_update)?;
+            }
+            if let Some(artifact_update) = map.get_mut("artifactUpdate") {
+                self.ensure_artifact_update_fields(artifact_update)?;
+            }
+        }
+        Ok(value)
+    }
+
+    fn next_message_id(&mut self) -> String {
+        self.message_counter += 1;
+        let derived = DerivedId::new(format!(
+            "js-msg-{}-{}",
+            self.context_id.as_str(),
+            self.message_counter
+        ));
+        A2aMessageId::outgoing(derived)
+            .as_message_id()
+            .as_str()
+            .to_string()
+    }
+
+    fn ensure_message_fields(&mut self, message: &mut Value) -> Result<()> {
+        let Some(map) = message.as_object_mut() else {
+            return Ok(());
+        };
+        map.entry("messageId".to_string())
+            .or_insert_with(|| Value::String(self.next_message_id()));
+        map.entry("role".to_string())
+            .or_insert_with(|| Value::String(ROLE_AGENT.to_string()));
+        map.entry("contextId".to_string())
+            .or_insert_with(|| Value::String(self.context_id.as_str().to_string()));
+        map.entry("taskId".to_string())
+            .or_insert_with(|| Value::String(self.task_id.as_str().to_string()));
+        Ok(())
+    }
+
+    fn ensure_task_fields(&mut self, task: &mut Value) -> Result<()> {
+        let Some(map) = task.as_object_mut() else {
+            return Ok(());
+        };
+        map.entry("id".to_string())
+            .or_insert_with(|| Value::String(self.task_id.as_str().to_string()));
+        map.entry("contextId".to_string())
+            .or_insert_with(|| Value::String(self.context_id.as_str().to_string()));
+        if let Some(history) = map.get_mut("history").and_then(Value::as_array_mut) {
+            for message in history {
+                self.ensure_message_fields(message)?;
+            }
+        }
+        if let Some(status) = map.get_mut("status") {
+            self.ensure_status_fields(status)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_status_fields(&mut self, status: &mut Value) -> Result<()> {
+        let Some(map) = status.as_object_mut() else {
+            return Ok(());
+        };
+        if let Some(message) = map.get_mut("message") {
+            self.ensure_message_fields(message)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_status_update_fields(&mut self, status_update: &mut Value) -> Result<()> {
+        let Some(map) = status_update.as_object_mut() else {
+            return Ok(());
+        };
+        map.entry("contextId".to_string())
+            .or_insert_with(|| Value::String(self.context_id.as_str().to_string()));
+        map.entry("taskId".to_string())
+            .or_insert_with(|| Value::String(self.task_id.as_str().to_string()));
+        if let Some(status) = map.get_mut("status") {
+            self.ensure_status_fields(status)?;
+        }
+        Ok(())
+    }
+
+    fn ensure_artifact_update_fields(&mut self, artifact_update: &mut Value) -> Result<()> {
+        let Some(map) = artifact_update.as_object_mut() else {
+            return Ok(());
+        };
+        map.entry("contextId".to_string())
+            .or_insert_with(|| Value::String(self.context_id.as_str().to_string()));
+        map.entry("taskId".to_string())
+            .or_insert_with(|| Value::String(self.task_id.as_str().to_string()));
+        Ok(())
+    }
+}
+
+/// Value passed to JS handler. For message.sendStream we pass only the incoming message payload (parts).
+pub fn request_to_js_value(request: &A2aRequest) -> Value {
+    match request.method {
+        A2aMethod::MessageSendStream => {
+            serde_json::from_value::<SendMessageRequest>(request.params.clone())
+                .ok()
+                .map(|params| json!({ "parts": params.message.parts }))
+                .unwrap_or_else(|| json!({ "parts": [] }))
+        }
+        _ => request.params.clone(),
     }
 }
 
@@ -400,47 +525,19 @@ mod tests {
     async fn setup_agent_with_js_inner() -> A2aAgent {
         tracing::info!("setup_agent_with_js_inner: Starting agent setup");
         let js_code = r#"
-            globalThis.handle_a2a_request = async function(request) {
-                const method = request && request.method;
-                const params = request && request.params ? request.params : {};
-                if (method === "message.sendStream") {
-                    const text = params.text || (params.message && params.message.parts && params.message.parts[0] && params.message.parts[0].text) || "friend";
-                    if (text === "task") {
-                        __baml_a2a_yield({
-                            task: {
-                                id: "task-1",
-                                contextId: "ctx-1",
-                                metadata: { agent: "test-agent" },
-                                status: { state: "TASK_STATE_WORKING" },
-                                history: []
-                            }
-                        });
-                        return;
-                    }
-                    __baml_a2a_yield({
-                        message: {
-                            messageId: "resp-1",
-                            role: "ROLE_AGENT",
-                            parts: [{ text: `hi ${text}` }]
+            globalThis.onChatMessage = async function(message) {
+                const text = (message && message.parts && message.parts[0] && message.parts[0].text) || "friend";
+                if (text === "task") {
+                    __baml_chat_yield({
+                        task: {
+                            metadata: { agent: "test-agent" },
+                            status: { state: "TASK_STATE_WORKING" }
                         }
-                    });
-                    __baml_a2a_yield({
-                        message: {
-                            messageId: "resp-2",
-                            role: "ROLE_AGENT",
-                            parts: [{ text: "done" }]
-                        },
-                        final: true
                     });
                     return;
                 }
-                __baml_a2a_yield({
-                    message: {
-                        messageId: "resp-unknown",
-                        role: "ROLE_AGENT",
-                        parts: [{ text: "unknown" }]
-                    }
-                });
+                __baml_chat_yield({ message: { parts: [{ text: "hi " + text }] } });
+                __baml_chat_yield({ message: { parts: [{ text: "done" }] }, final: true });
             };
         "#;
         tracing::info!("setup_agent_with_js_inner: Creating builder");
@@ -773,23 +870,7 @@ mod tests {
                 .any(|task| { task.get("id").and_then(Value::as_str) == Some(task_id) })
         );
 
-        let cancel_request = JSONRPCRequest {
-            jsonrpc: "2.0".to_string(),
-            method: "tasks.cancel".to_string(),
-            params: Some(json!({ "id": task_id })),
-            id: Some(JSONRPCId::String("corr-1-16".to_string())),
-        };
-        let responses = agent
-            .handle_a2a(serde_json::to_value(cancel_request).expect("serialize request"))
-            .await
-            .expect("cancel task");
-        let result = expect_success_result(responses);
-        let state = result
-            .get("status")
-            .and_then(Value::as_object)
-            .and_then(|status| status.get("state"))
-            .and_then(Value::as_str);
-        assert_eq!(state, Some("TASK_STATE_CANCELED"));
+        let _ = task_id;
     }
 
     #[tokio::test]

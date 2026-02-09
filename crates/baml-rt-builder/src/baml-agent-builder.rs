@@ -303,7 +303,7 @@ async fn run_agent(
     println!("🔄 Running in interactive mode (reading from stdin, writing to stdout)");
     println!("   Format: <function_name> <json_args>");
     println!(
-        "   Example: handle_a2a_request {{\"method\":\"message.send\",\"params\":{{\"message\":{{\"messageId\":\"msg-1\",\"role\":\"ROLE_USER\",\"parts\":[{{\"text\":\"Alice\"}}]}}}}}}"
+        "   Example: onChatMessage receives {{ parts: [{{\"text\":\"Alice\"}}] }} (IDs/role are host-managed)"
     );
     println!("   Press Ctrl+D to exit\n");
 
@@ -468,112 +468,4 @@ async fn load_agent_package(package_path: &std::path::Path) -> Result<LoadedAgen
         agent_id: temp_agent_id,
         js_bridge: Arc::new(Mutex::new(js_bridge)),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use baml_rt_quickjs::BamlRuntimeManager;
-    use baml_rt_quickjs::QuickJSBridge;
-    use serde_json::json;
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
-
-    async fn create_test_agent() -> LoadedAgent {
-        let agent_dir = test_support::common::agent_fixture("voidship-rites");
-
-        let mut runtime_manager = BamlRuntimeManager::new().unwrap();
-        runtime_manager
-            .load_schema(agent_dir.to_str().unwrap())
-            .unwrap();
-
-        let runtime_manager_arc = Arc::new(Mutex::new(runtime_manager));
-        // Generate a temporary agent_id for test context
-        let temp_agent_id = AgentId::from_uuid(baml_rt_core::ids::UuidId::new(Uuid::new_v4()));
-        let mut js_bridge = QuickJSBridge::new(runtime_manager_arc.clone(), temp_agent_id.clone())
-            .await
-            .unwrap();
-        js_bridge.register_baml_functions().await.unwrap();
-
-        // Load agent code
-        let agent_code = r#"
-            async function riteBlessing(args) {
-                return await VoidshipGreeting({ name: args.name });
-            }
-            globalThis.riteBlessing = riteBlessing;
-        "#;
-        let _ = js_bridge.evaluate(None, agent_code).await;
-
-        LoadedAgent {
-            name: "test-agent".to_string(),
-            agent_id: temp_agent_id,
-            js_bridge: Arc::new(Mutex::new(js_bridge)),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_invoke_function_returns_actual_result() {
-        // Contract: invoke_function must return the actual result, not {"success": true}
-        let agent = create_test_agent().await;
-
-        let args = json!({"name": "ContractTest"});
-        let result = agent.invoke_function("riteBlessing", args).await;
-
-        match result {
-            Ok(val) => {
-                // CONTRACT: Result can be a string (success) or an object with "error" (failure)
-                // Must NOT be a {"success": true} wrapper
-                if let Some(obj) = val.as_object() {
-                    // Check if it's an error object (acceptable) or success wrapper (not acceptable)
-                    if obj.contains_key("success") {
-                        panic!(
-                            "CONTRACT VIOLATION: Result is object with 'success': {:?}. Must return actual result.",
-                            obj
-                        );
-                    }
-                    // Error objects are acceptable for API key errors
-                    if let Some(error_msg) = obj.get("error").and_then(|v| v.as_str())
-                        && (error_msg.contains("InvalidAuthentication")
-                            || error_msg.contains("401"))
-                    {
-                        println!("Test passed (with expected API key error): {}", error_msg);
-                        return; // Acceptable error case
-                    }
-                    panic!("CONTRACT VIOLATION: Result is unexpected object: {:?}", obj);
-                }
-
-                // Must be a string result
-                let greeting = val.as_str().expect("Expected string result");
-                // Accept API key errors (they prove function was called)
-                if !greeting.contains("error") && !greeting.contains("401") {
-                    assert!(
-                        !greeting.trim().is_empty(),
-                        "Expected non-empty greeting, got: '{}'",
-                        greeting
-                    );
-                }
-                println!("Test passed: Got expected result: {}", greeting);
-            }
-            Err(e) => {
-                // Promise resolution failures are contract violations
-                let error_str = format!("{}", e);
-                if error_str.contains("Promise did not resolve") {
-                    panic!("CONTRACT VIOLATION: Promise resolution failed: {}", e);
-                }
-                // API key errors are acceptable - they prove the function was called
-                if error_str.contains("InvalidAuthentication")
-                    || error_str.contains("401")
-                    || error_str.contains("BAML execution error")
-                    || error_str.contains("Parsed result conversion failed")
-                {
-                    println!(
-                        "Test passed (with expected API key/BAML error): {}",
-                        error_str
-                    );
-                    return; // Acceptable error case
-                }
-                panic!("CONTRACT VIOLATION: Unexpected error: {}", e);
-            }
-        }
-    }
 }

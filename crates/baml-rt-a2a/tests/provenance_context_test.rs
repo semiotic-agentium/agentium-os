@@ -47,16 +47,11 @@ fn user_message(message_id: &str, text: &str, context_id: Option<ContextId>) -> 
 
 async fn setup_agent(writer: Arc<InMemoryProvenanceStore>) -> A2aAgent {
     let js_code = r#"
-        globalThis.handle_a2a_request = async function(request) {
-            const params = request && request.params ? request.params : {};
-            const ctx = params.message && params.message.contextId ? params.message.contextId : "missing";
-            __baml_a2a_yield({
+        globalThis.onChatMessage = async function(message) {
+            __baml_chat_yield({
                 task: {
-                    id: "task-ctx",
-                    contextId: ctx,
                     metadata: { agent: "test-agent" },
-                    status: { state: "TASK_STATE_WORKING" },
-                    history: []
+                    status: { state: "TASK_STATE_WORKING" }
                 }
             });
         };
@@ -146,13 +141,13 @@ async fn test_context_id_propagates_across_agents() {
 async fn test_context_id_is_task_local_under_concurrency() {
     let writer = Arc::new(InMemoryProvenanceStore::new());
     let js_code = r#"
-        globalThis.handle_a2a_request = async function(request) {
-            const text = request?.params?.message?.parts?.[0]?.text || "";
+        globalThis.onChatMessage = async function(message) {
+            const text = message?.parts?.[0]?.text || "";
             const session = await openToolSession("test/echo_tool", __baml_invocation_token);
             await session.send({ text });
             const step = await session.continue();
             const out = step && step.output ? step.output : {};
-            __baml_a2a_yield(out);
+            __baml_chat_yield(out);
         };
     "#;
 

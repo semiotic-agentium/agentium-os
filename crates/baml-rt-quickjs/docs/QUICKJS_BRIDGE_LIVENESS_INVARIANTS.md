@@ -115,12 +115,12 @@ Promises created during `evaluate()` for non-stream requests must resolve within
 ```
 ∀ stream request s:
   invoke_js_function_stream(s) starts async execution AND returns immediately
-  The promise from handle_a2a_request() NEVER resolves (by design)
+  The promise from onChatMessage() NEVER resolves (by design)
   Chunks are collected via get_a2a_yield_buffer() after invocation
   Promise only completes on agent exit or crash
 ```
 
-For stream requests, the promise from `handle_a2a_request()` is DESIGNED to never resolve. It yields chunks via `__baml_a2a_yield()` and runs indefinitely until agent termination.
+For stream requests, the promise from `onChatMessage()` is DESIGNED to never resolve. It yields chunks via `__baml_chat_yield()` and runs indefinitely until agent termination.
 
 **Enforcement:**
 
@@ -135,7 +135,7 @@ For stream requests, the promise from `handle_a2a_request()` is DESIGNED to neve
 
 **This is NOT a violation - it's the intended design:**
 - Stream functions are long-running async generators
-- They yield chunks incrementally via `__baml_a2a_yield()`
+- They yield chunks incrementally via `__baml_chat_yield()`
 - The promise never resolves because the function never completes (until agent exit)
 
 ### L5: Sandbox Initialization Atomicity
@@ -201,6 +201,10 @@ drop(manager); // Explicit release
 some_async_operation().await; // Safe - no lock held
 ```
 
+**Application: `__baml_stream` (BAML function stream run)**
+
+When running a BAML function stream (`stream.run(..., &ctx_manager, ...).await`), the manager lock must be released **before** `stream.run`. Reason: `stream.run` is async and may trigger tool calls (or other work) that need to acquire `baml_manager`; holding the lock across `stream.run` would deadlock. `ctx_manager` is an owned `RuntimeContextManager` from `create_ctx_manager_for_current_scope()`, so it does not borrow the executor; we can drop the manager guard after obtaining `stream` and `ctx_manager`, then call `stream.run(...).await` without holding any lock.
+
 ### Rule 3: Timeout All Blocking Operations
 
 **Property:**
@@ -264,13 +268,13 @@ Re-checking effects periodically must only increase the timeout, never decrease 
 
 ### Fix: Stream Promise Non-Termination (By Design)
 
-**Symptom:** `test_a2a_jsonrpc_request_invokes_js_function` hangs indefinitely in `invoke_js_function()` when calling `handle_a2a_request()`.
+**Symptom:** `test_a2a_jsonrpc_request_invokes_js_function` hangs indefinitely in `invoke_js_function()` when calling `onChatMessage()`.
 
 **Root Cause Analysis:**
 1. `invoke_js_function()` wraps the call in `__awaitAndStringify(func(args))` which returns a promise
 2. `evaluate()` wraps that promise in an async IIFE that awaits it and sets `__eval_result`
 3. The promise polling loop waits for `__eval_result` to be set
-4. **The promise from `handle_a2a_request()` never resolves BY DESIGN** - it's a stream function that yields chunks
+4. **The promise from `onChatMessage()` never resolves BY DESIGN** - it's a stream function that yields chunks
 5. Stream functions are long-running async generators that never complete until agent exit
 
 **Fix Applied:**
@@ -280,7 +284,7 @@ Re-checking effects periodically must only increase the timeout, never decrease 
 - Added timeouts around critical operations (`initialize_sandbox`, `register_baml_functions`, `init_js` evaluation)
 
 **Design Rationale:**
-- Stream requests use yield-based protocol: `__baml_a2a_yield(chunk)` pushes chunks to buffer
+- Stream requests use yield-based protocol: `__baml_chat_yield(chunk)` pushes chunks to buffer
 - The promise never resolves because the function runs indefinitely (until agent exit)
 - Chunks are collected via `get_a2a_yield_buffer()` after invocation, not from promise resolution
 - This is the intended design, not a bug

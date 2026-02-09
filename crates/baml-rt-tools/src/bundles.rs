@@ -14,12 +14,14 @@ use serde_json::Value;
 ///
 /// # Example
 /// ```rust,no_run
-/// pub struct Support;
+/// use baml_rt_tools::BundleType;
 ///
-/// impl BundleType for Support {
-///     const NAME: &'static str = "support";
+/// pub struct MyBundle;
+///
+/// impl BundleType for MyBundle {
+///     const NAME: &'static str = "my_bundle";
 ///     fn description() -> &'static str {
-///         "Support tools for basic operations"
+///         "My bundle of tools"
 ///     }
 /// }
 /// ```

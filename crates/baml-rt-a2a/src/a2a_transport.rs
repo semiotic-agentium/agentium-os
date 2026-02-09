@@ -646,6 +646,9 @@ impl A2aRequestHandler for A2aAgent {
         let method = parsed_request.method;
         let is_stream = parsed_request.is_stream;
 
+        // One scope per request (per conversation). Multiple concurrent A2A requests each get
+        // their own scope; the handler runs inside with_scope(scope, ...) so routing is to the
+        // correct conversation and yielded chunks are attributed to that context.
         let request_context_id = parsed_request
             .context_id
             .clone()

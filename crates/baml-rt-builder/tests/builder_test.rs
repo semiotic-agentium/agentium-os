@@ -4,7 +4,7 @@
 //! that all CLI subcommands work correctly end-to-end.
 
 use tempfile::TempDir;
-use test_support::common::{agent_fixture, workspace_root};
+use test_support::common::{agent_fixture, ensure_fixture_runtime_types, workspace_root};
 use test_support::support::cli::CliHarness;
 
 #[test]
@@ -99,6 +99,7 @@ async fn test_full_integration_package_load_execute() {
     use tokio::sync::Mutex;
 
     // Use voidship-rites fixture
+    ensure_fixture_runtime_types();
     let agent_dir = agent_fixture("voidship-rites");
 
     if !agent_dir.exists() || !agent_dir.join("baml_src").exists() {
@@ -171,7 +172,7 @@ async fn test_full_integration_package_load_execute() {
     let check_code = r#"
         (function() {
             return JSON.stringify({
-                existsGlobal: typeof globalThis.handle_a2a_request === 'function'
+                existsGlobal: typeof globalThis.onChatMessage === 'function'
             });
         })()
     "#;
@@ -184,12 +185,12 @@ async fn test_full_integration_package_load_execute() {
         .unwrap_or(false);
     assert!(
         exists_global,
-        "handle_a2a_request function should be defined in globalThis after loading packaged agent. result={:?}",
+        "onChatMessage function should be defined in globalThis after loading packaged agent. result={:?}",
         check_obj
     );
 
     // STEP 5: Execute the function using the shared invoke_function implementation
-    let function_name = "handle_a2a_request";
+    let function_name = "onChatMessage";
     let args = json!({
         "method": "message.send",
         "params": {

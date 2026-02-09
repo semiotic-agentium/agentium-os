@@ -16,7 +16,11 @@ use std::time::Instant;
 use tokio::sync::Mutex;
 
 /// Non-stream invocation: waits for JS promise to resolve and returns the result.
-/// Scope is type-enforced: caller must pass the invocation scope from the request pipeline.
+///
+/// **Conversation routing:** Each call receives the invocation scope for a single A2A request
+/// (one conversation). The host ensures multiple concurrent conversations each get their own
+/// scope; the handler is invoked with that scope so messages and yielded chunks stay with the
+/// correct conversation.
 #[async_trait(?Send)]
 pub trait JsInvoker: Send + Sync {
     async fn invoke_handler(
@@ -33,7 +37,11 @@ pub trait JsInvoker: Send + Sync {
 }
 
 /// **CG4 (Stream Promise Non-Resolution):** Invokes stream handlers without waiting for promise resolution.
-/// The promise from `handle_a2a_request()` is designed to never resolve; chunks are collected via the yield buffer.
+/// The promise from `onChatMessage()` is designed to never resolve; chunks are collected via the yield buffer.
+///
+/// **Conversation routing:** Invocation uses the given `scope` (one per request). Multiple parallel
+/// conversations are supported: each request gets its own scope from the transport, and chunks
+/// are normalized with that scope so they are attributed to the correct conversation.
 #[async_trait(?Send)]
 pub trait JsStreamInvoker: Send + Sync {
     /// Starts async execution and collects yielded chunks. Does NOT wait for promise resolution.
@@ -71,7 +79,7 @@ impl JsInvoker for QuickJsInvoker {
         let js_request = a2a::request_to_js_value(request);
         let mut bridge = self.bridge.lock().await;
         bridge
-            .invoke_js_function(scope, "handle_a2a_request", js_request)
+            .invoke_js_function(scope, "onChatMessage", js_request)
             .await
     }
 
@@ -160,11 +168,6 @@ impl RequestRouter for MethodBasedRouter {
                     serde_json::from_value(request.params.clone()).map_err(BamlRtError::Json)?;
                 self.task_handler.handle_list(req).await
             }
-            a2a::A2aMethod::TasksCancel => {
-                let req =
-                    serde_json::from_value(request.params.clone()).map_err(BamlRtError::Json)?;
-                self.task_handler.handle_cancel(req).await
-            }
             a2a::A2aMethod::TasksSubscribe => {
                 let req =
                     serde_json::from_value(request.params.clone()).map_err(BamlRtError::Json)?;
@@ -223,16 +226,21 @@ impl RequestRouter for MethodBasedRouter {
 
                 // Compute result so we always emit A2aCompleted on every exit (success or failure)
                 let result = async {
+                    let mut normalizer = a2a::JsChunkNormalizer::new(scope);
                     if request.is_stream {
                         let chunks = self.js_invoker.invoke_stream(request, scope).await?;
-                        for chunk in &chunks {
-                            self.result_pipeline.store_result(chunk).await?;
+                        let mut normalized_chunks = Vec::with_capacity(chunks.len());
+                        for chunk in chunks {
+                            let normalized = normalizer.normalize_value(chunk)?;
+                            self.result_pipeline.store_result(&normalized).await?;
+                            normalized_chunks.push(normalized);
                         }
-                        Ok(a2a::A2aOutcome::Stream(chunks))
+                        Ok(a2a::A2aOutcome::Stream(normalized_chunks))
                     } else {
                         let result = self.js_invoker.invoke_handler(request, scope).await?;
-                        self.result_pipeline.store_result(&result).await?;
-                        Ok(a2a::A2aOutcome::Response(result))
+                        let normalized = normalizer.normalize_value(result)?;
+                        self.result_pipeline.store_result(&normalized).await?;
+                        Ok(a2a::A2aOutcome::Response(normalized))
                     }
                 }
                 .await;
@@ -261,9 +269,7 @@ impl RequestRouter for MethodBasedRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::a2a_types::{
-        CancelTaskRequest, GetTaskRequest, ListTasksRequest, SubscribeToTaskRequest,
-    };
+    use crate::a2a_types::{GetTaskRequest, ListTasksRequest, SubscribeToTaskRequest};
     use async_trait::async_trait;
     use baml_rt_core::effects::EffectBus;
     use serde_json::json;
@@ -311,9 +317,6 @@ mod tests {
         async fn handle_list(&self, _req: ListTasksRequest) -> Result<a2a::A2aOutcome> {
             Err(BamlRtError::InvalidArgument("mock".to_string()))
         }
-        async fn handle_cancel(&self, _req: CancelTaskRequest) -> Result<a2a::A2aOutcome> {
-            Err(BamlRtError::InvalidArgument("mock".to_string()))
-        }
         async fn handle_subscribe(
             &self,
             _req: SubscribeToTaskRequest,
@@ -334,8 +337,8 @@ mod tests {
 
     #[tokio::test]
     async fn stream_request_uses_only_invoke_stream_chunks() {
-        let chunk_a = json!({ "message": { "messageId": "m1", "role": "ROLE_AGENT", "parts": [{ "text": "a" }] } });
-        let chunk_b = json!({ "statusUpdate": { "taskId": "t1", "status": { "state": "TASK_STATE_WORKING" } } });
+        let chunk_a = json!({ "message": { "parts": [{ "text": "a" }] } });
+        let chunk_b = json!({ "statusUpdate": { "status": { "state": "TASK_STATE_WORKING" } } });
         let invoker = Arc::new(MockJsInvoker {
             stream_chunks: vec![chunk_a.clone(), chunk_b.clone()],
         });

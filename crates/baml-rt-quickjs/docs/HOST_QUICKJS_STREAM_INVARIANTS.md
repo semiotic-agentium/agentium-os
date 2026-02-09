@@ -26,9 +26,9 @@ Notation: □ = always, ◇ = eventually.
 
 1. **Host** holds `bridge: Arc<Mutex<QuickJSBridge>>` and runs, under one lock, the session:  
    `begin_a2a_yield_session(&mut *bridge)` → `session.invoke(js_request)` → `session.collect()`.
-2. **JS** sees `globalThis.__baml_a2a_yield_buffer` and `globalThis.__baml_a2a_yield` (set by setup).  
-   `handle_a2a_request` runs; it may call `__baml_a2a_yield(chunk)` and may `await` (e.g. `openToolSession`, BAML). The stream handler typically **does not terminate** (no final promise resolution).
-3. **Host** reads chunks from the yield buffer via `get_a2a_yield_buffer()` at a time of its choosing (e.g. after a timeout or when the buffer has grown); it does **not** wait for the JS promise to resolve. The return value of `handle_a2a_request` is ignored.
+2. **JS** sees `globalThis.__baml_chat_yield_buffer` and `globalThis.__baml_chat_yield` (set by setup).  
+   `onChatMessage` runs; it may call `__baml_chat_yield(chunk)` and may `await` (e.g. `openToolSession`, BAML). The stream handler typically **does not terminate** (no final promise resolution).
+3. **Host** reads chunks from the yield buffer via `get_a2a_yield_buffer()` at a time of its choosing (e.g. after a timeout or when the buffer has grown); it does **not** wait for the JS promise to resolve. The return value of `onChatMessage` is ignored.
 
 ## Invariants
 
@@ -36,7 +36,7 @@ Notation: □ = always, ◇ = eventually.
 
 **Property:**
 
-- Before each stream request, the host sets `globalThis.__baml_a2a_yield_buffer = []` and `globalThis.__baml_a2a_yield`; only the current `handle_a2a_request` call may push to that buffer for the duration of that call.
+- Before each stream request, the host sets `globalThis.__baml_chat_yield_buffer = []` and `globalThis.__baml_chat_yield`; only the current `onChatMessage` call may push to that buffer for the duration of that call.
 - After the promise for that call resolves, the host reads and clears the buffer exactly once.
 
 **Formal:**
@@ -44,14 +44,14 @@ Notation: □ = always, ◇ = eventually.
 - ∀ stream request r:  
   `setup_a2a_yield_buffer()` runs once before `invoke_js_function(..., r)`;  
   `get_a2a_yield_buffer()` runs when the host decides to read (e.g. after a timeout or poll); the JS promise for that invoke typically **does not resolve** (stream is non-terminating).  
-  No other code clears or replaces `__baml_a2a_yield_buffer` between setup and get.
+  No other code clears or replaces `__baml_chat_yield_buffer` between setup and get.
 
 **Enforcement:**
 
 | Layer        | Mechanism                                                                 |
 |-------------|----------------------------------------------------------------------------|
 | Application | Invoker holds bridge lock for full sequence; no other caller runs JS.     |
-| Contract     | a2a.ts: agent must call `__baml_a2a_yield(chunk)`; host ignores return.    |
+| Contract     | a2a.ts: agent must call `__baml_chat_yield(chunk)`; host ignores return.    |
 | Testing     | `stream_request_uses_only_invoke_stream_chunks` (mock invoker).            |
 
 ---
@@ -60,7 +60,7 @@ Notation: □ = always, ◇ = eventually.
 
 **Property:**
 
-- While the host is inside `invoke_stream` (bridge lock held) and waiting for the `handle_a2a_request` promise to resolve, JS must not call back into host code that requires the **same** bridge lock (e.g. another `invoke_js_function` or `evaluate` that would block on that lock).
+- While the host is inside `invoke_stream` (bridge lock held) and waiting for the `onChatMessage` promise to resolve, JS must not call back into host code that requires the **same** bridge lock (e.g. another `invoke_js_function` or `evaluate` that would block on that lock).
 
 **Formal:**
 
@@ -71,13 +71,13 @@ Notation: □ = always, ◇ = eventually.
 
 | Layer        | Mechanism                                                                 |
 |-------------|----------------------------------------------------------------------------|
-| Application | Tool sessions (e.g. BAML tools) use `baml_manager` and registry, not bridge. A2A tool sessions that call `handle_a2a` would re-enter; avoid opening A2A sessions from inside a stream `handle_a2a_request`. |
+| Application | Tool sessions (e.g. BAML tools) use `baml_manager` and registry, not bridge. A2A tool sessions that call `handle_a2a` would re-enter; avoid opening A2A sessions from inside a stream `onChatMessage`. |
 | Concurrency | Bridge is `Mutex`; re-entrant lock would deadlock.                        |
 | Testing     | Stream tests that hang may be hitting this (JS awaiting a path that needs the bridge). |
 
 **Risk:** If JS does `await openToolSession("...")` and that tool’s `send`/`next` eventually calls the same agent’s `handle_a2a`, the handler will try to take the bridge lock → deadlock.
 
-**Concurrent A2A and tool execution:** We need to support concurrent incoming A2A context driving concurrent tool execution. The invariant forbids only **re-entering the bridge** (taking `lock(bridge)` again) from any callback or future that contributes to resolving the current stream’s promise. Tool sessions do **not** use the bridge: `openToolSession` → `__tool_session_open` → `context::with_scope` + `baml_manager.open_tool_session` (and send/next/finish/abort) use the tool registry and session state only. So multiple tools can run concurrently within the same stream (or across streams when using multiple bridges) without touching the bridge lock. The only forbidden pattern is: from inside a stream’s `handle_a2a_request` (or from a tool invoked by it), calling something that needs the **same** bridge—e.g. `invoke_js_function`, `evaluate`, or another stream on that bridge. Use separate bridge instances or avoid A2A-from-inside-tool if you need nested stream-like work.
+**Concurrent A2A and tool execution:** We need to support concurrent incoming A2A context driving concurrent tool execution. The invariant forbids only **re-entering the bridge** (taking `lock(bridge)` again) from any callback or future that contributes to resolving the current stream’s promise. Tool sessions do **not** use the bridge: `openToolSession` → `__tool_session_open` → `context::with_scope` + `baml_manager.open_tool_session` (and send/next/finish/abort) use the tool registry and session state only. So multiple tools can run concurrently within the same stream (or across streams when using multiple bridges) without touching the bridge lock. The only forbidden pattern is: from inside a stream’s `onChatMessage` (or from a tool invoked by it), calling something that needs the **same** bridge—e.g. `invoke_js_function`, `evaluate`, or another stream on that bridge. Use separate bridge instances or avoid A2A-from-inside-tool if you need nested stream-like work.
 
 ---
 
@@ -108,11 +108,11 @@ Notation: □ = always, ◇ = eventually.
 
 **Property:**
 
-- Chunks written in JS via `__baml_a2a_yield(chunk)` are read by the host as `Value::Array` after `JSON.stringify(buf)` in JS and `evaluate()` (which parses the returned string as JSON). The shape must match what the stream normalizer and pipeline expect.
+- Chunks written in JS via `__baml_chat_yield(chunk)` are read by the host as `Value::Array` after `JSON.stringify(buf)` in JS and `evaluate()` (which parses the returned string as JSON). The shape must match what the stream normalizer and pipeline expect.
 
 **Formal:**
 
-- `get_a2a_yield_buffer()` evals code that does `buf = __baml_a2a_yield_buffer; __baml_a2a_yield_buffer = []; return JSON.stringify(buf);`.  
+- `get_a2a_yield_buffer()` evals code that does `buf = __baml_chat_yield_buffer; __baml_chat_yield_buffer = []; return JSON.stringify(buf);`.  
   Host parses the eval result as JSON; if it is an array, that array is the chunk list; otherwise host uses `[]`.
 
 **Enforcement:**

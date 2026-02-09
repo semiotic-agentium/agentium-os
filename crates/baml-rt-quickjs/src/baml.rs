@@ -1166,7 +1166,15 @@ impl BamlRuntimeManager {
 
         for step in steps {
             match step {
-                ToolSessionOp::Open { initial_input, .. } => {
+                ToolSessionOp::Open {
+                    initial_input,
+                    reason,
+                } => {
+                    tracing::debug!(
+                        tool = %tool_name,
+                        reason = ?reason,
+                        "FSM step: Open"
+                    );
                     if session_id.is_some() {
                         return Err(BamlRtError::InvalidArgument(
                             "Tool session already open".to_string(),
@@ -1182,7 +1190,12 @@ impl BamlRuntimeManager {
                         self.tool_session_send(&session, normalized).await?;
                     }
                 }
-                ToolSessionOp::Send { input, .. } => {
+                ToolSessionOp::Send { input, reason } => {
+                    tracing::debug!(
+                        tool = %tool_name,
+                        reason = ?reason,
+                        "FSM step: Send"
+                    );
                     let session = session_id.as_ref().ok_or_else(|| {
                         BamlRtError::InvalidArgument(
                             "send step before open: FSM requires Open before Send".to_string(),
@@ -1191,7 +1204,12 @@ impl BamlRuntimeManager {
                     let normalized = normalize_plan_input(input)?;
                     self.tool_session_send(session, normalized).await?;
                 }
-                ToolSessionOp::Next { .. } => {
+                ToolSessionOp::Next { reason } => {
+                    tracing::debug!(
+                        tool = %tool_name,
+                        reason = ?reason,
+                        "FSM step: Next"
+                    );
                     let session = session_id.as_ref().ok_or_else(|| {
                         BamlRtError::InvalidArgument("next step before open".to_string())
                     })?;
@@ -1217,13 +1235,23 @@ impl BamlRuntimeManager {
                         }
                     }
                 }
-                ToolSessionOp::Finish { .. } => {
+                ToolSessionOp::Finish { reason } => {
+                    tracing::debug!(
+                        tool = %tool_name,
+                        reason = ?reason,
+                        "FSM step: Finish"
+                    );
                     if let Some(session) = session_id.as_ref() {
                         self.tool_session_finish(session).await?;
                         session_id = None;
                     }
                 }
                 ToolSessionOp::Abort { reason, .. } => {
+                    tracing::debug!(
+                        tool = %tool_name,
+                        reason = ?reason,
+                        "FSM step: Abort"
+                    );
                     if let Some(session) = session_id.as_ref() {
                         self.tool_session_abort(session, reason).await?;
                         session_id = None;

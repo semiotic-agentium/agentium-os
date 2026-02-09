@@ -1,11 +1,9 @@
-//! Comprehensive end-to-end tests for the trait-based tool system
+//! Trait-based tool system: registration, Rust execution, JS visibility, metadata.
 //!
-//! Tests cover:
-//! - Tool registration using the BamlTool trait
-//! - Tool execution from Rust
-//! - Tool execution from JavaScript via QuickJS
-//! - Tool metadata and listing
-//! - **E2E: Actual LLM calls that invoke registered tools**
+//! **Purpose:** Verify that tools implemented with the BamlTool trait can be
+//! registered, executed from Rust (with scope), exposed to QuickJS (openToolSession),
+//! and that list_tools / get_tool_metadata return correct data. No LLM calls;
+//! E2E authority for LLM→tool is in baml-rt (voidship) and runner.
 
 use async_trait::async_trait;
 use baml_rt::tools::BamlTool;
@@ -18,8 +16,7 @@ use ts_rs::TS;
 
 use baml_rt_tools::bundles::BundleType;
 use test_support::common::{
-    CalculatorTool, WeatherTool, assert_tool_registered_in_js, require_api_key,
-    setup_baml_runtime_default, setup_bridge,
+    assert_tool_registered_in_js, setup_baml_runtime_default, setup_bridge,
 };
 
 // Test bundle for test tools
@@ -159,20 +156,23 @@ impl BamlTool for StringManipulationTool {
     }
 }
 
+/// **Purpose:** Register ArithmeticTool and StringManipulationTool, then execute
+/// them from Rust (execute_tool) inside an invocation scope and assert correct results.
 #[tokio::test]
 async fn test_e2e_trait_tool_registration_rust_execution() {
-    // Set up BAML runtime
     let baml_manager = setup_baml_runtime_default();
 
-    // Register tools using trait system
     {
         let mut manager = baml_manager.lock().await;
         manager.register_tool(ArithmeticTool).await.unwrap();
         manager.register_tool(StringManipulationTool).await.unwrap();
     }
 
-    // Execute tools from Rust
-    {
+    let scope = context::InvocationScope::standalone(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-000000000020").unwrap(),
+    ));
+
+    context::with_scope(scope.as_scope().clone(), async {
         let manager = baml_manager.lock().await;
 
         let arithmetic_result = manager
@@ -202,12 +202,14 @@ async fn test_e2e_trait_tool_registration_rust_execution() {
             .and_then(|v| v.as_str())
             .unwrap();
         assert_eq!(result, "lmab", "Reversing 'baml' should give 'lmab'");
-    }
+    })
+    .await;
 }
 
+/// **Purpose:** Register ArithmeticTool, create QuickJS bridge; assert the tool
+/// is visible to JS via assert_tool_registered_in_js (scope required for Rust tools).
 #[tokio::test]
 async fn test_e2e_trait_tool_js_registration() {
-    // Set up BAML runtime and bridge
     let baml_manager = setup_baml_runtime_default();
 
     // Register tools using trait system
@@ -225,9 +227,10 @@ async fn test_e2e_trait_tool_js_registration() {
     assert_tool_registered_in_js(&mut bridge, "test/arithmetic", Some(&scope)).await;
 }
 
+/// **Purpose:** After registering two tools, list_tools() contains their names
+/// and get_tool_metadata("test/arithmetic") returns name and description.
 #[tokio::test]
 async fn test_e2e_trait_tool_metadata_and_listing() {
-    // Set up BAML runtime
     let baml_manager = setup_baml_runtime_default();
 
     // Register tools
@@ -251,41 +254,4 @@ async fn test_e2e_trait_tool_metadata_and_listing() {
     }
 }
 
-#[tokio::test]
-async fn test_e2e_trait_tool_llm_calling() {
-    let _ = require_api_key();
-
-    // Set up BAML runtime
-    let baml_manager = setup_baml_runtime_default();
-
-    // Register tools
-    {
-        let mut manager = baml_manager.lock().await;
-        manager.register_tool(WeatherTool).await.unwrap();
-        manager.register_tool(CalculatorTool).await.unwrap();
-    }
-
-    // Invoke a function that may call tools (scope required for execute_tool / with_agent_id)
-    {
-        let manager = baml_manager.lock().await;
-        let agent_id = AgentId::from_uuid(
-            UuidId::parse_str("00000000-0000-0000-0000-000000000010").expect("valid test uuid"),
-        );
-        let scope = context::InvocationScope::standalone(agent_id.clone());
-        let result = context::with_scope(scope.as_scope().clone(), async {
-            context::with_agent_id(agent_id, async {
-                manager
-                    .invoke_function("ChooseTool", json!({"user_message": "What is 42 times 7?"}))
-                    .await
-            })
-            .await
-        })
-        .await;
-
-        match result {
-            Ok(Ok(_)) => {}
-            Ok(Err(err)) => panic!("invoke_function failed: {err}"),
-            Err(err) => panic!("scope/with_agent_id failed: {err}"),
-        }
-    }
-}
+// E2E trait-tool LLM calling retired: authority is baml-rt voidship + concurrent tests.

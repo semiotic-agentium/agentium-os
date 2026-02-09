@@ -30,3 +30,4 @@ tracing-opentelemetry = { workspace = true }
 test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
 insta = { workspace = true }
+proptest = "1.5"

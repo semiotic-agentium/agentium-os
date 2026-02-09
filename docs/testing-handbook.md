@@ -41,8 +41,65 @@ Use `crates/test-support` for setup and fixtures rather than duplicating logic:
 - `setup_baml_runtime_default()` and `setup_baml_runtime_from_fixture()` for runtime setup
 - `setup_bridge()` for QuickJS bridge setup
 - `agent_fixture()` and `fixture_path()` for fixture files
+- **`ensure_fixture_runtime_types()`** — call at the start of any E2E test that loads from
+  `tests/fixtures/agents/` (e.g. `agent_fixture("voidship-rites")` or `setup_baml_runtime_from_fixture(...)`).
+  Ensures fixture runtime types are regenerated once per test process before use.
 - `require_api_key()` to gate tests that require `OPENROUTER_API_KEY`
 - `ensure_baml_src_exists()` to skip tests when `baml_src` is missing
+
+---
+
+## Authoritative E2E and Test Layers
+
+We keep **one authoritative E2E per behavior** to avoid overlapping coverage and flaky duplicates.
+
+### E2E Authority (single source of truth)
+
+- **Streaming E2E (full agent → stream):**  
+  `crates/baml-agent-runner/tests/runner_test.rs`  
+  - `test_e2e_stream_baml_tool`, `test_e2e_stream_js_tool` — full runner + fixture package + stream.
+- **Tool/LLM E2E (single request):**  
+  `crates/baml-rt/tests/tool_calling_test.rs`  
+  - `test_e2e_voidship_baml_tool_calling` — single-request tool E2E from fixture.
+- **Tool/LLM E2E (concurrent):**  
+  `crates/baml-rt/tests/tool_calling_test.rs`  
+  - `test_e2e_voidship_baml_tool_calling_concurrent` — concurrent tool calls with per-request scope;
+  authoritative for concurrency correctness (per-conversation scope, no cross-contamination).
+
+### Integration (non–full E2E)
+
+- **A2A streaming protocol:** `crates/baml-rt-a2a/tests/task_streaming_test.rs` — protocol semantics,
+  tool-call flows, subscribe; not full runner binary.
+- **QuickJS scope propagation:** `crates/baml-rt-quickjs/tests/bridge_test.rs` — scope attribution
+  under concurrency, tool session plans.
+
+### Property tests (invariants)
+
+- **Scope attribution:** `crates/baml-rt-a2a/tests/provenance_property_test.rs` — no cross-contamination
+  of `context_id` across concurrent requests.
+- **Tool session lifecycle:** `crates/baml-rt-quickjs/tests/tool_session_property_test.rs` — valid
+  session plans (open → send* → next → finish) complete consistently.
+- **Stream chunk order and finality:** `crates/baml-rt-a2a/tests/stream_property_test.rs` — yielded
+  chunks preserve order; exactly one chunk is final.
+
+### Concurrency coverage
+
+- **E2E:** `test_e2e_voidship_baml_tool_calling_concurrent` (baml-rt) — multiple requests with
+  distinct agent/context IDs; each request’s result must match its inputs (no cross-talk).
+- **Integration:** `test_context_id_is_task_local_under_concurrency` (baml-rt-a2a provenance_context_test),
+  `test_quickjs_concurrent_scope_propagation` (bridge_test) — scope and provenance attribution.
+- **Property:** `prop_scope_attribution_no_cross_contamination` (provenance_property_test) — any
+  N concurrent requests with distinct context_ids produce events only for those context_ids.
+
+### Malformed and error-path E2E
+
+All live in `crates/baml-rt-a2a/tests/a2a_malformed_and_error_paths_test.rs`. Purpose: verify invalid
+JSON-RPC input and runtime error paths produce the expected error responses or stream content.
+
+- **Malformed JSON-RPC:** `test_malformed_a2a_invalid_jsonrpc_version`, `test_malformed_a2a_unsupported_method`, `test_malformed_a2a_invalid_params` — wrong version, unsupported method, or invalid params yield a single error response.
+- **Allowlist during streaming:** `test_allowlist_violation_during_stream` — JS opens a tool not in the runtime allowlist; stream must contain allowlist error.
+- **Streaming tool failure:** `test_streaming_tool_failure_mid_stream` — tool returns `Err` mid-stream; stream must contain error content.
+- **Concurrency mixed success/failure:** `test_concurrency_mixed_success_failure` — valid and malformed requests run concurrently; valid succeed, malformed return error.
 
 ---
 
@@ -95,7 +152,8 @@ normalized data) to avoid noisy churn.
 
 ## Invariants and Behavior Contracts
 
-Invariants should be encoded as direct assertions in tests, especially in:
+Invariants should be encoded as direct assertions in tests, and where appropriate as
+**property tests** (e.g. `proptest`), especially in:
 
 - Provenance normalization and relation derivation
   (`crates/baml-rt-provenance/tests/normalizer_test.rs`)
@@ -103,6 +161,12 @@ Invariants should be encoded as direct assertions in tests, especially in:
   (`crates/baml-rt-provenance/tests/store_test.rs`)
 - Tool registration and execution correctness
   (`crates/baml-rt/tests/tool_calling_test.rs`)
+- **Scope attribution:** property test that no provenance event has a `context_id` from a
+  different request (`provenance_property_test::prop_scope_attribution_no_cross_contamination`).
+- **Tool session lifecycle:** property test that valid session plans complete
+  (`tool_session_property_test::prop_valid_session_plans_complete`).
+- **Stream order and finality:** property test that K chunks yield K responses in order and
+  exactly one final (`stream_property_test::prop_stream_chunk_order_and_finality`).
 
 ### How to Discover New Invariants
 

@@ -1,18 +1,16 @@
 /**
- * A2A runtime shim: register handler and tools on globalThis so the runner can invoke them.
+ * Chat runtime shim: register handler and tools on globalThis so the runner can invoke them.
  * Loaded before agent code (prepended to dist/index.js) or evaluated first.
- * Host overwrites __baml_a2a_yield for stream requests; no-op here so the symbol always exists.
+ * Host overwrites __baml_chat_yield for stream requests; no-op here so the symbol always exists.
+ * The JS interface is message-only; IDs and protocol metadata are host-managed.
  */
 (function () {
-  globalThis.__baml_a2a_yield = function (chunk) {
-    if (globalThis.__baml_a2a_yield_buffer) globalThis.__baml_a2a_yield_buffer.push(chunk);
+  globalThis.__baml_chat_yield = function (chunk) {
+    if (globalThis.__baml_chat_yield_buffer) globalThis.__baml_chat_yield_buffer.push(chunk);
   };
-  function __baml_a2a_register(agent) {
-    if (agent.handle_a2a_request != null) {
-      globalThis.handle_a2a_request = agent.handle_a2a_request;
-    }
-    if (agent.handle_a2a_cancel != null) {
-      globalThis.handle_a2a_cancel = agent.handle_a2a_cancel;
+  function __baml_chat_register(agent) {
+    if (agent.onChatMessage != null) {
+      globalThis.onChatMessage = agent.onChatMessage;
     }
     if (agent.tools != null && typeof agent.tools === 'object') {
       globalThis.__js_tools = globalThis.__js_tools || {};
@@ -23,5 +21,5 @@
       }
     }
   }
-  globalThis.__baml_a2a_register = __baml_a2a_register;
+  globalThis.__baml_chat_register = __baml_chat_register;
 })();

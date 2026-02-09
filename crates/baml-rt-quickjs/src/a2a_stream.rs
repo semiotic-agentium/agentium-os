@@ -24,8 +24,8 @@
 //!   For non-stream requests, the JS promise eventually resolves or the evaluate loop hits MAX_ATTEMPTS.
 //!
 //! - **L6 (Stream Promise Non-Termination)**  
-//!   For stream requests, the promise from `handle_a2a_request()` is DESIGNED to never resolve.
-//!   It yields chunks via `__baml_a2a_yield()` and only completes on agent exit or crash.
+//!   For stream requests, the promise from `onChatMessage()` is DESIGNED to never resolve.
+//!   It yields chunks via `__baml_chat_yield()` and only completes on agent exit or crash.
 //!   `invoke_js_function_stream()` starts the function but does NOT wait for promise resolution.
 //!
 //! **CG4 (Stream Promise Non-Resolution):** The type parameter `P` encodes promise semantics;
@@ -36,15 +36,17 @@ use baml_rt_core::Result;
 use baml_rt_core::context::InvocationScope;
 use serde_json::Value;
 use std::marker::PhantomData;
+use std::time::{Duration, Instant};
+use tokio::time::sleep;
 
 /// State marker: yield buffer is installed and ready for one stream invocation.
 pub struct YieldBufferReady;
 
-/// State marker: handle_a2a_request has been invoked (promise intentionally not awaited).
+/// State marker: onChatMessage has been invoked (promise intentionally not awaited).
 pub struct InvocationComplete;
 
 /// **INVARIANT L6 / CG4:** Marker type encoding that the JS promise never resolves for this session.
-/// Stream handlers yield via `__baml_a2a_yield()`; the host must never wait on promise resolution.
+/// Stream handlers yield via `__baml_chat_yield()`; the host must never wait on promise resolution.
 #[derive(Debug, Clone, Copy)]
 pub struct NonResolvingPromise;
 
@@ -78,8 +80,8 @@ pub async fn begin_a2a_yield_session(
 }
 
 impl<'a> A2aYieldSession<'a, YieldBufferReady, NonResolvingPromise> {
-    /// Invokes `handle_a2a_request` with the given request. The JS handler must use
-    /// `__baml_a2a_yield(chunk)`; the return value is ignored.
+    /// Invokes `onChatMessage` with the given chat message payload. The JS handler must use
+    /// `__baml_chat_yield(chunk)`; the return value is ignored.
     ///
     /// **Liveness (L2):** Caller must eventually call [`collect`](A2aYieldSession::collect) on the returned session.
     ///
@@ -91,7 +93,7 @@ impl<'a> A2aYieldSession<'a, YieldBufferReady, NonResolvingPromise> {
         request: Value,
     ) -> Result<A2aYieldSession<'a, InvocationComplete, NonResolvingPromise>> {
         self.bridge
-            .invoke_js_function_stream(scope, "handle_a2a_request", request)
+            .invoke_js_function_stream(scope, "onChatMessage", request)
             .await?;
         Ok(A2aYieldSession {
             bridge: self.bridge,
@@ -102,10 +104,24 @@ impl<'a> A2aYieldSession<'a, YieldBufferReady, NonResolvingPromise> {
 
 impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
     /// Reads and clears the yield buffer. Returns the sequence of chunks yielded via
-    /// `__baml_a2a_yield` during the preceding invoke.
+    /// `__baml_chat_yield` during the preceding invoke.
     ///
-    /// **Liveness (L3):** This method returns in finite time.
+    /// **Liveness (L3):** This method returns in finite time. It polls briefly to allow
+    /// async handlers to yield before the buffer is read.
     pub async fn collect(self) -> Result<Vec<Value>> {
-        self.bridge.get_a2a_yield_buffer().await
+        let start = Instant::now();
+        let timeout = Duration::from_secs(30);
+        let interval = Duration::from_millis(50);
+
+        loop {
+            let responses = self.bridge.get_a2a_yield_buffer().await?;
+            if !responses.is_empty() {
+                return Ok(responses);
+            }
+            if start.elapsed() >= timeout {
+                return Ok(responses);
+            }
+            sleep(interval).await;
+        }
     }
 }

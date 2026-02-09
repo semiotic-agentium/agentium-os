@@ -20,15 +20,20 @@ impl QuickJSBridge {
         self.register_tool_session_helpers().await?;
         self.register_tool_session_wrapper().await?;
 
+        // Register a JS-callable wrapper per tool so each tool name is available as a function
+        let tool_names = {
+            let manager = self.baml_manager.lock().await;
+            manager.list_tools().await
+        };
+        for tool_name in tool_names {
+            self.register_single_tool(&tool_name).await?;
+        }
+
         Ok(())
     }
 
-    /// Register a single tool function with QuickJS
-    #[allow(dead_code)]
+    /// Register a single tool function with QuickJS (per-tool JS wrapper).
     pub(crate) async fn register_single_tool(&mut self, tool_name: &str) -> Result<()> {
-        let _manager_clone = self.baml_manager.clone();
-        let _tool_name_clone = tool_name.to_string();
-
         // Register a JavaScript wrapper function for the tool
         let js_code = wrappers::build_token_args_wrapper(
             tool_name,

@@ -103,9 +103,12 @@ pub async fn run_bootstrap(
 
     let d_ts_src = build_dir.join("dist").join("baml-runtime.d.ts");
     let d_ts_dest = src_dir.join("baml-runtime.d.ts");
-    if d_ts_src.exists() {
-        fs::copy(&d_ts_src, &d_ts_dest).map_err(BamlRtError::Io)?;
+    if !d_ts_src.exists() {
+        return Err(BamlRtError::InvalidArgument(
+            "baml-runtime.d.ts was not generated during bootstrap".to_string(),
+        ));
     }
+    fs::copy(&d_ts_src, &d_ts_dest).map_err(BamlRtError::Io)?;
 
     let a2a_ts = include_str!("a2a.ts");
     fs::write(src_dir.join("a2a.ts"), a2a_ts).map_err(BamlRtError::Io)?;
@@ -207,31 +210,22 @@ fn index_ts_template(prompt_name: &str, no_tools: bool) -> String {
         r#"// @ts-nocheck
 // Types from ./a2a.ts (normal TS include).
 
-function extractText(params: unknown): string {{
-  if (!params || typeof params !== 'object') return 'unknown';
-  const p = params as Record<string, unknown>;
-  if (typeof p.text === 'string') return p.text;
-  const message = p.message as Record<string, unknown> | undefined;
-  if (message && Array.isArray(message.parts) && message.parts.length > 0) {{
-    const first = (message.parts as Record<string, unknown>[])[0];
+function extractText(message: unknown): string {{
+  if (!message || typeof message !== 'object') return 'unknown';
+  const m = message as Record<string, unknown>;
+  if (Array.isArray(m.parts) && m.parts.length > 0) {{
+    const first = (m.parts as Record<string, unknown>[])[0];
     if (first && typeof first.text === 'string') return first.text;
   }}
   return 'unknown';
 }}
 
-async function handle_a2a_request(request: unknown): Promise<void> {{
-  const params = request.params ?? {{}} as Record<string, unknown>;
-  const text = extractText(params);
+async function onChatMessage(message: unknown): Promise<void> {{
+  const text = extractText(message);
   const result = await {fn_name}({args});
-  __baml_a2a_yield({{
-    message: {{
-      messageId: 'resp-1',
-      role: 'ROLE_AGENT',
-      parts: [{{ text: String(result) }}],
-    }},
-  }});
+  __baml_chat_yield({{ message: {{ parts: [{{ text: String(result) }}] }} }});
 }}
-__baml_a2a_register({{ handle_a2a_request }});
+__baml_chat_register({{ onChatMessage }});
 "#,
         fn_name = fn_name,
         args = args

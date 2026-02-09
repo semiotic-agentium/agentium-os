@@ -7,6 +7,7 @@ pub use test_tools::{DelayedResponseTool, UppercaseTool, WeatherTool};
 // Fixture helpers
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::Once;
 use tokio::sync::Mutex;
 
 use baml_rt::QuickJSConfig;
@@ -22,6 +23,25 @@ pub fn fixture_path(relative_path: &str) -> PathBuf {
 
 pub fn agent_fixture(name: &str) -> PathBuf {
     fixture_path(&format!("agents/{}", name))
+}
+
+/// Ensure fixture TypeScript runtime declarations are up to date.
+/// Runs the builder's regen_fixtures binary once per test process.
+pub fn ensure_fixture_runtime_types() {
+    static REGEN_FIXTURES: Once = Once::new();
+    REGEN_FIXTURES.call_once(|| {
+        let output = crate::support::cli::CliHarness::new()
+            .regen_fixtures_command()
+            .output()
+            .expect("run regen_fixtures");
+        if !output.status.success() {
+            panic!(
+                "regen_fixtures failed: stdout={}, stderr={}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    });
 }
 
 pub fn setup_baml_runtime(schema_path: &str) -> Arc<Mutex<BamlRuntimeManager>> {

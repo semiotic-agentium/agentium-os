@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 #[tokio::test]
 async fn test_js_stream_baml_function() {
+    test_support::common::ensure_fixture_runtime_types();
+
     // Set up BAML runtime
     let mut baml_manager = BamlRuntimeManager::new().unwrap();
 
