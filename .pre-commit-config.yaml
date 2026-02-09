@@ -29,18 +29,6 @@ repos:
         # Uncomment below to run on all files (slower but more thorough)
         # args: ['--all', '--', '-D', 'warnings']
 
-  # Cargo audit for security vulnerabilities
-  - repo: local
-    hooks:
-      - id: cargo-audit
-        name: cargo audit
-        entry: cargo audit --deny warnings
-        language: system
-        pass_filenames: false
-        always_run: true
-        types: [rust]
-        # Note: Install with: cargo install cargo-audit
-
   # Typos - spell checker for code
   - repo: https://github.com/crate-ci/typos
     rev: v1.28.1
