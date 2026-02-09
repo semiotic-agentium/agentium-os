@@ -1,0 +1,105 @@
+# Pre-commit hooks for Rust project
+# Install pre-commit: pip install pre-commit
+# Then run: pre-commit install
+
+repos:
+  # General file checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-toml
+      - id: check-added-large-files
+        args: ['--maxkb=1000']
+      - id: check-merge-conflict
+      - id: check-case-conflict
+
+  # Rust formatting
+  - repo: https://github.com/doublify/pre-commit-rust
+    rev: v1.0
+    hooks:
+      - id: fmt
+        args: ['--', '--check']
+      - id: clippy
+        args: ['--', '-D', 'warnings']
+        # Only run on staged files for faster checks
+        # Uncomment below to run on all files (slower but more thorough)
+        # args: ['--all', '--', '-D', 'warnings']
+
+  # Cargo audit for security vulnerabilities
+  - repo: local
+    hooks:
+      - id: cargo-audit
+        name: cargo audit
+        entry: cargo audit --deny warnings
+        language: system
+        pass_filenames: false
+        always_run: true
+        types: [rust]
+        # Note: Install with: cargo install cargo-audit
+
+  # Typos - spell checker for code
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.28.1
+    hooks:
+      - id: typos
+        # Exclude generated files and common false positives
+        exclude: |
+          (?x)^(
+            target/|
+            Cargo.lock|
+            \.snap$|
+            \.tar\.gz$|
+            node_modules/|
+            dist/
+          )
+
+  # Cargo deny - comprehensive dependency checking
+  - repo: local
+    hooks:
+      - id: cargo-deny
+        name: cargo deny
+        entry: cargo deny check
+        language: system
+        pass_filenames: false
+        always_run: true
+        types: [rust]
+        # Install with: cargo install cargo-deny && cargo deny init
+
+  # Cargo machete - find unused dependencies
+  - repo: local
+    hooks:
+      - id: cargo-machete
+        name: cargo machete
+        entry: cargo machete
+        language: system
+        pass_filenames: false
+        always_run: true
+        types: [rust]
+        # Install with: cargo install cargo-machete
+
+  # Cargo outdated - check for outdated dependencies
+  - repo: local
+    hooks:
+      - id: cargo-outdated
+        name: cargo outdated
+        entry: cargo outdated --exit-code 1
+        language: system
+        pass_filenames: false
+        always_run: true
+        types: [rust]
+        # Install with: cargo install cargo-outdated
+
+  # Cargo check - basic compilation check
+  - repo: local
+    hooks:
+      - id: cargo-check
+        name: cargo check
+        entry: cargo check --all-targets
+        language: system
+        pass_filenames: false
+        always_run: true
+        types: [rust]
