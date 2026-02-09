@@ -401,14 +401,18 @@ impl JsChunkNormalizer {
         Ok(())
     }
 
-    fn ensure_status_update_fields(&mut self, status_update: &mut Value) -> Result<()> {
-        let Some(map) = status_update.as_object_mut() else {
-            return Ok(());
-        };
+    fn ensure_context_and_task_fields(&self, map: &mut Map<String, Value>) {
         map.entry("contextId".to_string())
             .or_insert_with(|| Value::String(self.context_id.as_str().to_string()));
         map.entry("taskId".to_string())
             .or_insert_with(|| Value::String(self.task_id.as_str().to_string()));
+    }
+
+    fn ensure_status_update_fields(&mut self, status_update: &mut Value) -> Result<()> {
+        let Some(map) = status_update.as_object_mut() else {
+            return Ok(());
+        };
+        self.ensure_context_and_task_fields(map);
         if let Some(status) = map.get_mut("status") {
             self.ensure_status_fields(status)?;
         }
@@ -419,10 +423,7 @@ impl JsChunkNormalizer {
         let Some(map) = artifact_update.as_object_mut() else {
             return Ok(());
         };
-        map.entry("contextId".to_string())
-            .or_insert_with(|| Value::String(self.context_id.as_str().to_string()));
-        map.entry("taskId".to_string())
-            .or_insert_with(|| Value::String(self.task_id.as_str().to_string()));
+        self.ensure_context_and_task_fields(map);
         Ok(())
     }
 }

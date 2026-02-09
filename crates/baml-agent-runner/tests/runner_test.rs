@@ -215,6 +215,48 @@ fn user_message(message_id: &str, text: &str) -> Message {
     }
 }
 
+fn jsonrpc_request(method: &str, params: serde_json::Value, id: &str) -> JSONRPCRequest {
+    JSONRPCRequest {
+        jsonrpc: "2.0".to_string(),
+        method: method.to_string(),
+        params: Some(params),
+        id: Some(JSONRPCId::String(id.to_string())),
+    }
+}
+
+fn send_message_request(params: SendMessageRequest, id: &str) -> JSONRPCRequest {
+    jsonrpc_request(
+        "message.sendStream",
+        serde_json::to_value(params).unwrap(),
+        id,
+    )
+}
+
+fn extract_chunks(responses: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+    responses
+        .iter()
+        .filter_map(|r| {
+            r.get("result")
+                .and_then(|res| res.get("chunk").or(Some(res)))
+        })
+        .collect()
+}
+
+fn extract_message_texts<'a>(chunks: &'a [&serde_json::Value]) -> Vec<&'a str> {
+    chunks
+        .iter()
+        .filter_map(|chunk| {
+            chunk
+                .get("message")
+                .and_then(|m| m.get("parts"))
+                .and_then(|p| p.as_array())
+                .and_then(|p| p.first())
+                .and_then(|part| part.get("text"))
+                .and_then(|v| v.as_str())
+        })
+        .collect()
+}
+
 async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
     ensure_fixture_runtime_types();
     let built = build_fixture_to_temp("stream-baml-tool");
@@ -474,49 +516,22 @@ async fn test_e2e_stream_baml_tool() {
         tenant: None,
         extra: std::collections::HashMap::new(),
     };
-    let request = JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "message.sendStream".to_string(),
-        params: Some(serde_json::to_value(params).unwrap()),
-        id: Some(JSONRPCId::String("corr-1-1".to_string())),
-    };
+    let request = send_message_request(params, "corr-1-1");
     let responses = agent
         .handle_a2a(serde_json::to_value(request).unwrap())
         .await
         .unwrap();
-    let text = responses
+    let chunks = extract_chunks(&responses);
+    let texts = extract_message_texts(&chunks);
+    let text = texts
         .iter()
-        .filter_map(|r| {
-            r.get("result")
-                .and_then(|res| res.get("chunk").or(Some(res)))
-        })
-        .filter_map(|chunk| {
-            chunk
-                .get("message")
-                .and_then(|m| m.get("parts"))
-                .and_then(|p| p.as_array())
-                .and_then(|p| p.first())
-                .and_then(|part| part.get("text"))
-                .and_then(|v| v.as_str())
-        })
         .find(|t| t.contains("sum=5"))
+        .copied()
         .unwrap_or("");
     assert!(
         !text.is_empty(),
         "Expected BAML tool result (sum=5) in stream. Source .env for OPENROUTER_API_KEY. Message texts: {:?}. Raw: {}",
-        responses
-            .iter()
-            .filter_map(|r| {
-                r.get("result")
-                    .and_then(|res| res.get("chunk").or(Some(res)))
-                    .and_then(|c| c.get("message"))
-                    .and_then(|m| m.get("parts"))
-                    .and_then(|p| p.as_array())
-                    .and_then(|p| p.first())
-                    .and_then(|part| part.get("text"))
-                    .and_then(|v| v.as_str())
-            })
-            .collect::<Vec<_>>(),
+        texts,
         serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
     );
 }
@@ -533,22 +548,14 @@ async fn test_e2e_stream_js_tool() {
         tenant: None,
         extra: std::collections::HashMap::new(),
     };
-    let request = JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "message.sendStream".to_string(),
-        params: Some(serde_json::to_value(params).unwrap()),
-        id: Some(JSONRPCId::String("corr-1-1".to_string())),
-    };
+    let request = send_message_request(params, "corr-1-1");
     let responses = agent
         .handle_a2a(serde_json::to_value(request).unwrap())
         .await
         .unwrap();
-    let task_id = responses
+    let chunks = extract_chunks(&responses);
+    let task_id = chunks
         .iter()
-        .filter_map(|r| {
-            r.get("result")
-                .and_then(|res| res.get("chunk").or(Some(res)))
-        })
         .find_map(|chunk| {
             chunk
                 .get("task")
@@ -566,28 +573,22 @@ async fn test_e2e_stream_js_tool() {
 
     let mut saw_status = false;
     let mut saw_artifact = false;
-    for response in &responses {
-        if let Some(chunk) = response
-            .get("result")
-            .and_then(|result| result.get("chunk"))
-        {
-            if chunk.get("statusUpdate").is_some() {
-                saw_status = true;
-            }
-            if chunk.get("artifactUpdate").is_some() {
-                saw_artifact = true;
-            }
+    for chunk in &chunks {
+        if chunk.get("statusUpdate").is_some() {
+            saw_status = true;
+        }
+        if chunk.get("artifactUpdate").is_some() {
+            saw_artifact = true;
         }
     }
     assert!(saw_status, "Expected statusUpdate in streaming chunks");
     assert!(saw_artifact, "Expected artifactUpdate in streaming chunks");
 
-    let subscribe_request = JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "tasks.subscribe".to_string(),
-        params: Some(json!({ "id": task_id, "stream": true })),
-        id: Some(JSONRPCId::String("corr-1-2".to_string())),
-    };
+    let subscribe_request = jsonrpc_request(
+        "tasks.subscribe",
+        json!({ "id": task_id, "stream": true }),
+        "corr-1-2",
+    );
     let responses = agent
         .handle_a2a(serde_json::to_value(subscribe_request).unwrap())
         .await
