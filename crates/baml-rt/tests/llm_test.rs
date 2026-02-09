@@ -1,6 +1,10 @@
 //! End-to-end test using actual LLM via OpenRouter
 
+use baml_rt_core::context::{self, InvocationScope};
+use baml_rt_core::ids::{AgentId, UuidId};
+use serde_json::json;
 use test_support::common::{require_api_key, setup_baml_runtime_default, setup_bridge};
+use uuid::Uuid;
 
 #[tokio::test]
 async fn test_e2e_simple_greeting_with_llm() {
@@ -10,34 +14,35 @@ async fn test_e2e_simple_greeting_with_llm() {
     let baml_manager = setup_baml_runtime_default();
     let mut bridge = setup_bridge(baml_manager).await;
 
-    // Call BAML function from JavaScript
-    let js_code = r#"
-        (() => __awaitAndStringify(
-            SimpleGreeting({ name: "E2E Test User" })
-        ))()
-    "#;
-
-    tracing::info!("Executing JavaScript that calls BAML function...");
-    let result = bridge.evaluate(None, js_code).await;
+    // Call BAML function via invoke_function (uses task-local scope; evaluate()+scope has worker-thread subtleties).
+    let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
+    let scope = InvocationScope::standalone(agent_id);
+    tracing::info!("Invoking SimpleGreeting BAML function...");
+    let result = context::with_scope(scope.as_scope().clone(), async {
+        bridge
+            .invoke_function("SimpleGreeting", json!({ "name": "E2E Test User" }))
+            .await
+    })
+    .await;
 
     match result {
         Ok(response_value) => {
-            // The response should be a JSON string from __awaitAndStringify
             let response_str = response_value.as_str().unwrap_or("");
-
             tracing::info!("✅ BAML function executed successfully!");
             tracing::info!("Response: {}", response_str);
 
-            // Verify response is not empty
-            assert!(!response_str.is_empty(), "Response should not be empty");
+            assert!(
+                !response_str.is_empty(),
+                "Response should not be empty (got value: {})",
+                response_value
+            );
 
-            // The greeting should contain the name or be a reasonable response
             let response_lower = response_str.to_lowercase();
             assert!(
                 response_lower.contains("e2e")
                     || response_lower.contains("test")
                     || response_lower.contains("user")
-                    || response_str.len() > 5, // Or just be a reasonable length
+                    || response_str.len() > 5,
                 "Response should be meaningful or mention the name"
             );
         }
@@ -60,7 +65,7 @@ async fn test_e2e_streaming_greeting() {
     let baml_manager = setup_baml_runtime_default();
     let mut bridge = setup_bridge(baml_manager).await;
 
-    // Call streaming BAML function from JavaScript
+    // Call streaming BAML function from JavaScript with scope (streaming path uses worker-thread scope).
     let js_code = r#"
         (() => __awaitAndStringify(
             (async () => {
@@ -74,8 +79,13 @@ async fn test_e2e_streaming_greeting() {
         ))()
     "#;
 
+    let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
+    let scope = InvocationScope::standalone(agent_id);
     tracing::info!("Executing streaming JavaScript call...");
-    let result = bridge.evaluate(None, js_code).await;
+    let result = context::with_scope(scope.as_scope().clone(), async {
+        bridge.evaluate(Some(&scope), js_code).await
+    })
+    .await;
 
     match result {
         Ok(response_value) => {

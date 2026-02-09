@@ -105,19 +105,22 @@ pub fn parse_tool_name_and_class(name: &str) -> Result<(ToolName, String)> {
 ///
 /// # Example
 /// ```rust,no_run
-/// use baml_rt::tools::BamlTool;
-/// use serde_json::{json, Value};
+/// use baml_rt_tools::{BamlTool, Support};
+/// use baml_rt_core::Result;
+/// use serde::{Deserialize, Serialize};
+/// use schemars::JsonSchema;
+/// use ts_rs::TS;
 /// use async_trait::async_trait;
 ///
 /// struct WeatherTool;
 ///
-/// #[derive(Serialize, Deserialize, JsonSchema, TS)]
+/// #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 /// #[ts(export)]
 /// struct WeatherInput {
 ///     location: String,
 /// }
 ///
-/// #[derive(Serialize, Deserialize, JsonSchema, TS)]
+/// #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 /// #[ts(export)]
 /// struct WeatherOutput {
 ///     temperature: String,
@@ -126,7 +129,9 @@ pub fn parse_tool_name_and_class(name: &str) -> Result<(ToolName, String)> {
 ///
 /// #[async_trait]
 /// impl BamlTool for WeatherTool {
-///     const NAME: &'static str = "get_weather";
+///     type Bundle = Support;
+///     const LOCAL_NAME: &'static str = "get_weather";
+///     type OpenInput = ();
 ///     type Input = WeatherInput;
 ///     type Output = WeatherOutput;
 ///
@@ -134,7 +139,7 @@ pub fn parse_tool_name_and_class(name: &str) -> Result<(ToolName, String)> {
 ///         "Gets the current weather for a specific location"
 ///     }
 ///
-///     async fn execute(&self, args: Self::Input) -> baml_rt::Result<Self::Output> {
+///     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
 ///         Ok(WeatherOutput {
 ///             temperature: "22°C".to_string(),
 ///             location: args.location,
@@ -631,12 +636,6 @@ pub enum ToolOrigin {
     Guest,
 }
 
-/// Trait for enforcing tool access policy based on origin
-pub trait ToolAccessPolicy: Send + Sync {
-    /// Ensure a tool is allowed to be executed based on its name and origin
-    fn ensure_allowed(&self, name: &ToolName, origin: ToolOrigin) -> Result<()>;
-}
-
 pub struct ToolSessionContext {
     pub session_id: ToolSessionId,
     pub tool_name: ToolName,
@@ -971,32 +970,37 @@ impl ToolRegistry {
     ///
     /// # Example
     /// ```rust,no_run
-    /// use baml_rt::tools::{ToolRegistry, BamlTool};
-    /// use serde_json::json;
+    /// use baml_rt_tools::{ToolRegistry, BamlTool, Support};
+    /// use baml_rt_core::Result;
+    /// use serde::{Deserialize, Serialize};
+    /// use schemars::JsonSchema;
+    /// use ts_rs::TS;
     /// use async_trait::async_trait;
     ///
     /// struct MyTool;
     ///
-    /// #[derive(Serialize, Deserialize, JsonSchema, TS)]
+    /// #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
     /// #[ts(export)]
     /// struct MyInput {}
     ///
-    /// #[derive(Serialize, Deserialize, JsonSchema, TS)]
+    /// #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
     /// #[ts(export)]
     /// struct MyOutput {}
     ///
     /// #[async_trait]
     /// impl BamlTool for MyTool {
-    ///     const NAME: &'static str = "my_tool";
+    ///     type Bundle = Support;
+    ///     const LOCAL_NAME: &'static str = "my_tool";
+    ///     type OpenInput = ();
     ///     type Input = MyInput;
     ///     type Output = MyOutput;
     ///     fn description(&self) -> &'static str { "My tool" }
-    ///     async fn execute(&self, _args: Self::Input) -> baml_rt::Result<Self::Output> {
+    ///     async fn execute(&self, _args: Self::Input) -> Result<Self::Output> {
     ///         Ok(MyOutput {})
     ///     }
     /// }
     ///
-    /// let mut registry = ToolRegistry::new();
+    /// let registry = ToolRegistry::new();
     /// registry.register(MyTool).expect("register tool");
     /// ```
     pub fn register<T: BamlTool>(&self, tool: T) -> Result<()> {
@@ -1449,21 +1453,6 @@ impl ToolRegistry {
         crate::metrics::record_tool_execution(name, result_str, duration);
 
         result
-    }
-
-    fn ensure_allowed(&self, name: &ToolName, origin: ToolOrigin) -> Result<()> {
-        if origin == ToolOrigin::Host {
-            let inner = self.inner.lock().unwrap();
-            if let Some(allowlist) = &inner.allowlist
-                && !allowlist.contains(name)
-            {
-                return Err(BamlRtError::InvalidArgument(format!(
-                    "Tool '{}' is not declared in the manifest allowlist",
-                    name
-                )));
-            }
-        }
-        Ok(())
     }
 }
 

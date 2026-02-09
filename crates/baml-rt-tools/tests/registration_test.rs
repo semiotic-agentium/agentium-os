@@ -514,7 +514,7 @@ async fn test_register_multiple_js_tools() {
 async fn test_invalid_open_input_deserialization() {
     tracing::info!("Test: Invalid open_input deserialization preserves error source");
 
-    let mut registry = baml_rt_tools::ToolRegistry::new();
+    let registry = baml_rt_tools::ToolRegistry::new();
     registry.register(AddNumbersTool).unwrap();
 
     // Try to open a session with invalid open_input (should be empty object for unit type)
@@ -552,7 +552,7 @@ async fn test_open_session_with_initial_input() {
     use baml_rt_tools::ToolRegistry;
     use serde_json::json;
 
-    let mut registry = ToolRegistry::new();
+    let registry = ToolRegistry::new();
     registry.register(AddNumbersTool).unwrap();
 
     // Test opening a session with empty initial_input (for unit type OpenInput)

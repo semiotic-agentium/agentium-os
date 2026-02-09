@@ -56,3 +56,4 @@ async-trait = { workspace = true }
 test-support = { path = "../test-support" }
 schemars = { workspace = true }
 ts-rs = { workspace = true }
+uuid = { workspace = true }

@@ -1,8 +1,8 @@
 use crate::a2a;
 use crate::a2a_store::{TaskEventRecorder, TaskRepository, TaskUpdateEvent, TaskUpdateQueue};
 use crate::a2a_types::{
-    CancelTaskRequest, GetTaskRequest, ListTasksRequest, ListTasksResponse, StreamResponse,
-    SubscribeToTaskRequest, TaskStatusUpdateEvent,
+    GetTaskRequest, ListTasksRequest, ListTasksResponse, StreamResponse, SubscribeToTaskRequest,
+    TaskStatusUpdateEvent,
 };
 use crate::events::EventEmitter;
 use async_trait::async_trait;
@@ -16,7 +16,6 @@ use tokio::sync::Mutex;
 pub trait TaskHandler: Send + Sync {
     async fn handle_get(&self, request: GetTaskRequest) -> Result<a2a::A2aOutcome>;
     async fn handle_list(&self, request: ListTasksRequest) -> Result<a2a::A2aOutcome>;
-    async fn handle_cancel(&self, request: CancelTaskRequest) -> Result<a2a::A2aOutcome>;
     async fn handle_subscribe(
         &self,
         request: SubscribeToTaskRequest,
@@ -48,6 +47,21 @@ impl DefaultTaskHandler {
             emitter,
         }
     }
+
+    /// Shared task event recorder (e.g. for custom routing or tests).
+    pub fn recorder(&self) -> &Arc<dyn TaskEventRecorder> {
+        &self.recorder
+    }
+
+    /// Shared QuickJS bridge (e.g. for custom invoke paths or tests).
+    pub fn bridge(&self) -> &Arc<Mutex<QuickJSBridge>> {
+        &self.bridge
+    }
+
+    /// Shared event emitter (e.g. for pushing updates from handler code).
+    pub fn emitter(&self) -> &Arc<dyn EventEmitter> {
+        &self.emitter
+    }
 }
 
 #[async_trait(?Send)]
@@ -66,38 +80,6 @@ impl TaskHandler for DefaultTaskHandler {
     async fn handle_list(&self, request: ListTasksRequest) -> Result<a2a::A2aOutcome> {
         let response: ListTasksResponse = self.repository.list(&request).await;
         let value = serde_json::to_value(response).map_err(BamlRtError::Json)?;
-        Ok(a2a::A2aOutcome::Response(value))
-    }
-
-    async fn handle_cancel(&self, request: CancelTaskRequest) -> Result<a2a::A2aOutcome> {
-        let task = {
-            let task = self
-                .repository
-                .cancel(request.id.as_str())
-                .await
-                .ok_or_else(|| BamlRtError::InvalidArgument("Task not found".to_string()))?;
-            if let Some(status) = task.status.clone()
-                && let Some(event) = self
-                    .recorder
-                    .record_status_update(task.id.clone(), task.context_id.clone(), status)
-                    .await
-            {
-                self.emitter.emit(event).await;
-            }
-            task
-        };
-
-        {
-            let mut bridge = self.bridge.lock().await;
-            let _ = bridge
-                .invoke_optional_js_function(
-                    "handle_a2a_cancel",
-                    serde_json::to_value(&request).map_err(BamlRtError::Json)?,
-                )
-                .await?;
-        }
-
-        let value = serde_json::to_value(task).map_err(BamlRtError::Json)?;
         Ok(a2a::A2aOutcome::Response(value))
     }
 

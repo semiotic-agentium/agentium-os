@@ -22,13 +22,16 @@ pub(crate) fn build_token_args_wrapper(function_name: &str, invoke_expr: &str) -
                 }
 "#;
 
+    // Bracket notation so qualified names like "Support/calculate" are valid (dot notation would parse as division).
+    let key_escaped = function_name.replace('\\', "\\\\").replace('"', "\\\"");
+
     format!(
         r#"
-            globalThis.{function_name} = async function(tokenOrArgs, ...rest) {{
+            globalThis["{key_escaped}"] = async function(tokenOrArgs, ...rest) {{
 {token_block}{arg_block}                return await {invoke_expr};
             }};
             "#,
-        function_name = function_name,
+        key_escaped = key_escaped,
         token_block = TOKEN_BLOCK,
         arg_block = ARG_BLOCK,
         invoke_expr = invoke_expr
