@@ -1,6 +1,6 @@
-use baml_rt_provenance::{normalize_event, InMemoryProvenanceStore, ProvEvent, ProvenanceWriter};
 use baml_rt_core::ids::{ContextId, ExternalId, MessageId};
-use serde_json::{json, Value};
+use baml_rt_provenance::{InMemoryProvenanceStore, ProvEvent, ProvenanceWriter, normalize_event};
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 #[tokio::test]
@@ -89,10 +89,16 @@ fn snapshot_value(normalized: &baml_rt_provenance::NormalizedProv) -> Value {
     for (id, activity) in normalized.document.activities() {
         let mut map = BTreeMap::new();
         if let Some(start_time_ms) = activity.start_time_ms {
-            map.insert("prov:startTime".to_string(), Value::Number(start_time_ms.into()));
+            map.insert(
+                "prov:startTime".to_string(),
+                Value::Number(start_time_ms.into()),
+            );
         }
         if let Some(end_time_ms) = activity.end_time_ms {
-            map.insert("prov:endTime".to_string(), Value::Number(end_time_ms.into()));
+            map.insert(
+                "prov:endTime".to_string(),
+                Value::Number(end_time_ms.into()),
+            );
         }
         if let Some(prov_type) = &activity.prov_type {
             map.insert("prov:type".to_string(), Value::String(prov_type.clone()));
@@ -100,7 +106,10 @@ fn snapshot_value(normalized: &baml_rt_provenance::NormalizedProv) -> Value {
         for (key, value) in &activity.attributes {
             map.insert(key.clone(), value.clone());
         }
-        activities.insert(id.as_str().to_string(), Value::Object(map.into_iter().collect()));
+        activities.insert(
+            id.as_str().to_string(),
+            Value::Object(map.into_iter().collect()),
+        );
     }
 
     let mut entities = BTreeMap::new();
@@ -112,7 +121,10 @@ fn snapshot_value(normalized: &baml_rt_provenance::NormalizedProv) -> Value {
         for (key, value) in &entity.attributes {
             map.insert(key.clone(), value.clone());
         }
-        entities.insert(id.as_str().to_string(), Value::Object(map.into_iter().collect()));
+        entities.insert(
+            id.as_str().to_string(),
+            Value::Object(map.into_iter().collect()),
+        );
     }
 
     let mut agents = BTreeMap::new();
@@ -124,7 +136,10 @@ fn snapshot_value(normalized: &baml_rt_provenance::NormalizedProv) -> Value {
         for (key, value) in &agent.attributes {
             map.insert(key.clone(), value.clone());
         }
-        agents.insert(id.as_str().to_string(), Value::Object(map.into_iter().collect()));
+        agents.insert(
+            id.as_str().to_string(),
+            Value::Object(map.into_iter().collect()),
+        );
     }
 
     let mut used = Vec::new();
@@ -162,7 +177,6 @@ fn snapshot_value(normalized: &baml_rt_provenance::NormalizedProv) -> Value {
             "role": rel.role
         }));
     }
-
 
     let mut was_derived_from = Vec::new();
     for (_, rel) in normalized.document.was_derived_from() {

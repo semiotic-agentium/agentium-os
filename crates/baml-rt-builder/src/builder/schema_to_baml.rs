@@ -14,13 +14,13 @@ pub fn generate_baml_types_from_schemas(
 ) -> Result<String> {
     let mut output = String::new();
     let mut generated = HashSet::new();
-    
+
     // First pass: extract all nested types from $defs in all schemas
     let mut all_nested_schemas = HashMap::new();
     for schema in schemas.values() {
         extract_defs(schema, &mut all_nested_schemas);
     }
-    
+
     // Merge nested schemas into main schemas map
     let mut all_schemas = schemas.clone();
     for (def_name, def_schema) in &all_nested_schemas {
@@ -28,7 +28,7 @@ pub fn generate_baml_types_from_schemas(
             all_schemas.insert(def_name.clone(), def_schema.clone());
         }
     }
-    
+
     // Generate types in dependency order (nested types first)
     // Collect all type names that need to be generated
     let mut types_to_generate: Vec<(String, String)> = Vec::new();
@@ -40,18 +40,26 @@ pub fn generate_baml_types_from_schemas(
             types_to_generate.push((schema_name.clone(), schema_name.clone()));
         }
     }
-    
+
     // Sort by BAML name for deterministic output
     types_to_generate.sort_by(|a, b| a.0.cmp(&b.0));
-    
+
     // Generate types
     for (baml_name, schema_key) in types_to_generate {
         if !generated.contains(&baml_name)
-            && let Some(schema) = all_schemas.get(&schema_key) {
-                generate_baml_type(&mut output, &baml_name, schema, &mut generated, &all_schemas, type_names)?;
-            }
+            && let Some(schema) = all_schemas.get(&schema_key)
+        {
+            generate_baml_type(
+                &mut output,
+                &baml_name,
+                schema,
+                &mut generated,
+                &all_schemas,
+                type_names,
+            )?;
+        }
     }
-    
+
     Ok(output)
 }
 
@@ -64,14 +72,14 @@ fn extract_defs(schema: &Value, defs: &mut HashMap<String, Value>) {
                 defs.insert(def_name.clone(), def_schema.clone());
             }
         }
-        
+
         // Check definitions (JSON Schema draft-07)
         if let Some(defs_obj) = schema_obj.get("definitions").and_then(|v| v.as_object()) {
             for (def_name, def_schema) in defs_obj {
                 defs.insert(def_name.clone(), def_schema.clone());
             }
         }
-        
+
         // Recursively check nested objects
         for value in schema_obj.values() {
             extract_defs(value, defs);
@@ -96,31 +104,47 @@ fn generate_baml_type(
         return Ok(());
     }
     generated.insert(type_name.to_string());
-    
+
     let schema_obj = schema.as_object().ok_or_else(|| {
         BamlRtError::InvalidArgument(format!("Schema for {} must be an object", type_name))
     })?;
-    
+
     // Check if it's an enum (oneOf with const values or enum field)
     if let Some(enum_values) = schema_obj.get("enum")
-        && let Some(enum_array) = enum_values.as_array() {
-            generate_baml_enum(output, type_name, enum_array, schema_obj)?;
-            return Ok(());
-        }
-    
-    // Check if it's an object/class
-    if let Some(Value::String(schema_type)) = schema_obj.get("type")
-        && schema_type == "object" {
-            generate_baml_class(output, type_name, schema_obj, generated, all_schemas, type_names)?;
-            return Ok(());
-        }
-    
-    // Fallback: try to infer from properties
-    if schema_obj.contains_key("properties") {
-        generate_baml_class(output, type_name, schema_obj, generated, all_schemas, type_names)?;
+        && let Some(enum_array) = enum_values.as_array()
+    {
+        generate_baml_enum(output, type_name, enum_array, schema_obj)?;
         return Ok(());
     }
-    
+
+    // Check if it's an object/class
+    if let Some(Value::String(schema_type)) = schema_obj.get("type")
+        && schema_type == "object"
+    {
+        generate_baml_class(
+            output,
+            type_name,
+            schema_obj,
+            generated,
+            all_schemas,
+            type_names,
+        )?;
+        return Ok(());
+    }
+
+    // Fallback: try to infer from properties
+    if schema_obj.contains_key("properties") {
+        generate_baml_class(
+            output,
+            type_name,
+            schema_obj,
+            generated,
+            all_schemas,
+            type_names,
+        )?;
+        return Ok(());
+    }
+
     Err(BamlRtError::InvalidArgument(format!(
         "Cannot generate BAML type for {}: unsupported schema format",
         type_name
@@ -135,13 +159,13 @@ fn generate_baml_enum(
     _schema_obj: &serde_json::Map<String, Value>,
 ) -> Result<()> {
     write_line(output, &format!("enum {} {{", enum_name))?;
-    
+
     for value in enum_values {
         if let Some(str_val) = value.as_str() {
             // Convert string to PascalCase variant name
             let variant_name = to_pascal_case(str_val);
             write_line(output, &format!("  {}", variant_name))?;
-            
+
             // Add @alias if the string value differs from variant name
             if str_val != variant_name {
                 write_line(output, &format!("    @alias(\"{}\")", str_val))?;
@@ -152,7 +176,7 @@ fn generate_baml_enum(
             write_line(output, &format!("    @alias(\"{}\")", num))?;
         }
     }
-    
+
     write_line(output, "}")?;
     write_line(output, "")?;
     Ok(())
@@ -168,16 +192,24 @@ fn generate_baml_class(
     type_names: &HashMap<String, String>,
 ) -> Result<()> {
     write_line(output, &format!("class {} {{", class_name))?;
-    
-    let properties = schema_obj.get("properties")
+
+    let properties = schema_obj
+        .get("properties")
         .and_then(|v| v.as_object())
-        .ok_or_else(|| BamlRtError::InvalidArgument(format!("Class {} must have properties", class_name)))?;
-    
-    let required = schema_obj.get("required")
+        .ok_or_else(|| {
+            BamlRtError::InvalidArgument(format!("Class {} must have properties", class_name))
+        })?;
+
+    let required = schema_obj
+        .get("required")
         .and_then(|v| v.as_array())
-        .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<HashSet<_>>())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str())
+                .collect::<HashSet<_>>()
+        })
         .unwrap_or_default();
-    
+
     for (prop_name, prop_schema) in properties {
         let prop_type = json_schema_to_baml_type(prop_schema, generated, all_schemas, type_names)?;
         let is_optional = !required.contains(prop_name.as_str());
@@ -186,17 +218,21 @@ fn generate_baml_class(
         } else {
             prop_type
         };
-        
+
         // Get description if available
-        let description = prop_schema.as_object()
+        let description = prop_schema
+            .as_object()
             .and_then(|obj| obj.get("description"))
             .and_then(|v| v.as_str())
             .map(|s| format!(" @description(\"{}\")", s))
             .unwrap_or_default();
-        
-        write_line(output, &format!("  {} {} {}", prop_name, type_str, description))?;
+
+        write_line(
+            output,
+            &format!("  {} {} {}", prop_name, type_str, description),
+        )?;
     }
-    
+
     write_line(output, "}")?;
     write_line(output, "")?;
     Ok(())
@@ -209,10 +245,10 @@ fn json_schema_to_baml_type(
     _all_schemas: &HashMap<String, Value>,
     _type_names: &HashMap<String, String>,
 ) -> Result<String> {
-    let schema_obj = schema.as_object().ok_or_else(|| {
-        BamlRtError::InvalidArgument("Schema must be an object".to_string())
-    })?;
-    
+    let schema_obj = schema
+        .as_object()
+        .ok_or_else(|| BamlRtError::InvalidArgument("Schema must be an object".to_string()))?;
+
     // Handle $ref - extract nested types from definitions
     if let Some(Value::String(ref_path)) = schema_obj.get("$ref") {
         // Extract type name from #/$defs/TypeName or #/definitions/TypeName
@@ -220,26 +256,32 @@ fn json_schema_to_baml_type(
             return Ok(type_name.to_string());
         }
     }
-    
+
     // Handle oneOf (union types)
     if let Some(one_of) = schema_obj.get("oneOf").and_then(|v| v.as_array()) {
         let mut types = Vec::new();
         for variant in one_of {
-            types.push(json_schema_to_baml_type(variant, _generated, _all_schemas, _type_names)?);
+            types.push(json_schema_to_baml_type(
+                variant,
+                _generated,
+                _all_schemas,
+                _type_names,
+            )?);
         }
         return Ok(types.join(" | "));
     }
-    
+
     // Handle array
     if let Some(Value::String(array_type)) = schema_obj.get("type")
-        && array_type == "array" {
-            if let Some(items) = schema_obj.get("items") {
-                let item_type = json_schema_to_baml_type(items, _generated, _all_schemas, _type_names)?;
-                return Ok(format!("{}[]", item_type));
-            }
-            return Ok("any[]".to_string());
+        && array_type == "array"
+    {
+        if let Some(items) = schema_obj.get("items") {
+            let item_type = json_schema_to_baml_type(items, _generated, _all_schemas, _type_names)?;
+            return Ok(format!("{}[]", item_type));
         }
-    
+        return Ok("any[]".to_string());
+    }
+
     // Handle primitive types
     if let Some(Value::String(primitive_type)) = schema_obj.get("type") {
         return Ok(match primitive_type.as_str() {
@@ -251,30 +293,30 @@ fn json_schema_to_baml_type(
                 } else {
                     "float".to_string()
                 }
-            },
+            }
             "boolean" => "bool".to_string(),
             "null" => "null".to_string(),
             "object" => {
                 // Inline object - generate anonymous class or use object
                 "object".to_string() // BAML doesn't support inline objects well, use object
-            },
+            }
             _ => format!("any /* {} */", primitive_type),
         });
     }
-    
+
     // Handle enum
     if schema_obj.contains_key("enum") {
         // This should have been handled by generate_baml_enum
         return Ok("string".to_string()); // Fallback
     }
-    
+
     Ok("any".to_string())
 }
 
 fn to_pascal_case(s: &str) -> String {
     let mut result = String::new();
     let mut capitalize_next = true;
-    
+
     for ch in s.chars() {
         if ch == '_' || ch == '-' {
             capitalize_next = true;
@@ -285,10 +327,11 @@ fn to_pascal_case(s: &str) -> String {
             result.push(ch);
         }
     }
-    
+
     result
 }
 
 fn write_line(output: &mut String, line: &str) -> Result<()> {
-    writeln!(output, "{}", line).map_err(|e| BamlRtError::InvalidArgument(format!("Format error: {}", e)))
+    writeln!(output, "{}", line)
+        .map_err(|e| BamlRtError::InvalidArgument(format!("Format error: {}", e)))
 }

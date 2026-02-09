@@ -77,6 +77,8 @@ Notation: □ = always, ◇ = eventually.
 
 **Risk:** If JS does `await openToolSession("...")` and that tool’s `send`/`next` eventually calls the same agent’s `handle_a2a`, the handler will try to take the bridge lock → deadlock.
 
+**Concurrent A2A and tool execution:** We need to support concurrent incoming A2A context driving concurrent tool execution. The invariant forbids only **re-entering the bridge** (taking `lock(bridge)` again) from any callback or future that contributes to resolving the current stream’s promise. Tool sessions do **not** use the bridge: `openToolSession` → `__tool_session_open` → `context::with_scope` + `baml_manager.open_tool_session` (and send/next/finish/abort) use the tool registry and session state only. So multiple tools can run concurrently within the same stream (or across streams when using multiple bridges) without touching the bridge lock. The only forbidden pattern is: from inside a stream’s `handle_a2a_request` (or from a tool invoked by it), calling something that needs the **same** bridge—e.g. `invoke_js_function`, `evaluate`, or another stream on that bridge. Use separate bridge instances or avoid A2A-from-inside-tool if you need nested stream-like work.
+
 ---
 
 ### 3. Non-stream evals: promise resolution observable after running pending jobs

@@ -6,10 +6,10 @@ use crate::a2a_types::{
     JSONRPCError, JSONRPCErrorResponse, JSONRPCId, JSONRPCRequest, JSONRPCSuccessResponse,
     ListTasksRequest, Message, SendMessageRequest,
 };
-use baml_rt_core::{BamlRtError, Result};
 use baml_rt_core::context;
 use baml_rt_core::ids::{ContextId, ExternalId, MessageId, TaskId};
-use serde_json::{json, Map, Value};
+use baml_rt_core::{BamlRtError, Result};
+use serde_json::{Map, Value, json};
 
 const JSONRPC_VERSION: &str = "2.0";
 
@@ -91,8 +91,7 @@ impl A2aRequest {
                 context_id = params.message.context_id.clone();
                 message_id = Some(params.message.message_id.as_message_id().clone());
                 task_id = params.message.task_id.clone();
-                params_value =
-                    serde_json::to_value(&params).map_err(BamlRtError::Json)?;
+                params_value = serde_json::to_value(&params).map_err(BamlRtError::Json)?;
                 params_value = augment_message_params(params_value, &params.message);
                 true
             }
@@ -158,14 +157,21 @@ pub fn success_response(id: Option<JSONRPCId>, result: Value) -> Value {
         result,
         id,
     })
-    .unwrap_or_else(|_| json!({
-        "jsonrpc": JSONRPC_VERSION,
-        "id": null,
-        "result": { "error": "serialization failed" }
-    }))
+    .unwrap_or_else(|_| {
+        json!({
+            "jsonrpc": JSONRPC_VERSION,
+            "id": null,
+            "result": { "error": "serialization failed" }
+        })
+    })
 }
 
-pub fn error_response(id: Option<JSONRPCId>, code: i64, message: &str, data: Option<Value>) -> Value {
+pub fn error_response(
+    id: Option<JSONRPCId>,
+    code: i64,
+    message: &str,
+    data: Option<Value>,
+) -> Value {
     let error = JSONRPCError {
         code: code as i32,
         message: message.to_string(),
@@ -176,11 +182,13 @@ pub fn error_response(id: Option<JSONRPCId>, code: i64, message: &str, data: Opt
         error,
         id,
     })
-    .unwrap_or_else(|_| json!({
-        "jsonrpc": JSONRPC_VERSION,
-        "id": null,
-        "error": { "code": -32603, "message": "serialization failed" }
-    }))
+    .unwrap_or_else(|_| {
+        json!({
+            "jsonrpc": JSONRPC_VERSION,
+            "id": null,
+            "error": { "code": -32603, "message": "serialization failed" }
+        })
+    })
 }
 
 pub fn stream_chunk_response(
@@ -199,11 +207,13 @@ pub fn stream_chunk_response(
         }),
         id,
     })
-    .unwrap_or_else(|_| json!({
-        "jsonrpc": JSONRPC_VERSION,
-        "id": null,
-        "result": { "error": "serialization failed" }
-    }))
+    .unwrap_or_else(|_| {
+        json!({
+            "jsonrpc": JSONRPC_VERSION,
+            "id": null,
+            "result": { "error": "serialization failed" }
+        })
+    })
 }
 
 fn normalize_params(value: Value) -> Value {
@@ -269,8 +279,7 @@ fn augment_message_params(mut params_value: Value, message: &Message) -> Value {
     if let Value::Object(ref mut map) = params_value
         && let Some(text) = message_text
     {
-        map.entry("text".to_string())
-            .or_insert(Value::String(text));
+        map.entry("text".to_string()).or_insert(Value::String(text));
     }
     params_value
 }
@@ -308,18 +317,20 @@ fn id_to_value(value: &JSONRPCId) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
     use super::A2aRequest;
-    use crate::a2a_types::{JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest, ROLE_USER};
-    use baml_rt_core::BamlRtError;
+    use crate::a2a_types::{
+        JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER, SendMessageRequest,
+    };
     use crate::{A2aAgent, A2aRequestHandler};
+    use baml_rt_core::BamlRtError;
     use opentelemetry::global;
     use opentelemetry::trace::TracerProvider as _;
     use opentelemetry_sdk::testing::trace::InMemorySpanExporterBuilder;
     use opentelemetry_sdk::trace::TracerProvider;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use std::collections::HashMap;
-    use tokio::time::{timeout, Duration};
+    use std::sync::Arc;
+    use tokio::time::{Duration, timeout};
     use tracing_subscriber::layer::SubscriberExt;
 
     /// Watchdog timeout for agent setup and tests - ensures tests fail fast if they hang.
@@ -364,10 +375,7 @@ mod tests {
         spans.iter().find(|span| span.name.as_ref() == name)
     }
 
-    fn attr_value(
-        span: &opentelemetry_sdk::export::trace::SpanData,
-        key: &str,
-    ) -> Option<String> {
+    fn attr_value(span: &opentelemetry_sdk::export::trace::SpanData, key: &str) -> Option<String> {
         span.attributes
             .iter()
             .find(|kv| kv.key.as_str() == key)
@@ -452,10 +460,7 @@ mod tests {
         }
         let result = response.get("result").cloned().expect("missing result");
         // Stream responses wrap each chunk as result: { chunk, final? }; unwrap to chunk content
-        result
-            .get("chunk")
-            .cloned()
-            .unwrap_or(result)
+        result.get("chunk").cloned().unwrap_or(result)
     }
 
     fn user_message(message_id: &str, text: &str) -> Message {
@@ -505,10 +510,7 @@ mod tests {
         };
         let request_value = serde_json::to_value(request).expect("serialize request");
 
-        let responses = agent
-            .handle_a2a(request_value)
-            .await
-            .expect("a2a handle");
+        let responses = agent.handle_a2a(request_value).await.expect("a2a handle");
         let result = expect_success_result(responses);
         let message = result
             .get("message")
@@ -557,10 +559,16 @@ mod tests {
         let _ = agent.handle_a2a(request_value).await;
 
         let spans = _otel.spans();
-        let span = find_span(&spans, "baml_rt.a2a_stream")
-            .expect("expected baml_rt.a2a_stream span");
-        assert_eq!(attr_value(span, "method").as_deref(), Some("message.sendStream"));
-        assert_eq!(attr_value(span, "correlation_id").as_deref(), Some("corr-1-19"));
+        let span =
+            find_span(&spans, "baml_rt.a2a_stream").expect("expected baml_rt.a2a_stream span");
+        assert_eq!(
+            attr_value(span, "method").as_deref(),
+            Some("message.sendStream")
+        );
+        assert_eq!(
+            attr_value(span, "correlation_id").as_deref(),
+            Some("corr-1-19")
+        );
     }
 
     #[tokio::test]
@@ -595,10 +603,16 @@ mod tests {
         let _ = agent.handle_a2a(request_value).await;
 
         let spans = _otel.spans();
-        let span = find_span(&spans, "baml_rt.a2a_stream")
-            .expect("expected baml_rt.a2a_stream span");
-        assert_eq!(attr_value(span, "method").as_deref(), Some("message.sendStream"));
-        assert_eq!(attr_value(span, "correlation_id").as_deref(), Some("corr-1-20"));
+        let span =
+            find_span(&spans, "baml_rt.a2a_stream").expect("expected baml_rt.a2a_stream span");
+        assert_eq!(
+            attr_value(span, "method").as_deref(),
+            Some("message.sendStream")
+        );
+        assert_eq!(
+            attr_value(span, "correlation_id").as_deref(),
+            Some("corr-1-20")
+        );
     }
 
     #[tokio::test]
@@ -629,10 +643,7 @@ mod tests {
         };
         let request_value = serde_json::to_value(request).expect("serialize request");
 
-        let responses = agent
-            .handle_a2a(request_value)
-            .await
-            .expect("a2a handle");
+        let responses = agent.handle_a2a(request_value).await.expect("a2a handle");
         assert!(!responses.is_empty(), "stream should return chunks");
         let any_final = responses.iter().any(|value| {
             value
@@ -676,10 +687,7 @@ mod tests {
         };
         let request_value = serde_json::to_value(request).expect("serialize request");
 
-        let responses = agent
-            .handle_a2a(request_value)
-            .await
-            .expect("a2a handle");
+        let responses = agent.handle_a2a(request_value).await.expect("a2a handle");
         assert!(!responses.is_empty(), "stream should return chunks");
         let any_final = responses.iter().any(|value| {
             value
@@ -724,7 +732,8 @@ mod tests {
             .find_map(|response| {
                 let result = response.get("result")?;
                 let chunk = result.get("chunk").or(Some(result));
-                chunk.and_then(|c| c.get("task"))
+                chunk
+                    .and_then(|c| c.get("task"))
                     .and_then(|task| task.get("id"))
                     .and_then(Value::as_str)
             })
@@ -758,9 +767,11 @@ mod tests {
             .get("tasks")
             .and_then(Value::as_array)
             .expect("tasks list");
-        assert!(tasks.iter().any(|task| {
-            task.get("id").and_then(Value::as_str) == Some(task_id)
-        }));
+        assert!(
+            tasks
+                .iter()
+                .any(|task| { task.get("id").and_then(Value::as_str) == Some(task_id) })
+        );
 
         let cancel_request = JSONRPCRequest {
             jsonrpc: "2.0".to_string(),
@@ -814,7 +825,8 @@ mod tests {
             .find_map(|response| {
                 let result = response.get("result")?;
                 let chunk = result.get("chunk").or(Some(result));
-                chunk.and_then(|c| c.get("task"))
+                chunk
+                    .and_then(|c| c.get("task"))
                     .and_then(|task| task.get("id"))
                     .and_then(Value::as_str)
             })
@@ -830,7 +842,10 @@ mod tests {
             .handle_a2a(serde_json::to_value(subscribe_request).expect("serialize request"))
             .await
             .expect("subscribe task");
-        assert!(!responses.is_empty(), "subscribe should return a stream response");
+        assert!(
+            !responses.is_empty(),
+            "subscribe should return a stream response"
+        );
         let any_final = responses.iter().any(|value| {
             value
                 .get("result")

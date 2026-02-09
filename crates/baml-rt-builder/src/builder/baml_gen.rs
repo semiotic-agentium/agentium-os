@@ -3,58 +3,104 @@
 //! Generates BAML tool interface files with detailed descriptions and examples
 //! following Anthropic's best practices for tool use prompting.
 
+use crate::builder::schema_to_baml;
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_tools::tool_catalog::resolve_manifest_tools;
 use baml_rt_tools::tools::ToolFunctionMetadata;
-use crate::builder::schema_to_baml;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fmt::Write;
 
 fn write_line(output: &mut String, line: &str) -> Result<()> {
-    writeln!(output, "{}", line).map_err(|e| BamlRtError::InvalidArgument(format!("Format error: {}", e)))
+    writeln!(output, "{}", line)
+        .map_err(|e| BamlRtError::InvalidArgument(format!("Format error: {}", e)))
 }
 
 /// Generate BAML tool interface file with FSM-aware prompting hints
 pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     let tool_metadata = resolve_manifest_tools(tool_names)?;
-    
+
     let mut output = String::new();
-    
+
     // Header with FSM documentation
     write_line(&mut output, "// Auto-generated tool interfaces")?;
-    write_line(&mut output, "// This file is auto-generated - do not edit manually")?;
+    write_line(
+        &mut output,
+        "// This file is auto-generated - do not edit manually",
+    )?;
     write_line(&mut output, "")?;
-    write_line(&mut output, "// FSM (Finite State Machine) Tool Session Protocol:")?;
-    write_line(&mut output, "// All host tools use a session-based FSM with strict state transitions:")?;
-    write_line(&mut output, "// 1. Open: Must be the FIRST step - opens a tool session")?;
-    write_line(&mut output, "// 2. Send: Can only occur AFTER Open - sends input to the session")?;
-    write_line(&mut output, "// 3. Next: Retrieves output from the session (after Send)")?;
+    write_line(
+        &mut output,
+        "// FSM (Finite State Machine) Tool Session Protocol:",
+    )?;
+    write_line(
+        &mut output,
+        "// All host tools use a session-based FSM with strict state transitions:",
+    )?;
+    write_line(
+        &mut output,
+        "// 1. Open: Must be the FIRST step - opens a tool session",
+    )?;
+    write_line(
+        &mut output,
+        "// 2. Send: Can only occur AFTER Open - sends input to the session",
+    )?;
+    write_line(
+        &mut output,
+        "// 3. Next: Retrieves output from the session (after Send)",
+    )?;
     write_line(&mut output, "// 4. Finish: Closes the session gracefully")?;
     write_line(&mut output, "// 5. Abort: Closes the session with an error")?;
     write_line(&mut output, "//")?;
     write_line(&mut output, "// CRITICAL FSM RULES:")?;
     write_line(&mut output, "// - Open MUST come before any Send step")?;
-    write_line(&mut output, "// - Open uses 'initial_input' field (for first input when opening)")?;
-    write_line(&mut output, "// - Send uses 'input' field (for subsequent inputs)")?;
-    write_line(&mut output, "// - After Send, call Next to retrieve results")?;
-    write_line(&mut output, "// - Always Finish or Abort to close the session")?;
+    write_line(
+        &mut output,
+        "// - Open uses 'initial_input' field (for first input when opening)",
+    )?;
+    write_line(
+        &mut output,
+        "// - Send uses 'input' field (for subsequent inputs)",
+    )?;
+    write_line(
+        &mut output,
+        "// - After Send, call Next to retrieve results",
+    )?;
+    write_line(
+        &mut output,
+        "// - Always Finish or Abort to close the session",
+    )?;
     write_line(&mut output, "")?;
 
     // Generate ToolSessionOp enum with descriptions
     write_line(&mut output, "enum ToolSessionOp {")?;
-    write_line(&mut output, "  Open @description(\"Open a new tool session. MUST be the first step in any plan. Use 'initial_input' field to provide the first input when opening the session.\")")?;
-    write_line(&mut output, "  Send @description(\"Send input to an already-open session. Can ONLY be used after an Open step. Use 'input' field (NOT 'initial_input').\")")?;
-    write_line(&mut output, "  Next @description(\"Retrieve the next output from the session. Call this after Send to get results. For streaming tools, call Next multiple times until Done.\")")?;
-    write_line(&mut output, "  Finish @description(\"Close the session gracefully after completing all operations. Always call Finish when done with a tool session.\")")?;
-    write_line(&mut output, "  Abort @description(\"Close the session with an error. Use this if something went wrong and you need to terminate the session.\")")?;
+    write_line(
+        &mut output,
+        "  Open @description(\"Open a new tool session. MUST be the first step in any plan. Use 'initial_input' field to provide the first input when opening the session.\")",
+    )?;
+    write_line(
+        &mut output,
+        "  Send @description(\"Send input to an already-open session. Can ONLY be used after an Open step. Use 'input' field (NOT 'initial_input').\")",
+    )?;
+    write_line(
+        &mut output,
+        "  Next @description(\"Retrieve the next output from the session. Call this after Send to get results. For streaming tools, call Next multiple times until Done.\")",
+    )?;
+    write_line(
+        &mut output,
+        "  Finish @description(\"Close the session gracefully after completing all operations. Always call Finish when done with a tool session.\")",
+    )?;
+    write_line(
+        &mut output,
+        "  Abort @description(\"Close the session with an error. Use this if something went wrong and you need to terminate the session.\")",
+    )?;
     write_line(&mut output, "}")?;
     write_line(&mut output, "")?;
 
     // Collect all schemas and extract nested types from $defs
     let mut schemas = HashMap::new();
     let mut type_names = HashMap::new();
-    
+
     for tool in &tool_metadata {
         // Extract nested schemas from $defs/definitions in each schema
         extract_nested_schemas(&tool.input_schema, &mut schemas, &mut type_names);
@@ -62,21 +108,27 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
         if tool.open_input_type.name != "()" {
             extract_nested_schemas(&tool.open_input_schema, &mut schemas, &mut type_names);
         }
-        
+
         // Add main input/output schemas (these may reference nested types via $ref)
         // Use the actual type names from metadata
         schemas.insert(tool.input_type.name.clone(), tool.input_schema.clone());
         type_names.insert(tool.input_type.name.clone(), tool.input_type.name.clone());
-        
+
         schemas.insert(tool.output_type.name.clone(), tool.output_schema.clone());
         type_names.insert(tool.output_type.name.clone(), tool.output_type.name.clone());
-        
+
         if tool.open_input_type.name != "()" {
-            schemas.insert(tool.open_input_type.name.clone(), tool.open_input_schema.clone());
-            type_names.insert(tool.open_input_type.name.clone(), tool.open_input_type.name.clone());
+            schemas.insert(
+                tool.open_input_type.name.clone(),
+                tool.open_input_schema.clone(),
+            );
+            type_names.insert(
+                tool.open_input_type.name.clone(),
+                tool.open_input_type.name.clone(),
+            );
         }
     }
-    
+
     // Generate domain types from schemas
     let domain_types = schema_to_baml::generate_baml_types_from_schemas(&schemas, &type_names)?;
     if !domain_types.is_empty() {
@@ -96,11 +148,11 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
 fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata) -> Result<()> {
     // Use the derived class name from metadata
     let class_name = &tool.class_name;
-    
+
     // Use the actual type names from metadata
     let open_input_type_name = &tool.open_input_type.name;
     let input_type_name = &tool.input_type.name;
-    
+
     let open_step_name = format!("{}OpenStep", class_name);
     let send_step_name = format!("{}SendStep", class_name);
     let next_step_name = format!("{}NextStep", class_name);
@@ -113,46 +165,92 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
     write_line(output, &format!("class {} {{", open_step_name))?;
     write_line(output, "  op \"Open\"")?;
     // Only include initial_input if it's not unit type (void/() - skip field entirely)
-    if open_input_type_name != "()" && open_input_type_name != "null" && open_input_type_name != "void" {
-        write_line(output, &format!("  initial_input {}? @description(\"Optional initial input when opening the session. If provided, will be automatically sent after opening.\")", open_input_type_name))?;
+    if open_input_type_name != "()"
+        && open_input_type_name != "null"
+        && open_input_type_name != "void"
+    {
+        write_line(
+            output,
+            &format!(
+                "  initial_input {}? @description(\"Optional initial input when opening the session. If provided, will be automatically sent after opening.\")",
+                open_input_type_name
+            ),
+        )?;
     }
-    write_line(output, "  reason string? @description(\"Optional explanation for this step.\")")?;
+    write_line(
+        output,
+        "  reason string? @description(\"Optional explanation for this step.\")",
+    )?;
     write_line(output, "}")?;
     write_line(output, "")?;
 
     write_line(output, &format!("class {} {{", send_step_name))?;
     write_line(output, "  op \"Send\"")?;
-    write_line(output, &format!("  input {} @description(\"Input to send to the already-open session.\")", input_type_name))?;
-    write_line(output, "  reason string? @description(\"Optional explanation for this step.\")")?;
+    write_line(
+        output,
+        &format!(
+            "  input {} @description(\"Input to send to the already-open session.\")",
+            input_type_name
+        ),
+    )?;
+    write_line(
+        output,
+        "  reason string? @description(\"Optional explanation for this step.\")",
+    )?;
     write_line(output, "}")?;
     write_line(output, "")?;
 
     write_line(output, &format!("class {} {{", next_step_name))?;
     write_line(output, "  op \"Next\"")?;
-    write_line(output, "  reason string? @description(\"Optional explanation for this step.\")")?;
+    write_line(
+        output,
+        "  reason string? @description(\"Optional explanation for this step.\")",
+    )?;
     write_line(output, "}")?;
     write_line(output, "")?;
 
     write_line(output, &format!("class {} {{", finish_step_name))?;
     write_line(output, "  op \"Finish\"")?;
-    write_line(output, "  reason string? @description(\"Optional explanation for this step.\")")?;
+    write_line(
+        output,
+        "  reason string? @description(\"Optional explanation for this step.\")",
+    )?;
     write_line(output, "}")?;
     write_line(output, "")?;
 
     write_line(output, &format!("class {} {{", abort_step_name))?;
     write_line(output, "  op \"Abort\"")?;
-    write_line(output, "  reason string? @description(\"Optional explanation for aborting the session.\")")?;
+    write_line(
+        output,
+        "  reason string? @description(\"Optional explanation for aborting the session.\")",
+    )?;
     write_line(output, "}")?;
     write_line(output, "")?;
 
     // Generate union type for all step types
-    write_line(output, &format!("type {} = {} | {} | {} | {} | {}", 
-        step_union_name, open_step_name, send_step_name, next_step_name, finish_step_name, abort_step_name))?;
+    write_line(
+        output,
+        &format!(
+            "type {} = {} | {} | {} | {} | {}",
+            step_union_name,
+            open_step_name,
+            send_step_name,
+            next_step_name,
+            finish_step_name,
+            abort_step_name
+        ),
+    )?;
     write_line(output, "")?;
 
     // Generate session plan with FSM guidance and example
     write_line(output, &format!("class {} {{", plan_type_name))?;
-    write_line(output, &format!("  steps {}[] @description(\"Array of FSM steps. MUST follow this strict order: 1) Open (with optional initial_input), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example valid plan: [{{op: 'Open', initial_input: {{...}}}}, {{op: 'Next'}}, {{op: 'Finish'}}]. Tool identity is inferred from the input schema (no tool_name field).\")", step_union_name))?;
+    write_line(
+        output,
+        &format!(
+            "  steps {}[] @description(\"Array of FSM steps. MUST follow this strict order: 1) Open (with optional initial_input), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example valid plan: [{{op: 'Open', initial_input: {{...}}}}, {{op: 'Next'}}, {{op: 'Finish'}}]. Tool identity is inferred from the input schema (no tool_name field).\")",
+            step_union_name
+        ),
+    )?;
     write_line(output, "}")?;
 
     Ok(())
@@ -172,7 +270,7 @@ fn extract_nested_schemas(
                 type_names.insert(def_name.clone(), def_name.clone());
             }
         }
-        
+
         // Check definitions (JSON Schema draft-07)
         if let Some(defs) = schema_obj.get("definitions").and_then(|v| v.as_object()) {
             for def_name in defs.keys() {
@@ -180,7 +278,7 @@ fn extract_nested_schemas(
                 type_names.insert(def_name.clone(), def_name.clone());
             }
         }
-        
+
         // Recursively check nested objects
         for value in schema_obj.values() {
             extract_nested_schemas(value, _schemas, type_names);

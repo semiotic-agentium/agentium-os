@@ -1,7 +1,9 @@
-use baml_rt_a2a::a2a_types::{JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest, ROLE_USER};
-use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
-use baml_rt::{BamlRuntimeManager, QuickJSConfig, Result};
 use baml_rt::tools::BamlTool;
+use baml_rt::{BamlRuntimeManager, QuickJSConfig, Result};
+use baml_rt_a2a::a2a_types::{
+    JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER, SendMessageRequest,
+};
+use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt_tools::bundles::BundleType;
 
 // Test bundle for test tools
@@ -13,17 +15,17 @@ impl BundleType for Test {
         "Test tools for unit testing"
     }
 }
-use baml_rt_core::ids::{ContextId, ExternalId};
+use async_trait::async_trait;
 use baml_rt_a2a::a2a_types::A2aMessageId;
+use baml_rt_core::ids::{ContextId, ExternalId};
 use baml_rt_provenance::InMemoryProvenanceStore;
 use baml_rt_provenance::ProvEventData;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use test_support::support::a2a::A2aInMemoryClient;
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use schemars::JsonSchema;
 use ts_rs::TS;
 
 fn user_message(message_id: &str, text: &str, context_id: Option<ContextId>) -> Message {
@@ -73,7 +75,10 @@ fn expect_context_id(responses: Vec<Value>) -> String {
     let response = responses.into_iter().next().expect("response");
     let result = response.get("result").cloned().expect("missing result");
     let content = result.get("chunk").cloned().unwrap_or(result);
-    let task = content.get("task").and_then(Value::as_object).expect("task");
+    let task = content
+        .get("task")
+        .and_then(Value::as_object)
+        .expect("task");
     task.get("contextId")
         .and_then(Value::as_str)
         .expect("contextId")
@@ -143,7 +148,7 @@ async fn test_context_id_is_task_local_under_concurrency() {
     let js_code = r#"
         globalThis.handle_a2a_request = async function(request) {
             const text = request?.params?.message?.parts?.[0]?.text || "";
-            const session = await openToolSession("test/echo_tool");
+            const session = await openToolSession("test/echo_tool", __baml_invocation_token);
             await session.send({ text });
             const step = await session.continue();
             const out = step && step.output ? step.output : {};
@@ -225,7 +230,10 @@ async fn test_context_id_is_task_local_under_concurrency() {
             successes, 2,
             "expected 2 tool successes for {context_id}, got {successes}"
         );
-        assert_eq!(starts, completes, "pre/post pairing mismatch for {context_id}");
+        assert_eq!(
+            starts, completes,
+            "pre/post pairing mismatch for {context_id}"
+        );
     }
 }
 
@@ -274,7 +282,9 @@ fn tool_event_counts(
             continue;
         }
         match event.data() {
-            ProvEventData::ToolCallStarted { tool_name: name, .. } if name == tool_name => {
+            ProvEventData::ToolCallStarted {
+                tool_name: name, ..
+            } if name == tool_name => {
                 starts += 1;
             }
             ProvEventData::ToolCallCompleted {

@@ -98,10 +98,7 @@ impl DerivedId {
         Self(id.into())
     }
 
-    pub fn from_parts<'a>(
-        prefix: &'static str,
-        parts: impl IntoIterator<Item = &'a str>,
-    ) -> Self {
+    pub fn from_parts<'a>(prefix: &'static str, parts: impl IntoIterator<Item = &'a str>) -> Self {
         let mut id = String::from(prefix);
         for part in parts {
             id.push(':');
@@ -128,7 +125,11 @@ pub struct TemporalId {
 
 impl TemporalId {
     pub const fn new(prefix: &'static str, millis: u64, counter: u64) -> Self {
-        Self { prefix, millis, counter }
+        Self {
+            prefix,
+            millis,
+            counter,
+        }
     }
 
     pub fn into_string(self) -> String {

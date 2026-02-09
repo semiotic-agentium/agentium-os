@@ -1,9 +1,9 @@
-use super::{empty_open_input, tool_step_to_value, QuickJSBridge};
 use super::wrappers;
+use super::{QuickJSBridge, empty_open_input, tool_step_to_value};
 use crate::js_value_converter::value_to_js_value_facade;
-use baml_rt_core::{BamlRtError, Result};
-use baml_rt_core::correlation;
 use baml_rt_core::context;
+use baml_rt_core::correlation;
+use baml_rt_core::{BamlRtError, Result};
 use baml_rt_tools::ToolSessionId;
 use quickjs_runtime::jsutils::Script;
 use quickjs_runtime::quickjsrealmadapter::QuickJsRealmAdapter;
@@ -32,7 +32,10 @@ impl QuickJSBridge {
         // Register a JavaScript wrapper function for the tool
         let js_code = wrappers::build_token_args_wrapper(
             tool_name,
-            &format!("__tool_invoke(token, \"{}\", JSON.stringify(argObj))", tool_name),
+            &format!(
+                "__tool_invoke(token, \"{}\", JSON.stringify(argObj))",
+                tool_name
+            ),
         );
 
         let script = Script::new("register_tool.js", &js_code);
@@ -186,7 +189,9 @@ impl QuickJSBridge {
                 source: Box::new(e),
             })?;
 
-        tracing::debug!("Registered __tool_invoke, __tool_from_baml_result, and invokeTool helper functions");
+        tracing::debug!(
+            "Registered __tool_invoke, __tool_from_baml_result, and invokeTool helper functions"
+        );
         Ok(())
     }
 

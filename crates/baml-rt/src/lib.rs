@@ -2,9 +2,9 @@
 //!
 //! This crate re-exports functionality from the workspace sub-crates.
 
-pub use baml_rt_core::{BamlRtError, Result};
-pub use baml_rt_core::correlation::{current_correlation_id, generate_correlation_id};
 pub use baml_rt_core::context::{current_context_id, generate_context_id};
+pub use baml_rt_core::correlation::{current_correlation_id, generate_correlation_id};
+pub use baml_rt_core::{BamlRtError, Result};
 pub mod error {
     pub use baml_rt_core::error::*;
 }
@@ -94,20 +94,18 @@ pub mod tracing_setup {
     pub use baml_rt_observability::tracing_setup::*;
 }
 
-#[cfg(feature = "quickjs")]
-pub use baml_rt_quickjs::{QuickJSBridge, Runtime, RuntimeBuilder, RuntimeConfig, QuickJSConfig};
-#[cfg(feature = "quickjs")]
-pub use baml_rt_quickjs::{BamlRuntimeManager, BamlContext, ContextMetadata};
-#[cfg(feature = "interceptor")]
-pub use baml_rt_interceptor::{
-    InterceptorRegistry, InterceptorDecision, LLMInterceptor, ToolInterceptor,
-    LLMCallContext, ToolCallContext,
-};
-#[cfg(feature = "interceptor")]
-pub use baml_rt_interceptor::{
-    TracingInterceptor, TracingLLMInterceptor, TracingToolInterceptor,
-};
-#[cfg(feature = "a2a")]
-pub use baml_rt_a2a::{A2aMethod, A2aOutcome, A2aRequest};
 #[cfg(feature = "a2a")]
 pub use baml_rt_a2a::{A2aAgent, A2aAgentBuilder, A2aRequestHandler};
+#[cfg(feature = "a2a")]
+pub use baml_rt_a2a::{A2aMethod, A2aOutcome, A2aRequest};
+#[cfg(feature = "interceptor")]
+pub use baml_rt_interceptor::{
+    InterceptorDecision, InterceptorRegistry, LLMCallContext, LLMInterceptor, ToolCallContext,
+    ToolInterceptor,
+};
+#[cfg(feature = "interceptor")]
+pub use baml_rt_interceptor::{TracingInterceptor, TracingLLMInterceptor, TracingToolInterceptor};
+#[cfg(feature = "quickjs")]
+pub use baml_rt_quickjs::{BamlContext, BamlRuntimeManager, ContextMetadata};
+#[cfg(feature = "quickjs")]
+pub use baml_rt_quickjs::{QuickJSBridge, QuickJSConfig, Runtime, RuntimeBuilder, RuntimeConfig};

@@ -6,13 +6,13 @@
 //! Use short max_attempts_ms so tests fail fast when LLM-backed fixtures (e.g. VoidshipGreeting)
 //! don't complete (e.g. missing API key); otherwise the effect-gated poller would wait 30 minutes.
 
-use std::fs;
-use std::sync::Arc;
-use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::A2aAgent;
 use baml_rt::QuickJSConfig;
-use baml_rt_core::context::InvocationScope;
+use baml_rt::baml::BamlRuntimeManager;
+use baml_rt_core::context::{self, InvocationScope};
 use serde_json::json;
+use std::fs;
+use std::sync::Arc;
 
 use test_support::common::agent_fixture;
 
@@ -25,10 +25,12 @@ fn test_quickjs_config() -> QuickJSConfig {
 async fn test_baml_function_returns_string_result() {
     // Contract: When a BAML function returns a string, invoke_function should return that string
     // (not wrapped in {"success": true} or any other wrapper)
-    
+
     let mut baml_manager = BamlRuntimeManager::new().unwrap();
     let agent_dir = agent_fixture("voidship-rites");
-    baml_manager.load_schema(agent_dir.to_str().unwrap()).unwrap();
+    baml_manager
+        .load_schema(agent_dir.to_str().unwrap())
+        .unwrap();
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
@@ -37,13 +39,15 @@ async fn test_baml_function_returns_string_result() {
         .await
         .unwrap();
     let bridge_handle = agent.bridge();
-    let mut bridge = bridge_handle.lock().await;
+    let scope = InvocationScope::standalone(agent.agent_id().clone());
+    let result = context::with_scope(scope.as_scope().clone(), async {
+        let mut bridge = bridge_handle.lock().await;
+        bridge
+            .invoke_function("VoidshipGreeting", json!({"name": "TestUser"}))
+            .await
+    })
+    .await;
 
-    // Invoke VoidshipGreeting which should return a string greeting
-    let result = bridge
-        .invoke_function("VoidshipGreeting", json!({"name": "TestUser"}))
-        .await;
-    
     // Contract assertion: Result should be a string (the greeting), not a wrapper object
     match result {
         Ok(val) => {
@@ -53,7 +57,7 @@ async fn test_baml_function_returns_string_result() {
                 "Expected string result, got: {:?}. The function should return the actual greeting string.",
                 val
             );
-            
+
             let greeting = val.as_str().unwrap();
             assert!(
                 !greeting.trim().is_empty(),
@@ -72,12 +76,14 @@ async fn test_baml_function_returns_string_result() {
 
 #[tokio::test]
 async fn test_js_function_invocation_returns_actual_result() {
-    // Contract: When invoking a JavaScript function that calls BAML, 
+    // Contract: When invoking a JavaScript function that calls BAML,
     // the result should be the actual BAML result, not a success wrapper
-    
+
     let mut baml_manager = BamlRuntimeManager::new().unwrap();
     let agent_dir = agent_fixture("voidship-rites");
-    baml_manager.load_schema(agent_dir.to_str().unwrap()).unwrap();
+    baml_manager
+        .load_schema(agent_dir.to_str().unwrap())
+        .unwrap();
     let agent_code = r#"
         async function riteBlessing(args) {
             return await VoidshipGreeting({ name: args.name });
@@ -100,7 +106,7 @@ async fn test_js_function_invocation_returns_actual_result() {
     let result = bridge
         .invoke_js_function(&scope, "riteBlessing", json!({"name": "ContractTest"}))
         .await;
-    
+
     // Contract assertion: Should return the actual greeting string, not {"success": true}
     match result {
         Ok(val) => {
@@ -110,7 +116,7 @@ async fn test_js_function_invocation_returns_actual_result() {
                 "CONTRACT VIOLATION: Expected string result from riteBlessing, got: {:?}. Actual result must be returned, not wrapped in success object.",
                 val
             );
-            
+
             // MUST NOT be a success wrapper
             if let Some(obj) = val.as_object()
                 && obj.contains_key("success")
@@ -120,7 +126,7 @@ async fn test_js_function_invocation_returns_actual_result() {
                     val
                 );
             }
-            
+
             let greeting = val.as_str().unwrap();
             assert!(
                 !greeting.trim().is_empty(),
@@ -141,10 +147,12 @@ async fn test_js_function_invocation_returns_actual_result() {
 async fn test_invoke_function_api_contract() {
     // Contract: The invoke_function API (from baml-agent-builder) should return the actual function result,
     // not wrapped in any success object
-    
+
     let agent_dir = agent_fixture("voidship-rites");
     let mut baml_manager = BamlRuntimeManager::new().unwrap();
-    baml_manager.load_schema(agent_dir.to_str().unwrap()).unwrap();
+    baml_manager
+        .load_schema(agent_dir.to_str().unwrap())
+        .unwrap();
     let agent_code = r#"
         async function riteBlessing(args) {
             return await VoidshipGreeting({ name: args.name });
@@ -166,7 +174,7 @@ async fn test_invoke_function_api_contract() {
     let result = bridge
         .invoke_js_function(&scope, "riteBlessing", json!({"name": "APIContractTest"}))
         .await;
-    
+
     // Contract assertion: Result MUST be the actual string, not wrapped
     match result {
         Ok(val) => {
@@ -176,7 +184,7 @@ async fn test_invoke_function_api_contract() {
                 "CONTRACT VIOLATION: invoke_function API must return actual result (string), not wrapper. Got: {:?}",
                 val
             );
-            
+
             // CONTRACT: Must NOT contain "success" field
             if let Some(obj) = val.as_object()
                 && obj.get("success").is_some()
@@ -186,7 +194,7 @@ async fn test_invoke_function_api_contract() {
                     val
                 );
             }
-            
+
             let greeting = val.as_str().unwrap();
             assert!(
                 !greeting.trim().is_empty(),
@@ -208,14 +216,16 @@ async fn test_invoke_function_api_contract() {
 #[tokio::test]
 async fn test_loaded_agent_invoke_function_contract() {
     // Contract: LoadedAgent::invoke_function must return the actual result, not wrapped
-    
+
     // Load agent exactly as load_agent_package does
     let agent_dir = test_support::common::agent_fixture("voidship-rites");
-    
+
     // Extract logic from load_agent_package (the actual code)
     let mut runtime_manager = BamlRuntimeManager::new().unwrap();
-    runtime_manager.load_schema(agent_dir.to_str().unwrap()).unwrap();
-    
+    runtime_manager
+        .load_schema(agent_dir.to_str().unwrap())
+        .unwrap();
+
     // Load agent JavaScript code (actual pattern from load_agent_package)
     let dist_path = agent_dir.join("dist").join("index.js");
     let mut agent_code = if dist_path.exists() {
@@ -244,12 +254,12 @@ async fn test_loaded_agent_invoke_function_contract() {
     let bridge_handle = agent.bridge();
     let mut bridge = bridge_handle.lock().await;
     let scope = InvocationScope::standalone(agent.agent_id().clone());
-    
+
     // Use the ACTUAL invoke_function logic from LoadedAgent (lines 257-290)
     let result = bridge
         .invoke_js_function(&scope, "riteBlessing", json!({"name": "ContractTest"}))
         .await;
-    
+
     match result {
         Ok(val) => {
             // CONTRACT: Result must be a string (the actual greeting), not {"success": true}
@@ -258,12 +268,15 @@ async fn test_loaded_agent_invoke_function_contract() {
                 "CONTRACT VIOLATION: invoke_function must return string result, got: {:?}",
                 val
             );
-            
+
             // CONTRACT: Must NOT be a success wrapper
             if let Some(obj) = val.as_object() {
-                panic!("CONTRACT VIOLATION: Result is object with 'success': {:?}. Must return actual result.", obj);
+                panic!(
+                    "CONTRACT VIOLATION: Result is object with 'success': {:?}. Must return actual result.",
+                    obj
+                );
             }
-            
+
             let greeting = val.as_str().unwrap();
             assert!(
                 !greeting.trim().is_empty(),

@@ -6,12 +6,12 @@
 //! "will never yield". See docs/HOST_QUICKJS_STREAM_INVARIANTS.md.
 
 use crate::quickjs_bridge::eval::EffectGatedPoller;
-use baml_rt_core::{BamlRtError, Result};
 use baml_rt_core::context::{InvocationScope, RuntimeScope};
 use baml_rt_core::effects::EffectLiveness;
+use baml_rt_core::{BamlRtError, Result};
 use quickjs_runtime::facades::QuickJsRuntimeFacade;
-use std::sync::{Arc, Mutex as StdMutex};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use super::scope::InvocationToken;
 

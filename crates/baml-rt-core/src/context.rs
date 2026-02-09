@@ -9,8 +9,8 @@
 //! needs the current scope must use a type implementing that trait (e.g. [`task_local_context()`]).
 //! Missing scope is a failure condition; the trait returns `Result`, not `Option`.
 
-use crate::ids::{AgentId, ContextId, MessageId, TaskId};
 use crate::error::{BamlRtError, Result};
+use crate::ids::{AgentId, ContextId, MessageId, TaskId};
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -45,6 +45,28 @@ pub fn task_local_context() -> TaskLocalContext {
     TaskLocalContext
 }
 
+/// Wrapper that carries a reference and an invocation scope. Use when an API must run
+/// with a specific scope (e.g. tool execution, session send/next). Implements
+/// [`InvocationContext`] so scope-dependent code can call `.current_scope()` and get
+/// the stored scope without touching task-local or globals.
+#[derive(Debug, Clone)]
+pub struct Scoped<'a, T> {
+    pub inner: &'a T,
+    pub scope: RuntimeScope,
+}
+
+impl<'a, T> Scoped<'a, T> {
+    pub fn new(inner: &'a T, scope: RuntimeScope) -> Self {
+        Self { inner, scope }
+    }
+}
+
+impl<T> InvocationContext for Scoped<'_, T> {
+    fn current_scope(&self) -> Result<RuntimeScope> {
+        Ok(self.scope.clone())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RuntimeScope {
     pub context_id: ContextId,
@@ -60,7 +82,12 @@ impl RuntimeScope {
         message_id: Option<MessageId>,
         task_id: Option<TaskId>,
     ) -> Self {
-        Self { context_id, agent_id, message_id, task_id }
+        Self {
+            context_id,
+            agent_id,
+            message_id,
+            task_id,
+        }
     }
 }
 
@@ -132,22 +159,36 @@ pub(crate) fn require_scope() -> Result<RuntimeScope> {
 
 /// Read the current context_id when running inside `with_scope(scope, ...)`.
 pub fn current_context_id() -> Option<ContextId> {
-    task_local_context().current_scope().ok().map(|scope| scope.context_id)
+    task_local_context()
+        .current_scope()
+        .ok()
+        .map(|scope| scope.context_id)
 }
 
 pub fn current_agent_id() -> Option<AgentId> {
-    task_local_context().current_scope().ok().map(|scope| scope.agent_id)
+    task_local_context()
+        .current_scope()
+        .ok()
+        .map(|scope| scope.agent_id)
 }
 
 pub fn current_message_id() -> Option<MessageId> {
-    task_local_context().current_scope().ok().and_then(|scope| scope.message_id)
+    task_local_context()
+        .current_scope()
+        .ok()
+        .and_then(|scope| scope.message_id)
 }
 
 pub fn current_task_id() -> Option<TaskId> {
-    task_local_context().current_scope().ok().and_then(|scope| scope.task_id)
+    task_local_context()
+        .current_scope()
+        .ok()
+        .and_then(|scope| scope.task_id)
 }
 
-pub fn current_or_new() -> ContextId {
+/// Context ID for request-entry paths (e.g. store) when no scope is set. Prefer
+/// requiring scope and using [`InvocationContext::current_scope`] in runtime/tool paths.
+pub fn context_id_or_generated() -> ContextId {
     current_context_id().unwrap_or_else(generate_context_id)
 }
 
@@ -185,16 +226,13 @@ where
     Ok(with_scope(scope, fut).await)
 }
 
-pub async fn with_agent_id<F, T>(id: AgentId, fut: F) -> T
+/// Run `fut` with the current scope's context_id/message_id/task_id but with
+/// `agent_id` set to `id`. Fails if no invocation scope is set (no implicit scope creation).
+pub async fn with_agent_id<F, T>(id: AgentId, fut: F) -> Result<T>
 where
     F: std::future::Future<Output = T>,
 {
-    let scope = task_local_context()
-        .current_scope()
-        .map(|mut scope| {
-            scope.agent_id = id.clone();
-            scope
-        })
-        .unwrap_or_else(|_| RuntimeScope::new(generate_context_id(), id, None, None));
-    with_scope(scope, fut).await
+    let mut scope = task_local_context().current_scope()?;
+    scope.agent_id = id;
+    Ok(with_scope(scope, fut).await)
 }

@@ -3,24 +3,24 @@
 //! This module provides a trait-based system for registering tool functions
 //! that can be called by LLMs during BAML function execution or directly from JavaScript.
 
-use baml_rt_core::{BamlRtError, Result};
 use crate::bundles::BundleType;
-use crate::tool_fsm::{ToolFailure, ToolSessionError, ToolSession, ToolSessionId, ToolStep};
-use crate::tool_schema::{json_schema_value, ToolType};
+use crate::tool_catalog::{InventoryCatalog, ToolCatalog};
+use crate::tool_fsm::{ToolFailure, ToolSession, ToolSessionError, ToolSessionId, ToolStep};
+use crate::tool_schema::{ToolType, json_schema_value};
+use crate::ts_gen::render_tool_typescript;
 use async_trait::async_trait;
+use baml_rt_core::{BamlRtError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::ts_gen::render_tool_typescript;
-use crate::tool_catalog::{InventoryCatalog, ToolCatalog};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex as StdMutex};
+use tokio::sync::Mutex as TokioMutex;
 
 /// Capitalize the first character of a string
-/// 
+///
 /// Used for generating class names and TypeScript identifiers.
 pub(crate) fn capitalize_first(s: &str) -> String {
     let mut chars = s.chars();
@@ -31,7 +31,7 @@ pub(crate) fn capitalize_first(s: &str) -> String {
 }
 
 /// Helper function for creating an empty open_input value.
-/// 
+///
 /// This centralizes the pattern of using an empty JSON object as the default
 /// open_input when none is provided.
 fn empty_open_input() -> Value {
@@ -39,21 +39,31 @@ fn empty_open_input() -> Value {
 }
 
 /// Deserialize a tool input from JSON Value
-/// 
+///
 /// Centralizes error handling for tool input deserialization.
 fn deserialize_tool_input<T: for<'de> Deserialize<'de>>(value: Value) -> Result<T> {
     serde_json::from_value(value).map_err(BamlRtError::Json)
 }
 
 /// Serialize a tool output to JSON Value
-/// 
+///
 /// Centralizes error handling for tool output serialization.
 fn serialize_tool_output<T: Serialize>(value: T) -> Result<Value> {
     serde_json::to_value(value).map_err(BamlRtError::Json)
 }
 
+fn tool_registry_trace_enabled() -> bool {
+    std::env::var("BAML_TRACE_TOOL_SESSION").is_ok()
+}
+
+fn tool_registry_trace(message: &str) {
+    if tool_registry_trace_enabled() {
+        eprintln!("[tool-registry-trace] {}", message);
+    }
+}
+
 /// Validate open_input by attempting to deserialize it
-/// 
+///
 /// Centralizes the validation pattern for open_input parameters.
 /// For unit type `()`, both `null` and empty object `{}` are accepted (registry uses `{}` for one-shot execute).
 fn validate_open_input<T: for<'de> Deserialize<'de>>(open_input: Value) -> Result<()> {
@@ -61,7 +71,13 @@ fn validate_open_input<T: for<'de> Deserialize<'de>>(open_input: Value) -> Resul
         Ok(_) => Ok(()),
         Err(err) => {
             let msg = err.to_string();
-            if msg.contains("expected unit") && (open_input.is_null() || open_input.as_object().map(|m| m.is_empty()).unwrap_or(false)) {
+            if msg.contains("expected unit")
+                && (open_input.is_null()
+                    || open_input
+                        .as_object()
+                        .map(|m| m.is_empty())
+                        .unwrap_or(false))
+            {
                 Ok(())
             } else {
                 Err(BamlRtError::InvalidOpenInput { source: err })
@@ -71,7 +87,7 @@ fn validate_open_input<T: for<'de> Deserialize<'de>>(open_input: Value) -> Resul
 }
 
 /// Parse a tool name and derive its class name
-/// 
+///
 /// Centralizes the common pattern of parsing a tool name string
 /// and deriving the corresponding class name.
 pub fn parse_tool_name_and_class(name: &str) -> Result<(ToolName, String)> {
@@ -154,9 +170,11 @@ pub trait BamlTool: Send + Sync + 'static {
     fn class_name() -> String {
         let bundle_name = Self::Bundle::NAME;
         let local_name = Self::LOCAL_NAME;
-        format!("{}{}", 
+        format!(
+            "{}{}",
             capitalize_first(bundle_name),
-            capitalize_first(local_name))
+            capitalize_first(local_name)
+        )
     }
 
     /// Description of what this tool does (used by LLMs to understand when to call it)
@@ -421,7 +439,7 @@ pub struct ToolFunctionMetadata {
 }
 
 /// Trait for building ToolFunctionMetadata consistently
-/// 
+///
 /// Provides a consistent interface for constructing tool metadata,
 /// ensuring all metadata follows the same pattern and reducing duplication.
 pub trait ToolMetadataBuilder {
@@ -436,13 +454,15 @@ impl ToolFunctionMetadata {
 
     /// Derive class name from bundle and local tool names
     pub fn derive_class_name(bundle: &BundleName, local: &LocalToolName) -> String {
-        format!("{}{}", 
+        format!(
+            "{}{}",
             capitalize_first(bundle.as_str()),
-            capitalize_first(local.as_str()))
+            capitalize_first(local.as_str())
+        )
     }
 
     /// Create ToolFunctionMetadata from type parameters
-    /// 
+    ///
     /// This helper consolidates the common pattern of building metadata
     /// from type information, reducing duplication across registration sites.
     pub fn from_types<OpenInput, Input, Output>(
@@ -534,7 +554,8 @@ where
     }
 }
 
-impl<OpenInput, Input, Output> ToolMetadataBuilder for TypeBasedMetadataBuilder<OpenInput, Input, Output>
+impl<OpenInput, Input, Output> ToolMetadataBuilder
+    for TypeBasedMetadataBuilder<OpenInput, Input, Output>
 where
     OpenInput: crate::tool_schema::ToolType,
     Input: crate::tool_schema::ToolType,
@@ -627,7 +648,11 @@ pub trait ToolHandler: Send + Sync {
     fn capability(&self) -> ToolCapability {
         ToolCapability::OneShot
     }
-    async fn open_session(&self, ctx: ToolSessionContext, open_input: Value) -> Result<Box<dyn ToolSession>>;
+    async fn open_session(
+        &self,
+        ctx: ToolSessionContext,
+        open_input: Value,
+    ) -> Result<Box<dyn ToolSession>>;
 }
 
 pub trait ToolBundle: Send + Sync {
@@ -637,21 +662,23 @@ pub trait ToolBundle: Send + Sync {
 
 /// Registry for dynamically registered tool functions
 pub struct ToolRegistry {
+    inner: StdMutex<ToolRegistryInner>,
+}
+
+struct ToolRegistryInner {
     tools: HashMap<ToolName, (ToolFunctionMetadata, Arc<dyn ToolHandler>)>,
     bundles: HashMap<BundleName, ToolBundleMetadata>,
     allowlist: Option<HashSet<ToolName>>,
-    sessions: HashMap<ToolSessionId, Arc<Mutex<Box<dyn ToolSession>>>>,
+    sessions: HashMap<ToolSessionId, Arc<TokioMutex<Box<dyn ToolSession>>>>,
 }
 
 fn map_session_error(error: ToolSessionError) -> BamlRtError {
     match error {
         ToolSessionError::Transport(err) => err,
-        ToolSessionError::Tool(failure) => {
-            BamlRtError::InvalidArgument(format!(
-                "Tool failure ({:?}): {}",
-                failure.kind, failure.message
-            ))
-        }
+        ToolSessionError::Tool(failure) => BamlRtError::InvalidArgument(format!(
+            "Tool failure ({:?}): {}",
+            failure.kind, failure.message
+        )),
     }
 }
 
@@ -678,27 +705,33 @@ impl SessionState for Closed {
 }
 
 pub enum ToolSessionAdvance {
-    Streaming { output: Value, session: ToolSessionHandle<Ready> },
-    Done { output: Option<Value>, session: ToolSessionHandle<Closed> },
-    Error { error: ToolFailure, session: ToolSessionHandle<Closed> },
+    Streaming {
+        output: Value,
+        session: ToolSessionHandle<Ready>,
+    },
+    Done {
+        output: Option<Value>,
+        session: ToolSessionHandle<Closed>,
+    },
+    Error {
+        error: ToolFailure,
+        session: ToolSessionHandle<Closed>,
+    },
 }
 
 pub struct ToolSessionHandle<State: SessionState> {
     id: ToolSessionId,
-    registry: Arc<Mutex<ToolRegistry>>,
+    registry: Arc<ToolRegistry>,
     _state: PhantomData<State>,
 }
 
 impl ToolSessionHandle<AwaitingInput> {
     pub async fn open(
-        registry: Arc<Mutex<ToolRegistry>>,
+        registry: Arc<ToolRegistry>,
         name: &str,
         open_input: Value,
     ) -> Result<ToolSessionHandle<AwaitingInput>> {
-        let session_id = {
-            let mut guard = registry.lock().await;
-            guard.open_session(name, open_input).await?
-        };
+        let session_id = registry.open_session(name, open_input).await?;
         Ok(ToolSessionHandle {
             id: session_id,
             registry,
@@ -713,10 +746,7 @@ impl ToolSessionHandle<AwaitingInput> {
     pub async fn send(self, input: Value) -> Result<ToolSessionHandle<Ready>> {
         let registry = self.registry.clone();
         let id = self.id.clone();
-        {
-            let guard = registry.lock().await;
-            guard.session_send(&id, input).await?;
-        }
+        registry.session_send(&id, input).await?;
         Ok(ToolSessionHandle {
             id,
             registry,
@@ -735,14 +765,15 @@ impl ToolSessionHandle<Ready> {
         let registry_handle = self.registry.clone();
         let id = self.id.clone();
         let step = {
-            let mut guard = registry.lock().await;
-            let step = guard.session_next(&id).await?;
+            let step = registry.session_next(&id).await?;
             match &step {
                 ToolStep::Done { .. } => {
-                    guard.session_finish(&id).await?;
+                    registry.session_finish(&id).await?;
                 }
                 ToolStep::Error { error } => {
-                    guard.session_abort(&id, Some(error.message.clone())).await?;
+                    registry
+                        .session_abort(&id, Some(error.message.clone()))
+                        .await?;
                 }
                 ToolStep::Streaming { .. } => {}
             }
@@ -757,36 +788,29 @@ impl ToolSessionHandle<Ready> {
                     _state: PhantomData,
                 },
             }),
-            ToolStep::Done { output } => {
-                Ok(ToolSessionAdvance::Done {
-                    output,
-                    session: ToolSessionHandle {
-                        id,
-                        registry: registry_handle,
-                        _state: PhantomData,
-                    },
-                })
-            }
-            ToolStep::Error { error } => {
-                Ok(ToolSessionAdvance::Error {
-                    error,
-                    session: ToolSessionHandle {
-                        id,
-                        registry: registry_handle,
-                        _state: PhantomData,
-                    },
-                })
-            }
+            ToolStep::Done { output } => Ok(ToolSessionAdvance::Done {
+                output,
+                session: ToolSessionHandle {
+                    id,
+                    registry: registry_handle,
+                    _state: PhantomData,
+                },
+            }),
+            ToolStep::Error { error } => Ok(ToolSessionAdvance::Error {
+                error,
+                session: ToolSessionHandle {
+                    id,
+                    registry: registry_handle,
+                    _state: PhantomData,
+                },
+            }),
         }
     }
 
     pub async fn finish(self) -> Result<ToolSessionHandle<Closed>> {
         let registry = self.registry.clone();
         let id = self.id.clone();
-        {
-            let mut guard = registry.lock().await;
-            guard.session_finish(&id).await?;
-        }
+        registry.session_finish(&id).await?;
         Ok(ToolSessionHandle {
             id,
             registry,
@@ -797,10 +821,7 @@ impl ToolSessionHandle<Ready> {
     pub async fn abort(self, reason: Option<String>) -> Result<ToolSessionHandle<Closed>> {
         let registry = self.registry.clone();
         let id = self.id.clone();
-        {
-            let mut guard = registry.lock().await;
-            guard.session_abort(&id, reason).await?;
-        }
+        registry.session_abort(&id, reason).await?;
         Ok(ToolSessionHandle {
             id,
             registry,
@@ -825,12 +846,14 @@ impl<State: SessionState> Drop for ToolSessionHandle<State> {
         let session_id = self.id.clone();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
-                let mut guard = registry.lock().await;
                 let reason = "session dropped";
                 let span = crate::spans::session_abort(&session_id, Some(reason));
                 let _guard = span.enter();
-                
-                if let Err(e) = guard.session_abort(&session_id, Some(reason.to_string())).await {
+
+                if let Err(e) = registry
+                    .session_abort(&session_id, Some(reason.to_string()))
+                    .await
+                {
                     tracing::warn!(
                         session_id = %session_id,
                         error = ?e,
@@ -887,10 +910,14 @@ impl<T: BamlTool> ToolHandler for ToolWrapper<T> {
         &self.metadata
     }
 
-    async fn open_session(&self, ctx: ToolSessionContext, open_input: Value) -> Result<Box<dyn ToolSession>> {
+    async fn open_session(
+        &self,
+        ctx: ToolSessionContext,
+        open_input: Value,
+    ) -> Result<Box<dyn ToolSession>> {
         // Parse and validate open_input if needed
         validate_open_input::<T::OpenInput>(open_input)?;
-        
+
         let tool = self.tool.clone();
         let executor: Box<dyn ToolExecutor> = Box::new(ExecutorAdapter::new(move |input| {
             let tool = tool.clone();
@@ -908,28 +935,33 @@ impl ToolRegistry {
     /// Create a new empty tool registry
     pub fn new() -> Self {
         Self {
-            tools: HashMap::new(),
-            bundles: HashMap::new(),
-            allowlist: None,
-            sessions: HashMap::new(),
+            inner: StdMutex::new(ToolRegistryInner {
+                tools: HashMap::new(),
+                bundles: HashMap::new(),
+                allowlist: None,
+                sessions: HashMap::new(),
+            }),
         }
     }
 
-    pub fn set_allowlist(&mut self, allowlist: HashSet<ToolName>) {
-        self.allowlist = Some(allowlist);
+    pub fn set_allowlist(&self, allowlist: HashSet<ToolName>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.allowlist = Some(allowlist);
     }
 
-    pub fn set_allowlist_from_strings(&mut self, allowlist: HashSet<String>) -> Result<()> {
+    pub fn set_allowlist_from_strings(&self, allowlist: HashSet<String>) -> Result<()> {
         let mut parsed = HashSet::with_capacity(allowlist.len());
         for name in allowlist {
             parsed.insert(ToolName::parse(&name)?);
         }
-        self.allowlist = Some(parsed);
+        let mut inner = self.inner.lock().unwrap();
+        inner.allowlist = Some(parsed);
         Ok(())
     }
 
-    pub fn clear_allowlist(&mut self) {
-        self.allowlist = None;
+    pub fn clear_allowlist(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.allowlist = None;
     }
 
     /// Register a tool that implements the BamlTool trait
@@ -967,11 +999,11 @@ impl ToolRegistry {
     /// let mut registry = ToolRegistry::new();
     /// registry.register(MyTool).expect("register tool");
     /// ```
-    pub fn register<T: BamlTool>(&mut self, tool: T) -> Result<()> {
+    pub fn register<T: BamlTool>(&self, tool: T) -> Result<()> {
         // Derive tool name from Bundle and LOCAL_NAME
         let tool_name_str = T::name();
         let name = ToolName::parse(&tool_name_str)?;
-        
+
         // Validate that the tool's bundle matches the Bundle type
         let expected_bundle = T::Bundle::bundle_name()?;
         if name.bundle() != &expected_bundle {
@@ -982,10 +1014,18 @@ impl ToolRegistry {
                 expected_bundle
             )));
         }
-        
-        self.ensure_allowed(&name, ToolOrigin::Host)?;
 
-        if self.tools.contains_key(&name) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(allowlist) = &inner.allowlist
+            && !allowlist.contains(&name)
+        {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "Tool '{}' is not declared in the manifest allowlist",
+                name
+            )));
+        }
+
+        if inner.tools.contains_key(&name) {
             return Err(BamlRtError::InvalidArgument(format!(
                 "Tool '{}' is already registered",
                 name
@@ -1006,7 +1046,10 @@ impl ToolRegistry {
             metadata,
         });
 
-        self.tools.insert(name.clone(), (tool_handler.metadata().clone(), tool_handler));
+        inner.tools.insert(
+            name.clone(),
+            (tool_handler.metadata().clone(), tool_handler),
+        );
 
         let span = crate::spans::register_tool(&name, &description_str);
         let _guard = span.enter();
@@ -1022,13 +1065,22 @@ impl ToolRegistry {
 
     /// Register a tool with dynamic metadata and handler.
     pub fn register_dynamic(
-        &mut self,
+        &self,
         metadata: ToolFunctionMetadata,
         handler: Arc<dyn ToolHandler>,
     ) -> Result<()> {
-        self.ensure_allowed(&metadata.name, metadata.origin)?;
+        let mut inner = self.inner.lock().unwrap();
+        if metadata.origin == ToolOrigin::Host
+            && let Some(allowlist) = &inner.allowlist
+            && !allowlist.contains(&metadata.name)
+        {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "Tool '{}' is not declared in the manifest allowlist",
+                metadata.name
+            )));
+        }
 
-        if self.tools.contains_key(&metadata.name) {
+        if inner.tools.contains_key(&metadata.name) {
             return Err(BamlRtError::InvalidArgument(format!(
                 "Tool '{}' is already registered",
                 metadata.name
@@ -1041,15 +1093,17 @@ impl ToolRegistry {
             "Registered dynamic tool function"
         );
 
-        self.tools
+        inner
+            .tools
             .insert(metadata.name.clone(), (metadata, handler));
 
         Ok(())
     }
 
-    pub fn register_bundle<T: ToolBundle>(&mut self, bundle: T) -> Result<()> {
+    pub fn register_bundle<T: ToolBundle>(&self, bundle: T) -> Result<()> {
         let bundle_meta = bundle.metadata();
-        if self.bundles.contains_key(&bundle_meta.name) {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.bundles.contains_key(&bundle_meta.name) {
             return Err(BamlRtError::InvalidArgument(format!(
                 "Bundle '{}' is already registered",
                 bundle_meta.name
@@ -1063,38 +1117,59 @@ impl ToolRegistry {
                     metadata.name, bundle_meta.name
                 )));
             }
-            self.ensure_allowed(&metadata.name, metadata.origin)?;
-            if self.tools.contains_key(&metadata.name) {
+            if metadata.origin == ToolOrigin::Host
+                && let Some(allowlist) = &inner.allowlist
+                && !allowlist.contains(&metadata.name)
+            {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "Tool '{}' is not declared in the manifest allowlist",
+                    metadata.name
+                )));
+            }
+            if inner.tools.contains_key(&metadata.name) {
                 return Err(BamlRtError::InvalidArgument(format!(
                     "Tool '{}' is already registered",
                     metadata.name
                 )));
             }
-            self.tools.insert(metadata.name.clone(), (metadata, handler.clone()));
+            inner
+                .tools
+                .insert(metadata.name.clone(), (metadata, handler.clone()));
         }
-        self.bundles.insert(bundle_meta.name.clone(), bundle_meta);
+        inner.bundles.insert(bundle_meta.name.clone(), bundle_meta);
         Ok(())
     }
 
     /// Get tool metadata by name
-    pub fn get_metadata(&self, name: &str) -> Option<&ToolFunctionMetadata> {
-        ToolName::parse(name)
-            .ok()
-            .and_then(|parsed| self.tools.get(&parsed).map(|(metadata, _)| metadata))
+    pub fn get_metadata(&self, name: &str) -> Option<ToolFunctionMetadata> {
+        let parsed = ToolName::parse(name).ok()?;
+        let inner = self.inner.lock().unwrap();
+        inner
+            .tools
+            .get(&parsed)
+            .map(|(metadata, _)| metadata.clone())
     }
 
     /// List all registered tool names
     pub fn list_tools(&self) -> Vec<String> {
-        self.tools.keys().map(|name| name.to_string()).collect()
+        let inner = self.inner.lock().unwrap();
+        inner.tools.keys().map(|name| name.to_string()).collect()
     }
 
     /// Get all tool metadata (for LLM function calling)
-    pub fn all_metadata(&self) -> Vec<&ToolFunctionMetadata> {
-        self.tools.values().map(|(metadata, _)| metadata).collect()
+    pub fn all_metadata(&self) -> Vec<ToolFunctionMetadata> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .tools
+            .values()
+            .map(|(metadata, _)| metadata.clone())
+            .collect()
     }
 
     pub fn export_metadata(&self) -> Vec<ToolFunctionMetadata> {
-        self.tools
+        let inner = self.inner.lock().unwrap();
+        inner
+            .tools
             .values()
             .filter(|(metadata, _)| metadata.origin == ToolOrigin::Host)
             .map(|(metadata, _)| metadata.clone())
@@ -1102,7 +1177,9 @@ impl ToolRegistry {
     }
 
     pub fn export_metadata_records(&self) -> Vec<ToolFunctionMetadataExport> {
-        self.tools
+        let inner = self.inner.lock().unwrap();
+        inner
+            .tools
             .values()
             .filter(|(metadata, _)| metadata.origin == ToolOrigin::Host)
             .map(|(metadata, _)| ToolFunctionMetadataExport::from(metadata))
@@ -1110,10 +1187,11 @@ impl ToolRegistry {
     }
 
     pub fn validate_allowlist_registered(&self) -> Result<()> {
-        if let Some(allowlist) = &self.allowlist {
+        let inner = self.inner.lock().unwrap();
+        if let Some(allowlist) = &inner.allowlist {
             let mut missing = Vec::new();
             for name in allowlist {
-                if !self.tools.contains_key(name) {
+                if !inner.tools.contains_key(name) {
                     missing.push(name.to_string());
                 }
             }
@@ -1132,8 +1210,15 @@ impl ToolRegistry {
         self.typescript_declarations_with_catalog(&catalog)
     }
 
-    pub fn typescript_declarations_with_catalog<C: ToolCatalog>(&self, catalog: &C) -> Result<String> {
-        let tools = if let Some(allowlist) = &self.allowlist {
+    pub fn typescript_declarations_with_catalog<C: ToolCatalog>(
+        &self,
+        catalog: &C,
+    ) -> Result<String> {
+        let allowlist = {
+            let inner = self.inner.lock().unwrap();
+            inner.allowlist.clone()
+        };
+        let tools = if let Some(allowlist) = &allowlist {
             let mut tools = Vec::with_capacity(allowlist.len());
             let mut missing = Vec::new();
             for name in allowlist {
@@ -1165,28 +1250,46 @@ impl ToolRegistry {
     }
 
     /// Open a tool session and return its session id.
-    pub async fn open_session(&mut self, name: &str, open_input: Value) -> Result<ToolSessionId> {
+    pub async fn open_session(&self, name: &str, open_input: Value) -> Result<ToolSessionId> {
         let start = std::time::Instant::now();
         let parsed = ToolName::parse(name)?;
         let session_id = ToolSessionId::random();
         let span = crate::spans::open_session(&session_id, &parsed);
         let _guard = span.enter();
-        
-        let (metadata, handler) = self.tools.get(&parsed)
-            .ok_or_else(|| BamlRtError::FunctionNotFound(format!("Tool '{}' not found", parsed)))?;
-        self.ensure_allowed(&parsed, metadata.origin)?;
+
+        let (metadata, handler) = {
+            let inner = self.inner.lock().unwrap();
+            let (metadata, handler) = inner.tools.get(&parsed).ok_or_else(|| {
+                BamlRtError::FunctionNotFound(format!("Tool '{}' not found", parsed))
+            })?;
+            if metadata.origin == ToolOrigin::Host
+                && let Some(allowlist) = &inner.allowlist
+                && !allowlist.contains(&parsed)
+            {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "Tool '{}' is not declared in the manifest allowlist",
+                    parsed
+                )));
+            }
+            (metadata.clone(), handler.clone())
+        };
 
         let ctx = ToolSessionContext {
             session_id: session_id.clone(),
             tool_name: metadata.name.clone(),
         };
         let session = handler.open_session(ctx, open_input).await?;
-        self.sessions.insert(session_id.clone(), Arc::new(Mutex::new(session)));
-        
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner
+                .sessions
+                .insert(session_id.clone(), Arc::new(TokioMutex::new(session)));
+        }
+
         let duration = start.elapsed();
         crate::metrics::record_session_open(&parsed.to_string());
         crate::metrics::record_session_operation("open", duration);
-        
+
         Ok(session_id)
     }
 
@@ -1194,15 +1297,28 @@ impl ToolRegistry {
         let start = std::time::Instant::now();
         let span = crate::spans::session_send(session_id);
         let _guard = span.enter();
-        
-        let session = self.sessions.get(session_id)
-            .ok_or_else(|| BamlRtError::InvalidArgument(format!("Unknown session {}", session_id)))?;
+
+        let session = {
+            let inner = self.inner.lock().unwrap();
+            inner.sessions.get(session_id).cloned()
+        };
+        let session = session.ok_or_else(|| {
+            if tool_registry_trace_enabled() {
+                let inner = self.inner.lock().unwrap();
+                tool_registry_trace(&format!(
+                    "session_send missing: session_id={}, known_sessions={}",
+                    session_id,
+                    inner.sessions.len()
+                ));
+            }
+            BamlRtError::InvalidArgument(format!("Unknown session {}", session_id))
+        })?;
         let mut guard = session.lock().await;
         let result = guard.send(input).await.map_err(map_session_error);
-        
+
         let duration = start.elapsed();
         crate::metrics::record_session_operation("send", duration);
-        
+
         result
     }
 
@@ -1210,65 +1326,95 @@ impl ToolRegistry {
         let start = std::time::Instant::now();
         let span = crate::spans::session_next(session_id);
         let _guard = span.enter();
-        
-        let session = self.sessions.get(session_id)
-            .ok_or_else(|| BamlRtError::InvalidArgument(format!("Unknown session {}", session_id)))?;
+
+        let session = {
+            let inner = self.inner.lock().unwrap();
+            inner.sessions.get(session_id).cloned()
+        };
+        let session = session.ok_or_else(|| {
+            if tool_registry_trace_enabled() {
+                let inner = self.inner.lock().unwrap();
+                tool_registry_trace(&format!(
+                    "session_next missing: session_id={}, known_sessions={}",
+                    session_id,
+                    inner.sessions.len()
+                ));
+            }
+            BamlRtError::InvalidArgument(format!("Unknown session {}", session_id))
+        })?;
         let mut guard = session.lock().await;
         let result = guard.next().await.map_err(map_session_error);
-        
+
         let duration = start.elapsed();
         crate::metrics::record_session_operation("next", duration);
-        
+
         result
     }
 
-    pub async fn session_finish(&mut self, session_id: &ToolSessionId) -> Result<()> {
+    pub async fn session_finish(&self, session_id: &ToolSessionId) -> Result<()> {
         let start = std::time::Instant::now();
         let span = crate::spans::session_finish(session_id);
         let _guard = span.enter();
-        
-        if let Some(session) = self.sessions.remove(session_id) {
+
+        let session = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.sessions.remove(session_id)
+        };
+        if let Some(session) = session {
             let mut guard = session.lock().await;
             guard.finish().await.map_err(map_session_error)?;
         }
-        
+
         let duration = start.elapsed();
         crate::metrics::record_session_operation("finish", duration);
-        
+
         Ok(())
     }
 
-    pub async fn session_abort(&mut self, session_id: &ToolSessionId, reason: Option<String>) -> Result<()> {
+    pub async fn session_abort(
+        &self,
+        session_id: &ToolSessionId,
+        reason: Option<String>,
+    ) -> Result<()> {
         let start = std::time::Instant::now();
         let span = crate::spans::session_abort(session_id, reason.as_deref());
         let _guard = span.enter();
-        
-        if let Some(session) = self.sessions.remove(session_id) {
+
+        let session = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.sessions.remove(session_id)
+        };
+        if let Some(session) = session {
             let mut guard = session.lock().await;
             guard.abort(reason).await.map_err(map_session_error)?;
         }
-        
+
         let duration = start.elapsed();
         crate::metrics::record_session_operation("abort", duration);
-        
+
         Ok(())
     }
 
     /// Execute a tool function by name (single-shot convenience).
-    pub async fn execute(&mut self, name: &str, args: Value) -> Result<Value> {
+    pub async fn execute(&self, name: &str, args: Value) -> Result<Value> {
         let start = std::time::Instant::now();
         let span = crate::spans::execute_tool(name);
         let _guard = span.enter();
-        
+
         tracing::debug!(
             tool = name,
             args = ?args,
             "Executing tool function"
         );
-        
+
         let parsed = ToolName::parse(name)?;
-        let (_, handler) = self.tools.get(&parsed)
-            .ok_or_else(|| BamlRtError::FunctionNotFound(format!("Tool '{}' not found", parsed)))?;
+        let handler = {
+            let inner = self.inner.lock().unwrap();
+            let (_, handler) = inner.tools.get(&parsed).ok_or_else(|| {
+                BamlRtError::FunctionNotFound(format!("Tool '{}' not found", parsed))
+            })?;
+            handler.clone()
+        };
         if handler.capability() != ToolCapability::OneShot {
             return Err(BamlRtError::InvalidArgument(format!(
                 "Tool '{}' requires a streaming session; use open_session",
@@ -1277,7 +1423,9 @@ impl ToolRegistry {
         }
 
         // For execute, open_input is always () (empty object)
-        let session_id = self.open_session(&parsed.to_string(), empty_open_input()).await?;
+        let session_id = self
+            .open_session(&parsed.to_string(), empty_open_input())
+            .await?;
         self.session_send(&session_id, args).await?;
         let result = match self.session_next(&session_id).await? {
             ToolStep::Streaming { output } => {
@@ -1289,28 +1437,31 @@ impl ToolRegistry {
                 Ok(output.unwrap_or(Value::Null))
             }
             ToolStep::Error { error } => {
-                self.session_abort(&session_id, Some(error.message.clone())).await?;
+                self.session_abort(&session_id, Some(error.message.clone()))
+                    .await?;
                 Err(map_session_error(ToolSessionError::Tool(error)))
             }
         };
-        
+
         // Record metrics
         let duration = start.elapsed();
         let result_str = if result.is_ok() { "success" } else { "error" };
         crate::metrics::record_tool_execution(name, result_str, duration);
-        
+
         result
     }
 
     fn ensure_allowed(&self, name: &ToolName, origin: ToolOrigin) -> Result<()> {
-        if origin == ToolOrigin::Host
-            && let Some(allowlist) = &self.allowlist
-            && !allowlist.contains(name)
-        {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "Tool '{}' is not declared in the manifest allowlist",
-                name
-            )));
+        if origin == ToolOrigin::Host {
+            let inner = self.inner.lock().unwrap();
+            if let Some(allowlist) = &inner.allowlist
+                && !allowlist.contains(name)
+            {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "Tool '{}' is not declared in the manifest allowlist",
+                    name
+                )));
+            }
         }
         Ok(())
     }
@@ -1341,8 +1492,12 @@ where
     pub fn new(name: &str, description: &str, handler: F) -> Self {
         // Tool name format is validated at compile time by the type system
         // If parsing fails, it indicates a programming error in the caller
-        let (parsed, class_name) = parse_tool_name_and_class(name)
-            .unwrap_or_else(|e| panic!("Invalid tool name format '{}': {}. This is a programming error.", name, e));
+        let (parsed, class_name) = parse_tool_name_and_class(name).unwrap_or_else(|e| {
+            panic!(
+                "Invalid tool name format '{}': {}. This is a programming error.",
+                name, e
+            )
+        });
         let metadata = TypeBasedMetadataBuilder::<(), I, O>::new(
             parsed.clone(),
             class_name,
@@ -1368,19 +1523,21 @@ where
         &self.metadata
     }
 
-    async fn open_session(&self, ctx: ToolSessionContext, open_input: Value) -> Result<Box<dyn ToolSession>> {
+    async fn open_session(
+        &self,
+        ctx: ToolSessionContext,
+        open_input: Value,
+    ) -> Result<Box<dyn ToolSession>> {
         // For TypedToolFunction, open_input is ignored (it's always ())
         // Validate it's an empty object or can be deserialized as unit type
         validate_open_input::<()>(open_input)?;
-        
+
         let handler = self.handler.clone();
         let executor: Box<dyn ToolExecutor> = Box::new(ExecutorAdapter::new(move |input| {
             let parsed: I = match deserialize_tool_input(input) {
                 Ok(value) => value,
                 Err(err) => {
-                    return Box::pin(async move {
-                        Err(err)
-                    });
+                    return Box::pin(async move { Err(err) });
                 }
             };
             let future = handler(parsed);
@@ -1435,10 +1592,16 @@ impl ToolSession for OneShotSession {
         })?;
         let output = match self.executor.execute(input).await {
             Ok(value) => value,
-            Err(err) => return Ok(ToolStep::Error { error: ToolFailure::from_error(&err) }),
+            Err(err) => {
+                return Ok(ToolStep::Error {
+                    error: ToolFailure::from_error(&err),
+                });
+            }
         };
         self.completed = true;
-        Ok(ToolStep::Done { output: Some(output) })
+        Ok(ToolStep::Done {
+            output: Some(output),
+        })
     }
 
     async fn finish(&mut self) -> std::result::Result<(), ToolSessionError> {
@@ -1446,9 +1609,11 @@ impl ToolSession for OneShotSession {
         Ok(())
     }
 
-    async fn abort(&mut self, _reason: Option<String>) -> std::result::Result<(), ToolSessionError> {
+    async fn abort(
+        &mut self,
+        _reason: Option<String>,
+    ) -> std::result::Result<(), ToolSessionError> {
         self.completed = true;
         Ok(())
     }
 }
-

@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use baml_rt::Result;
 use baml_rt::tools::BamlTool;
 use baml_rt_tools::bundles::Support;
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// Example weather tool
@@ -36,16 +36,16 @@ impl BamlTool for WeatherTool {
     type OpenInput = ();
     type Input = WeatherInput;
     type Output = WeatherOutput;
-    
+
     fn description(&self) -> &'static str {
         "Gets the current weather for a specific location. Returns temperature, condition, and humidity."
     }
-    
+
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         let location = args.location;
-        
+
         tracing::info!(location = location.as_str(), "WeatherTool executed");
-        
+
         Ok(WeatherOutput {
             location: location.clone(),
             temperature: "22°C".to_string(),
@@ -81,11 +81,11 @@ impl BamlTool for UppercaseTool {
     type OpenInput = ();
     type Input = UppercaseInput;
     type Output = UppercaseOutput;
-    
+
     fn description(&self) -> &'static str {
         "Converts a string to uppercase"
     }
-    
+
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         Ok(UppercaseOutput {
             result: args.text.to_uppercase(),
@@ -117,17 +117,17 @@ impl BamlTool for DelayedResponseTool {
     type OpenInput = ();
     type Input = DelayedInput;
     type Output = DelayedOutput;
-    
+
     fn description(&self) -> &'static str {
         "Returns a response after a short delay (simulates async operation)"
     }
-    
+
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
-        use tokio::time::{sleep, Duration};
-        
+        use tokio::time::{Duration, sleep};
+
         // Simulate async work
         sleep(Duration::from_millis(50)).await;
-        
+
         Ok(DelayedOutput {
             response: format!("Delayed: {}", args.message),
             timestamp: format!(

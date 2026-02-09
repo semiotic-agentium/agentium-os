@@ -2,8 +2,8 @@ use crate::result_pipeline::ResultStoragePipeline;
 use async_trait::async_trait;
 use baml_rt_core::Result;
 use serde_json::Value;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -64,7 +64,10 @@ impl DeduplicatingPipeline {
         inner: Arc<dyn ResultStoragePipeline>,
         deduplicator: Arc<dyn ResultDeduplicator>,
     ) -> Self {
-        Self { inner, deduplicator }
+        Self {
+            inner,
+            deduplicator,
+        }
     }
 }
 

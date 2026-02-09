@@ -5,8 +5,8 @@
 //! names with dynamic data in structured attributes. Instruments are cached
 //! using OnceLock for zero-allocation hot paths.
 
-use opentelemetry::{global, KeyValue};
 use opentelemetry::metrics::{Counter, Histogram};
+use opentelemetry::{KeyValue, global};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -60,10 +60,7 @@ fn tool_session_operation_histogram() -> &'static Histogram<f64> {
 
 /// Record tool registration event.
 pub(crate) fn record_tool_registration(tool_name: &str) {
-    tool_registration_counter().add(
-        1,
-        &[KeyValue::new("tool", tool_name.to_string())],
-    );
+    tool_registration_counter().add(1, &[KeyValue::new("tool", tool_name.to_string())]);
 }
 
 /// Record tool execution with duration and result.
@@ -79,10 +76,7 @@ pub(crate) fn record_tool_execution(tool_name: &str, result: &str, duration: Dur
 
 /// Record tool session open event.
 pub(crate) fn record_session_open(tool_name: &str) {
-    tool_session_open_counter().add(
-        1,
-        &[KeyValue::new("tool", tool_name.to_string())],
-    );
+    tool_session_open_counter().add(1, &[KeyValue::new("tool", tool_name.to_string())]);
 }
 
 /// Record tool session operation (send, next, finish) with duration.

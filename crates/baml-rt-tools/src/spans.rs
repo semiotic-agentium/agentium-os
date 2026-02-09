@@ -4,8 +4,8 @@
 //! from the OpenTelemetry instrumentation guide. All spans use static names
 //! with dynamic data in structured fields.
 
-use crate::tools::ToolName;
 use crate::tool_fsm::ToolSessionId;
+use crate::tools::ToolName;
 use tracing::Span;
 
 /// Create span for tool registration operation.
@@ -27,10 +27,7 @@ pub(crate) fn register_tool(tool_name: &ToolName, description: &str) -> Span {
 /// Children: Tool session operations
 #[inline]
 pub(crate) fn execute_tool(tool_name: &str) -> Span {
-    tracing::debug_span!(
-        "baml_rt_tools.execute_tool",
-        tool = tool_name,
-    )
+    tracing::debug_span!("baml_rt_tools.execute_tool", tool = tool_name,)
 }
 
 /// Create span for opening a tool session.

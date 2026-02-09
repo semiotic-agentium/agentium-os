@@ -4,12 +4,12 @@ use crate::handlers::TaskHandler;
 use crate::result_pipeline::ResultStoragePipeline;
 use crate::stream_normalizer::StreamNormalizer;
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, Result};
 use baml_rt_core::context::InvocationScope;
-use baml_rt_core::effects::{EffectEmitter, EffectEvent, A2aEffectMetadata};
+use baml_rt_core::effects::{A2aEffectMetadata, EffectEmitter, EffectEvent};
 use baml_rt_core::ids::AgentId;
-use baml_rt_quickjs::begin_a2a_yield_session;
+use baml_rt_core::{BamlRtError, Result};
 use baml_rt_quickjs::QuickJSBridge;
+use baml_rt_quickjs::begin_a2a_yield_session;
 use serde_json::Value;
 use std::sync::Arc;
 use std::time::Instant;
@@ -19,9 +19,17 @@ use tokio::sync::Mutex;
 /// Scope is type-enforced: caller must pass the invocation scope from the request pipeline.
 #[async_trait(?Send)]
 pub trait JsInvoker: Send + Sync {
-    async fn invoke_handler(&self, request: &a2a::A2aRequest, scope: &InvocationScope) -> Result<Value>;
+    async fn invoke_handler(
+        &self,
+        request: &a2a::A2aRequest,
+        scope: &InvocationScope,
+    ) -> Result<Value>;
     /// Stream invocation: promise never resolves (CG4). Use only for stream requests.
-    async fn invoke_stream(&self, request: &a2a::A2aRequest, scope: &InvocationScope) -> Result<Vec<Value>>;
+    async fn invoke_stream(
+        &self,
+        request: &a2a::A2aRequest,
+        scope: &InvocationScope,
+    ) -> Result<Vec<Value>>;
 }
 
 /// **CG4 (Stream Promise Non-Resolution):** Invokes stream handlers without waiting for promise resolution.
@@ -29,7 +37,11 @@ pub trait JsInvoker: Send + Sync {
 #[async_trait(?Send)]
 pub trait JsStreamInvoker: Send + Sync {
     /// Starts async execution and collects yielded chunks. Does NOT wait for promise resolution.
-    async fn invoke_stream(&self, request: &a2a::A2aRequest, scope: &InvocationScope) -> Result<Vec<Value>>;
+    async fn invoke_stream(
+        &self,
+        request: &a2a::A2aRequest,
+        scope: &InvocationScope,
+    ) -> Result<Vec<Value>>;
 }
 
 pub struct QuickJsInvoker {
@@ -51,13 +63,23 @@ impl QuickJsInvoker {
 
 #[async_trait(?Send)]
 impl JsInvoker for QuickJsInvoker {
-    async fn invoke_handler(&self, request: &a2a::A2aRequest, scope: &InvocationScope) -> Result<Value> {
+    async fn invoke_handler(
+        &self,
+        request: &a2a::A2aRequest,
+        scope: &InvocationScope,
+    ) -> Result<Value> {
         let js_request = a2a::request_to_js_value(request);
         let mut bridge = self.bridge.lock().await;
-        bridge.invoke_js_function(scope, "handle_a2a_request", js_request).await
+        bridge
+            .invoke_js_function(scope, "handle_a2a_request", js_request)
+            .await
     }
 
-    async fn invoke_stream(&self, request: &a2a::A2aRequest, scope: &InvocationScope) -> Result<Vec<Value>> {
+    async fn invoke_stream(
+        &self,
+        request: &a2a::A2aRequest,
+        scope: &InvocationScope,
+    ) -> Result<Vec<Value>> {
         <Self as JsStreamInvoker>::invoke_stream(self, request, scope).await
     }
 }
@@ -65,7 +87,11 @@ impl JsInvoker for QuickJsInvoker {
 #[async_trait(?Send)]
 impl JsStreamInvoker for QuickJsInvoker {
     /// Stream request: type-safe session (setup → invoke → collect). Promise never resolves (CG4).
-    async fn invoke_stream(&self, request: &a2a::A2aRequest, scope: &InvocationScope) -> Result<Vec<Value>> {
+    async fn invoke_stream(
+        &self,
+        request: &a2a::A2aRequest,
+        scope: &InvocationScope,
+    ) -> Result<Vec<Value>> {
         let js_request = a2a::request_to_js_value(request);
         let mut bridge = self.bridge.lock().await;
 
@@ -83,7 +109,11 @@ impl JsStreamInvoker for QuickJsInvoker {
 #[async_trait(?Send)]
 pub trait RequestRouter: Send + Sync {
     /// Route the request. Scope is type-enforced: caller must pass the invocation scope (e.g. from transport).
-    async fn route(&self, request: &a2a::A2aRequest, scope: &InvocationScope) -> Result<a2a::A2aOutcome>;
+    async fn route(
+        &self,
+        request: &a2a::A2aRequest,
+        scope: &InvocationScope,
+    ) -> Result<a2a::A2aOutcome>;
 }
 
 pub struct MethodBasedRouter {
@@ -114,7 +144,11 @@ impl MethodBasedRouter {
 
 #[async_trait(?Send)]
 impl RequestRouter for MethodBasedRouter {
-    async fn route(&self, request: &a2a::A2aRequest, scope: &InvocationScope) -> Result<a2a::A2aOutcome> {
+    async fn route(
+        &self,
+        request: &a2a::A2aRequest,
+        scope: &InvocationScope,
+    ) -> Result<a2a::A2aOutcome> {
         match request.method {
             a2a::A2aMethod::TasksGet => {
                 let req =
@@ -134,7 +168,9 @@ impl RequestRouter for MethodBasedRouter {
             a2a::A2aMethod::TasksSubscribe => {
                 let req =
                     serde_json::from_value(request.params.clone()).map_err(BamlRtError::Json)?;
-                self.task_handler.handle_subscribe(req, request.is_stream).await
+                self.task_handler
+                    .handle_subscribe(req, request.is_stream)
+                    .await
             }
             _ => {
                 let start = Instant::now();
@@ -143,13 +179,22 @@ impl RequestRouter for MethodBasedRouter {
                 // Build metadata
                 let mut metadata_map = serde_json::Map::new();
                 if let Some(id) = request.id.as_ref() {
-                    metadata_map.insert("request_id".to_string(), serde_json::to_value(id).unwrap_or(Value::Null));
+                    metadata_map.insert(
+                        "request_id".to_string(),
+                        serde_json::to_value(id).unwrap_or(Value::Null),
+                    );
                 }
                 if let Some(message_id) = scope.message_id.as_ref() {
-                    metadata_map.insert("message_id".to_string(), Value::String(message_id.as_str().to_string()));
+                    metadata_map.insert(
+                        "message_id".to_string(),
+                        Value::String(message_id.as_str().to_string()),
+                    );
                 }
                 if let Some(task_id) = scope.task_id.as_ref() {
-                    metadata_map.insert("task_id".to_string(), Value::String(task_id.as_str().to_string()));
+                    metadata_map.insert(
+                        "task_id".to_string(),
+                        Value::String(task_id.as_str().to_string()),
+                    );
                 }
                 let metadata = Value::Object(metadata_map);
 
@@ -165,10 +210,14 @@ impl RequestRouter for MethodBasedRouter {
                 };
 
                 // Emit A2A started
-                if let Err(e) = self.effect_emitter.emit(EffectEvent::A2aStarted {
-                    context_id: context_id.clone(),
-                    metadata: effect_metadata.clone(),
-                }).await {
+                if let Err(e) = self
+                    .effect_emitter
+                    .emit(EffectEvent::A2aStarted {
+                        context_id: context_id.clone(),
+                        metadata: effect_metadata.clone(),
+                    })
+                    .await
+                {
                     tracing::warn!(error = ?e, "Failed to emit A2A effect started");
                 }
 
@@ -185,16 +234,21 @@ impl RequestRouter for MethodBasedRouter {
                         self.result_pipeline.store_result(&result).await?;
                         Ok(a2a::A2aOutcome::Response(result))
                     }
-                }.await;
+                }
+                .await;
 
                 let duration_ms = start.elapsed().as_millis() as u64;
                 let success = result.is_ok();
-                if let Err(e) = self.effect_emitter.emit(EffectEvent::A2aCompleted {
-                    context_id: context_id.clone(),
-                    metadata: effect_metadata,
-                    duration_ms,
-                    success,
-                }).await {
+                if let Err(e) = self
+                    .effect_emitter
+                    .emit(EffectEvent::A2aCompleted {
+                        context_id: context_id.clone(),
+                        metadata: effect_metadata,
+                        duration_ms,
+                        success,
+                    })
+                    .await
+                {
                     tracing::warn!(error = ?e, "Failed to emit A2A effect completed");
                 }
 
@@ -207,7 +261,9 @@ impl RequestRouter for MethodBasedRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::a2a_types::{GetTaskRequest, ListTasksRequest, CancelTaskRequest, SubscribeToTaskRequest};
+    use crate::a2a_types::{
+        CancelTaskRequest, GetTaskRequest, ListTasksRequest, SubscribeToTaskRequest,
+    };
     use async_trait::async_trait;
     use baml_rt_core::effects::EffectBus;
     use serde_json::json;
@@ -218,17 +274,29 @@ mod tests {
 
     #[async_trait(?Send)]
     impl JsInvoker for MockJsInvoker {
-        async fn invoke_handler(&self, _request: &a2a::A2aRequest, _scope: &InvocationScope) -> Result<Value> {
+        async fn invoke_handler(
+            &self,
+            _request: &a2a::A2aRequest,
+            _scope: &InvocationScope,
+        ) -> Result<Value> {
             Ok(Value::Null)
         }
-        async fn invoke_stream(&self, request: &a2a::A2aRequest, scope: &InvocationScope) -> Result<Vec<Value>> {
+        async fn invoke_stream(
+            &self,
+            request: &a2a::A2aRequest,
+            scope: &InvocationScope,
+        ) -> Result<Vec<Value>> {
             <Self as JsStreamInvoker>::invoke_stream(self, request, scope).await
         }
     }
 
     #[async_trait(?Send)]
     impl JsStreamInvoker for MockJsInvoker {
-        async fn invoke_stream(&self, _request: &a2a::A2aRequest, _scope: &InvocationScope) -> Result<Vec<Value>> {
+        async fn invoke_stream(
+            &self,
+            _request: &a2a::A2aRequest,
+            _scope: &InvocationScope,
+        ) -> Result<Vec<Value>> {
             Ok(self.stream_chunks.clone())
         }
     }
@@ -305,7 +373,15 @@ mod tests {
         match outcome {
             a2a::A2aOutcome::Stream(chunks) => {
                 assert_eq!(chunks.len(), 2);
-                assert_eq!(chunks[0].get("message").and_then(|m| m.get("parts")).and_then(|p| p.get(0)).and_then(|p| p.get("text")).and_then(|t| t.as_str()), Some("a"));
+                assert_eq!(
+                    chunks[0]
+                        .get("message")
+                        .and_then(|m| m.get("parts"))
+                        .and_then(|p| p.get(0))
+                        .and_then(|p| p.get("text"))
+                        .and_then(|t| t.as_str()),
+                    Some("a")
+                );
                 assert!(chunks[1].get("statusUpdate").is_some());
             }
             a2a::A2aOutcome::Response(_) => panic!("expected Stream outcome"),

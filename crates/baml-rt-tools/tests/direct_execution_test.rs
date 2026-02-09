@@ -1,9 +1,10 @@
 //! Integration tests for direct BAML tool execution (Rust + JS tools).
 
+use baml_rt::A2aAgent;
+use baml_rt_core::context::InvocationScope;
+use serde_json::json;
 use std::sync::Arc;
 use test_support::support;
-use baml_rt::A2aAgent;
-use serde_json::json;
 
 #[tokio::test]
 async fn test_direct_tool_execution_rust_and_js() {
@@ -22,13 +23,18 @@ async fn test_direct_tool_execution_rust_and_js() {
             .expect("register rust tool");
     }
 
+    let scope = InvocationScope::standalone(agent.agent_id().clone());
+    let runtime = agent.runtime();
+
     let rust_result = {
-        let runtime = agent.runtime();
-        let runtime = runtime.lock().await;
-        runtime
-            .execute_tool("support/calculate", json!({"expression": {"left": 6, "operation": "Multiply", "right": 7}}))
-            .await
-            .expect("execute rust tool")
+        let mgr = runtime.lock().await;
+        mgr.execute_tool_with_scope(
+            scope.as_scope(),
+            "support/calculate",
+            json!({"expression": {"left": 6, "operation": "Multiply", "right": 7}}),
+        )
+        .await
+        .expect("execute rust tool")
     };
 
     assert_eq!(
@@ -54,10 +60,8 @@ async fn test_direct_tool_execution_rust_and_js() {
         .expect("register js tool");
 
     let js_result = {
-        let runtime = agent.runtime();
-        let runtime = runtime.lock().await;
-        runtime
-            .execute_tool("js/add", json!({"a": 10, "b": 5}))
+        let mgr = runtime.lock().await;
+        mgr.execute_tool_with_scope(scope.as_scope(), "js/add", json!({"a": 10, "b": 5}))
             .await
             .expect("execute js tool")
     };

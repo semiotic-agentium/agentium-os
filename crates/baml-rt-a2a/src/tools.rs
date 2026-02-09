@@ -3,20 +3,19 @@
 use crate::A2aRequestHandler;
 use async_trait::async_trait;
 use baml_rt_core::Result;
+use baml_rt_tools::register_tool_metadata;
 use baml_rt_tools::tools::ToolFunctionMetadata;
-use baml_rt_tools::{
-    json_schema_value, ts_decl, ts_name, BundleName, ToolBundle, ToolBundleMetadata,
-    ToolCapability, ToolFailure, ToolHandler, ToolName, ToolSession,
-    ToolSessionError, ToolStep, ToolTypeSpec,
-};
 use baml_rt_tools::tools::ToolSessionContext;
+use baml_rt_tools::{
+    BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler, ToolName,
+    ToolSession, ToolSessionError, ToolStep, ToolTypeSpec, json_schema_value, ts_decl, ts_name,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use ts_rs::TS;
-use baml_rt_tools::register_tool_metadata;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
@@ -44,8 +43,7 @@ impl A2aSessionBundle {
 
 impl ToolBundle for A2aSessionBundle {
     fn metadata(&self) -> ToolBundleMetadata {
-        let name = BundleName::new("a2a".to_string())
-            .expect("a2a bundle name must be valid");
+        let name = BundleName::new("a2a".to_string()).expect("a2a bundle name must be valid");
         ToolBundleMetadata {
             name,
             description: "Agent-to-agent session interface".to_string(),
@@ -113,11 +111,15 @@ impl ToolHandler for A2aSessionHandler {
         ToolCapability::Streaming
     }
 
-    async fn open_session(&self, ctx: ToolSessionContext, open_input: Value) -> Result<Box<dyn ToolSession>> {
+    async fn open_session(
+        &self,
+        ctx: ToolSessionContext,
+        open_input: Value,
+    ) -> Result<Box<dyn ToolSession>> {
         // For A2A session, open_input should be empty object (unit type)
         let _: () = serde_json::from_value(open_input)
             .map_err(|err| baml_rt_core::BamlRtError::InvalidOpenInput { source: err })?;
-        
+
         Ok(Box::new(A2aSession {
             ctx,
             handler: self.handler.clone(),
@@ -143,11 +145,17 @@ impl ToolSession for A2aSession {
                 self.ctx.session_id
             ))));
         }
-        let parsed: A2aSessionInput = serde_json::from_value(input)
-            .map_err(|e| ToolSessionError::Tool(ToolFailure::invalid_input(format!("Invalid A2A input: {}", e))))?;
+        let parsed: A2aSessionInput = serde_json::from_value(input).map_err(|e| {
+            ToolSessionError::Tool(ToolFailure::invalid_input(format!(
+                "Invalid A2A input: {}",
+                e
+            )))
+        })?;
         let handle = tokio::runtime::Handle::current();
-        let responses = tokio::task::block_in_place(|| handle.block_on(self.handler.handle_a2a(parsed.request)))
-            .map_err(|e| ToolSessionError::Tool(ToolFailure::execution_failed(e.to_string())))?;
+        let responses = tokio::task::block_in_place(|| {
+            handle.block_on(self.handler.handle_a2a(parsed.request))
+        })
+        .map_err(|e| ToolSessionError::Tool(ToolFailure::execution_failed(e.to_string())))?;
         for response in responses {
             self.queue.push_back(response);
         }
@@ -157,8 +165,12 @@ impl ToolSession for A2aSession {
     async fn next(&mut self) -> std::result::Result<ToolStep, ToolSessionError> {
         if let Some(response) = self.queue.pop_front() {
             let output = A2aSessionOutput { response };
-            let value = serde_json::to_value(output)
-                .map_err(|e| ToolSessionError::Tool(ToolFailure::execution_failed(format!("Invalid A2A output: {}", e))))?;
+            let value = serde_json::to_value(output).map_err(|e| {
+                ToolSessionError::Tool(ToolFailure::execution_failed(format!(
+                    "Invalid A2A output: {}",
+                    e
+                )))
+            })?;
             return Ok(ToolStep::Streaming { output: value });
         }
         Ok(ToolStep::Done { output: None })
@@ -169,7 +181,10 @@ impl ToolSession for A2aSession {
         Ok(())
     }
 
-    async fn abort(&mut self, _reason: Option<String>) -> std::result::Result<(), ToolSessionError> {
+    async fn abort(
+        &mut self,
+        _reason: Option<String>,
+    ) -> std::result::Result<(), ToolSessionError> {
         self.closed = true;
         Ok(())
     }

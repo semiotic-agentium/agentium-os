@@ -11,7 +11,7 @@ async fn test_load_schema_discovers_functions() {
         return;
     }
     let manager = setup_baml_runtime_manager_default();
-    
+
     // Should discover SimpleGreeting function
     let functions = manager.list_functions();
     assert!(
@@ -28,13 +28,13 @@ async fn test_invoke_simple_greeting() {
         return;
     }
     let manager = setup_baml_runtime_manager_default();
-    
+
     // Try to invoke the function
     // This will fail until we implement actual execution, but verifies the function is registered
     let result = manager
         .invoke_function("SimpleGreeting", serde_json::json!({"name": "Test"}))
         .await;
-    
+
     // Execution should work (may fail with API key error, which is acceptable)
     match result {
         Ok(value) => {
@@ -50,7 +50,10 @@ async fn test_invoke_simple_greeting() {
         Err(e) => {
             // Other errors (like API key issues) are acceptable for now
             // The important thing is that execution was attempted
-            println!("Function execution attempted but failed (likely config issue): {}", e);
+            println!(
+                "Function execution attempted but failed (likely config issue): {}",
+                e
+            );
         }
     }
 }

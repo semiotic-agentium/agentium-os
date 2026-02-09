@@ -3,11 +3,11 @@
 //! Provides a trait-based system for intercepting, logging, and potentially blocking
 //! LLM calls and tool executions for governance, tracing, and security purposes.
 
-use baml_rt_core::{BamlRtError, Result};
+use async_trait::async_trait;
 use baml_rt_core::ids::ContextId;
+use baml_rt_core::{BamlRtError, Result};
 use serde_json::Value;
 use std::sync::Arc;
-use async_trait::async_trait;
 
 /// Result of an interception decision
 #[derive(Debug, Clone)]
@@ -239,7 +239,10 @@ impl InterceptorRegistry {
     /// Add a tool interceptor pipeline
     ///
     /// This allows composing multiple interceptors into a pipeline.
-    pub fn with_tool_pipeline(mut self, pipeline: InterceptorPipeline<dyn ToolInterceptor>) -> Self {
+    pub fn with_tool_pipeline(
+        mut self,
+        pipeline: InterceptorPipeline<dyn ToolInterceptor>,
+    ) -> Self {
         // Merge the new pipeline with existing interceptors
         let existing = std::mem::take(&mut self.tool_pipeline);
         let mut merged = InterceptorPipeline::new();
@@ -283,7 +286,10 @@ impl InterceptorRegistry {
     /// Execute LLM interceptors and return the final decision
     ///
     /// Returns Ok(Allow) if all interceptors allow, or Err if any block
-    pub async fn intercept_llm_call(&self, context: &LLMCallContext) -> Result<InterceptorDecision> {
+    pub async fn intercept_llm_call(
+        &self,
+        context: &LLMCallContext,
+    ) -> Result<InterceptorDecision> {
         for interceptor in self.llm_pipeline.interceptors() {
             match interceptor.intercept_llm_call(context).await {
                 Ok(InterceptorDecision::Allow) => {
@@ -291,7 +297,8 @@ impl InterceptorRegistry {
                 }
                 Ok(InterceptorDecision::Block(msg)) => {
                     return Err(BamlRtError::BamlRuntime(format!(
-                        "LLM call blocked by interceptor: {}", msg
+                        "LLM call blocked by interceptor: {}",
+                        msg
                     )));
                 }
                 Err(e) => {
@@ -307,7 +314,10 @@ impl InterceptorRegistry {
     /// Execute tool interceptors and return the final decision
     ///
     /// Returns Ok(Allow) if all interceptors allow, or Err if any block
-    pub async fn intercept_tool_call(&self, context: &ToolCallContext) -> Result<InterceptorDecision> {
+    pub async fn intercept_tool_call(
+        &self,
+        context: &ToolCallContext,
+    ) -> Result<InterceptorDecision> {
         for interceptor in self.tool_pipeline.interceptors() {
             match interceptor.intercept_tool_call(context).await {
                 Ok(InterceptorDecision::Allow) => {
@@ -315,7 +325,8 @@ impl InterceptorRegistry {
                 }
                 Ok(InterceptorDecision::Block(msg)) => {
                     return Err(BamlRtError::ToolExecution(format!(
-                        "Tool call blocked by interceptor: {}", msg
+                        "Tool call blocked by interceptor: {}",
+                        msg
                     )));
                 }
                 Err(e) => {
@@ -336,7 +347,9 @@ impl InterceptorRegistry {
         duration_ms: u64,
     ) {
         for interceptor in self.llm_pipeline.interceptors() {
-            interceptor.on_llm_call_complete(context, result, duration_ms).await;
+            interceptor
+                .on_llm_call_complete(context, result, duration_ms)
+                .await;
         }
     }
 
@@ -348,7 +361,9 @@ impl InterceptorRegistry {
         duration_ms: u64,
     ) {
         for interceptor in self.tool_pipeline.interceptors() {
-            interceptor.on_tool_call_complete(context, result, duration_ms).await;
+            interceptor
+                .on_tool_call_complete(context, result, duration_ms)
+                .await;
         }
     }
 

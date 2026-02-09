@@ -1,10 +1,8 @@
 //! Builder service that orchestrates the agent building pipeline
 
-use baml_rt_core::Result;
+use crate::builder::traits::{Linter, Packager, TypeGenerator, TypeScriptCompiler};
 use crate::builder::types::{AgentDir, BuildDir};
-use crate::builder::traits::{
-    Linter, TypeScriptCompiler, TypeGenerator, Packager,
-};
+use baml_rt_core::Result;
 
 /// Service that orchestrates the agent building process
 pub struct BuilderService<L, TC, TG, P> {
@@ -21,12 +19,7 @@ where
     TG: TypeGenerator,
     P: Packager,
 {
-    pub fn new(
-        linter: L,
-        ts_compiler: TC,
-        type_generator: TG,
-        packager: P,
-    ) -> Self {
+    pub fn new(linter: L, ts_compiler: TC, type_generator: TG, packager: P) -> Self {
         Self {
             linter,
             ts_compiler,
@@ -51,7 +44,9 @@ where
 
         // Stage 2: Generate runtime type declarations from BAML runtime
         println!("\n📝 Generating runtime type declarations...");
-        self.type_generator.generate(&agent_dir.baml_src(), build_dir).await?;
+        self.type_generator
+            .generate(&agent_dir.baml_src(), build_dir)
+            .await?;
 
         // Stage 3: Compile TypeScript
         println!("\n⚙️  Compiling TypeScript...");

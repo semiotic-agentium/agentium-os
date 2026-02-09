@@ -9,7 +9,11 @@ pub enum ProvenanceError {
     #[error("missing required field in event {event_id}: {field}")]
     MissingField { event_id: String, field: String },
     #[error("invalid provenance mapping: {relation} ({from_label} -> {to_label})")]
-    InvalidMapping { relation: String, from_label: String, to_label: String },
+    InvalidMapping {
+        relation: String,
+        from_label: String,
+        to_label: String,
+    },
     #[error("missing required label for {kind} {node_id}")]
     MissingLabel { node_id: String, kind: String },
 }

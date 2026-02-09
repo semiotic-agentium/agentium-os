@@ -115,11 +115,17 @@ pub struct A2aMessageId {
 
 impl A2aMessageId {
     pub fn incoming(id: ExternalId) -> Self {
-        Self { id: MessageId::from_external(id), kind: MessageIdKind::Incoming }
+        Self {
+            id: MessageId::from_external(id),
+            kind: MessageIdKind::Incoming,
+        }
     }
 
     pub fn outgoing(id: DerivedId) -> Self {
-        Self { id: MessageId::from_derived(id), kind: MessageIdKind::Outgoing }
+        Self {
+            id: MessageId::from_derived(id),
+            kind: MessageIdKind::Outgoing,
+        }
     }
 
     pub fn as_message_id(&self) -> &MessageId {

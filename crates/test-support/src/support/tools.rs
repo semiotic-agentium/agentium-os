@@ -1,9 +1,12 @@
 //! Test tool implementations for testing BAML tool system.
 
-use baml_rt::tools::BamlTool;
-use baml_rt_tools::{bundles::Support, support::{CalculatorInput, CalculatorOutput, MathOperation}};
-use baml_rt::Result;
 use async_trait::async_trait;
+use baml_rt::Result;
+use baml_rt::tools::BamlTool;
+use baml_rt_tools::{
+    bundles::Support,
+    support::{CalculatorInput, CalculatorOutput, MathOperation},
+};
 
 /// Example calculator tool
 pub struct CalculatorTool;
@@ -15,11 +18,11 @@ impl BamlTool for CalculatorTool {
     type OpenInput = ();
     type Input = CalculatorInput;
     type Output = CalculatorOutput;
-    
+
     fn description(&self) -> &'static str {
         "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division."
     }
-    
+
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         let left = args.expression.left as f64;
         let right = args.expression.right as f64;
@@ -40,4 +43,3 @@ impl BamlTool for CalculatorTool {
         })
     }
 }
-

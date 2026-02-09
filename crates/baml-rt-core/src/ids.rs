@@ -5,17 +5,14 @@
 
 pub use baml_rt_id::{
     ConstantConstructible, ConstantId, DerivedConstructible, DerivedId, ExternalConstructible,
-    ExternalId, MonotonicConstructible, MonotonicId, ProvActivitySemantics,
-    ProvAgentSemantics, ProvConstantActivitySemantics, ProvConstantAgentSemantics,
-    ProvConstantEntitySemantics, ProvConstantIdTemplate, ProvDerivedActivitySemantics,
-    ProvDerivedAgentSemantics, ProvDerivedEntitySemantics, ProvDerivedIdTemplate,
-    ProvEntitySemantics, ProvIdSemantics, ProvKind, ProvVocabularyType, TemporalConstructible,
-    TemporalId, UuidConstructible, UuidId,
+    ExternalId, MonotonicConstructible, MonotonicId, ProvActivitySemantics, ProvAgentSemantics,
+    ProvConstantActivitySemantics, ProvConstantAgentSemantics, ProvConstantEntitySemantics,
+    ProvConstantIdTemplate, ProvDerivedActivitySemantics, ProvDerivedAgentSemantics,
+    ProvDerivedEntitySemantics, ProvDerivedIdTemplate, ProvEntitySemantics, ProvIdSemantics,
+    ProvKind, ProvVocabularyType, TemporalConstructible, TemporalId, UuidConstructible, UuidId,
 };
 use serde::{Deserialize, Serialize};
 use std::fmt;
-
- 
 
 macro_rules! define_id_type {
     ($(#[$doc:meta])* $name:ident) => {
@@ -125,7 +122,8 @@ impl EventId {
     pub fn from_counter(counter: u64) -> Self {
         Self(MonotonicId::new("prov", counter).into_string())
     }
-}impl AgentId {
+}
+impl AgentId {
     pub fn from_uuid(id: UuidId) -> Self {
         Self(id.to_string())
     }

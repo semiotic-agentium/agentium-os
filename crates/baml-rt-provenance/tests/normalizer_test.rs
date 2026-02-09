@@ -1,5 +1,5 @@
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
-use baml_rt_provenance::{normalize_event, A2aRelationType, ProvEvent};
+use baml_rt_provenance::{A2aRelationType, ProvEvent, normalize_event};
 
 #[test]
 fn normalize_status_change_includes_derived_relation() {
@@ -11,8 +11,10 @@ fn normalize_status_change_includes_derived_relation() {
     );
     let normalized = normalize_event(&event).expect("normalize event");
     assert_eq!(normalized.document.was_derived_from().count(), 1);
-    assert!(normalized
-        .derived_relations
-        .iter()
-        .any(|rel| matches!(rel.relation, A2aRelationType::TaskStatusTransition)));
+    assert!(
+        normalized
+            .derived_relations
+            .iter()
+            .any(|rel| matches!(rel.relation, A2aRelationType::TaskStatusTransition))
+    );
 }

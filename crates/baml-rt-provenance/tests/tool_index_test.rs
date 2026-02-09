@@ -1,11 +1,11 @@
 use baml_rt_provenance::{ToolIndexConfig, index_tools};
 use baml_rt_tools::{ToolFunctionMetadataExport, ToolName, ToolSecretRequirement, ToolTypeSpec};
 use serde_json::json;
+use testcontainers::GenericImage;
 use testcontainers::core::ContainerPort;
 use testcontainers::runners::AsyncRunner;
-use testcontainers::GenericImage;
 use text_to_cypher::core::execute_cypher_query;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 async fn start_falkordb() -> (testcontainers::ContainerAsync<GenericImage>, String) {
     let image = GenericImage::new("falkordb/falkordb", "latest")

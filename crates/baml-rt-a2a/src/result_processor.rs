@@ -14,7 +14,10 @@ pub struct TaskProcessor {
 
 impl TaskProcessor {
     pub fn new(task_store: Arc<dyn TaskStoreBackend>, emitter: Arc<dyn EventEmitter>) -> Self {
-        Self { task_store, emitter }
+        Self {
+            task_store,
+            emitter,
+        }
     }
 
     pub async fn process_stream_response(&self, stream: StreamResponse) -> Result<()> {
@@ -28,7 +31,8 @@ impl TaskProcessor {
     }
 
     pub async fn process_send_message_response(&self, response: SendMessageResponse) -> Result<()> {
-        self.process(response.task, response.message, None, None).await
+        self.process(response.task, response.message, None, None)
+            .await
     }
 
     pub async fn process_task(&self, task: Task) -> Result<()> {
@@ -43,30 +47,36 @@ impl TaskProcessor {
         artifact_update: Option<TaskArtifactUpdateEvent>,
     ) -> Result<()> {
         // Extract agent_id from message metadata for injection into tasks if needed
-        let agent_id_from_message = message.as_ref()
+        let agent_id_from_message = message
+            .as_ref()
             .and_then(|msg| msg.metadata.as_ref())
             .and_then(|meta| meta.get("agent_id"))
             .cloned();
-        
+
         // Extract agent_id from task metadata (after potential injection) for messages
         let mut task_agent_id_opt = None;
-        
+
         if let Some(mut task) = task {
             // Inject agent_id into task metadata if missing (from request metadata)
             // This ensures tasks created from JS responses have agent_id for provenance
-            if !task.metadata.as_ref().is_some_and(|m| m.contains_key("agent_id"))
+            if !task
+                .metadata
+                .as_ref()
+                .is_some_and(|m| m.contains_key("agent_id"))
                 && let Some(agent_id_value) = agent_id_from_message.clone()
             {
                 let mut metadata = task.metadata.unwrap_or_default();
                 metadata.insert("agent_id".to_string(), agent_id_value);
                 task.metadata = Some(metadata);
             }
-            
+
             // Extract agent_id from task for later use with messages
-            task_agent_id_opt = task.metadata.as_ref()
+            task_agent_id_opt = task
+                .metadata
+                .as_ref()
                 .and_then(|meta| meta.get("agent_id"))
                 .cloned();
-            
+
             let status = task.status.clone();
             let context_id = task.context_id.clone();
             let task_id = task.id.clone();
@@ -101,7 +111,10 @@ impl TaskProcessor {
         if let Some(mut msg) = message {
             // Ensure message has agent_id in metadata for provenance
             // If missing, try to get it from task metadata (from above) or use message's own
-            if !msg.metadata.as_ref().is_some_and(|m| m.contains_key("agent_id"))
+            if !msg
+                .metadata
+                .as_ref()
+                .is_some_and(|m| m.contains_key("agent_id"))
                 && let Some(agent_id_value) = task_agent_id_opt.or(agent_id_from_message)
             {
                 let mut metadata = msg.metadata.unwrap_or_default();

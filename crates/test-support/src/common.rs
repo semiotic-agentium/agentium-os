@@ -2,16 +2,16 @@
 
 pub use crate::support::tools::*;
 mod test_tools;
-pub use test_tools::{WeatherTool, UppercaseTool, DelayedResponseTool};
+pub use test_tools::{DelayedResponseTool, UppercaseTool, WeatherTool};
 
 // Fixture helpers
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use baml_rt::QuickJSConfig;
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::quickjs_bridge::QuickJSBridge;
-use baml_rt::QuickJSConfig;
 
 pub fn fixture_path(relative_path: &str) -> PathBuf {
     workspace_root()
@@ -26,13 +26,17 @@ pub fn agent_fixture(name: &str) -> PathBuf {
 
 pub fn setup_baml_runtime(schema_path: &str) -> Arc<Mutex<BamlRuntimeManager>> {
     let mut manager = BamlRuntimeManager::new().expect("Should create manager");
-    manager.load_schema(schema_path).expect("Should load schema");
+    manager
+        .load_schema(schema_path)
+        .expect("Should load schema");
     Arc::new(Mutex::new(manager))
 }
 
 pub fn setup_baml_runtime_manager(schema_path: &str) -> BamlRuntimeManager {
     let mut manager = BamlRuntimeManager::new().expect("Should create manager");
-    manager.load_schema(schema_path).expect("Should load schema");
+    manager
+        .load_schema(schema_path)
+        .expect("Should load schema");
     manager
 }
 
@@ -75,10 +79,9 @@ pub async fn setup_bridge(baml_manager: Arc<Mutex<BamlRuntimeManager>>) -> Quick
     // Generate a temporary agent_id for test context
     let temp_agent_id = AgentId::from_uuid(baml_rt_core::ids::UuidId::new(Uuid::new_v4()));
     let config = quickjs_config_for_tests();
-    let mut bridge =
-        QuickJSBridge::new_with_config(baml_manager, temp_agent_id, config)
-            .await
-            .expect("Create QuickJS bridge");
+    let mut bridge = QuickJSBridge::new_with_config(baml_manager, temp_agent_id, config)
+        .await
+        .expect("Create QuickJS bridge");
     bridge
         .register_baml_functions()
         .await
@@ -111,7 +114,13 @@ pub fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-pub async fn assert_tool_registered_in_js(bridge: &mut QuickJSBridge, tool_name: &str) {
+/// Asserts that a tool is visible in QuickJS (either as a JS tool in `__js_tools` or as a Rust tool via `openToolSession`).
+/// When checking Rust tools, pass `scope` so `openToolSession` has a valid invocation token.
+pub async fn assert_tool_registered_in_js(
+    bridge: &mut QuickJSBridge,
+    tool_name: &str,
+    scope: Option<&baml_rt_core::context::InvocationScope>,
+) {
     let js_code = format!(
         r#"
         (async () => {{
@@ -123,7 +132,7 @@ pub async fn assert_tool_registered_in_js(bridge: &mut QuickJSBridge, tool_name:
                 }});
             }}
             try {{
-                const session = await openToolSession("{}");
+                const session = await openToolSession("{}", __baml_invocation_token);
                 return JSON.stringify({{
                     toolExists: true,
                     source: "rust",
@@ -139,15 +148,24 @@ pub async fn assert_tool_registered_in_js(bridge: &mut QuickJSBridge, tool_name:
         "#,
         tool_name, tool_name
     );
-    let result = bridge.evaluate(None, &js_code).await.expect("Should check tool registration");
+    let result = bridge.evaluate(scope, &js_code).await.unwrap_or_else(|e| {
+        panic!(
+            "Tool '{}' registration check failed: evaluate returned error (includes raw response if parse failed): {}",
+            tool_name, e
+        );
+    });
     let obj = result.as_object().expect("Expected object");
     let tool_exists = obj
         .get("toolExists")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let error_detail = obj
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("(no error detail)");
     assert!(
         tool_exists,
-        "Tool '{}' should be registered in QuickJS",
-        tool_name
+        "Tool '{}' should be registered in QuickJS. Error: {}. Full result: {:?}",
+        tool_name, error_detail, obj
     );
 }

@@ -1,10 +1,10 @@
 //! Compiler implementations for BAML and TypeScript
 
-use baml_rt_core::{BamlRtError, Result};
-use crate::builder::traits::{TypeScriptCompiler, TypeGenerator, FileSystem};
-use crate::builder::types::BuildDir;
-use crate::builder::ts_gen::{load_manifest_tools, render_ts_declarations};
 use crate::builder::baml_gen::render_baml_tool_interfaces;
+use crate::builder::traits::{FileSystem, TypeGenerator, TypeScriptCompiler};
+use crate::builder::ts_gen::{load_manifest_tools, render_ts_declarations};
+use crate::builder::types::BuildDir;
+use baml_rt_core::{BamlRtError, Result};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::Path;
@@ -36,7 +36,7 @@ impl<FS: FileSystem> TypeScriptCompiler for OxcTypeScriptCompiler<FS> {
 
         for file_path in files {
             let content = self.filesystem.read_to_string(&file_path)?;
-            
+
             let allocator = Allocator::default();
             let source_type = oxc_span::SourceType::from_path(&file_path)
                 .unwrap_or_else(|_| oxc_span::SourceType::default());
@@ -44,7 +44,8 @@ impl<FS: FileSystem> TypeScriptCompiler for OxcTypeScriptCompiler<FS> {
             let parse_result = parser.parse();
 
             if !parse_result.errors.is_empty() {
-                let errors: Vec<String> = parse_result.errors
+                let errors: Vec<String> = parse_result
+                    .errors
                     .iter()
                     .map(|e| format!("{:?}", e))
                     .collect();
@@ -60,7 +61,8 @@ impl<FS: FileSystem> TypeScriptCompiler for OxcTypeScriptCompiler<FS> {
                 .with_excess_capacity(2.0)
                 .build(&program);
             if !semantic_result.errors.is_empty() {
-                let errors: Vec<String> = semantic_result.errors
+                let errors: Vec<String> = semantic_result
+                    .errors
                     .iter()
                     .map(|e| format!("{:?}", e))
                     .collect();
@@ -77,7 +79,8 @@ impl<FS: FileSystem> TypeScriptCompiler for OxcTypeScriptCompiler<FS> {
             let transform_result = Transformer::new(&allocator, &file_path, &transform_options)
                 .build_with_scoping(scoping, &mut program);
             if !transform_result.errors.is_empty() {
-                let errors: Vec<String> = transform_result.errors
+                let errors: Vec<String> = transform_result
+                    .errors
                     .iter()
                     .map(|e| format!("{:?}", e))
                     .collect();
@@ -92,15 +95,25 @@ impl<FS: FileSystem> TypeScriptCompiler for OxcTypeScriptCompiler<FS> {
             // QuickJS does not support ESM; strip trailing empty export so script evaluates.
             let trimmed = js_code.trim_end();
             if trimmed.ends_with("export {};") {
-                js_code = trimmed.strip_suffix("export {};").unwrap_or(trimmed).trim_end().to_string();
+                js_code = trimmed
+                    .strip_suffix("export {};")
+                    .unwrap_or(trimmed)
+                    .trim_end()
+                    .to_string();
             } else if trimmed.ends_with("export {}") {
-                js_code = trimmed.strip_suffix("export {}").unwrap_or(trimmed).trim_end().to_string();
+                js_code = trimmed
+                    .strip_suffix("export {}")
+                    .unwrap_or(trimmed)
+                    .trim_end()
+                    .to_string();
             }
-            let relative_path = file_path.strip_prefix(src_dir)
-                .map_err(|_| BamlRtError::InvalidArgument(
-                    format!("File {} is not under src directory", file_path.display())
-                ))?;
-            
+            let relative_path = file_path.strip_prefix(src_dir).map_err(|_| {
+                BamlRtError::InvalidArgument(format!(
+                    "File {} is not under src directory",
+                    file_path.display()
+                ))
+            })?;
+
             let output_path = dist_dir.join(relative_path).with_extension("js");
             if let Some(parent) = output_path.parent() {
                 self.filesystem.create_dir_all(parent)?;
@@ -138,7 +151,7 @@ impl TypeGenerator for RuntimeTypeGenerator {
     async fn generate(&self, baml_src: &Path, build_dir: &BuildDir) -> Result<()> {
         use baml_runtime::BamlRuntime;
         use std::collections::HashMap;
-        
+
         // Generate BAML tool interfaces FIRST (before loading runtime, since prompts may reference them)
         let tool_names = load_manifest_tools(baml_src)?;
         if !tool_names.is_empty() {
@@ -146,17 +159,17 @@ impl TypeGenerator for RuntimeTypeGenerator {
             let baml_output_path = baml_src.join("generated_tools.baml");
             fs::write(&baml_output_path, baml_interfaces).map_err(BamlRtError::Io)?;
         }
-        
+
         // Load BAML runtime to discover functions (after generating BAML interfaces)
         let env_vars: HashMap<String, String> = HashMap::new();
         let feature_flags = internal_baml_core::feature_flags::FeatureFlags::default();
-        
+
         let runtime = BamlRuntime::from_directory(baml_src, env_vars, feature_flags)
             .map_err(|e| BamlRtError::RuntimeLoadFailed { source: e })?;
-        
+
         // Get function names from runtime
         let function_names: Vec<String> = runtime.function_names().map(|s| s.to_string()).collect();
-        
+
         // Generate TypeScript declarations
         let declarations = render_ts_declarations(&function_names, &tool_names)?;
         let ts_output_path = build_dir.join("dist").join("baml-runtime.d.ts");
@@ -168,4 +181,3 @@ impl TypeGenerator for RuntimeTypeGenerator {
         Ok(())
     }
 }
-

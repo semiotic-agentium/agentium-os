@@ -3,9 +3,8 @@ use baml_rt_core::ids::{AgentId, ArtifactId, EventId, MessageId, TaskId};
 use baml_rt_id::{
     ConstantConstructible, ConstantId, DerivedConstructible, DerivedId, ProvActivitySemantics,
     ProvAgentSemantics, ProvConstantAgentSemantics, ProvConstantIdTemplate,
-    ProvDerivedActivitySemantics, ProvDerivedAgentSemantics,
-    ProvDerivedEntitySemantics, ProvDerivedIdTemplate, ProvEntitySemantics, ProvIdSemantics,
-    ProvKind, ProvVocabularyType,
+    ProvDerivedActivitySemantics, ProvDerivedAgentSemantics, ProvDerivedEntitySemantics,
+    ProvDerivedIdTemplate, ProvEntitySemantics, ProvIdSemantics, ProvKind, ProvVocabularyType,
 };
 
 /// Provenance ID semantics for derived graph nodes.
@@ -323,8 +322,14 @@ impl ProvDerivedIdTemplate for ArtifactByEventEntityId {
 
 pub enum ArtifactIdentity<'a> {
     ById(&'a ArtifactId),
-    ByType { task_id: &'a TaskId, artifact_type: &'a str },
-    ByEvent { task_id: &'a TaskId, event_id: &'a EventId },
+    ByType {
+        task_id: &'a TaskId,
+        artifact_type: &'a str,
+    },
+    ByEvent {
+        task_id: &'a TaskId,
+        event_id: &'a EventId,
+    },
 }
 
 /// Activity representing an agent boot.

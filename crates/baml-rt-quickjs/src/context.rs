@@ -4,9 +4,9 @@
 //! This enables multi-tenant scenarios and prevents state pollution.
 
 use crate::baml::BamlRuntimeManager;
+use crate::quickjs_bridge::QuickJSBridge;
 use baml_rt_core::Result;
 use baml_rt_core::ids::AgentId;
-use crate::quickjs_bridge::QuickJSBridge;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -103,10 +103,13 @@ impl BamlContext {
 impl Default for ContextMetadata {
     fn default() -> Self {
         Self {
-            context_id: format!("ctx-{}", std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_else(|_| std::time::Duration::from_secs(0))
-                .as_nanos()),
+            context_id: format!(
+                "ctx-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_else(|_| std::time::Duration::from_secs(0))
+                    .as_nanos()
+            ),
             user_id: None,
             request_id: None,
         }

@@ -14,9 +14,11 @@ pub fn init_tracing() {
                 .parse()
                 .unwrap_or_default(),
         )
-        .add_directive("quickjs_runtime::typescript=warn".parse().unwrap_or_default());
+        .add_directive(
+            "quickjs_runtime::typescript=warn"
+                .parse()
+                .unwrap_or_default(),
+        );
 
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 }

@@ -23,14 +23,14 @@ pub mod a2a {
     pub const AGENT_ID: &str = "a2a:agent_id";
     pub const AGENT_TYPE: &str = "a2a:agent_type";
     pub const AGENT_VERSION: &str = "a2a:agent_version";
-    
+
     // Task attributes
     pub const TASK_ID: &str = "a2a:task_id";
     pub const TASK_STATE: &str = "a2a:task_state";
     pub const TASK_STATE_TIME: &str = "a2a:task_state_time";
     pub const OLD_STATUS: &str = "a2a:old_status";
     pub const IS_PREVIOUS: &str = "a2a:is_previous";
-    
+
     // Message attributes
     pub const MESSAGE_ID: &str = "a2a:message_id";
     pub const ROLE: &str = "a2a:role";
@@ -41,7 +41,7 @@ pub mod a2a {
     pub const RELATION: &str = "a2a:relation";
     pub const FROM: &str = "a2a:from";
     pub const TO: &str = "a2a:to";
-    
+
     // LLM call attributes
     pub const CLIENT: &str = "a2a:client";
     pub const MODEL: &str = "a2a:model";
@@ -52,16 +52,16 @@ pub mod a2a {
     pub const USAGE_TOTAL_TOKENS: &str = "a2a:usage_total_tokens";
     pub const DURATION_MS: &str = "a2a:duration_ms";
     pub const SUCCESS: &str = "a2a:success";
-    
+
     // Tool call attributes
     pub const TOOL_NAME: &str = "a2a:tool_name";
     pub const ARGS: &str = "a2a:args";
-    
+
     // Archive attributes
     pub const ARCHIVE_PATH: &str = "a2a:archive_path";
     pub const ARTIFACT_ID: &str = "a2a:artifact_id";
     pub const ARTIFACT_TYPE: &str = "a2a:artifact_type";
-    
+
     // Context attributes
     pub const CONTEXT_ID: &str = "a2a:context_id";
     pub const TIMESTAMP_MS: &str = "a2a:timestamp_ms";
@@ -98,7 +98,7 @@ pub mod a2a_types {
     pub const AGENT_BOOT: &str = "a2a:AgentBoot";
     pub const TASK_EXECUTION: &str = "a2a:A2ATaskExecution";
     pub const MESSAGE_PROCESSING: &str = "a2a:A2AMessageProcessing";
-    
+
     // Entities
     pub const LLM_PROMPT: &str = "a2a:LlmPrompt";
     pub const TOOL_ARGS: &str = "a2a:ToolArgs";
@@ -108,7 +108,6 @@ pub mod a2a_types {
     pub const TASK_STATE: &str = "a2a:A2ATaskState";
     pub const MESSAGE: &str = "a2a:Message";
     pub const ARTIFACT: &str = "a2a:Artifact";
-    
 }
 
 // A2A relation types (used in prov:type on relations)

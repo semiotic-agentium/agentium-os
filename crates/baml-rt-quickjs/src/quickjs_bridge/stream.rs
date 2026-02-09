@@ -1,7 +1,7 @@
 use super::QuickJSBridge;
 use crate::quickjs_bridge::scope::clear_worker_thread_scope;
-use baml_rt_core::{BamlRtError, Result};
 use baml_rt_core::context::InvocationScope;
+use baml_rt_core::{BamlRtError, Result};
 use quickjs_runtime::jsutils::Script;
 use serde_json::Value;
 
@@ -19,10 +19,13 @@ impl QuickJSBridge {
             };
         "#;
         let script = Script::new("setup_a2a_yield.js", js_code);
-        self.runtime.eval(None, script).await.map_err(|e| BamlRtError::QuickJsWithSource {
-            context: "Failed to set up A2A yield buffer".to_string(),
-            source: Box::new(e),
-        })?;
+        self.runtime
+            .eval(None, script)
+            .await
+            .map_err(|e| BamlRtError::QuickJsWithSource {
+                context: "Failed to set up A2A yield buffer".to_string(),
+                source: Box::new(e),
+            })?;
 
         Ok(())
     }
@@ -40,10 +43,13 @@ impl QuickJSBridge {
                 return JSON.stringify(buffer);
             })()
         "#;
-        let value = self.evaluate(None, js_code).await.map_err(|e| BamlRtError::QuickJsWithSource {
-            context: "Failed to retrieve A2A yield buffer".to_string(),
-            source: Box::new(e),
-        })?;
+        let value =
+            self.evaluate(None, js_code)
+                .await
+                .map_err(|e| BamlRtError::QuickJsWithSource {
+                    context: "Failed to retrieve A2A yield buffer".to_string(),
+                    source: Box::new(e),
+                })?;
 
         let responses = match value {
             Value::Array(arr) => arr,
@@ -77,7 +83,12 @@ impl QuickJSBridge {
     ///   The promise from handle_a2a_request() never resolves (by design)
     ///   Chunks are collected via get_a2a_yield_buffer() after invocation
     /// ```
-    pub async fn invoke_js_function_stream(&mut self, scope: &InvocationScope, function_name: &str, args: Value) -> Result<()> {
+    pub async fn invoke_js_function_stream(
+        &mut self,
+        scope: &InvocationScope,
+        function_name: &str,
+        args: Value,
+    ) -> Result<()> {
         // Only one stream active at a time so invocation token state is not overwritten by a concurrent stream.
         let permit = self
             .stream_semaphore
@@ -144,12 +155,13 @@ impl QuickJSBridge {
         if js_result.is_string() {
             let json_str = js_result.get_str();
             if let Ok(value) = serde_json::from_str::<Value>(json_str)
-                && let Some(error) = value.get("error").and_then(Value::as_str) {
-                    return Err(BamlRtError::QuickJs(format!(
-                        "JS stream function invocation error ({}): {}",
-                        function_name, error
-                    )));
-                }
+                && let Some(error) = value.get("error").and_then(Value::as_str)
+            {
+                return Err(BamlRtError::QuickJs(format!(
+                    "JS stream function invocation error ({}): {}",
+                    function_name, error
+                )));
+            }
         }
 
         // Run pending jobs to allow the async function to start executing

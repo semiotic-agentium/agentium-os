@@ -1,16 +1,18 @@
+use async_trait::async_trait;
+use baml_rt::a2a_types::{
+    JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest,
+};
+use baml_rt::baml::BamlRuntimeManager;
+use baml_rt::tools::BamlTool;
+use baml_rt::{A2aAgent, A2aRequestHandler, QuickJSConfig};
+use baml_rt_tools::bundles::BundleType;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
-use async_trait::async_trait;
-use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest};
-use baml_rt::tools::BamlTool;
-use baml_rt_tools::bundles::BundleType;
-use baml_rt::baml::BamlRuntimeManager;
-use baml_rt::{A2aAgent, A2aRequestHandler, QuickJSConfig};
-use serde_json::{json, Value};
-use serde::{Deserialize, Serialize};
-use schemars::JsonSchema;
-use ts_rs::TS;
 use test_support::common::CalculatorTool;
+use ts_rs::TS;
 
 // Test bundle for test tools
 struct Test;
@@ -46,7 +48,7 @@ fn fixture_js_code() -> String {
                 return;
             }
             if (text.startsWith("tool-call:")) {
-                const session = await openToolSession("test/add_numbers");
+                const session = await openToolSession("test/add_numbers", __baml_invocation_token);
                 await session.send({ a: 2, b: 3 });
                 const step = await session.continue();
                 const result = step && step.output ? step.output : {};
@@ -60,7 +62,7 @@ fn fixture_js_code() -> String {
                 return;
             }
             if (text.startsWith("baml-tool:")) {
-                const session = await openToolSession("support/calculate");
+                const session = await openToolSession("support/calculate", __baml_invocation_token);
                 await session.send({ expression: { left: 2, operation: "Add", right: 3 } });
                 const step = await session.continue();
                 const result = step && step.output ? step.output : {};
@@ -98,8 +100,8 @@ fn fixture_js_code() -> String {
 }
 
 fn user_message(message_id: &str, text: &str) -> Message {
-    use baml_rt_core::ids::{ContextId, ExternalId};
     use baml_rt_a2a::a2a_types::A2aMessageId;
+    use baml_rt_core::ids::{ContextId, ExternalId};
     Message {
         message_id: A2aMessageId::incoming(ExternalId::new(message_id)),
         role: MessageRole::String("ROLE_USER".to_string()),
@@ -119,9 +121,13 @@ fn user_message(message_id: &str, text: &str) -> Message {
 /// Extract message text from the first stream chunk that has a message, across all responses.
 fn first_message_text_from_stream(responses: &[Value]) -> String {
     for response in responses {
-        let Some(result) = response.get("result") else { continue };
+        let Some(result) = response.get("result") else {
+            continue;
+        };
         let content = result.get("chunk").unwrap_or(result);
-        let Some(message) = content.get("message") else { continue };
+        let Some(message) = content.get("message") else {
+            continue;
+        };
         let text = message
             .get("parts")
             .and_then(|parts| parts.as_array())
@@ -287,7 +293,10 @@ async fn test_tasks_subscribe_streams_incremental_updates() {
     }
 
     assert!(saw_status, "expected status updates in subscribe stream");
-    assert!(saw_artifact, "expected artifact updates in subscribe stream");
+    assert!(
+        saw_artifact,
+        "expected artifact updates in subscribe stream"
+    );
 }
 
 struct AddNumbersTool;
@@ -318,7 +327,9 @@ impl BamlTool for AddNumbersTool {
     }
 
     async fn execute(&self, args: Self::Input) -> baml_rt::Result<Self::Output> {
-        Ok(AddNumbersOutput { result: args.a + args.b })
+        Ok(AddNumbersOutput {
+            result: args.a + args.b,
+        })
     }
 }
 

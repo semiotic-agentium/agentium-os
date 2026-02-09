@@ -3,13 +3,13 @@
 //! This module implements pre-execution interception by using BAML's build_request
 //! to intercept LLM calls before the HTTP request is sent.
 
-use baml_rt_core::{BamlRtError, Result};
 use baml_rt_core::context;
 use baml_rt_core::effects::{EffectEmitter, LlmEffectMetadata};
+use baml_rt_core::{BamlRtError, InvocationContext, Result};
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry, LLMCallContext};
 use baml_runtime::RuntimeContextManager;
 use baml_types::{BamlMap, BamlValue};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -25,24 +25,20 @@ fn llm_effect_metadata_from_context(ctx: &LLMCallContext) -> LlmEffectMetadata {
     }
 }
 
-
 /// Extract LLM call context from BAML's HTTPRequest
 ///
 /// This extracts the client, model, and prompt information from the HTTPRequest
-/// that BAML builds before sending to the LLM.
+/// that BAML builds before sending to the LLM. Requires an invocation scope (e.g. run inside `context::with_scope`).
 pub fn extract_context_from_http_request(
     http_request: &baml_types::tracing::events::HTTPRequest,
     function_name: &str,
-) -> LLMCallContext {
+) -> Result<LLMCallContext> {
     // Extract client and model from client_details
     // HTTPRequest has fields: id, url, method, body, client_details (Arc<ClientDetails>)
     // ClientDetails has fields: name, provider, options
     let (client, model) = {
         let client_details = &http_request.client_details;
-        (
-            client_details.name.clone(),
-            client_details.provider.clone(),
-        )
+        (client_details.name.clone(), client_details.provider.clone())
     };
 
     // Extract prompt/messages from the request body
@@ -61,20 +57,27 @@ pub fn extract_context_from_http_request(
 
     let mut metadata_map = serde_json::Map::new();
     metadata_map.insert("url".to_string(), Value::String(http_request.url.clone()));
-    metadata_map.insert("method".to_string(), Value::String(http_request.method.clone()));
+    metadata_map.insert(
+        "method".to_string(),
+        Value::String(http_request.method.clone()),
+    );
     metadata_map.insert("id".to_string(), Value::String(http_request.id.to_string()));
-    if let Some(message_id) = context::current_message_id() {
-        metadata_map.insert("message_id".to_string(), Value::String(message_id.as_str().to_string()));
+    let scope = context::task_local_context().current_scope()?;
+    if let Some(message_id) = scope.message_id.as_ref() {
+        metadata_map.insert(
+            "message_id".to_string(),
+            Value::String(message_id.as_str().to_string()),
+        );
     }
 
-    LLMCallContext {
+    Ok(LLMCallContext {
         client,
         model,
         function_name: function_name.to_string(),
-        context_id: context::current_or_new(),
+        context_id: scope.context_id,
         prompt,
         metadata: Value::Object(metadata_map),
-    }
+    })
 }
 
 /// Intercept an LLM call before execution using build_request
@@ -97,26 +100,28 @@ pub async fn intercept_llm_call_pre_execution(
 ) -> Result<InterceptorDecision> {
     // Build the HTTP request to get LLM call details
     // This doesn't actually send the request, just builds it
-    let http_request_result = runtime.build_request(
-        function_name.to_string(),
-        params,
-        ctx_manager,
-        None, // type_builder
-        None, // client_registry
-        env_vars,
-        stream,
-    ).await;
+    let http_request_result = runtime
+        .build_request(
+            function_name.to_string(),
+            params,
+            ctx_manager,
+            None, // type_builder
+            None, // client_registry
+            env_vars,
+            stream,
+        )
+        .await;
 
-    let http_request = http_request_result
-        .map_err(|e| BamlRtError::RequestBuildFailed(e.to_string()))?;
+    let http_request =
+        http_request_result.map_err(|e| BamlRtError::RequestBuildFailed(e.to_string()))?;
 
     // Extract LLM call context from the HTTP request
-    let context = extract_context_from_http_request(&http_request, function_name);
+    let context = extract_context_from_http_request(&http_request, function_name)?;
 
     // Start effect and get token (type-safe start/complete pairing)
     let effect_metadata = llm_effect_metadata_from_context(&context);
     let context_id = context.context_id.clone();
-    
+
     if let Some(emitter) = effect_emitter {
         match emitter.start_llm(context_id.clone(), effect_metadata).await {
             Ok(token) => {

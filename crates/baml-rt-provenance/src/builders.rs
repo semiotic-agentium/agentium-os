@@ -15,7 +15,11 @@ pub struct EntityBuilder {
 
 impl EntityBuilder {
     pub fn new(id: impl Into<ProvEntityId>) -> Self {
-        Self { id: id.into(), prov_type: None, attributes: HashMap::new() }
+        Self {
+            id: id.into(),
+            prov_type: None,
+            attributes: HashMap::new(),
+        }
     }
 
     pub fn type_(mut self, prov_type: &str) -> Self {
@@ -29,7 +33,10 @@ impl EntityBuilder {
     }
 
     pub fn build(self) -> (ProvEntityId, Entity) {
-        let entity = Entity { prov_type: self.prov_type, attributes: self.attributes };
+        let entity = Entity {
+            prov_type: self.prov_type,
+            attributes: self.attributes,
+        };
         (self.id, entity)
     }
 }
@@ -92,7 +99,11 @@ pub struct AgentBuilder {
 
 impl AgentBuilder {
     pub fn new(id: impl Into<ProvAgentId>) -> Self {
-        Self { id: id.into(), prov_type: None, attributes: HashMap::new() }
+        Self {
+            id: id.into(),
+            prov_type: None,
+            attributes: HashMap::new(),
+        }
     }
 
     pub fn type_(mut self, prov_type: &str) -> Self {
@@ -106,7 +117,10 @@ impl AgentBuilder {
     }
 
     pub fn build(self) -> (ProvAgentId, Agent) {
-        let agent = Agent { prov_type: self.prov_type, attributes: self.attributes };
+        let agent = Agent {
+            prov_type: self.prov_type,
+            attributes: self.attributes,
+        };
         (self.id, agent)
     }
 }
@@ -117,7 +131,9 @@ pub struct ProvDocumentBuilder {
 
 impl ProvDocumentBuilder {
     pub fn new() -> Self {
-        Self { doc: ProvDocument::new() }
+        Self {
+            doc: ProvDocument::new(),
+        }
     }
 
     pub fn entity<F>(mut self, id: impl Into<ProvEntityId>, f: F) -> Self
@@ -147,7 +163,11 @@ impl ProvDocumentBuilder {
         self
     }
 
-    pub fn used(self, activity: impl Into<ProvActivityId>, entity: impl Into<ProvEntityId>) -> UsedBuilder {
+    pub fn used(
+        self,
+        activity: impl Into<ProvActivityId>,
+        entity: impl Into<ProvEntityId>,
+    ) -> UsedBuilder {
         UsedBuilder::new(self, activity.into(), entity.into())
     }
 
@@ -167,11 +187,19 @@ impl ProvDocumentBuilder {
         QualifiedGenerationBuilder::new(self, entity.into(), activity.into())
     }
 
-    pub fn was_associated_with(self, activity: impl Into<ProvActivityId>, agent: impl Into<ProvAgentId>) -> WasAssociatedWithBuilder {
+    pub fn was_associated_with(
+        self,
+        activity: impl Into<ProvActivityId>,
+        agent: impl Into<ProvAgentId>,
+    ) -> WasAssociatedWithBuilder {
         WasAssociatedWithBuilder::new(self, activity.into(), agent.into())
     }
 
-    pub fn was_derived_from(self, generated_entity: impl Into<ProvEntityId>, used_entity: impl Into<ProvEntityId>) -> WasDerivedFromBuilder {
+    pub fn was_derived_from(
+        self,
+        generated_entity: impl Into<ProvEntityId>,
+        used_entity: impl Into<ProvEntityId>,
+    ) -> WasDerivedFromBuilder {
         WasDerivedFromBuilder::new(self, generated_entity.into(), used_entity.into())
     }
 
@@ -188,8 +216,17 @@ pub struct UsedBuilder {
 }
 
 impl UsedBuilder {
-    fn new(doc_builder: ProvDocumentBuilder, activity: ProvActivityId, entity: ProvEntityId) -> Self {
-        Self { doc_builder, activity, entity, role: None }
+    fn new(
+        doc_builder: ProvDocumentBuilder,
+        activity: ProvActivityId,
+        entity: ProvEntityId,
+    ) -> Self {
+        Self {
+            doc_builder,
+            activity,
+            entity,
+            role: None,
+        }
     }
 
     pub fn role(mut self, role: &str) -> Self {
@@ -199,7 +236,11 @@ impl UsedBuilder {
 
     pub fn build(mut self) -> ProvDocumentBuilder {
         let id = self.doc_builder.doc.blank_node_id("u");
-        let used = Used { activity: self.activity, entity: self.entity, role: self.role };
+        let used = Used {
+            activity: self.activity,
+            entity: self.entity,
+            role: self.role,
+        };
         self.doc_builder.doc.insert_used(id, used);
         self.doc_builder
     }
@@ -228,7 +269,12 @@ pub struct WasAssociatedWithBuilder {
 
 impl WasAssociatedWithBuilder {
     fn new(doc_builder: ProvDocumentBuilder, activity: ProvActivityId, agent: ProvAgentId) -> Self {
-        Self { doc_builder, activity, agent, role: None }
+        Self {
+            doc_builder,
+            activity,
+            agent,
+            role: None,
+        }
     }
 
     pub fn role(mut self, role: &str) -> Self {
@@ -238,16 +284,30 @@ impl WasAssociatedWithBuilder {
 
     pub fn build(mut self) -> ProvDocumentBuilder {
         let id = self.doc_builder.doc.blank_node_id("assoc");
-        let was_associated_with =
-            WasAssociatedWith { activity: self.activity, agent: self.agent, role: self.role };
-        self.doc_builder.doc.insert_was_associated_with(id, was_associated_with);
+        let was_associated_with = WasAssociatedWith {
+            activity: self.activity,
+            agent: self.agent,
+            role: self.role,
+        };
+        self.doc_builder
+            .doc
+            .insert_was_associated_with(id, was_associated_with);
         self.doc_builder
     }
 }
 
 impl WasGeneratedByBuilder {
-    fn new(doc_builder: ProvDocumentBuilder, entity: ProvNodeRef, activity: ProvActivityId) -> Self {
-        Self { doc_builder, entity, activity, time_ms: None }
+    fn new(
+        doc_builder: ProvDocumentBuilder,
+        entity: ProvNodeRef,
+        activity: ProvActivityId,
+    ) -> Self {
+        Self {
+            doc_builder,
+            entity,
+            activity,
+            time_ms: None,
+        }
     }
 
     pub fn time_ms(mut self, time_ms: u64) -> Self {
@@ -257,16 +317,30 @@ impl WasGeneratedByBuilder {
 
     pub fn build(mut self) -> ProvDocumentBuilder {
         let id = self.doc_builder.doc.blank_node_id("g");
-        let was_generated_by =
-            WasGeneratedBy { entity: self.entity, activity: self.activity, time_ms: self.time_ms };
-        self.doc_builder.doc.insert_was_generated_by(id, was_generated_by);
+        let was_generated_by = WasGeneratedBy {
+            entity: self.entity,
+            activity: self.activity,
+            time_ms: self.time_ms,
+        };
+        self.doc_builder
+            .doc
+            .insert_was_generated_by(id, was_generated_by);
         self.doc_builder
     }
 }
 
 impl QualifiedGenerationBuilder {
-    fn new(doc_builder: ProvDocumentBuilder, entity: ProvNodeRef, activity: ProvActivityId) -> Self {
-        Self { doc_builder, entity, activity, time_ms: None }
+    fn new(
+        doc_builder: ProvDocumentBuilder,
+        entity: ProvNodeRef,
+        activity: ProvActivityId,
+    ) -> Self {
+        Self {
+            doc_builder,
+            entity,
+            activity,
+            time_ms: None,
+        }
     }
 
     pub fn time_ms(mut self, time_ms: u64) -> Self {
@@ -281,7 +355,9 @@ impl QualifiedGenerationBuilder {
             activity: self.activity,
             time_ms: self.time_ms,
         };
-        self.doc_builder.doc.insert_qualified_generation(id, qualified_generation);
+        self.doc_builder
+            .doc
+            .insert_qualified_generation(id, qualified_generation);
         self.doc_builder
     }
 }
@@ -327,7 +403,9 @@ impl WasDerivedFromBuilder {
             activity: self.activity,
             prov_type: self.prov_type,
         };
-        self.doc_builder.doc.insert_was_derived_from(id, was_derived_from);
+        self.doc_builder
+            .doc
+            .insert_was_derived_from(id, was_derived_from);
         self.doc_builder
     }
 }

@@ -1,16 +1,17 @@
 use crate::a2a_types::{
-    Artifact, ListTasksRequest, ListTasksResponse, Message, MessageRole, Task,
-    TaskArtifactUpdateEvent, TaskState, TaskStatus, TaskStatusUpdateEvent, ROLE_USER, TASK_STATE_CANCELED,
+    Artifact, ListTasksRequest, ListTasksResponse, Message, MessageRole, ROLE_USER,
+    TASK_STATE_CANCELED, Task, TaskArtifactUpdateEvent, TaskState, TaskStatus,
+    TaskStatusUpdateEvent,
 };
 use async_trait::async_trait;
 use baml_rt_core::context;
 use baml_rt_core::ids::{AgentId, ContextId, TaskId};
 use baml_rt_provenance::{ProvEvent, ProvenanceWriter};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
-use serde_json::Value;
-use std::sync::Arc;
-use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum TaskUpdateEvent {
@@ -122,7 +123,6 @@ impl TaskEventRecorder for Mutex<TaskStore> {
         let mut store = self.lock().await;
         store.record_artifact_update(task_id, context_id, artifact, append, last_chunk)
     }
-
 }
 
 #[async_trait]
@@ -150,7 +150,9 @@ impl ProvenanceTaskStore {
 
     async fn record_event(&self, event: ProvEvent) {
         if let Some(writer) = &self.writer {
-            writer.add_event_with_logging(event, "task store operation").await;
+            writer
+                .add_event_with_logging(event, "task store operation")
+                .await;
         }
     }
 }
@@ -168,15 +170,22 @@ impl TaskRepository for ProvenanceTaskStore {
         let context_id = task
             .context_id
             .clone()
-            .unwrap_or_else(context::current_or_new);
-        
+            .unwrap_or_else(context::context_id_or_generated);
+
         // Always inject agent_id into task metadata from store-level agent_id
-        if !task.metadata.as_ref().is_some_and(|m| m.contains_key("agent_id")) {
+        if !task
+            .metadata
+            .as_ref()
+            .is_some_and(|m| m.contains_key("agent_id"))
+        {
             let mut metadata = task.metadata.unwrap_or_default();
-            metadata.insert("agent_id".to_string(), Value::String(self.agent_id.as_str().to_string()));
+            metadata.insert(
+                "agent_id".to_string(),
+                Value::String(self.agent_id.as_str().to_string()),
+            );
             task.metadata = Some(metadata);
         }
-        
+
         if let Some(task_id) = task.id.clone() {
             let event = ProvEvent::task_created(context_id, task_id, self.agent_id.clone());
             self.record_event(event).await;
@@ -204,22 +213,26 @@ impl TaskRepository for ProvenanceTaskStore {
         let context_id = message
             .context_id
             .clone()
-            .unwrap_or_else(context::current_or_new);
+            .unwrap_or_else(context::context_id_or_generated);
         let task_id = message.task_id.clone();
         let role = message_role_string(&message.role);
         let content = message_content(message);
-        
+
         // Always inject agent_id into message metadata from store-level agent_id
         let mut msg_metadata = message.metadata.clone();
-        if !msg_metadata.as_ref().is_some_and(|m| m.contains_key("agent_id")) {
+        if !msg_metadata
+            .as_ref()
+            .is_some_and(|m| m.contains_key("agent_id"))
+        {
             let mut metadata = msg_metadata.unwrap_or_default();
-            metadata.insert("agent_id".to_string(), Value::String(self.agent_id.as_str().to_string()));
+            metadata.insert(
+                "agent_id".to_string(),
+                Value::String(self.agent_id.as_str().to_string()),
+            );
             msg_metadata = Some(metadata);
         }
-        
-        let metadata = msg_metadata
-            .as_ref()
-            .map(metadata_string_map);
+
+        let metadata = msg_metadata.as_ref().map(metadata_string_map);
 
         // agent_id is always available from store level
         if let Some(task_id) = task_id.clone() {
@@ -293,7 +306,6 @@ fn metadata_string_map(metadata: &HashMap<String, Value>) -> HashMap<String, Str
         .collect()
 }
 
-
 #[async_trait]
 impl TaskEventRecorder for ProvenanceTaskStore {
     async fn record_status_update(
@@ -304,7 +316,9 @@ impl TaskEventRecorder for ProvenanceTaskStore {
     ) -> Option<TaskUpdateEvent> {
         if let Some(task_id) = task_id.clone() {
             let event = ProvEvent::task_status_changed(
-                context_id.clone().unwrap_or_else(context::current_or_new),
+                context_id
+                    .clone()
+                    .unwrap_or_else(context::context_id_or_generated),
                 task_id,
                 None,
                 status_to_string(&status),
@@ -325,7 +339,9 @@ impl TaskEventRecorder for ProvenanceTaskStore {
     ) -> Option<TaskUpdateEvent> {
         if let Some(task_id) = task_id.clone() {
             let event = ProvEvent::task_artifact_generated(
-                context_id.clone().unwrap_or_else(context::current_or_new),
+                context_id
+                    .clone()
+                    .unwrap_or_else(context::context_id_or_generated),
                 task_id,
                 artifact.artifact_id.clone(),
                 artifact.name.clone(),
@@ -335,7 +351,6 @@ impl TaskEventRecorder for ProvenanceTaskStore {
         let mut store = self.inner.lock().await;
         store.record_artifact_update(task_id, context_id, artifact, append, last_chunk)
     }
-
 }
 
 #[async_trait]
@@ -347,13 +362,10 @@ impl TaskUpdateQueue for ProvenanceTaskStore {
 }
 
 fn status_to_string(status: &TaskStatus) -> Option<String> {
-    status
-        .state
-        .as_ref()
-        .map(|state| match state {
-            TaskState::String(value) => value.clone(),
-            TaskState::Integer(value) => value.to_string(),
-        })
+    status.state.as_ref().map(|state| match state {
+        TaskState::String(value) => value.clone(),
+        TaskState::Integer(value) => value.to_string(),
+    })
 }
 
 impl TaskStore {
@@ -387,7 +399,9 @@ impl TaskStore {
             .collect();
 
         if let Some(context_id) = &request.context_id {
-            tasks.retain(|task| task.context_id.as_ref().map(|id| id.as_str()) == Some(context_id.as_str()));
+            tasks.retain(|task| {
+                task.context_id.as_ref().map(|id| id.as_str()) == Some(context_id.as_str())
+            });
         }
 
         if let Some(status) = &request.status {
@@ -401,7 +415,11 @@ impl TaskStore {
             }
         }
 
-        if let Some(limit) = request.history_length.as_ref().and_then(|value| value.as_usize()) {
+        if let Some(limit) = request
+            .history_length
+            .as_ref()
+            .and_then(|value| value.as_usize())
+        {
             for task in &mut tasks {
                 truncate_history(task, limit);
             }

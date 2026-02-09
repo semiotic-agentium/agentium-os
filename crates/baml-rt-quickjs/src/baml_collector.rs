@@ -8,14 +8,14 @@
 //! This module implements a collector that hooks into BAML's execution lifecycle
 //! to intercept LLM calls and route them through our interceptor system.
 
-use baml_rt_core::Result;
 use baml_rt_core::context;
 use baml_rt_core::effects::{EffectEmitter, EffectStartToken, LlmKind};
 use baml_rt_core::ids::ContextId;
-use std::collections::HashMap;
+use baml_rt_core::{InvocationContext, Result};
 use baml_rt_interceptor::{InterceptorRegistry, LLMCallContext};
 use baml_runtime::tracingv2::storage::storage::Collector;
 use serde_json::json;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -38,7 +38,10 @@ impl BamlLLMCollector {
         interceptor_registry: Arc<Mutex<InterceptorRegistry>>,
         function_name: String,
     ) -> Self {
-        let inner = Arc::new(Collector::new(Some(format!("llm_interceptor_{}", function_name))));
+        let inner = Arc::new(Collector::new(Some(format!(
+            "llm_interceptor_{}",
+            function_name
+        ))));
         Self {
             inner,
             interceptor_registry,
@@ -52,12 +55,16 @@ impl BamlLLMCollector {
     pub fn set_effect_emitter(&mut self, emitter: Arc<dyn EffectEmitter>) {
         self.effect_emitter = Some(emitter);
     }
-    
+
     /// Store an effect token for later completion (type-safe start/complete pairing).
-    /// 
+    ///
     /// This allows the token to be passed from pre-execution interception to
     /// post-execution completion. Completion is never tied to BAML trace.
-    pub async fn store_effect_token(&self, context_id: ContextId, token: EffectStartToken<LlmKind>) {
+    pub async fn store_effect_token(
+        &self,
+        context_id: ContextId,
+        token: EffectStartToken<LlmKind>,
+    ) {
         let mut tokens = self.effect_tokens.lock().await;
         tokens.insert(context_id, token);
     }
@@ -75,7 +82,10 @@ impl BamlLLMCollector {
             guard.drain().map(|(_, t)| t).collect()
         };
         for token in tokens {
-            if let Err(e) = token.complete(emitter.as_ref(), None, duration_ms, success).await {
+            if let Err(e) = token
+                .complete(emitter.as_ref(), None, duration_ms, success)
+                .await
+            {
                 tracing::warn!(error = ?e, "Failed to complete LLM effect");
             }
         }
@@ -89,9 +99,12 @@ impl BamlLLMCollector {
     /// Process trace events to extract LLM call information and notify interceptors
     ///
     /// This should be called after function execution to process collected trace events.
+    /// Requires an invocation scope (e.g. run inside `context::with_scope`).
     ///
     /// Note: This uses the last function log tracked by the collector.
     pub async fn process_trace_events(&self) -> Result<()> {
+        let scope = context::task_local_context().current_scope()?;
+        let context_id = scope.context_id.clone();
 
         // Get the last function log tracked by this collector
         // The collector tracks function IDs as they're executed when passed to call_function
@@ -111,12 +124,14 @@ impl BamlLLMCollector {
         // Effect completion is done by complete_pending_effects(); we do not touch effect_tokens here.
         for call_kind in llm_calls {
             if let Some(llm_call) = call_kind.as_request() {
-                let context = self.extract_context_from_llm_call(llm_call);
+                let context = self.extract_context_from_llm_call(llm_call, context_id.clone());
                 let duration_ms = llm_call.timing.duration_ms.unwrap_or(0) as u64;
-                let result: Result<serde_json::Value> = Ok(serde_json::to_value(llm_call)
-                    .unwrap_or_else(|_| json!({})));
+                let result: Result<serde_json::Value> =
+                    Ok(serde_json::to_value(llm_call).unwrap_or_else(|_| json!({})));
                 let registry = self.interceptor_registry.lock().await;
-                registry.notify_llm_call_complete(&context, &result, duration_ms).await;
+                registry
+                    .notify_llm_call_complete(&context, &result, duration_ms)
+                    .await;
             }
             // TODO: Handle stream calls (call_kind.as_stream())
         }
@@ -125,15 +140,18 @@ impl BamlLLMCollector {
     }
 
     /// Extract LLM call context from an LLMCall
-    fn extract_context_from_llm_call(&self, call: &baml_runtime::tracingv2::storage::storage::LLMCall) -> LLMCallContext {
+    fn extract_context_from_llm_call(
+        &self,
+        call: &baml_runtime::tracingv2::storage::storage::LLMCall,
+        context_id: ContextId,
+    ) -> LLMCallContext {
         // Extract client/provider from the call
         let client = call.client_name.clone();
         let model = call.provider.clone(); // provider is the model/provider name
 
         // Extract prompt/messages from the request if available
         let prompt = if let Some(ref http_request) = call.request {
-            serde_json::to_value(http_request.as_ref())
-                .unwrap_or_else(|_| json!({}))
+            serde_json::to_value(http_request.as_ref()).unwrap_or_else(|_| json!({}))
         } else {
             json!({})
         };
@@ -142,7 +160,7 @@ impl BamlLLMCollector {
             client,
             model,
             function_name: self.function_name.clone(),
-            context_id: context::current_or_new(),
+            context_id,
             prompt,
             metadata: json!({
                 "usage": call.usage,

@@ -6,10 +6,10 @@
 //! Root spans include runtime scope attributes (context_id, message_id, task_id) when available.
 //! Child spans inherit context automatically through OTEL span nesting - no need to repeat attributes.
 
-use tracing::Span;
-use std::path::Path;
-use baml_rt_core::correlation::current_correlation_id;
 use crate::scope::scope_attributes;
+use baml_rt_core::correlation::current_correlation_id;
+use std::path::Path;
+use tracing::Span;
 
 // Builder operations
 
@@ -120,17 +120,14 @@ pub fn register_baml_functions(function_count: usize) -> Span {
 /// Parent: load_agent_package
 #[inline]
 pub fn evaluate_agent_code(entry_point: &str) -> Span {
-    tracing::debug_span!(
-        "baml_rt.evaluate_agent_code",
-        entry_point = entry_point,
-    )
+    tracing::debug_span!("baml_rt.evaluate_agent_code", entry_point = entry_point,)
 }
 
 /// Create span for invoking an agent function.
 ///
 /// Parent: CLI command span or interactive loop
 /// Children: invoke_js_function, invoke_baml_function
-/// 
+///
 /// This is a root span - includes runtime scope attributes for context propagation.
 #[inline]
 pub fn invoke_function(agent_name: &str, function_name: &str) -> Span {
@@ -161,7 +158,7 @@ pub fn evaluate_javascript() -> Span {
 ///
 /// Parent: invoke_function
 /// Children: invoke_baml_function, llm_call, tool_call
-/// 
+///
 /// Child span - inherits context from parent automatically.
 #[inline]
 pub fn invoke_js_function(function_name: &str) -> Span {
@@ -179,7 +176,7 @@ pub fn invoke_js_function(function_name: &str) -> Span {
 ///
 /// Parent: invoke_function or invoke_js_function
 /// Children: llm_call, tool_call
-/// 
+///
 /// Child span - inherits context from parent automatically.
 #[inline]
 pub fn invoke_baml_function(function_name: &str) -> Span {
@@ -245,10 +242,7 @@ pub fn a2a_cancel(task_id: &str, correlation_id: &str) -> Span {
 /// Parent: create_js_bridge
 #[inline]
 pub fn register_tool(tool_name: &str) -> Span {
-    tracing::debug_span!(
-        "baml_rt.register_tool",
-        tool = tool_name,
-    )
+    tracing::debug_span!("baml_rt.register_tool", tool = tool_name,)
 }
 
 /// Create span for BAML runtime initialization.

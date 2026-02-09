@@ -2,24 +2,26 @@
 //!
 //! Use short max_attempts so effect-gated poll doesn't hang when LLM-backed fixtures don't complete.
 
-use std::sync::Arc;
-use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::A2aAgent;
 use baml_rt::QuickJSConfig;
+use baml_rt::baml::BamlRuntimeManager;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_js_stream_baml_function() {
     // Set up BAML runtime
     let mut baml_manager = BamlRuntimeManager::new().unwrap();
-    
+
     // Load BAML schema from agent fixture (which has baml_src directory)
     let agent_dir = test_support::common::agent_fixture("voidship-rites");
     assert!(
         agent_dir.join("baml_src").exists(),
         "voidship-rites fixture must have baml_src directory"
     );
-    baml_manager.load_schema(agent_dir.to_str().unwrap()).unwrap();
-    
+    baml_manager
+        .load_schema(agent_dir.to_str().unwrap())
+        .unwrap();
+
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
@@ -29,7 +31,7 @@ async fn test_js_stream_baml_function() {
         .unwrap();
     let bridge_handle = agent.bridge();
     let mut bridge = bridge_handle.lock().await;
-    
+
     // Test invoking SimpleGreeting stream from JavaScript
     // Use __awaitAndStringify helper to handle async function calls
     // Note: This will fail without an API key, but we can test the invocation path
@@ -43,22 +45,25 @@ async fn test_js_stream_baml_function() {
             }
         })()
     "#;
-    
+
     let result = bridge.evaluate(None, js_code).await;
-    
+
     // The result should contain either success with results array, or error info
     // Note: This may fail due to missing API keys, which is acceptable
     let json_result = match result {
         Ok(val) => val,
         Err(e) => {
-            println!("JavaScript execution error (may be due to missing API keys): {:?}", e);
+            println!(
+                "JavaScript execution error (may be due to missing API keys): {:?}",
+                e
+            );
             // The function exists and was called, but execution failed (likely API key issue)
             // This is acceptable for integration tests
             return;
         }
     };
     println!("JavaScript streaming execution result: {:?}", json_result);
-    
+
     // Check if we got a proper result structure
     if json_result.is_array() {
         return;
@@ -74,7 +79,10 @@ async fn test_js_stream_baml_function() {
         if let Some(success) = obj.get("success").and_then(|s| s.as_bool())
             && success
         {
-            assert!(obj.contains_key("results"), "Success result should contain 'results' array");
+            assert!(
+                obj.contains_key("results"),
+                "Success result should contain 'results' array"
+            );
         }
     } else {
         panic!("Result should be an array or object");

@@ -22,8 +22,6 @@ pub trait ProvenanceWriter: Send + Sync {
     }
 }
 
- 
-
 pub struct InMemoryProvenanceStore {
     events: RwLock<Vec<ProvEvent>>,
 }
@@ -58,4 +56,3 @@ impl ProvenanceWriter for InMemoryProvenanceStore {
         Ok(())
     }
 }
-

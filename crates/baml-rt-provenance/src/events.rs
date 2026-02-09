@@ -442,7 +442,11 @@ impl ProvEvent {
             context_id,
             task_id: task_id.clone(),
             timestamp_ms: now_millis(),
-            data: ProvEventData::TaskStatusChanged { task_id, old_status, new_status },
+            data: ProvEventData::TaskStatusChanged {
+                task_id,
+                old_status,
+                new_status,
+            },
         })
     }
 
@@ -457,7 +461,11 @@ impl ProvEvent {
             context_id,
             task_id: task_id.clone(),
             timestamp_ms: now_millis(),
-            data: ProvEventData::TaskArtifactGenerated { task_id, artifact_id, artifact_type },
+            data: ProvEventData::TaskArtifactGenerated {
+                task_id,
+                artifact_id,
+                artifact_type,
+            },
         })
     }
 
@@ -475,7 +483,12 @@ impl ProvEvent {
             context_id,
             task_id,
             timestamp_ms,
-            data: ProvEventData::MessageReceived { id, role, content, metadata },
+            data: ProvEventData::MessageReceived {
+                id,
+                role,
+                content,
+                metadata,
+            },
         })
     }
 
@@ -491,7 +504,12 @@ impl ProvEvent {
             id: next_event_id(),
             context_id,
             timestamp_ms,
-            data: ProvEventData::MessageReceived { id, role, content, metadata },
+            data: ProvEventData::MessageReceived {
+                id,
+                role,
+                content,
+                metadata,
+            },
         })
     }
 
@@ -509,7 +527,12 @@ impl ProvEvent {
             context_id,
             task_id,
             timestamp_ms,
-            data: ProvEventData::MessageSent { id, role, content, metadata },
+            data: ProvEventData::MessageSent {
+                id,
+                role,
+                content,
+                metadata,
+            },
         })
     }
 
@@ -525,7 +548,12 @@ impl ProvEvent {
             id: next_event_id(),
             context_id,
             timestamp_ms,
-            data: ProvEventData::MessageSent { id, role, content, metadata },
+            data: ProvEventData::MessageSent {
+                id,
+                role,
+                content,
+                metadata,
+            },
         })
     }
 }

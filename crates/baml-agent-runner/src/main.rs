@@ -6,22 +6,22 @@
 
 mod package;
 
-use baml_rt_a2a::{A2aAgent, A2aRequestHandler, a2a};
-use baml_rt_a2a::a2a_types::{
-    JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageConfiguration,
-    SendMessageRequest, ROLE_USER,
-};
-use baml_rt_core::ids::{AgentId, DerivedId, ExternalId, TaskId};
+use anyhow::Context;
 use baml_rt_a2a::a2a_types::A2aMessageId;
-use baml_rt_core::{AgentManifest, BamlRtError, ContextId, Result};
+use baml_rt_a2a::a2a_types::{
+    JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER, SendMessageConfiguration,
+    SendMessageRequest,
+};
+use baml_rt_a2a::{A2aAgent, A2aRequestHandler, a2a};
 use baml_rt_core::context::{self, InvocationScope};
-use baml_rt_provenance::{AgentType, ProvEvent, ToolIndexConfig, index_tools};
+use baml_rt_core::ids::{AgentId, DerivedId, ExternalId, TaskId};
+use baml_rt_core::{AgentManifest, BamlRtError, ContextId, Result};
 use baml_rt_observability::{spans, tracing_setup};
+use baml_rt_provenance::{AgentType, ProvEvent, ToolIndexConfig, index_tools};
 use baml_rt_provenance::{
     FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, InMemoryProvenanceStore, ProvenanceWriter,
 };
 use baml_rt_quickjs::BamlRuntimeManager;
-use anyhow::Context;
 use clap::{Parser, ValueEnum};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -52,7 +52,7 @@ impl AgentPackage {
     }
 
     /// Boot this package into a running A2aAgent
-    /// 
+    ///
     /// This creates the runtime, loads BAML schema, creates QuickJS bridge,
     /// loads JavaScript code, and returns a configured A2aAgent.
     /// The agent_id is generated internally by A2aAgent.
@@ -69,10 +69,9 @@ impl AgentPackage {
         {
             let schema_span = spans::load_baml_schema(&self.baml_src);
             let _schema_guard = schema_span.enter();
-            let baml_src_str = self.baml_src.to_str()
-                .ok_or_else(|| BamlRtError::InvalidArgument(
-                    "BAML source path contains invalid UTF-8".to_string()
-                ))?;
+            let baml_src_str = self.baml_src.to_str().ok_or_else(|| {
+                BamlRtError::InvalidArgument("BAML source path contains invalid UTF-8".to_string())
+            })?;
             runtime_manager.load_schema(baml_src_str)?;
             info!(agent = self.manifest.name, "BAML schema loaded");
         }
@@ -87,23 +86,25 @@ impl AgentPackage {
             .with_runtime_handle(runtime_manager_arc.clone())
             .with_baml_helpers(true) // Register BAML functions
             .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()));
-        
+
         if let Some(writer) = provenance_writer.clone() {
             agent_builder = agent_builder.with_provenance_writer(writer);
         }
 
         let agent = agent_builder.build().await?;
-        
+
         // Load and evaluate agent JavaScript code
         let entry_point_path = self.extract_dir.join(&self.manifest.entry_point);
         if entry_point_path.exists() {
             let eval_span = spans::evaluate_agent_code(&self.manifest.entry_point);
             let _eval_guard = eval_span.enter();
 
-            let agent_code = std::fs::read_to_string(&entry_point_path)
-                .map_err(BamlRtError::Io)?;
-            
-            info!(entry_point = self.manifest.entry_point, "Loading agent JavaScript code");
+            let agent_code = std::fs::read_to_string(&entry_point_path).map_err(BamlRtError::Io)?;
+
+            info!(
+                entry_point = self.manifest.entry_point,
+                "Loading agent JavaScript code"
+            );
 
             let bridge = agent.bridge();
             let mut bridge_guard = bridge.lock().await;
@@ -143,8 +144,8 @@ impl AgentPackage {
             // Use stable archive identity from manifest signature
             let archive_path = self.manifest.signature.clone();
             let context_id = context::generate_context_id();
-            let agent_type_parsed = AgentType::new(self.manifest.name.clone())
-                .ok_or_else(|| {
+            let agent_type_parsed =
+                AgentType::new(self.manifest.name.clone()).ok_or_else(|| {
                     BamlRtError::InvalidArgument("agent_type cannot be empty".to_string())
                 })?;
             let boot_event = ProvEvent::agent_booted(
@@ -180,7 +181,9 @@ impl BootedAgent {
         let scope = InvocationScope::standalone(self.agent.agent_id().clone());
         let bridge = self.agent.bridge();
         let mut js_bridge = bridge.lock().await;
-        js_bridge.invoke_js_function(&scope, function_name, args).await
+        js_bridge
+            .invoke_js_function(&scope, function_name, args)
+            .await
     }
 
     async fn handle_a2a(&self, request: Value) -> Result<Vec<Value>> {
@@ -215,31 +218,23 @@ impl AgentRunner {
         let (agent, _agent_id) = package
             .boot(self.provenance_writer.clone(), self.tool_index.clone())
             .await?;
-        
-        let booted = BootedAgent {
-            agent,
-        };
-        
+
+        let booted = BootedAgent { agent };
+
         info!(agent = name, "Agent loaded and booted successfully");
         self.agents.insert(name.clone(), booted);
         Ok(())
     }
 
     /// Execute a function in a specific agent
-    async fn invoke(
-        &self,
-        agent_name: &str,
-        function_name: &str,
-        args: Value,
-    ) -> Result<Value> {
+    async fn invoke(&self, agent_name: &str, function_name: &str, args: Value) -> Result<Value> {
         let span = spans::invoke_function(agent_name, function_name);
         let _guard = span.enter();
 
-        let agent = self.agents.get(agent_name)
-            .ok_or_else(|| BamlRtError::InvalidArgument(
-                format!("Agent '{}' not found", agent_name)
-            ))?;
-        
+        let agent = self.agents.get(agent_name).ok_or_else(|| {
+            BamlRtError::InvalidArgument(format!("Agent '{}' not found", agent_name))
+        })?;
+
         agent.invoke_function(function_name, args).await
     }
 
@@ -269,7 +264,8 @@ impl AgentRunner {
             };
 
             let request_id = a2a::extract_jsonrpc_id(&request_value);
-            let (agent_name, prepared_request) = match self.prepare_a2a_request(&mut request_value) {
+            let (agent_name, prepared_request) = match self.prepare_a2a_request(&mut request_value)
+            {
                 Ok(result) => result,
                 Err(err) => {
                     let response = map_a2a_error(request_id, err);
@@ -346,7 +342,8 @@ impl AgentRunner {
                 return Ok((agent_name, request.clone()));
             }
             return Err(BamlRtError::InvalidArgument(
-                "A2A request missing agent (set message metadata agent or params.agent)".to_string(),
+                "A2A request missing agent (set message metadata agent or params.agent)"
+                    .to_string(),
             ));
         }
 
@@ -372,7 +369,9 @@ impl AgentRunner {
 
         let (agent_name, method_name) = if let Some(agent_name) = agent_name {
             (agent_name, method_base)
-        } else if let Some((agent_name, method_name)) = split_agent_method(&method_base, &self.agents) {
+        } else if let Some((agent_name, method_name)) =
+            split_agent_method(&method_base, &self.agents)
+        {
             (agent_name, method_name)
         } else if self.agents.len() == 1 {
             let agent_name = self.agents.keys().next().cloned().unwrap_or_default();
@@ -390,15 +389,18 @@ impl AgentRunner {
 
         if (method_name == "message.send" || method_name == "message.sendStream")
             && let Some(message_value) = params.get_mut("message")
-                && message_value.is_object()
-                && let Some(message_obj) = message_value.as_object_mut() {
-                    let metadata_entry = message_obj
-                        .entry("metadata".to_string())
-                        .or_insert_with(|| Value::Object(serde_json::Map::new()));
-                    if let Value::Object(meta_obj) = metadata_entry {
-                        meta_obj.entry("agent".to_string()).or_insert_with(|| Value::String(agent_name.clone()));
-                    }
-                }
+            && message_value.is_object()
+            && let Some(message_obj) = message_value.as_object_mut()
+        {
+            let metadata_entry = message_obj
+                .entry("metadata".to_string())
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if let Value::Object(meta_obj) = metadata_entry {
+                meta_obj
+                    .entry("agent".to_string())
+                    .or_insert_with(|| Value::String(agent_name.clone()));
+            }
+        }
 
         obj.insert("method".to_string(), Value::String(method_name));
         obj.insert("params".to_string(), Value::Object(params));
@@ -416,7 +418,10 @@ fn strip_stream_suffix(method: &str) -> (String, bool) {
     (method.to_string(), false)
 }
 
-fn split_agent_method(method: &str, agents: &HashMap<String, BootedAgent>) -> Option<(String, String)> {
+fn split_agent_method(
+    method: &str,
+    agents: &HashMap<String, BootedAgent>,
+) -> Option<(String, String)> {
     for sep in ["::", "/", "."] {
         if let Some((prefix, suffix)) = method.split_once(sep)
             && agents.contains_key(prefix)
@@ -428,17 +433,26 @@ fn split_agent_method(method: &str, agents: &HashMap<String, BootedAgent>) -> Op
 }
 
 fn is_a2a_method(method: &str) -> bool {
-    method.starts_with("message/")
-        || method.starts_with("tasks/")
-        || method.starts_with("agent/")
+    method.starts_with("message/") || method.starts_with("tasks/") || method.starts_with("agent/")
 }
 
 fn map_a2a_error(id: Option<JSONRPCId>, err: BamlRtError) -> Value {
     match err {
-        BamlRtError::InvalidArgument(message) => a2a::error_response(id, -32602, "Invalid params", Some(Value::String(message))),
-        BamlRtError::FunctionNotFound(message) => a2a::error_response(id, -32601, "Method not found", Some(Value::String(message))),
-        BamlRtError::QuickJs(message) => a2a::error_response(id, -32000, "QuickJS error", Some(Value::String(message))),
-        other => a2a::error_response(id, -32603, "Internal error", Some(Value::String(other.to_string()))),
+        BamlRtError::InvalidArgument(message) => {
+            a2a::error_response(id, -32602, "Invalid params", Some(Value::String(message)))
+        }
+        BamlRtError::FunctionNotFound(message) => {
+            a2a::error_response(id, -32601, "Method not found", Some(Value::String(message)))
+        }
+        BamlRtError::QuickJs(message) => {
+            a2a::error_response(id, -32000, "QuickJS error", Some(Value::String(message)))
+        }
+        other => a2a::error_response(
+            id,
+            -32603,
+            "Internal error",
+            Some(Value::String(other.to_string())),
+        ),
     }
 }
 
@@ -475,7 +489,10 @@ fn wrap_plaintext_message(text: &str) -> Value {
     let message = Message {
         message_id,
         role: MessageRole::String(ROLE_USER.to_string()),
-        parts: vec![Part { text: Some(text.to_string()), ..Part::default() }],
+        parts: vec![Part {
+            text: Some(text.to_string()),
+            ..Part::default()
+        }],
         context_id: Some(stdio_context_id()),
         task_id: Some(stdio_task_id()),
         reference_task_ids: Vec::new(),
@@ -485,7 +502,10 @@ fn wrap_plaintext_message(text: &str) -> Value {
     };
     let params = SendMessageRequest {
         message,
-        configuration: Some(SendMessageConfiguration { blocking: Some(true), ..Default::default() }),
+        configuration: Some(SendMessageConfiguration {
+            blocking: Some(true),
+            ..Default::default()
+        }),
         metadata: None,
         tenant: None,
         extra: HashMap::new(),
@@ -550,13 +570,9 @@ struct Cli {
 
 impl Cli {
     fn into_config(self) -> anyhow::Result<RunnerConfig> {
-        let invoke = self.invoke.map(|values| {
-            (
-                values[0].clone(),
-                values[1].clone(),
-                values[2].clone(),
-            )
-        });
+        let invoke = self
+            .invoke
+            .map(|values| (values[0].clone(), values[1].clone(), values[2].clone()));
 
         let provenance_store = match self.provenance_store {
             ProvenanceStoreChoice::Memory => ProvenanceStoreKind::Memory,
@@ -580,9 +596,7 @@ impl Cli {
     }
 }
 
-fn build_provenance_writer(
-    store: &ProvenanceStoreKind,
-) -> Option<Arc<dyn ProvenanceWriter>> {
+fn build_provenance_writer(store: &ProvenanceStoreKind) -> Option<Arc<dyn ProvenanceWriter>> {
     match store {
         ProvenanceStoreKind::Memory => Some(Arc::new(InMemoryProvenanceStore::new())),
         ProvenanceStoreKind::FalkorDb { url, graph } => {
@@ -600,7 +614,9 @@ async fn main() -> anyhow::Result<()> {
     info!("BAML Agent Runner starting");
 
     // Parse command line arguments
-    let config = Cli::parse().into_config().context("Failed to parse arguments")?;
+    let config = Cli::parse()
+        .into_config()
+        .context("Failed to parse arguments")?;
     let provenance_writer = build_provenance_writer(&config.provenance_store);
     let tool_index = match &config.provenance_store {
         ProvenanceStoreKind::FalkorDb { url, graph } => {
@@ -623,15 +639,19 @@ async fn main() -> anyhow::Result<()> {
             }
             Err(e) => {
                 error!(error = %e, package = %package_path.display(), "Failed to load agent package");
-                eprintln!("Error: Failed to load agent package {}: {}", package_path.display(), e);
+                eprintln!(
+                    "Error: Failed to load agent package {}: {}",
+                    package_path.display(),
+                    e
+                );
                 std::process::exit(1);
             }
         }
     }
 
     if let Some((agent_name, function_name, json_args)) = config.invoke {
-        let args_value: Value = serde_json::from_str(&json_args)
-            .context("Invalid JSON arguments")?;
+        let args_value: Value =
+            serde_json::from_str(&json_args).context("Invalid JSON arguments")?;
         let result = runner
             .invoke(&agent_name, &function_name, args_value)
             .await

@@ -22,7 +22,10 @@ impl ToolIndexConfig {
     }
 }
 
-pub async fn index_tools(config: &ToolIndexConfig, tools: &[ToolFunctionMetadataExport]) -> Result<()> {
+pub async fn index_tools(
+    config: &ToolIndexConfig,
+    tools: &[ToolFunctionMetadataExport],
+) -> Result<()> {
     ensure_fulltext_index(config).await?;
     for tool in tools {
         upsert_tool(config, tool).await?;

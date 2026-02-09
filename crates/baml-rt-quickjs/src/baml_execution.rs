@@ -3,13 +3,13 @@
 //! This module executes BAML functions using the compiled IL (Intermediate Language)
 //! from the BAML compiler.
 
-use baml_rt_core::{BamlRtError, Result};
-use baml_rt_core::context;
-use baml_rt_core::effects::EffectEmitter;
-use baml_rt_tools::ToolRegistry;
-use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry};
 use crate::baml_collector::BamlLLMCollector;
 use crate::baml_pre_execution::intercept_llm_call_pre_execution;
+use baml_rt_core::context;
+use baml_rt_core::effects::EffectEmitter;
+use baml_rt_core::{BamlRtError, Result};
+use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry};
+use baml_rt_tools::ToolRegistry;
 use baml_runtime::{BamlRuntime, FunctionResultStream, RuntimeContextManager};
 use baml_types::BamlValue;
 use serde_json::Value;
@@ -22,7 +22,7 @@ use tokio::sync::Mutex;
 /// BAML execution engine that executes BAML IL
 pub struct BamlExecutor {
     runtime: Arc<BamlRuntime>,
-    tool_registry: Arc<Mutex<ToolRegistry>>,
+    tool_registry: Arc<ToolRegistry>,
     effect_emitter: Option<Arc<dyn EffectEmitter>>,
 }
 
@@ -30,10 +30,7 @@ impl BamlExecutor {
     /// Load BAML IL from the compiled output
     ///
     /// This loads the BAML runtime from the baml_src directory using from_directory
-    pub fn load_il(
-        baml_src_dir: &Path,
-        tool_registry: Arc<Mutex<ToolRegistry>>,
-    ) -> Result<Self> {
+    pub fn load_il(baml_src_dir: &Path, tool_registry: Arc<ToolRegistry>) -> Result<Self> {
         tracing::info!(?baml_src_dir, "Loading BAML runtime from directory");
 
         // Use from_directory which handles feature flags internally
@@ -57,9 +54,7 @@ impl BamlExecutor {
         let feature_flags = internal_baml_core::feature_flags::FeatureFlags::default();
 
         let runtime = BamlRuntime::from_directory(baml_src_dir, env_vars, feature_flags)
-            .map_err(|e| BamlRtError::RuntimeLoadFailed {
-                source: e,
-            })?;
+            .map_err(|e| BamlRtError::RuntimeLoadFailed { source: e })?;
 
         Ok(Self {
             runtime: Arc::new(runtime),
@@ -107,18 +102,16 @@ impl BamlExecutor {
         let start_time = Instant::now();
 
         // Create collector for LLM interception if registry is provided
-        let mut collector: Option<BamlLLMCollector> = interceptor_registry.as_ref().map(|registry| {
-            BamlLLMCollector::new(
-                registry.clone(),
-                function_name.to_string(),
-            )
-        });
-        
+        let mut collector: Option<BamlLLMCollector> = interceptor_registry
+            .as_ref()
+            .map(|registry| BamlLLMCollector::new(registry.clone(), function_name.to_string()));
+
         // Set effect emitter on collector if available
         if let Some(ref mut coll) = collector
-            && let Some(ref emitter) = self.effect_emitter {
-                coll.set_effect_emitter(emitter.clone());
-            }
+            && let Some(ref emitter) = self.effect_emitter
+        {
+            coll.set_effect_emitter(emitter.clone());
+        }
 
         // Pre-execution interception: intercept LLM calls before they're sent
         let ctx_manager = self.create_ctx_manager_for_current_scope()?;
@@ -133,7 +126,9 @@ impl BamlExecutor {
                 false, // stream = false for regular calls
                 self.effect_emitter.as_ref(),
                 collector.as_ref(),
-            ).await {
+            )
+            .await
+            {
                 Ok(InterceptorDecision::Allow) => {
                     // Allow the call to proceed
                 }
@@ -142,7 +137,8 @@ impl BamlExecutor {
                         collector.complete_pending_effects(false, 0).await;
                     }
                     return Err(BamlRtError::BamlRuntime(format!(
-                        "LLM call blocked by interceptor: {}", msg
+                        "LLM call blocked by interceptor: {}",
+                        msg
                     )));
                 }
                 Err(e) => {
@@ -163,31 +159,56 @@ impl BamlExecutor {
             None
         };
 
-        let (result, _call_id) = self.runtime.call_function(
-            function_name.to_string(),
-            &params,
-            &ctx_manager,
-            None, // type_builder
-            None, // client_registry
-            collectors, // collectors - now wired up to track execution
-            env_vars,
-            tags,
-            cancel_tripwire,
-        ).await;
+        tracing::info!(
+            function = function_name,
+            context_id = %context::current_context_id().map(|id| id.as_str().to_string()).unwrap_or_else(|| "none".to_string()),
+            message_id = %context::current_message_id().map(|id| id.as_str().to_string()).unwrap_or_else(|| "none".to_string()),
+            task_id = %context::current_task_id().map(|id| id.as_str().to_string()).unwrap_or_else(|| "none".to_string()),
+            "BAML call_function: start"
+        );
+        let (result, _call_id) = self
+            .runtime
+            .call_function(
+                function_name.to_string(),
+                &params,
+                &ctx_manager,
+                None,       // type_builder
+                None,       // client_registry
+                collectors, // collectors - now wired up to track execution
+                env_vars,
+                tags,
+                cancel_tripwire,
+            )
+            .await;
+
+        if let Err(ref e) = result {
+            tracing::warn!(
+                function = function_name,
+                error = ?e,
+                elapsed_ms = start_time.elapsed().as_millis() as u64,
+                "BAML call_function: error"
+            );
+        } else {
+            tracing::info!(
+                function = function_name,
+                elapsed_ms = start_time.elapsed().as_millis() as u64,
+                "BAML call_function: ok"
+            );
+        }
 
         // Complete LLM effect on all paths (success or failure). No BAML trace dependency.
         if let Some(ref collector) = collector {
-            collector.complete_pending_effects(result.is_ok(), start_time.elapsed().as_millis() as u64).await;
+            collector
+                .complete_pending_effects(result.is_ok(), start_time.elapsed().as_millis() as u64)
+                .await;
         }
 
-        let function_result = result
-            .map_err(|e| BamlRtError::ExecutionFailed { source: e })?;
+        let function_result = result.map_err(|e| BamlRtError::ExecutionFailed { source: e })?;
 
         // Extract the parsed value
-        let parsed_result = function_result
-            .parsed()
-            .as_ref()
-            .ok_or_else(|| BamlRtError::BamlRuntime("Function returned no parsed result".to_string()))?;
+        let parsed_result = function_result.parsed().as_ref().ok_or_else(|| {
+            BamlRtError::BamlRuntime("Function returned no parsed result".to_string())
+        })?;
         let parsed = parsed_result
             .as_ref()
             .map_err(|e| BamlRtError::ParsedResultFailed {
@@ -195,8 +216,8 @@ impl BamlExecutor {
             })?;
 
         // Convert ResponseBamlValue to JSON using serialize_partial
-        let json_value = serde_json::to_value(parsed.serialize_partial())
-            .map_err(BamlRtError::Json)?;
+        let json_value =
+            serde_json::to_value(parsed.serialize_partial()).map_err(BamlRtError::Json)?;
 
         // Process trace events to notify LLM interceptors of completion
         // This extracts LLM call information from BAML's trace events
@@ -249,18 +270,20 @@ impl BamlExecutor {
         let tags = None;
         let cancel_tripwire = baml_runtime::TripWire::new(None);
 
-        let stream = self.runtime.stream_function(
-            function_name.to_string(),
-            &params,
-            &ctx_manager,
-            None, // type_builder
-            None, // client_registry
-            None, // collectors
-            env_vars,
-            cancel_tripwire,
-            tags,
-        )
-        .map_err(|e| BamlRtError::BamlRuntime(format!("Failed to create stream: {}", e)))?;
+        let stream = self
+            .runtime
+            .stream_function(
+                function_name.to_string(),
+                &params,
+                &ctx_manager,
+                None, // type_builder
+                None, // client_registry
+                None, // collectors
+                env_vars,
+                cancel_tripwire,
+                tags,
+            )
+            .map_err(|e| BamlRtError::BamlRuntime(format!("Failed to create stream: {}", e)))?;
 
         Ok(stream)
     }
@@ -270,7 +293,7 @@ impl BamlExecutor {
         let context_id = context::current_context_id();
         let message_id = context::current_message_id();
         let task_id = context::current_task_id();
-        
+
         let context_id = context_id.ok_or_else(|| {
             tracing::warn!(
                 context_id = "none",
@@ -278,23 +301,26 @@ impl BamlExecutor {
                 task_id = %task_id.as_ref().map(|id| id.as_str()).unwrap_or("none"),
                 "missing context_id for BAML context manager"
             );
-            BamlRtError::InvalidArgument(
-                "missing context_id for BAML context manager".to_string(),
-            )
+            BamlRtError::InvalidArgument("missing context_id for BAML context manager".to_string())
         })?;
-        
-        Ok(self.runtime
+
+        Ok(self
+            .runtime
             .create_ctx_manager(BamlValue::String(context_id.as_str().to_string()), None))
     }
 
     /// List all available function names from the loaded BAML runtime
     pub fn list_functions(&self) -> Vec<String> {
-        self.runtime.function_names().map(|s| s.to_string()).collect()
+        self.runtime
+            .function_names()
+            .map(|s| s.to_string())
+            .collect()
     }
 
     /// Convert JSON Value to BamlMap<String, BamlValue>
     fn json_to_baml_map(&self, value: &Value) -> Result<baml_types::BamlMap<String, BamlValue>> {
-        let obj = value.as_object()
+        let obj = value
+            .as_object()
             .ok_or_else(|| BamlRtError::InvalidArgument("Expected JSON object".to_string()))?;
 
         let mut map = baml_types::BamlMap::new();
@@ -315,7 +341,10 @@ impl BamlExecutor {
                 } else if let Some(f) = n.as_f64() {
                     Ok(BamlValue::Float(f))
                 } else {
-                    Err(BamlRtError::TypeConversion(format!("Invalid number: {}", n)))
+                    Err(BamlRtError::TypeConversion(format!(
+                        "Invalid number: {}",
+                        n
+                    )))
                 }
             }
             Value::Bool(b) => Ok(BamlValue::Bool(*b)),
@@ -336,19 +365,17 @@ impl BamlExecutor {
             Value::Null => Ok(BamlValue::Null),
         }
     }
-
 }
 
 async fn maybe_execute_tool_from_result(
-    tool_registry: &Arc<Mutex<ToolRegistry>>,
+    tool_registry: &Arc<ToolRegistry>,
     result: &Value,
 ) -> Result<Option<Value>> {
     let Some((tool_name, tool_args)) = extract_tool_call(result)? else {
         return Ok(None);
     };
 
-    let mut registry = tool_registry.lock().await;
-    let tool_result = registry.execute(&tool_name, tool_args).await?;
+    let tool_result = tool_registry.execute(&tool_name, tool_args).await?;
     Ok(Some(tool_result))
 }
 
@@ -367,9 +394,10 @@ fn extract_tool_call(result: &Value) -> Result<Option<(String, Value)>> {
             BamlRtError::InvalidArgument("Expected non-empty tool object".to_string())
         })?;
         if let Some(inner) = value.as_object()
-            && let Some(tool_name) = inner.get("tool_name") {
-                return Ok(Some(parse_tool_call_object(inner, tool_name)?));
-            }
+            && let Some(tool_name) = inner.get("tool_name")
+        {
+            return Ok(Some(parse_tool_call_object(inner, tool_name)?));
+        }
     }
 
     Ok(None)
@@ -379,9 +407,9 @@ fn parse_tool_call_object(
     obj: &serde_json::Map<String, Value>,
     tool_name_value: &Value,
 ) -> Result<(String, Value)> {
-    let tool_name = tool_name_value.as_str().ok_or_else(|| {
-        BamlRtError::InvalidArgument("tool_name must be a string".to_string())
-    })?;
+    let tool_name = tool_name_value
+        .as_str()
+        .ok_or_else(|| BamlRtError::InvalidArgument("tool_name must be a string".to_string()))?;
 
     let mut tool_args = serde_json::Map::new();
     for (key, value) in obj {
@@ -396,12 +424,12 @@ fn parse_tool_call_object(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use baml_rt_tools::BamlTool;
     use baml_rt_tools::bundles::BundleType;
-    use async_trait::async_trait;
-    use serde_json::json;
-    use serde::{Deserialize, Serialize};
     use schemars::JsonSchema;
+    use serde::{Deserialize, Serialize};
+    use serde_json::json;
     use ts_rs::TS;
 
     // Test bundle for test tools
@@ -450,31 +478,29 @@ mod tests {
 
     #[tokio::test]
     async fn executes_tool_when_explicit_variant_is_present() {
-        let registry = Arc::new(Mutex::new(ToolRegistry::new()));
-        registry.lock().await.register(EchoTool).unwrap();
+        let registry = Arc::new(ToolRegistry::new());
+        registry.register(EchoTool).unwrap();
 
         let result = json!({
             "tool_name": "test/echo_tool",
             "message": "hello"
         });
 
-        let tool_result =
-            maybe_execute_tool_from_result(&registry, &result)
-                .await
-                .unwrap()
-                .expect("expected tool execution");
+        let tool_result = maybe_execute_tool_from_result(&registry, &result)
+            .await
+            .unwrap()
+            .expect("expected tool execution");
 
         assert_eq!(tool_result["echo"]["message"], "hello");
     }
 
     #[tokio::test]
     async fn leaves_non_tool_results_untouched() {
-        let registry = Arc::new(Mutex::new(ToolRegistry::new()));
+        let registry = Arc::new(ToolRegistry::new());
         let result = json!({ "value": "not a tool" });
-        let tool_result =
-            maybe_execute_tool_from_result(&registry, &result)
-                .await
-                .unwrap();
+        let tool_result = maybe_execute_tool_from_result(&registry, &result)
+            .await
+            .unwrap();
 
         assert!(tool_result.is_none());
     }

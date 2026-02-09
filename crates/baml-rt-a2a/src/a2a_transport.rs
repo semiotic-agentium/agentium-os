@@ -1,37 +1,39 @@
 //! A2A request handler interface for non-standard transports.
 
 use crate::a2a;
-use crate::a2a_types::SendMessageRequest;
 use crate::a2a_store::{
-    ProvenanceTaskStore, TaskEventRecorder, TaskRepository, TaskStoreBackend, TaskUpdateQueue,
-    TaskUpdateEvent,
+    ProvenanceTaskStore, TaskEventRecorder, TaskRepository, TaskStoreBackend, TaskUpdateEvent,
+    TaskUpdateQueue,
 };
+use crate::a2a_types::SendMessageRequest;
 use crate::error_classifier::{A2aErrorClassifier, ErrorClassifier};
 use crate::events::{BroadcastEventEmitter, EventEmitter};
 use crate::handlers::{DefaultTaskHandler, TaskHandler};
 use crate::request_router::{MethodBasedRouter, QuickJsInvoker, RequestRouter};
-use crate::result_deduplicator::{DeduplicatingPipeline, HashResultDeduplicator, ResultDeduplicator};
-use crate::result_pipeline::{A2aResultPipeline, ResultStoragePipeline};
 use crate::response::{JsonRpcResponseFormatter, ResponseFormatter};
+use crate::result_deduplicator::{
+    DeduplicatingPipeline, HashResultDeduplicator, ResultDeduplicator,
+};
+use crate::result_pipeline::{A2aResultPipeline, ResultStoragePipeline};
 use crate::stream_normalizer::{A2aStreamNormalizer, StreamNormalizer};
- 
-use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, QuickJSConfig};
-use baml_rt_core::{BamlRtError, Result};
+
+use crate::tools::A2aSessionBundle;
+use async_trait::async_trait;
+use baml_rt_core::context::{self, InvocationContext, InvocationScope};
 use baml_rt_core::correlation;
-use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::effects::EffectEmitter;
+use baml_rt_core::{BamlRtError, Result};
 use baml_rt_observability::{metrics, spans};
+use baml_rt_provenance::{InMemoryProvenanceStore, ProvenanceInterceptor, ProvenanceWriter};
+use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, QuickJSConfig};
 use baml_rt_tools::tools::ToolFunctionMetadata;
-use baml_rt_tools::{ToolHandler, ToolName, ToolSession, ToolTypeSpec};
 use baml_rt_tools::tools::ToolSessionContext;
 use baml_rt_tools::{ToolFailure, ToolSessionError};
-use baml_rt_provenance::{InMemoryProvenanceStore, ProvenanceInterceptor, ProvenanceWriter};
-use async_trait::async_trait;
+use baml_rt_tools::{ToolHandler, ToolName, ToolSession, ToolTypeSpec};
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::sync::broadcast;
 use tokio::sync::Mutex;
-use crate::tools::A2aSessionBundle;
+use tokio::sync::broadcast;
 
 /// Top-level agent type that owns runtime, JS bridge, and A2A comms.
 #[derive(Clone)]
@@ -49,7 +51,7 @@ pub struct A2aAgent {
 
 impl A2aAgent {
     /// Create a builder for configuring agent subcomponents.
-    /// 
+    ///
     /// `agent_id` is automatically generated for provenance tracking.
     pub fn builder() -> A2aAgentBuilder {
         A2aAgentBuilder::new()
@@ -141,7 +143,6 @@ impl A2aAgent {
             let runtime = self.runtime.lock().await;
             runtime.tool_registry()
         };
-        let mut registry = registry.lock().await;
         registry.register_dynamic(metadata, handler)?;
 
         Ok(())
@@ -153,7 +154,6 @@ impl A2aAgent {
             let runtime = self.runtime.lock().await;
             runtime.tool_registry()
         };
-        let mut registry = registry.lock().await;
         registry.register_bundle(bundle)?;
         Ok(())
     }
@@ -171,7 +171,6 @@ pub struct A2aAgentBuilder {
     agent_id: AgentIdConfig,
     register_a2a_session_tool: bool,
 }
-
 
 pub struct A2aAgentBuilderWithEffectEmitter {
     runtime: RuntimeConfig,
@@ -224,7 +223,7 @@ impl Default for A2aAgentBuilder {
 
 impl A2aAgentBuilder {
     /// Create a new builder with all defaults.
-    /// 
+    ///
     /// Defaults:
     /// - `runtime`: Creates new `BamlRuntimeManager`
     /// - `bridge`: Auto-created from runtime + agent_id + config
@@ -234,7 +233,7 @@ impl A2aAgentBuilder {
     /// - `task_store`: `InMemoryProvenanceStore` + `ProvenanceTaskStore`
     /// - `provenance_writer`: `InMemoryProvenanceStore`
     /// - `agent_id`: Auto-generated UUID
-    /// 
+    ///
     /// **REQUIRED**: Call `with_effect_emitter()` before `build()`.
     pub fn new() -> Self {
         Self {
@@ -311,10 +310,13 @@ impl A2aAgentBuilder {
     }
 
     /// Provide an effect emitter for A2A effect tracking (host-inbound).
-    /// 
+    ///
     /// **REQUIRED**: This must be called before `build()`.
     /// Returns a builder in a state that allows `build()` to be called.
-    pub fn with_effect_emitter(self, emitter: Arc<dyn EffectEmitter>) -> A2aAgentBuilderWithEffectEmitter {
+    pub fn with_effect_emitter(
+        self,
+        emitter: Arc<dyn EffectEmitter>,
+    ) -> A2aAgentBuilderWithEffectEmitter {
         A2aAgentBuilderWithEffectEmitter {
             runtime: self.runtime,
             bridge: self.bridge,
@@ -386,13 +388,13 @@ impl A2aAgentBuilderWithEffectEmitter {
     }
 
     /// Build the agent with the configured subcomponents.
-    /// 
+    ///
     /// This method is only available after `with_effect_emitter()` has been called.
     /// The `effect_emitter` field is guaranteed to be present by the type system.
     /// All other fields use defaults if not explicitly provided.
     pub async fn build(self) -> Result<A2aAgent> {
         tracing::info!("A2aAgentBuilder::build: Starting build");
-        
+
         // Resolve runtime: provided or default
         tracing::debug!("A2aAgentBuilder::build: Resolving runtime");
         let runtime = match self.runtime {
@@ -416,7 +418,9 @@ impl A2aAgentBuilderWithEffectEmitter {
             }
             AgentIdConfig::AutoGenerate => {
                 tracing::debug!("A2aAgentBuilder::build: Auto-generating agent_id");
-                baml_rt_core::ids::AgentId::from_uuid(baml_rt_core::ids::UuidId::new(Uuid::new_v4()))
+                baml_rt_core::ids::AgentId::from_uuid(
+                    baml_rt_core::ids::UuidId::new(Uuid::new_v4()),
+                )
             }
         };
 
@@ -428,13 +432,20 @@ impl A2aAgentBuilderWithEffectEmitter {
                 bridge
             }
             BridgeConfig::AutoCreate => {
-                tracing::info!("A2aAgentBuilder::build: Creating QuickJS bridge (this may take a moment)");
+                tracing::info!(
+                    "A2aAgentBuilder::build: Creating QuickJS bridge (this may take a moment)"
+                );
                 // Add timeout around bridge creation to detect hangs
-                use tokio::time::{timeout as tokio_timeout, Duration};
+                use tokio::time::{Duration, timeout as tokio_timeout};
                 let bridge_result = tokio_timeout(
                     Duration::from_secs(20),
-                    QuickJSBridge::new_with_config(runtime.clone(), agent_id.clone(), self.quickjs_config),
-                ).await;
+                    QuickJSBridge::new_with_config(
+                        runtime.clone(),
+                        agent_id.clone(),
+                        self.quickjs_config,
+                    ),
+                )
+                .await;
                 let bridge = bridge_result
                     .map_err(|_| BamlRtError::InvalidArgument(
                         "QuickJS bridge creation timed out after 20 seconds - possible deadlock".to_string()
@@ -448,36 +459,47 @@ impl A2aAgentBuilderWithEffectEmitter {
         };
 
         if self.register_baml_functions || !self.init_js.is_empty() {
-            tracing::debug!("A2aAgentBuilder::build: Registering BAML functions and/or evaluating init_js");
+            tracing::debug!(
+                "A2aAgentBuilder::build: Registering BAML functions and/or evaluating init_js"
+            );
             let mut bridge_guard = bridge.lock().await;
             if self.register_baml_functions {
                 tracing::debug!("A2aAgentBuilder::build: Calling register_baml_functions()");
                 // INVARIANT L1: Bridge initialization must terminate within bounded time
                 // Add timeout to detect hangs in function registration
-                use tokio::time::{timeout as tokio_timeout, Duration};
+                use tokio::time::{Duration, timeout as tokio_timeout};
                 tokio_timeout(
                     Duration::from_secs(10),
                     bridge_guard.register_baml_functions(),
                 )
                 .await
-                .map_err(|_| BamlRtError::InvalidArgument(
-                    "register_baml_functions() timed out after 10 seconds - possible deadlock".to_string()
-                ))??;
+                .map_err(|_| {
+                    BamlRtError::InvalidArgument(
+                        "register_baml_functions() timed out after 10 seconds - possible deadlock"
+                            .to_string(),
+                    )
+                })??;
                 tracing::debug!("A2aAgentBuilder::build: register_baml_functions() completed");
             }
             for code in self.init_js {
                 tracing::debug!("A2aAgentBuilder::build: Evaluating init_js code");
                 // INVARIANT L2: Eval operations must yield control within bounded time
-                use tokio::time::{timeout as tokio_timeout, Duration};
+                use tokio::time::{Duration, timeout as tokio_timeout};
                 tokio_timeout(
                     Duration::from_secs(30), // Longer timeout for user code
                     bridge_guard.evaluate(None, &code),
                 )
                 .await
-                .map_err(|_| BamlRtError::InvalidArgument(
-                    format!("init_js evaluation timed out after 30 seconds - code may be blocking: {}", 
-                        if code.len() > 100 { format!("{}...", &code[..100]) } else { code.clone() })
-                ))??;
+                .map_err(|_| {
+                    BamlRtError::InvalidArgument(format!(
+                        "init_js evaluation timed out after 30 seconds - code may be blocking: {}",
+                        if code.len() > 100 {
+                            format!("{}...", &code[..100])
+                        } else {
+                            code.clone()
+                        }
+                    ))
+                })??;
                 tracing::debug!("A2aAgentBuilder::build: init_js code evaluated");
             }
         }
@@ -498,20 +520,25 @@ impl A2aAgentBuilderWithEffectEmitter {
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Provided(writer)) => {
                 // Writer provided but no task store - create task store with writer
-                let store: Arc<dyn TaskStoreBackend> =
-                    Arc::new(ProvenanceTaskStore::new(Some(writer.clone()), agent_id.clone()));
+                let store: Arc<dyn TaskStoreBackend> = Arc::new(ProvenanceTaskStore::new(
+                    Some(writer.clone()),
+                    agent_id.clone(),
+                ));
                 (store, Some(writer))
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Default) => {
                 // Both default - create both
                 let writer: Arc<dyn ProvenanceWriter> = Arc::new(InMemoryProvenanceStore::new());
-                let store: Arc<dyn TaskStoreBackend> =
-                    Arc::new(ProvenanceTaskStore::new(Some(writer.clone()), agent_id.clone()));
+                let store: Arc<dyn TaskStoreBackend> = Arc::new(ProvenanceTaskStore::new(
+                    Some(writer.clone()),
+                    agent_id.clone(),
+                ));
                 (store, Some(writer))
             }
         };
 
-        let emitter: Arc<dyn EventEmitter> = Arc::new(BroadcastEventEmitter::new(update_tx.clone()));
+        let emitter: Arc<dyn EventEmitter> =
+            Arc::new(BroadcastEventEmitter::new(update_tx.clone()));
         let result_pipeline: Arc<dyn ResultStoragePipeline> =
             Arc::new(A2aResultPipeline::new(task_store.clone(), emitter.clone()));
         let deduplicator: Arc<dyn ResultDeduplicator> = Arc::new(HashResultDeduplicator::new());
@@ -544,7 +571,9 @@ impl A2aAgentBuilderWithEffectEmitter {
 
         if let Some(writer) = provenance_writer.clone() {
             let runtime_guard = runtime.lock().await;
-            runtime_guard.register_llm_interceptor(ProvenanceInterceptor::new(writer.clone())).await;
+            runtime_guard
+                .register_llm_interceptor(ProvenanceInterceptor::new(writer.clone()))
+                .await;
             runtime_guard
                 .register_tool_interceptor(ProvenanceInterceptor::new(writer))
                 .await;
@@ -617,8 +646,10 @@ impl A2aRequestHandler for A2aAgent {
         let method = parsed_request.method;
         let is_stream = parsed_request.is_stream;
 
-        let request_context_id =
-            parsed_request.context_id.clone().unwrap_or_else(context::generate_context_id);
+        let request_context_id = parsed_request
+            .context_id
+            .clone()
+            .unwrap_or_else(context::generate_context_id);
         let request_message_id = parsed_request.message_id.clone();
         let request_task_id = parsed_request.task_id.clone();
         let agent_id = self.agent_id.clone();
@@ -633,11 +664,13 @@ impl A2aRequestHandler for A2aAgent {
             context::with_scope(scope, async move {
                 if parsed_request.method == a2a::A2aMethod::MessageSendStream
                     && let Ok(params) =
-                    serde_json::from_value::<SendMessageRequest>(parsed_request.params.clone())
+                        serde_json::from_value::<SendMessageRequest>(parsed_request.params.clone())
                 {
                     self.task_store.insert_message(&params.message).await;
                 }
-                self.request_router.route(&parsed_request, &invocation_scope).await
+                self.request_router
+                    .route(&parsed_request, &invocation_scope)
+                    .await
             })
             .await
         })
@@ -690,7 +723,11 @@ impl ToolHandler for JsToolHandler {
         &self.metadata
     }
 
-    async fn open_session(&self, ctx: ToolSessionContext, open_input: Value) -> Result<Box<dyn ToolSession>> {
+    async fn open_session(
+        &self,
+        ctx: ToolSessionContext,
+        open_input: Value,
+    ) -> Result<Box<dyn ToolSession>> {
         // Registry passes empty object {} for one-shot execute; actual args come via send()
         let _ = open_input;
         Ok(Box::new(JsToolSession {
@@ -733,20 +770,29 @@ impl ToolSession for JsToolSession {
                 self.ctx.session_id
             )))
         })?;
+        let scope = context::task_local_context()
+            .current_scope()
+            .map(InvocationScope::new)
+            .ok();
         let bridge = self.bridge.clone();
         let tool_name = self.tool_name.clone();
         let handle = tokio::runtime::Handle::current();
         let result = tokio::task::spawn_blocking(move || {
             handle.block_on(async move {
                 let mut bridge = bridge.lock().await;
-                bridge.invoke_js_tool(&tool_name, input).await
+                match &scope {
+                    Some(s) => bridge.invoke_js_tool_with_scope(s, &tool_name, input).await,
+                    None => bridge.invoke_js_tool(&tool_name, input).await,
+                }
             })
         })
         .await
-        .map_err(|err| ToolSessionError::Transport(BamlRtError::QuickJsWithSource {
-            context: "js tool join error".to_string(),
-            source: Box::new(err),
-        }))?
+        .map_err(|err| {
+            ToolSessionError::Transport(BamlRtError::QuickJsWithSource {
+                context: "js tool join error".to_string(),
+                source: Box::new(err),
+            })
+        })?
         .map_err(ToolSessionError::Transport)?;
         if let Some(error) = result.get("error").and_then(Value::as_str) {
             self.completed = true;
@@ -755,7 +801,9 @@ impl ToolSession for JsToolSession {
             });
         }
         self.completed = true;
-        Ok(baml_rt_tools::ToolStep::Done { output: Some(result) })
+        Ok(baml_rt_tools::ToolStep::Done {
+            output: Some(result),
+        })
     }
 
     async fn finish(&mut self) -> std::result::Result<(), ToolSessionError> {
@@ -763,7 +811,10 @@ impl ToolSession for JsToolSession {
         Ok(())
     }
 
-    async fn abort(&mut self, _reason: Option<String>) -> std::result::Result<(), ToolSessionError> {
+    async fn abort(
+        &mut self,
+        _reason: Option<String>,
+    ) -> std::result::Result<(), ToolSessionError> {
         self.completed = true;
         Ok(())
     }
@@ -772,6 +823,7 @@ impl ToolSession for JsToolSession {
 #[cfg(test)]
 mod tests {
     use super::A2aAgent;
+    use baml_rt_core::context::InvocationScope;
     use serde_json::json;
     use std::sync::Arc;
 
@@ -800,11 +852,11 @@ mod tests {
             .await
             .expect("register js tool");
 
+        let scope = InvocationScope::standalone(agent.agent_id().clone());
         let runtime = agent.runtime();
         let result = {
-            let runtime = runtime.lock().await;
-            runtime
-                .execute_tool("js/add", json!({"a": 2, "b": 3}))
+            let mgr = runtime.lock().await;
+            mgr.execute_tool_with_scope(scope.as_scope(), "js/add", json!({"a": 2, "b": 3}))
                 .await
                 .expect("execute tool")
         };

@@ -3,9 +3,9 @@
 //! Provides a builder pattern for constructing and configuring the BAML runtime environment.
 
 use crate::baml::BamlRuntimeManager;
-use baml_rt_core::{BamlRtError, Result};
-use baml_rt_core::effects::{EffectBus, EffectEmitter, EffectLiveness};
 use crate::quickjs_bridge::QuickJSBridge;
+use baml_rt_core::effects::{EffectBus, EffectEmitter, EffectLiveness};
+use baml_rt_core::{BamlRtError, Result};
 use baml_rt_interceptor::{InterceptorPipeline, LLMInterceptor, ToolInterceptor};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,26 +13,26 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 
 /// Configuration for QuickJS runtime options
-/// 
+///
 /// These options map directly to the available options in `quickjs_runtime::builder::QuickJsRuntimeBuilder`.
 #[derive(Debug, Clone, Default)]
 pub struct QuickJSConfig {
     /// Maximum memory limit in bytes (None = no limit)
     pub memory_limit: Option<u64>,
-    
+
     /// Maximum stack size in bytes (None = default)
     pub max_stack_size: Option<u64>,
-    
+
     /// Number of allocations before garbage collection runs (None = default)
     pub gc_threshold: Option<u64>,
-    
+
     /// Garbage collection interval - triggers a full GC every set interval (None = disabled)
     pub gc_interval: Option<Duration>,
-    
+
     /// Idle timeout in milliseconds when no effects are in-flight (default: 5000ms)
     /// When effects are active, the longer max_attempts_ms timeout applies.
     pub idle_timeout_ms: Option<u64>,
-    
+
     /// Maximum timeout in milliseconds when effects are in-flight (default: 1,800,000ms = 30 minutes)
     /// This allows long-running I/O operations (tool calls, LLM calls) to complete.
     pub max_attempts_ms: Option<u64>,
@@ -63,7 +63,7 @@ impl QuickJSConfig {
     }
 
     /// Set garbage collection interval
-    /// 
+    ///
     /// This will start a timer thread which triggers a full GC every set interval.
     pub fn with_gc_interval(mut self, interval: Option<Duration>) -> Self {
         self.gc_interval = interval;
@@ -71,15 +71,15 @@ impl QuickJSConfig {
     }
 
     /// Set idle timeout in milliseconds (when no effects are in-flight)
-    /// 
+    ///
     /// Default is 5000ms. When effects are active, the longer max_attempts_ms timeout applies.
     pub fn with_idle_timeout_ms(mut self, timeout_ms: Option<u64>) -> Self {
         self.idle_timeout_ms = timeout_ms;
         self
     }
-    
+
     /// Set maximum timeout in milliseconds (when effects are in-flight)
-    /// 
+    ///
     /// Default is 1,800,000ms (30 minutes). This allows long-running I/O operations
     /// (tool calls, LLM calls, A2A requests) to complete.
     pub fn with_max_attempts_ms(mut self, timeout_ms: Option<u64>) -> Self {
@@ -93,22 +93,22 @@ impl QuickJSConfig {
 pub struct RuntimeConfig {
     /// Path to the BAML schema directory
     pub schema_path: Option<PathBuf>,
-    
+
     /// Agent ID - REQUIRED for QuickJS bridge
     pub agent_id: Option<baml_rt_core::ids::AgentId>,
-    
+
     /// QuickJS-specific configuration
     pub quickjs_config: QuickJSConfig,
-    
+
     /// Additional environment variables to pass to BAML runtime
     pub env_vars: Vec<(String, String)>,
-    
+
     /// LLM interceptor pipeline
     pub llm_interceptor_pipeline: Option<InterceptorPipeline<dyn LLMInterceptor>>,
-    
+
     /// Tool interceptor pipeline
     pub tool_interceptor_pipeline: Option<InterceptorPipeline<dyn ToolInterceptor>>,
-    
+
     /// Provenance writer (if provided, enables effects-first system)
     pub provenance_writer: Option<Arc<dyn baml_rt_provenance::ProvenanceWriter>>,
 }
@@ -126,7 +126,7 @@ impl RuntimeConfig {
     }
 
     /// Configure QuickJS runtime options
-    /// 
+    ///
     /// This allows fine-grained control over the QuickJS runtime behavior,
     /// including memory limits, stack size, and module loading.
     pub fn with_quickjs_config(mut self, config: QuickJSConfig) -> Self {
@@ -145,10 +145,10 @@ impl RuntimeConfig {
 pub struct Runtime {
     /// The BAML runtime manager
     pub baml_manager: Arc<Mutex<BamlRuntimeManager>>,
-    
+
     /// The QuickJS bridge (always enabled)
     pub quickjs_bridge: Arc<Mutex<QuickJSBridge>>,
-    
+
     /// Runtime configuration
     pub config: RuntimeConfig,
 }
@@ -191,15 +191,15 @@ impl RuntimeBuilder {
     }
 
     /// Configure QuickJS runtime options
-    /// 
+    ///
     /// This allows fine-grained control over the QuickJS runtime behavior,
     /// including memory limits, stack size, and garbage collection settings.
-    /// 
+    ///
     /// # Example
     /// ```rust,no_run
     /// use baml_rt::{RuntimeBuilder, QuickJSConfig};
     /// use std::time::Duration;
-    /// 
+    ///
     /// # tokio_test::block_on(async {
     /// use baml_rt_core::ids::{AgentId, UuidId};
     /// let runtime = RuntimeBuilder::new()
@@ -227,7 +227,7 @@ impl RuntimeBuilder {
     }
 
     /// Add an LLM interceptor to the pipeline
-    /// 
+    ///
     /// This allows composing interceptors in a pipeline pattern.
     pub fn with_llm_interceptor<I: LLMInterceptor>(mut self, interceptor: I) -> Self {
         let pipeline = self
@@ -235,9 +235,8 @@ impl RuntimeBuilder {
             .llm_interceptor_pipeline
             .take()
             .unwrap_or_default();
-        self.config.llm_interceptor_pipeline = Some(
-            pipeline.with_interceptor(Arc::new(interceptor) as Arc<dyn LLMInterceptor>),
-        );
+        self.config.llm_interceptor_pipeline =
+            Some(pipeline.with_interceptor(Arc::new(interceptor) as Arc<dyn LLMInterceptor>));
         self
     }
 
@@ -248,25 +247,28 @@ impl RuntimeBuilder {
             .llm_interceptor_pipeline
             .take()
             .unwrap_or_default();
-        
+
         for interceptor in interceptors {
             pipeline = pipeline.with_interceptor(Arc::new(interceptor) as Arc<dyn LLMInterceptor>);
         }
-        
+
         self.config.llm_interceptor_pipeline = Some(pipeline);
         self
     }
 
     /// Set the LLM interceptor pipeline
-    /// 
+    ///
     /// This replaces any existing LLM interceptor pipeline.
-    pub fn with_llm_interceptor_pipeline(mut self, pipeline: InterceptorPipeline<dyn LLMInterceptor>) -> Self {
+    pub fn with_llm_interceptor_pipeline(
+        mut self,
+        pipeline: InterceptorPipeline<dyn LLMInterceptor>,
+    ) -> Self {
         self.config.llm_interceptor_pipeline = Some(pipeline);
         self
     }
 
     /// Add a tool interceptor to the pipeline
-    /// 
+    ///
     /// This allows composing interceptors in a pipeline pattern.
     pub fn with_tool_interceptor<I: ToolInterceptor>(mut self, interceptor: I) -> Self {
         let pipeline = self
@@ -274,9 +276,8 @@ impl RuntimeBuilder {
             .tool_interceptor_pipeline
             .take()
             .unwrap_or_default();
-        self.config.tool_interceptor_pipeline = Some(
-            pipeline.with_interceptor(Arc::new(interceptor) as Arc<dyn ToolInterceptor>),
-        );
+        self.config.tool_interceptor_pipeline =
+            Some(pipeline.with_interceptor(Arc::new(interceptor) as Arc<dyn ToolInterceptor>));
         self
     }
 
@@ -287,27 +288,33 @@ impl RuntimeBuilder {
             .tool_interceptor_pipeline
             .take()
             .unwrap_or_default();
-        
+
         for interceptor in interceptors {
             pipeline = pipeline.with_interceptor(Arc::new(interceptor) as Arc<dyn ToolInterceptor>);
         }
-        
+
         self.config.tool_interceptor_pipeline = Some(pipeline);
         self
     }
 
     /// Set the tool interceptor pipeline
-    /// 
+    ///
     /// This replaces any existing tool interceptor pipeline.
-    pub fn with_tool_interceptor_pipeline(mut self, pipeline: InterceptorPipeline<dyn ToolInterceptor>) -> Self {
+    pub fn with_tool_interceptor_pipeline(
+        mut self,
+        pipeline: InterceptorPipeline<dyn ToolInterceptor>,
+    ) -> Self {
         self.config.tool_interceptor_pipeline = Some(pipeline);
         self
     }
 
     /// Set the provenance writer (enables effects-first system)
-    /// 
+    ///
     /// When provided, creates an EffectBus and wires it to provenance and liveness gating.
-    pub fn with_provenance_writer(mut self, writer: Arc<dyn baml_rt_provenance::ProvenanceWriter>) -> Self {
+    pub fn with_provenance_writer(
+        mut self,
+        writer: Arc<dyn baml_rt_provenance::ProvenanceWriter>,
+    ) -> Self {
         self.config.provenance_writer = Some(writer);
         self
     }
@@ -321,11 +328,12 @@ impl RuntimeBuilder {
 
         // Load schema if path is provided
         if let Some(schema_path) = &self.config.schema_path {
-            let schema_path_str = schema_path
-                .to_str()
-                .ok_or_else(|| BamlRtError::InvalidArgument(
-                    format!("Schema path contains invalid UTF-8: {:?}", schema_path)
-                ))?;
+            let schema_path_str = schema_path.to_str().ok_or_else(|| {
+                BamlRtError::InvalidArgument(format!(
+                    "Schema path contains invalid UTF-8: {:?}",
+                    schema_path
+                ))
+            })?;
             baml_manager.load_schema(schema_path_str)?;
         }
 
@@ -333,30 +341,32 @@ impl RuntimeBuilder {
         let llm_pipeline = self.config.llm_interceptor_pipeline.take();
         let tool_pipeline = self.config.tool_interceptor_pipeline.take();
         let provenance_writer = self.config.provenance_writer.take();
-        
+
         // Create EffectBus if provenance writer is provided (effects-first system)
         let effect_bus: Option<Arc<EffectBus>> = if let Some(ref prov_writer) = provenance_writer {
             let bus = Arc::new(EffectBus::new());
             // Subscribe provenance adapter
-            let subscriber = Arc::new(baml_rt_provenance::ProvenanceEffectSubscriber::new(prov_writer.clone()));
+            let subscriber = Arc::new(baml_rt_provenance::ProvenanceEffectSubscriber::new(
+                prov_writer.clone(),
+            ));
             bus.subscribe(subscriber).await;
             Some(bus)
         } else {
             None
         };
-        
+
         // Set effect emitter on BamlRuntimeManager if EffectBus exists
         if let Some(ref bus) = effect_bus {
             baml_manager.set_effect_emitter(bus.clone() as Arc<dyn EffectEmitter>);
         }
-        
+
         // Inject LLM interceptor pipeline if provided
         if let Some(llm_pipeline) = llm_pipeline {
             let registry = baml_manager.interceptor_registry();
             let mut registry_guard = registry.lock().await;
             registry_guard.merge_llm_pipeline(llm_pipeline);
         }
-        
+
         // Inject tool interceptor pipeline if provided
         if let Some(tool_pipeline) = tool_pipeline {
             let registry = baml_manager.interceptor_registry();
@@ -375,24 +385,22 @@ impl RuntimeBuilder {
         let quickjs_config = quickjs_config.clone();
         let agent_id = agent_id.clone();
         let config = self.config; // Move config here
-        
+
         // Create QuickJS bridge (always enabled)
         let agent_id = agent_id.ok_or_else(|| {
             BamlRtError::InvalidArgument(
-                "agent_id is REQUIRED. Call with_agent_id() before build().".to_string()
+                "agent_id is REQUIRED. Call with_agent_id() before build().".to_string(),
             )
         })?;
-        let mut bridge = QuickJSBridge::new_with_config(
-            baml_manager.clone(),
-            agent_id,
-            quickjs_config.clone(),
-        ).await?;
-        
+        let mut bridge =
+            QuickJSBridge::new_with_config(baml_manager.clone(), agent_id, quickjs_config.clone())
+                .await?;
+
         // Set effect liveness on QuickJSBridge if EffectBus exists
         if let Some(ref bus) = effect_bus {
             bridge.set_effect_liveness(bus.clone() as Arc<dyn EffectLiveness>);
         }
-        
+
         bridge.register_baml_functions().await?;
         let quickjs_bridge = Arc::new(Mutex::new(bridge));
 

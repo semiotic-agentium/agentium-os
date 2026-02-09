@@ -7,29 +7,30 @@
 
 mod tool_extraction;
 pub(crate) use tool_extraction::{
-    extract_tool_call, extract_tool_session_plan, normalize_plan_input,
-    resolve_tool_name_from_input_with_registry, ToolSessionOp,
+    ToolSessionOp, extract_tool_call, extract_tool_session_plan, normalize_plan_input,
+    resolve_tool_name_from_input_with_registry,
 };
 
 use crate::baml_execution::BamlExecutor;
-use baml_rt_core::{BamlRtError, Result};
-use baml_rt_core::types::FunctionSignature;
-use baml_rt_core::effects::{EffectEmitter, ToolEffectMetadata};
-use baml_rt_tools::{ToolRegistry as ConcreteToolRegistry, ToolFunctionMetadataExport, ToolSessionId, ToolStep};
 use crate::traits::{BamlFunctionExecutor, SchemaLoader};
-use baml_rt_interceptor::{InterceptorRegistry, ToolCallContext};
-use baml_rt_core::correlation::current_correlation_id;
-use baml_rt_core::context::{self, InvocationContext};
-use baml_rt_observability::metrics;
 use async_trait::async_trait;
+use baml_rt_core::context::{self, InvocationContext};
+use baml_rt_core::correlation::current_correlation_id;
+use baml_rt_core::effects::{EffectEmitter, ToolEffectMetadata};
+use baml_rt_core::types::FunctionSignature;
+use baml_rt_core::{BamlRtError, Result};
+use baml_rt_interceptor::{InterceptorRegistry, ToolCallContext};
+use baml_rt_observability::metrics;
+use baml_rt_tools::{
+    ToolFunctionMetadataExport, ToolRegistry as ConcreteToolRegistry, ToolSessionId, ToolStep,
+};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex as TokioMutex;
-
 
 // Helper function to build metadata map with correlation_id and message_id
 fn build_metadata_map() -> Value {
@@ -49,13 +50,12 @@ fn build_metadata_map() -> Value {
     Value::Object(map)
 }
 
-
 // BAML executes in Rust. We will implement execution of BAML functions
 // in Rust, then map those function calls to QuickJS so JavaScript can invoke them.
 // use baml;
 
 /// Helper function for creating an empty open_input value.
-/// 
+///
 /// This centralizes the pattern of using an empty JSON object as the default
 /// open_input when none is provided.
 fn empty_open_input() -> Value {
@@ -118,9 +118,11 @@ impl ToolExecutionHandle {
     }
 
     pub(crate) async fn execute_tool_from_baml_result(&self, baml_result: Value) -> Result<Value> {
-        let call = extract_tool_call(&baml_result)?
-            .ok_or_else(|| BamlRtError::InvalidArgument("No tool call found in result".to_string()))?;
-        let tool_name = resolve_tool_name_from_input_with_registry(&self.tool_registry, &call.args)?;
+        let call = extract_tool_call(&baml_result)?.ok_or_else(|| {
+            BamlRtError::InvalidArgument("No tool call found in result".to_string())
+        })?;
+        let tool_name =
+            resolve_tool_name_from_input_with_registry(&self.tool_registry, &call.args)?;
         self.execute_tool(&tool_name, call.args).await
     }
 
@@ -150,7 +152,10 @@ impl ToolExecutionHandle {
             metadata: metadata.clone(),
         };
         let effect_token = if let Some(emitter) = self.effect_emitter.as_ref() {
-            match emitter.start_tool(context_id.clone(), effect_metadata).await {
+            match emitter
+                .start_tool(context_id.clone(), effect_metadata)
+                .await
+            {
                 Ok(token) => Some(token),
                 Err(e) => {
                     tracing::warn!(error = ?e, "Failed to start tool effect");
@@ -167,10 +172,11 @@ impl ToolExecutionHandle {
         drop(interceptor_registry);
         if let Err(e) = interceptor_result {
             if let Some(token) = effect_token
-                && let Some(emitter) = self.effect_emitter.as_ref() {
-                    let duration_ms = start.elapsed().as_millis() as u64;
-                    let _ = token.complete(emitter.as_ref(), duration_ms, false).await;
-                }
+                && let Some(emitter) = self.effect_emitter.as_ref()
+            {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                let _ = token.complete(emitter.as_ref(), duration_ms, false).await;
+            }
             return Err(e);
         }
         let _decision = interceptor_result.unwrap();
@@ -190,13 +196,16 @@ impl ToolExecutionHandle {
         // Complete effect using token (type-safe: token consumed, cannot double-complete)
         if let Some(token) = effect_token
             && let Some(emitter) = self.effect_emitter.as_ref()
-                && let Err(e) = token.complete(emitter.as_ref(), duration_ms, success).await {
-                    tracing::warn!(error = ?e, "Failed to complete tool effect");
-                }
+            && let Err(e) = token.complete(emitter.as_ref(), duration_ms, success).await
+        {
+            tracing::warn!(error = ?e, "Failed to complete tool effect");
+        }
 
         // Notify interceptors of completion
         let interceptor_registry = self.interceptor_registry.lock().await;
-        interceptor_registry.notify_tool_call_complete(&context, &result, duration_ms).await;
+        interceptor_registry
+            .notify_tool_call_complete(&context, &result, duration_ms)
+            .await;
         drop(interceptor_registry);
 
         let metric_result = if result.is_ok() { "success" } else { "error" };
@@ -320,10 +329,7 @@ impl ToolSessionExecutionHandle {
         let session_scope = session_scope.ok_or_else(|| {
             if tool_session_trace_enabled() {
                 if let Ok(scopes) = self.tool_session_scopes.try_lock() {
-                    let known_ids: Vec<String> = scopes
-                        .keys()
-                        .map(|id| id.to_string())
-                        .collect();
+                    let known_ids: Vec<String> = scopes.keys().map(|id| id.to_string()).collect();
                     tool_session_trace(&format!(
                         "send missing scope: session_id={}, known_scopes={}, known_ids={:?}",
                         session_id,
@@ -337,10 +343,7 @@ impl ToolSessionExecutionHandle {
                     ));
                 }
             }
-            BamlRtError::InvalidArgument(format!(
-                "Unknown tool session {}",
-                session_id
-            ))
+            BamlRtError::InvalidArgument(format!("Unknown tool session {}", session_id))
         })?;
 
         tracing::info!(
@@ -434,10 +437,7 @@ impl ToolSessionExecutionHandle {
         result
     }
 
-    pub(crate) async fn tool_session_next(
-        &self,
-        session_id: &ToolSessionId,
-    ) -> Result<ToolStep> {
+    pub(crate) async fn tool_session_next(&self, session_id: &ToolSessionId) -> Result<ToolStep> {
         let session_scope = {
             let scopes = self.tool_session_scopes.lock().await;
             scopes.get(session_id).cloned()
@@ -449,12 +449,10 @@ impl ToolSessionExecutionHandle {
 
             let completion = match &result {
                 Ok(ToolStep::Done { output }) => Some(Ok(output.clone().unwrap_or(Value::Null))),
-                Ok(ToolStep::Error { error }) => {
-                    Some(Err(BamlRtError::InvalidArgument(format!(
-                        "Tool failure ({:?}): {}",
-                        error.kind, error.message
-                    ))))
-                }
+                Ok(ToolStep::Error { error }) => Some(Err(BamlRtError::InvalidArgument(format!(
+                    "Tool failure ({:?}): {}",
+                    error.kind, error.message
+                )))),
                 Err(err) => Some(Err(BamlRtError::InvalidArgument(err.to_string()))),
                 _ => None,
             };
@@ -463,48 +461,52 @@ impl ToolSessionExecutionHandle {
                 && let Some(state) = {
                     let mut states = self.tool_session_states.lock().await;
                     states.remove(session_id)
-                } {
-                    // Do not remove scopes here; Finish/Abort is responsible for cleanup.
-                    let duration_ms = state.start.elapsed().as_millis() as u64;
-                    let interceptor_registry = self.interceptor_registry.lock().await;
-                    interceptor_registry
-                        .notify_tool_call_complete(&state.context, &completion_result, duration_ms)
-                        .await;
-                    drop(interceptor_registry);
-                    let metric_result =
-                        if completion_result.is_ok() { "success" } else { "error" };
-                    metrics::record_tool_invocation(
-                        &state.context.tool_name,
-                        metric_result,
-                        state.start.elapsed(),
-                    );
                 }
+            {
+                // Do not remove scopes here; Finish/Abort is responsible for cleanup.
+                let duration_ms = state.start.elapsed().as_millis() as u64;
+                let interceptor_registry = self.interceptor_registry.lock().await;
+                interceptor_registry
+                    .notify_tool_call_complete(&state.context, &completion_result, duration_ms)
+                    .await;
+                drop(interceptor_registry);
+                let metric_result = if completion_result.is_ok() {
+                    "success"
+                } else {
+                    "error"
+                };
+                metrics::record_tool_invocation(
+                    &state.context.tool_name,
+                    metric_result,
+                    state.start.elapsed(),
+                );
+            }
 
             result
         };
 
-        let scope = session_scope.ok_or_else(|| {
-            if tool_session_trace_enabled() {
-                if let Ok(scopes) = self.tool_session_scopes.try_lock() {
-                    let known_ids: Vec<String> = scopes
-                        .keys()
-                        .map(|id| id.to_string())
-                        .collect();
-                    tool_session_trace(&format!(
-                        "next missing scope: session_id={}, known_scopes={}, known_ids={:?}",
-                        session_id,
-                        scopes.len(),
-                        known_ids
-                    ));
-                } else {
-                    tool_session_trace(&format!(
-                        "next missing scope: session_id={}, scopes=locked",
-                        session_id
-                    ));
+        let scope = session_scope
+            .ok_or_else(|| {
+                if tool_session_trace_enabled() {
+                    if let Ok(scopes) = self.tool_session_scopes.try_lock() {
+                        let known_ids: Vec<String> =
+                            scopes.keys().map(|id| id.to_string()).collect();
+                        tool_session_trace(&format!(
+                            "next missing scope: session_id={}, known_scopes={}, known_ids={:?}",
+                            session_id,
+                            scopes.len(),
+                            known_ids
+                        ));
+                    } else {
+                        tool_session_trace(&format!(
+                            "next missing scope: session_id={}, scopes=locked",
+                            session_id
+                        ));
+                    }
                 }
-            }
-            BamlRtError::InvalidArgument(format!("Unknown tool session {}", session_id))
-        })?.scope;
+                BamlRtError::InvalidArgument(format!("Unknown tool session {}", session_id))
+            })?
+            .scope;
         let result = context::with_scope(scope, run()).await;
         if let Ok(ref step) = result {
             tracing::info!(
@@ -544,8 +546,11 @@ impl ToolSessionExecutionHandle {
                     .notify_tool_call_complete(&state.context, &completion_result, duration_ms)
                     .await;
                 drop(interceptor_registry);
-                let metric_result =
-                    if completion_result.is_ok() { "success" } else { "error" };
+                let metric_result = if completion_result.is_ok() {
+                    "success"
+                } else {
+                    "error"
+                };
                 metrics::record_tool_invocation(
                     &state.context.tool_name,
                     metric_result,
@@ -556,28 +561,28 @@ impl ToolSessionExecutionHandle {
             result
         };
 
-        let scope = session_scope.ok_or_else(|| {
-            if tool_session_trace_enabled() {
-                if let Ok(scopes) = self.tool_session_scopes.try_lock() {
-                    let known_ids: Vec<String> = scopes
-                        .keys()
-                        .map(|id| id.to_string())
-                        .collect();
-                    tool_session_trace(&format!(
-                        "finish missing scope: session_id={}, known_scopes={}, known_ids={:?}",
-                        session_id,
-                        scopes.len(),
-                        known_ids
-                    ));
-                } else {
-                    tool_session_trace(&format!(
-                        "finish missing scope: session_id={}, scopes=locked",
-                        session_id
-                    ));
+        let scope = session_scope
+            .ok_or_else(|| {
+                if tool_session_trace_enabled() {
+                    if let Ok(scopes) = self.tool_session_scopes.try_lock() {
+                        let known_ids: Vec<String> =
+                            scopes.keys().map(|id| id.to_string()).collect();
+                        tool_session_trace(&format!(
+                            "finish missing scope: session_id={}, known_scopes={}, known_ids={:?}",
+                            session_id,
+                            scopes.len(),
+                            known_ids
+                        ));
+                    } else {
+                        tool_session_trace(&format!(
+                            "finish missing scope: session_id={}, scopes=locked",
+                            session_id
+                        ));
+                    }
                 }
-            }
-            BamlRtError::InvalidArgument(format!("Unknown tool session {}", session_id))
-        })?.scope;
+                BamlRtError::InvalidArgument(format!("Unknown tool session {}", session_id))
+            })?
+            .scope;
         let result = context::with_scope(scope, run()).await;
         if let Err(ref e) = result {
             tracing::warn!(session_id = %session_id, error = ?e, "Tool session finish: error");
@@ -599,7 +604,10 @@ impl ToolSessionExecutionHandle {
 
         let run = || async {
             tracing::info!(session_id = %session_id, "Tool session abort: start");
-            let result = self.tool_registry.session_abort(session_id, reason.clone()).await;
+            let result = self
+                .tool_registry
+                .session_abort(session_id, reason.clone())
+                .await;
 
             if let Some(state) = {
                 let mut states = self.tool_session_states.lock().await;
@@ -626,28 +634,28 @@ impl ToolSessionExecutionHandle {
             result
         };
 
-        let scope = session_scope.ok_or_else(|| {
-            if tool_session_trace_enabled() {
-                if let Ok(scopes) = self.tool_session_scopes.try_lock() {
-                    let known_ids: Vec<String> = scopes
-                        .keys()
-                        .map(|id| id.to_string())
-                        .collect();
-                    tool_session_trace(&format!(
-                        "abort missing scope: session_id={}, known_scopes={}, known_ids={:?}",
-                        session_id,
-                        scopes.len(),
-                        known_ids
-                    ));
-                } else {
-                    tool_session_trace(&format!(
-                        "abort missing scope: session_id={}, scopes=locked",
-                        session_id
-                    ));
+        let scope = session_scope
+            .ok_or_else(|| {
+                if tool_session_trace_enabled() {
+                    if let Ok(scopes) = self.tool_session_scopes.try_lock() {
+                        let known_ids: Vec<String> =
+                            scopes.keys().map(|id| id.to_string()).collect();
+                        tool_session_trace(&format!(
+                            "abort missing scope: session_id={}, known_scopes={}, known_ids={:?}",
+                            session_id,
+                            scopes.len(),
+                            known_ids
+                        ));
+                    } else {
+                        tool_session_trace(&format!(
+                            "abort missing scope: session_id={}, scopes=locked",
+                            session_id
+                        ));
+                    }
                 }
-            }
-            BamlRtError::InvalidArgument(format!("Unknown tool session {}", session_id))
-        })?.scope;
+                BamlRtError::InvalidArgument(format!("Unknown tool session {}", session_id))
+            })?
+            .scope;
         let result = context::with_scope(scope, run()).await;
         if let Err(ref e) = result {
             tracing::warn!(session_id = %session_id, error = ?e, "Tool session abort: error");
@@ -715,8 +723,7 @@ impl BamlRuntimeManager {
         // Find project root
         let schema_path_obj = Path::new(schema_path);
         let project_root = if schema_path_obj.is_file() {
-            schema_path_obj.parent()
-                .and_then(|p| p.parent())
+            schema_path_obj.parent().and_then(|p| p.parent())
         } else if schema_path_obj.file_name() == Some(std::ffi::OsStr::new("baml_src")) {
             schema_path_obj.parent()
         } else {
@@ -727,14 +734,14 @@ impl BamlRuntimeManager {
         let baml_src_dir = project_root.join("baml_src");
         if !baml_src_dir.exists() {
             return Err(BamlRtError::BamlRuntime(
-                "baml_src directory not found".to_string()
+                "baml_src directory not found".to_string(),
             ));
         }
 
         // Load BAML IL into executor (pass tool registry)
         let tool_registry_clone = self.tool_registry.clone();
         let mut executor = BamlExecutor::load_il(&baml_src_dir, tool_registry_clone)?;
-        
+
         // Set effect emitter if available
         if let Some(ref emitter) = self.effect_emitter {
             executor.set_effect_emitter(emitter.clone());
@@ -801,12 +808,16 @@ impl BamlRuntimeManager {
             .ok_or_else(|| BamlRtError::FunctionNotFound(function_name.to_string()))?;
 
         // Execute the BAML function using the executor
-        let executor = self.executor.as_ref()
+        let executor = self
+            .executor
+            .as_ref()
             .ok_or_else(|| BamlRtError::BamlRuntime("BAML runtime not loaded".to_string()))?;
 
         // Pass tool registry and interceptor registry to executor
         let interceptor_registry = Some(self.interceptor_registry.clone());
-        executor.execute_function(function_name, args, interceptor_registry).await
+        executor
+            .execute_function(function_name, args, interceptor_registry)
+            .await
     }
 
     /// Invoke a BAML function with streaming support
@@ -830,7 +841,9 @@ impl BamlRuntimeManager {
             .ok_or_else(|| BamlRtError::FunctionNotFound(function_name.to_string()))?;
 
         // Execute the BAML function using the executor
-        let executor = self.executor.as_ref()
+        let executor = self
+            .executor
+            .as_ref()
             .ok_or_else(|| BamlRtError::BamlRuntime("BAML runtime not loaded".to_string()))?;
 
         executor.execute_function_stream(function_name, args)
@@ -852,13 +865,19 @@ impl BamlRuntimeManager {
     }
 
     /// Register an LLM interceptor
-    pub async fn register_llm_interceptor<I: baml_rt_interceptor::LLMInterceptor>(&self, interceptor: I) {
+    pub async fn register_llm_interceptor<I: baml_rt_interceptor::LLMInterceptor>(
+        &self,
+        interceptor: I,
+    ) {
         let mut registry = self.interceptor_registry.lock().await;
         registry.register_llm_interceptor(interceptor);
     }
 
     /// Register a tool interceptor
-    pub async fn register_tool_interceptor<I: baml_rt_interceptor::ToolInterceptor>(&self, interceptor: I) {
+    pub async fn register_tool_interceptor<I: baml_rt_interceptor::ToolInterceptor>(
+        &self,
+        interceptor: I,
+    ) {
         let mut registry = self.interceptor_registry.lock().await;
         registry.register_tool_interceptor(interceptor);
     }
@@ -945,7 +964,11 @@ impl BamlRuntimeManager {
         Ok(())
     }
 
-    pub async fn open_tool_session(&self, tool_name: &str, open_input: serde_json::Value) -> Result<ToolSessionId> {
+    pub async fn open_tool_session(
+        &self,
+        tool_name: &str,
+        open_input: serde_json::Value,
+    ) -> Result<ToolSessionId> {
         self.tool_session_handle()
             .open_tool_session(tool_name, open_input)
             .await
@@ -969,7 +992,11 @@ impl BamlRuntimeManager {
             .await
     }
 
-    pub async fn tool_session_abort(&self, session_id: &ToolSessionId, reason: Option<String>) -> Result<()> {
+    pub async fn tool_session_abort(
+        &self,
+        session_id: &ToolSessionId,
+        reason: Option<String>,
+    ) -> Result<()> {
         self.tool_session_handle()
             .tool_session_abort(session_id, reason)
             .await
@@ -1055,8 +1082,9 @@ impl BamlRuntimeManager {
     /// # Returns
     /// The result of executing the tool function
     pub async fn execute_tool_from_baml_result(&self, baml_result: Value) -> Result<Value> {
-        let call = extract_tool_call(&baml_result)?
-            .ok_or_else(|| BamlRtError::InvalidArgument("No tool call found in result".to_string()))?;
+        let call = extract_tool_call(&baml_result)?.ok_or_else(|| {
+            BamlRtError::InvalidArgument("No tool call found in result".to_string())
+        })?;
         let tool_name = self.resolve_tool_name_from_input(&call.args).await?;
         self.execute_tool(&tool_name, call.args).await
     }
@@ -1076,16 +1104,11 @@ impl BamlRuntimeManager {
         Ok(baml_result)
     }
 
-    async fn resolve_tool_name_from_plan_steps(
-        &self,
-        steps: &[ToolSessionOp],
-    ) -> Result<String> {
-        let input = steps.iter().find_map(|step| {
-            match step {
-                ToolSessionOp::Open { initial_input, .. } => initial_input.as_ref(),
-                ToolSessionOp::Send { input, .. } => Some(input),
-                _ => None,
-            }
+    async fn resolve_tool_name_from_plan_steps(&self, steps: &[ToolSessionOp]) -> Result<String> {
+        let input = steps.iter().find_map(|step| match step {
+            ToolSessionOp::Open { initial_input, .. } => initial_input.as_ref(),
+            ToolSessionOp::Send { input, .. } => Some(input),
+            _ => None,
         });
         if let Some(input) = input {
             return self.resolve_tool_name_from_input(input).await;
@@ -1106,7 +1129,7 @@ impl BamlRuntimeManager {
     }
 
     /// Execute a typed tool session plan.
-    /// 
+    ///
     /// The plan is a sequence of typed `ToolSessionOp` operations that must follow FSM rules:
     /// - First operation must be Open
     /// - Subsequent operations must be Send/Next/Finish/Abort (after Open)
@@ -1117,17 +1140,24 @@ impl BamlRuntimeManager {
         steps: Vec<ToolSessionOp>,
     ) -> Result<Value> {
         // Validate FSM: no Send before first Open
-        let first_open = steps.iter().position(|s| matches!(s, ToolSessionOp::Open { .. }));
-        let first_send = steps.iter().position(|s| matches!(s, ToolSessionOp::Send { .. }));
+        let first_open = steps
+            .iter()
+            .position(|s| matches!(s, ToolSessionOp::Open { .. }));
+        let first_send = steps
+            .iter()
+            .position(|s| matches!(s, ToolSessionOp::Send { .. }));
         if let (Some(open_pos), Some(send_pos)) = (first_open, first_send)
-            && send_pos < open_pos {
-                return Err(BamlRtError::InvalidArgument(format!(
-                    "FSM violation: plan has 'send' step at position {} before 'open' at {}. FSM requires Open before Send.",
-                    send_pos, open_pos
-                )));
-            }
+            && send_pos < open_pos
+        {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "FSM violation: plan has 'send' step at position {} before 'open' at {}. FSM requires Open before Send.",
+                send_pos, open_pos
+            )));
+        }
         if steps.is_empty() {
-            return Err(BamlRtError::InvalidArgument("ToolSessionPlan must have at least one step".to_string()));
+            return Err(BamlRtError::InvalidArgument(
+                "ToolSessionPlan must have at least one step".to_string(),
+            ));
         }
 
         let mut session_id: Option<ToolSessionId> = None;
@@ -1154,7 +1184,9 @@ impl BamlRuntimeManager {
                 }
                 ToolSessionOp::Send { input, .. } => {
                     let session = session_id.as_ref().ok_or_else(|| {
-                        BamlRtError::InvalidArgument("send step before open: FSM requires Open before Send".to_string())
+                        BamlRtError::InvalidArgument(
+                            "send step before open: FSM requires Open before Send".to_string(),
+                        )
                     })?;
                     let normalized = normalize_plan_input(input)?;
                     self.tool_session_send(session, normalized).await?;
@@ -1175,7 +1207,8 @@ impl BamlRuntimeManager {
                                 break;
                             }
                             ToolStep::Error { error } => {
-                                self.tool_session_abort(session, Some(error.message.clone())).await?;
+                                self.tool_session_abort(session, Some(error.message.clone()))
+                                    .await?;
                                 return Err(BamlRtError::InvalidArgument(format!(
                                     "Tool failure ({:?}): {}",
                                     error.kind, error.message
@@ -1212,7 +1245,8 @@ impl BamlRuntimeManager {
                         break;
                     }
                     ToolStep::Error { error } => {
-                        self.tool_session_abort(session, Some(error.message.clone())).await?;
+                        self.tool_session_abort(session, Some(error.message.clone()))
+                            .await?;
                         return Err(BamlRtError::InvalidArgument(format!(
                             "Tool failure ({:?}): {}",
                             error.kind, error.message
@@ -1268,4 +1302,3 @@ impl Default for BamlRuntimeManager {
         }
     }
 }
-

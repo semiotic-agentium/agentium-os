@@ -1,25 +1,25 @@
 //! Tests for agent runner binary
 
-use baml_rt::baml::BamlRuntimeManager;
+use async_trait::async_trait;
 use baml_rt::A2aRequestHandler;
-use std::path::Path;
-use std::process::Command;
-use std::fs;
+use baml_rt::baml::BamlRuntimeManager;
+use baml_rt::tools::BamlTool;
+use baml_rt_core::context::{self, InvocationScope};
+use baml_rt_core::effects::EffectBus;
+use baml_rt_core::ids::{AgentId, UuidId};
+use baml_rt_tools::bundles::BundleType;
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use tar::Builder;
-use async_trait::async_trait;
-use serde_json::json;
-use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
-use ts_rs::TS;
-use baml_rt::tools::BamlTool;
-use baml_rt_tools::bundles::BundleType;
-use baml_rt_core::effects::EffectBus;
-use baml_rt_core::context::{self, InvocationScope};
-use baml_rt_core::ids::{AgentId, UuidId};
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+use std::sync::Arc;
+use tar::Builder;
+use ts_rs::TS;
 
 // Test bundle for test tools
 #[allow(dead_code)]
@@ -31,9 +31,11 @@ impl BundleType for Test {
         "Test tools for unit testing"
     }
 }
-use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest};
+use baml_rt::a2a_types::{
+    JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest,
+};
 
-use test_support::common::{ensure_baml_src_exists, agent_fixture, workspace_root, CalculatorTool};
+use test_support::common::{CalculatorTool, agent_fixture, ensure_baml_src_exists, workspace_root};
 use test_support::support::cli::CliHarness;
 
 /// Build fixture with baml-agent-builder, extract tar to temp dir, return path to extracted dir (has dist + baml_src).
@@ -46,8 +48,10 @@ fn build_fixture_to_temp(fixture_name: &str) -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let tar_path = std::env::temp_dir().join(format!("runner-test-{}-{}.tar.gz", fixture_name, unique));
-    let extract_dir = std::env::temp_dir().join(format!("runner-test-{}-extract-{}", fixture_name, unique));
+    let tar_path =
+        std::env::temp_dir().join(format!("runner-test-{}-{}.tar.gz", fixture_name, unique));
+    let extract_dir =
+        std::env::temp_dir().join(format!("runner-test-{}-extract-{}", fixture_name, unique));
     let _ = fs::remove_dir_all(&extract_dir);
     fs::create_dir_all(&extract_dir).expect("create extract dir");
 
@@ -75,7 +79,10 @@ fn build_fixture_to_temp(fixture_name: &str) -> std::path::PathBuf {
     let _ = fs::remove_file(&tar_path);
 
     let dist_index = extract_dir.join("dist").join("index.js");
-    assert!(dist_index.exists(), "Built package must contain dist/index.js");
+    assert!(
+        dist_index.exists(),
+        "Built package must contain dist/index.js"
+    );
     extract_dir
 }
 
@@ -91,11 +98,8 @@ fn create_test_agent_package(output_path: &Path) -> Result<(), Box<dyn std::erro
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let temp_dir = std::env::temp_dir().join(format!(
-        "e2e-agent-{}-{}",
-        std::process::id(),
-        unique
-    ));
+    let temp_dir =
+        std::env::temp_dir().join(format!("e2e-agent-{}-{}", std::process::id(), unique));
     fs::create_dir_all(&temp_dir)?;
 
     // Copy baml_src from fixture (we no longer need baml_client - runtime loads directly from baml_src)
@@ -117,7 +121,10 @@ fn create_test_agent_package(output_path: &Path) -> Result<(), Box<dyn std::erro
         "signature": "test-agent@1.0.0",
         "tools": ["support/calculate"]
     });
-    fs::write(temp_dir.join("manifest.json"), serde_json::to_string_pretty(&manifest)?)?;
+    fs::write(
+        temp_dir.join("manifest.json"),
+        serde_json::to_string_pretty(&manifest)?,
+    )?;
 
     // Create tar.gz
     if let Some(parent) = output_path.parent() {
@@ -180,13 +187,15 @@ impl BamlTool for AddNumbersTool {
     }
 
     async fn execute(&self, args: Self::Input) -> baml_rt::Result<Self::Output> {
-        Ok(AddNumbersOutput { result: args.a + args.b })
+        Ok(AddNumbersOutput {
+            result: args.a + args.b,
+        })
     }
 }
 
 fn user_message(message_id: &str, text: &str) -> Message {
-    use baml_rt_core::ids::{ContextId, ExternalId};
     use baml_rt_a2a::a2a_types::A2aMessageId;
+    use baml_rt_core::ids::{ContextId, ExternalId};
     Message {
         message_id: A2aMessageId::incoming(ExternalId::new(message_id)),
         role: MessageRole::String("ROLE_USER".to_string()),
@@ -208,7 +217,8 @@ async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.load_schema(built.to_str().unwrap()).unwrap();
     manager.register_tool(CalculatorTool).await.unwrap();
-    let agent_code = fs::read_to_string(built.join("dist").join("index.js")).expect("stream-baml-tool dist/index.js");
+    let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
+        .expect("stream-baml-tool dist/index.js");
     baml_rt::A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
@@ -222,7 +232,8 @@ async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
     let built = build_fixture_to_temp("stream-js-tool");
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.load_schema(built.to_str().unwrap()).unwrap();
-    let agent_code = fs::read_to_string(built.join("dist").join("index.js")).expect("stream-js-tool dist/index.js");
+    let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
+        .expect("stream-js-tool dist/index.js");
     baml_rt::A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
@@ -237,13 +248,17 @@ async fn test_manifest_allowlist_blocks_undeclared_tool() {
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.register_tool(CalculatorTool).await.unwrap();
 
-    let agent_id = AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000020").unwrap());
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000020").unwrap());
     let scope = InvocationScope::standalone(agent_id);
 
     manager.set_tool_allowlist(HashSet::new()).await.unwrap();
     let blocked = context::with_scope(scope.as_scope().clone(), async {
-        manager.open_tool_session("support/calculate", json!({})).await
-    }).await;
+        manager
+            .open_tool_session("support/calculate", json!({}))
+            .await
+    })
+    .await;
     assert!(
         blocked
             .err()
@@ -256,8 +271,11 @@ async fn test_manifest_allowlist_blocks_undeclared_tool() {
     allowlist.insert("support/calculate".to_string());
     manager.set_tool_allowlist(allowlist).await.unwrap();
     let session = context::with_scope(scope.as_scope().clone(), async {
-        manager.open_tool_session("support/calculate", json!({})).await
-    }).await;
+        manager
+            .open_tool_session("support/calculate", json!({}))
+            .await
+    })
+    .await;
     assert!(session.is_ok(), "Expected allowlisted tool to open");
 }
 
@@ -267,7 +285,7 @@ async fn test_agent_package_loading() {
 
     // Create a test agent package
     let package_path = std::env::temp_dir().join("test-agent-package.tar.gz");
-    
+
     match create_test_agent_package(&package_path) {
         Ok(_) => {
             println!("Created test agent package: {}", package_path.display());
@@ -286,17 +304,18 @@ async fn test_agent_package_loading() {
     let tar_gz = fs::File::open(&package_path).unwrap();
     let tar = flate2::read::GzDecoder::new(tar_gz);
     let mut archive = tar::Archive::new(tar);
-    
-    let extract_dir = std::env::temp_dir().join(format!(
-        "test-agent-extract-{}",
-        std::process::id()
-    ));
+
+    let extract_dir =
+        std::env::temp_dir().join(format!("test-agent-extract-{}", std::process::id()));
     fs::create_dir_all(&extract_dir).unwrap();
     archive.unpack(&extract_dir).unwrap();
 
     // Verify manifest exists
     let manifest_path = extract_dir.join("manifest.json");
-    assert!(manifest_path.exists(), "manifest.json should exist in package");
+    assert!(
+        manifest_path.exists(),
+        "manifest.json should exist in package"
+    );
 
     // Verify baml_src exists
     let baml_src = extract_dir.join("baml_src");
@@ -311,7 +330,7 @@ async fn test_agent_package_loading() {
 async fn test_runtime_manager_loads_schema() {
     // Test that BamlRuntimeManager can load a schema
     // This is the core functionality needed for agent loading
-    
+
     if !ensure_baml_src_exists() {
         return;
     }
@@ -323,7 +342,7 @@ async fn test_runtime_manager_loads_schema() {
             .to_str()
             .expect("Workspace baml_src path should be valid"),
     );
-    
+
     match result {
         Ok(_) => {
             assert!(manager.is_schema_loaded(), "Schema should be loaded");
@@ -342,8 +361,7 @@ async fn test_e2e_agent_runner_load_package() {
     // Create a test agent package
     let package_path = std::env::temp_dir().join("e2e-test-agent-package.tar.gz");
 
-    create_test_agent_package(&package_path)
-        .expect("Failed to create test agent package");
+    create_test_agent_package(&package_path).expect("Failed to create test agent package");
 
     assert!(package_path.exists(), "Test package should exist");
 
@@ -381,8 +399,7 @@ async fn test_e2e_agent_runner_invoke_function() {
     // Create a test agent package
     let package_path = std::env::temp_dir().join("e2e-test-agent-invoke.tar.gz");
 
-    create_test_agent_package(&package_path)
-        .expect("Failed to create test agent package");
+    create_test_agent_package(&package_path).expect("Failed to create test agent package");
 
     // Try to invoke a function (will fail without API key, but should parse correctly)
     let mut cmd = agent_runner_command();
@@ -402,7 +419,7 @@ async fn test_e2e_agent_runner_invoke_function() {
 
     // Even if it fails due to missing API key, the structure should work
     // (i.e., it should load the package and attempt to invoke, not fail on parsing)
-    let is_auth_error = stderr.contains("API key") 
+    let is_auth_error = stderr.contains("API key")
         || stderr.contains("authentication")
         || stderr.contains("401")
         || stdout.contains("error");
@@ -412,8 +429,10 @@ async fn test_e2e_agent_runner_invoke_function() {
         println!("Expected authentication error (no API key provided)");
     } else if output.status.success() {
         // Success: Function was invoked
-        assert!(stdout.contains("{") || stdout.contains("result"), 
-                "Should return JSON result");
+        assert!(
+            stdout.contains("{") || stdout.contains("result"),
+            "Should return JSON result"
+        );
     } else {
         // Other errors might be acceptable if they're not parsing/loading errors
         println!("Function invocation returned non-zero exit code, but may be expected");
@@ -462,7 +481,10 @@ async fn test_e2e_stream_baml_tool() {
         .unwrap();
     let text = responses
         .iter()
-        .filter_map(|r| r.get("result").and_then(|res| res.get("chunk").or(Some(res))))
+        .filter_map(|r| {
+            r.get("result")
+                .and_then(|res| res.get("chunk").or(Some(res)))
+        })
         .filter_map(|chunk| {
             chunk
                 .get("message")
@@ -477,15 +499,19 @@ async fn test_e2e_stream_baml_tool() {
     assert!(
         !text.is_empty(),
         "Expected BAML tool result (sum=5) in stream. Source .env for OPENROUTER_API_KEY. Message texts: {:?}. Raw: {}",
-        responses.iter().filter_map(|r| {
-            r.get("result").and_then(|res| res.get("chunk").or(Some(res)))
-                .and_then(|c| c.get("message"))
-                .and_then(|m| m.get("parts"))
-                .and_then(|p| p.as_array())
-                .and_then(|p| p.first())
-                .and_then(|part| part.get("text"))
-                .and_then(|v| v.as_str())
-        }).collect::<Vec<_>>(),
+        responses
+            .iter()
+            .filter_map(|r| {
+                r.get("result")
+                    .and_then(|res| res.get("chunk").or(Some(res)))
+                    .and_then(|c| c.get("message"))
+                    .and_then(|m| m.get("parts"))
+                    .and_then(|p| p.as_array())
+                    .and_then(|p| p.first())
+                    .and_then(|part| part.get("text"))
+                    .and_then(|v| v.as_str())
+            })
+            .collect::<Vec<_>>(),
         serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
     );
 }
@@ -514,7 +540,10 @@ async fn test_e2e_stream_js_tool() {
         .unwrap();
     let task_id = responses
         .iter()
-        .filter_map(|r| r.get("result").and_then(|res| res.get("chunk").or(Some(res))))
+        .filter_map(|r| {
+            r.get("result")
+                .and_then(|res| res.get("chunk").or(Some(res)))
+        })
         .find_map(|chunk| {
             chunk
                 .get("task")

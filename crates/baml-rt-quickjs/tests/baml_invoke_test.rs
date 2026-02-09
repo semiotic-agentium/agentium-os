@@ -7,7 +7,7 @@ async fn test_js_invoke_baml_function() {
     // Set up BAML runtime
     let baml_manager = setup_baml_runtime_from_fixture("voidship-rites");
     let mut bridge = setup_bridge(baml_manager.clone()).await;
-    
+
     // Test invoking SimpleGreeting from JavaScript (voidship-rites has this function)
     // Use __awaitAndStringify helper to handle async function calls
     let js_code = r#"
@@ -20,23 +20,26 @@ async fn test_js_invoke_baml_function() {
             }
         })()
     "#;
-    
+
     let result = bridge.evaluate(None, js_code).await;
-    
+
     // The result should contain either success with result, or error info
     // Note: This may fail due to missing API keys, which is acceptable
     // We just want to verify the function can be invoked from JS
     let json_result = match result {
         Ok(val) => val,
         Err(e) => {
-            println!("JavaScript execution error (may be due to missing API keys): {:?}", e);
+            println!(
+                "JavaScript execution error (may be due to missing API keys): {:?}",
+                e
+            );
             // The function exists and was called, but execution failed (likely API key issue)
             // This is acceptable for integration tests
             return;
         }
     };
     println!("JavaScript execution result: {:?}", json_result);
-    
+
     // Check if we got a proper result
     // The result might be a promise that needs to be awaited, or it might be an object
     // For now, just verify that we can call the function and get some response
@@ -51,7 +54,7 @@ async fn test_js_invoke_baml_function() {
             println!("Got different result format: {:?}", obj);
         }
     }
-    
+
     // At minimum, verify that we received a non-null response payload.
     assert!(!json_result.is_null(), "Expected a non-null response value");
 }

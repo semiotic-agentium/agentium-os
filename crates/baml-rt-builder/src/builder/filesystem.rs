@@ -1,7 +1,7 @@
 //! File system operations implementation
 
-use baml_rt_core::{BamlRtError, Result};
 use crate::builder::traits::FileSystem;
+use baml_rt_core::{BamlRtError, Result};
 use std::fs;
 use std::path::Path;
 

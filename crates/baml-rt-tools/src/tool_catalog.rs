@@ -1,5 +1,5 @@
-use crate::tools::ToolFunctionMetadata;
 use crate::ToolName;
+use crate::tools::ToolFunctionMetadata;
 use baml_rt_core::{BamlRtError, Result};
 use std::collections::HashMap;
 

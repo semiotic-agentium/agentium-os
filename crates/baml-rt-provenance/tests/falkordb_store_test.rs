@@ -1,23 +1,17 @@
-use baml_rt_core::ids::{AgentId, ArtifactId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId};
+use baml_rt_core::ids::{
+    AgentId, ArtifactId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId,
+};
 use baml_rt_provenance::{
-    AgentType,
-    CallScope,
-    FalkorDbProvenanceConfig,
-    FalkorDbProvenanceWriter,
-    GlobalEvent,
-    LlmUsage,
-    ProvEvent,
-    ProvEventData,
-    ProvenanceWriter,
-    TaskScopedEvent,
+    AgentType, CallScope, FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, GlobalEvent,
+    LlmUsage, ProvEvent, ProvEventData, ProvenanceWriter, TaskScopedEvent,
 };
 use insta::assert_json_snapshot;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
+use testcontainers::GenericImage;
 use testcontainers::core::ContainerPort;
 use testcontainers::runners::AsyncRunner;
-use testcontainers::GenericImage;
 use text_to_cypher::core::execute_cypher_query;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 async fn start_falkordb() -> (testcontainers::ContainerAsync<GenericImage>, String) {
     let image = GenericImage::new("falkordb/falkordb", "latest")
@@ -65,13 +59,12 @@ async fn falkordb_writer_persists_task_and_artifact() {
     let graph = "baml_prov_test";
     wait_for_falkordb(&connection, graph).await;
 
-    let writer = FalkorDbProvenanceWriter::new(FalkorDbProvenanceConfig::new(
-        connection.clone(),
-        graph,
-    ));
+    let writer =
+        FalkorDbProvenanceWriter::new(FalkorDbProvenanceConfig::new(connection.clone(), graph));
     let context_id = ContextId::new(1, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-1"));
-    let agent_id = AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000010").unwrap());
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000010").unwrap());
 
     let agent_booted = ProvEvent::Global(GlobalEvent {
         id: EventId::from_counter(0),
@@ -106,8 +99,14 @@ async fn falkordb_writer_persists_task_and_artifact() {
             artifact_type: Some("result".to_string()),
         },
     });
-    writer.add_event(agent_booted).await.expect("write agent_booted");
-    writer.add_event(task_created).await.expect("write task_created");
+    writer
+        .add_event(agent_booted)
+        .await
+        .expect("write agent_booted");
+    writer
+        .add_event(task_created)
+        .await
+        .expect("write task_created");
     writer
         .add_event(task_artifact_generated)
         .await
@@ -157,10 +156,8 @@ async fn falkordb_writer_persists_large_document() {
     let graph = "baml_prov_large_test";
     wait_for_falkordb(&connection, graph).await;
 
-    let writer = FalkorDbProvenanceWriter::new(FalkorDbProvenanceConfig::new(
-        connection.clone(),
-        graph,
-    ));
+    let writer =
+        FalkorDbProvenanceWriter::new(FalkorDbProvenanceConfig::new(connection.clone(), graph));
     let context_id = ContextId::new(2, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-42"));
     let agent_id = "00000000-0000-0000-0000-000000000010";
@@ -202,9 +199,10 @@ async fn falkordb_writer_persists_large_document() {
             id: MessageId::from_external(ExternalId::new("msg-2")),
             role: "assistant".to_string(),
             content: vec!["Tell me about those ducks.".to_string()],
-            metadata: Some(std::collections::HashMap::from([
-                ("agent_id".to_string(), agent_id.to_string()),
-            ])),
+            metadata: Some(std::collections::HashMap::from([(
+                "agent_id".to_string(),
+                agent_id.to_string(),
+            )])),
         },
     });
     let task_status_changed = ProvEvent::Task(TaskScopedEvent {
@@ -225,7 +223,9 @@ async fn falkordb_writer_persists_large_document() {
         task_id: task_id.clone(),
         timestamp_ms: 1_700_000_001_600,
         data: ProvEventData::LlmCallStarted {
-            scope: CallScope::Task { task_id: task_id.clone() },
+            scope: CallScope::Task {
+                task_id: task_id.clone(),
+            },
             client: "TonyOpenRouter".to_string(),
             model: "deepseek/deepseek-chat".to_string(),
             function_name: "TonyShrinkChat".to_string(),
@@ -245,7 +245,9 @@ async fn falkordb_writer_persists_large_document() {
         task_id: task_id.clone(),
         timestamp_ms: 1_700_000_001_700,
         data: ProvEventData::LlmCallCompleted {
-            scope: CallScope::Task { task_id: task_id.clone() },
+            scope: CallScope::Task {
+                task_id: task_id.clone(),
+            },
             client: "TonyOpenRouter".to_string(),
             model: "deepseek/deepseek-chat".to_string(),
             function_name: "TonyShrinkChat".to_string(),
@@ -272,7 +274,9 @@ async fn falkordb_writer_persists_large_document() {
         task_id: task_id.clone(),
         timestamp_ms: 1_700_000_001_800,
         data: ProvEventData::ToolCallStarted {
-            scope: CallScope::Task { task_id: task_id.clone() },
+            scope: CallScope::Task {
+                task_id: task_id.clone(),
+            },
             tool_name: "memory/tony".to_string(),
             function_name: Some("ChooseTonyMemoryTool".to_string()),
             args: json!({
@@ -288,7 +292,9 @@ async fn falkordb_writer_persists_large_document() {
         task_id: task_id.clone(),
         timestamp_ms: 1_700_000_001_900,
         data: ProvEventData::ToolCallCompleted {
-            scope: CallScope::Task { task_id: task_id.clone() },
+            scope: CallScope::Task {
+                task_id: task_id.clone(),
+            },
             tool_name: "memory/tony".to_string(),
             function_name: Some("ChooseTonyMemoryTool".to_string()),
             args: json!({
@@ -355,9 +361,10 @@ async fn falkordb_writer_persists_large_document() {
         .expect("query node count");
     assert!(node_count.trim().parse::<usize>().unwrap_or_default() > 5);
 
-    let edge_count = execute_cypher_query("MATCH ()-[r]->() RETURN COUNT(r)", graph, &connection, true)
-        .await
-        .expect("query edge count");
+    let edge_count =
+        execute_cypher_query("MATCH ()-[r]->() RETURN COUNT(r)", graph, &connection, true)
+            .await
+            .expect("query edge count");
     assert!(edge_count.trim().parse::<usize>().unwrap_or_default() > 5);
 
     let graph_snapshot = execute_cypher_query(
@@ -384,10 +391,8 @@ async fn falkordb_writer_persists_send_message_calls_without_task() {
     let graph = "baml_prov_send_message_test";
     wait_for_falkordb(&connection, graph).await;
 
-    let writer = FalkorDbProvenanceWriter::new(FalkorDbProvenanceConfig::new(
-        connection.clone(),
-        graph,
-    ));
+    let writer =
+        FalkorDbProvenanceWriter::new(FalkorDbProvenanceConfig::new(connection.clone(), graph));
     let context_id = ContextId::new(3, 1);
     let agent_id = "00000000-0000-0000-0000-000000000010";
     let agent_uuid = AgentId::from_uuid(UuidId::parse_str(agent_id).unwrap());
@@ -590,9 +595,7 @@ fn graph_snapshot_json(raw: &str) -> Value {
 
 fn normalize_value(value: Value) -> Value {
     match value {
-        Value::Array(items) => {
-            Value::Array(items.into_iter().map(normalize_value).collect())
-        }
+        Value::Array(items) => Value::Array(items.into_iter().map(normalize_value).collect()),
         Value::Object(map) => {
             let mut entries: Vec<(String, Value)> = map.into_iter().collect();
             entries.sort_by(|(a, _), (b, _)| a.cmp(b));
@@ -702,11 +705,7 @@ fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
                 depth_paren = depth_paren.saturating_sub(1);
                 current.push(ch);
             }
-            _ if ch == delimiter
-                && depth_bracket == 0
-                && depth_brace == 0
-                && depth_paren == 0 =>
-            {
+            _ if ch == delimiter && depth_bracket == 0 && depth_brace == 0 && depth_paren == 0 => {
                 parts.push(current.trim().to_string());
                 current.clear();
             }
@@ -752,7 +751,9 @@ fn parse_debug_value(input: &str) -> Option<Value> {
         return parse_bracket_array(value);
     }
     if value.starts_with('"') && value.ends_with('"') {
-        return serde_json::from_str::<String>(value).ok().map(Value::String);
+        return serde_json::from_str::<String>(value)
+            .ok()
+            .map(Value::String);
     }
     Some(Value::String(value.to_string()))
 }

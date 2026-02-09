@@ -20,7 +20,10 @@ impl A2aResultPipeline {
     pub fn new(task_store: Arc<dyn TaskStoreBackend>, emitter: Arc<dyn EventEmitter>) -> Self {
         let extractor: Arc<dyn ResultExtractor> = Arc::new(A2aResultExtractor);
         let processor = Arc::new(TaskProcessor::new(task_store, emitter));
-        Self { extractor, processor }
+        Self {
+            extractor,
+            processor,
+        }
     }
 }
 

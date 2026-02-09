@@ -11,7 +11,7 @@
 //!   short variable names like `n`, `a`, `b`, and `r`.
 use crate::error::Result;
 use crate::normalizer::{
-    validate_event, A2aDerivedRelation, DefaultProvNormalizer, NormalizedProv, ProvNormalizer,
+    A2aDerivedRelation, DefaultProvNormalizer, NormalizedProv, ProvNormalizer, validate_event,
 };
 use crate::store::ProvenanceWriter;
 use crate::types::{
@@ -40,7 +40,10 @@ pub struct FalkorDbProvenanceConfig {
 
 impl FalkorDbProvenanceConfig {
     pub fn new(connection: impl Into<String>, graph: impl Into<String>) -> Self {
-        Self { connection: connection.into(), graph: graph.into() }
+        Self {
+            connection: connection.into(),
+            graph: graph.into(),
+        }
     }
 }
 
@@ -52,7 +55,10 @@ pub struct FalkorDbProvenanceWriter {
 
 impl FalkorDbProvenanceWriter {
     pub fn new(config: FalkorDbProvenanceConfig) -> Self {
-        Self { config, normalizer: Arc::new(DefaultProvNormalizer::default()) }
+        Self {
+            config,
+            normalizer: Arc::new(DefaultProvNormalizer::default()),
+        }
     }
 
     pub fn with_normalizer(
@@ -103,8 +109,7 @@ impl FalkorDbProvenanceWriter {
             clauses.push(merge_node(label, id.as_str(), &props));
         }
 
-        let mut agent_entries: Vec<(&ProvAgentId, &Agent)> =
-            normalized.document.agents().collect();
+        let mut agent_entries: Vec<(&ProvAgentId, &Agent)> = normalized.document.agents().collect();
         agent_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
         let mut agent_labels = HashMap::new();
         for (id, agent) in &agent_entries {
@@ -112,7 +117,9 @@ impl FalkorDbProvenanceWriter {
             agent_labels.insert(id.as_str().to_string(), label);
         }
         for (id, label) in &normalized.agent_labels {
-            agent_labels.entry(id.clone()).or_insert_with(|| label.clone());
+            agent_labels
+                .entry(id.clone())
+                .or_insert_with(|| label.clone());
         }
         for (id, agent) in agent_entries {
             let label = agent_labels
@@ -144,8 +151,12 @@ impl FalkorDbProvenanceWriter {
         generated_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
         for (_, generated) in generated_entries {
             let props = was_generated_by_props(generated);
-            let entity_label =
-                label_for_ref(generated.entity.clone(), &entity_labels, &activity_labels, &agent_labels);
+            let entity_label = label_for_ref(
+                generated.entity.clone(),
+                &entity_labels,
+                &activity_labels,
+                &agent_labels,
+            );
             let activity_label = label_for_activity(&activity_labels, generated.activity.as_str());
             let rel_type = relation_label("WAS_GENERATED_BY", entity_label, activity_label, &props);
             clauses.push(merge_edge(
@@ -162,8 +173,12 @@ impl FalkorDbProvenanceWriter {
         qualified_gen_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
         for (_, generation) in qualified_gen_entries {
             let props = qualified_generation_props(generation);
-            let entity_label =
-                label_for_ref(generation.entity.clone(), &entity_labels, &activity_labels, &agent_labels);
+            let entity_label = label_for_ref(
+                generation.entity.clone(),
+                &entity_labels,
+                &activity_labels,
+                &agent_labels,
+            );
             let activity_label = label_for_activity(&activity_labels, generation.activity.as_str());
             let rel_type = relation_label(
                 prov_relations::QUALIFIED_GENERATION,
@@ -187,7 +202,8 @@ impl FalkorDbProvenanceWriter {
             let props = was_associated_with_props(assoc);
             let activity_label = label_for_activity(&activity_labels, assoc.activity.as_str());
             let agent_label = label_for_agent(&agent_labels, assoc.agent.as_str());
-            let rel_type = relation_label("WAS_ASSOCIATED_WITH", activity_label, agent_label, &props);
+            let rel_type =
+                relation_label("WAS_ASSOCIATED_WITH", activity_label, agent_label, &props);
             clauses.push(merge_edge(
                 activity_label,
                 assoc.activity.as_str(),
@@ -202,7 +218,8 @@ impl FalkorDbProvenanceWriter {
         derived_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
         for (_, derived) in derived_entries {
             let props = was_derived_from_props(derived);
-            let generated_label = label_for_entity(&entity_labels, derived.generated_entity.as_str());
+            let generated_label =
+                label_for_entity(&entity_labels, derived.generated_entity.as_str());
             let used_label = label_for_entity(&entity_labels, derived.used_entity.as_str());
             let rel_type = relation_label("WAS_DERIVED_FROM", generated_label, used_label, &props);
             clauses.push(merge_edge(
@@ -241,9 +258,7 @@ impl ProvenanceWriter for FalkorDbProvenanceWriter {
         if query.is_empty() {
             return Ok(());
         }
-        execute_cypher_query(&query, &self.config.graph, &self.config.connection, false)
-            .await
-            ?;
+        execute_cypher_query(&query, &self.config.graph, &self.config.connection, false).await?;
         Ok(())
     }
 }
@@ -256,8 +271,18 @@ fn merge_derived_relation(
     agent_labels: &HashMap<String, String>,
 ) -> String {
     let props = relation_props(relation);
-    let from_label = label_for_ref(relation.from.clone(), entity_labels, activity_labels, agent_labels);
-    let to_label = label_for_ref(relation.to.clone(), entity_labels, activity_labels, agent_labels);
+    let from_label = label_for_ref(
+        relation.from.clone(),
+        entity_labels,
+        activity_labels,
+        agent_labels,
+    );
+    let to_label = label_for_ref(
+        relation.to.clone(),
+        entity_labels,
+        activity_labels,
+        agent_labels,
+    );
     let rel_type = derived_relation_label(relation, from_label, to_label, &props);
     merge_edge(
         from_label,
@@ -281,10 +306,16 @@ fn entity_props(id: &ProvEntityId, entity: &Entity) -> HashMap<String, Value> {
 fn activity_props(id: &ProvActivityId, activity: &Activity) -> HashMap<String, Value> {
     let mut props = activity.attributes.clone();
     if let Some(start_time_ms) = activity.start_time_ms {
-        props.insert(prov::START_TIME.to_string(), Value::Number(start_time_ms.into()));
+        props.insert(
+            prov::START_TIME.to_string(),
+            Value::Number(start_time_ms.into()),
+        );
     }
     if let Some(end_time_ms) = activity.end_time_ms {
-        props.insert(prov::END_TIME.to_string(), Value::Number(end_time_ms.into()));
+        props.insert(
+            prov::END_TIME.to_string(),
+            Value::Number(end_time_ms.into()),
+        );
     }
     insert_type(&mut props, activity.prov_type.as_ref());
     insert_base_type(&mut props, "ProvActivity");
@@ -303,7 +334,10 @@ fn agent_props(id: &ProvAgentId, agent: &Agent) -> HashMap<String, Value> {
 /// Relation properties for `USED`.
 fn used_props(used: &Used) -> HashMap<String, Value> {
     let mut props = HashMap::new();
-    props.insert(prov::BASE_TYPE.to_string(), Value::String(prov_relations::USED.to_string()));
+    props.insert(
+        prov::BASE_TYPE.to_string(),
+        Value::String(prov_relations::USED.to_string()),
+    );
     if let Some(role) = &used.role {
         props.insert(prov::ROLE.to_string(), Value::String(role.clone()));
     }
@@ -353,7 +387,10 @@ fn was_derived_from_props(derived: &WasDerivedFrom) -> HashMap<String, Value> {
         Value::String(prov_relations::WAS_DERIVED_FROM.to_string()),
     );
     if let Some(activity) = &derived.activity {
-        props.insert(prov::ACTIVITY.to_string(), Value::String(activity.to_string()));
+        props.insert(
+            prov::ACTIVITY.to_string(),
+            Value::String(activity.to_string()),
+        );
     }
     if let Some(prov_type) = &derived.prov_type {
         props.insert(prov::TYPE.to_string(), Value::String(prov_type.clone()));
@@ -362,7 +399,10 @@ fn was_derived_from_props(derived: &WasDerivedFrom) -> HashMap<String, Value> {
 }
 
 fn insert_base_type(props: &mut HashMap<String, Value>, base_type: &str) {
-    props.insert(prov::BASE_TYPE.to_string(), Value::String(base_type.to_string()));
+    props.insert(
+        prov::BASE_TYPE.to_string(),
+        Value::String(base_type.to_string()),
+    );
 }
 
 fn relation_props(relation: &A2aDerivedRelation) -> HashMap<String, Value> {
@@ -372,8 +412,14 @@ fn relation_props(relation: &A2aDerivedRelation) -> HashMap<String, Value> {
         a2a::RELATION.to_string(),
         Value::String(relation.relation.as_str().to_string()),
     );
-    props.insert(a2a::FROM.to_string(), Value::String(relation.from.id().to_string()));
-    props.insert(a2a::TO.to_string(), Value::String(relation.to.id().to_string()));
+    props.insert(
+        a2a::FROM.to_string(),
+        Value::String(relation.from.id().to_string()),
+    );
+    props.insert(
+        a2a::TO.to_string(),
+        Value::String(relation.to.id().to_string()),
+    );
     props
 }
 
@@ -410,7 +456,12 @@ fn sanitize_label(value: &str, fallback: &str) -> String {
     }
 }
 
-fn relation_label(base: &str, from_label: &str, to_label: &str, props: &HashMap<String, Value>) -> String {
+fn relation_label(
+    base: &str,
+    from_label: &str,
+    to_label: &str,
+    props: &HashMap<String, Value>,
+) -> String {
     let semantic = match base {
         prov_relations::USED => semantic_used(from_label, to_label, props),
         prov_relations::WAS_GENERATED_BY => semantic_generated_by(from_label, to_label),
@@ -422,7 +473,11 @@ fn relation_label(base: &str, from_label: &str, to_label: &str, props: &HashMap<
     sanitize_label(label, base)
 }
 
-fn semantic_used(from_label: &str, _to_label: &str, props: &HashMap<String, Value>) -> Option<&'static str> {
+fn semantic_used(
+    from_label: &str,
+    _to_label: &str,
+    props: &HashMap<String, Value>,
+) -> Option<&'static str> {
     let role = props.get(prov::ROLE).and_then(Value::as_str);
     match role {
         Some(a2a_roles::INPUT_MESSAGE) => Some(match from_label {
@@ -449,7 +504,6 @@ fn semantic_associated_with(props: &HashMap<String, Value>) -> Option<&'static s
         _ => None,
     }
 }
-
 
 #[derive(Debug, Clone, Copy)]
 enum GeneratedByPair {
@@ -521,15 +575,24 @@ fn derived_relation_label(
 }
 
 fn label_for_entity<'a>(labels: &'a HashMap<String, String>, id: &str) -> &'a str {
-    labels.get(id).map(|value| value.as_str()).unwrap_or("ProvEntity")
+    labels
+        .get(id)
+        .map(|value| value.as_str())
+        .unwrap_or("ProvEntity")
 }
 
 fn label_for_activity<'a>(labels: &'a HashMap<String, String>, id: &str) -> &'a str {
-    labels.get(id).map(|value| value.as_str()).unwrap_or("ProvActivity")
+    labels
+        .get(id)
+        .map(|value| value.as_str())
+        .unwrap_or("ProvActivity")
 }
 
 fn label_for_agent<'a>(labels: &'a HashMap<String, String>, id: &str) -> &'a str {
-    labels.get(id).map(|value| value.as_str()).unwrap_or("ProvAgent")
+    labels
+        .get(id)
+        .map(|value| value.as_str())
+        .unwrap_or("ProvAgent")
 }
 
 fn label_for_ref<'a>(
@@ -655,7 +718,10 @@ fn cypher_value(value: &Value) -> String {
 }
 
 fn is_primitive_value(value: &Value) -> bool {
-    matches!(value, Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_))
+    matches!(
+        value,
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_)
+    )
 }
 
 fn json_string_literal(value: &str) -> String {

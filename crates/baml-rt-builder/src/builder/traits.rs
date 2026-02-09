@@ -3,9 +3,9 @@
 //! These traits provide a clean abstraction for different operations
 //! in the agent building pipeline, enabling testability and modularity.
 
+use crate::builder::types::{AgentDir, BuildDir};
 use baml_rt_core::Result;
 use std::path::Path;
-use crate::builder::types::{AgentDir, BuildDir};
 
 /// Trait for linting source code
 #[async_trait::async_trait]
@@ -33,10 +33,10 @@ pub trait TypeGenerator: Send + Sync {
 pub trait FileSystem: Send + Sync {
     /// Copy a directory recursively
     fn copy_dir_all(&self, src: &Path, dst: &Path) -> Result<()>;
-    
+
     /// Collect TypeScript/JavaScript files from a directory
     fn collect_ts_js_files(&self, dir: &Path, files: &mut Vec<std::path::PathBuf>) -> Result<()>;
-    
+
     /// Collect TypeScript files from a directory
     fn collect_ts_files(&self, dir: &Path, files: &mut Vec<std::path::PathBuf>) -> Result<()>;
 
@@ -54,5 +54,10 @@ pub trait FileSystem: Send + Sync {
 #[async_trait::async_trait]
 pub trait Packager: Send + Sync {
     /// Package an agent from build directory to output path
-    async fn package(&self, agent_dir: &AgentDir, build_dir: &BuildDir, output: &Path) -> Result<()>;
+    async fn package(
+        &self,
+        agent_dir: &AgentDir,
+        build_dir: &BuildDir,
+        output: &Path,
+    ) -> Result<()>;
 }

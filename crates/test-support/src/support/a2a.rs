@@ -1,15 +1,15 @@
 //! In-memory A2A test client.
 
-use baml_rt::{A2aRequestHandler, Result};
-use baml_rt::tools::BamlTool;
-use baml_rt_tools::bundles::Support;
 use async_trait::async_trait;
-use serde_json::Value;
-use serde::{Deserialize, Serialize};
+use baml_rt::tools::BamlTool;
+use baml_rt::{A2aRequestHandler, Result};
+use baml_rt_tools::bundles::Support;
 use schemars::JsonSchema;
-use ts_rs::TS;
-use tokio::task;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::Arc;
+use tokio::task;
+use ts_rs::TS;
 
 #[derive(Clone)]
 pub struct A2aInMemoryClient {
@@ -50,8 +50,7 @@ impl BamlTool for A2aRelayTool {
 
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         let handle = tokio::runtime::Handle::current();
-        let responses =
-            task::block_in_place(|| handle.block_on(self.client.send(args.request)))?;
+        let responses = task::block_in_place(|| handle.block_on(self.client.send(args.request)))?;
         Ok(A2aRelayOutput { responses })
     }
 }

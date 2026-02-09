@@ -1,8 +1,8 @@
 //! Linter implementation using OXC parser
 
-use baml_rt_core::{BamlRtError, Result};
-use crate::builder::traits::{Linter, FileSystem};
+use crate::builder::traits::{FileSystem, Linter};
 use crate::builder::types::AgentDir;
+use baml_rt_core::{BamlRtError, Result};
 use std::fs;
 
 /// OXC-based linter implementation
@@ -20,7 +20,7 @@ impl<FS: FileSystem> OxcLinter<FS> {
 impl<FS: FileSystem> Linter for OxcLinter<FS> {
     async fn lint(&self, agent_dir: &AgentDir) -> Result<()> {
         let src_dir = agent_dir.src();
-        
+
         if !src_dir.exists() {
             println!("✓ No src directory found, nothing to lint");
             return Ok(());
@@ -36,8 +36,8 @@ impl<FS: FileSystem> Linter for OxcLinter<FS> {
 
         println!("🔍 Linting {} file(s)...", files.len());
 
-        use oxc_parser::Parser;
         use oxc_allocator::Allocator;
+        use oxc_parser::Parser;
 
         let mut errors = Vec::new();
         for file_path in files {
@@ -47,7 +47,7 @@ impl<FS: FileSystem> Linter for OxcLinter<FS> {
                 .unwrap_or(&file_path)
                 .display()
                 .to_string();
-            
+
             let allocator = Allocator::default();
             let source_type = oxc_span::SourceType::from_path(&file_path)
                 .unwrap_or_else(|_| oxc_span::SourceType::default());
@@ -56,11 +56,7 @@ impl<FS: FileSystem> Linter for OxcLinter<FS> {
 
             if !parse_result.errors.is_empty() {
                 for error in parse_result.errors {
-                    errors.push(format!(
-                        "{} - Syntax error: {:?}",
-                        file_name,
-                        error
-                    ));
+                    errors.push(format!("{} - Syntax error: {:?}", file_name, error));
                 }
             } else {
                 println!("  ✓ {}", file_name);
@@ -72,9 +68,10 @@ impl<FS: FileSystem> Linter for OxcLinter<FS> {
             for error in &errors {
                 println!("  {}", error);
             }
-            return Err(BamlRtError::InvalidArgument(
-                format!("Linting failed with {} error(s)", errors.len())
-            ));
+            return Err(BamlRtError::InvalidArgument(format!(
+                "Linting failed with {} error(s)",
+                errors.len()
+            )));
         }
 
         println!("\n✓ All files passed linting");

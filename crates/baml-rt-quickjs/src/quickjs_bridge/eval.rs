@@ -3,7 +3,7 @@ use baml_rt_core::ids::ContextId;
 use std::sync::Arc;
 
 /// Encapsulates effect-gated timeout logic for promise polling.
-/// 
+///
 /// Determines timeout attempts based on whether effects are in-flight:
 /// - Effects active: use max_attempts (configurable, default 30 minutes) to allow I/O to complete
 /// - No effects: use idle_timeout_attempts (default 5s) to detect deadlocks
@@ -33,7 +33,7 @@ impl EffectGatedPoller {
     }
 
     /// Get the timeout attempts based on current effect state.
-    /// 
+    ///
     /// Returns max_attempts if effects are in-flight, otherwise idle_timeout_attempts.
     pub async fn timeout_attempts(&self) -> u32 {
         match (&self.liveness, &self.context_id) {

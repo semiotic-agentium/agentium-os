@@ -2,8 +2,8 @@
 //!
 //! Metrics are defined here to keep instrumentation orthogonal to business logic.
 
-use opentelemetry::{global, KeyValue};
 use opentelemetry::metrics::{Counter, Histogram};
+use opentelemetry::{KeyValue, global};
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -74,12 +74,7 @@ fn tool_invocation_histogram() -> &'static Histogram<f64> {
 }
 
 /// Record completion of an A2A request.
-pub fn record_a2a_request(
-    method: &str,
-    result: &str,
-    is_stream: bool,
-    duration: Duration,
-) {
+pub fn record_a2a_request(method: &str, result: &str, is_stream: bool, duration: Duration) {
     let attributes = &[
         KeyValue::new("method", method.to_string()),
         KeyValue::new("result", result.to_string()),

@@ -1,5 +1,5 @@
-use text_to_cypher::core::execute_cypher_query;
 use serde_json::Value;
+use text_to_cypher::core::execute_cypher_query;
 
 const CONNECTION: &str = "falkor://127.0.0.1:6379";
 const GRAPH: &str = "baml_prov";

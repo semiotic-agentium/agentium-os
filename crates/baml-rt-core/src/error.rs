@@ -54,6 +54,15 @@ pub enum BamlRtError {
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
 
+    /// JSON parse error with raw input for diagnostics (e.g. evaluate promise result)
+    #[error("JSON error: {source} (raw length: {raw_length}, prefix: {raw_prefix:?})")]
+    JsonWithRaw {
+        #[source]
+        source: serde_json::Error,
+        raw_length: usize,
+        raw_prefix: String,
+    },
+
     /// Invalid open_input for tool session
     #[error("Invalid open_input for tool session")]
     InvalidOpenInput {
@@ -105,7 +114,6 @@ pub enum BamlRtError {
         #[source]
         source: AnyhowError,
     },
-
 
     /// System time error
     #[error("System time error: {0}")]

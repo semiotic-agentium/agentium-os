@@ -29,4 +29,3 @@ pub struct ObjectField {
     pub name: String,
     pub ty: BamlType,
 }
-

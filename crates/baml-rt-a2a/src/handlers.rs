@@ -1,5 +1,5 @@
 use crate::a2a;
-use crate::a2a_store::{TaskEventRecorder, TaskRepository, TaskUpdateQueue, TaskUpdateEvent};
+use crate::a2a_store::{TaskEventRecorder, TaskRepository, TaskUpdateEvent, TaskUpdateQueue};
 use crate::a2a_types::{
     CancelTaskRequest, GetTaskRequest, ListTasksRequest, ListTasksResponse, StreamResponse,
     SubscribeToTaskRequest, TaskStatusUpdateEvent,

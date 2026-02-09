@@ -1,9 +1,9 @@
 //! Tool session FSM primitives.
 
-use baml_rt_core::BamlRtError;
 use async_trait::async_trait;
-use serde_json::Value;
+use baml_rt_core::BamlRtError;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::borrow::Cow;
 use std::fmt;
 use uuid::Uuid;
@@ -37,7 +37,7 @@ impl ToolSessionId {
     }
 
     /// Get the string representation as a `Cow`.
-    /// 
+    ///
     /// Since UUIDs require formatting, this always returns `Cow::Owned`.
     /// For cases where you need a `&str`, use `.as_ref()` on the result.
     /// For an owned `String`, use `.into_owned()` or the `Display` trait's `to_string()`.

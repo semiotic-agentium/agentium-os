@@ -122,7 +122,10 @@ baml-rt/
 
 ## Testing
 
+Source `.env` before running tests so API-key–dependent e2e and contract tests pass (e.g. `OPENROUTER_API_KEY`):
+
 ```bash
+set -a && source .env && set +a
 cargo test
 
 # With output

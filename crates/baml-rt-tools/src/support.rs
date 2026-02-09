@@ -1,5 +1,5 @@
-use crate::tools::ToolFunctionMetadata;
 use crate::register_tool_metadata;
+use crate::tools::ToolFunctionMetadata;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -40,7 +40,7 @@ pub struct CalculatorOutput {
 }
 
 pub fn support_calculate_metadata() -> ToolFunctionMetadata {
-    use crate::{parse_tool_name_and_class, ToolMetadataBuilder, TypeBasedMetadataBuilder};
+    use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
     // This is a compile-time constant, so parsing cannot fail
     let (name, class_name) = parse_tool_name_and_class("support/calculate")
         .expect("support/calculate is a compile-time constant and must be valid");

@@ -6,24 +6,22 @@
 //! **Tool catalogue:** Tool list composition for bootstrap is done in the binary,
 //! not in the lib. See [`bootstrap`].
 
-pub mod types;
-pub mod traits;
+pub mod baml_gen;
+pub mod bootstrap;
+pub mod compiler;
 pub mod filesystem;
 pub mod linter;
-pub mod compiler;
-pub mod ts_gen;
-pub mod baml_gen;
-pub mod schema_to_baml;
 pub mod packager;
+pub mod schema_to_baml;
 pub mod service;
-pub mod bootstrap;
+pub mod traits;
+pub mod ts_gen;
+pub mod types;
 
-pub use types::{AgentDir, PackagePath, FunctionName, BuildDir};
-pub use traits::{
-    Linter, TypeScriptCompiler, TypeGenerator, FileSystem, Packager
-};
+pub use compiler::{OxcTypeScriptCompiler, RuntimeTypeGenerator};
 pub use filesystem::StdFileSystem;
 pub use linter::OxcLinter;
-pub use compiler::{OxcTypeScriptCompiler, RuntimeTypeGenerator};
 pub use packager::StdPackager;
 pub use service::BuilderService;
+pub use traits::{FileSystem, Linter, Packager, TypeGenerator, TypeScriptCompiler};
+pub use types::{AgentDir, BuildDir, FunctionName, PackagePath};
