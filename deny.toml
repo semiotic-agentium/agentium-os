@@ -1,0 +1,8 @@
+# Cargo-deny configuration
+# See https://embarkstudios.github.io/cargo-deny/
+
+[advisories]
+# Vulnerability exceptions
+ignore = [
+    { id = "RUSTSEC-2025-0111", reason = "tokio-tar vulnerability has no fix available yet. It's a transitive dependency through testcontainers (used for integration tests). Waiting for upstream fix." },
+]
