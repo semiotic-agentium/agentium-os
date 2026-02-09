@@ -1,13 +1,14 @@
- [package]
- name = "baml-rt-provenance"
- version = { workspace = true }
- edition = { workspace = true }
- authors = { workspace = true }
- 
+[package]
+name = "baml-rt-provenance"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+
  [lib]
  name = "baml_rt_provenance"
  path = "src/lib.rs"
- 
+
  [dependencies]
  baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-id = { path = "../baml-rt-id" }

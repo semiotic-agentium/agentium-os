@@ -3,6 +3,8 @@ name = "baml-agent-runner"
 version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
+publish = false
+license = "MIT"
 
 [dependencies]
 baml-rt-a2a = { path = "../baml-rt-a2a" }

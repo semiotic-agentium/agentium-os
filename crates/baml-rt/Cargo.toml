@@ -3,6 +3,7 @@ name = "baml-rt"
 version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
+publish = false
 
 [lib]
 name = "baml_rt"

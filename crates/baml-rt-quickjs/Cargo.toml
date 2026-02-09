@@ -3,6 +3,7 @@ name = "baml-rt-quickjs"
 version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
+publish = false
 
 [dependencies]
 baml-rt-core = { path = "../baml-rt-core" }

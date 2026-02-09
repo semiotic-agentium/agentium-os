@@ -3,6 +3,7 @@ name = "baml-rt-id"
 version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
+publish = false
 
 [dependencies]
 uuid = { workspace = true }

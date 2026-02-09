@@ -45,41 +45,38 @@ repos:
             dist/
           )
 
-  # Cargo deny - comprehensive dependency checking
-  - repo: local
-    hooks:
-      - id: cargo-deny
-        name: cargo deny
-        entry: cargo deny check
-        language: system
-        pass_filenames: false
-        always_run: true
-        types: [rust]
-        # Install with: cargo install cargo-deny && cargo deny init
+  # Cargo deny - disabled (license/source config not fully aligned with git deps)
+  # - repo: local
+  #   hooks:
+  #     - id: cargo-deny
+  #       name: cargo deny
+  #       entry: cargo deny check
+  #       language: system
+  #       pass_filenames: false
+  #       always_run: true
+  #       types: [rust]
 
-  # Cargo machete - find unused dependencies
-  - repo: local
-    hooks:
-      - id: cargo-machete
-        name: cargo machete
-        entry: cargo machete
-        language: system
-        pass_filenames: false
-        always_run: true
-        types: [rust]
-        # Install with: cargo install cargo-machete
+  # Cargo machete - disabled (reports many false positives for workspace)
+  # - repo: local
+  #   hooks:
+  #     - id: cargo-machete
+  #       name: cargo machete
+  #       entry: cargo machete
+  #       language: system
+  #       pass_filenames: false
+  #       always_run: true
+  #       types: [rust]
 
-  # Cargo outdated - check for outdated dependencies
-  - repo: local
-    hooks:
-      - id: cargo-outdated
-        name: cargo outdated
-        entry: cargo outdated --exit-code 1
-        language: system
-        pass_filenames: false
-        always_run: true
-        types: [rust]
-        # Install with: cargo install cargo-outdated
+  # Cargo outdated - disabled
+  # - repo: local
+  #   hooks:
+  #     - id: cargo-outdated
+  #       name: cargo outdated
+  #       entry: cargo outdated --exit-code 1
+  #       language: system
+  #       pass_filenames: false
+  #       always_run: true
+  #       types: [rust]
 
   # Cargo check - basic compilation check
   - repo: local

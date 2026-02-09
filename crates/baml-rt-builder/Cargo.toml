@@ -3,6 +3,7 @@ name = "baml-rt-builder"
 version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
+publish = false
 
 [[bin]]
 name = "baml-agent-builder"

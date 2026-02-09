@@ -1,20 +1,18 @@
 [package]
-name = "test-support"
+name = "baml-rt-tools-internal-dev"
 version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
 publish = false
+description = "Internal development tool bundle for BAML runtime tests"
 
 [dependencies]
-baml-rt = { path = "../baml-rt" }
-baml-rt-tools = { path = "../baml-rt-tools" }
-baml-rt-core = { path = "../baml-rt-core" }
+baml-rt-tools = { path = "../../baml-rt-tools" }
 async-trait = { workspace = true }
+inventory = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ts-rs = { workspace = true }
 tokio = { workspace = true }
-dotenvy = { workspace = true }
 tracing = { workspace = true }
-uuid = { workspace = true }

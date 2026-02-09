@@ -1,5 +1,5 @@
 // Fixture: BAML tool streaming. Prompt returns a calculation session plan (2+3 default).
-function ChooseCalcTool(user_message: string) -> SupportCalculateSessionPlan {
+function ChooseCalcTool(user_message: string) -> InternalDevCalculateSessionPlan {
   client DefaultClient
   prompt #"
     The user says: {{ user_message }}
@@ -13,7 +13,7 @@ function ChooseCalcTool(user_message: string) -> SupportCalculateSessionPlan {
 client DefaultClient {
   provider openai-generic
   options {
-    model "deepseek/deepseek-chat"
+    model "meta-llama/llama-4-maverick"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }

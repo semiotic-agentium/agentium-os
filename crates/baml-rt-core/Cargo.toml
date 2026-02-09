@@ -3,6 +3,7 @@ name = "baml-rt-core"
 version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
+publish = false
 
 [dependencies]
 baml-rt-id = { path = "../baml-rt-id" }
