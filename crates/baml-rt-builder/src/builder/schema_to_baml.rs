@@ -189,12 +189,7 @@ fn generate_baml_enum_from_one_of(
         let desc = obj
             .get("description")
             .and_then(|v| v.as_str())
-            .map(|s| {
-                format!(
-                    " @description(\"{}\")",
-                    s.replace('"', "\\\"")
-                )
-            })
+            .map(|s| format!(" @description(\"{}\")", s.replace('"', "\\\"")))
             .unwrap_or_default();
 
         write_line(output, &format!("  {}{}", variant_name, desc))?;
