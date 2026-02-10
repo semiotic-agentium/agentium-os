@@ -3,6 +3,7 @@
 pub mod bundles;
 pub mod clickup;
 mod metrics;
+pub mod notion;
 mod spans;
 pub mod support;
 pub mod tool_catalog;

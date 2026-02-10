@@ -17,6 +17,8 @@ tokio = { workspace = true }
 schemars = "1.1.0"
 ts-rs = "11.1.0"
 uuid = { workspace = true }
+reqwest = { version = "0.11", features = ["json"] }
+thiserror = { workspace = true }
 notion-client = "1.0.11"
 genco = { workspace = true }
 inventory = { workspace = true }
