@@ -21,8 +21,19 @@ function newTask(message?: { parts: { text: string }[] }): Task {
 
 function isWriteRequest(text: string): boolean {
   const lowered = text.toLowerCase();
-  const keywords = ["create", "update", "edit", "delete", "archive", "write", "add page"];
-  return keywords.some((k) => lowered.includes(k));
+  const keywords = ["create", "edit", "delete", "archive", "write"];
+  const phrases = [
+    "create page",
+    "update page",
+    "edit page",
+    "delete page",
+    "archive page",
+    "add page",
+  ];
+  return (
+    keywords.some((k) => lowered.includes(`${k} `)) ||
+    phrases.some((p) => lowered.includes(p))
+  );
 }
 
 function wantsSummary(text: string): boolean {
@@ -87,10 +98,11 @@ async function fetchBlocksForPage(args: {
   blocks?: { text?: string | null }[];
   sources?: { page_id: string; url: string }[];
   message?: string;
-} | null> {
+  } | null> {
   if (!args.token) return null;
+  let session: { send: (input: { block_id: string }) => Promise<void>; continue: () => Promise<{ output?: unknown } | null>; finish: () => Promise<void> } | null = null;
   try {
-    const session = await openToolSession("support/notionGetPageBlocks", args.token);
+    session = await openToolSession("support/notionGetPageBlocks", args.token);
     await session.send({ block_id: args.page_id });
     const step = await session.continue();
     if (step && step.output && typeof step.output === "object") {
@@ -103,6 +115,14 @@ async function fetchBlocksForPage(args: {
     }
   } catch {
     return null;
+  } finally {
+    if (session) {
+      try {
+        await session.finish();
+      } catch {
+        // ignore
+      }
+    }
   }
   return null;
 }
@@ -163,12 +183,21 @@ async function onChatMessage(
         output.pages.length > 0 &&
         (!output.blocks || output.blocks.length === 0)
       ) {
-        const blocksResult = await fetchBlocksForPage({
-          page_id: output.pages[0].id,
-          token,
-        });
-        if (blocksResult) {
-          merged = mergeOutputs(output, blocksResult);
+        const pagesToExpand = output.pages.slice(0, 3);
+        const mergedBlocks: { text?: string | null }[] = [];
+        const mergedSources: { page_id: string; url: string }[] = [];
+        for (const page of pagesToExpand) {
+          const blocksResult = await fetchBlocksForPage({
+            page_id: page.id,
+            token,
+          });
+          if (blocksResult) {
+            mergedBlocks.push(...(blocksResult.blocks || []));
+            mergedSources.push(...(blocksResult.sources || []));
+          }
+        }
+        if (mergedBlocks.length > 0) {
+          merged = mergeOutputs(output, { blocks: mergedBlocks, sources: mergedSources });
         }
       }
 
@@ -183,11 +212,12 @@ async function onChatMessage(
       if (blocksText.length > 0) {
         const pageTitle = merged.pages && merged.pages[0] ? merged.pages[0].title : null;
         const pageUrl = merged.pages && merged.pages[0] ? merged.pages[0].url : null;
+        const truncated = blocksText.length > 8000 ? blocksText.slice(0, 8000) : blocksText;
         const summary = await summarizeBlocks({
           user_message: text,
           page_title: pageTitle,
           page_url: pageUrl,
-          blocks_text: blocksText.slice(0, 8000),
+          blocks_text: truncated,
         });
         if (summary) {
           response += `\n\nSummary:\n${summary}`;
