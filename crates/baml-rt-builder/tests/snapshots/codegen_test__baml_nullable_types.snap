@@ -1,0 +1,12 @@
+---
+source: crates/baml-rt-builder/tests/codegen_test.rs
+expression: baml_output
+---
+class NullableTest {
+  required_string string 
+  nullable_string string? 
+  nullable_int int? 
+  nullable_array string[]? 
+  plain_int int 
+  plain_u8 int 
+}

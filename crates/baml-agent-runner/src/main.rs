@@ -89,7 +89,10 @@ impl AgentPackage {
                         .await?;
                 }
                 other => {
-                    warn!(tool = other, "Unknown tool in manifest, skipping registration");
+                    warn!(
+                        tool = other,
+                        "Unknown tool in manifest, skipping registration"
+                    );
                 }
             }
         }

@@ -16,61 +16,40 @@ use ts_rs::TS;
 pub const BASE_URL: &str = "https://api.clickup.com/api/v2";
 
 // ---------------------------------------------------------------------------
-// Newtype wrappers — enforce semantic meaning at the type level
+// Input — flat struct with action discriminator
 // ---------------------------------------------------------------------------
 
-/// A ClickUp list identifier.
+/// Which ClickUp action to perform.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
-pub struct ListId(pub String);
+pub enum ClickUpAction {
+    ListTasks,
+    GetTask,
+    CreateTask,
+    UpdateTask,
+}
 
-/// A ClickUp task identifier.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
-pub struct TaskId(pub String);
-
-/// A human-readable task name.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
-pub struct TaskName(pub String);
-
-/// ClickUp task priority (1 = urgent, 2 = high, 3 = normal, 4 = low).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
-pub struct Priority(pub u8);
-
-// ---------------------------------------------------------------------------
-// Input — enum variants make invalid field combinations unrepresentable
-// ---------------------------------------------------------------------------
-
-/// Typed input for the ClickUp tool.
+/// Input for the ClickUp tool.
 ///
-/// Each variant carries exactly the fields required for its action;
-/// deserialization rejects missing or extraneous fields at the boundary.
+/// Uses a flat struct with an `action` discriminator instead of a Rust enum
+/// so that BAML (which lacks sum types) can represent it as a single class
+/// with an enum field. Per-action field requirements are validated at runtime
+/// in [`ClickUpTool::execute`].
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
-pub enum ClickUpInput {
-    /// List tasks in a ClickUp list (paginated, 100/page).
-    ListTasks { list_id: ListId },
-
-    /// Get full details for a single task.
-    GetTask { task_id: TaskId },
-
-    /// Create a new task in a list.
-    CreateTask {
-        list_id: ListId,
-        name: TaskName,
-        description: Option<String>,
-        priority: Option<Priority>,
-    },
-
-    /// Update an existing task's status, description, or priority.
-    UpdateTask {
-        task_id: TaskId,
-        status: Option<String>,
-        description: Option<String>,
-        priority: Option<Priority>,
-    },
+pub struct ClickUpInput {
+    pub action: ClickUpAction,
+    /// Required for `ListTasks` and `CreateTask`.
+    pub list_id: Option<String>,
+    /// Required for `GetTask` and `UpdateTask`.
+    pub task_id: Option<String>,
+    /// Required for `CreateTask`.
+    pub name: Option<String>,
+    pub description: Option<String>,
+    /// ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+    pub priority: Option<u8>,
+    /// Task status string (e.g. "in progress"). Used by `UpdateTask`.
+    pub status: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -102,11 +81,6 @@ pub struct ClickUpOutput {
 // Raw deserialization structs — match the ClickUp v2 API shape
 // ---------------------------------------------------------------------------
 
-/// Raw task object from the ClickUp v2 API.
-///
-/// Required fields (`id`, `name`, `status`, `url`) are non-`Option` so that
-/// serde fails loudly if the API contract changes, instead of silently
-/// producing incomplete summaries.
 #[derive(Debug, Deserialize)]
 pub(crate) struct RawClickUpTask {
     pub id: String,
@@ -134,7 +108,6 @@ pub(crate) struct RawPriority {
     pub priority: Option<String>,
 }
 
-/// Wrapper for the top-level `{ "tasks": [...] }` response shape.
 #[derive(Debug, Deserialize)]
 pub(crate) struct RawTaskList {
     #[serde(default)]
@@ -163,44 +136,29 @@ impl From<RawClickUpTask> for ClickUpTaskSummary {
 // Error type — preserves the full source chain via #[source]
 // ---------------------------------------------------------------------------
 
-/// Errors specific to the ClickUp tool.
-///
-/// Converted to [`BamlRtError`] at the tool boundary via the [`From`] impl,
-/// keeping the `#[source]` chain accessible for tracing and debugging.
 #[derive(Debug, thiserror::Error)]
 pub enum ClickUpError {
-    /// Network-level failure (DNS, timeout, TLS, etc.).
     #[error("ClickUp HTTP request failed")]
     Http(#[source] reqwest::Error),
 
-    /// 401 — bad or expired API key.
     #[error("ClickUp API authentication failed (401): {body}")]
     Unauthorized { body: String },
 
-    /// 404 — the requested resource does not exist.
     #[error("ClickUp resource not found (404): {body}")]
     NotFound { body: String },
 
-    /// 429 — rate limit exceeded.
     #[error("ClickUp rate limit exceeded (429), resets at {reset_at}: {body}")]
     RateLimited { body: String, reset_at: String },
 
-    /// Any other non-2xx status code from the ClickUp API.
     #[error("ClickUp API returned {status}: {body}")]
     Api { status: u16, body: String },
 
-    /// Response body could not be deserialized as JSON.
     #[error("Failed to deserialize ClickUp response")]
     Deserialize(#[source] reqwest::Error),
 
-    /// `CLICKUP_API_KEY` environment variable is not set.
     #[error("CLICKUP_API_KEY environment variable not set")]
     MissingApiKey(#[source] std::env::VarError),
 }
-
-// ---------------------------------------------------------------------------
-// Boundary conversion — ClickUpError → BamlRtError
-// ---------------------------------------------------------------------------
 
 impl From<ClickUpError> for BamlRtError {
     fn from(err: ClickUpError) -> Self {
@@ -221,7 +179,6 @@ impl From<ClickUpError> for BamlRtError {
 // Tool struct and helpers
 // ---------------------------------------------------------------------------
 
-/// ClickUp tool — executes actions against the ClickUp v2 REST API.
 pub struct ClickUpTool {
     client: reqwest::Client,
 }
@@ -239,13 +196,16 @@ impl ClickUpTool {
         }
     }
 
-    /// Read the ClickUp personal API token from the environment.
     fn api_key() -> std::result::Result<String, ClickUpError> {
         std::env::var("CLICKUP_API_KEY").map_err(ClickUpError::MissingApiKey)
     }
 
-    /// Send an HTTP request to ClickUp and map non-2xx responses to
-    /// [`ClickUpError`] variants.
+    fn require<'a>(value: &'a Option<String>, field: &str, action: &str) -> Result<&'a str> {
+        value.as_deref().ok_or_else(|| {
+            BamlRtError::InvalidArgument(format!("{field} is required for {action}"))
+        })
+    }
+
     #[tracing::instrument(skip_all, fields(url))]
     async fn send_request(
         &self,
@@ -323,11 +283,10 @@ impl ClickUpTool {
             )
             .await?;
 
-        let raw: RawClickUpTask =
-            serde_json::from_value(json).map_err(|e| ClickUpError::Api {
-                status: 0,
-                body: format!("unexpected task shape: {e}"),
-            })?;
+        let raw: RawClickUpTask = serde_json::from_value(json).map_err(|e| ClickUpError::Api {
+            status: 0,
+            body: format!("unexpected task shape: {e}"),
+        })?;
 
         let summary = ClickUpTaskSummary::from(raw);
         Ok(ClickUpOutput {
@@ -343,14 +302,14 @@ impl ClickUpTool {
         list_id: &str,
         name: &str,
         description: Option<&str>,
-        priority: Option<Priority>,
+        priority: Option<u8>,
     ) -> Result<ClickUpOutput> {
         let mut body = serde_json::json!({ "name": name });
         if let Some(desc) = description {
             body["description"] = serde_json::Value::String(desc.to_string());
         }
         if let Some(p) = priority {
-            body["priority"] = serde_json::json!(p.0);
+            body["priority"] = serde_json::json!(p);
         }
 
         let json = self
@@ -362,11 +321,10 @@ impl ClickUpTool {
             )
             .await?;
 
-        let raw: RawClickUpTask =
-            serde_json::from_value(json).map_err(|e| ClickUpError::Api {
-                status: 0,
-                body: format!("unexpected task shape: {e}"),
-            })?;
+        let raw: RawClickUpTask = serde_json::from_value(json).map_err(|e| ClickUpError::Api {
+            status: 0,
+            body: format!("unexpected task shape: {e}"),
+        })?;
 
         let summary = ClickUpTaskSummary::from(raw);
         Ok(ClickUpOutput {
@@ -382,7 +340,7 @@ impl ClickUpTool {
         task_id: &str,
         status: Option<&str>,
         description: Option<&str>,
-        priority: Option<Priority>,
+        priority: Option<u8>,
     ) -> Result<ClickUpOutput> {
         let mut body = serde_json::Map::new();
         if let Some(s) = status {
@@ -398,7 +356,7 @@ impl ClickUpTool {
             );
         }
         if let Some(p) = priority {
-            body.insert("priority".to_string(), serde_json::json!(p.0));
+            body.insert("priority".to_string(), serde_json::json!(p));
         }
 
         let json = self
@@ -410,11 +368,10 @@ impl ClickUpTool {
             )
             .await?;
 
-        let raw: RawClickUpTask =
-            serde_json::from_value(json).map_err(|e| ClickUpError::Api {
-                status: 0,
-                body: format!("unexpected task shape: {e}"),
-            })?;
+        let raw: RawClickUpTask = serde_json::from_value(json).map_err(|e| ClickUpError::Api {
+            status: 0,
+            body: format!("unexpected task shape: {e}"),
+        })?;
 
         let summary = ClickUpTaskSummary::from(raw);
         Ok(ClickUpOutput {
@@ -440,35 +397,38 @@ impl BamlTool for ClickUpTool {
         "Interact with ClickUp: list, get, create, and update tasks."
     }
 
-    #[tracing::instrument(skip(self), fields(action))]
+    #[tracing::instrument(skip(self), fields(action = ?args.action))]
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         let api_key = Self::api_key()?;
-        match args {
-            ClickUpInput::ListTasks { list_id } => {
-                self.list_tasks(&api_key, &list_id.0).await
+        match args.action {
+            ClickUpAction::ListTasks => {
+                let list_id = Self::require(&args.list_id, "list_id", "ListTasks")?;
+                self.list_tasks(&api_key, list_id).await
             }
-            ClickUpInput::GetTask { task_id } => self.get_task(&api_key, &task_id.0).await,
-            ClickUpInput::CreateTask {
-                list_id,
-                name,
-                description,
-                priority,
-            } => {
-                self.create_task(&api_key, &list_id.0, &name.0, description.as_deref(), priority)
-                    .await
+            ClickUpAction::GetTask => {
+                let task_id = Self::require(&args.task_id, "task_id", "GetTask")?;
+                self.get_task(&api_key, task_id).await
             }
-            ClickUpInput::UpdateTask {
-                task_id,
-                status,
-                description,
-                priority,
-            } => {
+            ClickUpAction::CreateTask => {
+                let list_id = Self::require(&args.list_id, "list_id", "CreateTask")?;
+                let name = Self::require(&args.name, "name", "CreateTask")?;
+                self.create_task(
+                    &api_key,
+                    list_id,
+                    name,
+                    args.description.as_deref(),
+                    args.priority,
+                )
+                .await
+            }
+            ClickUpAction::UpdateTask => {
+                let task_id = Self::require(&args.task_id, "task_id", "UpdateTask")?;
                 self.update_task(
                     &api_key,
-                    &task_id.0,
-                    status.as_deref(),
-                    description.as_deref(),
-                    priority,
+                    task_id,
+                    args.status.as_deref(),
+                    args.description.as_deref(),
+                    args.priority,
                 )
                 .await
             }

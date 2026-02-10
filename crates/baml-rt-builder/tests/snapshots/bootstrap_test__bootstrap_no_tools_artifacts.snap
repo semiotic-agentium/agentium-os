@@ -87,6 +87,12 @@ export type ToolName = never;
  * A2A (Agent-to-Agent) types for BAML agent packages.
  * Only message.sendStream is supported; all message handling is async/stream.
  *
+ * Conversation routing:
+ * - The host invokes the handler once per incoming chat message and binds each invocation
+ *   to the correct conversation (context). Multiple conversations may be in progress in parallel;
+ *   each message is delivered with the correct conversation context, and yielded chunks are
+ *   attributed to that conversation by the host.
+ *
  * Stream contract:
  * - For message.sendStream the host sets globalThis.__baml_chat_yield_buffer and
  *   globalThis.__baml_chat_yield before invoking onChatMessage.
@@ -112,7 +118,7 @@ export interface Message {
   parts: Part[];
 }
 
-/** Payload passed to the JS handler: the incoming message. */
+/** Incoming chat message passed to the JS handler (parts only). */
 export type ChatMessage = Message;
 
 export interface Artifact {

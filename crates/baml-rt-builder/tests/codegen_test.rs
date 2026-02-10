@@ -10,6 +10,48 @@ use baml_rt_builder::builder::{
 use serde_json::Value;
 use std::collections::HashMap;
 
+// ---------------------------------------------------------------------------
+// ClickUp tool codegen — validates that schemars 1.x nullable types
+// (Option<T> → "type": ["T", "null"]) and u8 integers are mapped correctly.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_clickup_tool_baml_interfaces() {
+    let tool_names = vec!["support/clickup".to_string()];
+    let baml_output =
+        render_baml_tool_interfaces(&tool_names).expect("Should generate ClickUp BAML interfaces");
+
+    insta::assert_snapshot!("clickup_baml_tool_interfaces", baml_output);
+}
+
+#[test]
+fn test_schema_to_baml_nullable_types() {
+    // Regression test: schemars 1.x encodes Option<T> as "type": ["T", "null"]
+    let mut schemas = HashMap::new();
+    let mut type_names = HashMap::new();
+
+    let schema: Value = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "required_string": { "type": "string" },
+            "nullable_string": { "type": ["string", "null"] },
+            "nullable_int":    { "type": ["integer", "null"], "format": "uint8" },
+            "nullable_array":  { "type": ["array", "null"], "items": { "type": "string" } },
+            "plain_int":       { "type": "integer", "format": "int32" },
+            "plain_u8":        { "type": "integer", "format": "uint8" }
+        },
+        "required": ["required_string", "plain_int", "plain_u8"]
+    });
+
+    schemas.insert("NullableTest".to_string(), schema);
+    type_names.insert("NullableTest".to_string(), "NullableTest".to_string());
+
+    let baml_output = generate_baml_types_from_schemas(&schemas, &type_names)
+        .expect("Should generate BAML for nullable types");
+
+    insta::assert_snapshot!("baml_nullable_types", baml_output);
+}
+
 #[test]
 fn test_baml_tool_interface_generation() {
     let tool_names = vec!["support/calculate".to_string()];
