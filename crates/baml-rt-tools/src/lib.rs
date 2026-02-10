@@ -1,6 +1,7 @@
 //! Tool registry and mapping utilities.
 
 pub mod bundles;
+pub mod clickup;
 mod metrics;
 mod spans;
 pub mod support;

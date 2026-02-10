@@ -80,6 +80,20 @@ impl AgentPackage {
             .set_tool_allowlist(self.manifest.tools.iter().cloned().collect::<HashSet<_>>())
             .await?;
 
+        // Register tool instances for every tool declared in the manifest
+        for tool_name in &self.manifest.tools {
+            match tool_name.as_str() {
+                "support/clickup" => {
+                    runtime_manager
+                        .register_tool(baml_rt_tools::clickup::ClickUpTool::new())
+                        .await?;
+                }
+                other => {
+                    warn!(tool = other, "Unknown tool in manifest, skipping registration");
+                }
+            }
+        }
+
         // Build A2aAgent - it will generate agent_id internally and create QuickJS bridge
         let runtime_manager_arc = Arc::new(Mutex::new(runtime_manager));
         let mut agent_builder = A2aAgent::builder()
