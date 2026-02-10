@@ -62,24 +62,6 @@ async fn test_load_and_execute_simple_greeting() {
 }
 
 #[tokio::test]
-async fn test_load_schema_discovers_functions() {
-    // Load schema from baml_src (compiled directory)
-    // TODO: Migrate to use compiled fixtures once we have a better strategy
-    if !ensure_baml_src_exists() {
-        return;
-    }
-    let manager = setup_baml_runtime_manager_default();
-
-    // Should discover SimpleGreeting function
-    let functions = manager.list_functions();
-    assert!(
-        functions.contains(&"SimpleGreeting".to_string()),
-        "Should discover SimpleGreeting function. Found: {:?}",
-        functions
-    );
-}
-
-#[tokio::test]
 async fn test_invoke_nonexistent_function_fails() {
     // Load schema from baml_src directory (not a specific file)
     if !ensure_baml_src_exists() {

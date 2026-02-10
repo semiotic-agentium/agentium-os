@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::Once;
 use tokio::sync::Mutex;
 
+use baml_rt::A2aAgent;
 use baml_rt::QuickJSConfig;
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::quickjs_bridge::QuickJSBridge;
@@ -195,5 +196,52 @@ pub async fn assert_tool_registered_in_js(
         tool_exists,
         "Tool '{}' should be registered in QuickJS. Error: {}. Full result: {:?}",
         tool_name, error_detail, obj
+    );
+}
+
+/// Builds an A2aAgent for contract tests: stream-baml-tool fixture, CalculatorTool,
+/// test QuickJS config. Call `ensure_fixture_runtime_types()` before this if not already done.
+/// Returns the agent; tests create scope via `InvocationScope::synthetic_message(agent.agent_id().clone())`.
+pub async fn setup_stream_baml_tool_agent_for_contract(init_js: Option<&str>) -> A2aAgent {
+    let mut baml_manager = BamlRuntimeManager::new().expect("create manager");
+    let agent_dir = agent_fixture("stream-baml-tool");
+    baml_manager
+        .load_schema(agent_dir.to_str().expect("fixture path valid"))
+        .expect("load schema");
+    baml_manager
+        .register_tool(CalculatorTool)
+        .await
+        .expect("register CalculatorTool");
+    let config = QuickJSConfig::new().with_max_attempts_ms(Some(15_000));
+    let mut builder = A2aAgent::builder()
+        .with_runtime_manager(baml_manager)
+        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_quickjs_config(config);
+    if let Some(js) = init_js {
+        builder = builder.with_init_js(js);
+    }
+    builder.build().await.expect("build A2aAgent")
+}
+
+/// Asserts the invocation result contract: value is an object, has no "success" wrapper,
+/// and has "steps" (plan) or "result"/"formatted" (tool output). Panics with CONTRACT VIOLATION message on failure.
+pub fn assert_result_contract_actual_result(val: &serde_json::Value) {
+    assert!(
+        val.is_object(),
+        "CONTRACT VIOLATION: Expected actual result (object), got: {:?}",
+        val
+    );
+    let obj = val.as_object().unwrap();
+    assert!(
+        !obj.contains_key("success"),
+        "CONTRACT VIOLATION: Result must not be wrapped in success object, got: {:?}",
+        val
+    );
+    let has_steps = val.get("steps").and_then(|v| v.as_array()).is_some();
+    let has_tool_output = obj.contains_key("result") || obj.contains_key("formatted");
+    assert!(
+        has_steps || has_tool_output,
+        "CONTRACT VIOLATION: Expected object with 'steps' or 'result'/'formatted', got: {:?}",
+        val
     );
 }

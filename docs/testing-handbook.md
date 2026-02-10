@@ -101,6 +101,29 @@ JSON-RPC input and runtime error paths produce the expected error responses or s
 - **Streaming tool failure:** `test_streaming_tool_failure_mid_stream` — tool returns `Err` mid-stream; stream must contain error content.
 - **Concurrency mixed success/failure:** `test_concurrency_mixed_success_failure` — valid and malformed requests run concurrently; valid succeed, malformed return error.
 
+### Test authority map (per-behavior)
+
+Single source of truth for each behavior; do not add overlapping coverage elsewhere.
+
+| Behavior | Authoritative location | Do not duplicate in |
+|----------|-------------------------|---------------------|
+| Schema/function discovery | `baml-rt/tests/invoke_test.rs` — `test_load_schema_discovers_functions` | `execution_test.rs` or other invoke tests |
+| SimpleGreeting invocation (direct runtime) | `baml-rt/tests/invoke_test.rs` — `test_invoke_simple_greeting`; `execution_test.rs` — `test_load_and_execute_simple_greeting` (superset: list + invoke) | Additional tests that only assert “invoke SimpleGreeting” via same API |
+| Tool result contract (no success wrapper, steps/result shape) | `baml-rt/tests/contracts_test.rs` — one direct BAML path, one JS-wrapper path | Extra contract tests with same setup and same assertions |
+| Streaming chunk semantics (statusUpdate, artifactUpdate) | `baml-rt-a2a/tests/task_streaming_test.rs` — protocol-level | `runner_test.rs` E2E (assert wiring/operability only, not chunk shape) |
+| Full streaming E2E (runner + package + stream) | `baml-agent-runner/tests/runner_test.rs` — `test_e2e_stream_baml_tool`, `test_e2e_stream_js_tool` | Additional full-runner streaming tests |
+| Single-request tool E2E (ChooseCalcTool, execute) | `baml-rt/tests/tool_calling_test.rs` — `test_e2e_voidship_baml_tool_calling` | Other crates re-covering same vertical slice |
+| Concurrent tool E2E (per-scope, no cross-talk) | `baml-rt/tests/tool_calling_test.rs` — `test_e2e_voidship_baml_tool_calling_concurrent` | Duplicate concurrency E2E |
+
+### Do-not-duplicate checklist
+
+Before adding a test that touches any of the following, check the authority map above and **do not** add duplicate coverage in the “Do not duplicate in” locations:
+
+- **Function discovery** — authority: `invoke_test.rs::test_load_schema_discovers_functions`. Do not add the same assertion in `execution_test.rs` or elsewhere.
+- **Streaming chunk semantics** (statusUpdate, artifactUpdate) — authority: `task_streaming_test.rs`. Runner E2E tests should assert wiring/operability only, not chunk shape.
+- **Tool result contract** (no success wrapper, steps/result shape) — authority: `contracts_test.rs` (one direct BAML path, one JS-wrapper path). Do not add extra contract tests with the same setup and assertions.
+- **SimpleGreeting entry-point coverage** — authority: `invoke_test.rs` and `execution_test.rs`. Do not add further tests that only assert “invoke SimpleGreeting” via the same API.
+
 ---
 
 ## Integration and E2E Tests

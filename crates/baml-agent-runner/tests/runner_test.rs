@@ -734,19 +734,7 @@ async fn test_e2e_stream_js_tool() {
         })
         .unwrap_or("");
     assert!(!task_id.is_empty(), "Expected task id in streaming chunks");
-
-    let mut saw_status = false;
-    let mut saw_artifact = false;
-    for chunk in &chunks {
-        if chunk.get("statusUpdate").is_some() {
-            saw_status = true;
-        }
-        if chunk.get("artifactUpdate").is_some() {
-            saw_artifact = true;
-        }
-    }
-    assert!(saw_status, "Expected statusUpdate in streaming chunks");
-    assert!(saw_artifact, "Expected artifactUpdate in streaming chunks");
+    // Chunk-shape semantics (statusUpdate/artifactUpdate) are asserted in task_streaming_test.rs; here we only verify wiring/operability.
 
     let subscribe_request = jsonrpc_request(
         "tasks.subscribe",
