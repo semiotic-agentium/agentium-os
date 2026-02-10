@@ -1,0 +1,12 @@
+[package]
+name = "baml-derive-tests"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+description = "Integration tests for baml-derive macro"
+publish = false
+
+[dev-dependencies]
+baml-derive = { path = "../baml-derive" }
+baml-derive-core = { path = "../baml-derive-core" }
+insta = { workspace = true }

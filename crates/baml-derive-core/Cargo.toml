@@ -1,0 +1,12 @@
+[package]
+name = "baml-derive-core"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+description = "Core types and rendering for BAML procedural macro derive"
+
+[dependencies]
+inventory = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
