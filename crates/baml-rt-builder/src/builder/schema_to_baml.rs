@@ -117,6 +117,20 @@ fn generate_baml_type(
         return Ok(());
     }
 
+    // schemars 1.x represents enums with doc comments as
+    // {"oneOf": [{"const": "Variant", "description": "..."}, ...]}
+    // instead of a flat {"enum": ["Variant", ...]}.
+    // Detect this pattern and generate a BAML enum with @description on each variant.
+    if let Some(one_of) = schema_obj.get("oneOf").and_then(|v| v.as_array()) {
+        let all_const = one_of
+            .iter()
+            .all(|v| v.as_object().is_some_and(|o| o.contains_key("const")));
+        if all_const {
+            generate_baml_enum_from_one_of(output, type_name, one_of)?;
+            return Ok(());
+        }
+    }
+
     // Check if it's an object/class
     if let Some(Value::String(schema_type)) = schema_obj.get("type")
         && schema_type == "object"
@@ -149,6 +163,45 @@ fn generate_baml_type(
         "Cannot generate BAML type for {}: unsupported schema format",
         type_name
     )))
+}
+
+/// Generate BAML enum from schemars 1.x `oneOf` with `const` + optional `description`.
+fn generate_baml_enum_from_one_of(
+    output: &mut String,
+    enum_name: &str,
+    variants: &[Value],
+) -> Result<()> {
+    write_line(output, &format!("enum {} {{", enum_name))?;
+
+    for variant in variants {
+        let obj = match variant.as_object() {
+            Some(o) => o,
+            None => continue, // defensive: skip non-objects
+        };
+
+        let const_val = match obj.get("const").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => continue,
+        };
+
+        let variant_name = to_pascal_case(const_val);
+
+        let desc = obj
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| format!(" @description(\"{}\")", s.replace('"', "\\\"")))
+            .unwrap_or_default();
+
+        write_line(output, &format!("  {}{}", variant_name, desc))?;
+
+        if const_val != variant_name {
+            write_line(output, &format!("    @alias(\"{}\")", const_val))?;
+        }
+    }
+
+    write_line(output, "}")?;
+    write_line(output, "")?;
+    Ok(())
 }
 
 /// Generate BAML enum from JSON schema enum
@@ -224,7 +277,7 @@ fn generate_baml_class(
             .as_object()
             .and_then(|obj| obj.get("description"))
             .and_then(|v| v.as_str())
-            .map(|s| format!(" @description(\"{}\")", s))
+            .map(|s| format!(" @description(\"{}\")", s.replace('"', "\\\"")))
             .unwrap_or_default();
 
         write_line(
@@ -238,7 +291,10 @@ fn generate_baml_class(
     Ok(())
 }
 
-/// Convert JSON schema type to BAML type string
+/// Convert JSON schema type to BAML type string.
+///
+/// Handles both scalar `"type": "string"` and nullable array
+/// `"type": ["string", "null"]` forms produced by schemars 1.x for `Option<T>`.
 fn json_schema_to_baml_type(
     schema: &Value,
     _generated: &mut HashSet<String>,
@@ -271,36 +327,52 @@ fn json_schema_to_baml_type(
         return Ok(types.join(" | "));
     }
 
-    // Handle array
-    if let Some(Value::String(array_type)) = schema_obj.get("type")
-        && array_type == "array"
-    {
-        if let Some(items) = schema_obj.get("items") {
-            let item_type = json_schema_to_baml_type(items, _generated, _all_schemas, _type_names)?;
-            return Ok(format!("{}[]", item_type));
-        }
-        return Ok("any[]".to_string());
-    }
-
-    // Handle primitive types
-    if let Some(Value::String(primitive_type)) = schema_obj.get("type") {
-        return Ok(match primitive_type.as_str() {
-            "string" => "string".to_string(),
-            "integer" | "number" => {
-                // Check format for int vs float
-                if schema_obj.get("format").and_then(|v| v.as_str()) == Some("int64") {
-                    "int".to_string()
-                } else {
-                    "float".to_string()
-                }
+    // Resolve the effective scalar type string.
+    //
+    // schemars 1.x represents `Option<T>` as `"type": ["T", "null"]`.
+    // We extract the single non-null element so downstream matching
+    // works identically for both nullable and non-nullable schemas.
+    let effective_type: Option<&str> = match schema_obj.get("type") {
+        Some(Value::String(s)) => Some(s.as_str()),
+        Some(Value::Array(arr)) => {
+            // Filter out "null" and expect exactly one remaining type.
+            let non_null: Vec<&str> = arr
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|t| *t != "null")
+                .collect();
+            match non_null.len() {
+                1 => Some(non_null[0]),
+                // No non-null type (pure null) or ambiguous union — fall through.
+                _ => None,
             }
+        }
+        _ => None,
+    };
+
+    if let Some(type_str) = effective_type {
+        // Handle array
+        if type_str == "array" {
+            if let Some(items) = schema_obj.get("items") {
+                let item_type =
+                    json_schema_to_baml_type(items, _generated, _all_schemas, _type_names)?;
+                return Ok(format!("{}[]", item_type));
+            }
+            return Ok("any[]".to_string());
+        }
+
+        // Handle scalar primitive types
+        return Ok(match type_str {
+            "string" => "string".to_string(),
+            // JSON Schema "integer" is always integral; "number" is always floating-point.
+            // Previous code only mapped format=="int64" to int, causing u8/i32/etc. to
+            // become float. The JSON Schema spec guarantees "integer" excludes fractions.
+            "integer" => "int".to_string(),
+            "number" => "float".to_string(),
             "boolean" => "bool".to_string(),
             "null" => "null".to_string(),
-            "object" => {
-                // Inline object - generate anonymous class or use object
-                "object".to_string() // BAML doesn't support inline objects well, use object
-            }
-            _ => format!("any /* {} */", primitive_type),
+            "object" => "object".to_string(),
+            _ => format!("any /* {} */", type_str),
         });
     }
 

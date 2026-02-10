@@ -10,6 +10,7 @@ baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-quickjs = { path = "../baml-rt-quickjs" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
+baml-rt-tools = { path = "../baml-rt-tools" }
 anyhow = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
@@ -22,7 +23,6 @@ uuid = { workspace = true }
 [dev-dependencies]
 test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
-baml-rt-tools = { path = "../baml-rt-tools" }
 async-trait = { workspace = true }
 dotenvy = { workspace = true }
 schemars = { workspace = true }
