@@ -35,10 +35,17 @@ async function onChatMessage(
       const output = toolResult as {
         action?: string;
         tasks?: { name: string; status: string; url: string }[];
+        items?: { id: string; name: string; kind: string }[];
         message?: string;
       };
 
       let response = output.message || "Done.";
+      if (output.items && output.items.length > 0) {
+        const itemList = output.items
+          .map((i) => `• [${i.kind}] ${i.name} (id: ${i.id})`)
+          .join("\n");
+        response += "\n\n" + itemList;
+      }
       if (output.tasks && output.tasks.length > 0) {
         const taskList = output.tasks
           .map((t) => `• ${t.name} [${t.status}] — ${t.url}`)

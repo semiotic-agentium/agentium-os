@@ -117,6 +117,20 @@ fn generate_baml_type(
         return Ok(());
     }
 
+    // schemars 1.x represents enums with doc comments as
+    // {"oneOf": [{"const": "Variant", "description": "..."}, ...]}
+    // instead of a flat {"enum": ["Variant", ...]}.
+    // Detect this pattern and generate a BAML enum with @description on each variant.
+    if let Some(one_of) = schema_obj.get("oneOf").and_then(|v| v.as_array()) {
+        let all_const = one_of
+            .iter()
+            .all(|v| v.as_object().is_some_and(|o| o.contains_key("const")));
+        if all_const {
+            generate_baml_enum_from_one_of(output, type_name, one_of)?;
+            return Ok(());
+        }
+    }
+
     // Check if it's an object/class
     if let Some(Value::String(schema_type)) = schema_obj.get("type")
         && schema_type == "object"
@@ -149,6 +163,50 @@ fn generate_baml_type(
         "Cannot generate BAML type for {}: unsupported schema format",
         type_name
     )))
+}
+
+/// Generate BAML enum from schemars 1.x `oneOf` with `const` + optional `description`.
+fn generate_baml_enum_from_one_of(
+    output: &mut String,
+    enum_name: &str,
+    variants: &[Value],
+) -> Result<()> {
+    write_line(output, &format!("enum {} {{", enum_name))?;
+
+    for variant in variants {
+        let obj = match variant.as_object() {
+            Some(o) => o,
+            None => continue, // defensive: skip non-objects
+        };
+
+        let const_val = match obj.get("const").and_then(|v| v.as_str()) {
+            Some(s) => s,
+            None => continue,
+        };
+
+        let variant_name = to_pascal_case(const_val);
+
+        let desc = obj
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| {
+                format!(
+                    " @description(\"{}\")",
+                    s.replace('"', "\\\"")
+                )
+            })
+            .unwrap_or_default();
+
+        write_line(output, &format!("  {}{}", variant_name, desc))?;
+
+        if const_val != variant_name {
+            write_line(output, &format!("    @alias(\"{}\")", const_val))?;
+        }
+    }
+
+    write_line(output, "}")?;
+    write_line(output, "")?;
+    Ok(())
 }
 
 /// Generate BAML enum from JSON schema enum
@@ -224,7 +282,7 @@ fn generate_baml_class(
             .as_object()
             .and_then(|obj| obj.get("description"))
             .and_then(|v| v.as_str())
-            .map(|s| format!(" @description(\"{}\")", s))
+            .map(|s| format!(" @description(\"{}\")", s.replace('"', "\\\"")))
             .unwrap_or_default();
 
         write_line(

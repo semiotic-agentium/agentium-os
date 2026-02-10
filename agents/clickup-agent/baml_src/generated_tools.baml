@@ -26,6 +26,9 @@ enum ToolSessionOp {
 
 // Domain types generated from JSON schemas
 enum ClickUpAction {
+  ListTeams
+  ListSpaces
+  ListLists
   ListTasks
   GetTask
   CreateTask
@@ -34,6 +37,8 @@ enum ClickUpAction {
 
 class ClickUpInput {
   action ClickUpAction 
+  team_id string?  @description("Required for `ListSpaces`.")
+  space_id string?  @description("Required for `ListLists`.")
   list_id string?  @description("Required for `ListTasks` and `CreateTask`.")
   task_id string?  @description("Required for `GetTask` and `UpdateTask`.")
   name string?  @description("Required for `CreateTask`.")
@@ -42,8 +47,15 @@ class ClickUpInput {
   status string?  @description("Task status string (e.g. \"in progress\"). Used by `UpdateTask`.")
 }
 
+class ClickUpItem {
+  id string 
+  name string 
+  kind string  @description("The kind of resource: \"team\", \"space\", or \"list\".")
+}
+
 class ClickUpOutput {
   tasks ClickUpTaskSummary[] 
+  items ClickUpItem[]  @description("Teams, spaces, or lists returned by navigation actions.")
   message string 
 }
 
@@ -89,3 +101,4 @@ type SupportClickupSessionStep = SupportClickupOpenStep | SupportClickupSendStep
 class SupportClickupSessionPlan {
   steps SupportClickupSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (with optional initial_input), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example valid plan: [{op: 'Open', initial_input: {...}}, {op: 'Next'}, {op: 'Finish'}]. Tool identity is inferred from the input schema (no tool_name field).")
 }
+

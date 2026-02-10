@@ -15,14 +15,13 @@ use ts_rs::TS;
 /// ClickUp v2 REST API base URL.
 pub const BASE_URL: &str = "https://api.clickup.com/api/v2";
 
-// ---------------------------------------------------------------------------
-// Input — flat struct with action discriminator
-// ---------------------------------------------------------------------------
-
 /// Which ClickUp action to perform.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 pub enum ClickUpAction {
+    ListTeams,
+    ListSpaces,
+    ListLists,
     ListTasks,
     GetTask,
     CreateTask,
@@ -39,6 +38,10 @@ pub enum ClickUpAction {
 #[ts(export)]
 pub struct ClickUpInput {
     pub action: ClickUpAction,
+    /// Required for `ListSpaces`.
+    pub team_id: Option<String>,
+    /// Required for `ListLists`.
+    pub space_id: Option<String>,
     /// Required for `ListTasks` and `CreateTask`.
     pub list_id: Option<String>,
     /// Required for `GetTask` and `UpdateTask`.
@@ -69,17 +72,27 @@ pub struct ClickUpTaskSummary {
     pub due_date: Option<String>,
 }
 
+/// A generic item returned by navigation actions (teams, spaces, lists).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct ClickUpItem {
+    pub id: String,
+    pub name: String,
+    /// The kind of resource: "team", "space", or "list".
+    pub kind: String,
+}
+
 /// Output returned by every ClickUp tool action.
+///
+/// Task actions populate `tasks`; navigation actions populate `items`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 pub struct ClickUpOutput {
     pub tasks: Vec<ClickUpTaskSummary>,
+    /// Teams, spaces, or lists returned by navigation actions.
+    pub items: Vec<ClickUpItem>,
     pub message: String,
 }
-
-// ---------------------------------------------------------------------------
-// Raw deserialization structs — match the ClickUp v2 API shape
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct RawClickUpTask {
@@ -114,6 +127,42 @@ pub(crate) struct RawTaskList {
     pub tasks: Vec<serde_json::Value>,
 }
 
+#[derive(Debug, Deserialize)]
+pub(crate) struct RawTeamList {
+    #[serde(default)]
+    pub teams: Vec<RawTeam>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RawTeam {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RawSpaceList {
+    #[serde(default)]
+    pub spaces: Vec<RawSpace>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RawSpace {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RawFolderlessList {
+    #[serde(default)]
+    pub lists: Vec<RawClickUpList>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct RawClickUpList {
+    pub id: String,
+    pub name: String,
+}
+
 impl From<RawClickUpTask> for ClickUpTaskSummary {
     fn from(raw: RawClickUpTask) -> Self {
         Self {
@@ -131,10 +180,6 @@ impl From<RawClickUpTask> for ClickUpTaskSummary {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Error type — preserves the full source chain via #[source]
-// ---------------------------------------------------------------------------
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClickUpError {
@@ -174,10 +219,6 @@ impl From<ClickUpError> for BamlRtError {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tool struct and helpers
-// ---------------------------------------------------------------------------
 
 pub struct ClickUpTool {
     client: reqwest::Client,
@@ -223,7 +264,19 @@ impl ClickUpTool {
                 .unwrap_or("unknown")
                 .to_string();
             let body = resp.text().await.unwrap_or_default();
+
+            // ClickUp returns 401 with ECODE "OAUTH_017"/"OAUTH_018"/"OAUTH_019"
+            // when a resource ID is invalid or inaccessible, rather than a proper
+            // 404. Detect this pattern and reclassify as NotFound so the LLM gets
+            // an actionable error instead of a misleading auth failure.
+            let is_fake_auth_error = code == 401
+                && body.contains("OAUTH_0")
+                && (body.contains("token not found") || body.contains("Token not found"));
+
             return Err(match code {
+                401 if is_fake_auth_error => ClickUpError::NotFound {
+                    body: format!("Resource not found : {body}"),
+                },
                 401 => ClickUpError::Unauthorized { body },
                 404 => ClickUpError::NotFound { body },
                 429 => ClickUpError::RateLimited { body, reset_at },
@@ -234,7 +287,105 @@ impl ClickUpTool {
         resp.json().await.map_err(ClickUpError::Deserialize)
     }
 
-    // -- Action methods ----------------------------------------------------
+    #[tracing::instrument(skip(self, api_key))]
+    async fn list_teams(&self, api_key: &str) -> Result<ClickUpOutput> {
+        let json = self
+            .send_request(
+                self.client
+                    .get(format!("{BASE_URL}/team"))
+                    .header("Authorization", api_key),
+            )
+            .await?;
+
+        let raw: RawTeamList = serde_json::from_value(json).map_err(|e| ClickUpError::Api {
+            status: 0,
+            body: format!("unexpected teams response shape: {e}"),
+        })?;
+
+        let items: Vec<ClickUpItem> = raw
+            .teams
+            .into_iter()
+            .map(|t| ClickUpItem {
+                id: t.id,
+                name: t.name,
+                kind: "team".to_string(),
+            })
+            .collect();
+
+        let count = items.len();
+        Ok(ClickUpOutput {
+            tasks: vec![],
+            items,
+            message: format!("Found {count} team(s)"),
+        })
+    }
+
+    #[tracing::instrument(skip(self, api_key))]
+    async fn list_spaces(&self, api_key: &str, team_id: &str) -> Result<ClickUpOutput> {
+        let json = self
+            .send_request(
+                self.client
+                    .get(format!("{BASE_URL}/team/{team_id}/space"))
+                    .header("Authorization", api_key),
+            )
+            .await?;
+
+        let raw: RawSpaceList = serde_json::from_value(json).map_err(|e| ClickUpError::Api {
+            status: 0,
+            body: format!("unexpected spaces response shape: {e}"),
+        })?;
+
+        let items: Vec<ClickUpItem> = raw
+            .spaces
+            .into_iter()
+            .map(|s| ClickUpItem {
+                id: s.id,
+                name: s.name,
+                kind: "space".to_string(),
+            })
+            .collect();
+
+        let count = items.len();
+        Ok(ClickUpOutput {
+            tasks: vec![],
+            items,
+            message: format!("Found {count} space(s) in team {team_id}"),
+        })
+    }
+
+    #[tracing::instrument(skip(self, api_key))]
+    async fn list_lists(&self, api_key: &str, space_id: &str) -> Result<ClickUpOutput> {
+        let json = self
+            .send_request(
+                self.client
+                    .get(format!("{BASE_URL}/space/{space_id}/list"))
+                    .header("Authorization", api_key),
+            )
+            .await?;
+
+        let raw: RawFolderlessList =
+            serde_json::from_value(json).map_err(|e| ClickUpError::Api {
+                status: 0,
+                body: format!("unexpected lists response shape: {e}"),
+            })?;
+
+        let items: Vec<ClickUpItem> = raw
+            .lists
+            .into_iter()
+            .map(|l| ClickUpItem {
+                id: l.id,
+                name: l.name,
+                kind: "list".to_string(),
+            })
+            .collect();
+
+        let count = items.len();
+        Ok(ClickUpOutput {
+            tasks: vec![],
+            items,
+            message: format!("Found {count} list(s) in space {space_id}"),
+        })
+    }
 
     #[tracing::instrument(skip(self, api_key))]
     async fn list_tasks(&self, api_key: &str, list_id: &str) -> Result<ClickUpOutput> {
@@ -269,6 +420,7 @@ impl ClickUpTool {
         let count = tasks.len();
         Ok(ClickUpOutput {
             tasks,
+            items: vec![],
             message: format!("Found {count} task(s) in list {list_id}"),
         })
     }
@@ -292,6 +444,7 @@ impl ClickUpTool {
         Ok(ClickUpOutput {
             message: format!("Task {task_id}: {}", summary.name),
             tasks: vec![summary],
+            items: vec![],
         })
     }
 
@@ -330,6 +483,7 @@ impl ClickUpTool {
         Ok(ClickUpOutput {
             message: format!("Created task '{}' in list {list_id}", summary.name),
             tasks: vec![summary],
+            items: vec![],
         })
     }
 
@@ -377,13 +531,10 @@ impl ClickUpTool {
         Ok(ClickUpOutput {
             message: format!("Updated task {task_id}"),
             tasks: vec![summary],
+            items: vec![],
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// BamlTool implementation
-// ---------------------------------------------------------------------------
 
 #[async_trait]
 impl BamlTool for ClickUpTool {
@@ -394,13 +545,22 @@ impl BamlTool for ClickUpTool {
     type Output = ClickUpOutput;
 
     fn description(&self) -> &'static str {
-        "Interact with ClickUp: list, get, create, and update tasks."
+        "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks."
     }
 
     #[tracing::instrument(skip(self), fields(action = ?args.action))]
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         let api_key = Self::api_key()?;
         match args.action {
+            ClickUpAction::ListTeams => self.list_teams(&api_key).await,
+            ClickUpAction::ListSpaces => {
+                let team_id = Self::require(&args.team_id, "team_id", "ListSpaces")?;
+                self.list_spaces(&api_key, team_id).await
+            }
+            ClickUpAction::ListLists => {
+                let space_id = Self::require(&args.space_id, "space_id", "ListLists")?;
+                self.list_lists(&api_key, space_id).await
+            }
             ClickUpAction::ListTasks => {
                 let list_id = Self::require(&args.list_id, "list_id", "ListTasks")?;
                 self.list_tasks(&api_key, list_id).await
@@ -436,10 +596,6 @@ impl BamlTool for ClickUpTool {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Metadata registration (compile-time, for codegen)
-// ---------------------------------------------------------------------------
-
 pub fn clickup_metadata() -> ToolFunctionMetadata {
     use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
     let (name, class_name) = parse_tool_name_and_class("support/clickup")
@@ -447,7 +603,8 @@ pub fn clickup_metadata() -> ToolFunctionMetadata {
     TypeBasedMetadataBuilder::<(), ClickUpInput, ClickUpOutput>::new(
         name,
         class_name,
-        "Interact with ClickUp: list, get, create, and update tasks.".to_string(),
+        "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks."
+            .to_string(),
     )
     .with_tags(vec!["support".to_string(), "clickup".to_string()])
     .with_secrets(vec![ToolSecretRequirement {
