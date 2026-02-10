@@ -224,7 +224,10 @@ fn generate_baml_class(
             .as_object()
             .and_then(|obj| obj.get("description"))
             .and_then(|v| v.as_str())
-            .map(|s| format!(" @description(\"{}\")", s))
+            .map(|s| {
+                let escaped = s.replace('"', r#"\""#);
+                format!(" @description(\"{}\")", escaped)
+            })
             .unwrap_or_default();
 
         write_line(
