@@ -465,37 +465,48 @@ mod tests {
     struct OtelTestFixture {
         exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
         provider: TracerProvider,
-        _guard: tracing::subscriber::DefaultGuard,
         _otel_lock: std::sync::MutexGuard<'static, ()>,
     }
 
     static OTEL_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    static OTEL_STATE: OnceLock<OtelTestState> = OnceLock::new();
+
+    struct OtelTestState {
+        exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+        provider: TracerProvider,
+    }
 
     fn otel_test_lock() -> std::sync::MutexGuard<'static, ()> {
         OTEL_TEST_LOCK
             .get_or_init(|| Mutex::new(()))
             .lock()
-            .expect("OTEL_TEST_LOCK poisoned")
+            .unwrap_or_else(|err| err.into_inner())
+    }
+
+    fn otel_state() -> &'static OtelTestState {
+        OTEL_STATE.get_or_init(|| {
+            let exporter = InMemorySpanExporterBuilder::new().build();
+            let provider = TracerProvider::builder()
+                .with_simple_exporter(exporter.clone())
+                .build();
+            global::set_tracer_provider(provider.clone());
+            let tracer = provider.tracer("baml_rt_test");
+            let subscriber = tracing_subscriber::registry()
+                .with(tracing_opentelemetry::layer().with_tracer(tracer));
+            tracing::subscriber::set_global_default(subscriber)
+                .expect("set global tracing subscriber");
+            OtelTestState { exporter, provider }
+        })
     }
 
     impl OtelTestFixture {
         fn new() -> Self {
             let _otel_lock = otel_test_lock();
-            let exporter = InMemorySpanExporterBuilder::new().build();
-            let provider = TracerProvider::builder()
-                .with_simple_exporter(exporter.clone())
-                .build();
-
-            global::set_tracer_provider(provider.clone());
-            let tracer = provider.tracer("baml_rt_test");
-            let subscriber = tracing_subscriber::registry()
-                .with(tracing_opentelemetry::layer().with_tracer(tracer));
-            let guard = tracing::subscriber::set_default(subscriber);
-
+            let state = otel_state();
+            state.exporter.reset();
             Self {
-                exporter,
-                provider,
-                _guard: guard,
+                exporter: state.exporter.clone(),
+                provider: state.provider.clone(),
                 _otel_lock,
             }
         }
@@ -511,6 +522,17 @@ mod tests {
         name: &str,
     ) -> Option<&'a opentelemetry_sdk::export::trace::SpanData> {
         spans.iter().find(|span| span.name.as_ref() == name)
+    }
+
+    fn find_span_with_attr<'a>(
+        spans: &'a [opentelemetry_sdk::export::trace::SpanData],
+        name: &str,
+        key: &str,
+        value: &str,
+    ) -> Option<&'a opentelemetry_sdk::export::trace::SpanData> {
+        spans.iter().find(|span| {
+            span.name.as_ref() == name && attr_value(span, key).as_deref() == Some(value)
+        })
     }
 
     fn attr_value(span: &opentelemetry_sdk::export::trace::SpanData, key: &str) -> Option<String> {
@@ -637,7 +659,7 @@ mod tests {
         assert_eq!(text, Some("hi Ada"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_a2a_request_span_structure() {
         timeout(
             Duration::from_secs(TEST_WATCHDOG_TIMEOUT_SECS),
@@ -672,8 +694,11 @@ mod tests {
             .expect("handle_a2a should succeed for span structure test");
 
         let spans = _otel.spans();
-        let span =
-            find_span(&spans, "baml_rt.a2a_stream").expect("expected baml_rt.a2a_stream span");
+        let span = find_span_with_attr(&spans, "baml_rt.a2a_stream", "correlation_id", "corr-1-19")
+            .unwrap_or_else(|| {
+                find_span(&spans, "baml_rt.a2a_stream")
+                    .expect("expected baml_rt.a2a_stream span")
+            });
         assert_eq!(
             attr_value(span, "method").as_deref(),
             Some("message.sendStream")
@@ -692,7 +717,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn test_a2a_stream_span_structure() {
         timeout(
             Duration::from_secs(TEST_WATCHDOG_TIMEOUT_SECS),
@@ -727,8 +752,11 @@ mod tests {
             .expect("handle_a2a should succeed for stream span structure test");
 
         let spans = _otel.spans();
-        let span =
-            find_span(&spans, "baml_rt.a2a_stream").expect("expected baml_rt.a2a_stream span");
+        let span = find_span_with_attr(&spans, "baml_rt.a2a_stream", "correlation_id", "corr-1-20")
+            .unwrap_or_else(|| {
+                find_span(&spans, "baml_rt.a2a_stream")
+                    .expect("expected baml_rt.a2a_stream span")
+            });
         assert_eq!(
             attr_value(span, "method").as_deref(),
             Some("message.sendStream")

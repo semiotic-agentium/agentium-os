@@ -277,13 +277,21 @@ fn generate_baml_class(
             .as_object()
             .and_then(|obj| obj.get("description"))
             .and_then(|v| v.as_str())
-            .map(|s| format!(" @description(\"{}\")", s.replace('"', "\\\"")))
+            .map(|s| {
+                format!(
+                    "@description(\"{}\")",
+                    s.replace('\\', "\\\\").replace('"', "\\\"")
+                )
+            })
             .unwrap_or_default();
-
-        write_line(
-            output,
-            &format!("  {} {} {}", prop_name, type_str, description),
-        )?;
+        if description.is_empty() {
+            write_line(output, &format!("  {} {}", prop_name, type_str))?;
+        } else {
+            write_line(
+                output,
+                &format!("  {} {} {}", prop_name, type_str, description),
+            )?;
+        }
     }
 
     write_line(output, "}")?;
@@ -324,13 +332,8 @@ fn json_schema_to_baml_type(
                     }
                     match type_str.as_str() {
                         "string" => "string".to_string(),
-                        "integer" | "number" => {
-                            if schema_obj.get("format").and_then(|v| v.as_str()) == Some("int64") {
-                                "int".to_string()
-                            } else {
-                                "float".to_string()
-                            }
-                        }
+                        "integer" => "int".to_string(),
+                        "number" => "float".to_string(),
                         "boolean" => "bool".to_string(),
                         "object" => "object".to_string(),
                         "array" => {

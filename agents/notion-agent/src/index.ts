@@ -25,9 +25,32 @@ function isWriteRequest(text: string): boolean {
   return keywords.some((k) => lowered.includes(k));
 }
 
-function formatSources(sources?: { page_id: string; url: string }[]): string {
+function wantsSummary(text: string): boolean {
+  const lowered = text.toLowerCase();
+  const keywords = [
+    "summarize",
+    "summary",
+    "what are we working on",
+    "status",
+    "impact",
+    "roadmap",
+    "brief",
+    "commitments",
+  ];
+  return keywords.some((k) => lowered.includes(k));
+}
+
+function formatSources(
+  sources?: { page_id: string; url: string }[],
+  pages?: { id: string; title: string; url: string }[]
+): string {
   if (!sources || sources.length === 0) return "";
-  const lines = sources.map((s) => `• ${s.url}`);
+  const pageTitleById = new Map<string, string>();
+  (pages || []).forEach((p) => pageTitleById.set(p.id, p.title));
+  const lines = sources.map((s) => {
+    const title = pageTitleById.get(s.page_id);
+    return title ? `• ${title} — ${s.url}` : `• ${s.url}`;
+  });
   return "\n\nSources:\n" + lines.join("\n");
 }
 
@@ -56,6 +79,56 @@ async function summarizeBlocks(args: {
   return null;
 }
 
+async function fetchBlocksForPage(args: {
+  page_id: string;
+  token?: string;
+}): Promise<{
+  pages?: { id: string; title: string; url: string }[];
+  blocks?: { text?: string | null }[];
+  sources?: { page_id: string; url: string }[];
+  message?: string;
+} | null> {
+  if (!args.token) return null;
+  try {
+    const session = await openToolSession("support/notionGetPageBlocks", args.token);
+    await session.send({ block_id: args.page_id });
+    const step = await session.continue();
+    if (step && step.output && typeof step.output === "object") {
+      return step.output as {
+        pages?: { id: string; title: string; url: string }[];
+        blocks?: { text?: string | null }[];
+        sources?: { page_id: string; url: string }[];
+        message?: string;
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function mergeOutputs(
+  base: {
+    message?: string;
+    pages?: { id: string; title: string; url: string }[];
+    blocks?: { text?: string | null }[];
+    sources?: { page_id: string; url: string }[];
+  },
+  extra: {
+    message?: string;
+    pages?: { id: string; title: string; url: string }[];
+    blocks?: { text?: string | null }[];
+    sources?: { page_id: string; url: string }[];
+  }
+) {
+  return {
+    message: extra.message || base.message,
+    pages: (extra.pages && extra.pages.length > 0 ? extra.pages : base.pages) || [],
+    blocks: (extra.blocks && extra.blocks.length > 0 ? extra.blocks : base.blocks) || [],
+    sources: (extra.sources && extra.sources.length > 0 ? extra.sources : base.sources) || [],
+  };
+}
+
 async function onChatMessage(
   message: ChatMessage & { __baml_invocation_token?: string }
 ): Promise<void> {
@@ -78,22 +151,38 @@ async function onChatMessage(
     if (toolResult != null && typeof toolResult === "object") {
       const output = toolResult as {
         message?: string;
-        pages?: { title: string; url: string }[];
+        pages?: { id: string; title: string; url: string }[];
         blocks?: { text?: string | null }[];
         sources?: { page_id: string; url: string }[];
       };
 
-      let response = output.message || "Done.";
-      response += formatPages(output.pages);
+      let merged = output;
+      if (
+        wantsSummary(text) &&
+        output.pages &&
+        output.pages.length > 0 &&
+        (!output.blocks || output.blocks.length === 0)
+      ) {
+        const blocksResult = await fetchBlocksForPage({
+          page_id: output.pages[0].id,
+          token,
+        });
+        if (blocksResult) {
+          merged = mergeOutputs(output, blocksResult);
+        }
+      }
 
-      const blocksText = (output.blocks || [])
+      let response = merged.message || "Done.";
+      response += formatPages(merged.pages);
+
+      const blocksText = (merged.blocks || [])
         .map((b) => b.text)
         .filter((t): t is string => Boolean(t && t.trim()))
         .join("\n");
 
       if (blocksText.length > 0) {
-        const pageTitle = output.pages && output.pages[0] ? output.pages[0].title : null;
-        const pageUrl = output.pages && output.pages[0] ? output.pages[0].url : null;
+        const pageTitle = merged.pages && merged.pages[0] ? merged.pages[0].title : null;
+        const pageUrl = merged.pages && merged.pages[0] ? merged.pages[0].url : null;
         const summary = await summarizeBlocks({
           user_message: text,
           page_title: pageTitle,
@@ -103,9 +192,17 @@ async function onChatMessage(
         if (summary) {
           response += `\n\nSummary:\n${summary}`;
         }
+      } else if (wantsSummary(text)) {
+        response +=
+          "\n\nMissing:\n- Page content not retrieved. Provide a Notion page link or ID, or ensure the integration has access.";
       }
 
-      response += formatSources(output.sources);
+      if ((!merged.pages || merged.pages.length === 0) && (!merged.blocks || merged.blocks.length === 0)) {
+        response +=
+          "\n\nMissing:\n- No Notion pages found for this request. Provide a page link or adjust the query, or ensure the integration has access.";
+      }
+
+      response += formatSources(merged.sources, merged.pages);
 
       __baml_chat_yield({
         message: newMessage(response),

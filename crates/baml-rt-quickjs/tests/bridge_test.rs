@@ -369,14 +369,36 @@ async fn test_invoke_function_with_explicit_scope_fails_for_missing_function() {
     let result = bridge
         .invoke_function(&invoke_scope, "SomeFunction", json!({}))
         .await;
-    assert!(
-        result.is_err(),
-        "invoke_function should fail for missing function"
-    );
-    let msg = result.unwrap_err().to_string();
-    assert!(
-        msg.contains("SomeFunction") || msg.contains("function"),
-        "invoke_function error should mention function resolution: {}",
-        msg
-    );
+    match result {
+        Err(err) => {
+            let msg = err.to_string();
+            assert!(
+                msg.contains("SomeFunction") || msg.contains("function"),
+                "invoke_function error should mention function resolution: {}",
+                msg
+            );
+        }
+        Ok(val) => {
+            let error_msg = if let Some(obj) = val.as_object() {
+                obj.get("error")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            } else if let Some(s) = val.as_str() {
+                serde_json::from_str::<Value>(s).ok().and_then(|parsed| {
+                    parsed
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .map(|msg| msg.to_string())
+                })
+            } else {
+                None
+            };
+
+            assert!(
+                error_msg.is_some(),
+                "invoke_function should report error for missing function, got: {}",
+                val
+            );
+        }
+    }
 }

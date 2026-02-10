@@ -1,11 +1,10 @@
 ---
 source: crates/baml-rt-builder/tests/codegen_test.rs
-assertion_line: 263
 expression: baml_output
 ---
 class EscapeTest {
-  plain string  @description("A plain description")
-  quoted string  @description("Field with \"quoted\" value")
-  backslash string  @description("Path like C:\\Users\\test")
-  mixed string  @description("She said \"hello\\world\"")
+  plain string @description("A plain description")
+  quoted string @description("Field with \"quoted\" value")
+  backslash string @description("Path like C:\\Users\\test")
+  mixed string @description("She said \"hello\\world\"")
 }
