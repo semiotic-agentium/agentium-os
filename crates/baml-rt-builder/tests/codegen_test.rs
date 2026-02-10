@@ -227,6 +227,43 @@ fn test_schema_to_baml_array_types() {
 }
 
 #[test]
+fn test_schema_to_baml_description_escaping() {
+    let mut schemas = HashMap::new();
+    let mut type_names = HashMap::new();
+
+    let class_schema: Value = serde_json::json!({
+        "type": "object",
+        "properties": {
+            "plain": {
+                "type": "string",
+                "description": "A plain description"
+            },
+            "quoted": {
+                "type": "string",
+                "description": "Field with \"quoted\" value"
+            },
+            "backslash": {
+                "type": "string",
+                "description": "Path like C:\\Users\\test"
+            },
+            "mixed": {
+                "type": "string",
+                "description": "She said \"hello\\world\""
+            }
+        },
+        "required": ["plain", "quoted", "backslash", "mixed"]
+    });
+
+    schemas.insert("EscapeTest".to_string(), class_schema);
+    type_names.insert("EscapeTest".to_string(), "EscapeTest".to_string());
+
+    let baml_output = generate_baml_types_from_schemas(&schemas, &type_names)
+        .expect("Should generate BAML class with escaped descriptions");
+
+    insta::assert_snapshot!("baml_description_escaping", baml_output);
+}
+
+#[test]
 fn test_schema_to_baml_primitive_types() {
     // Test that primitive types are correctly converted
     let mut schemas = HashMap::new();

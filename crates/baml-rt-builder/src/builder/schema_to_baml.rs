@@ -225,8 +225,8 @@ fn generate_baml_class(
             .and_then(|obj| obj.get("description"))
             .and_then(|v| v.as_str())
             .map(|s| {
-                let escaped = s.replace('"', r#"\""#);
-                format!(" @description(\"{}\")", escaped)
+                let escaped = s.replace('\\', r#"\\"#).replace('"', r#"\""#);
+                format!(" @description(\"{escaped}\")")
             })
             .unwrap_or_default();
 
