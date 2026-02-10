@@ -1255,6 +1255,7 @@ dependencies = [
  "baml-runtime",
  "baml-types",
  "clap",
+ "dotenvy",
  "flate2",
  "genco",
  "inquire",

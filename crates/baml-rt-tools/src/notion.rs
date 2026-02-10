@@ -1,11 +1,10 @@
-//! Notion tool — `support/notion`.
+//! Notion tools — `support/notionSearchPages`, `support/notionGetPage`, `support/notionGetPageBlocks`.
 //!
-//! Provides a [`BamlTool`] implementation that calls the Notion REST API.
-//! Supports searching pages, fetching a page, and retrieving page blocks.
+//! Provides read-only access to the Notion REST API.
 
 use crate::bundles::Support;
 use crate::register_tool_metadata;
-use crate::tools::{BamlTool, ToolFunctionMetadata, ToolMetadataBuilder, ToolSecretRequirement};
+use crate::tools::{BamlTool, ToolAccess, ToolFunctionMetadata, ToolSecretRequirement};
 use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, Result};
 use schemars::JsonSchema;
@@ -18,37 +17,28 @@ pub const BASE_URL: &str = "https://api.notion.com/v1";
 pub const NOTION_VERSION: &str = "2025-09-03";
 
 // ---------------------------------------------------------------------------
-// Input — flat struct with action discriminator
+// Input types
 // ---------------------------------------------------------------------------
 
-/// Which Notion action to perform.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
-pub enum NotionAction {
-    SearchPages,
-    GetPage,
-    GetPageBlocks,
+pub struct NotionSearchPagesInput {
+    pub query: Option<String>,
+    pub start_cursor: Option<String>,
+    pub page_size: Option<u32>,
 }
 
-/// Input for the Notion tool.
-///
-/// Uses a flat struct with an `action` discriminator instead of a Rust enum
-/// so that BAML (which lacks sum types) can represent it as a single class
-/// with an enum field. Per-action field requirements are validated at runtime
-/// in [`NotionTool::execute`].
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
-pub struct NotionInput {
-    pub action: NotionAction,
-    /// Used by `SearchPages`.
-    pub query: Option<String>,
-    /// Required for `GetPage`.
-    pub page_id: Option<String>,
-    /// Required for `GetPageBlocks`.
-    pub block_id: Option<String>,
-    /// Optional pagination cursor for `SearchPages` and `GetPageBlocks`.
+pub struct NotionGetPageInput {
+    pub page_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct NotionGetPageBlocksInput {
+    pub block_id: String,
     pub start_cursor: Option<String>,
-    /// Optional page size for `SearchPages` and `GetPageBlocks`.
     pub page_size: Option<u32>,
 }
 
@@ -81,7 +71,6 @@ pub struct NotionSource {
     pub url: String,
 }
 
-/// Output returned by every Notion tool action.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 pub struct NotionOutput {
@@ -146,22 +135,17 @@ impl From<NotionError> for BamlRtError {
 }
 
 // ---------------------------------------------------------------------------
-// Tool struct and helpers
+// Client helpers
 // ---------------------------------------------------------------------------
 
-pub struct NotionTool {
+#[derive(Clone)]
+struct NotionClient {
     client: reqwest::Client,
     api_key: Option<String>,
 }
 
-impl Default for NotionTool {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl NotionTool {
-    pub fn new() -> Self {
+impl NotionClient {
+    fn new() -> Self {
         let api_key = std::env::var("NOTION_API_TOKEN").ok();
         Self {
             client: reqwest::Client::new(),
@@ -173,26 +157,29 @@ impl NotionTool {
         self.api_key.as_deref().ok_or(NotionError::MissingApiKey)
     }
 
-    fn require<'a>(value: &'a Option<String>, field: &str, action: &str) -> Result<&'a str> {
-        value.as_deref().ok_or_else(|| {
-            BamlRtError::InvalidArgument(format!("{field} is required for {action}"))
-        })
-    }
-
     fn normalize_id(id: &str) -> std::result::Result<String, NotionError> {
         let cleaned: String = id.chars().filter(|c| *c != '-').collect();
         if cleaned.len() != 32 || !cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err(NotionError::InvalidId { id: id.to_string() });
         }
-        let hyphenated = format!(
+        Ok(format!(
             "{}-{}-{}-{}-{}",
             &cleaned[0..8],
             &cleaned[8..12],
             &cleaned[12..16],
             &cleaned[16..20],
             &cleaned[20..32]
+        ))
+    }
+
+    fn auth_headers(&self, api_key: &str) -> reqwest::header::HeaderMap {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            reqwest::header::AUTHORIZATION,
+            format!("Bearer {api_key}").parse().unwrap(),
         );
-        Ok(hyphenated)
+        headers.insert("Notion-Version", NOTION_VERSION.parse().unwrap());
+        headers
     }
 
     #[tracing::instrument(skip_all, fields(url))]
@@ -222,18 +209,6 @@ impl NotionTool {
 
         resp.json().await.map_err(NotionError::Deserialize)
     }
-
-    fn auth_headers(&self, api_key: &str) -> reqwest::header::HeaderMap {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            format!("Bearer {api_key}").parse().unwrap(),
-        );
-        headers.insert("Notion-Version", NOTION_VERSION.parse().unwrap());
-        headers
-    }
-
-    // -- Action methods ----------------------------------------------------
 
     #[tracing::instrument(skip(self, api_key))]
     async fn search_pages(
@@ -400,49 +375,128 @@ impl NotionTool {
 }
 
 // ---------------------------------------------------------------------------
-// BamlTool implementation
+// Tools
 // ---------------------------------------------------------------------------
 
+pub struct NotionSearchPagesTool {
+    client: NotionClient,
+}
+
+impl Default for NotionSearchPagesTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NotionSearchPagesTool {
+    pub fn new() -> Self {
+        Self {
+            client: NotionClient::new(),
+        }
+    }
+}
+
 #[async_trait]
-impl BamlTool for NotionTool {
+impl BamlTool for NotionSearchPagesTool {
     type Bundle = Support;
-    const LOCAL_NAME: &'static str = "notion";
+    const LOCAL_NAME: &'static str = "notionSearchPages";
     type OpenInput = ();
-    type Input = NotionInput;
+    type Input = NotionSearchPagesInput;
     type Output = NotionOutput;
 
     fn description(&self) -> &'static str {
-        "Read from Notion: search pages, get a page, and retrieve page blocks."
+        "Search Notion pages by query. Read-only."
     }
 
-    #[tracing::instrument(skip(self), fields(action = ?args.action))]
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
-        let api_key = self.api_key()?;
-        match args.action {
-            NotionAction::SearchPages => {
-                self.search_pages(
-                    api_key,
-                    args.query.as_deref(),
-                    args.start_cursor.as_deref(),
-                    args.page_size,
-                )
-                .await
-            }
-            NotionAction::GetPage => {
-                let page_id = Self::require(&args.page_id, "page_id", "GetPage")?;
-                self.get_page(api_key, page_id).await
-            }
-            NotionAction::GetPageBlocks => {
-                let block_id = Self::require(&args.block_id, "block_id", "GetPageBlocks")?;
-                self.get_page_blocks(
-                    api_key,
-                    block_id,
-                    args.start_cursor.as_deref(),
-                    args.page_size,
-                )
-                .await
-            }
+        let api_key = self.client.api_key()?;
+        self.client
+            .search_pages(
+                api_key,
+                args.query.as_deref(),
+                args.start_cursor.as_deref(),
+                args.page_size,
+            )
+            .await
+    }
+}
+
+pub struct NotionGetPageTool {
+    client: NotionClient,
+}
+
+impl Default for NotionGetPageTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NotionGetPageTool {
+    pub fn new() -> Self {
+        Self {
+            client: NotionClient::new(),
         }
+    }
+}
+
+#[async_trait]
+impl BamlTool for NotionGetPageTool {
+    type Bundle = Support;
+    const LOCAL_NAME: &'static str = "notionGetPage";
+    type OpenInput = ();
+    type Input = NotionGetPageInput;
+    type Output = NotionOutput;
+
+    fn description(&self) -> &'static str {
+        "Fetch a Notion page by id. Read-only."
+    }
+
+    async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
+        let api_key = self.client.api_key()?;
+        self.client.get_page(api_key, &args.page_id).await
+    }
+}
+
+pub struct NotionGetPageBlocksTool {
+    client: NotionClient,
+}
+
+impl Default for NotionGetPageBlocksTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl NotionGetPageBlocksTool {
+    pub fn new() -> Self {
+        Self {
+            client: NotionClient::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl BamlTool for NotionGetPageBlocksTool {
+    type Bundle = Support;
+    const LOCAL_NAME: &'static str = "notionGetPageBlocks";
+    type OpenInput = ();
+    type Input = NotionGetPageBlocksInput;
+    type Output = NotionOutput;
+
+    fn description(&self) -> &'static str {
+        "Retrieve Notion block children for a page or block. Read-only."
+    }
+
+    async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
+        let api_key = self.client.api_key()?;
+        self.client
+            .get_page_blocks(
+                api_key,
+                &args.block_id,
+                args.start_cursor.as_deref(),
+                args.page_size,
+            )
+            .await
     }
 }
 
@@ -571,17 +625,21 @@ fn extract_parent_page_id(json: &serde_json::Value) -> Option<String> {
 // Metadata registration (compile-time, for codegen)
 // ---------------------------------------------------------------------------
 
-pub fn notion_metadata() -> ToolFunctionMetadata {
-    use crate::{TypeBasedMetadataBuilder, parse_tool_name_and_class};
-    let (name, class_name) = parse_tool_name_and_class("support/notion")
-        .expect("support/notion is a compile-time constant");
-    TypeBasedMetadataBuilder::<(), NotionInput, NotionOutput>::new(
+pub fn notion_search_pages_metadata() -> ToolFunctionMetadata {
+    use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
+    let (name, class_name) = parse_tool_name_and_class("support/notionSearchPages")
+        .expect("support/notionSearchPages is a compile-time constant");
+    TypeBasedMetadataBuilder::<(), NotionSearchPagesInput, NotionOutput>::new(
         name,
         class_name,
-        "Read Notion pages and blocks. Search pages, fetch a page, or retrieve page blocks."
-            .to_string(),
+        "Search Notion pages by query.".to_string(),
     )
-    .with_tags(vec!["support".to_string(), "notion".to_string()])
+    .with_tags(vec![
+        "support".to_string(),
+        "notion".to_string(),
+        "read".to_string(),
+    ])
+    .with_access(ToolAccess::Read)
     .with_secrets(vec![ToolSecretRequirement {
         name: "NOTION_API_TOKEN".to_string(),
         description: "Notion integration token".to_string(),
@@ -590,4 +648,52 @@ pub fn notion_metadata() -> ToolFunctionMetadata {
     .build_metadata()
 }
 
-register_tool_metadata!(notion_metadata);
+pub fn notion_get_page_metadata() -> ToolFunctionMetadata {
+    use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
+    let (name, class_name) = parse_tool_name_and_class("support/notionGetPage")
+        .expect("support/notionGetPage is a compile-time constant");
+    TypeBasedMetadataBuilder::<(), NotionGetPageInput, NotionOutput>::new(
+        name,
+        class_name,
+        "Fetch a Notion page by id.".to_string(),
+    )
+    .with_tags(vec![
+        "support".to_string(),
+        "notion".to_string(),
+        "read".to_string(),
+    ])
+    .with_access(ToolAccess::Read)
+    .with_secrets(vec![ToolSecretRequirement {
+        name: "NOTION_API_TOKEN".to_string(),
+        description: "Notion integration token".to_string(),
+        reason: "Required to authenticate with the Notion API".to_string(),
+    }])
+    .build_metadata()
+}
+
+pub fn notion_get_page_blocks_metadata() -> ToolFunctionMetadata {
+    use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
+    let (name, class_name) = parse_tool_name_and_class("support/notionGetPageBlocks")
+        .expect("support/notionGetPageBlocks is a compile-time constant");
+    TypeBasedMetadataBuilder::<(), NotionGetPageBlocksInput, NotionOutput>::new(
+        name,
+        class_name,
+        "Retrieve Notion block children for a page or block.".to_string(),
+    )
+    .with_tags(vec![
+        "support".to_string(),
+        "notion".to_string(),
+        "read".to_string(),
+    ])
+    .with_access(ToolAccess::Read)
+    .with_secrets(vec![ToolSecretRequirement {
+        name: "NOTION_API_TOKEN".to_string(),
+        description: "Notion integration token".to_string(),
+        reason: "Required to authenticate with the Notion API".to_string(),
+    }])
+    .build_metadata()
+}
+
+register_tool_metadata!(notion_search_pages_metadata);
+register_tool_metadata!(notion_get_page_metadata);
+register_tool_metadata!(notion_get_page_blocks_metadata);

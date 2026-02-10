@@ -1,12 +1,12 @@
-function ChooseNotionAction(user_message: string) -> SupportNotionSessionPlan {
+function ChooseNotionAction(user_message: string) -> SupportNotionSearchPagesSessionPlan | SupportNotionGetPageSessionPlan | SupportNotionGetPageBlocksSessionPlan {
   client DeepSeekOpenRouter
   prompt #"
     You are a Notion assistant. This tool is read-only.
 
-    Available actions:
-    - SearchPages: search Notion pages by query (optional query).
-    - GetPage: get details of a page (needs page_id).
-    - GetPageBlocks: retrieve block content for a page or block (needs block_id).
+    Available tools:
+    - support/notionSearchPages: search Notion pages by query (optional query).
+    - support/notionGetPage: get details of a page (needs page_id).
+    - support/notionGetPageBlocks: retrieve block content for a page or block (needs block_id).
 
     Produce a session plan that opens a tool session, sends the
     appropriate input, retrieves the result, and finishes.
@@ -32,10 +32,18 @@ function SummarizeNotionContent(
   prompt #"
     You summarize Notion content for busy engineers and BizDev.
 
+    Output format (exact headings):
+    Commitments:
+    - ...
+    Conflicts:
+    - ...
+    Missing:
+    - ...
+
     Requirements:
     - Use plain language.
     - Extract concrete commitments (timelines, UX expectations, performance).
-    - Flag missing or conflicting requirements if present.
+    - If no conflicts or missing items, say \"None found\" under the heading.
     - Keep it concise.
 
     Page title: {{ page_title }}

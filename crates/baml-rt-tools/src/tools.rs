@@ -446,6 +446,8 @@ pub struct ToolFunctionMetadata {
     pub tags: Vec<String>,
     /// Secrets required to execute this tool
     pub secret_requirements: Vec<ToolSecretRequirement>,
+    /// Access classification for policy and UI hints
+    pub access: Option<ToolAccess>,
     /// Origin of this tool (host vs guest)
     pub origin: ToolOrigin,
 }
@@ -483,6 +485,7 @@ impl ToolFunctionMetadata {
         description: String,
         tags: Vec<String>,
         secret_requirements: Vec<ToolSecretRequirement>,
+        access: Option<ToolAccess>,
         origin: ToolOrigin,
     ) -> Self
     where
@@ -513,6 +516,7 @@ impl ToolFunctionMetadata {
             baml_decl: None,
             tags,
             secret_requirements,
+            access,
             origin,
         }
     }
@@ -526,6 +530,7 @@ pub struct TypeBasedMetadataBuilder<OpenInput, Input, Output> {
     baml_decl: Option<String>,
     tags: Vec<String>,
     secret_requirements: Vec<ToolSecretRequirement>,
+    access: Option<ToolAccess>,
     origin: ToolOrigin,
     _phantom: std::marker::PhantomData<(OpenInput, Input, Output)>,
 }
@@ -545,6 +550,7 @@ where
             baml_decl: None,
             tags: Vec::new(),
             secret_requirements: Vec::new(),
+            access: None,
             origin: ToolOrigin::Host,
             _phantom: std::marker::PhantomData,
         }
@@ -571,6 +577,12 @@ where
         self
     }
 
+    /// Set access classification for the tool
+    pub fn with_access(mut self, access: ToolAccess) -> Self {
+        self.access = Some(access);
+        self
+    }
+
     /// Set the tool origin
     pub fn with_origin(mut self, origin: ToolOrigin) -> Self {
         self.origin = origin;
@@ -592,6 +604,7 @@ where
             self.description,
             self.tags,
             self.secret_requirements,
+            self.access,
             self.origin,
         );
         metadata.baml_decl = self.baml_decl;
@@ -613,6 +626,7 @@ pub struct ToolFunctionMetadataExport {
     pub baml_decl: Option<String>,
     pub tags: Vec<String>,
     pub secret_requirements: Vec<ToolSecretRequirement>,
+    pub access: Option<ToolAccess>,
     pub origin: ToolOrigin,
 }
 
@@ -631,6 +645,7 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
             baml_decl: metadata.baml_decl.clone(),
             tags: metadata.tags.clone(),
             secret_requirements: metadata.secret_requirements.clone(),
+            access: metadata.access,
             origin: metadata.origin,
         }
     }
@@ -648,6 +663,24 @@ pub struct ToolBundleMetadata {
 pub enum ToolCapability {
     OneShot,
     Streaming,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ToolAccess {
+    Read,
+    Write,
+    Delete,
+}
+
+impl std::fmt::Display for ToolAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            ToolAccess::Read => "read",
+            ToolAccess::Write => "write",
+            ToolAccess::Delete => "delete",
+        };
+        f.write_str(label)
+    }
 }
 
 /// Origin of a tool invocation (host vs guest)

@@ -23,6 +23,10 @@ use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_provenance::{AgentType, ProvEvent, ToolIndexConfig, index_tools};
 use baml_rt_provenance::{FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, ProvenanceWriter};
 use baml_rt_quickjs::BamlRuntimeManager;
+use baml_rt_tools::ToolCatalog;
+use baml_rt_tools::ToolName;
+use baml_rt_tools::tool_catalog::InventoryCatalog;
+use baml_rt_tools::tools::ToolAccess;
 use clap::{Parser, ValueEnum};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -32,6 +36,53 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
+
+fn parse_access_allowlist() -> Option<HashSet<ToolAccess>> {
+    let raw = std::env::var("BAML_TOOL_ACCESS_ALLOWLIST").ok()?;
+    let mut set = HashSet::new();
+    for token in raw.split(',') {
+        let value = token.trim().to_lowercase();
+        let access = match value.as_str() {
+            "read" => ToolAccess::Read,
+            "write" => ToolAccess::Write,
+            "delete" => ToolAccess::Delete,
+            "" => continue,
+            other => {
+                warn!(
+                    value = other,
+                    "Unknown access in BAML_TOOL_ACCESS_ALLOWLIST"
+                );
+                continue;
+            }
+        };
+        set.insert(access);
+    }
+    if set.is_empty() { None } else { Some(set) }
+}
+
+fn enforce_tool_access(tool_name: &str, allowlist: &Option<HashSet<ToolAccess>>) -> Result<()> {
+    let Some(allowlist) = allowlist else {
+        return Ok(());
+    };
+
+    let catalog = InventoryCatalog::new();
+    if let Some(metadata) = catalog.by_name(&ToolName::parse(tool_name)?) {
+        if let Some(access) = metadata.access {
+            if !allowlist.contains(&access) {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "Tool '{}' access '{}' is not allowed by BAML_TOOL_ACCESS_ALLOWLIST",
+                    tool_name, access
+                )));
+            }
+        } else {
+            warn!(
+                tool = tool_name,
+                "Tool access not declared; allowlist is set but tool was allowed"
+            );
+        }
+    }
+    Ok(())
+}
 
 /// Inert agent package - just holds package data
 struct AgentPackage {
@@ -61,6 +112,7 @@ impl AgentPackage {
         &self,
         provenance_writer: Option<Arc<dyn ProvenanceWriter>>,
         tool_index: Option<ToolIndexConfig>,
+        access_allowlist: &Option<HashSet<ToolAccess>>,
     ) -> Result<(A2aAgent, AgentId)> {
         let span = spans::load_agent_package(&self.extract_dir);
         let _guard = span.enter();
@@ -83,6 +135,7 @@ impl AgentPackage {
 
         // Register tool instances for every tool declared in the manifest
         for tool_name in &self.manifest.tools {
+            enforce_tool_access(tool_name, access_allowlist)?;
             match tool_name.as_str() {
                 "support/calculate" => {
                     runtime_manager
@@ -92,6 +145,21 @@ impl AgentPackage {
                 "support/clickup" => {
                     runtime_manager
                         .register_tool(baml_rt_tools::clickup::ClickUpTool::new())
+                        .await?;
+                }
+                "support/notionSearchPages" => {
+                    runtime_manager
+                        .register_tool(baml_rt_tools::notion::NotionSearchPagesTool::new())
+                        .await?;
+                }
+                "support/notionGetPage" => {
+                    runtime_manager
+                        .register_tool(baml_rt_tools::notion::NotionGetPageTool::new())
+                        .await?;
+                }
+                "support/notionGetPageBlocks" => {
+                    runtime_manager
+                        .register_tool(baml_rt_tools::notion::NotionGetPageBlocksTool::new())
                         .await?;
                 }
                 other => {
@@ -226,17 +294,20 @@ struct AgentRunner {
     agents: HashMap<String, BootedAgent>,
     provenance_writer: Option<Arc<dyn ProvenanceWriter>>,
     tool_index: Option<ToolIndexConfig>,
+    access_allowlist: Option<HashSet<ToolAccess>>,
 }
 
 impl AgentRunner {
     fn new(
         provenance_writer: Option<Arc<dyn ProvenanceWriter>>,
         tool_index: Option<ToolIndexConfig>,
+        access_allowlist: Option<HashSet<ToolAccess>>,
     ) -> Self {
         Self {
             agents: HashMap::new(),
             provenance_writer,
             tool_index,
+            access_allowlist,
         }
     }
 
@@ -246,7 +317,11 @@ impl AgentRunner {
         let name = package.name().to_string();
         // Boot the package into a running agent
         let (agent, _agent_id) = package
-            .boot(self.provenance_writer.clone(), self.tool_index.clone())
+            .boot(
+                self.provenance_writer.clone(),
+                self.tool_index.clone(),
+                &self.access_allowlist,
+            )
             .await?;
 
         let version = package.version().to_string();
@@ -698,6 +773,7 @@ fn build_provenance_writer(store: &ProvenanceStoreKind) -> Option<Arc<dyn Proven
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing
     tracing_setup::init_tracing();
+    let _ = dotenvy::dotenv();
 
     info!("BAML Agent Runner starting");
 
@@ -706,12 +782,13 @@ async fn main() -> anyhow::Result<()> {
         .into_config()
         .context("Failed to parse arguments")?;
     let provenance_writer = build_provenance_writer(&config.provenance_store);
+    let access_allowlist = parse_access_allowlist();
     let tool_index = match &config.provenance_store {
         ProvenanceStoreKind::FalkorDb { url, graph } => {
             Some(ToolIndexConfig::new(url.clone(), graph.clone()))
         }
     };
-    let mut runner = AgentRunner::new(provenance_writer, tool_index);
+    let mut runner = AgentRunner::new(provenance_writer, tool_index, access_allowlist);
 
     for package in &config.packages {
         let package_path = Path::new(package);

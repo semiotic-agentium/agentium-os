@@ -204,6 +204,10 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
     let abort_step_name = format!("{}AbortStep", class_name);
     let step_union_name = format!("{}SessionStep", class_name);
     let plan_type_name = format!("{}SessionPlan", class_name);
+    let access_note = tool
+        .access
+        .map(|access| format!(" Access: {}.", access))
+        .unwrap_or_default();
 
     // Generate distinct step types for each FSM operation
     write_line(output, &format!("class {} {{", open_step_name))?;
@@ -291,8 +295,8 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
     write_line(
         output,
         &format!(
-            "  steps {}[] @description(\"Array of FSM steps. MUST follow this strict order: 1) Open (with optional initial_input), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example valid plan: [{{op: 'Open', initial_input: {{...}}}}, {{op: 'Next'}}, {{op: 'Finish'}}]. Tool identity is inferred from the input schema (no tool_name field).\")",
-            step_union_name
+            "  steps {}[] @description(\"Array of FSM steps. MUST follow this strict order: 1) Open (with optional initial_input), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example valid plan: [{{op: 'Open', initial_input: {{...}}}}, {{op: 'Next'}}, {{op: 'Finish'}}]. Tool identity is inferred from the input schema (no tool_name field).{}\")",
+            step_union_name, access_note
         ),
     )?;
     write_line(output, "}")?;

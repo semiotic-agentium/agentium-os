@@ -14,15 +14,66 @@ use baml_rt_core::ids::AgentId;
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge};
-use baml_rt_tools::tool_catalog::all_tool_metadata;
+use baml_rt_tools::ToolCatalog;
+use baml_rt_tools::ToolName;
+use baml_rt_tools::tool_catalog::{InventoryCatalog, all_tool_metadata};
+use baml_rt_tools::tools::ToolAccess;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::warn;
 use uuid::Uuid;
+
+fn parse_access_allowlist() -> Option<HashSet<ToolAccess>> {
+    let raw = std::env::var("BAML_TOOL_ACCESS_ALLOWLIST").ok()?;
+    let mut set = HashSet::new();
+    for token in raw.split(',') {
+        let value = token.trim().to_lowercase();
+        let access = match value.as_str() {
+            "read" => ToolAccess::Read,
+            "write" => ToolAccess::Write,
+            "delete" => ToolAccess::Delete,
+            "" => continue,
+            other => {
+                warn!(
+                    value = other,
+                    "Unknown access in BAML_TOOL_ACCESS_ALLOWLIST"
+                );
+                continue;
+            }
+        };
+        set.insert(access);
+    }
+    if set.is_empty() { None } else { Some(set) }
+}
+
+fn enforce_tool_access(tool_name: &str, allowlist: &Option<HashSet<ToolAccess>>) -> Result<()> {
+    let Some(allowlist) = allowlist else {
+        return Ok(());
+    };
+    let catalog = InventoryCatalog::new();
+    if let Some(metadata) = catalog.by_name(&ToolName::parse(tool_name)?) {
+        if let Some(access) = metadata.access {
+            if !allowlist.contains(&access) {
+                return Err(BamlRtError::InvalidArgument(format!(
+                    "Tool '{}' access '{}' is not allowed by BAML_TOOL_ACCESS_ALLOWLIST",
+                    tool_name, access
+                )));
+            }
+        } else {
+            warn!(
+                tool = tool_name,
+                "Tool access not declared; allowlist is set but tool was allowed"
+            );
+        }
+    }
+    Ok(())
+}
 
 #[derive(Parser)]
 #[command(name = "baml-agent-builder")]
@@ -92,6 +143,7 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_setup::init_tracing();
+    let _ = dotenvy::dotenv();
 
     let cli = Cli::parse();
 
@@ -270,7 +322,8 @@ async fn run_agent(
 
     // Load the agent package
     println!("📦 Loading agent package: {}", package_path);
-    let agent = load_agent_package(package_path.as_path()).await?;
+    let access_allowlist = parse_access_allowlist();
+    let agent = load_agent_package(package_path.as_path(), &access_allowlist).await?;
     println!("✅ Agent loaded: {}", agent.name());
 
     // If function is specified, call it once
@@ -384,7 +437,10 @@ impl LoadedAgent {
     }
 }
 
-async fn load_agent_package(package_path: &std::path::Path) -> Result<LoadedAgent> {
+async fn load_agent_package(
+    package_path: &std::path::Path,
+    access_allowlist: &Option<HashSet<ToolAccess>>,
+) -> Result<LoadedAgent> {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -434,6 +490,47 @@ async fn load_agent_package(package_path: &std::path::Path) -> Result<LoadedAgen
         })?;
         let mut rm = BamlRuntimeManager::new()?;
         rm.load_schema(baml_src_str)?;
+
+        let tools = manifest_json
+            .get("tools")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        if !tools.is_empty() {
+            rm.set_tool_allowlist(tools.iter().cloned().collect::<HashSet<_>>())
+                .await?;
+
+            for tool_name in &tools {
+                enforce_tool_access(tool_name, access_allowlist)?;
+                match tool_name.as_str() {
+                    "support/notionSearchPages" => {
+                        rm.register_tool(baml_rt_tools::notion::NotionSearchPagesTool::new())
+                            .await?;
+                    }
+                    "support/notionGetPage" => {
+                        rm.register_tool(baml_rt_tools::notion::NotionGetPageTool::new())
+                            .await?;
+                    }
+                    "support/notionGetPageBlocks" => {
+                        rm.register_tool(baml_rt_tools::notion::NotionGetPageBlocksTool::new())
+                            .await?;
+                    }
+                    other => {
+                        warn!(
+                            tool = other,
+                            "Unknown tool in manifest, skipping registration"
+                        );
+                    }
+                }
+            }
+        }
+
         rm
     };
 

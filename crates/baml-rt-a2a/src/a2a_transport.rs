@@ -217,6 +217,7 @@ impl A2aAgent {
             baml_decl: None,
             tags: Vec::new(),
             secret_requirements: Vec::new(),
+            access: None,
             origin: baml_rt_tools::ToolOrigin::Guest,
         };
 

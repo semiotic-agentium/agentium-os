@@ -80,6 +80,7 @@ async fn tool_index_creates_nodes_and_fulltext() {
             description: "Weather API key".to_string(),
             reason: "call provider".to_string(),
         }],
+        access: None,
         origin: baml_rt_tools::ToolOrigin::Host,
     }];
 

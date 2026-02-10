@@ -25,77 +25,144 @@ enum ToolSessionOp {
 }
 
 // Domain types generated from JSON schemas
-enum NotionAction {
-  SearchPages
-  GetPage
-  GetPageBlocks
+class NotionBlockSummary {
+  id string 
+  block_type string 
+  text string? 
+  has_children bool 
 }
 
-class NotionInput {
-  action NotionAction
-  query string? @description("Used by SearchPages.")
-  page_id string? @description("Required for GetPage.")
-  block_id string? @description("Required for GetPageBlocks.")
-  start_cursor string? @description("Optional pagination cursor for SearchPages and GetPageBlocks.")
-  page_size int? @description("Optional page size for SearchPages and GetPageBlocks.")
+class NotionGetPageBlocksInput {
+  block_id string 
+  start_cursor string? 
+  page_size float? 
+}
+
+class NotionGetPageInput {
+  page_id string 
 }
 
 class NotionOutput {
-  pages NotionPageSummary[]
-  blocks NotionBlockSummary[]
-  next_cursor string?
-  has_more bool
-  sources NotionSource[]
-  message string
+  pages NotionPageSummary[] 
+  blocks NotionBlockSummary[] 
+  next_cursor string? 
+  has_more bool 
+  sources NotionSource[] 
+  message string 
 }
 
 class NotionPageSummary {
-  id string
-  title string
-  url string
-  last_edited_time string?
+  id string 
+  title string 
+  url string 
+  last_edited_time string? 
 }
 
-class NotionBlockSummary {
-  id string
-  block_type string
-  text string?
-  has_children bool
+class NotionSearchPagesInput {
+  query string? 
+  start_cursor string? 
+  page_size float? 
 }
 
 class NotionSource {
-  page_id string
-  url string
+  page_id string 
+  url string 
 }
 
-class SupportNotionOpenStep {
+
+class SupportNotionSearchPagesOpenStep {
   op "Open"
   reason string? @description("Optional explanation for this step.")
 }
 
-class SupportNotionSendStep {
+class SupportNotionSearchPagesSendStep {
   op "Send"
-  input NotionInput @description("Input to send to the already-open session.")
+  input NotionSearchPagesInput @description("Input to send to the already-open session.")
   reason string? @description("Optional explanation for this step.")
 }
 
-class SupportNotionNextStep {
+class SupportNotionSearchPagesNextStep {
   op "Next"
   reason string? @description("Optional explanation for this step.")
 }
 
-class SupportNotionFinishStep {
+class SupportNotionSearchPagesFinishStep {
   op "Finish"
   reason string? @description("Optional explanation for this step.")
 }
 
-class SupportNotionAbortStep {
+class SupportNotionSearchPagesAbortStep {
   op "Abort"
   reason string? @description("Optional explanation for aborting the session.")
 }
 
-type SupportNotionSessionStep = SupportNotionOpenStep | SupportNotionSendStep | SupportNotionNextStep | SupportNotionFinishStep | SupportNotionAbortStep
+type SupportNotionSearchPagesSessionStep = SupportNotionSearchPagesOpenStep | SupportNotionSearchPagesSendStep | SupportNotionSearchPagesNextStep | SupportNotionSearchPagesFinishStep | SupportNotionSearchPagesAbortStep
 
-class SupportNotionSessionPlan {
-  steps SupportNotionSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (with optional initial_input), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example valid plan: [{op: 'Open', initial_input: {...}}, {op: 'Next'}, {op: 'Finish'}]. Tool identity is inferred from the input schema (no tool_name field).")
+class SupportNotionSearchPagesSessionPlan {
+  steps SupportNotionSearchPagesSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (with optional initial_input), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example valid plan: [{op: 'Open', initial_input: {...}}, {op: 'Next'}, {op: 'Finish'}]. Tool identity is inferred from the input schema (no tool_name field).")
 }
+
+class SupportNotionGetPageOpenStep {
+  op "Open"
+  reason string? @description("Optional explanation for this step.")
+}
+
+class SupportNotionGetPageSendStep {
+  op "Send"
+  input NotionGetPageInput @description("Input to send to the already-open session.")
+  reason string? @description("Optional explanation for this step.")
+}
+
+class SupportNotionGetPageNextStep {
+  op "Next"
+  reason string? @description("Optional explanation for this step.")
+}
+
+class SupportNotionGetPageFinishStep {
+  op "Finish"
+  reason string? @description("Optional explanation for this step.")
+}
+
+class SupportNotionGetPageAbortStep {
+  op "Abort"
+  reason string? @description("Optional explanation for aborting the session.")
+}
+
+type SupportNotionGetPageSessionStep = SupportNotionGetPageOpenStep | SupportNotionGetPageSendStep | SupportNotionGetPageNextStep | SupportNotionGetPageFinishStep | SupportNotionGetPageAbortStep
+
+class SupportNotionGetPageSessionPlan {
+  steps SupportNotionGetPageSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (with optional initial_input), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example valid plan: [{op: 'Open', initial_input: {...}}, {op: 'Next'}, {op: 'Finish'}]. Tool identity is inferred from the input schema (no tool_name field).")
+}
+
+class SupportNotionGetPageBlocksOpenStep {
+  op "Open"
+  reason string? @description("Optional explanation for this step.")
+}
+
+class SupportNotionGetPageBlocksSendStep {
+  op "Send"
+  input NotionGetPageBlocksInput @description("Input to send to the already-open session.")
+  reason string? @description("Optional explanation for this step.")
+}
+
+class SupportNotionGetPageBlocksNextStep {
+  op "Next"
+  reason string? @description("Optional explanation for this step.")
+}
+
+class SupportNotionGetPageBlocksFinishStep {
+  op "Finish"
+  reason string? @description("Optional explanation for this step.")
+}
+
+class SupportNotionGetPageBlocksAbortStep {
+  op "Abort"
+  reason string? @description("Optional explanation for aborting the session.")
+}
+
+type SupportNotionGetPageBlocksSessionStep = SupportNotionGetPageBlocksOpenStep | SupportNotionGetPageBlocksSendStep | SupportNotionGetPageBlocksNextStep | SupportNotionGetPageBlocksFinishStep | SupportNotionGetPageBlocksAbortStep
+
+class SupportNotionGetPageBlocksSessionPlan {
+  steps SupportNotionGetPageBlocksSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (with optional initial_input), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example valid plan: [{op: 'Open', initial_input: {...}}, {op: 'Next'}, {op: 'Finish'}]. Tool identity is inferred from the input schema (no tool_name field).")
+}
+
