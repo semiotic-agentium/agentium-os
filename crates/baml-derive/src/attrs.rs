@@ -132,10 +132,9 @@ pub(crate) fn extract_doc_comment(attrs: &[Attribute]) -> Option<String> {
             continue;
         }
         if let Meta::NameValue(MetaNameValue {
-            value:
-                Expr::Lit(ExprLit {
-                    lit: Lit::Str(lit), ..
-                }),
+            value: Expr::Lit(ExprLit {
+                lit: Lit::Str(lit), ..
+            }),
             ..
         }) = &attr.meta
         {

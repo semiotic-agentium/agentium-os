@@ -84,7 +84,8 @@ fn expand_struct(
         };
 
         // Collect user-type dependencies (non-primitive field types).
-        if !skip && field_attrs.type_override.is_none()
+        if !skip
+            && field_attrs.type_override.is_none()
             && let Some(dep) = extract_user_type_dep(&field.ty)
         {
             dep_names.push(dep);
@@ -101,10 +102,7 @@ fn expand_struct(
         });
     }
 
-    let dep_tokens = dep_names
-        .iter()
-        .map(|d| quote! { #d })
-        .collect::<Vec<_>>();
+    let dep_tokens = dep_names.iter().map(|d| quote! { #d }).collect::<Vec<_>>();
 
     Ok(quote! {
         impl ::baml_derive_core::BamlType for #name {
@@ -220,10 +218,7 @@ fn expand_union_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream
         .map(|n| quote! { #n })
         .collect::<Vec<_>>();
 
-    let dep_tokens = dep_names
-        .iter()
-        .map(|d| quote! { #d })
-        .collect::<Vec<_>>();
+    let dep_tokens = dep_names.iter().map(|d| quote! { #d }).collect::<Vec<_>>();
 
     Ok(quote! {
         impl ::baml_derive_core::BamlType for #name {
@@ -345,10 +340,8 @@ fn extract_single_generic_type(segment: &syn::PathSegment) -> Option<syn::Type> 
 fn extract_two_generic_types(segment: &syn::PathSegment) -> Option<(syn::Type, syn::Type)> {
     if let syn::PathArguments::AngleBracketed(args) = &segment.arguments
         && args.args.len() >= 2
-        && let (
-            Some(syn::GenericArgument::Type(k)),
-            Some(syn::GenericArgument::Type(v)),
-        ) = (args.args.first(), args.args.iter().nth(1))
+        && let (Some(syn::GenericArgument::Type(k)), Some(syn::GenericArgument::Type(v))) =
+            (args.args.first(), args.args.iter().nth(1))
     {
         return Some((k.clone(), v.clone()));
     }
