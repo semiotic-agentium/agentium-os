@@ -202,7 +202,7 @@ async fn test_full_integration_package_load_execute() {
         }
     });
 
-    let scope = baml_rt_core::context::InvocationScope::standalone(agent_id.clone());
+    let scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id.clone());
     let result = bridge.invoke_js_function(&scope, function_name, args).await;
 
     // Assert the function is found and can be called

@@ -13,6 +13,7 @@ publish = false
  baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-id = { path = "../baml-rt-id" }
  baml-rt-interceptor = { path = "../baml-rt-interceptor" }
+baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 serde = { workspace = true }
 serde_json = { workspace = true }

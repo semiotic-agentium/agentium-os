@@ -1,11 +1,14 @@
+#![allow(dead_code)]
+
 use baml_rt_core::ids::{
     AgentId, ArtifactId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId,
 };
 use baml_rt_provenance::{
     AgentType, CallScope, FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, GlobalEvent,
-    LlmUsage, ProvEvent, ProvEventData, ProvenanceWriter, TaskScopedEvent,
+    LlmUsage, ProvEvent, ProvEventData, ProvenanceContextReader, ProvenanceWriter, TaskScopedEvent,
 };
 use insta::assert_json_snapshot;
+use serde::Serialize;
 use serde_json::{Value, json};
 use testcontainers::GenericImage;
 use testcontainers::core::ContainerPort;
@@ -236,7 +239,7 @@ async fn falkordb_writer_persists_large_document() {
                 ],
                 "temperature": 0.2
             }),
-            metadata: json!({"request_id": "req-1", "message_id": "msg-1"}),
+            metadata: json!({"request_id": "req-1", "message_id": "msg-1", "agent_id": agent_id}),
         },
     });
     let llm_call_completed = ProvEvent::Task(TaskScopedEvent {
@@ -258,7 +261,11 @@ async fn falkordb_writer_persists_large_document() {
                 ],
                 "temperature": 0.2
             }),
-            metadata: json!({"usage": {"prompt": 10, "completion": 20}}),
+            metadata: json!({
+                "message_id": "msg-1",
+                "agent_id": agent_id,
+                "usage": {"prompt": 10, "completion": 20}
+            }),
             usage: LlmUsage::Known {
                 prompt_tokens: 10,
                 completion_tokens: 20,
@@ -283,7 +290,7 @@ async fn falkordb_writer_persists_large_document() {
                 "limit": 6,
                 "memory": ["user: Hi Tony", "assistant: Hey, what's on your mind?"]
             }),
-            metadata: json!({"source": "baml"}),
+            metadata: json!({"source": "baml", "message_id": "msg-1", "agent_id": agent_id}),
         },
     });
     let tool_call_completed = ProvEvent::Task(TaskScopedEvent {
@@ -301,7 +308,11 @@ async fn falkordb_writer_persists_large_document() {
                 "limit": 6,
                 "memory": ["user: Hi Tony", "assistant: Hey, what's on your mind?"]
             }),
-            metadata: json!({"result": {"count": 2, "tokens": [1, 2, 3]}}),
+            metadata: json!({
+                "message_id": "msg-1",
+                "agent_id": agent_id,
+                "result": {"count": 2, "tokens": [1, 2, 3]}
+            }),
             duration_ms: 25,
             success: true,
         },
@@ -474,6 +485,7 @@ async fn falkordb_writer_persists_send_message_calls_without_task() {
             }),
             metadata: json!({
                 "message_id": "msg-10",
+                "agent_id": agent_id,
                 "usage": {"prompt": 4, "completion": 6}
             }),
             usage: LlmUsage::Known {
@@ -496,7 +508,7 @@ async fn falkordb_writer_persists_send_message_calls_without_task() {
             tool_name: "memory/tony".to_string(),
             function_name: Some("ChooseTonyMemoryTool".to_string()),
             args: json!({"limit": 3}),
-            metadata: json!({"message_id": "msg-10"}),
+            metadata: json!({"message_id": "msg-10", "agent_id": agent_id}),
         },
     });
     let tool_call_completed = ProvEvent::Global(GlobalEvent {
@@ -587,10 +599,641 @@ async fn falkordb_writer_persists_send_message_calls_without_task() {
     );
 }
 
+#[tokio::test]
+async fn falkordb_conversation_history_and_attribution_snapshot() {
+    let (_container, connection) = start_falkordb().await;
+    let graph = "baml_prov_conversation_history_test";
+    wait_for_falkordb(&connection, graph).await;
+
+    let writer =
+        FalkorDbProvenanceWriter::new(FalkorDbProvenanceConfig::new(connection.clone(), graph));
+    let context_id = ContextId::new(4, 1);
+    let task_id = TaskId::from_external(ExternalId::new("task-ctx-4"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000010").unwrap());
+
+    let events = vec![
+        ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(40),
+            context_id: context_id.clone(),
+            timestamp_ms: 1_700_000_099_990,
+            data: ProvEventData::AgentBooted {
+                agent_id: agent_id.clone(),
+                agent_type: AgentType::new("conversational").expect("agent_type"),
+                agent_version: "1.0.0".to_string(),
+                archive_path: "conversational-context-auto@1.0.0".to_string(),
+            },
+        }),
+        ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(41),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_099_995,
+            data: ProvEventData::TaskCreated {
+                task_id: task_id.clone(),
+                agent_id: agent_id.clone(),
+            },
+        }),
+        ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(42),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_100_000,
+            data: ProvEventData::MessageReceived {
+                id: MessageId::from_external(ExternalId::new("msg-ctx-1")),
+                role: "user".to_string(),
+                content: vec!["Remember codeword ORBIT.".to_string()],
+                metadata: Some(std::collections::HashMap::from([
+                    (
+                        "agent_id".to_string(),
+                        "00000000-0000-0000-0000-000000000010".to_string(),
+                    ),
+                    ("channel".to_string(), "a2a".to_string()),
+                    ("message_id".to_string(), "msg-ctx-1".to_string()),
+                ])),
+            },
+        }),
+        ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(43),
+            context_id: context_id.clone(),
+            timestamp_ms: 1_700_000_100_010,
+            data: ProvEventData::ToolCallStarted {
+                scope: CallScope::Message {
+                    message_id: MessageId::from_external(ExternalId::new("msg-ctx-1")),
+                },
+                tool_name: "support/calculate".to_string(),
+                function_name: None,
+                args: json!({}),
+                metadata: json!({
+                    "message_id": "msg-ctx-1",
+                    "phase": "open",
+                    "agent_id": "00000000-0000-0000-0000-000000000010",
+                    "args": {}
+                }),
+            },
+        }),
+        ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(44),
+            context_id: context_id.clone(),
+            timestamp_ms: 1_700_000_100_020,
+            data: ProvEventData::ToolCallCompleted {
+                scope: CallScope::Message {
+                    message_id: MessageId::from_external(ExternalId::new("msg-ctx-1")),
+                },
+                tool_name: "support/calculate".to_string(),
+                function_name: None,
+                args: json!({}),
+                metadata: json!({
+                    "message_id": "msg-ctx-1",
+                    "phase": "open",
+                    "agent_id": "00000000-0000-0000-0000-000000000010",
+                    "args": {}
+                }),
+                duration_ms: 7,
+                success: true,
+            },
+        }),
+        ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(45),
+            context_id: context_id.clone(),
+            timestamp_ms: 1_700_000_100_025,
+            data: ProvEventData::ToolCallStarted {
+                scope: CallScope::Message {
+                    message_id: MessageId::from_external(ExternalId::new("msg-ctx-1")),
+                },
+                tool_name: "support/calculate".to_string(),
+                function_name: None,
+                args: json!({
+                    "expression": {"left": 2, "operation": "Add", "right": 3}
+                }),
+                metadata: json!({
+                    "message_id": "msg-ctx-1",
+                    "phase": "send",
+                    "agent_id": "00000000-0000-0000-0000-000000000010",
+                    "args": {"expression": {"left": 2, "operation": "Add", "right": 3}}
+                }),
+            },
+        }),
+        ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(46),
+            context_id: context_id.clone(),
+            timestamp_ms: 1_700_000_100_032,
+            data: ProvEventData::ToolCallCompleted {
+                scope: CallScope::Message {
+                    message_id: MessageId::from_external(ExternalId::new("msg-ctx-1")),
+                },
+                tool_name: "support/calculate".to_string(),
+                function_name: None,
+                args: json!({
+                    "expression": {"left": 2, "operation": "Add", "right": 3}
+                }),
+                metadata: json!({
+                    "message_id": "msg-ctx-1",
+                    "phase": "send",
+                    "agent_id": "00000000-0000-0000-0000-000000000010",
+                    "args": {"expression": {"left": 2, "operation": "Add", "right": 3}},
+                    "result": {"expression": "2 + 3", "result": 5, "formatted": "2 + 3 = 5"}
+                }),
+                duration_ms: 21,
+                success: true,
+            },
+        }),
+        ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(47),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_100_040,
+            data: ProvEventData::MessageSent {
+                id: MessageId::from_external(ExternalId::new("msg-ctx-2")),
+                role: "assistant".to_string(),
+                content: vec!["Computed result is 5. I will remember ORBIT.".to_string()],
+                metadata: Some(std::collections::HashMap::from([
+                    (
+                        "agent_id".to_string(),
+                        "00000000-0000-0000-0000-000000000010".to_string(),
+                    ),
+                    ("message_id".to_string(), "msg-ctx-2".to_string()),
+                ])),
+            },
+        }),
+        ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(48),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_100_080,
+            data: ProvEventData::MessageReceived {
+                id: MessageId::from_external(ExternalId::new("msg-ctx-3")),
+                role: "user".to_string(),
+                content: vec!["What codeword did I ask you to remember?".to_string()],
+                metadata: Some(std::collections::HashMap::from([
+                    (
+                        "agent_id".to_string(),
+                        "00000000-0000-0000-0000-000000000010".to_string(),
+                    ),
+                    ("channel".to_string(), "a2a".to_string()),
+                    ("message_id".to_string(), "msg-ctx-3".to_string()),
+                ])),
+            },
+        }),
+        ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(49),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_100_120,
+            data: ProvEventData::MessageSent {
+                id: MessageId::from_external(ExternalId::new("msg-ctx-4")),
+                role: "assistant".to_string(),
+                content: vec!["ORBIT".to_string()],
+                metadata: Some(std::collections::HashMap::from([
+                    (
+                        "agent_id".to_string(),
+                        "00000000-0000-0000-0000-000000000010".to_string(),
+                    ),
+                    ("message_id".to_string(), "msg-ctx-4".to_string()),
+                ])),
+            },
+        }),
+    ];
+    writer.add_events(events).await.expect("write events");
+
+    let attribution_links = execute_cypher_query(
+        "MATCH (mp:A2AMessageProcessing)-[r]->(target) \
+         WHERE mp.`a2a:context_id` = \"ctx-4-1\" \
+         RETURN mp.name, type(r), target.name, properties(r) \
+         ORDER BY mp.name, type(r), target.name",
+        graph,
+        &connection,
+        true,
+    )
+    .await
+    .expect("query attribution links");
+
+    let context_items = writer
+        .conversation_context(&context_id, None)
+        .await
+        .expect("read conversation context");
+    let attribution_links = attribution_links_dto(&attribution_links);
+    let conversation_history = context_items_to_dto(&context_items);
+    let tool_turns = tool_history_from_context_items(&context_items);
+    let snapshot = TaskConversationDto {
+        task_id: "task:task-ctx-4".to_string(),
+        context_id: "ctx-4-1".to_string(),
+        conversation_history,
+        attribution_links,
+        tool_call_history: tool_turns.clone(),
+    };
+    assert_json_snapshot!(
+        "falkordb_conversation_history_and_attribution_snapshot",
+        snapshot
+    );
+}
+
 fn graph_snapshot_json(raw: &str) -> Value {
     parse_graph_snapshot(raw)
         .map(normalize_value)
         .unwrap_or_else(|| Value::String(raw.to_string()))
+}
+
+#[derive(Debug, Serialize)]
+struct TaskConversationDto {
+    task_id: String,
+    context_id: String,
+    conversation_history: Vec<ConversationContextItemDto>,
+    attribution_links: Vec<AttributionLinkDto>,
+    tool_call_history: Vec<ToolCallDto>,
+}
+
+#[derive(Debug, Serialize)]
+struct ConversationTurnDto {
+    event_id: String,
+    direction: String,
+    role: String,
+    content: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct ConversationContextItemDto {
+    event_id: String,
+    role: String,
+    content: Value,
+    source: String,
+}
+
+#[derive(Debug, Serialize)]
+struct AttributionLinkDto {
+    message_processing: String,
+    relation: String,
+    target: String,
+    relation_props: Value,
+}
+
+#[derive(Debug, Serialize, Clone)]
+struct ToolCallDto {
+    event_id: String,
+    tool_call: String,
+    tool_name: String,
+    function_name: Option<String>,
+    metadata: Value,
+    args: Value,
+    args_relation_props: Value,
+    result: Value,
+    result_relation_props: Value,
+}
+
+fn context_items_to_dto(
+    items: &[baml_rt_provenance::ProvenanceConversationContextItem],
+) -> Vec<ConversationContextItemDto> {
+    items
+        .iter()
+        .map(|item| ConversationContextItemDto {
+            event_id: item.event_id.clone(),
+            role: item.role.clone(),
+            content: item.content.clone(),
+            source: item.source.clone(),
+        })
+        .collect()
+}
+
+fn tool_history_from_context_items(
+    items: &[baml_rt_provenance::ProvenanceConversationContextItem],
+) -> Vec<ToolCallDto> {
+    let mut calls: std::collections::BTreeMap<String, ToolCallDto> =
+        std::collections::BTreeMap::new();
+
+    for item in items {
+        match item.source.as_str() {
+            "tool_call" => {
+                let tool_name = item
+                    .content
+                    .get("tool_call")
+                    .and_then(|v| v.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string();
+                let args = item
+                    .content
+                    .get("tool_call")
+                    .and_then(|v| v.get("args"))
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                calls
+                    .entry(item.event_id.clone())
+                    .or_insert_with(|| ToolCallDto {
+                        event_id: item.event_id.clone(),
+                        tool_call: format!("tool_call:{}", item.event_id),
+                        tool_name: tool_name.clone(),
+                        function_name: None,
+                        metadata: json!({}),
+                        args,
+                        args_relation_props: json!({}),
+                        result: json!({}),
+                        result_relation_props: json!({}),
+                    });
+            }
+            "tool_result" => {
+                let tool_name = item
+                    .content
+                    .get("tool_name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown")
+                    .to_string();
+                let result = item
+                    .content
+                    .get("result")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                let metadata = item
+                    .content
+                    .get("metadata")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                let entry = calls
+                    .entry(item.event_id.clone())
+                    .or_insert_with(|| ToolCallDto {
+                        event_id: item.event_id.clone(),
+                        tool_call: format!("tool_call:{}", item.event_id),
+                        tool_name: tool_name.clone(),
+                        function_name: None,
+                        metadata: json!({}),
+                        args: json!({}),
+                        args_relation_props: json!({}),
+                        result: json!({}),
+                        result_relation_props: json!({}),
+                    });
+                entry.tool_name = tool_name;
+                entry.metadata = metadata;
+                entry.result = result;
+            }
+            _ => {}
+        }
+    }
+
+    calls.into_values().collect()
+}
+
+fn conversation_turns_dto(raw: &str) -> Vec<ConversationTurnDto> {
+    let rows = snapshot_rows(raw);
+    rows.into_iter()
+        .filter(|row| row.len() >= 4)
+        .map(|row| ConversationTurnDto {
+            event_id: value_as_string(&row[0]),
+            direction: value_as_string(&row[1]),
+            role: value_as_string(&row[2]),
+            content: row[3].clone(),
+        })
+        .collect()
+}
+
+fn conversation_context_dto(
+    message_turns: &[ConversationTurnDto],
+    tool_turns: &[ToolCallDto],
+) -> Vec<ConversationContextItemDto> {
+    let mut items: Vec<ConversationContextItemDto> = message_turns
+        .iter()
+        .map(|turn| ConversationContextItemDto {
+            event_id: turn.event_id.clone(),
+            role: match turn.direction.as_str() {
+                "received" => "user".to_string(),
+                _ => "assistant".to_string(),
+            },
+            content: turn.content.clone(),
+            source: "message".to_string(),
+        })
+        .collect();
+
+    for call in tool_turns {
+        items.push(ConversationContextItemDto {
+            event_id: call.event_id.clone(),
+            role: "assistant".to_string(),
+            content: json!({
+                "tool_call": {
+                    "name": call.tool_name,
+                    "args": call.args
+                }
+            }),
+            source: "tool_call".to_string(),
+        });
+        if has_meaningful_result(&call.result) {
+            items.push(ConversationContextItemDto {
+                event_id: call.event_id.clone(),
+                role: "tool".to_string(),
+                content: json!({
+                    "tool_name": call.tool_name,
+                    "result": call.result,
+                    "metadata": call.metadata
+                }),
+                source: "tool_result".to_string(),
+            });
+        }
+    }
+
+    items.sort_by_key(|item| event_id_counter(&item.event_id));
+    items
+}
+
+fn attribution_links_dto(raw: &str) -> Vec<AttributionLinkDto> {
+    let rows = snapshot_rows(raw);
+    rows.into_iter()
+        .filter(|row| row.len() >= 4)
+        .map(|row| AttributionLinkDto {
+            message_processing: value_as_string(&row[0]),
+            relation: value_as_string(&row[1]),
+            target: value_as_string(&row[2]),
+            relation_props: normalize_value(row[3].clone()),
+        })
+        .collect()
+}
+
+fn synthetic_tool_calls_from_attribution(
+    links: &[AttributionLinkDto],
+    call_map: &std::collections::HashMap<String, (String, Option<String>, Value)>,
+    args_map: &std::collections::HashMap<String, Value>,
+) -> Vec<ToolCallDto> {
+    let mut tool_targets: Vec<String> = links
+        .iter()
+        .filter(|link| link.relation == "WAS_EXECUTED_BY" && link.target.starts_with("tool_call:"))
+        .map(|link| link.target.clone())
+        .collect();
+    tool_targets.sort();
+    tool_targets.dedup();
+
+    tool_targets
+        .into_iter()
+        .map(|target| {
+            let event_id = target
+                .strip_prefix("tool_call:")
+                .unwrap_or("prov-0")
+                .to_string();
+            let (tool_name, function_name, metadata) =
+                call_map.get(&event_id).cloned().unwrap_or_else(|| {
+                    (
+                        "support/calculate".to_string(),
+                        None,
+                        json!({"source": "attribution_fallback"}),
+                    )
+                });
+            let args = args_map
+                .get(&event_id)
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let result = metadata.get("result").cloned().unwrap_or_else(|| json!({}));
+            ToolCallDto {
+                event_id,
+                tool_call: target,
+                tool_name,
+                function_name,
+                metadata,
+                args,
+                args_relation_props: json!({}),
+                result,
+                result_relation_props: json!({}),
+            }
+        })
+        .collect()
+}
+
+fn tool_call_nodes_map(
+    raw: &str,
+) -> std::collections::HashMap<String, (String, Option<String>, Value)> {
+    let mut out = std::collections::HashMap::new();
+    for row in snapshot_rows(raw) {
+        if row.len() < 5 {
+            continue;
+        }
+        let event_id = value_as_nullable_string(&row[1]).unwrap_or_default();
+        if event_id.is_empty() {
+            continue;
+        }
+        let tool_name = value_as_nullable_string(&row[2]).unwrap_or_default();
+        let function_name = value_as_nullable_string(&row[3]);
+        let metadata = decode_embedded_json(&row[4]);
+        out.insert(event_id, (tool_name, function_name, metadata));
+    }
+    out
+}
+
+fn tool_args_map(raw: &str) -> std::collections::HashMap<String, Value> {
+    let mut out = std::collections::HashMap::new();
+    for row in snapshot_rows(raw) {
+        if row.len() < 2 {
+            continue;
+        }
+        let event_id = value_as_nullable_string(&row[0]).unwrap_or_default();
+        if event_id.is_empty() {
+            continue;
+        }
+        out.insert(event_id, decode_embedded_json(&row[1]));
+    }
+    out
+}
+
+type ToolSeedMaps = (
+    std::collections::HashMap<String, (String, Option<String>, Value)>,
+    std::collections::HashMap<String, Value>,
+);
+
+fn tool_seed_maps_from_events(events: &[ProvEvent]) -> ToolSeedMaps {
+    let mut calls = std::collections::HashMap::new();
+    let mut args = std::collections::HashMap::new();
+
+    let mut seed = |id: &EventId,
+                    tool_name: &str,
+                    function_name: &Option<String>,
+                    call_args: &Value,
+                    metadata: &Value| {
+        let eid = id.to_string();
+        calls.insert(
+            eid.clone(),
+            (
+                tool_name.to_string(),
+                function_name.clone(),
+                metadata.clone(),
+            ),
+        );
+        args.insert(eid, call_args.clone());
+    };
+
+    for ev in events {
+        match ev {
+            ProvEvent::Global(GlobalEvent { id, data, .. })
+            | ProvEvent::Task(TaskScopedEvent { id, data, .. }) => match data {
+                ProvEventData::ToolCallStarted {
+                    tool_name,
+                    function_name,
+                    args: call_args,
+                    metadata,
+                    ..
+                }
+                | ProvEventData::ToolCallCompleted {
+                    tool_name,
+                    function_name,
+                    args: call_args,
+                    metadata,
+                    ..
+                } => {
+                    seed(id, tool_name, function_name, call_args, metadata);
+                }
+                _ => {}
+            },
+        }
+    }
+
+    (calls, args)
+}
+
+fn snapshot_rows(raw: &str) -> Vec<Vec<Value>> {
+    parse_graph_snapshot(raw)
+        .and_then(|parsed| parsed.as_array().cloned())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|row| {
+            row.as_array()
+                .map(|values| values.to_vec())
+                .filter(|values| !values.is_empty())
+        })
+        .collect()
+}
+
+fn value_as_string(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn value_as_nullable_string(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::String(s) if s == "null" => None,
+        Value::String(s) => Some(s.clone()),
+        other => Some(other.to_string()),
+    }
+}
+
+fn decode_embedded_json(value: &Value) -> Value {
+    match value {
+        Value::String(s) => {
+            serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.clone()))
+        }
+        other => other.clone(),
+    }
+}
+
+fn event_id_counter(event_id: &str) -> u64 {
+    event_id
+        .strip_prefix("prov-")
+        .and_then(|id| id.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+fn has_meaningful_result(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Object(map) => !map.is_empty(),
+        Value::Array(items) => !items.is_empty(),
+        Value::String(s) => !s.trim().is_empty(),
+        _ => true,
+    }
 }
 
 fn normalize_value(value: Value) -> Value {

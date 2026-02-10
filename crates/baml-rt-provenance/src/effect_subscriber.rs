@@ -3,7 +3,6 @@
 use crate::events::{LlmUsage, ProvEvent};
 use crate::store::ProvenanceWriter;
 use async_trait::async_trait;
-use baml_rt_core::context;
 use baml_rt_core::effects::{EffectEvent, EffectSubscriber};
 use baml_rt_core::ids::{ContextId, ExternalId, MessageId, TaskId};
 use serde_json::Value;
@@ -37,7 +36,7 @@ where
     F: FnOnce(ContextId, TaskId) -> ProvEvent,
     G: FnOnce(ContextId, MessageId) -> ProvEvent,
 {
-    let task_id = context::current_task_id();
+    let task_id = task_id_from_metadata(metadata);
     let message_id = message_id_from_metadata(metadata);
 
     if task_id.is_none() && message_id.is_none() {
@@ -72,13 +71,13 @@ where
     F: FnOnce(ContextId, TaskId) -> ProvEvent,
     G: FnOnce(ContextId, MessageId) -> ProvEvent,
 {
-    let task_id = context::current_task_id();
+    let task_id = task_id_from_metadata(metadata);
     let message_id = message_id_from_metadata(metadata);
 
     if task_id.is_none() && message_id.is_none() {
         tracing::error!(
-            "{} completion missing metadata.message_id",
-            event_type.as_str()
+            event_type = event_type.as_str(),
+            "completion missing metadata.message_id"
         );
         return None;
     }
@@ -176,33 +175,36 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
             EffectEvent::LlmStarted {
                 context_id,
                 metadata,
-            } => build_prov_event(
-                context_id,
-                &metadata.metadata,
-                ProvenanceEventType::LlmCall,
-                |ctx_id, task_id| {
-                    ProvEvent::llm_call_started_task(
-                        ctx_id,
-                        task_id,
-                        metadata.client.clone(),
-                        metadata.model.clone(),
-                        metadata.function_name.clone(),
-                        metadata.prompt.clone(),
-                        metadata.metadata.clone(),
-                    )
-                },
-                |ctx_id, msg_id| {
-                    ProvEvent::llm_call_started_global(
-                        ctx_id,
-                        msg_id,
-                        metadata.client.clone(),
-                        metadata.model.clone(),
-                        metadata.function_name.clone(),
-                        metadata.prompt.clone(),
-                        metadata.metadata.clone(),
-                    )
-                },
-            )?,
+            } => {
+                let prompt = normalized_prompt(&metadata.prompt);
+                build_prov_event(
+                    context_id,
+                    &metadata.metadata,
+                    ProvenanceEventType::LlmCall,
+                    |ctx_id, task_id| {
+                        ProvEvent::llm_call_started_task(
+                            ctx_id,
+                            task_id,
+                            metadata.client.clone(),
+                            metadata.model.clone(),
+                            metadata.function_name.clone(),
+                            prompt.clone(),
+                            metadata.metadata.clone(),
+                        )
+                    },
+                    |ctx_id, msg_id| {
+                        ProvEvent::llm_call_started_global(
+                            ctx_id,
+                            msg_id,
+                            metadata.client.clone(),
+                            metadata.model.clone(),
+                            metadata.function_name.clone(),
+                            prompt.clone(),
+                            metadata.metadata.clone(),
+                        )
+                    },
+                )?
+            }
             EffectEvent::LlmCompleted {
                 context_id,
                 metadata,
@@ -223,6 +225,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                     Some(baml_rt_core::effects::LlmUsage::Unknown) | None => LlmUsage::Unknown,
                 };
                 let prov_usage_clone = prov_usage.clone();
+                let prompt = normalized_prompt(&metadata.prompt);
                 match build_prov_event_completion(
                     context_id,
                     &metadata.metadata,
@@ -234,7 +237,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             metadata.client.clone(),
                             metadata.model.clone(),
                             metadata.function_name.clone(),
-                            metadata.prompt.clone(),
+                            prompt.clone(),
                             metadata.metadata.clone(),
                             prov_usage.clone(),
                             *duration_ms,
@@ -248,7 +251,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             metadata.client.clone(),
                             metadata.model.clone(),
                             metadata.function_name.clone(),
-                            metadata.prompt.clone(),
+                            prompt.clone(),
                             metadata.metadata.clone(),
                             prov_usage_clone,
                             *duration_ms,
@@ -279,4 +282,19 @@ fn message_id_from_metadata(metadata: &Value) -> Option<MessageId> {
         .get("message_id")
         .and_then(|value| value.as_str())
         .map(|value| MessageId::from_external(ExternalId::new(value.to_string())))
+}
+
+fn task_id_from_metadata(metadata: &Value) -> Option<TaskId> {
+    metadata
+        .get("task_id")
+        .and_then(|value| value.as_str())
+        .map(|value| TaskId::from_external(ExternalId::new(value.to_string())))
+}
+
+fn normalized_prompt(prompt: &Value) -> Value {
+    if prompt.is_null() {
+        Value::Object(serde_json::Map::new())
+    } else {
+        prompt.clone()
+    }
 }

@@ -168,7 +168,7 @@ async fn test_e2e_trait_tool_registration_rust_execution() {
         manager.register_tool(StringManipulationTool).await.unwrap();
     }
 
-    let scope = context::InvocationScope::standalone(AgentId::from_uuid(
+    let scope = context::InvocationScope::synthetic_message(AgentId::from_uuid(
         UuidId::parse_str("00000000-0000-0000-0000-000000000020").unwrap(),
     ));
 
@@ -177,6 +177,7 @@ async fn test_e2e_trait_tool_registration_rust_execution() {
 
         let arithmetic_result = manager
             .execute_tool(
+                scope.as_scope(),
                 "test/arithmetic",
                 json!({"operation": "multiply", "a": 7, "b": 6}),
             )
@@ -191,6 +192,7 @@ async fn test_e2e_trait_tool_registration_rust_execution() {
 
         let string_result = manager
             .execute_tool(
+                scope.as_scope(),
                 "test/string_manipulation",
                 json!({"operation": "reverse", "text": "baml"}),
             )
@@ -220,7 +222,7 @@ async fn test_e2e_trait_tool_js_registration() {
 
     let mut bridge = setup_bridge(baml_manager.clone()).await;
 
-    let scope = context::InvocationScope::standalone(AgentId::from_uuid(
+    let scope = context::InvocationScope::synthetic_message(AgentId::from_uuid(
         UuidId::parse_str("00000000-0000-0000-0000-00000000000a").unwrap(),
     ));
     // Verify tool is registered in JS (scope required for Rust tools via openToolSession)

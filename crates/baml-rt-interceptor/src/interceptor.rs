@@ -4,7 +4,7 @@
 //! LLM calls and tool executions for governance, tracing, and security purposes.
 
 use async_trait::async_trait;
-use baml_rt_core::ids::ContextId;
+use baml_rt_core::context::RuntimeScope;
 use baml_rt_core::{BamlRtError, Result};
 use serde_json::Value;
 use std::sync::Arc;
@@ -32,8 +32,8 @@ pub struct LLMCallContext {
     /// The function name that triggered this LLM call
     pub function_name: String,
 
-    /// The active context ID for this call
-    pub context_id: ContextId,
+    /// Typed runtime scope for this call.
+    pub runtime_scope: RuntimeScope,
 
     /// The prompt/messages being sent
     pub prompt: Value,
@@ -54,8 +54,8 @@ pub struct ToolCallContext {
     /// The tool arguments
     pub args: Value,
 
-    /// The active context ID for this call
-    pub context_id: ContextId,
+    /// Typed runtime scope for this call.
+    pub runtime_scope: RuntimeScope,
 
     /// Additional metadata
     pub metadata: Value,
@@ -331,7 +331,7 @@ impl InterceptorRegistry {
                 }
                 Err(e) => {
                     // Interceptor itself failed - log but continue?
-                    tracing::warn!("Tool interceptor failed: {}", e);
+                    tracing::warn!(error = ?e, "Tool interceptor failed");
                 }
             }
         }

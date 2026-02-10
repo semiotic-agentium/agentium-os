@@ -12,6 +12,7 @@ use crate::baml::BamlRuntimeManager;
 use crate::quickjs_bridge::QuickJSBridge;
 use async_trait::async_trait;
 use baml_rt_core::Result;
+use baml_rt_core::context;
 use baml_rt_tools::{BamlTool, ToolSessionId, ToolStep};
 use serde_json::Value;
 
@@ -19,7 +20,12 @@ use serde_json::Value;
 #[async_trait]
 pub trait BamlFunctionExecutor: Send + Sync {
     /// Execute a BAML function by name with given arguments
-    async fn execute_function(&self, function_name: &str, args: Value) -> Result<Value>;
+    async fn execute_function(
+        &self,
+        scope: &context::RuntimeScope,
+        function_name: &str,
+        args: Value,
+    ) -> Result<Value>;
 
     /// List all available function names
     fn list_functions(&self) -> Vec<String>;
@@ -41,13 +47,19 @@ pub trait ToolRegistryTrait: Send + Sync {
     async fn register_tool<T: BamlTool>(&mut self, tool: T) -> Result<()>;
 
     /// Execute a tool by name
-    async fn execute_tool(&self, name: &str, args: Value) -> Result<Value>;
+    async fn execute_tool(
+        &self,
+        scope: &context::RuntimeScope,
+        name: &str,
+        args: Value,
+    ) -> Result<Value>;
 
     /// List all registered tool names
     async fn list_tools(&self) -> Vec<String>;
 
     async fn open_tool_session(
         &self,
+        scope: &context::RuntimeScope,
         tool_name: &str,
         open_input: serde_json::Value,
     ) -> Result<ToolSessionId>;
@@ -70,8 +82,17 @@ pub trait JsRuntimeHost: Send + Sync {
 /// Trait for invoking BAML functions and tools.
 #[async_trait(?Send)]
 pub trait BamlGateway: Send + Sync {
-    async fn invoke_baml_function(&self, function_name: &str, args: Value) -> Result<Value>;
-    async fn execute_tool_from_baml_result(&self, baml_result: Value) -> Result<Value>;
+    async fn invoke_baml_function(
+        &self,
+        scope: &context::RuntimeScope,
+        function_name: &str,
+        args: Value,
+    ) -> Result<Value>;
+    async fn execute_tool_from_baml_result(
+        &self,
+        scope: &context::RuntimeScope,
+        baml_result: Value,
+    ) -> Result<Value>;
 }
 
 #[async_trait(?Send)]
@@ -83,11 +104,20 @@ impl JsRuntimeHost for QuickJSBridge {
 
 #[async_trait(?Send)]
 impl BamlGateway for BamlRuntimeManager {
-    async fn invoke_baml_function(&self, function_name: &str, args: Value) -> Result<Value> {
-        self.invoke_function(function_name, args).await
+    async fn invoke_baml_function(
+        &self,
+        scope: &context::RuntimeScope,
+        function_name: &str,
+        args: Value,
+    ) -> Result<Value> {
+        self.invoke_function(scope, function_name, args).await
     }
 
-    async fn execute_tool_from_baml_result(&self, baml_result: Value) -> Result<Value> {
-        self.execute_tool_from_baml_result(baml_result).await
+    async fn execute_tool_from_baml_result(
+        &self,
+        scope: &context::RuntimeScope,
+        baml_result: Value,
+    ) -> Result<Value> {
+        self.execute_tool_from_baml_result(scope, baml_result).await
     }
 }

@@ -50,7 +50,7 @@ async fn test_llm_tool_calling_rust() {
     }
 
     // Test that tools are registered and can be executed (scope required for execute_tool)
-    let scope = InvocationScope::standalone(AgentId::from_uuid(
+    let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
         UuidId::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
     ));
     {
@@ -155,7 +155,7 @@ async fn test_llm_tool_calling_js() {
     let mut bridge = setup_bridge(baml_manager.clone()).await;
 
     // Scope required so openToolSession has a valid invocation token when checking Rust tools
-    let scope = InvocationScope::standalone(AgentId::from_uuid(
+    let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
         UuidId::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
     ));
     assert_tool_registered_in_js(&mut bridge, "test/reverse_string", Some(&scope)).await;
@@ -190,22 +190,27 @@ async fn test_e2e_voidship_baml_tool_calling() {
         let mut manager = baml_manager.lock().await;
         manager.register_tool(CalculatorTool).await.unwrap();
     }
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-0000000000b1").unwrap());
+    let scope = InvocationScope::synthetic_message(agent_id);
 
-    let result = {
+    let result = context::with_scope(scope.as_scope().clone(), async {
         let manager = baml_manager.lock().await;
         manager
             .invoke_function(
+                scope.as_scope(),
                 "ChooseCalcTool",
                 json!({"user_message": "Perform the rite of sums."}),
             )
             .await
-    };
+    })
+    .await;
 
     match result {
         Ok(tool_choice) => {
             let manager = baml_manager.lock().await;
             let tool_result = manager
-                .execute_tool_from_baml_result_or_value(tool_choice)
+                .execute_tool_from_baml_result_or_value(scope.as_scope(), tool_choice)
                 .await
                 .expect("Should execute tool from BAML result");
             let value = tool_result
@@ -252,7 +257,7 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
         let barrier = barrier.clone();
         join_set.spawn(async move {
             let agent_id = AgentId::from_uuid(UuidId::parse_str(agent_uuid).unwrap());
-            let scope = InvocationScope::standalone(agent_id);
+            let scope = InvocationScope::synthetic_message(agent_id);
             barrier.wait().await;
 
             let left = (idx as f64) + 2.0;
@@ -261,13 +266,14 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
             let result = context::with_scope(scope.as_scope().clone(), async {
                 let tool_choice = manager
                     .invoke_function(
+                        scope.as_scope(),
                         "ChooseCalcTool",
                         json!({"user_message": format!("Compute {} + {} (req {})", left, right, idx)}),
                     )
                     .await?;
                 println!("ChooseCalcTool result (req {}): {:?}", idx, tool_choice);
                 manager
-                    .execute_tool_from_baml_result_or_value(tool_choice)
+                    .execute_tool_from_baml_result_or_value(scope.as_scope(), tool_choice)
                     .await
             })
             .await?;

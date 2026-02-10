@@ -20,6 +20,10 @@ impl BroadcastEventEmitter {
 #[async_trait]
 impl EventEmitter for BroadcastEventEmitter {
     async fn emit(&self, event: TaskUpdateEvent) {
-        let _ = self.tx.send(event);
+        if self.tx.send(event).is_err() {
+            tracing::debug!(
+                "Task update broadcast skipped: no subscribers (fire-and-forget is acceptable)"
+            );
+        }
     }
 }

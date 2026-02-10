@@ -2,7 +2,7 @@
 //!
 //! This crate re-exports functionality from the workspace sub-crates.
 
-pub use baml_rt_core::context::{current_context_id, generate_context_id};
+pub use baml_rt_core::context::generate_context_id;
 pub use baml_rt_core::correlation::{current_correlation_id, generate_correlation_id};
 pub use baml_rt_core::{BamlRtError, Result};
 pub mod error {

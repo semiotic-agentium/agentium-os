@@ -55,14 +55,14 @@ We keep **one authoritative E2E per behavior** to avoid overlapping coverage and
 
 ### E2E Authority (single source of truth)
 
-- **Streaming E2E (full agent → stream):**  
-  `crates/baml-agent-runner/tests/runner_test.rs`  
+- **Streaming E2E (full agent → stream):**
+  `crates/baml-agent-runner/tests/runner_test.rs`
   - `test_e2e_stream_baml_tool`, `test_e2e_stream_js_tool` — full runner + fixture package + stream.
-- **Tool/LLM E2E (single request):**  
-  `crates/baml-rt/tests/tool_calling_test.rs`  
+- **Tool/LLM E2E (single request):**
+  `crates/baml-rt/tests/tool_calling_test.rs`
   - `test_e2e_voidship_baml_tool_calling` — single-request tool E2E from fixture.
-- **Tool/LLM E2E (concurrent):**  
-  `crates/baml-rt/tests/tool_calling_test.rs`  
+- **Tool/LLM E2E (concurrent):**
+  `crates/baml-rt/tests/tool_calling_test.rs`
   - `test_e2e_voidship_baml_tool_calling_concurrent` — concurrent tool calls with per-request scope;
   authoritative for concurrency correctness (per-conversation scope, no cross-contamination).
 

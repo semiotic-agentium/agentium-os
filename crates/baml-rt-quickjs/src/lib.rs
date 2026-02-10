@@ -14,7 +14,7 @@ pub mod traits;
 pub use a2a_stream::{
     A2aYieldSession, InvocationComplete, YieldBufferReady, begin_a2a_yield_session,
 };
-pub use baml::BamlRuntimeManager;
+pub use baml::{BamlRuntimeManager, ToolSessionExecutionHandle};
 pub use context::{BamlContext, ContextMetadata};
 pub use quickjs_bridge::QuickJSBridge;
 pub use runtime::{QuickJSConfig, Runtime, RuntimeBuilder, RuntimeConfig};

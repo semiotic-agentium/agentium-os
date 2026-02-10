@@ -303,11 +303,11 @@ pub struct JsChunkNormalizer {
 
 impl JsChunkNormalizer {
     pub fn new(scope: &InvocationScope) -> Self {
-        let task_id = scope.task_id.clone().unwrap_or_else(|| {
+        let task_id = scope.task_id_opt().cloned().unwrap_or_else(|| {
             TaskId::from_external(ExternalId::new(format!("js-task-{}", Uuid::new_v4())))
         });
         Self {
-            context_id: scope.context_id.clone(),
+            context_id: scope.context_id().clone(),
             task_id,
             message_counter: 0,
         }
@@ -654,7 +654,10 @@ mod tests {
         };
         let request_value = serde_json::to_value(request).expect("serialize request");
 
-        let _ = agent.handle_a2a(request_value).await;
+        agent
+            .handle_a2a(request_value)
+            .await
+            .expect("handle_a2a should succeed for span structure test");
 
         let spans = _otel.spans();
         let span =
@@ -666,6 +669,14 @@ mod tests {
         assert_eq!(
             attr_value(span, "correlation_id").as_deref(),
             Some("corr-1-19")
+        );
+        assert!(
+            find_span(&spans, "baml_rt.a2a_route").is_some(),
+            "expected baml_rt.a2a_route span (routing instrumentation)"
+        );
+        assert!(
+            find_span(&spans, "baml_rt.a2a_js_invoke").is_some(),
+            "expected baml_rt.a2a_js_invoke span (JS invocation instrumentation)"
         );
     }
 
@@ -698,7 +709,10 @@ mod tests {
         };
         let request_value = serde_json::to_value(request).expect("serialize request");
 
-        let _ = agent.handle_a2a(request_value).await;
+        agent
+            .handle_a2a(request_value)
+            .await
+            .expect("handle_a2a should succeed for stream span structure test");
 
         let spans = _otel.spans();
         let span =
@@ -710,6 +724,14 @@ mod tests {
         assert_eq!(
             attr_value(span, "correlation_id").as_deref(),
             Some("corr-1-20")
+        );
+        assert!(
+            find_span(&spans, "baml_rt.a2a_route").is_some(),
+            "expected baml_rt.a2a_route span (routing instrumentation)"
+        );
+        assert!(
+            find_span(&spans, "baml_rt.a2a_js_invoke").is_some(),
+            "expected baml_rt.a2a_js_invoke span (JS invocation instrumentation)"
         );
     }
 

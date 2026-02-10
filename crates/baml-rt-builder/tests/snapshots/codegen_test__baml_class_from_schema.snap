@@ -3,7 +3,7 @@ source: crates/baml-rt-builder/tests/codegen_test.rs
 expression: baml_output
 ---
 class Expression {
-  left int 
-  right int 
-  optional_field string? 
+  left int
+  right int
+  optional_field string?
 }

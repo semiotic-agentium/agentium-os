@@ -5,7 +5,7 @@
 
 use baml_rt_core::context;
 use baml_rt_core::effects::{EffectEmitter, LlmEffectMetadata};
-use baml_rt_core::{BamlRtError, InvocationContext, Result};
+use baml_rt_core::{BamlRtError, Result};
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry, LLMCallContext};
 use baml_runtime::RuntimeContextManager;
 use baml_types::{BamlMap, BamlValue};
@@ -30,6 +30,7 @@ fn llm_effect_metadata_from_context(ctx: &LLMCallContext) -> LlmEffectMetadata {
 /// This extracts the client, model, and prompt information from the HTTPRequest
 /// that BAML builds before sending to the LLM. Requires an invocation scope (e.g. run inside `context::with_scope`).
 pub fn extract_context_from_http_request(
+    scope: &context::RuntimeScope,
     http_request: &baml_types::tracing::events::HTTPRequest,
     function_name: &str,
 ) -> Result<LLMCallContext> {
@@ -62,11 +63,18 @@ pub fn extract_context_from_http_request(
         Value::String(http_request.method.clone()),
     );
     metadata_map.insert("id".to_string(), Value::String(http_request.id.to_string()));
-    let scope = context::task_local_context().current_scope()?;
-    if let Some(message_id) = scope.message_id.as_ref() {
+    metadata_map.insert(
+        "message_id".to_string(),
+        Value::String(scope.message_id().as_str().to_string()),
+    );
+    metadata_map.insert(
+        "agent_id".to_string(),
+        Value::String(scope.agent_id().as_str().to_string()),
+    );
+    if let Some(task_id) = scope.task_id_opt() {
         metadata_map.insert(
-            "message_id".to_string(),
-            Value::String(message_id.as_str().to_string()),
+            "task_id".to_string(),
+            Value::String(task_id.as_str().to_string()),
         );
     }
 
@@ -74,7 +82,7 @@ pub fn extract_context_from_http_request(
         client,
         model,
         function_name: function_name.to_string(),
-        context_id: scope.context_id,
+        runtime_scope: scope.clone(),
         prompt,
         metadata: Value::Object(metadata_map),
     })
@@ -89,6 +97,7 @@ pub fn extract_context_from_http_request(
 #[allow(clippy::too_many_arguments)]
 pub async fn intercept_llm_call_pre_execution(
     runtime: &baml_runtime::BamlRuntime,
+    scope: &context::RuntimeScope,
     function_name: &str,
     params: &BamlMap<String, BamlValue>,
     ctx_manager: &RuntimeContextManager,
@@ -116,11 +125,11 @@ pub async fn intercept_llm_call_pre_execution(
         http_request_result.map_err(|e| BamlRtError::RequestBuildFailed(e.to_string()))?;
 
     // Extract LLM call context from the HTTP request
-    let context = extract_context_from_http_request(&http_request, function_name)?;
+    let context = extract_context_from_http_request(scope, &http_request, function_name)?;
 
     // Start effect and get token (type-safe start/complete pairing)
     let effect_metadata = llm_effect_metadata_from_context(&context);
-    let context_id = context.context_id.clone();
+    let context_id = context.runtime_scope.context_id().clone();
 
     if let Some(emitter) = effect_emitter {
         match emitter.start_llm(context_id.clone(), effect_metadata).await {

@@ -16,7 +16,7 @@ async function testA2AWebSocket(uri) {
 
     return new Promise((resolve, reject) => {
         console.log(`Connecting to ${uri}...`);
-        
+
         const ws = new WebSocket(uri);
 
         ws.on('open', () => {

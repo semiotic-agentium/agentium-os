@@ -1,6 +1,8 @@
 //! Tests for invoking BAML functions
 
 use baml_rt::BamlRtError;
+use baml_rt_core::context::InvocationScope;
+use baml_rt_core::ids::{AgentId, UuidId};
 use test_support::common::{ensure_baml_src_exists, setup_baml_runtime_manager_default};
 
 #[tokio::test]
@@ -31,8 +33,15 @@ async fn test_invoke_simple_greeting() {
 
     // Try to invoke the function
     // This will fail until we implement actual execution, but verifies the function is registered
+    let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-000000000001").unwrap(),
+    ));
     let result = manager
-        .invoke_function("SimpleGreeting", serde_json::json!({"name": "Test"}))
+        .invoke_function(
+            scope.as_scope(),
+            "SimpleGreeting",
+            serde_json::json!({"name": "Test"}),
+        )
         .await;
 
     // Execution should work (may fail with API key error, which is acceptable)

@@ -44,14 +44,14 @@ Every session ID returned by `open_tool_session` must remain in `tool_session_sc
 
 ## QuickJS Threading Constraint (Common Requirement)
 
-**quickjs_runtime** runs all JS (and native callbacks) on a **worker-thread EventLoop**, not on the Tokio task that called `eval`. So **task-local scope is not visible inside native callbacks**—they run on the worker thread, where `context::current_scope()` is `None`. Any design that needs request-scoped context inside native callbacks must provide scope in a way the **worker thread** can read (e.g. per-eval context, bridge-held scope for the worker). See **[QUICKJS_THREADING_AND_SCOPE.md](./QUICKJS_THREADING_AND_SCOPE.md)** for the threading model and options.
+**quickjs_runtime** runs all JS (and native callbacks) on a **worker-thread EventLoop**, not on the Tokio task that called `eval`. So **task-local scope is not visible inside native callbacks**—they run on the worker thread, where task-local lookup returns `None`. Any design that needs request-scoped context inside native callbacks must provide scope in a way the **worker thread** can read (e.g. per-eval context, bridge-held scope for the worker). See **[QUICKJS_THREADING_AND_SCOPE.md](./QUICKJS_THREADING_AND_SCOPE.md)** for the threading model and options.
 
 ## Where Invariants Can Be Violated
 
 | Location | Risk | Enforcement |
 | --- | --- | --- |
 | **Bridge native entry points** that take `context_id` from JS args | JS may pass a value that was overwritten by another task, or JS may be buggy/malicious and pass a wrong or forged value. | **Never trust JS-passed context_id for authoritative attribution.** When passing context via JS (e.g. for concurrent streams), use an **opaque token** (host issues token, stores token→scope, native looks up) or **validate** JS-passed value against a host-held set. See [QUICKJS_THREADING_AND_SCOPE.md](./QUICKJS_THREADING_AND_SCOPE.md) § Passing context via JavaScript. |
-| **open_tool_session** storing scope for later use in send/next | If scope is read **after** an `await`, task-local might have changed (wrong task). | Capture `current_scope()` **before** any `await` and use that value for both open attribution and `ToolSessionScope`. |
+| **open_tool_session** storing scope for later use in send/next | If scope is read **after** an `await`, task-local might have changed (wrong task). | Pass scope explicitly to `open_tool_session` and store that value in `ToolSessionScope` before any async boundary. |
 | **tool_session_send / tool_session_next** | Must run under the **same** scope as the open that created the session. | Store scope at open; run send/next inside `context::with_scope(stored_scope, run()).await`. Never use `current_or_new()` for send/next without that wrapper. |
 | **ProvenanceInterceptor** | Must see the same context_id for start and complete for a given call. | All call sites (open, send, one-shot execute) build `ToolCallContext` from the scope in effect for that call (task-local or stored scope). |
 
@@ -59,8 +59,8 @@ Every session ID returned by `open_tool_session` must remain in `tool_session_sc
 
 1. **Transport:** Set scope once per request from parsed `request.context_id`; run entire `route()` inside `with_scope(scope, route()).await`. No other code in that path may replace scope for that request.
 2. **Bridge:** Native callbacks **do not** use task-local context (worker thread has no task-local). Scope is resolved **only** from the **token → scope** map: the first argument must be a valid invocation token; the host looks up `RuntimeScope` and runs the callback body inside `context::with_scope(scope, ...).await`. No fallback to task-local or JS-passed raw `context_id` for attribution.
-3. **BamlRuntimeManager::open_tool_session:** Capture `scope = context::current_scope()` at the **first** line (before any `await`). Use that scope’s `context_id` for open attribution and store that scope in `ToolSessionScope` for send/next.
-4. **BamlRuntimeManager::open_tool_session:** Require an active scope: if `current_scope()` is `None` at the start, return `Err` so we never store a session with `scope: None`. That way send/next always run inside `with_scope(stored_scope, ...)` and never attribute to the wrong request.
+3. **BamlRuntimeManager::open_tool_session:** Require explicit `scope` parameter and use its `context_id` for open attribution; store it in `ToolSessionScope` for send/next.
+4. **BamlRuntimeManager::open_tool_session:** Reject calls that do not provide scope so we never store a session with missing scope. That way send/next always run inside `with_scope(stored_scope, ...)` and never attribute to the wrong request.
 5. **BamlRuntimeManager::tool_session_send / tool_session_next:** Run the inner logic inside `context::with_scope(session_scope.scope, run()).await` when `session_scope.scope` is `Some`; the `require scope` rule for open ensures valid sessions always have `Some(scope)`.
 6. **No retries in tests:** Tests that assert these invariants must not use retries; any failure indicates a real concurrency bug.
 
@@ -69,9 +69,9 @@ Every session ID returned by `open_tool_session` must remain in `tool_session_sc
 All of these receive a **token** (or token + other args) from JS and resolve scope **only** via the host-held token → scope map. There is **no task-local fallback** (native callbacks run on the worker thread). Invalid or missing token returns an error.
 
 - `__tool_session_open` (token, toolName)
-- `__tool_invoke` (token?, toolName, args)
-- `__tool_from_baml_result` (token?, baml_result_json)
-- `__baml_invoke` (token?, function_name, args)
-- `__baml_stream` (token?, function_name, args)
+- `__tool_invoke` (token, toolName, args)
+- `__tool_from_baml_result` (token, baml_result_json)
+- `__baml_invoke` (token, function_name, args)
+- `__baml_stream` (token, function_name, args)
 
 Any new native that needs request-scoped attribution must take a token and use the same lookup.

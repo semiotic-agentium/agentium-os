@@ -32,6 +32,3 @@ let agent_path = agent_fixture("voidship-rites");
 1. Place BAML files in `baml/`
 2. Place agent applications in `agents/{name}/`
 3. Update this README if adding new categories
-
-
-

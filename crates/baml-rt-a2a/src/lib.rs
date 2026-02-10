@@ -13,6 +13,7 @@ pub mod result_deduplicator;
 pub mod result_extractor;
 pub mod result_pipeline;
 pub mod result_processor;
+pub mod session_channel;
 pub mod stream_normalizer;
 pub mod tools;
 

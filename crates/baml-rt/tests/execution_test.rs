@@ -1,5 +1,7 @@
 //! Tests for BAML function execution
 
+use baml_rt_core::context::InvocationScope;
+use baml_rt_core::ids::{AgentId, UuidId};
 use serde_json::json;
 use test_support::common::{ensure_baml_src_exists, setup_baml_runtime_manager_default};
 
@@ -23,8 +25,11 @@ async fn test_load_and_execute_simple_greeting() {
     // Execute the function
     // Note: This will make an actual LLM call unless we stub it
     // For now, we expect it to at least attempt execution
+    let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-0000000000e1").unwrap(),
+    ));
     let result = manager
-        .invoke_function("SimpleGreeting", json!({"name": "Alice"}))
+        .invoke_function(scope.as_scope(), "SimpleGreeting", json!({"name": "Alice"}))
         .await;
 
     // Execution should either succeed or fail with a specific error (like missing API key)
@@ -83,8 +88,11 @@ async fn test_invoke_nonexistent_function_fails() {
     let manager = setup_baml_runtime_manager_default();
 
     // Try to invoke a function that doesn't exist
+    let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-0000000000e2").unwrap(),
+    ));
     let result = manager
-        .invoke_function("NonexistentFunction", json!({}))
+        .invoke_function(scope.as_scope(), "NonexistentFunction", json!({}))
         .await;
 
     assert!(result.is_err(), "Should fail for nonexistent function");

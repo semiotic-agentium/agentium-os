@@ -1,11 +1,11 @@
 use crate::error::Result;
 use crate::events::ProvEvent;
-use crate::normalizer::validate_event;
 use async_trait::async_trait;
-use tokio::sync::RwLock;
+use baml_rt_core::ids::ContextId;
+use serde_json::Value;
 
 #[async_trait]
-pub trait ProvenanceWriter: Send + Sync {
+pub trait ProvenanceWriter: ProvenanceContextReader + Send + Sync {
     async fn add_event(&self, event: ProvEvent) -> Result<()>;
 
     async fn add_events(&self, events: Vec<ProvEvent>) -> Result<()> {
@@ -22,37 +22,72 @@ pub trait ProvenanceWriter: Send + Sync {
     }
 }
 
-pub struct InMemoryProvenanceStore {
-    events: RwLock<Vec<ProvEvent>>,
+#[derive(Debug, Clone)]
+pub struct ProvenanceContextMessage {
+    pub message_id: String,
+    pub timestamp_ms: u64,
+    pub role: String,
+    pub content: Vec<String>,
 }
 
-impl InMemoryProvenanceStore {
-    pub fn new() -> Self {
-        Self {
-            events: RwLock::new(Vec::new()),
+#[derive(Debug, Clone)]
+pub struct ProvenanceConversationContextItem {
+    pub timestamp_ms: u64,
+    pub event_id: String,
+    pub role: String,
+    pub content: Value,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolSessionPhase {
+    Open,
+    Send,
+    Next,
+    Finish,
+    Abort,
+    Unknown(String),
+}
+
+impl ToolSessionPhase {
+    pub fn from_metadata(metadata: &Value) -> Self {
+        let phase = metadata
+            .get("phase")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        match phase {
+            "open" => Self::Open,
+            "send" => Self::Send,
+            "next" => Self::Next,
+            "finish" => Self::Finish,
+            "abort" => Self::Abort,
+            other => Self::Unknown(other.to_string()),
         }
     }
 
-    pub async fn events(&self) -> Vec<ProvEvent> {
-        let events = self.events.read().await;
-        let mut cloned = events.clone();
-        cloned.sort_by(|a, b| a.id().cmp(b.id()));
-        cloned
-    }
-}
-
-impl Default for InMemoryProvenanceStore {
-    fn default() -> Self {
-        Self::new()
+    pub fn label(&self) -> String {
+        match self {
+            Self::Open => "open".to_string(),
+            Self::Send => "send".to_string(),
+            Self::Next => "next".to_string(),
+            Self::Finish => "finish".to_string(),
+            Self::Abort => "abort".to_string(),
+            Self::Unknown(value) => value.clone(),
+        }
     }
 }
 
 #[async_trait]
-impl ProvenanceWriter for InMemoryProvenanceStore {
-    async fn add_event(&self, event: ProvEvent) -> Result<()> {
-        validate_event(&event)?;
-        let mut events = self.events.write().await;
-        events.push(event);
-        Ok(())
-    }
+pub trait ProvenanceContextReader: Send + Sync {
+    async fn context_messages(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+    ) -> Result<Vec<ProvenanceContextMessage>>;
+
+    async fn conversation_context(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+    ) -> Result<Vec<ProvenanceConversationContextItem>>;
 }

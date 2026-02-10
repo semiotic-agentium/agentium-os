@@ -8,22 +8,22 @@
 //!
 //! Let □ = "always", ◇ = "eventually", and "→" denote ordering.
 //!
-//! - **L1 (Session progress)**  
-//!   □(begin_a2a_yield_session returns Ok(s) → ◇(invoke(s) is called))  
+//! - **L1 (Session progress)**
+//!   □(begin_a2a_yield_session returns Ok(s) → ◇(invoke(s) is called))
 //!   If setup succeeds, the caller must eventually call invoke on the session.
 //!
-//! - **L2 (Invoke progress)**  
-//!   □(invoke(s) returns Ok(s′) → ◇(collect(s′) is called))  
+//! - **L2 (Invoke progress)**
+//!   □(invoke(s) returns Ok(s′) → ◇(collect(s′) is called))
 //!   If invoke succeeds, the caller must eventually call collect.
 //!
-//! - **L3 (Collect terminates)**  
-//!   □(collect(s) is called → ◇(collect(s) returns))  
+//! - **L3 (Collect terminates)**
+//!   □(collect(s) is called → ◇(collect(s) returns))
 //!   Collect always returns in finite time (bounded by JSON parse and buffer read).
 //!
-//! - **L4 (Promise resolution for non-stream)**  
+//! - **L4 (Promise resolution for non-stream)**
 //!   For non-stream requests, the JS promise eventually resolves or the evaluate loop hits MAX_ATTEMPTS.
 //!
-//! - **L6 (Stream Promise Non-Termination)**  
+//! - **L6 (Stream Promise Non-Termination)**
 //!   For stream requests, the promise from `onChatMessage()` is DESIGNED to never resolve.
 //!   It yields chunks via `__baml_chat_yield()` and only completes on agent exit or crash.
 //!   `invoke_js_function_stream()` starts the function but does NOT wait for promise resolution.
@@ -112,13 +112,25 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
         let start = Instant::now();
         let timeout = Duration::from_secs(30);
         let interval = Duration::from_millis(50);
+        let read_timeout = Duration::from_secs(2);
 
         loop {
-            let responses = self.bridge.get_a2a_yield_buffer().await?;
+            // Liveness guard: a single buffer-read must not stall collection forever.
+            let responses = match tokio::time::timeout(
+                read_timeout,
+                self.bridge.get_a2a_yield_buffer(),
+            )
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => Vec::new(),
+            };
             if !responses.is_empty() {
+                self.bridge.finalize_a2a_stream_invocation();
                 return Ok(responses);
             }
             if start.elapsed() >= timeout {
+                self.bridge.finalize_a2a_stream_invocation();
                 return Ok(responses);
             }
             sleep(interval).await;

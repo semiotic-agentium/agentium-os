@@ -4,13 +4,13 @@ use crate::a2a_types::{
     TaskStatusUpdateEvent,
 };
 use async_trait::async_trait;
-use baml_rt_core::context;
 use baml_rt_core::ids::{AgentId, ContextId, TaskId};
+use baml_rt_observability::metrics;
 use baml_rt_provenance::{ProvEvent, ProvenanceWriter};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
 #[derive(Debug, Clone)]
@@ -164,13 +164,20 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+fn require_context_id(context_id: Option<ContextId>, operation: &str) -> ContextId {
+    context_id.unwrap_or_else(|| {
+        panic!(
+            "context_id is required for {} in ProvenanceTaskStore; refusing implicit generation",
+            operation
+        )
+    })
+}
+
 #[async_trait]
 impl TaskRepository for ProvenanceTaskStore {
     async fn upsert(&self, mut task: Task) -> Option<Task> {
-        let context_id = task
-            .context_id
-            .clone()
-            .unwrap_or_else(context::context_id_or_generated);
+        let start = Instant::now();
+        let context_id = require_context_id(task.context_id.clone(), "task upsert");
 
         // Always inject agent_id into task metadata from store-level agent_id
         if !task
@@ -191,17 +198,25 @@ impl TaskRepository for ProvenanceTaskStore {
             self.record_event(event).await;
         }
         let mut store = self.inner.lock().await;
-        store.upsert(task)
+        let out = store.upsert(task);
+        metrics::record_task_store_operation("upsert", "success", start.elapsed());
+        out
     }
 
     async fn get(&self, id: &str, history_length: Option<usize>) -> Option<Task> {
+        let start = Instant::now();
         let store = self.inner.lock().await;
-        store.get(id, history_length)
+        let out = store.get(id, history_length);
+        metrics::record_task_store_operation("get", "success", start.elapsed());
+        out
     }
 
     async fn list(&self, request: &ListTasksRequest) -> ListTasksResponse {
+        let start = Instant::now();
         let store = self.inner.lock().await;
-        store.list(request)
+        let out = store.list(request);
+        metrics::record_task_store_operation("list", "success", start.elapsed());
+        out
     }
 
     async fn cancel(&self, id: &str) -> Option<Task> {
@@ -210,10 +225,7 @@ impl TaskRepository for ProvenanceTaskStore {
     }
 
     async fn insert_message(&self, message: &Message) {
-        let context_id = message
-            .context_id
-            .clone()
-            .unwrap_or_else(context::context_id_or_generated);
+        let context_id = require_context_id(message.context_id.clone(), "message insert");
         let task_id = message.task_id.clone();
         let role = message_role_string(&message.role);
         let content = message_content(message);
@@ -279,8 +291,10 @@ impl TaskRepository for ProvenanceTaskStore {
         };
         self.record_event(event).await;
 
+        let start = Instant::now();
         let mut store = self.inner.lock().await;
         store.insert_message(message);
+        metrics::record_task_store_operation("insert_message", "success", start.elapsed());
     }
 }
 
@@ -315,10 +329,9 @@ impl TaskEventRecorder for ProvenanceTaskStore {
         status: TaskStatus,
     ) -> Option<TaskUpdateEvent> {
         if let Some(task_id) = task_id.clone() {
+            let context_id = require_context_id(context_id.clone(), "status update");
             let event = ProvEvent::task_status_changed(
-                context_id
-                    .clone()
-                    .unwrap_or_else(context::context_id_or_generated),
+                context_id,
                 task_id,
                 None,
                 status_to_string(&status),
@@ -338,10 +351,9 @@ impl TaskEventRecorder for ProvenanceTaskStore {
         last_chunk: Option<bool>,
     ) -> Option<TaskUpdateEvent> {
         if let Some(task_id) = task_id.clone() {
+            let context_id = require_context_id(context_id.clone(), "artifact update");
             let event = ProvEvent::task_artifact_generated(
-                context_id
-                    .clone()
-                    .unwrap_or_else(context::context_id_or_generated),
+                context_id,
                 task_id,
                 artifact.artifact_id.clone(),
                 artifact.name.clone(),

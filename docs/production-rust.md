@@ -672,8 +672,8 @@ pub struct TaskEvent {
 
 **Rule of Thumb:**
 
-If a field encodes **structure or dependency**, use a **discriminated union**.  
-If a value is **required by design**, do not wrap it in `Option`.  
+If a field encodes **structure or dependency**, use a **discriminated union**.
+If a value is **required by design**, do not wrap it in `Option`.
 If an invariant must hold, make the **invalid state unrepresentable**.
 
 ---

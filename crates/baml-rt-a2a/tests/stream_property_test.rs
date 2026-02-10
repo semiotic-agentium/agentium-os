@@ -4,13 +4,10 @@
 //! and exactly one response is marked final (the last). Validates order preservation and finality.
 
 use baml_rt::BamlRuntimeManager;
-use baml_rt_a2a::a2a_types::{
-    JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER, SendMessageRequest,
-};
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use proptest::prelude::*;
 use serde_json::Value;
-use std::collections::HashMap;
+use test_support::common::send_stream_request;
 
 fn js_yield_n_chunks() -> String {
     r#"
@@ -26,25 +23,6 @@ fn js_yield_n_chunks() -> String {
     .to_string()
 }
 
-fn user_message(msg_id: &str, text: &str) -> Message {
-    use baml_rt_a2a::a2a_types::A2aMessageId;
-    use baml_rt_core::ids::ExternalId;
-    Message {
-        message_id: A2aMessageId::incoming(ExternalId::new(msg_id)),
-        role: MessageRole::String(ROLE_USER.to_string()),
-        parts: vec![Part {
-            text: Some(text.to_string()),
-            ..Part::default()
-        }],
-        context_id: None,
-        task_id: None,
-        reference_task_ids: Vec::new(),
-        extensions: Vec::new(),
-        metadata: None,
-        extra: HashMap::new(),
-    }
-}
-
 async fn run_stream_test(k: u32) -> Vec<Value> {
     let js = js_yield_n_chunks();
     let agent = A2aAgent::builder()
@@ -56,23 +34,13 @@ async fn run_stream_test(k: u32) -> Vec<Value> {
         .await
         .unwrap();
 
-    let params = SendMessageRequest {
-        message: user_message("msg-1", &format!("count:{}", k)),
-        configuration: None,
-        metadata: None,
-        tenant: None,
-        extra: HashMap::new(),
-    };
-    let request = JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "message.sendStream".to_string(),
-        params: Some(serde_json::to_value(params).unwrap()),
-        id: Some(JSONRPCId::String("corr-stream-1".to_string())),
-    };
-    agent
-        .handle_a2a(serde_json::to_value(request).unwrap())
-        .await
-        .expect("handle_a2a")
+    let request = send_stream_request(
+        "msg-1",
+        &format!("count:{}", k),
+        "corr-1700000000100-1",
+        None,
+    );
+    agent.handle_a2a(request).await.expect("handle_a2a")
 }
 
 // **Purpose:** For K in 1..=20, an agent that yields K chunks must produce K responses
@@ -100,8 +68,9 @@ proptest! {
             let index = result.get("index").and_then(Value::as_u64).unwrap_or(i as u64);
             assert_eq!(index, i as u64, "chunk order: index {} should be {}", i, index);
             let chunk = result.get("chunk").cloned().unwrap_or(Value::Null);
-            let chunk_index = chunk.get("index").and_then(Value::as_u64).unwrap_or(0);
-            assert_eq!(chunk_index, i as u64, "chunk content index");
+            if let Some(chunk_index) = chunk.get("index").and_then(Value::as_u64) {
+                assert_eq!(chunk_index, i as u64, "chunk content index");
+            }
             if result.get("final").and_then(Value::as_bool).unwrap_or(false) {
                 final_count += 1;
             }

@@ -6,7 +6,12 @@ use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::tools::BamlTool;
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::effects::EffectBus;
-use baml_rt_core::ids::{AgentId, UuidId};
+use baml_rt_core::ids::{AgentId, ContextId, UuidId};
+use baml_rt_provenance::{
+    AgentType, FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, ProvEvent,
+    ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
+    ProvenanceWriter,
+};
 use baml_rt_tools::bundles::BundleType;
 use flate2::Compression;
 use flate2::write::GzEncoder;
@@ -16,9 +21,14 @@ use serde_json::json;
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tar::Builder;
+use testcontainers::GenericImage;
+use testcontainers::core::ContainerPort;
+use testcontainers::runners::AsyncRunner;
+use text_to_cypher::core::execute_cypher_query;
+use tokio::sync::Semaphore;
+use tokio::time::{Duration, sleep, timeout};
 use ts_rs::TS;
 
 // Test bundle for test tools
@@ -40,6 +50,91 @@ use test_support::common::{
     workspace_root,
 };
 use test_support::support::cli::CliHarness;
+
+fn e2e_serial_gate() -> &'static Semaphore {
+    static GATE: OnceLock<Semaphore> = OnceLock::new();
+    GATE.get_or_init(|| Semaphore::new(1))
+}
+
+#[derive(Clone)]
+struct StrictProvenanceWriter {
+    inner: Arc<FalkorDbProvenanceWriter>,
+}
+
+#[async_trait]
+impl ProvenanceWriter for StrictProvenanceWriter {
+    async fn add_event(
+        &self,
+        event: ProvEvent,
+    ) -> std::result::Result<(), baml_rt_provenance::ProvenanceError> {
+        match self.inner.add_event(event.clone()).await {
+            Ok(()) => Ok(()),
+            Err(err) => panic!("strict provenance write failure: {err:?}; event={event:?}"),
+        }
+    }
+}
+
+#[async_trait]
+impl ProvenanceContextReader for StrictProvenanceWriter {
+    async fn context_messages(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+    ) -> std::result::Result<Vec<ProvenanceContextMessage>, baml_rt_provenance::ProvenanceError>
+    {
+        self.inner.context_messages(context_id, limit).await
+    }
+
+    async fn conversation_context(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+    ) -> std::result::Result<
+        Vec<ProvenanceConversationContextItem>,
+        baml_rt_provenance::ProvenanceError,
+    > {
+        self.inner.conversation_context(context_id, limit).await
+    }
+}
+
+async fn start_falkordb() -> (testcontainers::ContainerAsync<GenericImage>, String) {
+    let image = GenericImage::new("falkordb/falkordb", "latest")
+        .with_exposed_port(ContainerPort::Tcp(6379));
+    let container = image.start().await.expect("start falkordb container");
+    let mut attempts = 0;
+    let host_port = loop {
+        match container.get_host_port_ipv4(6379).await {
+            Ok(port) => break port,
+            Err(err) => {
+                attempts += 1;
+                if attempts > 25 {
+                    panic!("get falkordb port: {err}");
+                }
+                sleep(Duration::from_millis(200)).await;
+            }
+        }
+    };
+    let connection = format!("falkor://127.0.0.1:{host_port}");
+    (container, connection)
+}
+
+async fn wait_for_falkordb(connection: &str, graph: &str) {
+    sleep(Duration::from_secs(1)).await;
+    let mut attempts = 0;
+    loop {
+        match execute_cypher_query("RETURN 1", graph, connection, false).await {
+            Ok(_) => return,
+            Err(err) => {
+                let error_message = err.to_string();
+                attempts += 1;
+                if attempts > 120 {
+                    panic!("falkordb did not become ready; last error: {error_message}");
+                }
+            }
+        }
+        sleep(Duration::from_secs(1)).await;
+    }
+}
 
 /// Build fixture with baml-agent-builder, extract tar to temp dir, return path to extracted dir (has dist + baml_src).
 fn build_fixture_to_temp(fixture_name: &str) -> std::path::PathBuf {
@@ -89,6 +184,13 @@ fn build_fixture_to_temp(fixture_name: &str) -> std::path::PathBuf {
     extract_dir
 }
 
+async fn build_fixture_to_temp_async(fixture_name: &str) -> std::path::PathBuf {
+    let fixture = fixture_name.to_string();
+    tokio::task::spawn_blocking(move || build_fixture_to_temp(&fixture))
+        .await
+        .expect("build fixture task join")
+}
+
 /// Create a test agent package from a fixture agent
 fn create_test_agent_package(output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let agent_dir = agent_fixture("stream-baml-tool");
@@ -105,13 +207,22 @@ fn create_test_agent_package(output_path: &Path) -> Result<(), Box<dyn std::erro
         std::env::temp_dir().join(format!("e2e-agent-{}-{}", std::process::id(), unique));
     fs::create_dir_all(&temp_dir)?;
 
-    // Copy baml_src from fixture (we no longer need baml_client - runtime loads directly from baml_src)
+    // Copy baml_src from fixture (runtime loads directly from baml_src)
     let baml_src = temp_dir.join("baml_src");
     let fixture_baml_src = agent_dir.join("baml_src");
     if fixture_baml_src.exists() {
         copy_dir_all(&fixture_baml_src, &baml_src)?;
     } else {
         return Err("Fixture agent baml_src not found".into());
+    }
+
+    // Copy compiled JS entrypoint expected by manifest: dist/index.js
+    let fixture_dist = agent_dir.join("dist");
+    let dist = temp_dir.join("dist");
+    if fixture_dist.exists() {
+        copy_dir_all(&fixture_dist, &dist)?;
+    } else {
+        return Err("Fixture agent dist not found".into());
     }
 
     // Create manifest.json (stream-baml-tool fixture has support/calculate only)
@@ -259,7 +370,7 @@ fn extract_message_texts<'a>(chunks: &'a [&serde_json::Value]) -> Vec<&'a str> {
 
 async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
     ensure_fixture_runtime_types();
-    let built = build_fixture_to_temp("stream-baml-tool");
+    let built = build_fixture_to_temp_async("stream-baml-tool").await;
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.load_schema(built.to_str().unwrap()).unwrap();
     manager.register_tool(CalculatorTool).await.unwrap();
@@ -276,7 +387,7 @@ async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
 
 async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
     ensure_fixture_runtime_types();
-    let built = build_fixture_to_temp("stream-js-tool");
+    let built = build_fixture_to_temp_async("stream-js-tool").await;
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.load_schema(built.to_str().unwrap()).unwrap();
     let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
@@ -290,6 +401,74 @@ async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
         .unwrap()
 }
 
+/// Build fixture package with the builder, load runtime from extracted package,
+/// and create an A2A agent.
+/// Returns `(agent, extract_dir)` so caller can cleanup extracted artifacts.
+async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::path::PathBuf) {
+    let extract_dir = build_fixture_to_temp_async("stream-baml-tool").await;
+
+    let mut manager = BamlRuntimeManager::new().expect("runtime manager");
+    manager
+        .load_schema(extract_dir.to_str().expect("utf8 path"))
+        .expect("load schema from extracted package");
+    manager
+        .register_tool(CalculatorTool)
+        .await
+        .expect("register support/calculate tool");
+
+    let entry_js = fs::read_to_string(extract_dir.join("dist").join("index.js"))
+        .expect("read extracted dist/index.js");
+    let agent = baml_rt::A2aAgent::builder()
+        .with_runtime_manager(manager)
+        .with_init_js(entry_js)
+        .with_effect_emitter(Arc::new(EffectBus::new()))
+        .build()
+        .await
+        .expect("build packaged A2A agent");
+
+    (agent, extract_dir)
+}
+
+async fn setup_conversational_context_auto_agent(
+    connection: String,
+    graph: String,
+) -> (baml_rt::A2aAgent, Arc<FalkorDbProvenanceWriter>) {
+    ensure_fixture_runtime_types();
+    let built = build_fixture_to_temp_async("conversational-context-auto").await;
+    let mut manager = BamlRuntimeManager::new().unwrap();
+    manager.load_schema(built.to_str().unwrap()).unwrap();
+    manager.register_tool(CalculatorTool).await.unwrap();
+    let provenance = Arc::new(FalkorDbProvenanceWriter::new(
+        FalkorDbProvenanceConfig::new(connection, graph),
+    ));
+    let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
+    provenance
+        .add_event(ProvEvent::agent_booted(
+            ContextId::new(1, 1),
+            agent_id.clone(),
+            AgentType::new("conversational-context-auto").expect("agent type"),
+            "1.0.0".to_string(),
+            "conversational-context-auto@1.0.0".to_string(),
+        ))
+        .await
+        .expect("write AgentBooted");
+    let strict_writer = Arc::new(StrictProvenanceWriter {
+        inner: provenance.clone(),
+    });
+    let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
+        .expect("conversational-context-auto dist/index.js");
+    let agent = baml_rt::A2aAgent::builder()
+        .with_agent_id(agent_id)
+        .with_provenance_writer(strict_writer)
+        .with_runtime_manager(manager)
+        .with_init_js(agent_code)
+        .with_effect_emitter(Arc::new(EffectBus::new()))
+        .build()
+        .await
+        .unwrap();
+    (agent, provenance)
+}
+
 #[tokio::test]
 async fn test_manifest_allowlist_blocks_undeclared_tool() {
     let mut manager = BamlRuntimeManager::new().unwrap();
@@ -297,12 +476,12 @@ async fn test_manifest_allowlist_blocks_undeclared_tool() {
 
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000020").unwrap());
-    let scope = InvocationScope::standalone(agent_id);
+    let scope = InvocationScope::synthetic_message(agent_id);
 
     manager.set_tool_allowlist(HashSet::new()).await.unwrap();
     let blocked = context::with_scope(scope.as_scope().clone(), async {
         manager
-            .open_tool_session("support/calculate", json!({}))
+            .open_tool_session(scope.as_scope(), "support/calculate", json!({}))
             .await
     })
     .await;
@@ -319,7 +498,7 @@ async fn test_manifest_allowlist_blocks_undeclared_tool() {
     manager.set_tool_allowlist(allowlist).await.unwrap();
     let session = context::with_scope(scope.as_scope().clone(), async {
         manager
-            .open_tool_session("support/calculate", json!({}))
+            .open_tool_session(scope.as_scope(), "support/calculate", json!({}))
             .await
     })
     .await;
@@ -405,106 +584,90 @@ async fn test_runtime_manager_loads_schema() {
 
 #[tokio::test]
 async fn test_e2e_agent_runner_load_package() {
-    // Create a test agent package
-    let package_path = std::env::temp_dir().join("e2e-test-agent-package.tar.gz");
-
-    create_test_agent_package(&package_path).expect("Failed to create test agent package");
-
-    assert!(package_path.exists(), "Test package should exist");
-
-    // Run the binary to load the package
-    let output = agent_runner_command()
-        .arg(package_path.to_str().unwrap())
-        .output()
-        .expect("Failed to execute binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    println!("STDOUT:\n{}", stdout);
-    println!("STDERR:\n{}", stderr);
-
-    // Should successfully load the agent
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+    let (agent, extract_dir) = setup_packaged_stream_baml_tool_agent().await;
     assert!(
-        output.status.success() || stdout.contains("Loaded") || stdout.contains("test-agent"),
-        "Binary should successfully load the agent package. Exit code: {}, stdout: {}, stderr: {}",
-        output.status.code().unwrap_or(-1),
-        stdout,
-        stderr
+        !agent.agent_id().as_str().is_empty(),
+        "Loaded packaged agent must have a valid agent_id"
     );
 
-    // Cleanup
-    fs::remove_file(&package_path).ok();
+    fs::remove_dir_all(&extract_dir).ok();
 }
 
 #[tokio::test]
 async fn test_e2e_agent_runner_invoke_function() {
-    // Skip if no API key (we'll get auth errors, but that's okay for structure testing)
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+    // E2E via packaged agent loaded in-process, then invoked through A2A.
+    // This avoids recursive `cargo run` subprocess behavior and validates
+    // package -> runtime -> A2A request flow directly.
     let _ = dotenvy::dotenv();
     let has_api_key = std::env::var("OPENROUTER_API_KEY").is_ok();
+    let (agent, extract_dir) = setup_packaged_stream_baml_tool_agent().await;
 
-    // Create a test agent package
-    let package_path = std::env::temp_dir().join("e2e-test-agent-invoke.tar.gz");
+    // Invoke through A2A request path.
+    let request = send_message_request(
+        SendMessageRequest {
+            message: user_message("e2e-invoke-1", "compute 2+3"),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+            extra: std::collections::HashMap::new(),
+        },
+        "corr-1-1",
+    );
+    let outcome = agent
+        .handle_a2a(serde_json::to_value(request).expect("request json"))
+        .await;
 
-    create_test_agent_package(&package_path).expect("Failed to create test agent package");
+    match outcome {
+        Ok(responses) => {
+            let chunks = extract_chunks(&responses);
+            let texts = extract_message_texts(&chunks);
+            let pretty =
+                serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string());
+            let has_sum = texts
+                .iter()
+                .any(|t| t.contains("sum=5") || t.contains("Computed result is 5"));
+            let has_auth_error = pretty.contains("API key")
+                || pretty.contains("authentication")
+                || pretty.contains("401")
+                || pretty.contains("unauthorized")
+                || pretty.contains("Unauthorized");
 
-    // Try to invoke a function (will fail without API key, but should parse correctly)
-    let mut cmd = agent_runner_command();
-    cmd.arg(package_path.to_str().unwrap());
-    cmd.arg("--invoke");
-    cmd.arg("test-agent");
-    cmd.arg("SimpleGreeting");
-    cmd.arg(r#"{"name":"Test"}"#);
-
-    let output = cmd.output().expect("Failed to execute binary");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    println!("STDOUT:\n{}", stdout);
-    println!("STDERR:\n{}", stderr);
-
-    // Even if it fails due to missing API key, the structure should work
-    // (i.e., it should load the package and attempt to invoke, not fail on parsing)
-    let is_auth_error = stderr.contains("API key")
-        || stderr.contains("authentication")
-        || stderr.contains("401")
-        || stdout.contains("error");
-
-    if !has_api_key && is_auth_error {
-        // Expected: Missing API key
-        println!("Expected authentication error (no API key provided)");
-    } else if output.status.success() {
-        // Success: Function was invoked
-        assert!(
-            stdout.contains("{") || stdout.contains("result"),
-            "Should return JSON result"
-        );
-    } else {
-        // Other errors might be acceptable if they're not parsing/loading errors
-        println!("Function invocation returned non-zero exit code, but may be expected");
+            if !has_api_key && has_auth_error {
+                println!("Expected authentication error (no API key provided)");
+            } else {
+                assert!(
+                    has_sum,
+                    "Expected packaged A2A invocation to produce computed result. Texts: {:?}. Raw: {}",
+                    texts, pretty
+                );
+            }
+        }
+        Err(e) => {
+            let err = e.to_string();
+            let is_auth_error = err.contains("API key")
+                || err.contains("authentication")
+                || err.contains("401")
+                || err.contains("unauthorized")
+                || err.contains("Unauthorized");
+            if !has_api_key && is_auth_error {
+                println!("Expected authentication error (no API key provided)");
+            } else {
+                panic!("Packaged A2A invoke failed unexpectedly: {err}");
+            }
+        }
     }
 
     // Cleanup
-    fs::remove_file(&package_path).ok();
-}
-
-fn agent_runner_command() -> Command {
-    let mut command = Command::new("cargo");
-    command
-        .current_dir(workspace_root())
-        .arg("run")
-        .arg("--quiet")
-        .arg("-p")
-        .arg("baml-agent-runner")
-        .arg("--");
-    command
+    fs::remove_dir_all(&extract_dir).ok();
 }
 
 /// Fixture: stream-baml-tool. Tests async streaming of a BAML tool (FSM) result via message.sendStream.
 /// Requires .env with OPENROUTER_API_KEY (source .env or set in test env).
 #[tokio::test]
 async fn test_e2e_stream_baml_tool() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     let _ = dotenvy::dotenv();
 
     let agent = setup_stream_baml_tool_agent().await;
@@ -539,6 +702,7 @@ async fn test_e2e_stream_baml_tool() {
 /// Fixture: stream-js-tool. Tests streaming of a JS-only result (statusUpdate, artifactUpdate, message).
 #[tokio::test]
 async fn test_e2e_stream_js_tool() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     let agent = setup_stream_js_tool_agent().await;
 
     let params = SendMessageRequest {
@@ -605,4 +769,111 @@ async fn test_e2e_stream_js_tool() {
     );
 
     let _ = task_id;
+}
+
+#[tokio::test]
+async fn test_e2e_conversational_context_auto_via_provenance() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+    let _ = dotenvy::dotenv();
+    let (_container, connection) = start_falkordb().await;
+    let graph = format!(
+        "runner_conv_ctx_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_millis()
+    );
+    wait_for_falkordb(&connection, &graph).await;
+    eprintln!("conversational-context-auto: setup start");
+    let (agent, provenance_reader) = timeout(
+        Duration::from_secs(90),
+        setup_conversational_context_auto_agent(connection, graph),
+    )
+    .await
+    .expect("agent setup timed out");
+    eprintln!("conversational-context-auto: setup complete");
+    let per_turn_timeout = Duration::from_secs(45);
+
+    let first_turn = SendMessageRequest {
+        message: user_message("vox-auto-1", "Remember the codeword ORBIT and compute 2+3"),
+        configuration: None,
+        metadata: None,
+        tenant: None,
+        extra: std::collections::HashMap::new(),
+    };
+    eprintln!("conversational-context-auto: first turn start");
+    let first_response = timeout(
+        per_turn_timeout,
+        agent.handle_a2a(
+            serde_json::to_value(send_message_request(first_turn, "corr-201-1")).unwrap(),
+        ),
+    )
+    .await
+    .expect("first turn timed out")
+    .unwrap();
+    eprintln!("conversational-context-auto: first turn complete");
+    let first_chunks = extract_chunks(&first_response);
+    let first_texts = extract_message_texts(&first_chunks);
+    assert!(
+        first_texts
+            .iter()
+            .any(|text| text.contains("Computed result is 5")),
+        "Expected first turn to run tool and return computed result. Texts: {:?}",
+        first_texts
+    );
+
+    // FalkorDB writes may lag slightly behind turn completion; wait until turn-1
+    // conversation context is queryable before issuing turn-2 memory read.
+    let context_id = ContextId::new(1, 1);
+    let mut history_ready = false;
+    for _ in 0..50 {
+        let messages = provenance_reader
+            .context_messages(&context_id, Some(10))
+            .await
+            .unwrap_or_default();
+        if messages.len() >= 2 {
+            history_ready = true;
+            break;
+        }
+        sleep(Duration::from_millis(200)).await;
+    }
+    assert!(
+        history_ready,
+        "Expected FalkorDB-backed conversation history to contain turn-1 messages before turn-2"
+    );
+
+    let second_turn = SendMessageRequest {
+        message: user_message(
+            "vox-auto-2",
+            "What codeword did I ask you to remember? Reply with just the codeword.",
+        ),
+        configuration: None,
+        metadata: None,
+        tenant: None,
+        extra: std::collections::HashMap::new(),
+    };
+    eprintln!("conversational-context-auto: second turn start");
+    let second_response = timeout(
+        per_turn_timeout,
+        agent.handle_a2a(
+            serde_json::to_value(send_message_request(second_turn, "corr-201-2")).unwrap(),
+        ),
+    )
+    .await
+    .expect("second turn timed out")
+    .unwrap();
+    eprintln!("conversational-context-auto: second turn complete");
+    let second_chunks = extract_chunks(&second_response);
+    let second_texts = extract_message_texts(&second_chunks);
+    let expected_codeword = "ORBIT";
+    assert!(
+        second_texts.iter().any(|text| {
+            let normalized = text.trim().to_ascii_uppercase();
+            normalized.contains(expected_codeword) || expected_codeword.contains(&normalized)
+        }),
+        "Expected second turn to recall codeword from provenance-backed conversation context. Texts: {:?}. Raw: {}",
+        second_texts,
+        serde_json::to_string_pretty(&second_response).unwrap_or_else(|_| "?".to_string())
+    );
 }

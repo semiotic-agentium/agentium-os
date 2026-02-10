@@ -967,6 +967,8 @@ dependencies = [
  "serde_json",
  "tar",
  "test-support",
+ "testcontainers",
+ "text-to-cypher",
  "tokio",
  "tracing",
  "ts-rs",
@@ -1110,6 +1112,7 @@ dependencies = [
 name = "baml-rt-a2a"
 version = "0.1.0"
 dependencies = [
+ "async-channel 2.5.0",
  "async-trait",
  "baml-rt",
  "baml-rt-core",
@@ -1127,6 +1130,8 @@ dependencies = [
  "serde",
  "serde_json",
  "test-support",
+ "testcontainers",
+ "text-to-cypher",
  "tokio",
  "tokio-tungstenite",
  "tracing",
@@ -1228,6 +1233,7 @@ dependencies = [
  "baml-rt-core",
  "baml-rt-id",
  "baml-rt-interceptor",
+ "baml-rt-observability",
  "baml-rt-tools",
  "insta",
  "serde",
@@ -1268,16 +1274,6 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
-]
-
-[[package]]
-name = "baml-rt-regen-fixtures"
-version = "0.1.0"
-dependencies = [
- "baml-rt-builder",
- "baml-rt-core",
- "baml-rt-tools-internal-dev",
- "tokio",
 ]
 
 [[package]]

@@ -41,11 +41,15 @@ async fn test_baml_function_returns_actual_result() {
         .await
         .unwrap();
     let bridge_handle = agent.bridge();
-    let scope = InvocationScope::standalone(agent.agent_id().clone());
+    let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
     let result = context::with_scope(scope.as_scope().clone(), async {
         let mut bridge = bridge_handle.lock().await;
         bridge
-            .invoke_function("ChooseCalcTool", json!({"user_message": "compute 2+3"}))
+            .invoke_function(
+                &scope,
+                "ChooseCalcTool",
+                json!({"user_message": "compute 2+3"}),
+            )
             .await
     })
     .await;
@@ -111,7 +115,7 @@ async fn test_js_function_invocation_returns_actual_result() {
         .unwrap();
     let bridge_handle = agent.bridge();
     let mut bridge = bridge_handle.lock().await;
-    let scope = InvocationScope::standalone(agent.agent_id().clone());
+    let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
 
     let result = bridge
         .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
@@ -177,7 +181,7 @@ async fn test_invoke_function_api_contract() {
         .unwrap();
     let bridge_handle = agent.bridge();
     let mut bridge = bridge_handle.lock().await;
-    let scope = InvocationScope::standalone(agent.agent_id().clone());
+    let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
 
     let result = bridge
         .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
@@ -257,7 +261,7 @@ async fn test_loaded_agent_invoke_function_contract() {
         .unwrap();
     let bridge_handle = agent.bridge();
     let mut bridge = bridge_handle.lock().await;
-    let scope = InvocationScope::standalone(agent.agent_id().clone());
+    let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
 
     let result = bridge
         .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))

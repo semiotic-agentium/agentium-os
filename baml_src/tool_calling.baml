@@ -6,6 +6,3 @@ function GreetWithTools(name: string) -> string {
     Greet them in a friendly way and tell them a fun fact.
   "#
 }
-
-
-

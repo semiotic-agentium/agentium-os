@@ -53,9 +53,7 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
         max_attempts_ms,
     } = params;
 
-    let context_id = scope
-        .map(|s| s.context_id.clone())
-        .or_else(baml_rt_core::context::current_context_id);
+    let context_id = scope.map(|s| s.context_id().clone());
     let poller = EffectGatedPoller::new(
         effect_liveness,
         context_id,

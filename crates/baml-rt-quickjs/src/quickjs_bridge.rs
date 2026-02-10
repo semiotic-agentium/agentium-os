@@ -5,7 +5,7 @@
 
 use crate::baml::BamlRuntimeManager;
 use crate::js_value_converter::value_to_js_value_facade;
-use baml_rt_core::context::{self, InvocationContext, InvocationScope, RuntimeScope};
+use baml_rt_core::context::{self, InvocationScope, RuntimeScope};
 use baml_rt_core::correlation;
 use baml_rt_core::effects::EffectLiveness;
 use baml_rt_core::{BamlRtError, Result};
@@ -18,7 +18,7 @@ use quickjs_runtime::values::JsValueFacade;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::{Mutex, Semaphore, mpsc};
 
 mod eval;
 mod js_codegen;
@@ -30,15 +30,18 @@ mod wrappers;
 
 pub use eval::EffectGatedPoller;
 use scope::{
-    InvocationToken, clear_worker_thread_scope, next_invocation_token, resolve_scope_from_token_arg,
+    InvocationToken, next_invocation_token, resolve_scope_from_token_arg, token_from_args,
 };
 
 pub(crate) use js_codegen::build_scope_prelude;
 
 type InvocationScopeMap = Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>>;
+type CorrelationMap = Arc<StdMutex<HashMap<InvocationToken, baml_rt_core::ids::CorrelationId>>>;
 type EvalResultMap = Arc<StdMutex<HashMap<InvocationToken, Option<String>>>>;
 type StreamSemaphore = Arc<Semaphore>;
 type StreamPermit = tokio::sync::OwnedSemaphorePermit;
+type YieldSenderSlot = Arc<StdMutex<Option<mpsc::UnboundedSender<Value>>>>;
+type YieldReceiver = mpsc::UnboundedReceiver<Value>;
 
 /// Helper function for creating an empty open_input value.
 ///
@@ -77,6 +80,8 @@ pub struct QuickJSBridge {
     max_attempts_ms: u64,
     /// Token → scope for native callbacks; host issues token, JS passes it, natives look up scope.
     invocation_scope_by_token: InvocationScopeMap,
+    /// Token -> correlation id captured at invocation entry and propagated through native callbacks.
+    correlation_id_by_token: CorrelationMap,
     /// Token → eval result (None while pending). Strictly keyed by token.
     eval_results_by_token: EvalResultMap,
     /// Token for the active stream invocation; cleared in get_a2a_yield_buffer so token can be removed.
@@ -86,6 +91,10 @@ pub struct QuickJSBridge {
     stream_semaphore: StreamSemaphore,
     /// Permit held while a stream is active; dropped in get_a2a_yield_buffer.
     stream_permit: Option<StreamPermit>,
+    /// Active stream yield sink. JS host callback pushes chunks into this channel.
+    a2a_yield_tx_slot: YieldSenderSlot,
+    /// Active stream yield receiver, drained by get_a2a_yield_buffer().
+    a2a_yield_rx: Option<YieldReceiver>,
 }
 
 impl QuickJSBridge {
@@ -158,10 +167,13 @@ impl QuickJSBridge {
                 .max_attempts_ms
                 .unwrap_or(EffectGatedPoller::DEFAULT_MAX_ATTEMPTS as u64), // Default 30 minutes
             invocation_scope_by_token: Arc::new(StdMutex::new(HashMap::new())),
+            correlation_id_by_token: Arc::new(StdMutex::new(HashMap::new())),
             eval_results_by_token: Arc::new(StdMutex::new(HashMap::new())),
             current_stream_token: None,
             stream_semaphore: Arc::new(Semaphore::new(1)),
             stream_permit: None,
+            a2a_yield_tx_slot: Arc::new(StdMutex::new(None)),
+            a2a_yield_rx: None,
         };
 
         // Initialize sandbox - remove dangerous globals and implement safe console
@@ -280,18 +292,24 @@ impl QuickJSBridge {
         Ok(())
     }
 
-    /// Register a helper function that JavaScript can call to invoke BAML functions. Accepts (token?, function_name, args).
+    /// Register a helper function that JavaScript can call to invoke BAML functions. Accepts (token, function_name, args).
     async fn register_baml_invoke_helper(&mut self) -> Result<()> {
         let manager_clone = self.baml_manager.clone();
         let scope_map = self.invocation_scope_by_token.clone();
+        let correlation_map = self.correlation_id_by_token.clone();
 
         self.runtime.set_function(
             &[],
             "__baml_invoke",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
+                let token = token_from_args(&args).ok_or_else(|| {
+                    quickjs_runtime::jsutils::JsError::new_str(
+                        "Missing or invalid invocation token (first arg must be token string)",
+                    )
+                })?;
                 let (scope, skip) = resolve_scope_from_token_arg(&scope_map, &args)?;
                 if args.len() < skip + 2 {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (token?, function_name, args)"));
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (token, function_name, args)"));
                 }
 
                 let func_name_js = &args[skip];
@@ -313,21 +331,32 @@ impl QuickJSBridge {
 
                 let func_name_clone = func_name.clone();
                 let manager_for_promise = manager_clone.clone();
-                let correlation_id = correlation::current_or_new();
+                let correlation_id = correlation_map
+                    .lock()
+                    .ok()
+                    .and_then(|map| map.get(&token).cloned());
+                let scope_for_tools = scope.clone();
 
                 Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
-                    correlation::with_correlation_id(correlation_id, async move {
+                    let run = async move {
                         context::with_scope(scope, async move {
                             let manager = manager_for_promise.lock().await;
-                            let value = manager.invoke_function(&func_name_clone, args_json).await
+                            let invocation_scope = InvocationScope::new(scope_for_tools.clone());
+                            let value = manager
+                                .invoke_function(&invocation_scope, &func_name_clone, args_json)
+                                .await
                                 .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
-                            let result = manager.execute_tool_from_baml_result_or_value(value).await
+                            let result = manager.execute_tool_from_baml_result_or_value(&scope_for_tools, value).await
                                 .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
                             Ok(value_to_js_value_facade(result))
                         })
                         .await
-                    })
-                    .await
+                    };
+                    if let Some(correlation_id) = correlation_id {
+                        correlation::with_correlation_id(correlation_id, run).await
+                    } else {
+                        run.await
+                    }
                 }))
             },
         ).map_err(|e| BamlRtError::QuickJsWithSource {
@@ -354,7 +383,7 @@ impl QuickJSBridge {
                     return JSON.stringify({ error: e.toString() });
                 }
             };
-            
+
             // Helper to synchronously check if a value is a promise
             globalThis.__isPromise = function(value) {
                 return value && typeof value.then === 'function';
@@ -408,18 +437,24 @@ impl QuickJSBridge {
         Ok(())
     }
 
-    /// Register a helper function for streaming BAML function execution. Accepts (token?, function_name, args).
+    /// Register a helper function for streaming BAML function execution. Accepts (token, function_name, args).
     async fn register_baml_stream_helper(&mut self) -> Result<()> {
         let manager_clone = self.baml_manager.clone();
         let scope_map = self.invocation_scope_by_token.clone();
+        let correlation_map = self.correlation_id_by_token.clone();
 
         self.runtime.set_function(
             &[],
             "__baml_stream",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
+                let token = token_from_args(&args).ok_or_else(|| {
+                    quickjs_runtime::jsutils::JsError::new_str(
+                        "Missing or invalid invocation token (first arg must be token string)",
+                    )
+                })?;
                 let (scope, skip) = resolve_scope_from_token_arg(&scope_map, &args)?;
                 if args.len() < skip + 2 {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (token?, function_name, args)"));
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (token, function_name, args)"));
                 }
 
                 let func_name_js = &args[skip];
@@ -442,20 +477,25 @@ impl QuickJSBridge {
                 };
 
                 let func_name_clone = func_name.clone();
-                let correlation_id = correlation::current_or_new();
+                let correlation_id = correlation_map
+                    .lock()
+                    .ok()
+                    .and_then(|map| map.get(&token).cloned());
                 let manager_for_stream = manager_clone.clone();
+                let correlation_id_for_spawn = correlation_id.clone();
 
                 Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
-                    correlation::with_correlation_id(correlation_id, async move {
+                    let run = async move {
                         use tokio::sync::mpsc;
                         let (tx, mut rx) = mpsc::channel::<serde_json::Value>(100);
                         let func_name_stream = func_name_clone.clone();
                         let args_json_stream = args_json.clone();
-                        let spawn_correlation_id = correlation::current_or_new();
+                        let spawn_correlation_id = correlation_id_for_spawn.clone();
                         let spawn_scope = scope.clone();
+                        let scope_for_stream = spawn_scope.clone();
                         // Spawn a task to run the stream and send incremental results
                         tokio::spawn(async move {
-                            correlation::with_correlation_id(spawn_correlation_id, async move {
+                            let run = async move {
                                 context::with_scope(spawn_scope, async move {
                                 if args_json_stream
                                     .get("__scope_probe")
@@ -463,12 +503,9 @@ impl QuickJSBridge {
                                     == Some(true)
                                 {
                                     let payload = json!({
-                                        "context_id": context::current_context_id()
-                                            .map(|id| id.to_string()),
-                                        "message_id": context::current_message_id()
-                                            .map(|id| id.to_string()),
-                                        "task_id": context::current_task_id()
-                                            .map(|id| id.to_string()),
+                                        "context_id": scope_for_stream.context_id().to_string(),
+                                        "message_id": scope_for_stream.message_id().to_string(),
+                                        "task_id": scope_for_stream.task_id_opt().map(|id| id.to_string()),
                                     });
                                     if let Err(e) = tx.send(payload).await {
                                         tracing::warn!(error = ?e, "Failed to send scope probe payload");
@@ -478,7 +515,13 @@ impl QuickJSBridge {
 
                                 // Create the stream
                                 let manager = manager_for_stream.lock().await;
-                                let stream_result = manager.invoke_function_stream(&func_name_stream, args_json_stream);
+                                let invocation_scope =
+                                    InvocationScope::new(scope_for_stream.clone());
+                                let stream_result = manager.invoke_function_stream(
+                                    &invocation_scope,
+                                    &func_name_stream,
+                                    args_json_stream,
+                                );
                                 let executor_ref = match manager.executor.as_ref() {
                                     Some(exec) => exec,
                                     None => {
@@ -491,9 +534,11 @@ impl QuickJSBridge {
                                         return;
                                     }
                                 };
-                                let ctx_manager = match executor_ref
-                                    .create_ctx_manager_for_current_scope()
-                                {
+                                let ctx_manager =
+                                    match executor_ref.create_ctx_manager_for_scope(
+                                        &scope_for_stream,
+                                        None,
+                                    ) {
                                     Ok(manager) => manager,
                                     Err(err) => {
                                         let error_value = serde_json::json!({
@@ -560,8 +605,12 @@ impl QuickJSBridge {
                                     }
                                 }
                                 }).await;
-                            })
-                            .await;
+                            };
+                            if let Some(correlation_id) = spawn_correlation_id {
+                                correlation::with_correlation_id(correlation_id, run).await;
+                            } else {
+                                run.await;
+                            }
                         });
 
                         // Collect results from the channel into an array
@@ -572,8 +621,12 @@ impl QuickJSBridge {
 
                         // Convert results array to JsValueFacade directly
                         Ok(value_to_js_value_facade(serde_json::Value::Array(results)))
-                    })
-                    .await
+                    };
+                    if let Some(correlation_id) = correlation_id {
+                        correlation::with_correlation_id(correlation_id, run).await
+                    } else {
+                        run.await
+                    }
                 }))
             },
         ).map_err(|e| BamlRtError::QuickJsWithSource {
@@ -652,6 +705,11 @@ impl QuickJSBridge {
         if let Ok(mut map) = self.invocation_scope_by_token.lock() {
             map.insert(token.clone(), scope.as_scope().clone());
         }
+        if let Some(correlation_id) = correlation::current_correlation_id()
+            && let Ok(mut map) = self.correlation_id_by_token.lock()
+        {
+            map.insert(token.clone(), correlation_id);
+        }
         (token, prelude)
     }
 
@@ -661,16 +719,15 @@ impl QuickJSBridge {
         if let Ok(mut map) = self.invocation_scope_by_token.lock() {
             map.remove(token);
         }
+        if let Ok(mut map) = self.correlation_id_by_token.lock() {
+            map.remove(token);
+        }
     }
 
-    /// Run a single script on the QuickJS worker thread with the given invocation scope set
-    /// in the worker-thread thread-local. Native callbacks (e.g. __tool_invoke) run on that
-    /// thread and read scope via [`worker_thread_scope()`]; no JS-passed context needed.
-    /// See docs/QUICKJS_THREADING_AND_SCOPE.md.
+    /// Run a single script with explicit invocation scope available through token prelude.
     ///
-    /// When `clear_after` is true (e.g. non-stream invoke), the scope is restored when the eval
-    /// returns. When false (stream invoke), the scope is left set so that async promise
-    /// continuations (e.g. openToolSession) still see it; clear via [`clear_worker_thread_scope`].
+    /// Scope lookup for native callbacks is token-authoritative; this helper keeps API shape
+    /// stable while delegating to runtime eval.
     pub async fn run_eval_with_scope(
         &self,
         scope: &InvocationScope,
@@ -678,6 +735,30 @@ impl QuickJSBridge {
         clear_after: bool,
     ) -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
         scope::run_eval_with_scope(&self.runtime, scope, script, clear_after).await
+    }
+
+    /// Post a closure to the QuickJS event-loop worker thread and return immediately.
+    ///
+    /// Invariant: caller path remains non-blocking; closure execution happens later on the
+    /// runtime worker thread and must deliver outcomes through channels/oneshots.
+    pub fn post_to_worker_void<F>(&self, f: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.runtime.add_task_to_event_loop_void(f);
+    }
+
+    /// Run a closure on the QuickJS event-loop worker thread (facade over the runtime's event loop).
+    ///
+    /// Use this to run work that must execute on the same thread as the QuickJS context (e.g. A2A
+    /// session handling that will later call back into the bridge). No extra thread is spawned;
+    /// the closure is posted to the existing QuickJS worker and the future resolves when it completes.
+    pub async fn run_on_worker<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        self.runtime.loop_realm(None, move |_rt, _realm| f()).await
     }
 
     /// Execute JavaScript code in the QuickJS context.
@@ -734,12 +815,9 @@ impl QuickJSBridge {
             prelude, code_expr_body
         );
         let direct_script = Script::new("eval_direct.js", &direct_code);
-        // When we have scope, use clear_after: false so scope stays set if code returns a promise
-        // (promise continuations run later on the worker thread and need worker_thread_scope()).
-        let direct_clear_after = scope.is_none();
         let direct_result = match scope {
             Some(s) => {
-                self.run_eval_with_scope(s, direct_script.clone(), direct_clear_after)
+                self.run_eval_with_scope(s, direct_script.clone(), false)
                     .await
             }
             None => self.runtime.eval(None, direct_script).await,
@@ -788,7 +866,6 @@ impl QuickJSBridge {
                     })?;
                     guard.remove(&eval_token);
                 }
-                clear_worker_thread_scope();
                 let _ = token_to_remove
                     .as_ref()
                     .map(|t| self.remove_invocation_token(t));
@@ -811,9 +888,6 @@ impl QuickJSBridge {
                     .map_err(|_| BamlRtError::QuickJs("eval_results lock poisoned".to_string()))?;
                 guard.remove(&eval_token);
             }
-            if token_to_remove.is_some() {
-                clear_worker_thread_scope();
-            }
             let _ = token_to_remove.map(|t| self.remove_invocation_token(&t));
             // Not a promise, code executed successfully (side effects happened)
             // Return empty object to indicate success without a value
@@ -835,8 +909,6 @@ impl QuickJSBridge {
         let script = Script::new("eval.js", &wrapped_code);
 
         // Execute the code - this will set __eval_result when the promise resolves.
-        // When we have scope, use clear_after: false so worker_thread_scope stays set while
-        // the promise runs (__baml_invoke etc. run in async continuations); we clear manually after.
         let js_result = match scope {
             Some(s) => self.run_eval_with_scope(s, script, false).await,
             None => self.runtime.eval(None, script).await,
@@ -857,9 +929,6 @@ impl QuickJSBridge {
                     })?;
                     guard.remove(&eval_token);
                 }
-                if token_to_remove.is_some() {
-                    clear_worker_thread_scope();
-                }
                 if let Some(ref t) = token_to_remove {
                     self.remove_invocation_token(t);
                 }
@@ -869,9 +938,6 @@ impl QuickJSBridge {
 
         // Check if result is a string (synchronous code returned immediately)
         if js_result.is_string() {
-            if token_to_remove.is_some() {
-                clear_worker_thread_scope();
-            }
             if let Some(ref t) = token_to_remove {
                 self.remove_invocation_token(t);
             }
@@ -897,12 +963,7 @@ impl QuickJSBridge {
                         max_attempts_ms: self.max_attempts_ms,
                     },
                 )
-                .await
-                .inspect_err(|_| {
-                    if token_to_remove.is_some() {
-                        clear_worker_thread_scope();
-                    }
-                })?;
+                .await?;
                 let parsed = serde_json::from_str(result_str.as_str()).map_err(|e| {
                     let len = result_str.len();
                     let prefix = result_str
@@ -910,18 +971,12 @@ impl QuickJSBridge {
                         .unwrap_or("")
                         .replace('\n', "\\n")
                         .replace('\r', "\\r");
-                    if token_to_remove.is_some() {
-                        clear_worker_thread_scope();
-                    }
                     BamlRtError::JsonWithRaw {
                         source: e,
                         raw_length: len,
                         raw_prefix: prefix,
                     }
                 })?;
-                if token_to_remove.is_some() {
-                    clear_worker_thread_scope();
-                }
                 if let Some(ref t) = token_to_remove {
                     self.remove_invocation_token(t);
                 }
@@ -933,9 +988,6 @@ impl QuickJSBridge {
                         BamlRtError::QuickJs("eval_results lock poisoned".to_string())
                     })?;
                     guard.remove(&eval_token);
-                }
-                if token_to_remove.is_some() {
-                    clear_worker_thread_scope();
                 }
                 if let Some(ref t) = token_to_remove {
                     self.remove_invocation_token(t);
@@ -961,10 +1013,12 @@ impl QuickJSBridge {
     ///
     /// **Scope:** Requires an invocation scope (e.g. run inside `context::with_scope`). A per-invocation
     /// token is bound for `__baml_invoke` calls within the eval scope.
-    pub async fn invoke_function(&mut self, function_name: &str, args: Value) -> Result<Value> {
-        let scope = context::task_local_context().current_scope()?;
-        let invocation_scope = InvocationScope::new(scope);
-
+    pub async fn invoke_function(
+        &mut self,
+        scope: &InvocationScope,
+        function_name: &str,
+        args: Value,
+    ) -> Result<Value> {
         let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
         let js_code = format!(
             r#"
@@ -982,11 +1036,11 @@ impl QuickJSBridge {
         );
 
         if correlation::current_correlation_id().is_some() {
-            self.evaluate(Some(&invocation_scope), &js_code).await
+            self.evaluate(Some(scope), &js_code).await
         } else {
             let correlation_id = correlation::generate_correlation_id();
             correlation::with_correlation_id(correlation_id, async {
-                self.evaluate(Some(&invocation_scope), &js_code).await
+                self.evaluate(Some(scope), &js_code).await
             })
             .await
         }
@@ -997,9 +1051,13 @@ impl QuickJSBridge {
     /// This only executes a JavaScript function from globalThis and does not fall back to BAML.
     /// Requires an invocation scope (e.g. run inside `context::with_scope`) so that
     /// a per-invocation token is available for nested __tool_invoke / __baml_invoke calls.
-    pub async fn invoke_js_tool(&mut self, tool_name: &str, args: Value) -> Result<Value> {
-        let scope = context::task_local_context().current_scope()?;
-        self.invoke_js_tool_with_scope(&InvocationScope::new(scope), tool_name, args)
+    pub async fn invoke_js_tool(
+        &mut self,
+        invocation_scope: &InvocationScope,
+        tool_name: &str,
+        args: Value,
+    ) -> Result<Value> {
+        self.invoke_js_tool_with_scope(invocation_scope, tool_name, args)
             .await
     }
 
@@ -1161,11 +1219,10 @@ impl QuickJSBridge {
     /// then falls back to BAML streaming via __baml_stream.
     pub async fn invoke_function_stream(
         &mut self,
+        invocation_scope: &InvocationScope,
         function_name: &str,
         args: Value,
     ) -> Result<Vec<Value>> {
-        let scope = context::task_local_context().current_scope()?;
-        let invocation_scope = InvocationScope::new(scope);
         let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
         let stream_function = format!("{}Stream", function_name);
 
@@ -1192,11 +1249,11 @@ impl QuickJSBridge {
         );
 
         let result = if correlation::current_correlation_id().is_some() {
-            self.evaluate(Some(&invocation_scope), &js_code).await?
+            self.evaluate(Some(invocation_scope), &js_code).await?
         } else {
             let correlation_id = correlation::generate_correlation_id();
             correlation::with_correlation_id(correlation_id, async {
-                self.evaluate(Some(&invocation_scope), &js_code).await
+                self.evaluate(Some(invocation_scope), &js_code).await
             })
             .await?
         };
@@ -1303,10 +1360,10 @@ mod tests {
             .unwrap();
         bridge.register_baml_functions().await.unwrap();
 
-        let scope_a = InvocationScope::standalone(AgentId::from_uuid(
+        let scope_a = InvocationScope::synthetic_message(AgentId::from_uuid(
             UuidId::parse_str("00000000-0000-0000-0000-0000000000a1").unwrap(),
         ));
-        let scope_b = InvocationScope::standalone(AgentId::from_uuid(
+        let scope_b = InvocationScope::synthetic_message(AgentId::from_uuid(
             UuidId::parse_str("00000000-0000-0000-0000-0000000000a2").unwrap(),
         ));
 

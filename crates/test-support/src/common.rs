@@ -1,8 +1,16 @@
 //! Common test utilities and shared modules.
 
 pub use crate::support::tools::*;
+mod a2a_test_helpers;
+pub use a2a_test_helpers::{
+    chunk_content, first_message_text_from_stream, first_task_id_from_stream, send_stream_request,
+    user_message,
+};
 mod test_tools;
-pub use test_tools::{DelayedResponseTool, UppercaseTool, WeatherTool};
+pub use test_tools::{
+    AddNumbersInput, AddNumbersOutput, AddNumbersTool, DelayedResponseTool, UppercaseTool,
+    WeatherTool,
+};
 
 // Fixture helpers
 use std::path::PathBuf;

@@ -22,10 +22,10 @@ Tokio task T (handling request R):
 
 the **eval** is submitted to the QuickJS worker thread. When the evaluated JS calls a native function (e.g. `__tool_invoke`), that **callback runs on the worker thread**, not on the Tokio task T. Therefore:
 
-- **`context::current_scope()` (task-local) is set on the Tokio task.**  
-- **Native callbacks run on the QuickJS worker thread.**  
-- **Task-local is per-Tokio-task; the worker thread is a different execution context.**  
-- So **`current_scope()` is `None` inside native callbacks** when they run on the worker thread.
+- **Task-local scope is set on the Tokio task.**
+- **Native callbacks run on the QuickJS worker thread.**
+- **Task-local is per-Tokio-task; the worker thread is a different execution context.**
+- So **task-local scope lookup is `None` inside native callbacks** when they run on the worker thread.
 
 ## Common Requirement: Scope Visible in Native Callbacks
 
@@ -33,13 +33,13 @@ Any design that needs **request-scoped context** (e.g. `context_id`, provenance,
 
 **Requirement:** The scope for the **current invocation** must be available to the code that runs **on the QuickJS worker thread** when the callback executes.
 
-- **Not sufficient:** Setting scope only via `context::with_scope(scope, ...)` on the Tokio task and then calling `current_scope()` inside the native callback. The callback runs on the worker thread; task-local is not visible there.
+- **Not sufficient:** Setting scope only via `context::with_scope(scope, ...)` on the Tokio task and then attempting task-local scope lookup inside the native callback. The callback runs on the worker thread; task-local is not visible there.
 - **Needed:** Scope (or a way to get it) must be provided to the **worker thread** for the duration of the eval that can trigger that callback. Options include:
   1. **Per-eval context in the runtime:** If the runtime supports passing an “invocation context” (e.g. `eval(script, context)`) that it sets on the worker thread before running the script and that native callbacks can read, use that.
   2. **Bridge-held “current scope” for the worker:** Before submitting the eval job, the bridge stores the current invocation scope in a place the worker thread can read (e.g. a thread-local set by the runtime when it starts running the script, or a shared slot that the runtime sets from the calling thread and the worker reads). Native callbacks then read scope from that place instead of from task-local.
   3. **Scope captured in the script/callback registration:** If the runtime allows passing data into the eval job that is visible to the worker during that job, scope can be passed with the job and stored in a worker-visible location for the duration of that eval.
 
-Until one of these is implemented, **do not rely on `context::current_scope()` inside native callbacks** when the runtime uses a separate worker thread; it will be `None` and can panic or mis-attribute context.
+Until one of these is implemented, **do not rely on task-local scope lookup inside native callbacks** when the runtime uses a separate worker thread; it will be `None` and can panic or misattribute context.
 
 ## Thunking Call Context via quickjs_runtime (No JS)
 
@@ -64,7 +64,14 @@ So we can **thunk call context** without touching JavaScript:
 
 **Benefits:** Scope is set and read entirely on the Rust side; no `globalThis.__baml_context_id` or JS arguments for context; same API for JS (no changes to how JS calls `__tool_invoke`, etc.). Any code path that runs eval with an `InvocationScope` (e.g. `invoke_js_function(scope, ...)`, `invoke_js_function_stream(scope, ...)`) must use this “eval with scope” thunk for every `eval` in that path (including the promise-poll loop in `evaluate()`).
 
-**Stream + concurrency:** For stream requests we leave the worker-thread scope set (`clear_after: false`) so async promise continuations (e.g. `openToolSession` → `__tool_session_open`) see it; we clear in `get_a2a_yield_buffer`. When **multiple** stream requests run concurrently, each `run_eval_with_scope(..., false)` overwrites the single thread-local. So the last request’s scope wins, and earlier requests’ async continuations can see the wrong scope.  
+## Fire-and-forget worker posting
+
+For non-eval host work that must execute on the QuickJS worker thread without blocking async callers, use bridge `post_to_worker_void`, which forwards to facade `add_task_to_event_loop_void`.
+
+- **Invariant:** caller path returns immediately (no blocking on worker completion).
+- **Liveness:** posted closure eventually executes on the worker thread and must report completion via channel/oneshot if a result is needed.
+
+**Stream + concurrency:** For stream requests we leave the worker-thread scope set (`clear_after: false`) so async promise continuations (e.g. `openToolSession` → `__tool_session_open`) see it; we clear in `get_a2a_yield_buffer`. When **multiple** stream requests run concurrently, each `run_eval_with_scope(..., false)` overwrites the single thread-local. So the last request’s scope wins, and earlier requests’ async continuations can see the wrong scope.
 To support **concurrent streams without per-request runtimes**, **do not rely on the global token**. Use explicit token passing in JS (e.g. `openToolSession(toolName, invocationToken)`), and keep authoritative scope resolution on the host via the token → scope map. This avoids global token collisions and removes reliance on the worker-thread scope for attribution.
 
 ---

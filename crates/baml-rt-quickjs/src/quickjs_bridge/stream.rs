@@ -1,21 +1,77 @@
 use super::QuickJSBridge;
-use crate::quickjs_bridge::scope::clear_worker_thread_scope;
 use baml_rt_core::context::InvocationScope;
 use baml_rt_core::{BamlRtError, Result};
 use quickjs_runtime::jsutils::Script;
+use quickjs_runtime::quickjsrealmadapter::QuickJsRealmAdapter;
+use quickjs_runtime::values::JsValueFacade;
 use serde_json::Value;
+use tokio::sync::mpsc::error::TryRecvError;
 
 impl QuickJSBridge {
     /// Set up the chat stream yield buffer and __baml_chat_yield so JS can yield chunks asynchronously
     /// instead of collecting and returning an array. Call before invoking onChatMessage for stream requests.
     ///
+    /// **Lifecycle:** Clears any previous yield channel (no stale sender/receiver across sessions).
     /// **Liveness:** □(this returns Ok → ◇(get_a2a_yield_buffer is called after one invoke_js_function("onChatMessage", ·))).
     /// Use [`a2a_stream::begin_a2a_yield_session`] for a type-safe sequence.
     pub async fn setup_a2a_yield_buffer(&mut self) -> Result<()> {
+        // Explicit close of previous stream yield channel so no stale state survives.
+        self.a2a_yield_rx = None;
+        if let Ok(mut slot) = self.a2a_yield_tx_slot.lock() {
+            *slot = None;
+        }
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Value>();
+        {
+            let mut slot = self.a2a_yield_tx_slot.lock().map_err(|_| {
+                BamlRtError::QuickJs("yield channel slot lock poisoned".to_string())
+            })?;
+            *slot = Some(tx);
+        }
+        self.a2a_yield_rx = Some(rx);
+
+        let tx_slot = self.a2a_yield_tx_slot.clone();
+        self.runtime
+            .set_function(
+                &[],
+                "__baml_chat_yield_host",
+                move |_realm: &QuickJsRealmAdapter,
+                      args: Vec<JsValueFacade>|
+                      -> std::result::Result<
+                    JsValueFacade,
+                    quickjs_runtime::jsutils::JsError,
+                > {
+                    if args.is_empty() || !args[0].is_string() {
+                        return Err(quickjs_runtime::jsutils::JsError::new_str(
+                            "Expected one JSON-string argument",
+                        ));
+                    }
+                    let chunk_json = args[0].get_str().to_string();
+                    let value: Value = serde_json::from_str(&chunk_json).map_err(|e| {
+                        quickjs_runtime::jsutils::JsError::new_str(&format!(
+                            "Invalid yield JSON: {}",
+                            e
+                        ))
+                    })?;
+
+                    let slot = tx_slot.lock().map_err(|_| {
+                        quickjs_runtime::jsutils::JsError::new_str("yield channel slot lock poisoned")
+                    })?;
+                    if let Some(tx) = slot.as_ref() && tx.send(value).is_err() {
+                        tracing::debug!(
+                            "Yield channel receiver dropped; stream consumer likely closed"
+                        );
+                    }
+                    Ok(JsValueFacade::Undefined)
+                },
+            )
+            .map_err(|e| BamlRtError::QuickJsWithSource {
+                context: "Failed to register __baml_chat_yield_host".to_string(),
+                source: Box::new(e),
+            })?;
+
         let js_code = r#"
-            globalThis.__baml_chat_yield_buffer = [];
             globalThis.__baml_chat_yield = function(chunk) {
-                if (globalThis.__baml_chat_yield_buffer) globalThis.__baml_chat_yield_buffer.push(chunk);
+                __baml_chat_yield_host(JSON.stringify(chunk));
             };
         "#;
         let script = Script::new("setup_a2a_yield.js", js_code);
@@ -36,34 +92,40 @@ impl QuickJSBridge {
     ///
     /// **Liveness:** Requires that `setup_a2a_yield_buffer` was called.
     pub async fn get_a2a_yield_buffer(&mut self) -> Result<Vec<Value>> {
-        let js_code = r#"
-            (function() {
-                const buffer = globalThis.__baml_chat_yield_buffer || [];
-                globalThis.__baml_chat_yield_buffer = [];
-                return JSON.stringify(buffer);
-            })()
-        "#;
-        let value =
-            self.evaluate(None, js_code)
-                .await
-                .map_err(|e| BamlRtError::QuickJsWithSource {
-                    context: "Failed to retrieve A2A yield buffer".to_string(),
-                    source: Box::new(e),
-                })?;
+        // INVARIANT (stream progress): before every buffer read, drive pending JS jobs once.
+        // Without this, async stream continuations may never run, yielding empty polls forever.
+        self.runtime.exe_rt_task_in_event_loop(|rt| {
+            rt.run_pending_jobs_if_any();
+        });
 
-        let responses = match value {
-            Value::Array(arr) => arr,
-            Value::String(s) => serde_json::from_str::<Value>(&s)
-                .ok()
-                .and_then(|v| v.as_array().cloned())
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        };
-
-        // Clear worker thread scope after stream invocation completes
-        clear_worker_thread_scope();
+        let mut responses = Vec::new();
+        if let Some(rx) = self.a2a_yield_rx.as_mut() {
+            loop {
+                match rx.try_recv() {
+                    Ok(value) => responses.push(value),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        self.a2a_yield_rx = None;
+                        break;
+                    }
+                }
+            }
+        }
 
         Ok(responses)
+    }
+
+    /// Finalize a stream invocation after chunk collection completes.
+    ///
+    /// **Close semantics:** Drops yield channel sender (slot) and receiver (a2a_yield_rx) so no
+    /// stale stream state survives; next stream gets a fresh channel from setup_a2a_yield_buffer.
+    /// Also releases stream permit so the next stream may start.
+    pub(crate) fn finalize_a2a_stream_invocation(&mut self) {
+        self.stream_permit = None;
+        self.a2a_yield_rx = None;
+        if let Ok(mut slot) = self.a2a_yield_tx_slot.lock() {
+            *slot = None;
+        }
     }
 
     /// Invoke a JavaScript function for streaming (yield-based) requests.
@@ -111,7 +173,7 @@ impl QuickJSBridge {
         self.current_stream_token = Some(token.clone());
         tracing::debug!(
             token = %token.0,
-            context_id = %scope.context_id,
+            context_id = %scope.context_id(),
             function_name = function_name,
             "invoke_js_function_stream: created token and prelude"
         );
@@ -144,8 +206,7 @@ impl QuickJSBridge {
             scope_prelude, args_json, function_name, function_name
         );
 
-        // Execute with worker-thread scope so native callbacks see scope (no JS-passed context).
-        // Leave scope set (clear_after: false) so async promise continuations (e.g. openToolSession) see it.
+        // Execute with explicit invocation scope and token prelude; native callbacks resolve scope by token.
         let script = Script::new("invoke_stream.js", &js_code);
         let js_result = self
             .run_eval_with_scope(scope, script, false)

@@ -217,8 +217,8 @@ pub async fn process_payment(&self, from: &str, to: &str, amount: i128) -> Resul
 
 **Why this pattern?**
 
-✅ **Separation**: Instrumentation lives in `metrics.rs`, not scattered across business logic  
-✅ **Centralized**: All metric names and attribute schemas in one place  
+✅ **Separation**: Instrumentation lives in `metrics.rs`, not scattered across business logic
+✅ **Centralized**: All metric names and attribute schemas in one place
 ✅ **Clean**: Business logic stays focused on business concerns
 
 ### ❌ Anti-Pattern: Inline Metrics
@@ -240,7 +240,7 @@ pub async fn process_payment(&self, from: &str, to: &str, amount: i128) -> Resul
 
 **Why avoid it:**
 
-❌ Hard to audit all instrumentation (scattered across files)  
+❌ Hard to audit all instrumentation (scattered across files)
 ❌ Violates separation of concerns
 
 ---
@@ -315,10 +315,10 @@ pub fn record_operation(operation: &str, duration: Duration) {
 
 ### Performance Benefits
 
-✅ **Initialized once**: First call creates instrument, all subsequent calls reuse it  
-✅ **Thread-safe**: `OnceLock` handles concurrent initialization safely  
-✅ **Zero allocation**: No memory allocations on hot path after first call  
-✅ **Zero overhead**: After initialization, it's just a pointer dereference  
+✅ **Initialized once**: First call creates instrument, all subsequent calls reuse it
+✅ **Thread-safe**: `OnceLock` handles concurrent initialization safely
+✅ **Zero allocation**: No memory allocations on hot path after first call
+✅ **Zero overhead**: After initialization, it's just a pointer dereference
 ✅ **Simple**: No manual locking or synchronization needed
 
 ---
@@ -412,10 +412,10 @@ opentelemetry = { workspace = true }  # Use OTEL native API
 
 **Why OTEL native over `metrics` crate?**
 
-✅ **No bridge needed**: Direct export via OTLP  
-✅ **Semantic conventions**: Built-in support for standard attributes  
-✅ **Future-proof**: OTEL is the industry standard  
-✅ **Better integration**: Works seamlessly with traces  
+✅ **No bridge needed**: Direct export via OTLP
+✅ **Semantic conventions**: Built-in support for standard attributes
+✅ **Future-proof**: OTEL is the industry standard
+✅ **Better integration**: Works seamlessly with traces
 ✅ **Cacheable instruments**: Can use `OnceLock` for zero-allocation metrics (not possible with `metrics` crate macros)
 
 ### Server Telemetry Setup

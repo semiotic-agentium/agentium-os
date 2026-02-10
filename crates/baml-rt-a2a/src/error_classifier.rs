@@ -14,6 +14,7 @@ impl ErrorClassifier for A2aErrorClassifier {
             BamlRtError::QuickJs(_) => "quickjs",
             BamlRtError::Json(_) => "json",
             BamlRtError::ToolExecution(_) => "tool_execution",
+            BamlRtError::ProvenanceContextRead { .. } => "provenance",
             _ => "internal",
         }
     }

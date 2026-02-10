@@ -14,6 +14,13 @@ pub enum BamlRtError {
     #[error("BAML runtime error: {0}")]
     BamlRuntime(String),
 
+    /// Failed to read provenance context (e.g. conversation history).
+    #[error("Failed to read provenance context")]
+    ProvenanceContextRead {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
     /// QuickJS JavaScript engine error
     #[error("QuickJS error: {0}")]
     QuickJs(String),

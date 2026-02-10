@@ -175,18 +175,16 @@ impl LLMInterceptor for CombinedTracker {
     }
 }
 
-async fn with_test_agent_scope<F, T>(fut: F) -> T
+async fn with_test_agent_scope<F, Fut, T>(f: F) -> T
 where
-    F: std::future::Future<Output = T>,
+    F: FnOnce(context::InvocationScope) -> Fut,
+    Fut: std::future::Future<Output = T>,
 {
     let agent_id = AgentId::from_uuid(
         UuidId::parse_str("00000000-0000-0000-0000-000000000001").expect("valid test uuid"),
     );
-    let scope = context::InvocationScope::standalone(agent_id.clone());
-    context::with_scope(scope.as_scope().clone(), async {
-        context::with_agent_id(agent_id, fut).await.unwrap()
-    })
-    .await
+    let scope = context::InvocationScope::synthetic_message(agent_id);
+    context::with_scope(scope.as_scope().clone(), f(scope)).await
 }
 
 #[tokio::test]
@@ -205,9 +203,10 @@ async fn test_pre_execution_interception_integration() {
 
     // Execute a BAML function that would trigger build_request
     // Note: Even if the actual LLM call fails (no API key), build_request should still be called
-    let result = with_test_agent_scope(async {
+    let result = with_test_agent_scope(|scope| async move {
         baml_manager
             .invoke_function(
+                scope.as_scope(),
                 "SimpleGreeting",
                 serde_json::json!({"name": "Integration Test"}),
             )
@@ -268,9 +267,10 @@ async fn test_post_execution_interception_integration() {
     baml_manager.register_llm_interceptor(post_tracker).await;
 
     // Execute a BAML function
-    let result = with_test_agent_scope(async {
+    let result = with_test_agent_scope(|scope| async move {
         baml_manager
             .invoke_function(
+                scope.as_scope(),
                 "SimpleGreeting",
                 serde_json::json!({"name": "Integration Test"}),
             )
@@ -340,9 +340,10 @@ async fn test_blocking_interception_integration() {
 
     // Try to execute a BAML function
     // The interceptor should block if the model/client matches
-    let result = with_test_agent_scope(async {
+    let result = with_test_agent_scope(|scope| async move {
         baml_manager
             .invoke_function(
+                scope.as_scope(),
                 "SimpleGreeting",
                 serde_json::json!({"name": "Blocked Test"}),
             )
@@ -406,9 +407,10 @@ async fn test_pre_and_post_execution_together_integration() {
         .await;
 
     // Execute a BAML function
-    let result = with_test_agent_scope(async {
+    let result = with_test_agent_scope(|scope| async move {
         baml_manager
             .invoke_function(
+                scope.as_scope(),
                 "SimpleGreeting",
                 serde_json::json!({"name": "Combined Test"}),
             )
@@ -487,9 +489,10 @@ async fn test_multiple_interceptors_integration() {
     baml_manager.register_llm_interceptor(pre_tracker2).await;
 
     // Execute a BAML function
-    let _result = with_test_agent_scope(async {
+    let _result = with_test_agent_scope(|scope| async move {
         baml_manager
             .invoke_function(
+                scope.as_scope(),
                 "SimpleGreeting",
                 serde_json::json!({"name": "Multiple Test"}),
             )
@@ -605,9 +608,13 @@ async fn test_e2e_llm_interceptor_with_baml_execution() {
 
     // Execute a BAML function that makes an LLM call
     tracing::info!("Calling SimpleGreeting BAML function (should trigger LLM interceptor)");
-    let result = with_test_agent_scope(async {
+    let result = with_test_agent_scope(|scope| async move {
         baml_manager
-            .invoke_function("SimpleGreeting", serde_json::json!({"name": "E2E Test"}))
+            .invoke_function(
+                scope.as_scope(),
+                "SimpleGreeting",
+                serde_json::json!({"name": "E2E Test"}),
+            )
             .await
     })
     .await;

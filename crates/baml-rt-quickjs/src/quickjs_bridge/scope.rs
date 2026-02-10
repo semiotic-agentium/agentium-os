@@ -1,6 +1,5 @@
 use baml_rt_core::context::RuntimeScope;
 use quickjs_runtime::values::JsValueFacade;
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -18,16 +17,22 @@ pub(crate) fn next_invocation_token() -> InvocationToken {
     InvocationToken(format!("inv-{}", n))
 }
 
-// Worker-thread invocation scope: set by the bridge when running eval via `loop_realm` with
-// an `InvocationScope`. Native callbacks run on the QuickJS worker thread and read this
-// instead of task-local context (see docs/QUICKJS_THREADING_AND_SCOPE.md).
-thread_local! {
-    static WORKER_INVOCATION_SCOPE: RefCell<Option<RuntimeScope>> = const { RefCell::new(None) };
+pub(crate) fn token_from_args(args: &[JsValueFacade]) -> Option<InvocationToken> {
+    args.first().and_then(|first| {
+        if !first.is_string() {
+            return None;
+        }
+        let token = first.get_str().to_string();
+        if token.is_empty() {
+            None
+        } else {
+            Some(InvocationToken(token))
+        }
+    })
 }
 
 /// Resolve invocation scope from native args: first arg must be a non-empty token string;
 /// look up scope in map. Returns (scope, skip_count) where skip_count is 1 (token consumed).
-/// If no valid token is in args, falls back to [`worker_thread_scope()`] when eval runs on the worker thread (scope set by run_eval_with_scope).
 pub(crate) fn resolve_scope_from_token_arg(
     map: &Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>>,
     args: &[JsValueFacade],
@@ -48,26 +53,9 @@ pub(crate) fn resolve_scope_from_token_arg(
             ));
         }
     }
-    // Fallback: native callback on worker thread may have scope set by run_eval_with_scope
-    if let Some(scope) = worker_thread_scope() {
-        return Ok((scope, 0));
-    }
     Err(quickjs_runtime::jsutils::JsError::new_str(
         "Missing or invalid invocation token (bind a token in the eval scope or pass it explicitly to __tool_invoke/__baml_invoke/__baml_stream)",
     ))
-}
-
-/// Worker-thread invocation scope: set by [`run_eval_with_scope`]; read by native callbacks when token is not passed. Used as fallback in [`resolve_scope_from_token_arg`].
-pub(crate) fn worker_thread_scope() -> Option<RuntimeScope> {
-    WORKER_INVOCATION_SCOPE.with(|cell| cell.borrow().clone())
-}
-
-/// Clear the worker-thread invocation scope. Call when a stream invocation is done (e.g. in
-/// [`get_a2a_yield_buffer`](crate::quickjs_bridge::QuickJSBridge::get_a2a_yield_buffer)) so the next operation doesn't see the old scope.
-pub(crate) fn clear_worker_thread_scope() {
-    WORKER_INVOCATION_SCOPE.with(|cell| {
-        let _ = cell.replace(None);
-    });
 }
 
 pub(crate) async fn run_eval_with_scope(
@@ -76,30 +64,18 @@ pub(crate) async fn run_eval_with_scope(
     script: quickjs_runtime::jsutils::Script,
     clear_after: bool,
 ) -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-    let scope_runtime = scope.as_scope().clone();
-    runtime
-        .loop_realm(None, move |_rt, realm| {
-            WORKER_INVOCATION_SCOPE.with(|cell| {
-                let prev = cell.replace(Some(scope_runtime));
-                let res = realm.eval(script);
-                let out = match res {
-                    Ok(jsvr) => realm.to_js_value_facade(&jsvr),
-                    Err(e) => Err(e),
-                };
-                if clear_after {
-                    cell.replace(prev);
-                }
-                out
-            })
-        })
-        .await
+    let _ = scope;
+    let _ = clear_after;
+    runtime.eval(None, script).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
     use proptest::prelude::*;
     use std::collections::HashSet;
+    use std::sync::{Arc, Mutex as StdMutex};
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(8))]
@@ -113,5 +89,63 @@ mod tests {
                 "next_invocation_token must yield distinct tokens"
             );
         }
+    }
+
+    fn test_scope(seed: u64) -> RuntimeScope {
+        RuntimeScope::task_scope(
+            ContextId::new(1700000000000 + seed, seed),
+            AgentId::from_uuid(
+                UuidId::parse_str("00000000-0000-0000-0000-000000000777").expect("valid test uuid"),
+            ),
+            MessageId::from_external(ExternalId::new(format!("msg-{seed}"))),
+            TaskId::from_external(ExternalId::new(format!("task-{seed}"))),
+        )
+    }
+
+    #[test]
+    fn token_resolution_rejects_expired_token_without_worker_fallback() {
+        let map: Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>> =
+            Arc::new(StdMutex::new(HashMap::new()));
+        let args = vec![JsValueFacade::new_string("inv-expired".to_string())];
+
+        let err = resolve_scope_from_token_arg(&map, &args).expect_err("expired token must fail");
+        assert!(
+            err.to_string()
+                .contains("Invalid or expired invocation token"),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn token_resolution_accepts_valid_token_map_entry() {
+        let token_scope = test_scope(1);
+        let token = InvocationToken("inv-123".to_string());
+        let map: Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>> =
+            Arc::new(StdMutex::new(HashMap::new()));
+        map.lock()
+            .expect("map lock")
+            .insert(token.clone(), token_scope.clone());
+
+        let args = vec![JsValueFacade::new_string(token.0.clone())];
+        let (resolved, skip) =
+            resolve_scope_from_token_arg(&map, &args).expect("valid token resolves");
+
+        assert_eq!(skip, 1, "token arg should be consumed");
+        assert_eq!(resolved.context_id(), token_scope.context_id());
+        assert_eq!(resolved.message_id(), token_scope.message_id());
+        assert_eq!(resolved.task_id_opt(), token_scope.task_id_opt());
+    }
+
+    #[test]
+    fn token_resolution_rejects_missing_token() {
+        let map: Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>> =
+            Arc::new(StdMutex::new(HashMap::new()));
+
+        let err = resolve_scope_from_token_arg(&map, &[]).expect_err("missing token must fail");
+        assert!(
+            err.to_string()
+                .contains("Missing or invalid invocation token"),
+            "unexpected error: {err:?}"
+        );
     }
 }

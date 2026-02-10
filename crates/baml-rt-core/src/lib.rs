@@ -8,10 +8,7 @@ pub mod ids;
 pub mod package;
 pub mod types;
 
-pub use context::{
-    InvocationContext, InvocationScope, RuntimeScope, Scoped, TaskLocalContext,
-    context_id_or_generated, task_local_context,
-};
+pub use context::{InvocationContext, InvocationScope, RuntimeScope, Scoped};
 pub use effects::{
     EffectBus, EffectEmitter, EffectEvent, EffectKind, EffectLiveness, EffectSubscriber,
     InFlightCounts,

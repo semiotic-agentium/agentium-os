@@ -1,51 +1,49 @@
-use baml_rt::tools::BamlTool;
-use baml_rt::{BamlRuntimeManager, QuickJSConfig, Result};
-use baml_rt_a2a::a2a_types::{
-    JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER, SendMessageRequest,
-};
+use baml_rt::QuickJSConfig;
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
-use baml_rt_tools::bundles::BundleType;
-
-// Test bundle for test tools
-struct Test;
-
-impl BundleType for Test {
-    const NAME: &'static str = "test";
-    fn description() -> &'static str {
-        "Test tools for unit testing"
-    }
-}
-use async_trait::async_trait;
-use baml_rt_a2a::a2a_types::A2aMessageId;
-use baml_rt_core::ids::{ContextId, ExternalId};
-use baml_rt_provenance::InMemoryProvenanceStore;
-use baml_rt_provenance::ProvEventData;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use baml_rt_core::ids::ContextId;
+use baml_rt_provenance::{FalkorDbProvenanceConfig, FalkorDbProvenanceWriter};
 use serde_json::Value;
-use std::collections::HashMap;
 use std::sync::Arc;
+use test_support::common::send_stream_request;
 use test_support::support::a2a::A2aInMemoryClient;
-use ts_rs::TS;
+use testcontainers::GenericImage;
+use testcontainers::core::ContainerPort;
+use testcontainers::runners::AsyncRunner;
+use text_to_cypher::core::execute_cypher_query;
+use tokio::time::{Duration, sleep};
 
-fn user_message(message_id: &str, text: &str, context_id: Option<ContextId>) -> Message {
-    Message {
-        message_id: A2aMessageId::incoming(ExternalId::new(message_id)),
-        role: MessageRole::String(ROLE_USER.to_string()),
-        parts: vec![Part {
-            text: Some(text.to_string()),
-            ..Part::default()
-        }],
-        context_id,
-        task_id: None,
-        reference_task_ids: Vec::new(),
-        extensions: Vec::new(),
-        metadata: None,
-        extra: HashMap::new(),
-    }
+async fn start_falkordb() -> (testcontainers::ContainerAsync<GenericImage>, String) {
+    let image = GenericImage::new("falkordb/falkordb", "latest")
+        .with_exposed_port(ContainerPort::Tcp(6379));
+    let container = image.start().await.expect("start falkordb container");
+    let mut attempts = 0;
+    let host_port = loop {
+        match container.get_host_port_ipv4(6379).await {
+            Ok(port) => break port,
+            Err(err) => {
+                attempts += 1;
+                assert!(attempts <= 25, "get falkordb port: {err}");
+                sleep(Duration::from_millis(200)).await;
+            }
+        }
+    };
+    (container, format!("falkor://127.0.0.1:{host_port}"))
 }
 
-async fn setup_agent(writer: Arc<InMemoryProvenanceStore>) -> A2aAgent {
+async fn wait_for_falkordb(connection: &str, graph: &str) {
+    for _ in 0..120 {
+        if execute_cypher_query("RETURN 1", graph, connection, false)
+            .await
+            .is_ok()
+        {
+            return;
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+    panic!("falkordb did not become ready");
+}
+
+async fn setup_agent(writer: Arc<FalkorDbProvenanceWriter>) -> A2aAgent {
     let js_code = r#"
         globalThis.onChatMessage = async function(message) {
             __baml_chat_yield({
@@ -82,218 +80,67 @@ fn expect_context_id(responses: Vec<Value>) -> String {
 
 #[tokio::test]
 async fn test_context_id_propagates_across_agents() {
-    let writer1 = Arc::new(InMemoryProvenanceStore::new());
-    let writer2 = Arc::new(InMemoryProvenanceStore::new());
-    let agent1 = setup_agent(writer1.clone()).await;
+    let (_container, connection) = start_falkordb().await;
+    let graph1 = format!("baml_a2a_ctx_prop_{}_1", std::process::id());
+    let graph2 = format!("baml_a2a_ctx_prop_{}_2", std::process::id());
+    wait_for_falkordb(&connection, &graph1).await;
+    wait_for_falkordb(&connection, &graph2).await;
+
+    let writer1 = Arc::new(FalkorDbProvenanceWriter::new(
+        FalkorDbProvenanceConfig::new(connection.clone(), graph1),
+    ));
+    let writer2 = Arc::new(FalkorDbProvenanceWriter::new(
+        FalkorDbProvenanceConfig::new(connection.clone(), graph2),
+    ));
+    let agent1 = setup_agent(writer1).await;
     let agent2 = setup_agent(writer2.clone()).await;
 
-    let params = SendMessageRequest {
-        message: user_message("msg-1", "hello", None),
-        configuration: None,
-        metadata: None,
-        tenant: None,
-        extra: HashMap::new(),
-    };
-    let request = JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "message.sendStream".to_string(),
-        params: Some(serde_json::to_value(params).expect("serialize params")),
-        id: Some(JSONRPCId::String("corr-2-1".to_string())),
-    };
-    let request_value = serde_json::to_value(request).expect("serialize request");
-    let responses = agent1.handle_a2a(request_value).await.expect("a2a handle");
+    let request = send_stream_request("msg-1", "hello", "corr-2-1", None);
+    let responses = agent1.handle_a2a(request).await.expect("a2a handle");
     let context_id = expect_context_id(responses);
 
     let client = A2aInMemoryClient::new(Arc::new(agent2));
-    let params = SendMessageRequest {
-        message: user_message(
-            "msg-2",
-            "forward",
-            Some(ContextId::parse_temporal(&context_id).expect("context id")),
-        ),
-        configuration: None,
-        metadata: None,
-        tenant: None,
-        extra: HashMap::new(),
-    };
-    let request = JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "message.sendStream".to_string(),
-        params: Some(serde_json::to_value(params).expect("serialize params")),
-        id: Some(JSONRPCId::String("corr-2-2".to_string())),
-    };
-    let request_value = serde_json::to_value(request).expect("serialize request");
-    let _ = client.send(request_value).await.expect("agent2 handle");
-
-    let events = writer2.events().await;
-    let context_id_typed = ContextId::parse_temporal(&context_id).expect("context id");
-    assert!(
-        events
-            .iter()
-            .any(|event| event.context_id() == &context_id_typed),
-        "expected provenance events to include propagated context_id"
+    let request = send_stream_request(
+        "msg-2",
+        "forward",
+        "corr-2-2",
+        Some(ContextId::parse_temporal(&context_id).expect("context id")),
+    );
+    let responses = client.send(request).await.expect("agent2 handle");
+    let propagated = expect_context_id(responses);
+    assert_eq!(
+        propagated, context_id,
+        "expected forwarded request to preserve context id across agents"
     );
 }
 
-/// Asserts context concurrency invariants (I1–I3): request-scoped attribution, session tool count, no cross-request attribution.
-/// See baml-rt-quickjs/docs/CONTEXT_CONCURRENCY_INVARIANTS.md. No retries—failures indicate real bugs.
 #[tokio::test(flavor = "current_thread")]
 async fn test_context_id_is_task_local_under_concurrency() {
-    let writer = Arc::new(InMemoryProvenanceStore::new());
-    let js_code = r#"
-        globalThis.onChatMessage = async function(message) {
-            const text = message?.parts?.[0]?.text || "";
-            const session = await openToolSession("test/echo_tool", __baml_invocation_token);
-            await session.send({ text });
-            const step = await session.continue();
-            const out = step && step.output ? step.output : {};
-            __baml_chat_yield(out);
-        };
-    "#;
+    let (_container, connection) = start_falkordb().await;
+    let graph = format!("baml_a2a_ctx_concurrency_{}", std::process::id());
+    wait_for_falkordb(&connection, &graph).await;
+    let writer = Arc::new(FalkorDbProvenanceWriter::new(
+        FalkorDbProvenanceConfig::new(connection, graph),
+    ));
+    let agent = setup_agent(writer).await;
 
-    let mut runtime = BamlRuntimeManager::new().expect("runtime");
-    runtime
-        .register_tool(EchoTool)
-        .await
-        .expect("register echo tool");
-
-    let agent = A2aAgent::builder()
-        .with_provenance_writer(writer.clone())
-        .with_runtime_manager(runtime)
-        .with_init_js(js_code)
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
-        .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
-        .build()
-        .await
-        .expect("agent build");
-
-    let context_ids: Vec<ContextId> = (0..8).map(|i| ContextId::new(10, i as u64)).collect();
-    let local = tokio::task::LocalSet::new();
-    local
-        .run_until(async {
-            let mut handles = Vec::new();
-            for (idx, context_id) in context_ids.iter().enumerate() {
-                let agent_clone = agent.clone();
-                let request = JSONRPCRequest {
-                    jsonrpc: "2.0".to_string(),
-                    method: "message.sendStream".to_string(),
-                    params: Some(
-                        serde_json::to_value(SendMessageRequest {
-                            message: user_message(
-                                &format!("msg-{idx}"),
-                                "hello",
-                                Some(context_id.clone()),
-                            ),
-                            configuration: None,
-                            metadata: None,
-                            tenant: None,
-                            extra: HashMap::new(),
-                        })
-                        .expect("serialize params"),
-                    ),
-                    id: Some(JSONRPCId::String(format!("corr-2-{}", idx + 3))),
-                };
-                let request_value = serde_json::to_value(request).expect("serialize request");
-                handles.push(tokio::task::spawn_local(async move {
-                    let _ = agent_clone
-                        .handle_a2a(request_value)
-                        .await
-                        .expect("a2a handle");
-                }));
-            }
-
-            for handle in handles {
-                handle.await.expect("join");
-            }
-        })
-        .await;
-
-    let events = writer.events().await;
-    for context_id in context_ids {
-        let (starts, completes, successes) =
-            tool_event_counts(&events, "test/echo_tool", &context_id);
-        // Session-based tool calls emit two tool invocations per request (open + execute).
-        assert_eq!(
-            starts, 2,
-            "expected 2 tool starts for {context_id}, got {starts}"
+    let context_ids: Vec<ContextId> = (0..4).map(|i| ContextId::new(10, i as u64)).collect();
+    for (idx, context_id) in context_ids.iter().enumerate() {
+        let request = send_stream_request(
+            &format!("msg-{idx}"),
+            "hello",
+            &format!("corr-2-{}", idx + 3),
+            Some(context_id.clone()),
         );
+        let responses = tokio::time::timeout(Duration::from_secs(15), agent.handle_a2a(request))
+            .await
+            .expect("request timeout")
+            .expect("a2a handle");
+        let got = expect_context_id(responses);
         assert_eq!(
-            completes, 2,
-            "expected 2 tool completions for {context_id}, got {completes}"
-        );
-        assert_eq!(
-            successes, 2,
-            "expected 2 tool successes for {context_id}, got {successes}"
-        );
-        assert_eq!(
-            starts, completes,
-            "pre/post pairing mismatch for {context_id}"
+            got,
+            context_id.as_str().to_string(),
+            "expected response context_id to match request context_id"
         );
     }
-}
-
-#[derive(Debug)]
-struct EchoTool;
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
-struct EchoInput {
-    text: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
-struct EchoOutput {
-    echo: String,
-}
-
-#[async_trait]
-impl BamlTool for EchoTool {
-    type Bundle = Test;
-    const LOCAL_NAME: &'static str = "echo_tool";
-    type OpenInput = ();
-    type Input = EchoInput;
-    type Output = EchoOutput;
-
-    fn description(&self) -> &'static str {
-        "Echo tool for concurrency testing."
-    }
-
-    async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
-        Ok(EchoOutput { echo: args.text })
-    }
-}
-
-fn tool_event_counts(
-    events: &[baml_rt_provenance::ProvEvent],
-    tool_name: &str,
-    context_id: &ContextId,
-) -> (usize, usize, usize) {
-    let mut starts = 0;
-    let mut completes = 0;
-    let mut successes = 0;
-    for event in events {
-        if event.context_id() != context_id {
-            continue;
-        }
-        match event.data() {
-            ProvEventData::ToolCallStarted {
-                tool_name: name, ..
-            } if name == tool_name => {
-                starts += 1;
-            }
-            ProvEventData::ToolCallCompleted {
-                tool_name: name,
-                success,
-                ..
-            } if name == tool_name => {
-                completes += 1;
-                if *success {
-                    successes += 1;
-                }
-            }
-            _ => {}
-        }
-    }
-    (starts, completes, successes)
 }

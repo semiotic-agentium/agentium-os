@@ -23,7 +23,7 @@ async fn test_direct_tool_execution_rust_and_js() {
             .expect("register rust tool");
     }
 
-    let scope = InvocationScope::standalone(agent.agent_id().clone());
+    let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
     let runtime = agent.runtime();
 
     let rust_result = {

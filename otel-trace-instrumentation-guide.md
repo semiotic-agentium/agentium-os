@@ -183,10 +183,10 @@ pub async fn record_webhook(&self, event_id: &str) -> Result<()> {
 
 **Why this pattern?**
 
-✅ **Separation**: Instrumentation lives in `spans.rs`, not scattered across business logic  
-✅ **Refactoring-safe**: Change function signatures without touching span schemas  
-✅ **Centralized**: All span names and attribute schemas in one place  
-✅ **Conditional**: Can skip instrumentation for hot paths  
+✅ **Separation**: Instrumentation lives in `spans.rs`, not scattered across business logic
+✅ **Refactoring-safe**: Change function signatures without touching span schemas
+✅ **Centralized**: All span names and attribute schemas in one place
+✅ **Conditional**: Can skip instrumentation for hot paths
 ✅ **Fine control**: Nested spans, early drops, complex scenarios
 
 ### ❌ Anti-Pattern: `#[tracing::instrument]`
@@ -207,10 +207,10 @@ pub async fn apply_event(&self, event_id: &str) -> Result<ApplyOutcome> {
 
 **Why avoid it:**
 
-❌ Couples instrumentation to function definition  
-❌ Span schema changes require touching business logic  
-❌ Hard to audit all instrumentation (scattered across files)  
-❌ Attribute names tied to parameter names (refactoring breaks spans)  
+❌ Couples instrumentation to function definition
+❌ Span schema changes require touching business logic
+❌ Hard to audit all instrumentation (scattered across files)
+❌ Attribute names tied to parameter names (refactoring breaks spans)
 ❌ Violates separation of concerns
 
 **Exception**: `#[instrument]` is acceptable for **test helpers only**, never production code
@@ -308,10 +308,10 @@ let pool: Pool<Postgres> = ...;  // Same type, just wrapped!
 
 ### Benefits
 
-✅ **Zero instrumentation code**: No manual span creation for queries  
-✅ **Automatic parent linking**: Queries are children of your business spans  
-✅ **Rich context**: Database host, query text, timing, row counts  
-✅ **Performance tracking**: `elapsed` attribute shows slow queries  
+✅ **Zero instrumentation code**: No manual span creation for queries
+✅ **Automatic parent linking**: Queries are children of your business spans
+✅ **Rich context**: Database host, query text, timing, row counts
+✅ **Performance tracking**: `elapsed` attribute shows slow queries
 ✅ **Semantic conventions**: Follows OpenTelemetry database conventions
 
 ### Testing Database Spans

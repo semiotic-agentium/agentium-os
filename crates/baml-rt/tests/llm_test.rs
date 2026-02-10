@@ -16,11 +16,11 @@ async fn test_e2e_simple_greeting_with_llm() {
 
     // Call BAML function via invoke_function (uses task-local scope; evaluate()+scope has worker-thread subtleties).
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
-    let scope = InvocationScope::standalone(agent_id);
+    let scope = InvocationScope::synthetic_message(agent_id);
     tracing::info!("Invoking SimpleGreeting BAML function...");
     let result = context::with_scope(scope.as_scope().clone(), async {
         bridge
-            .invoke_function("SimpleGreeting", json!({ "name": "E2E Test User" }))
+            .invoke_function(&scope, "SimpleGreeting", json!({ "name": "E2E Test User" }))
             .await
     })
     .await;
@@ -80,7 +80,7 @@ async fn test_e2e_streaming_greeting() {
     "#;
 
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
-    let scope = InvocationScope::standalone(agent_id);
+    let scope = InvocationScope::synthetic_message(agent_id);
     tracing::info!("Executing streaming JavaScript call...");
     let result = context::with_scope(scope.as_scope().clone(), async {
         bridge.evaluate(Some(&scope), js_code).await

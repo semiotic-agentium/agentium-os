@@ -30,3 +30,5 @@ dotenvy = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 ts-rs = { workspace = true }
+testcontainers = { workspace = true }
+text-to-cypher = { workspace = true }

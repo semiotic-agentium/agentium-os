@@ -8,6 +8,7 @@ use baml_rt_core::context::InvocationScope;
 use baml_rt_core::effects::{A2aEffectMetadata, EffectEmitter, EffectEvent};
 use baml_rt_core::ids::AgentId;
 use baml_rt_core::{BamlRtError, Result};
+use baml_rt_observability::{metrics, spans};
 use baml_rt_quickjs::QuickJSBridge;
 use baml_rt_quickjs::begin_a2a_yield_session;
 use serde_json::Value;
@@ -177,7 +178,9 @@ impl RequestRouter for MethodBasedRouter {
             }
             _ => {
                 let start = Instant::now();
-                let context_id = scope.context_id.clone();
+                let context_id = scope.context_id().clone();
+                let route_span = spans::a2a_route(request.method.as_str(), context_id.as_str());
+                let _route_guard = route_span.enter();
 
                 // Build metadata
                 let mut metadata_map = serde_json::Map::new();
@@ -187,13 +190,15 @@ impl RequestRouter for MethodBasedRouter {
                         serde_json::to_value(id).unwrap_or(Value::Null),
                     );
                 }
-                if let Some(message_id) = scope.message_id.as_ref() {
-                    metadata_map.insert(
-                        "message_id".to_string(),
-                        Value::String(message_id.as_str().to_string()),
-                    );
-                }
-                if let Some(task_id) = scope.task_id.as_ref() {
+                metadata_map.insert(
+                    "message_id".to_string(),
+                    Value::String(scope.message_id().as_str().to_string()),
+                );
+                metadata_map.insert(
+                    "agent_id".to_string(),
+                    Value::String(scope.agent_id().as_str().to_string()),
+                );
+                if let Some(task_id) = scope.task_id_opt() {
                     metadata_map.insert(
                         "task_id".to_string(),
                         Value::String(task_id.as_str().to_string()),
@@ -226,6 +231,8 @@ impl RequestRouter for MethodBasedRouter {
 
                 // Compute result so we always emit A2aCompleted on every exit (success or failure)
                 let result = async {
+                    let js_span = spans::a2a_js_invoke(request.method.as_str(), request.is_stream);
+                    let _js_guard = js_span.enter();
                     let mut normalizer = a2a::JsChunkNormalizer::new(scope);
                     if request.is_stream {
                         let chunks = self.js_invoker.invoke_stream(request, scope).await?;
@@ -245,8 +252,16 @@ impl RequestRouter for MethodBasedRouter {
                 }
                 .await;
 
-                let duration_ms = start.elapsed().as_millis() as u64;
+                let duration = start.elapsed();
+                let duration_ms = duration.as_millis() as u64;
                 let success = result.is_ok();
+                let mode = if request.is_stream {
+                    "stream"
+                } else {
+                    "non_stream"
+                };
+                let result_str = if success { "success" } else { "error" };
+                metrics::record_quickjs_invoke(mode, result_str, duration);
                 if let Err(e) = self
                     .effect_emitter
                     .emit(EffectEvent::A2aCompleted {
@@ -366,12 +381,7 @@ mod tests {
         let request = a2a::A2aRequest::from_value(request_value).unwrap();
         assert!(request.is_stream);
 
-        let scope = InvocationScope::new(baml_rt_core::context::RuntimeScope::new(
-            baml_rt_core::context::generate_context_id(),
-            agent_id.clone(),
-            None,
-            None,
-        ));
+        let scope = InvocationScope::synthetic_message(agent_id.clone());
         let outcome = router.route(&request, &scope).await.unwrap();
         match outcome {
             a2a::A2aOutcome::Stream(chunks) => {

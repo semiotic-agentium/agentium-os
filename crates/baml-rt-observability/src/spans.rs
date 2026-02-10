@@ -7,6 +7,7 @@
 //! Child spans inherit context automatically through OTEL span nesting - no need to repeat attributes.
 
 use crate::scope::scope_attributes;
+use baml_rt_core::context::RuntimeScope;
 use baml_rt_core::correlation::current_correlation_id;
 use std::path::Path;
 use tracing::Span;
@@ -130,11 +131,15 @@ pub fn evaluate_agent_code(entry_point: &str) -> Span {
 ///
 /// This is a root span - includes runtime scope attributes for context propagation.
 #[inline]
-pub fn invoke_function(agent_name: &str, function_name: &str) -> Span {
+pub fn invoke_function(
+    scope: Option<&RuntimeScope>,
+    agent_name: &str,
+    function_name: &str,
+) -> Span {
     let correlation_id = current_correlation_id()
         .map(|id| id.as_str().to_string())
         .unwrap_or_else(|| "none".to_string());
-    let (context_id, message_id, task_id) = scope_attributes();
+    let (context_id, message_id, task_id) = scope_attributes(scope);
     tracing::info_span!(
         "baml_rt.invoke_function",
         agent = agent_name,
@@ -194,8 +199,8 @@ pub fn invoke_baml_function(function_name: &str) -> Span {
 ///
 /// Root span - includes runtime scope attributes for context propagation.
 #[inline]
-pub fn a2a_request(method: &str, correlation_id: &str) -> Span {
-    let (context_id, message_id, task_id) = scope_attributes();
+pub fn a2a_request(scope: Option<&RuntimeScope>, method: &str, correlation_id: &str) -> Span {
+    let (context_id, message_id, task_id) = scope_attributes(scope);
     tracing::info_span!(
         "baml_rt.a2a_request",
         method = method,
@@ -210,8 +215,8 @@ pub fn a2a_request(method: &str, correlation_id: &str) -> Span {
 ///
 /// Root span - includes runtime scope attributes for context propagation.
 #[inline]
-pub fn a2a_stream(method: &str, correlation_id: &str) -> Span {
-    let (context_id, message_id, task_id) = scope_attributes();
+pub fn a2a_stream(scope: Option<&RuntimeScope>, method: &str, correlation_id: &str) -> Span {
+    let (context_id, message_id, task_id) = scope_attributes(scope);
     tracing::info_span!(
         "baml_rt.a2a_stream",
         method = method,
@@ -226,8 +231,8 @@ pub fn a2a_stream(method: &str, correlation_id: &str) -> Span {
 ///
 /// Root span - includes runtime scope attributes for context propagation.
 #[inline]
-pub fn a2a_cancel(task_id: &str, correlation_id: &str) -> Span {
-    let (context_id, message_id, _) = scope_attributes();
+pub fn a2a_cancel(scope: Option<&RuntimeScope>, task_id: &str, correlation_id: &str) -> Span {
+    let (context_id, message_id, _) = scope_attributes(scope);
     tracing::info_span!(
         "baml_rt.a2a_cancel",
         task_id = task_id,
@@ -251,4 +256,71 @@ pub fn register_tool(tool_name: &str) -> Span {
 #[inline]
 pub fn init_baml_runtime() -> Span {
     tracing::info_span!("baml_rt.init_baml_runtime")
+}
+
+// A2A stdio loop and routing
+
+/// Create span for one A2A request in the stdio loop.
+///
+/// Parent: (none; root per request)
+#[inline]
+pub fn a2a_stdio_request(agent_name: &str, method: &str, correlation_id: &str) -> Span {
+    tracing::info_span!(
+        "baml_rt.a2a_stdio_request",
+        agent = agent_name,
+        method = method,
+        correlation_id = correlation_id,
+    )
+}
+
+/// Create span for A2A routing and dispatch (method-based router).
+///
+/// Parent: a2a_request / a2a_stream / a2a_stdio_request
+#[inline]
+pub fn a2a_route(method: &str, context_id: &str) -> Span {
+    tracing::debug_span!(
+        "baml_rt.a2a_route",
+        method = method,
+        context_id = context_id,
+    )
+}
+
+/// Create span for JS handler invocation (onChatMessage / stream).
+///
+/// Parent: a2a_route
+#[inline]
+pub fn a2a_js_invoke(method: &str, is_stream: bool) -> Span {
+    tracing::debug_span!(
+        "baml_rt.a2a_js_invoke",
+        method = method,
+        is_stream = is_stream,
+    )
+}
+
+/// Create span for A2A worker drain on QuickJS worker thread.
+///
+/// Not parented to caller (runs on different thread).
+#[inline]
+pub fn a2a_worker_drain() -> Span {
+    tracing::debug_span!("baml_rt.a2a_worker_drain")
+}
+
+/// Create span for session dispatcher loop.
+#[inline]
+pub fn session_dispatcher() -> Span {
+    tracing::debug_span!("baml_rt.session_dispatcher")
+}
+
+/// Create span for session runtime worker loop.
+#[inline]
+pub fn session_runtime_worker() -> Span {
+    tracing::debug_span!("baml_rt.session_runtime_worker")
+}
+
+/// Create span for a single provenance event write.
+///
+/// Parent: (caller; e.g. interceptor or effect subscriber)
+#[inline]
+pub fn provenance_write(event_kind: &str) -> Span {
+    tracing::debug_span!("baml_rt.provenance_write", event_kind = event_kind,)
 }

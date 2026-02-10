@@ -1,35 +1,34 @@
 use baml_rt_core::ids::{ContextId, ExternalId, MessageId};
-use baml_rt_provenance::{InMemoryProvenanceStore, ProvEvent, ProvenanceWriter, normalize_event};
+use baml_rt_provenance::{ProvEvent, normalize_event};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 #[tokio::test]
-async fn test_in_memory_store_adds_events() {
-    let store = InMemoryProvenanceStore::new();
+async fn test_normalize_event_snapshot_for_tool_call_started() {
     let event = ProvEvent::tool_call_started_global(
         ContextId::new(1, 1),
         MessageId::from_external(ExternalId::new("msg-1")),
         "tool".to_string(),
         None,
         json!({"input": "value"}),
-        json!({"message_id": "msg-1"}),
+        json!({"message_id": "msg-1", "agent_id": "00000000-0000-0000-0000-000000000010"}),
     );
 
-    store.add_event(event).await.expect("add event");
-    let events = store.events().await;
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].context_id(), &ContextId::new(1, 1));
+    assert_eq!(event.context_id(), &ContextId::new(1, 1));
 
-    let normalized = normalize_event(&events[0]).expect("normalize event");
+    let normalized = normalize_event(&event).expect("normalize event");
     let snapshot = snapshot_value(&normalized);
     let expected = json!({
         "activities": {
-            format!("tool_call:{}", events[0].id().as_str()): {
+            format!("tool_call:{}", event.id().as_str()): {
                 "a2a:context_id": "ctx-1-1",
-                "a2a:event_id": events[0].id().as_str(),
-                "a2a:metadata": {"message_id": "msg-1"},
+                "a2a:event_id": event.id().as_str(),
+                "a2a:metadata": {
+                    "message_id": "msg-1",
+                    "agent_id": "00000000-0000-0000-0000-000000000010"
+                },
                 "a2a:tool_name": "tool",
-                "prov:startTime": events[0].timestamp_ms(),
+                "prov:startTime": event.timestamp_ms(),
                 "prov:type": "a2a:ToolCall"
             },
             "message_processing:msg-1": {
@@ -41,27 +40,27 @@ async fn test_in_memory_store_adds_events() {
         "entities": {
             "message:msg-1": {
                 "a2a:context_id": "ctx-1-1",
-                "a2a:event_id": events[0].id().as_str(),
+                "a2a:event_id": event.id().as_str(),
                 "a2a:message_id": "msg-1",
                 "prov:type": "a2a:Message"
             },
-            format!("tool_args:{}", events[0].id().as_str()): {
+            format!("tool_args:{}", event.id().as_str()): {
                 "a2a:args": {"input":"value"},
                 "a2a:context_id": "ctx-1-1",
-                "a2a:event_id": events[0].id().as_str(),
+                "a2a:event_id": event.id().as_str(),
                 "prov:type": "a2a:ToolArgs"
             }
         },
         "agents": {},
         "used": [
             {
-                "activity": format!("tool_call:{}", events[0].id().as_str()),
+                "activity": format!("tool_call:{}", event.id().as_str()),
                 "entity": "message:msg-1",
                 "role": "input_message"
             },
             {
-                "activity": format!("tool_call:{}", events[0].id().as_str()),
-                "entity": format!("tool_args:{}", events[0].id().as_str()),
+                "activity": format!("tool_call:{}", event.id().as_str()),
+                "entity": format!("tool_args:{}", event.id().as_str()),
                 "role": "a2a:args"
             }
         ],
@@ -73,10 +72,10 @@ async fn test_in_memory_store_adds_events() {
             {
                 "relation": "A2A_MESSAGE_CALL",
                 "from": "message_processing:msg-1",
-                "to": format!("tool_call:{}", events[0].id().as_str()),
+                "to": format!("tool_call:{}", event.id().as_str()),
                 "attributes": {
                     "a2a:context_id": "ctx-1-1",
-                    "a2a:timestamp_ms": events[0].timestamp_ms()
+                    "a2a:timestamp_ms": event.timestamp_ms()
                 }
             }
         ]

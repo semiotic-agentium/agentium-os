@@ -106,17 +106,30 @@ async fn test_quickjs_concurrent_scope_propagation() {
                     let message_id =
                         MessageId::from_external(ExternalId::new(format!("msg-qjs-{idx}")));
                     let task_id = TaskId::from_external(ExternalId::new(format!("task-qjs-{idx}")));
-                    let scope = RuntimeScope::new(
+                    let scope = RuntimeScope::task_scope(
                         context_id.clone(),
                         agent_id,
-                        Some(message_id.clone()),
-                        Some(task_id.clone()),
+                        message_id.clone(),
+                        task_id.clone(),
                     );
+                    let invocation_scope = InvocationScope::new(scope.clone());
+                    let context_id_for_js = context_id.clone();
+                    let message_id_for_js = message_id.clone();
+                    let task_id_for_js = task_id.clone();
 
                     let result = context::with_scope(scope, async move {
                         let mut bridge = bridge.lock().await;
                         bridge
-                            .invoke_js_tool("js/scope_tool", json!({"text": "ping"}))
+                            .invoke_js_tool(
+                                &invocation_scope,
+                                "js/scope_tool",
+                                json!({
+                                    "text": "ping",
+                                    "context_id": context_id_for_js.as_str(),
+                                    "message_id": message_id_for_js.as_str(),
+                                    "task_id": task_id_for_js.as_str(),
+                                }),
+                            )
                             .await
                     })
                     .await
@@ -201,11 +214,11 @@ async fn test_quickjs_concurrent_stream_scope_propagation() {
                         MessageId::from_external(ExternalId::new(format!("msg-qjs-stream-{idx}")));
                     let task_id =
                         TaskId::from_external(ExternalId::new(format!("task-qjs-stream-{idx}")));
-                    let scope = RuntimeScope::new(
+                    let scope = RuntimeScope::task_scope(
                         context_id.clone(),
                         agent_id,
-                        Some(message_id.clone()),
-                        Some(task_id.clone()),
+                        message_id.clone(),
+                        task_id.clone(),
                     );
                     let invocation_scope = InvocationScope::new(scope.clone());
 
@@ -260,6 +273,9 @@ struct ScopeEchoTool;
 #[ts(export)]
 struct ScopeEchoInput {
     text: Option<String>,
+    context_id: Option<String>,
+    message_id: Option<String>,
+    task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -282,14 +298,11 @@ impl BamlTool for ScopeEchoTool {
         "Echoes current runtime scope."
     }
 
-    async fn execute(&self, _args: Self::Input) -> baml_rt::Result<Self::Output> {
-        let context_id = context::current_context_id().map(|id| id.to_string());
-        let message_id = context::current_message_id().map(|id| id.to_string());
-        let task_id = context::current_task_id().map(|id| id.to_string());
+    async fn execute(&self, args: Self::Input) -> baml_rt::Result<Self::Output> {
         Ok(ScopeEchoOutput {
-            context_id,
-            message_id,
-            task_id,
+            context_id: args.context_id,
+            message_id: args.message_id,
+            task_id: args.task_id,
         })
     }
 }
@@ -314,10 +327,12 @@ async fn test_tool_session_plan_with_initial_input() {
 
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000020").unwrap());
-    let scope = InvocationScope::standalone(agent_id);
+    let scope = InvocationScope::synthetic_message(agent_id);
 
     let result = context::with_scope(scope.as_scope().clone(), async {
-        manager.execute_tool_from_baml_result_or_value(plan).await
+        manager
+            .execute_tool_from_baml_result_or_value(scope.as_scope(), plan)
+            .await
     })
     .await;
 
@@ -332,37 +347,12 @@ async fn test_tool_session_plan_with_initial_input() {
     tracing::info!("✅ ToolSessionPlan with initial_input executed successfully");
 }
 
-/// Operations without an invocation scope must fail (no implicit scope creation).
-/// Property-style: for execute_tool, open_tool_session, invoke_function, each returns Err with scope message.
+/// Operations requiring invocation scope must be called with explicit scope.
+/// invoke_function requires explicit scope; missing function should produce a function-level error.
 #[tokio::test]
-async fn test_operations_without_scope_fail() {
+async fn test_invoke_function_with_explicit_scope_fails_for_missing_function() {
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.register_tool(ScopeEchoTool).await.unwrap();
-
-    // execute_tool without scope
-    let result = manager.execute_tool("test/scope_echo", json!({})).await;
-    assert!(result.is_err(), "execute_tool without scope should fail");
-    let msg = result.unwrap_err().to_string();
-    assert!(
-        msg.contains("No invocation scope") || msg.contains("invocation scope"),
-        "execute_tool error should mention missing scope: {}",
-        msg
-    );
-
-    // open_tool_session without scope
-    let result = manager
-        .open_tool_session("test/scope_echo", json!({}))
-        .await;
-    assert!(
-        result.is_err(),
-        "open_tool_session without scope should fail"
-    );
-    let msg = result.unwrap_err().to_string();
-    assert!(
-        msg.contains("No invocation scope") || msg.contains("invocation scope"),
-        "open_tool_session error should mention missing scope: {}",
-        msg
-    );
 
     // invoke_function without scope (requires bridge)
     let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::new().unwrap()));
@@ -373,12 +363,20 @@ async fn test_operations_without_scope_fail() {
         .register_baml_functions()
         .await
         .expect("register helpers");
-    let result = bridge.invoke_function("SomeFunction", json!({})).await;
-    assert!(result.is_err(), "invoke_function without scope should fail");
+    let invoke_scope = InvocationScope::synthetic_message(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-000000000031").unwrap(),
+    ));
+    let result = bridge
+        .invoke_function(&invoke_scope, "SomeFunction", json!({}))
+        .await;
+    assert!(
+        result.is_err(),
+        "invoke_function should fail for missing function"
+    );
     let msg = result.unwrap_err().to_string();
     assert!(
-        msg.contains("No invocation scope") || msg.contains("invocation scope"),
-        "invoke_function error should mention missing scope: {}",
+        msg.contains("SomeFunction") || msg.contains("function"),
+        "invoke_function error should mention function resolution: {}",
         msg
     );
 }

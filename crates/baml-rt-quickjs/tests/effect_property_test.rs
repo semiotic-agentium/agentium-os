@@ -14,7 +14,7 @@
 //! **I2 (Liveness Gating)**
 //!   When effects are in-flight, the poller uses max_attempts_ms (configurable, default 30 minutes).
 //!   When no effects are in-flight, the poller uses idle_timeout_attempts (5s).
-//!   
+//!
 //!   Tests use shorter timeouts (e.g., 1000ms) for faster feedback.
 //!
 //! **I3 (Effect Count Accuracy)**

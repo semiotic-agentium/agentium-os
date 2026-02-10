@@ -18,9 +18,7 @@ use baml_rt_core::ids::{AgentId, DerivedId, ExternalId, TaskId};
 use baml_rt_core::{AgentManifest, BamlRtError, ContextId, Result};
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_provenance::{AgentType, ProvEvent, ToolIndexConfig, index_tools};
-use baml_rt_provenance::{
-    FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, InMemoryProvenanceStore, ProvenanceWriter,
-};
+use baml_rt_provenance::{FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, ProvenanceWriter};
 use baml_rt_quickjs::BamlRuntimeManager;
 use clap::{Parser, ValueEnum};
 use serde_json::Value;
@@ -195,7 +193,7 @@ struct BootedAgent {
 
 impl BootedAgent {
     async fn invoke_function(&self, function_name: &str, args: Value) -> Result<Value> {
-        let scope = InvocationScope::standalone(self.agent.agent_id().clone());
+        let scope = InvocationScope::synthetic_message(self.agent.agent_id().clone());
         let bridge = self.agent.bridge();
         let mut js_bridge = bridge.lock().await;
         js_bridge
@@ -245,7 +243,7 @@ impl AgentRunner {
 
     /// Execute a function in a specific agent
     async fn invoke(&self, agent_name: &str, function_name: &str, args: Value) -> Result<Value> {
-        let span = spans::invoke_function(agent_name, function_name);
+        let span = spans::invoke_function(None, agent_name, function_name);
         let _guard = span.enter();
 
         let agent = self.agents.get(agent_name).ok_or_else(|| {
@@ -312,6 +310,17 @@ impl AgentRunner {
                     continue;
                 }
             };
+
+            let method = request_value
+                .get("method")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let correlation_id = request_id
+                .as_ref()
+                .map(|id| format!("{:?}", id))
+                .unwrap_or_else(|| "none".to_string());
+            let span = spans::a2a_stdio_request(&agent_name, method, &correlation_id);
+            let _guard = span.enter();
 
             let responses = agent
                 .handle_a2a(prepared_request)
@@ -538,7 +547,6 @@ fn wrap_plaintext_message(text: &str) -> Value {
 
 #[derive(Debug, Clone)]
 enum ProvenanceStoreKind {
-    Memory,
     FalkorDb { url: String, graph: String },
 }
 
@@ -552,7 +560,6 @@ struct RunnerConfig {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ProvenanceStoreChoice {
-    Memory,
     Falkordb,
 }
 
@@ -573,7 +580,7 @@ struct Cli {
     a2a_stdio: bool,
 
     /// Provenance storage backend.
-    #[arg(long, value_enum, default_value_t = ProvenanceStoreChoice::Memory)]
+    #[arg(long, value_enum, default_value_t = ProvenanceStoreChoice::Falkordb)]
     provenance_store: ProvenanceStoreChoice,
 
     /// FalkorDB connection URL (required when provenance store is falkordb).
@@ -592,7 +599,6 @@ impl Cli {
             .map(|values| (values[0].clone(), values[1].clone(), values[2].clone()));
 
         let provenance_store = match self.provenance_store {
-            ProvenanceStoreChoice::Memory => ProvenanceStoreKind::Memory,
             ProvenanceStoreChoice::Falkordb => {
                 let url = self.falkordb_url.ok_or_else(|| {
                     anyhow::anyhow!("--falkordb-url is required for falkordb store")
@@ -615,7 +621,6 @@ impl Cli {
 
 fn build_provenance_writer(store: &ProvenanceStoreKind) -> Option<Arc<dyn ProvenanceWriter>> {
     match store {
-        ProvenanceStoreKind::Memory => Some(Arc::new(InMemoryProvenanceStore::new())),
         ProvenanceStoreKind::FalkorDb { url, graph } => {
             let config = FalkorDbProvenanceConfig::new(url.clone(), graph.clone());
             Some(Arc::new(FalkorDbProvenanceWriter::new(config)))
@@ -639,7 +644,6 @@ async fn main() -> anyhow::Result<()> {
         ProvenanceStoreKind::FalkorDb { url, graph } => {
             Some(ToolIndexConfig::new(url.clone(), graph.clone()))
         }
-        ProvenanceStoreKind::Memory => None,
     };
     let mut runner = AgentRunner::new(provenance_writer, tool_index);
 

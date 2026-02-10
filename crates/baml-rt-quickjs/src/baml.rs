@@ -11,10 +11,10 @@ pub(crate) use tool_extraction::{
     resolve_tool_name_from_input_with_registry,
 };
 
-use crate::baml_execution::BamlExecutor;
+use crate::baml_execution::{BamlExecutor, ConversationContextProvider};
 use crate::traits::{BamlFunctionExecutor, SchemaLoader};
 use async_trait::async_trait;
-use baml_rt_core::context::{self, InvocationContext};
+use baml_rt_core::context;
 use baml_rt_core::correlation::current_correlation_id;
 use baml_rt_core::effects::{EffectEmitter, ToolEffectMetadata};
 use baml_rt_core::types::FunctionSignature;
@@ -32,8 +32,8 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex as TokioMutex;
 
-// Helper function to build metadata map with correlation_id and message_id
-fn build_metadata_map() -> Value {
+// Helper function to build metadata map with correlation_id and message_id.
+fn build_metadata_map(scope: &context::RuntimeScope) -> Value {
     let mut map = serde_json::Map::new();
     if let Some(correlation_id) = current_correlation_id() {
         map.insert(
@@ -41,12 +41,20 @@ fn build_metadata_map() -> Value {
             Value::String(correlation_id.to_string()),
         );
     }
-    if let Some(message_id) = context::current_message_id() {
+    map.insert(
+        "message_id".to_string(),
+        Value::String(scope.message_id().as_str().to_owned()),
+    );
+    if let Some(task_id) = scope.task_id_opt() {
         map.insert(
-            "message_id".to_string(),
-            Value::String(message_id.as_str().to_string()),
+            "task_id".to_string(),
+            Value::String(task_id.as_str().to_owned()),
         );
     }
+    map.insert(
+        "agent_id".to_string(),
+        Value::String(scope.agent_id().as_str().to_owned()),
+    );
     Value::Object(map)
 }
 
@@ -81,6 +89,7 @@ pub struct BamlRuntimeManager {
     tool_session_scopes: Arc<TokioMutex<HashMap<ToolSessionId, ToolSessionScope>>>,
     tool_session_states: Arc<TokioMutex<HashMap<ToolSessionId, ToolCallSessionState>>>,
     effect_emitter: Option<Arc<dyn EffectEmitter>>,
+    conversation_context_provider: Option<Arc<dyn ConversationContextProvider>>,
 }
 
 #[derive(Debug, Clone)]
@@ -103,37 +112,44 @@ pub(crate) struct ToolExecutionHandle {
 }
 
 impl ToolExecutionHandle {
-    pub(crate) async fn execute_tool(&self, name: &str, args: Value) -> Result<Value> {
-        let scope = context::task_local_context().current_scope()?;
-        self.execute_tool_with_scope(&scope, name, args).await
-    }
-
-    pub(crate) async fn execute_tool_with_scope(
+    pub(crate) async fn execute_tool(
         &self,
         scope: &context::RuntimeScope,
         name: &str,
         args: Value,
     ) -> Result<Value> {
-        context::with_scope(scope.clone(), self.execute_tool_inner(name, args)).await
+        context::with_scope(
+            scope.clone(),
+            self.execute_tool_inner(scope.clone(), name, args),
+        )
+        .await
     }
 
-    pub(crate) async fn execute_tool_from_baml_result(&self, baml_result: Value) -> Result<Value> {
+    pub(crate) async fn execute_tool_from_baml_result(
+        &self,
+        scope: &context::RuntimeScope,
+        baml_result: Value,
+    ) -> Result<Value> {
         let call = extract_tool_call(&baml_result)?.ok_or_else(|| {
             BamlRtError::InvalidArgument("No tool call found in result".to_string())
         })?;
         let tool_name =
             resolve_tool_name_from_input_with_registry(&self.tool_registry, &call.args)?;
-        self.execute_tool(&tool_name, call.args).await
+        self.execute_tool(scope, &tool_name, call.args).await
     }
 
-    async fn execute_tool_inner(&self, name: &str, args: Value) -> Result<Value> {
+    async fn execute_tool_inner(
+        &self,
+        scope: context::RuntimeScope,
+        name: &str,
+        args: Value,
+    ) -> Result<Value> {
         use baml_rt_interceptor::ToolCallContext;
         use std::time::Instant;
 
         let start = Instant::now();
-        let scope = context::task_local_context().current_scope()?;
-        let context_id = scope.context_id.clone();
-        let metadata = build_metadata_map();
+        let context_id = scope.context_id().clone();
+        let metadata = build_metadata_map(&scope);
 
         // Build context for interceptors
         let context = ToolCallContext {
@@ -141,7 +157,7 @@ impl ToolExecutionHandle {
             function_name: None, // Could be enhanced to track which function called this tool
             args: args.clone(),
             metadata: metadata.clone(),
-            context_id: context_id.clone(),
+            runtime_scope: scope.clone(),
         };
 
         // Start effect and get token (type-safe start/complete pairing)
@@ -175,18 +191,28 @@ impl ToolExecutionHandle {
                 && let Some(emitter) = self.effect_emitter.as_ref()
             {
                 let duration_ms = start.elapsed().as_millis() as u64;
-                let _ = token.complete(emitter.as_ref(), duration_ms, false).await;
+                if let Err(complete_err) =
+                    token.complete(emitter.as_ref(), duration_ms, false).await
+                {
+                    tracing::warn!(
+                        error = ?complete_err,
+                        "Failed to complete tool effect after interceptor denied"
+                    );
+                }
             }
             return Err(e);
         }
-        let _decision = interceptor_result.unwrap();
+        let _decision = match interceptor_result {
+            Ok(d) => d,
+            Err(_) => unreachable!("Err branch returned above"),
+        };
 
         // Handle interceptor decision
         // If we get here, the decision is Allow (blocking would have returned Err)
         let final_args = args;
 
         // Execute the tool
-        let result = self.tool_registry.execute(name, final_args).await;
+        let result = self.tool_registry.execute(&scope, name, final_args).await;
 
         // Calculate duration
         let duration = start.elapsed();
@@ -215,8 +241,10 @@ impl ToolExecutionHandle {
     }
 }
 
+/// Handle for tool session operations without holding the full runtime lock.
+/// Use this when session operations may await and another task needs the runtime (e.g. A2A dispatcher).
 #[derive(Clone)]
-pub(crate) struct ToolSessionExecutionHandle {
+pub struct ToolSessionExecutionHandle {
     tool_registry: Arc<ConcreteToolRegistry>,
     interceptor_registry: Arc<TokioMutex<InterceptorRegistry>>,
     tool_session_scopes: Arc<TokioMutex<HashMap<ToolSessionId, ToolSessionScope>>>,
@@ -224,23 +252,24 @@ pub(crate) struct ToolSessionExecutionHandle {
 }
 
 impl ToolSessionExecutionHandle {
-    pub(crate) async fn open_tool_session(
+    /// Open a tool session with explicit runtime scope.
+    pub async fn open_tool_session(
         &self,
+        scope: &context::RuntimeScope,
         tool_name: &str,
         open_input: serde_json::Value,
     ) -> Result<ToolSessionId> {
-        // Scope is required; missing scope is a failure (trait returns Result).
-        let scope = context::task_local_context().current_scope()?;
-        let context_id = scope.context_id.clone();
+        let scope = scope.clone();
+        let context_id = scope.context_id().clone();
 
         let start = Instant::now();
-        let metadata = build_metadata_map();
+        let metadata = build_metadata_map(&scope);
         let context = ToolCallContext {
             tool_name: tool_name.to_string(),
             function_name: None,
             args: open_input.clone(),
             metadata,
-            context_id: context_id.clone(),
+            runtime_scope: scope.clone(),
         };
 
         tracing::info!(
@@ -254,8 +283,10 @@ impl ToolSessionExecutionHandle {
         let _ = interceptor_registry.intercept_tool_call(&context).await?;
         drop(interceptor_registry);
 
-        let result = self.tool_registry.open_session(tool_name, open_input).await;
-
+        let result = self
+            .tool_registry
+            .open_session(&scope, tool_name, open_input)
+            .await;
         let duration_ms = start.elapsed().as_millis() as u64;
         let completion_result: Result<Value> = match &result {
             Ok(_) => Ok(Value::Null),
@@ -308,11 +339,7 @@ impl ToolSessionExecutionHandle {
         Ok(session_id)
     }
 
-    pub(crate) async fn tool_session_send(
-        &self,
-        session_id: &ToolSessionId,
-        input: Value,
-    ) -> Result<()> {
+    pub async fn tool_session_send(&self, session_id: &ToolSessionId, input: Value) -> Result<()> {
         use baml_rt_interceptor::InterceptorDecision;
 
         let session_scope = {
@@ -349,7 +376,7 @@ impl ToolSessionExecutionHandle {
         tracing::info!(
             session_id = %session_id,
             tool_name = %session_scope.tool_name,
-            context_id = %session_scope.scope.context_id,
+            context_id = %session_scope.scope.context_id(),
             "Tool session send: start"
         );
 
@@ -363,12 +390,10 @@ impl ToolSessionExecutionHandle {
                     Value::String(correlation_id.to_string()),
                 );
             }
-            if let Some(message_id) = context::current_message_id() {
-                metadata_map.insert(
-                    "message_id".to_string(),
-                    Value::String(message_id.as_str().to_string()),
-                );
-            }
+            metadata_map.insert(
+                "message_id".to_string(),
+                Value::String(session_scope.scope.message_id().as_str().to_string()),
+            );
             let metadata = Value::Object(metadata_map);
 
             let context = ToolCallContext {
@@ -376,7 +401,7 @@ impl ToolSessionExecutionHandle {
                 function_name: None,
                 args: input.clone(),
                 metadata,
-                context_id: session_scope.scope.context_id.clone(),
+                runtime_scope: session_scope.scope.clone(),
             };
 
             let interceptor_registry = self.interceptor_registry.lock().await;
@@ -422,7 +447,7 @@ impl ToolSessionExecutionHandle {
             tracing::warn!(
                 session_id = %session_id,
                 tool_name = %session_scope.tool_name,
-                context_id = %session_scope.scope.context_id,
+                context_id = %session_scope.scope.context_id(),
                 error = ?e,
                 "Tool session send: error"
             );
@@ -430,14 +455,14 @@ impl ToolSessionExecutionHandle {
             tracing::info!(
                 session_id = %session_id,
                 tool_name = %session_scope.tool_name,
-                context_id = %session_scope.scope.context_id,
+                context_id = %session_scope.scope.context_id(),
                 "Tool session send: ok"
             );
         }
         result
     }
 
-    pub(crate) async fn tool_session_next(&self, session_id: &ToolSessionId) -> Result<ToolStep> {
+    pub async fn tool_session_next(&self, session_id: &ToolSessionId) -> Result<ToolStep> {
         let session_scope = {
             let scopes = self.tool_session_scopes.lock().await;
             scopes.get(session_id).cloned()
@@ -520,7 +545,7 @@ impl ToolSessionExecutionHandle {
         result
     }
 
-    pub(crate) async fn tool_session_finish(&self, session_id: &ToolSessionId) -> Result<()> {
+    pub async fn tool_session_finish(&self, session_id: &ToolSessionId) -> Result<()> {
         let session_scope = {
             let scopes = self.tool_session_scopes.lock().await;
             scopes.get(session_id).cloned()
@@ -592,7 +617,7 @@ impl ToolSessionExecutionHandle {
         result
     }
 
-    pub(crate) async fn tool_session_abort(
+    pub async fn tool_session_abort(
         &self,
         session_id: &ToolSessionId,
         reason: Option<String>,
@@ -679,12 +704,23 @@ impl BamlRuntimeManager {
             tool_session_scopes: Arc::new(TokioMutex::new(HashMap::new())),
             tool_session_states: Arc::new(TokioMutex::new(HashMap::new())),
             effect_emitter: None,
+            conversation_context_provider: None,
         })
     }
 
     /// Set the effect emitter (for effects-first liveness)
     pub fn set_effect_emitter(&mut self, emitter: Arc<dyn EffectEmitter>) {
         self.effect_emitter = Some(emitter);
+    }
+
+    pub fn set_conversation_context_provider(
+        &mut self,
+        provider: Arc<dyn ConversationContextProvider>,
+    ) {
+        self.conversation_context_provider = Some(provider.clone());
+        if let Some(executor) = self.executor.as_mut() {
+            executor.set_conversation_context_provider(provider);
+        }
     }
 
     pub(crate) fn tool_execution_handle(&self) -> ToolExecutionHandle {
@@ -695,7 +731,8 @@ impl BamlRuntimeManager {
         }
     }
 
-    pub(crate) fn tool_session_handle(&self) -> ToolSessionExecutionHandle {
+    /// Returns a handle for session operations. Use this to avoid holding the runtime lock across awaits.
+    pub fn tool_session_handle(&self) -> ToolSessionExecutionHandle {
         ToolSessionExecutionHandle {
             tool_registry: self.tool_registry.clone(),
             interceptor_registry: self.interceptor_registry.clone(),
@@ -746,6 +783,9 @@ impl BamlRuntimeManager {
         if let Some(ref emitter) = self.effect_emitter {
             executor.set_effect_emitter(emitter.clone());
         }
+        if let Some(ref provider) = self.conversation_context_provider {
+            executor.set_conversation_context_provider(provider.clone());
+        }
 
         // Discover functions from the BAML runtime
         let function_names = executor.list_functions();
@@ -782,6 +822,7 @@ impl BamlRuntimeManager {
     /// It validates the function exists and delegates to the executor.
     pub async fn invoke_function(
         &self,
+        scope: &context::RuntimeScope,
         function_name: &str,
         args: serde_json::Value,
     ) -> Result<serde_json::Value> {
@@ -816,7 +857,7 @@ impl BamlRuntimeManager {
         // Pass tool registry and interceptor registry to executor
         let interceptor_registry = Some(self.interceptor_registry.clone());
         executor
-            .execute_function(function_name, args, interceptor_registry)
+            .execute_function(scope, function_name, args, interceptor_registry)
             .await
     }
 
@@ -825,6 +866,7 @@ impl BamlRuntimeManager {
     /// Returns a stream that yields incremental results as the function executes.
     pub fn invoke_function_stream(
         &self,
+        scope: &context::RuntimeScope,
         function_name: &str,
         args: serde_json::Value,
     ) -> Result<baml_runtime::FunctionResultStream> {
@@ -846,7 +888,7 @@ impl BamlRuntimeManager {
             .as_ref()
             .ok_or_else(|| BamlRtError::BamlRuntime("BAML runtime not loaded".to_string()))?;
 
-        executor.execute_function_stream(function_name, args)
+        executor.execute_function_stream(scope, function_name, args)
     }
 
     /// List all available BAML functions
@@ -929,29 +971,30 @@ impl BamlRuntimeManager {
         self.tool_registry.register(tool)
     }
 
-    /// Execute a tool function by name
-    ///
-    /// This will call tool interceptors before and after execution.
-    /// Requires an invocation scope (e.g. run inside `context::with_scope` or use
-    /// [`execute_tool_with_scope`](Self::execute_tool_with_scope) when you have a scope in hand).
-    pub async fn execute_tool(&self, name: &str, args: Value) -> Result<Value> {
-        self.tool_execution_handle().execute_tool(name, args).await
-    }
-
     /// Execute a tool function by name with an explicit scope.
     ///
     /// Use this when you have a [`RuntimeScope`](context::RuntimeScope) in hand (e.g. in tests or
-    /// when scope is not task-local). Runs the tool inside `context::with_scope(scope, ...)` so
+    /// at runtime boundaries). Runs the tool inside `context::with_scope(scope, ...)` so
     /// nested calls see the scope.
-    pub async fn execute_tool_with_scope(
+    pub async fn execute_tool(
         &self,
         scope: &context::RuntimeScope,
         name: &str,
         args: Value,
     ) -> Result<Value> {
         self.tool_execution_handle()
-            .execute_tool_with_scope(scope, name, args)
+            .execute_tool(scope, name, args)
             .await
+    }
+
+    /// Backward-compatible alias for explicit-scope tool execution.
+    pub async fn execute_tool_with_scope(
+        &self,
+        scope: &context::RuntimeScope,
+        name: &str,
+        args: Value,
+    ) -> Result<Value> {
+        self.execute_tool(scope, name, args).await
     }
 
     /// List all registered tools
@@ -966,11 +1009,12 @@ impl BamlRuntimeManager {
 
     pub async fn open_tool_session(
         &self,
+        scope: &context::RuntimeScope,
         tool_name: &str,
         open_input: serde_json::Value,
     ) -> Result<ToolSessionId> {
         self.tool_session_handle()
-            .open_tool_session(tool_name, open_input)
+            .open_tool_session(scope, tool_name, open_input)
             .await
     }
 
@@ -1081,25 +1125,30 @@ impl BamlRuntimeManager {
     ///
     /// # Returns
     /// The result of executing the tool function
-    pub async fn execute_tool_from_baml_result(&self, baml_result: Value) -> Result<Value> {
+    pub async fn execute_tool_from_baml_result(
+        &self,
+        scope: &context::RuntimeScope,
+        baml_result: Value,
+    ) -> Result<Value> {
         let call = extract_tool_call(&baml_result)?.ok_or_else(|| {
             BamlRtError::InvalidArgument("No tool call found in result".to_string())
         })?;
         let tool_name = self.resolve_tool_name_from_input(&call.args).await?;
-        self.execute_tool(&tool_name, call.args).await
+        self.execute_tool(scope, &tool_name, call.args).await
     }
 
     pub async fn execute_tool_from_baml_result_or_value(
         &self,
+        scope: &context::RuntimeScope,
         baml_result: Value,
     ) -> Result<Value> {
         if let Some(plan) = extract_tool_session_plan(&baml_result)? {
             let tool_name = self.resolve_tool_name_from_plan_steps(&plan).await?;
-            return self.execute_tool_session_plan(tool_name, plan).await;
+            return self.execute_tool_session_plan(scope, tool_name, plan).await;
         }
         if let Some(call) = extract_tool_call(&baml_result)? {
             let tool_name = self.resolve_tool_name_from_input(&call.args).await?;
-            return self.execute_tool(&tool_name, call.args).await;
+            return self.execute_tool(scope, &tool_name, call.args).await;
         }
         Ok(baml_result)
     }
@@ -1136,9 +1185,11 @@ impl BamlRuntimeManager {
     /// - After Finish/Abort, session is closed
     async fn execute_tool_session_plan(
         &self,
+        scope: &context::RuntimeScope,
         tool_name: String,
         steps: Vec<ToolSessionOp>,
     ) -> Result<Value> {
+        let plan_scope = scope.clone();
         // Validate FSM: no Send before first Open
         let first_open = steps
             .iter()
@@ -1182,7 +1233,9 @@ impl BamlRuntimeManager {
                     }
                     // For Open step, use initial_input if provided, otherwise empty object
                     let open_input = initial_input.clone().unwrap_or_else(empty_open_input);
-                    let session = self.open_tool_session(&tool_name, open_input).await?;
+                    let session = self
+                        .open_tool_session(&plan_scope, &tool_name, open_input)
+                        .await?;
                     session_id = Some(session.clone());
                     // If Open step has initial_input, automatically Send it
                     if let Some(initial_input) = initial_input {
@@ -1298,8 +1351,13 @@ impl BamlRuntimeManager {
 // Implement traits for better abstraction
 #[async_trait]
 impl BamlFunctionExecutor for BamlRuntimeManager {
-    async fn execute_function(&self, function_name: &str, args: Value) -> Result<Value> {
-        self.invoke_function(function_name, args).await
+    async fn execute_function(
+        &self,
+        scope: &context::RuntimeScope,
+        function_name: &str,
+        args: Value,
+    ) -> Result<Value> {
+        self.invoke_function(scope, function_name, args).await
     }
 
     fn list_functions(&self) -> Vec<String> {
@@ -1327,6 +1385,7 @@ impl Default for BamlRuntimeManager {
             tool_session_scopes: Arc::new(TokioMutex::new(HashMap::new())),
             tool_session_states: Arc::new(TokioMutex::new(HashMap::new())),
             effect_emitter: None,
+            conversation_context_provider: None,
         }
     }
 }

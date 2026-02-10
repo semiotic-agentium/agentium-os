@@ -24,9 +24,9 @@ Notation: □ = always, ◇ = eventually.
 
 ## Data flow
 
-1. **Host** holds `bridge: Arc<Mutex<QuickJSBridge>>` and runs, under one lock, the session:  
+1. **Host** holds `bridge: Arc<Mutex<QuickJSBridge>>` and runs, under one lock, the session:
    `begin_a2a_yield_session(&mut *bridge)` → `session.invoke(js_request)` → `session.collect()`.
-2. **JS** sees `globalThis.__baml_chat_yield_buffer` and `globalThis.__baml_chat_yield` (set by setup).  
+2. **JS** sees `globalThis.__baml_chat_yield_buffer` and `globalThis.__baml_chat_yield` (set by setup).
    `onChatMessage` runs; it may call `__baml_chat_yield(chunk)` and may `await` (e.g. `openToolSession`, BAML). The stream handler typically **does not terminate** (no final promise resolution).
 3. **Host** reads chunks from the yield buffer via `get_a2a_yield_buffer()` at a time of its choosing (e.g. after a timeout or when the buffer has grown); it does **not** wait for the JS promise to resolve. The return value of `onChatMessage` is ignored.
 
@@ -41,9 +41,9 @@ Notation: □ = always, ◇ = eventually.
 
 **Formal:**
 
-- ∀ stream request r:  
-  `setup_a2a_yield_buffer()` runs once before `invoke_js_function(..., r)`;  
-  `get_a2a_yield_buffer()` runs when the host decides to read (e.g. after a timeout or poll); the JS promise for that invoke typically **does not resolve** (stream is non-terminating).  
+- ∀ stream request r:
+  `setup_a2a_yield_buffer()` runs once before `invoke_js_function(..., r)`;
+  `get_a2a_yield_buffer()` runs when the host decides to read (e.g. after a timeout or poll); the JS promise for that invoke typically **does not resolve** (stream is non-terminating).
   No other code clears or replaces `__baml_chat_yield_buffer` between setup and get.
 
 **Enforcement:**
@@ -64,7 +64,7 @@ Notation: □ = always, ◇ = eventually.
 
 **Formal:**
 
-- ∀ execution where Host holds `lock(bridge)` and is in `evaluate()` polling loop waiting for promise P:  
+- ∀ execution where Host holds `lock(bridge)` and is in `evaluate()` polling loop waiting for promise P:
   any callback or future that contributes to resolving P must not perform a blocking acquisition of `lock(bridge)`.
 
 **Enforcement:**
@@ -89,7 +89,7 @@ Notation: □ = always, ◇ = eventually.
 
 **Formal:**
 
-- ∀ **non-stream** promise P returned from the eval’d code:  
+- ∀ **non-stream** promise P returned from the eval’d code:
   eventually, after some finite sequence of `run_pending_jobs_if_any()` and checks, `__eval_result` is set (or we hit max_attempts_ms and error).
 - So: running pending jobs must be sufficient (or we must have another way) for the microtask that sets `__eval_result` to run.
 
@@ -112,7 +112,7 @@ Notation: □ = always, ◇ = eventually.
 
 **Formal:**
 
-- `get_a2a_yield_buffer()` evals code that does `buf = __baml_chat_yield_buffer; __baml_chat_yield_buffer = []; return JSON.stringify(buf);`.  
+- `get_a2a_yield_buffer()` evals code that does `buf = __baml_chat_yield_buffer; __baml_chat_yield_buffer = []; return JSON.stringify(buf);`.
   Host parses the eval result as JSON; if it is an array, that array is the chunk list; otherwise host uses `[]`.
 
 **Enforcement:**
@@ -150,32 +150,32 @@ We need to distinguish two cases so the host can treat them differently:
 
 ### Semi-formal distinction
 
-- **Progress predicate** (for one poll iteration):  
+- **Progress predicate** (for one poll iteration):
   `progress(i) ≜ (__eval_result became set) ∨ (yield buffer grew) ∨ (some Rust future backing a JS promise made progress)`.
 
-- **Waiting on I/O**:  
-  □(¬progress(i) for many i) ∧ (there exists an external dependency D such that when D completes, progress will hold).  
+- **Waiting on I/O**:
+  □(¬progress(i) for many i) ∧ (there exists an external dependency D such that when D completes, progress will hold).
   So: no progress *yet*, but progress is *possible*.
 
-- **Will never yield**:  
-  □(¬progress(i) for all i) ∧ (no external dependency can change that).  
+- **Will never yield**:
+  □(¬progress(i) for all i) ∧ (no external dependency can change that).
   So: no progress and none possible (e.g. deadlock or infinite sync work).
 
 ### Implications for the current design
 
 1. **Configurable MAX_ATTEMPTS (default: 1.8M × 1ms ≈ 30 minutes)**
    - Set via `QuickJSConfig::with_max_attempts_ms(Some(ms))`
-   - Default: 1,800,000ms (30 minutes)  
+   - Default: 1,800,000ms (30 minutes)
    The poll loop cannot tell "waiting on LLM" from "deadlock". Both hit the same cap and return an error. So:
    - **Liveness L4** holds in a bounded sense: we eventually exit the loop (either with result or with error), but we do *not* guarantee "if the promise can resolve, we see it" — we might time out first when JS is legitimately slow (e.g. LLM).
 
-2. **Making progress observable**  
+2. **Making progress observable**
    To separate "slow but progressing" from "stuck", we would need at least one of:
    - **Progress hint from JS**: e.g. the agent or runtime sets a "waiting on" flag (tool name, LLM call id) so the host can allow a longer or unbounded wait for that dependency.
    - **Progress hint from Rust**: when a Rust-backed promise (e.g. tool session, BAML call) is polled and makes progress, signal it so the host knows not to give up.
    - **Heuristic**: if the yield buffer has grown since last check, we are "making progress" (agent is yielding chunks while doing async work); if it never grows and we never see __eval_result, we are more likely in "will never yield."
 
-3. **Refined liveness wording**  
+3. **Refined liveness wording**
    - **L4 (current, bounded):** After at most max_attempts_ms iterations, the loop exits (with __eval_result set or with error). So: "no infinite poll without *exit*."
    - **L4′ (strong, if we had progress detection):** If the JS promise will eventually resolve (no deadlock, no infinite sync), then ◇(__eval_result is set). We do *not* currently guarantee L4′ because we time out regardless of whether the promise could have resolved later.
    - **L4″ (will never yield):** If the environment will never yield (deadlock or infinite sync), then ◇(loop exits with error). We guarantee this only in the sense that we eventually hit max_attempts_ms and return an error; we do not *detect* "will never yield" explicitly.
@@ -211,7 +211,7 @@ The effects-first system distinguishes "waiting on effect" (tool/LLM execution i
 
 **Formal (L5):**
 
-- ∀ poll iteration i in `evaluate()`:  
+- ∀ poll iteration i in `evaluate()`:
   `timeout_attempts(i) = if in_flight(context_id).any() then MAX_ATTEMPTS else idle_timeout_ms`
 - So: when effects are active, we allow longer waits; when idle, we fail fast.
 

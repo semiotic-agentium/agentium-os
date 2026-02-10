@@ -33,13 +33,12 @@ function ChooseTool(user_message: string) -> ToolChoice {
   client DeepSeekOpenRouter
   prompt #"
     The user said: {{ user_message }}
-    
+
     Determine which tool they need.
-    
+
     {{ ctx.output_format }}
 
     {{ _.role('user') }}
     {{ user_message }}
   "#
 }
-

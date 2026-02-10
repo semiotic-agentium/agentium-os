@@ -292,7 +292,7 @@ async fn run_agent(
             })?
         };
 
-        let invoke_span = spans::invoke_function("agent", function_name.as_str());
+        let invoke_span = spans::invoke_function(None, "agent", function_name.as_str());
         let _invoke_guard = invoke_span.enter();
         let result = agent.invoke_function(function_name.as_str(), args).await?;
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -336,7 +336,7 @@ async fn run_agent(
 
                 match serde_json::from_str::<Value>(args_json) {
                     Ok(args) => {
-                        let invoke_span = spans::invoke_function("agent", function_name_str);
+                        let invoke_span = spans::invoke_function(None, "agent", function_name_str);
                         let _invoke_guard = invoke_span.enter();
                         match agent.invoke_function(function_name_str, args).await {
                             Ok(result) => {
@@ -375,7 +375,8 @@ impl LoadedAgent {
     }
 
     async fn invoke_function(&self, function_name: &str, args: Value) -> Result<Value> {
-        let scope = baml_rt_core::context::InvocationScope::standalone(self.agent_id.clone());
+        let scope =
+            baml_rt_core::context::InvocationScope::synthetic_message(self.agent_id.clone());
         let mut bridge_guard = self.js_bridge.lock().await;
         bridge_guard
             .invoke_js_function(&scope, function_name, args)

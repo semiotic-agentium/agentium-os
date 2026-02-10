@@ -21,13 +21,13 @@ pub(crate) fn serialize_id(id: &impl Serialize) -> Result<String> {
 pub(crate) fn build_scope_prelude(scope: &InvocationScope, token_prelude: &str) -> Result<String> {
     let context_prelude = format!(
         "const __baml_context_id = {};",
-        serialize_id(&scope.context_id)?
+        serialize_id(scope.context_id())?
     );
-    let message_prelude = match scope.message_id.as_ref() {
-        Some(id) => format!("const __baml_message_id = {};", serialize_id(id)?),
-        None => "const __baml_message_id = undefined;".to_string(),
-    };
-    let task_prelude = match scope.task_id.as_ref() {
+    let message_prelude = format!(
+        "const __baml_message_id = {};",
+        serialize_id(scope.message_id())?
+    );
+    let task_prelude = match scope.task_id_opt() {
         Some(id) => format!("const __baml_task_id = {};", serialize_id(id)?),
         None => "const __baml_task_id = undefined;".to_string(),
     };
@@ -73,11 +73,11 @@ mod tests {
     use proptest::prelude::*;
 
     fn test_scope() -> InvocationScope {
-        let runtime = baml_rt_core::context::RuntimeScope::new(
+        let runtime = baml_rt_core::context::RuntimeScope::task_scope(
             ContextId::new(1000, 1),
             AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000001").unwrap()),
-            Some(MessageId::from_external(ExternalId::new("msg-1"))),
-            Some(TaskId::from_external(ExternalId::new("task-1"))),
+            MessageId::from_external(ExternalId::new("msg-1")),
+            TaskId::from_external(ExternalId::new("task-1")),
         );
         InvocationScope::new(runtime)
     }

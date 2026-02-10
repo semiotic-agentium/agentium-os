@@ -3,5 +3,5 @@ source: crates/baml-rt-builder/tests/codegen_test.rs
 expression: baml_output
 ---
 class ArrayTest {
-  items string[] 
+  items string[]
 }

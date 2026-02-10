@@ -60,7 +60,7 @@ QuickJS `runtime.eval()` operations must not block the tokio runtime indefinitel
   IF op1 acquires locks in order [L1, L2]
   AND op2 acquires locks in order [L2, L1]
   THEN deadlock is possible
-  
+
 THEREFORE: All operations MUST acquire locks in consistent order
 ```
 
@@ -88,7 +88,7 @@ Lock acquisition must follow a consistent ordering to prevent deadlocks.
 ∀ promise p in evaluate() WHERE p is NOT a stream request:
   IF p is created by runtime.eval()
   THEN p MUST resolve OR timeout within bounded time T_promise
-  
+
   T_promise = {
     idle_timeout_ms IF no effects in-flight
     max_attempts_ms IF effects in-flight
@@ -203,7 +203,7 @@ some_async_operation().await; // Safe - no lock held
 
 **Application: `__baml_stream` (BAML function stream run)**
 
-When running a BAML function stream (`stream.run(..., &ctx_manager, ...).await`), the manager lock must be released **before** `stream.run`. Reason: `stream.run` is async and may trigger tool calls (or other work) that need to acquire `baml_manager`; holding the lock across `stream.run` would deadlock. `ctx_manager` is an owned `RuntimeContextManager` from `create_ctx_manager_for_current_scope()`, so it does not borrow the executor; we can drop the manager guard after obtaining `stream` and `ctx_manager`, then call `stream.run(...).await` without holding any lock.
+When running a BAML function stream (`stream.run(..., &ctx_manager, ...).await`), the manager lock must be released **before** `stream.run`. Reason: `stream.run` is async and may trigger tool calls (or other work) that need to acquire `baml_manager`; holding the lock across `stream.run` would deadlock. `ctx_manager` is an owned `RuntimeContextManager` created from explicit invocation scope (`create_ctx_manager_for_scope(...)`), so it does not borrow the executor; we can drop the manager guard after obtaining `stream` and `ctx_manager`, then call `stream.run(...).await` without holding any lock.
 
 ### Rule 3: Timeout All Blocking Operations
 

@@ -30,19 +30,19 @@ enum ToolSessionOp {
 
 // Domain types generated from JSON schemas
 class CalculatorInput {
-  expression Expression 
+  expression Expression
 }
 
 class CalculatorOutput {
-  expression string 
-  result float 
-  formatted string 
+  expression string
+  result float
+  formatted string
 }
 
 class Expression {
-  left int 
-  operation MathOperation 
-  right int 
+  left int
+  operation MathOperation
+  right int
 }
 
 enum MathOperation {

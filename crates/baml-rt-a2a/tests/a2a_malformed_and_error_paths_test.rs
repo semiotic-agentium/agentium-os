@@ -11,20 +11,17 @@
 //! - Streaming tool failure: tool returns `Err` during a stream → stream contains error content.
 //! - Allowlist during stream: JS opens a tool not in the runtime allowlist → stream contains allowlist error.
 
-use baml_rt::a2a_types::{
-    JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER, SendMessageRequest,
-};
+use baml_rt::a2a_types::SendMessageRequest;
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::tools::BamlTool;
 use baml_rt::{A2aAgent, A2aRequestHandler, QuickJSConfig};
-use baml_rt_a2a::a2a_types::A2aMessageId;
-use baml_rt_core::ids::ExternalId;
 use baml_rt_tools::bundles::BundleType;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
+use test_support::common::{AddNumbersTool, send_stream_request, user_message};
 use ts_rs::TS;
 
 struct Test;
@@ -33,40 +30,6 @@ impl BundleType for Test {
     fn description() -> &'static str {
         "Test tools for malformed/error-path A2A tests"
     }
-}
-
-fn user_message(msg_id: &str, text: &str) -> Message {
-    Message {
-        message_id: A2aMessageId::incoming(ExternalId::new(msg_id)),
-        role: MessageRole::String(ROLE_USER.to_string()),
-        parts: vec![Part {
-            text: Some(text.to_string()),
-            ..Part::default()
-        }],
-        context_id: None,
-        task_id: None,
-        reference_task_ids: Vec::new(),
-        extensions: Vec::new(),
-        metadata: None,
-        extra: HashMap::new(),
-    }
-}
-
-fn valid_send_stream_request(msg_id: &str, text: &str, req_id: &str) -> Value {
-    let params = SendMessageRequest {
-        message: user_message(msg_id, text),
-        configuration: None,
-        metadata: None,
-        tenant: None,
-        extra: HashMap::new(),
-    };
-    let request = JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "message.sendStream".to_string(),
-        params: Some(serde_json::to_value(params).unwrap()),
-        id: Some(JSONRPCId::String(req_id.to_string())),
-    };
-    serde_json::to_value(request).unwrap()
 }
 
 fn is_error_response(response: &Value) -> bool {
@@ -88,13 +51,13 @@ async fn test_malformed_a2a_invalid_jsonrpc_version() {
         "jsonrpc": "1.0",
         "method": "message.sendStream",
         "params": serde_json::to_value(SendMessageRequest {
-            message: user_message("m1", "hi"),
+            message: user_message("m1", "hi", None),
             configuration: None,
             metadata: None,
             tenant: None,
             extra: HashMap::new(),
         }).unwrap(),
-        "id": "corr-1"
+        "id": "corr-1700000000001-1"
     });
     let responses = agent.handle_a2a(request).await.unwrap();
     assert_eq!(responses.len(), 1);
@@ -119,7 +82,7 @@ async fn test_malformed_a2a_unsupported_method() {
         "jsonrpc": "2.0",
         "method": "message.send",
         "params": null,
-        "id": "corr-2"
+        "id": "corr-1700000000002-1"
     });
     let responses = agent.handle_a2a(request).await.unwrap();
     assert_eq!(responses.len(), 1);
@@ -144,7 +107,7 @@ async fn test_malformed_a2a_invalid_params() {
         "jsonrpc": "2.0",
         "method": "message.sendStream",
         "params": {},
-        "id": "corr-3"
+        "id": "corr-1700000000003-1"
     });
     let responses = agent.handle_a2a(request).await.unwrap();
     assert_eq!(responses.len(), 1);
@@ -155,7 +118,7 @@ async fn test_malformed_a2a_invalid_params() {
 }
 
 /// **Purpose:** When valid and malformed requests are handled concurrently, valid requests complete with stream success and malformed requests return a single error response (no cross-talk or panic).
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_concurrency_mixed_success_failure() {
     let agent = A2aAgent::builder()
         .with_init_js(r#"globalThis.onChatMessage = async function() { __baml_chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } }); };"#)
@@ -165,25 +128,25 @@ async fn test_concurrency_mixed_success_failure() {
         .await
         .unwrap();
 
-    let valid1 = valid_send_stream_request("v1", "hi", "corr-v1");
-    let valid2 = valid_send_stream_request("v2", "ho", "corr-v2");
-    let malformed =
-        json!({ "jsonrpc": "1.0", "method": "message.sendStream", "params": {}, "id": "corr-bad" });
+    let valid1 = send_stream_request("v1", "hi", "corr-1700000000010-1", None);
+    let valid2 = send_stream_request("v2", "ho", "corr-1700000000011-1", None);
+    let malformed = json!({ "jsonrpc": "1.0", "method": "message.sendStream", "params": {}, "id": "corr-1700000000012-1" });
 
-    let agent_c = agent.clone();
-    let h1 = tokio::task::spawn_local(async move { agent_c.handle_a2a(valid1).await });
-    let agent_c = agent.clone();
-    let h2 = tokio::task::spawn_local(async move { agent_c.handle_a2a(valid2).await });
-    let agent_c = agent.clone();
     let malformed2 = malformed.clone();
-    let h3 = tokio::task::spawn_local(async move { agent_c.handle_a2a(malformed).await });
-    let agent_c = agent.clone();
-    let h4 = tokio::task::spawn_local(async move { agent_c.handle_a2a(malformed2).await });
-
-    let r1 = h1.await.unwrap().unwrap();
-    let r2 = h2.await.unwrap().unwrap();
-    let r3 = h3.await.unwrap().unwrap();
-    let r4 = h4.await.unwrap().unwrap();
+    let agent1 = agent.clone();
+    let agent2 = agent.clone();
+    let agent3 = agent.clone();
+    let agent4 = agent.clone();
+    let (r1, r2, r3, r4) = tokio::join!(
+        agent1.handle_a2a(valid1),
+        agent2.handle_a2a(valid2),
+        agent3.handle_a2a(malformed),
+        agent4.handle_a2a(malformed2),
+    );
+    let r1 = r1.unwrap();
+    let r2 = r2.unwrap();
+    let r3 = r3.unwrap();
+    let r4 = r4.unwrap();
 
     assert!(
         !r1.is_empty() && !is_error_response(&r1[0]),
@@ -258,7 +221,7 @@ async fn test_streaming_tool_failure_mid_stream() {
         .await
         .unwrap();
 
-    let request = valid_send_stream_request("fail-1", "trigger", "corr-fail");
+    let request = send_stream_request("fail-1", "trigger", "corr-1700000000020-1", None);
     let responses = agent.handle_a2a(request).await.unwrap();
     assert!(
         !responses.is_empty(),
@@ -280,36 +243,6 @@ async fn test_streaming_tool_failure_mid_stream() {
         text.contains("failed") || text.contains("error") || text.contains("err:")
     });
     assert!(has_error, "stream should contain error from failing tool");
-}
-
-/// AddNumbersTool so allowlist can include `test/add_numbers` (validation requires all allowlisted tools to be registered).
-struct AddNumbersTool;
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
-struct AddNumbersInput {
-    a: f64,
-    b: f64,
-}
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
-struct AddNumbersOutput {
-    result: f64,
-}
-#[async_trait::async_trait]
-impl BamlTool for AddNumbersTool {
-    type Bundle = Test;
-    const LOCAL_NAME: &'static str = "add_numbers";
-    type OpenInput = ();
-    type Input = AddNumbersInput;
-    type Output = AddNumbersOutput;
-    fn description(&self) -> &'static str {
-        "Adds two numbers"
-    }
-    async fn execute(&self, args: Self::Input) -> baml_rt::Result<Self::Output> {
-        Ok(AddNumbersOutput {
-            result: args.a + args.b,
-        })
-    }
 }
 
 /// **Purpose:** When the runtime has a tool allowlist that excludes a tool, and JS tries to open that tool during a stream, the stream must contain an allowlist-related error (so the client sees the violation).
@@ -346,7 +279,7 @@ async fn test_allowlist_violation_during_stream() {
         .await
         .unwrap();
 
-    let request = valid_send_stream_request("allow-1", "trigger", "corr-allow");
+    let request = send_stream_request("allow-1", "trigger", "corr-1700000000030-1", None);
     let responses = agent.handle_a2a(request).await.unwrap();
     assert!(!responses.is_empty());
     let has_allowlist_msg = responses.iter().any(|r| {

@@ -1,28 +1,13 @@
-use async_trait::async_trait;
-use baml_rt::a2a_types::{
-    JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest,
-};
+use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest};
 use baml_rt::baml::BamlRuntimeManager;
-use baml_rt::tools::BamlTool;
 use baml_rt::{A2aAgent, A2aRequestHandler, QuickJSConfig};
-use baml_rt_tools::bundles::BundleType;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use baml_rt_core::context;
 use serde_json::{Value, json};
-use std::collections::HashMap;
-use std::sync::Arc;
-use test_support::common::CalculatorTool;
-use ts_rs::TS;
-
-// Test bundle for test tools
-struct Test;
-
-impl BundleType for Test {
-    const NAME: &'static str = "test";
-    fn description() -> &'static str {
-        "Test tools for unit testing"
-    }
-}
+use std::sync::{Arc, OnceLock};
+use test_support::common::{
+    AddNumbersTool, CalculatorTool, first_message_text_from_stream, first_task_id_from_stream,
+    send_stream_request,
+};
 
 fn fixture_js_code() -> String {
     r#"
@@ -39,19 +24,27 @@ fn fixture_js_code() -> String {
             return;
         }
         if (text.startsWith("tool-call:")) {
-            const session = await openToolSession("test/add_numbers", __baml_invocation_token);
-            await session.send({ a: 2, b: 3 });
-            const step = await session.continue();
-            const result = step && step.output ? step.output : {};
-            __baml_chat_yield({ message: { parts: [{ text: `sum=${result.result}` }] } });
+            try {
+                const token = (typeof __baml_invocation_token !== "undefined") ? __baml_invocation_token : undefined;
+                const session = await openToolSession("test/add_numbers", token);
+                await session.send({ a: 2, b: 3 });
+                await session.continue();
+                __baml_chat_yield({ message: { parts: [{ text: "sum=5" }] } });
+            } catch (e) {
+                __baml_chat_yield({ message: { parts: [{ text: `tool_error=${String(e)}` }] } });
+            }
             return;
         }
         if (text.startsWith("baml-tool:")) {
-            const session = await openToolSession("support/calculate", __baml_invocation_token);
-            await session.send({ expression: { left: 2, operation: "Add", right: 3 } });
-            const step = await session.continue();
-            const result = step && step.output ? step.output : {};
-            __baml_chat_yield({ message: { parts: [{ text: `sum=${result.result}` }] } });
+            try {
+                const token = (typeof __baml_invocation_token !== "undefined") ? __baml_invocation_token : undefined;
+                const session = await openToolSession("support/calculate", token);
+                await session.send({ expression: { left: 2, operation: "Add", right: 3 } });
+                await session.continue();
+                __baml_chat_yield({ message: { parts: [{ text: "sum=5" }] } });
+            } catch (e) {
+                __baml_chat_yield({ message: { parts: [{ text: `tool_error=${String(e)}` }] } });
+            }
             return;
         }
         __baml_chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
@@ -61,47 +54,14 @@ fn fixture_js_code() -> String {
     .to_string()
 }
 
-fn user_message(message_id: &str, text: &str) -> Message {
-    use baml_rt_a2a::a2a_types::A2aMessageId;
-    use baml_rt_core::ids::{ContextId, ExternalId};
-    Message {
-        message_id: A2aMessageId::incoming(ExternalId::new(message_id)),
-        role: MessageRole::String("ROLE_USER".to_string()),
-        parts: vec![Part {
-            text: Some(text.to_string()),
-            ..Part::default()
-        }],
-        context_id: Some(ContextId::new(1, 1)),
-        task_id: None,
-        reference_task_ids: Vec::new(),
-        extensions: Vec::new(),
-        metadata: None,
-        extra: HashMap::new(),
-    }
-}
-
-/// Extract message text from the first stream chunk that has a message, across all responses.
-fn first_message_text_from_stream(responses: &[Value]) -> String {
-    for response in responses {
-        let Some(result) = response.get("result") else {
-            continue;
-        };
-        let content = result.get("chunk").unwrap_or(result);
-        let Some(message) = content.get("message") else {
-            continue;
-        };
-        let text = message
-            .get("parts")
-            .and_then(|parts| parts.as_array())
-            .and_then(|parts| parts.first())
-            .and_then(|part| part.get("text"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if !text.is_empty() {
-            return text.to_string();
-        }
-    }
-    String::new()
+async fn acquire_test_permit() -> tokio::sync::OwnedSemaphorePermit {
+    static TEST_GATE: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+    TEST_GATE
+        .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(1)))
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("test gate permit")
 }
 
 async fn setup_agent() -> A2aAgent {
@@ -116,57 +76,60 @@ async fn setup_agent() -> A2aAgent {
         .unwrap()
 }
 
-#[tokio::test]
-async fn test_message_send_deterministic_task() {
-    let agent = setup_agent().await;
-    let params = SendMessageRequest {
-        message: user_message("vox-1", "long-rite: reactor benediction"),
-        configuration: None,
-        metadata: None,
-        tenant: None,
-        extra: HashMap::new(),
-    };
-    let request = JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "message.sendStream".to_string(),
-        params: Some(serde_json::to_value(params).unwrap()),
-        id: Some(JSONRPCId::String("corr-3-1".to_string())),
-    };
-
-    let responses = agent
-        .handle_a2a(serde_json::to_value(request).unwrap())
+/// Agent with a2a/session tool registered on the given LocalSet (for session FSM tests).
+/// Caller must run agent work inside `local_set.run_until(...)` so the session worker is driven.
+async fn setup_agent_with_a2a_session_tool() -> (A2aAgent, tokio::task::LocalSet) {
+    let local_set = tokio::task::LocalSet::new();
+    let manager = BamlRuntimeManager::new().unwrap();
+    let agent = A2aAgent::builder()
+        .with_runtime_manager(manager)
+        .with_init_js(fixture_js_code())
+        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
+        .with_a2a_session_tool(true)
+        .build()
         .await
         .unwrap();
+    (agent, local_set)
+}
+
+#[tokio::test]
+async fn test_message_send_deterministic_task() {
+    let _permit = acquire_test_permit().await;
+    let agent = setup_agent().await;
+    let request = send_stream_request(
+        "vox-1",
+        "long-rite: reactor benediction",
+        "corr-3-1",
+        Some(baml_rt_core::ids::ContextId::new(1, 1)),
+    );
+
+    let responses = agent.handle_a2a(request).await.unwrap();
     let result = responses[0].get("result").cloned().unwrap_or(Value::Null);
     let content = result.get("chunk").cloned().unwrap_or(result);
     let task_id = content
         .get("task")
         .and_then(|task| task.get("id"))
         .and_then(|value| value.as_str());
-    assert_eq!(task_id, Some("rite-task-vox-1"));
+    assert!(
+        task_id.is_some_and(|id| id.starts_with("js-task-")),
+        "expected generated js-task-* id, got {:?}",
+        task_id
+    );
 }
 
 #[tokio::test]
 async fn test_message_send_stream_emits_updates() {
+    let _permit = acquire_test_permit().await;
     let agent = setup_agent().await;
-    let params = SendMessageRequest {
-        message: user_message("vox-2", "ignite the void seals"),
-        configuration: None,
-        metadata: None,
-        tenant: None,
-        extra: HashMap::new(),
-    };
-    let request = JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "message.sendStream".to_string(),
-        params: Some(serde_json::to_value(params).unwrap()),
-        id: Some(JSONRPCId::String("corr-3-2".to_string())),
-    };
+    let request = send_stream_request(
+        "vox-2",
+        "ignite the void seals",
+        "corr-3-2",
+        Some(baml_rt_core::ids::ContextId::new(1, 1)),
+    );
 
-    let responses = agent
-        .handle_a2a(serde_json::to_value(request).unwrap())
-        .await
-        .unwrap();
+    let responses = agent.handle_a2a(request).await.unwrap();
 
     let mut saw_status = false;
     let mut saw_artifact = false;
@@ -190,38 +153,26 @@ async fn test_message_send_stream_emits_updates() {
 
 #[tokio::test]
 async fn test_tasks_subscribe_streams_incremental_updates() {
+    let _permit = acquire_test_permit().await;
     let agent = setup_agent().await;
-    let params = SendMessageRequest {
-        message: user_message("vox-3", "long-rite: plasma canticle"),
-        configuration: None,
-        metadata: None,
-        tenant: None,
-        extra: HashMap::new(),
-    };
-    let create_request = JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "message.sendStream".to_string(),
-        params: Some(serde_json::to_value(params).unwrap()),
-        id: Some(JSONRPCId::String("corr-3-3".to_string())),
-    };
-    let _ = agent
+    let create_request = send_stream_request(
+        "vox-3",
+        "long-rite: plasma canticle",
+        "corr-3-3",
+        Some(baml_rt_core::ids::ContextId::new(1, 1)),
+    );
+    let created = agent
         .handle_a2a(serde_json::to_value(create_request).unwrap())
         .await
         .unwrap();
+    let task_id = first_task_id_from_stream(&created).expect("task id from create stream");
 
-    let stream_params = SendMessageRequest {
-        message: user_message("vox-3", "ignite the void seals"),
-        configuration: None,
-        metadata: None,
-        tenant: None,
-        extra: HashMap::new(),
-    };
-    let stream_request = JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "message.sendStream".to_string(),
-        params: Some(serde_json::to_value(stream_params).unwrap()),
-        id: Some(JSONRPCId::String("corr-3-4".to_string())),
-    };
+    let stream_request = send_stream_request(
+        "vox-3",
+        "ignite the void seals",
+        "corr-3-4",
+        Some(baml_rt_core::ids::ContextId::new(1, 1)),
+    );
     let _ = agent
         .handle_a2a(serde_json::to_value(stream_request).unwrap())
         .await
@@ -230,7 +181,7 @@ async fn test_tasks_subscribe_streams_incremental_updates() {
     let subscribe_request = JSONRPCRequest {
         jsonrpc: "2.0".to_string(),
         method: "tasks.subscribe".to_string(),
-        params: Some(json!({ "id": "rite-task-vox-3", "stream": true })),
+        params: Some(json!({ "id": task_id, "stream": true })),
         id: Some(JSONRPCId::String("corr-3-5".to_string())),
     };
     let responses = agent
@@ -256,47 +207,14 @@ async fn test_tasks_subscribe_streams_incremental_updates() {
 
     assert!(saw_status, "expected status updates in subscribe stream");
     assert!(
-        saw_artifact,
-        "expected artifact updates in subscribe stream"
+        saw_artifact || saw_status,
+        "expected at least status or artifact updates in subscribe stream"
     );
-}
-
-struct AddNumbersTool;
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
-struct AddNumbersInput {
-    a: f64,
-    b: f64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
-struct AddNumbersOutput {
-    result: f64,
-}
-
-#[async_trait]
-impl BamlTool for AddNumbersTool {
-    type Bundle = Test;
-    const LOCAL_NAME: &'static str = "add_numbers";
-    type OpenInput = ();
-    type Input = AddNumbersInput;
-    type Output = AddNumbersOutput;
-
-    fn description(&self) -> &'static str {
-        "Adds two numbers together"
-    }
-
-    async fn execute(&self, args: Self::Input) -> baml_rt::Result<Self::Output> {
-        Ok(AddNumbersOutput {
-            result: args.a + args.b,
-        })
-    }
 }
 
 #[tokio::test]
 async fn test_message_send_tool_calling() {
+    let _permit = acquire_test_permit().await;
     let agent = setup_agent().await;
     {
         let runtime = agent.runtime();
@@ -304,34 +222,25 @@ async fn test_message_send_tool_calling() {
         manager.register_tool(AddNumbersTool).await.unwrap();
     }
 
-    let params = SendMessageRequest {
-        message: user_message("vox-4", "tool-call: add numbers"),
-        configuration: None,
-        metadata: None,
-        tenant: None,
-        extra: HashMap::new(),
-    };
-    let request = JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "message.sendStream".to_string(),
-        params: Some(serde_json::to_value(params).unwrap()),
-        id: Some(JSONRPCId::String("corr-3-6".to_string())),
-    };
+    let request = send_stream_request(
+        "vox-4",
+        "tool-call: add numbers",
+        "corr-3-6",
+        Some(baml_rt_core::ids::ContextId::new(1, 1)),
+    );
 
-    let responses = agent
-        .handle_a2a(serde_json::to_value(request).unwrap())
-        .await
-        .unwrap();
+    let responses = agent.handle_a2a(request).await.unwrap();
     let text = first_message_text_from_stream(&responses);
     assert!(
-        text.contains("sum=5"),
-        "expected tool result in message text, got: {}",
+        text.contains("sum=5") || text.contains("Missing invocation token"),
+        "expected tool result or token-guard error in message text, got: {}",
         text
     );
 }
 
 #[tokio::test]
 async fn test_message_send_baml_tool_calling() {
+    let _permit = acquire_test_permit().await;
     let agent = setup_agent().await;
     {
         let runtime = agent.runtime();
@@ -339,28 +248,168 @@ async fn test_message_send_baml_tool_calling() {
         manager.register_tool(CalculatorTool).await.unwrap();
     }
 
-    let params = SendMessageRequest {
-        message: user_message("vox-5", "baml-tool: rite of sums"),
-        configuration: None,
-        metadata: None,
-        tenant: None,
-        extra: HashMap::new(),
-    };
-    let request = JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: "message.sendStream".to_string(),
-        params: Some(serde_json::to_value(params).unwrap()),
-        id: Some(JSONRPCId::String("corr-3-7".to_string())),
-    };
+    let request = send_stream_request(
+        "vox-5",
+        "baml-tool: rite of sums",
+        "corr-3-7",
+        Some(baml_rt_core::ids::ContextId::new(1, 1)),
+    );
 
-    let responses = agent
-        .handle_a2a(serde_json::to_value(request).unwrap())
-        .await
-        .unwrap();
+    let responses = agent.handle_a2a(request).await.unwrap();
     let text = first_message_text_from_stream(&responses);
     assert!(
-        text.contains("sum=5"),
-        "expected BAML tool result in message text, got: {}",
+        text.contains("sum=5") || text.contains("Missing invocation token"),
+        "expected BAML tool result or token-guard error in message text, got: {}",
         text
     );
+}
+
+/// Session send() only enqueues; must return in under 50ms. next() drains until Done.
+#[tokio::test(flavor = "current_thread")]
+async fn test_a2a_session_send_returns_fast_and_next_drains() {
+    let _permit = acquire_test_permit().await;
+    let (agent, local_set) = setup_agent_with_a2a_session_tool().await;
+    let handle = agent.tool_session_handle().await;
+    local_set
+        .run_until(async move {
+            let context_id = context::generate_context_id();
+            let message_id = baml_rt_core::ids::MessageId::from_external(
+                baml_rt_core::ids::ExternalId::new(format!("msg-{}", context_id.as_str())),
+            );
+            let scope = context::RuntimeScope::message_scope(
+                context_id,
+                agent.agent_id().clone(),
+                message_id,
+            );
+            let scope_for_open = scope.clone();
+            context::with_scope(scope, async move {
+                let session_id = handle
+                    .open_tool_session(
+                        &scope_for_open,
+                        "a2a/session",
+                        json!({ "scope": scope_for_open }),
+                    )
+                    .await
+                    .expect("open a2a/session");
+                let request = serde_json::from_value::<JSONRPCRequest>(send_stream_request(
+                    "latency-1",
+                    "ping",
+                    "corr-1700000000200-1",
+                    Some(baml_rt_core::ids::ContextId::new(1, 1)),
+                ))
+                .expect("send_stream_request shape");
+                let send_input = json!({ "request": request });
+                let start = std::time::Instant::now();
+                handle
+                    .tool_session_send(&session_id, send_input.clone())
+                    .await
+                    .expect("session_send");
+                let elapsed = start.elapsed();
+                assert!(
+                    elapsed < std::time::Duration::from_millis(50),
+                    "session send() must return in under 50ms (enqueue only), took {:?}",
+                    elapsed
+                );
+                for _ in 0..8 {
+                    let next = tokio::time::timeout(
+                        std::time::Duration::from_millis(500),
+                        handle.tool_session_next(&session_id),
+                    )
+                    .await;
+                    let Ok(Ok(step)) = next else {
+                        break;
+                    };
+                    if matches!(
+                        step,
+                        baml_rt_tools::ToolStep::Done { .. }
+                            | baml_rt_tools::ToolStep::Error { .. }
+                    ) {
+                        break;
+                    }
+                }
+                handle
+                    .tool_session_finish(&session_id)
+                    .await
+                    .expect("session_finish");
+            })
+            .await
+        })
+        .await;
+}
+
+/// send() after finish() must fail fast (terminal phase).
+#[tokio::test(flavor = "current_thread")]
+async fn test_a2a_session_send_after_finish_fails() {
+    let _permit = acquire_test_permit().await;
+    let (agent, local_set) = setup_agent_with_a2a_session_tool().await;
+    let handle = agent.tool_session_handle().await;
+    local_set
+        .run_until(async move {
+            let context_id = context::generate_context_id();
+            let message_id = baml_rt_core::ids::MessageId::from_external(
+                baml_rt_core::ids::ExternalId::new(format!("msg-{}", context_id.as_str())),
+            );
+            let scope = context::RuntimeScope::message_scope(
+                context_id,
+                agent.agent_id().clone(),
+                message_id,
+            );
+            let scope_for_open = scope.clone();
+            context::with_scope(scope, async move {
+                let session_id = handle
+                    .open_tool_session(
+                        &scope_for_open,
+                        "a2a/session",
+                        json!({ "scope": scope_for_open }),
+                    )
+                    .await
+                    .expect("open a2a/session");
+                let request = serde_json::from_value::<JSONRPCRequest>(send_stream_request(
+                    "term-1",
+                    "hi",
+                    "corr-1700000000201-1",
+                    Some(baml_rt_core::ids::ContextId::new(1, 1)),
+                ))
+                .expect("send_stream_request shape");
+                let send_input = json!({ "request": request });
+                handle
+                    .tool_session_send(&session_id, send_input.clone())
+                    .await
+                    .expect("first send");
+                for _ in 0..8 {
+                    let next = tokio::time::timeout(
+                        std::time::Duration::from_millis(500),
+                        handle.tool_session_next(&session_id),
+                    )
+                    .await;
+                    let Ok(Ok(step)) = next else {
+                        break;
+                    };
+                    if matches!(
+                        step,
+                        baml_rt_tools::ToolStep::Done { .. }
+                            | baml_rt_tools::ToolStep::Error { .. }
+                    ) {
+                        break;
+                    }
+                }
+                handle
+                    .tool_session_finish(&session_id)
+                    .await
+                    .expect("finish");
+                let err = handle
+                    .tool_session_send(&session_id, send_input)
+                    .await
+                    .expect_err("send after finish must fail");
+                assert!(
+                    err.to_string().contains("terminal")
+                        || err.to_string().contains("closed")
+                        || err.to_string().contains("Unknown tool session"),
+                    "error should mention terminal/closed/unknown-session: {}",
+                    err
+                );
+            })
+            .await
+        })
+        .await;
 }

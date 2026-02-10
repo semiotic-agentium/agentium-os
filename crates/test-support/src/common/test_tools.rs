@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use baml_rt::Result;
 use baml_rt::tools::BamlTool;
-use baml_rt_tools::bundles::Support;
+use baml_rt_tools::bundles::{BundleType, Support};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -101,6 +101,51 @@ pub struct DelayedResponseTool;
 #[ts(export)]
 pub struct DelayedInput {
     message: String,
+}
+
+/// Test-only bundle used by A2A error/streaming tests.
+pub struct Test;
+
+impl BundleType for Test {
+    const NAME: &'static str = "test";
+    fn description() -> &'static str {
+        "Test tools for A2A tests"
+    }
+}
+
+/// Example add-numbers tool for A2A tests.
+pub struct AddNumbersTool;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct AddNumbersInput {
+    pub a: f64,
+    pub b: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+pub struct AddNumbersOutput {
+    pub result: f64,
+}
+
+#[async_trait]
+impl BamlTool for AddNumbersTool {
+    type Bundle = Test;
+    const LOCAL_NAME: &'static str = "add_numbers";
+    type OpenInput = ();
+    type Input = AddNumbersInput;
+    type Output = AddNumbersOutput;
+
+    fn description(&self) -> &'static str {
+        "Adds two numbers"
+    }
+
+    async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
+        Ok(AddNumbersOutput {
+            result: args.a + args.b,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]

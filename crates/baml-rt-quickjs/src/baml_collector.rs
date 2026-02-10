@@ -8,10 +8,10 @@
 //! This module implements a collector that hooks into BAML's execution lifecycle
 //! to intercept LLM calls and route them through our interceptor system.
 
+use baml_rt_core::Result;
 use baml_rt_core::context;
 use baml_rt_core::effects::{EffectEmitter, EffectStartToken, LlmKind};
 use baml_rt_core::ids::ContextId;
-use baml_rt_core::{InvocationContext, Result};
 use baml_rt_interceptor::{InterceptorRegistry, LLMCallContext};
 use baml_runtime::tracingv2::storage::storage::Collector;
 use serde_json::json;
@@ -99,13 +99,10 @@ impl BamlLLMCollector {
     /// Process trace events to extract LLM call information and notify interceptors
     ///
     /// This should be called after function execution to process collected trace events.
-    /// Requires an invocation scope (e.g. run inside `context::with_scope`).
+    /// Scope is explicit and must match the invocation scope for the function call.
     ///
     /// Note: This uses the last function log tracked by the collector.
-    pub async fn process_trace_events(&self) -> Result<()> {
-        let scope = context::task_local_context().current_scope()?;
-        let context_id = scope.context_id.clone();
-
+    pub async fn process_trace_events(&self, scope: &context::RuntimeScope) -> Result<()> {
         // Get the last function log tracked by this collector
         // The collector tracks function IDs as they're executed when passed to call_function
         let mut function_log = match self.inner.last_function_log() {
@@ -124,7 +121,7 @@ impl BamlLLMCollector {
         // Effect completion is done by complete_pending_effects(); we do not touch effect_tokens here.
         for call_kind in llm_calls {
             if let Some(llm_call) = call_kind.as_request() {
-                let context = self.extract_context_from_llm_call(llm_call, context_id.clone());
+                let context = self.extract_context_from_llm_call(llm_call, scope);
                 let duration_ms = llm_call.timing.duration_ms.unwrap_or(0) as u64;
                 let result: Result<serde_json::Value> =
                     Ok(serde_json::to_value(llm_call).unwrap_or_else(|_| json!({})));
@@ -143,7 +140,7 @@ impl BamlLLMCollector {
     fn extract_context_from_llm_call(
         &self,
         call: &baml_runtime::tracingv2::storage::storage::LLMCall,
-        context_id: ContextId,
+        scope: &context::RuntimeScope,
     ) -> LLMCallContext {
         // Extract client/provider from the call
         let client = call.client_name.clone();
@@ -160,11 +157,14 @@ impl BamlLLMCollector {
             client,
             model,
             function_name: self.function_name.clone(),
-            context_id,
+            runtime_scope: scope.clone(),
             prompt,
             metadata: json!({
                 "usage": call.usage,
                 "selected": call.selected,
+                "agent_id": scope.agent_id().as_str(),
+                "message_id": scope.message_id().as_str(),
+                "task_id": scope.task_id_opt().map(|id| id.as_str()),
             }),
         }
     }

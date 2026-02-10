@@ -149,7 +149,7 @@ async fn test_register_and_execute_tool_rust() {
         manager.register_tool(AddNumbersTool).await.unwrap();
     }
 
-    let scope = InvocationScope::standalone(AgentId::from_uuid(
+    let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
         UuidId::parse_str("00000000-0000-0000-0000-00000000000d").unwrap(),
     ));
     // Test executing the tool directly from Rust (scope required)
@@ -198,7 +198,7 @@ async fn test_register_and_execute_tool_js() {
     // Create QuickJS bridge and register functions
     let mut bridge = setup_bridge(baml_manager.clone()).await;
 
-    let scope = InvocationScope::standalone(AgentId::from_uuid(
+    let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
         UuidId::parse_str("00000000-0000-0000-0000-00000000000b").unwrap(),
     ));
     // Test that tool is registered in QuickJS (scope required for Rust tools via openToolSession)
@@ -230,7 +230,7 @@ async fn test_async_streaming_tool() {
     }
 
     // Test executing the streaming tool (scope required)
-    let scope = InvocationScope::standalone(AgentId::from_uuid(
+    let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
         UuidId::parse_str("00000000-0000-0000-0000-00000000000c").unwrap(),
     ));
     {
@@ -517,10 +517,14 @@ async fn test_invalid_open_input_deserialization() {
     let registry = baml_rt_tools::ToolRegistry::new();
     registry.register(AddNumbersTool).unwrap();
 
+    let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
+    ));
+
     // Try to open a session with invalid open_input (should be empty object for unit type)
     let invalid_open_input = serde_json::json!({"invalid": "data"});
     let result = registry
-        .open_session("test/add_numbers", invalid_open_input)
+        .open_session(scope.as_scope(), "test/add_numbers", invalid_open_input)
         .await;
 
     assert!(result.is_err(), "Should fail with invalid open_input");
@@ -555,10 +559,14 @@ async fn test_open_session_with_initial_input() {
     let registry = ToolRegistry::new();
     registry.register(AddNumbersTool).unwrap();
 
+    let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
+    ));
+
     // Test opening a session with empty initial_input (for unit type OpenInput)
     let empty_input = json!({});
     let session_id = registry
-        .open_session("test/add_numbers", empty_input)
+        .open_session(scope.as_scope(), "test/add_numbers", empty_input)
         .await
         .unwrap();
 

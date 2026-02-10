@@ -5,12 +5,12 @@
 //! the pipeline. No fallback to generate context_id—construction and passing are
 //! controlled by types.
 //!
-//! **Runtime context is exposed only via the [`InvocationContext`] trait.** Code that
-//! needs the current scope must use a type implementing that trait (e.g. [`task_local_context()`]).
-//! Missing scope is a failure condition; the trait returns `Result`, not `Option`.
+//! Runtime context must be threaded explicitly at runtime boundaries.
+//! Missing scope is a failure condition; APIs return `Result`, not `Option`.
 
-use crate::error::{BamlRtError, Result};
+use crate::error::Result;
 use crate::ids::{AgentId, ContextId, MessageId, TaskId};
+use baml_rt_id::ExternalId;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -20,34 +20,16 @@ pub const NO_SCOPE_MESSAGE: &str =
     "No invocation scope set. Run inside context::with_scope(scope, ...) (e.g. from transport).";
 
 /// Trait for obtaining the current invocation scope. Runtime context is exposed only through
-/// this interface. Missing scope is a failure; use `current_scope()?` or handle the error.
+/// this interface. Missing scope is a failure; use `scope()?` or handle the error.
 pub trait InvocationContext {
     /// Returns the current invocation scope when running inside `with_scope(scope, ...)`.
     /// Returns `Err` when no scope is set—downstream does not have to handle optionality.
-    fn current_scope(&self) -> Result<RuntimeScope>;
-}
-
-/// Task-local invocation context: reads the scope from the tokio task-local set by
-/// [`with_scope`]. Use [`task_local_context()`] to obtain an instance.
-#[derive(Debug, Clone, Copy)]
-pub struct TaskLocalContext;
-
-impl InvocationContext for TaskLocalContext {
-    fn current_scope(&self) -> Result<RuntimeScope> {
-        require_scope()
-    }
-}
-
-/// Returns the task-local invocation context. Use this when you need to pass an
-/// [`InvocationContext`] to code that requires the current scope (e.g. `open_tool_session`).
-/// Scope is set by running inside [`with_scope`](with_scope) (e.g. from the transport).
-pub fn task_local_context() -> TaskLocalContext {
-    TaskLocalContext
+    fn scope(&self) -> Result<RuntimeScope>;
 }
 
 /// Wrapper that carries a reference and an invocation scope. Use when an API must run
 /// with a specific scope (e.g. tool execution, session send/next). Implements
-/// [`InvocationContext`] so scope-dependent code can call `.current_scope()` and get
+/// [`InvocationContext`] so scope-dependent code can call `.scope()` and get
 /// the stored scope without touching task-local or globals.
 #[derive(Debug, Clone)]
 pub struct Scoped<'a, T> {
@@ -62,31 +44,80 @@ impl<'a, T> Scoped<'a, T> {
 }
 
 impl<T> InvocationContext for Scoped<'_, T> {
-    fn current_scope(&self) -> Result<RuntimeScope> {
+    fn scope(&self) -> Result<RuntimeScope> {
         Ok(self.scope.clone())
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct RuntimeScope {
-    pub context_id: ContextId,
-    pub agent_id: AgentId,
-    pub message_id: Option<MessageId>,
-    pub task_id: Option<TaskId>,
+/// Discriminated union for invocation scope: message-level or task-level.
+/// No standalone variant; context kind is explicit in the type.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RuntimeScope {
+    MessageScope {
+        context_id: ContextId,
+        agent_id: AgentId,
+        message_id: MessageId,
+    },
+    TaskScope {
+        context_id: ContextId,
+        agent_id: AgentId,
+        message_id: MessageId,
+        task_id: TaskId,
+    },
 }
 
 impl RuntimeScope {
-    pub fn new(
+    /// Build scope for a message-level invocation (no task).
+    pub fn message_scope(context_id: ContextId, agent_id: AgentId, message_id: MessageId) -> Self {
+        Self::MessageScope {
+            context_id,
+            agent_id,
+            message_id,
+        }
+    }
+
+    /// Build scope for a task-level invocation.
+    pub fn task_scope(
         context_id: ContextId,
         agent_id: AgentId,
-        message_id: Option<MessageId>,
-        task_id: Option<TaskId>,
+        message_id: MessageId,
+        task_id: TaskId,
     ) -> Self {
-        Self {
+        Self::TaskScope {
             context_id,
             agent_id,
             message_id,
             task_id,
+        }
+    }
+
+    pub fn context_id(&self) -> &ContextId {
+        match self {
+            Self::MessageScope { context_id, .. } | Self::TaskScope { context_id, .. } => {
+                context_id
+            }
+        }
+    }
+
+    pub fn agent_id(&self) -> &AgentId {
+        match self {
+            Self::MessageScope { agent_id, .. } | Self::TaskScope { agent_id, .. } => agent_id,
+        }
+    }
+
+    pub fn message_id(&self) -> &MessageId {
+        match self {
+            Self::MessageScope { message_id, .. } | Self::TaskScope { message_id, .. } => {
+                message_id
+            }
+        }
+    }
+
+    pub fn task_id_opt(&self) -> Option<&TaskId> {
+        match self {
+            Self::MessageScope { .. } => None,
+            Self::TaskScope { task_id, .. } => Some(task_id),
         }
     }
 }
@@ -109,15 +140,34 @@ impl InvocationScope {
         Self(scope)
     }
 
-    /// Build a standalone scope for CLI/test or other non-request paths that still need
-    /// to run scope-dependent JS (e.g. direct invoke_js_function). Uses a generated
-    /// context_id and no message/task ids.
-    pub fn standalone(agent_id: AgentId) -> Self {
-        Self(RuntimeScope::new(
-            generate_context_id(),
-            agent_id,
-            None,
-            None,
+    /// Synthetic message scope for CLI/test only. Uses generated context_id and message_id.
+    /// Do not use in runtime request paths.
+    pub fn synthetic_message(agent_id: AgentId) -> Self {
+        let counter = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let context_id = ContextId::new(millis, counter);
+        let message_id = MessageId::from_external(ExternalId::new(format!("syn-msg-{}", counter)));
+        Self(RuntimeScope::message_scope(
+            context_id, agent_id, message_id,
+        ))
+    }
+
+    /// Synthetic task scope for CLI/test only. Uses generated context_id, message_id, and task_id.
+    /// Do not use in runtime request paths.
+    pub fn synthetic_task(agent_id: AgentId) -> Self {
+        let counter = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let context_id = ContextId::new(millis, counter);
+        let message_id = MessageId::from_external(ExternalId::new(format!("syn-msg-{}", counter)));
+        let task_id = TaskId::from_external(ExternalId::new(format!("syn-task-{}", counter)));
+        Self(RuntimeScope::task_scope(
+            context_id, agent_id, message_id, task_id,
         ))
     }
 
@@ -149,90 +199,9 @@ pub fn generate_context_id() -> ContextId {
     ContextId::new(millis, counter)
 }
 
-/// Requires the task-local scope; not public. Use [`InvocationContext::current_scope`] via [`task_local_context()`] instead.
-/// Missing scope is a failure—returns `Err`, no optionality for downstream.
-pub(crate) fn require_scope() -> Result<RuntimeScope> {
-    RUNTIME_SCOPE
-        .try_with(|scope| scope.clone())
-        .map_err(|_| BamlRtError::InvalidArgument(NO_SCOPE_MESSAGE.to_string()))
-}
-
-/// Read the current context_id when running inside `with_scope(scope, ...)`.
-pub fn current_context_id() -> Option<ContextId> {
-    task_local_context()
-        .current_scope()
-        .ok()
-        .map(|scope| scope.context_id)
-}
-
-pub fn current_agent_id() -> Option<AgentId> {
-    task_local_context()
-        .current_scope()
-        .ok()
-        .map(|scope| scope.agent_id)
-}
-
-pub fn current_message_id() -> Option<MessageId> {
-    task_local_context()
-        .current_scope()
-        .ok()
-        .and_then(|scope| scope.message_id)
-}
-
-pub fn current_task_id() -> Option<TaskId> {
-    task_local_context()
-        .current_scope()
-        .ok()
-        .and_then(|scope| scope.task_id)
-}
-
-/// Context ID for request-entry paths (e.g. store) when no scope is set. Prefer
-/// requiring scope and using [`InvocationContext::current_scope`] in runtime/tool paths.
-pub fn context_id_or_generated() -> ContextId {
-    current_context_id().unwrap_or_else(generate_context_id)
-}
-
 pub async fn with_scope<F, T>(scope: RuntimeScope, fut: F) -> T
 where
     F: std::future::Future<Output = T>,
 {
     RUNTIME_SCOPE.scope(scope, fut).await
-}
-
-pub async fn with_context_id<F, T>(id: ContextId, fut: F) -> Result<T>
-where
-    F: std::future::Future<Output = T>,
-{
-    let mut scope = task_local_context().current_scope()?;
-    scope.context_id = id.clone();
-    Ok(with_scope(scope, fut).await)
-}
-
-pub async fn with_message_id<F, T>(id: MessageId, fut: F) -> Result<T>
-where
-    F: std::future::Future<Output = T>,
-{
-    let scope = task_local_context().current_scope()?;
-    let scope = RuntimeScope::new(scope.context_id, scope.agent_id, Some(id), scope.task_id);
-    Ok(with_scope(scope, fut).await)
-}
-
-pub async fn with_task_id<F, T>(id: TaskId, fut: F) -> Result<T>
-where
-    F: std::future::Future<Output = T>,
-{
-    let scope = task_local_context().current_scope()?;
-    let scope = RuntimeScope::new(scope.context_id, scope.agent_id, scope.message_id, Some(id));
-    Ok(with_scope(scope, fut).await)
-}
-
-/// Run `fut` with the current scope's context_id/message_id/task_id but with
-/// `agent_id` set to `id`. Fails if no invocation scope is set (no implicit scope creation).
-pub async fn with_agent_id<F, T>(id: AgentId, fut: F) -> Result<T>
-where
-    F: std::future::Future<Output = T>,
-{
-    let mut scope = task_local_context().current_scope()?;
-    scope.agent_id = id;
-    Ok(with_scope(scope, fut).await)
 }

@@ -1,0 +1,9 @@
+{
+  "version": "1.0.0",
+  "name": "conversational-persona-demo",
+  "description": "Fixture: simple conversational BAML persona agent with no tools",
+  "entry_point": "src/index.ts",
+  "signature": "conversational-persona-demo@1.0.0",
+  "runtime_version": "0.1.0",
+  "tools": []
+}

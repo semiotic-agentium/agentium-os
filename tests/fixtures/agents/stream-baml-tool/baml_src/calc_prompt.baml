@@ -1,5 +1,5 @@
 // Fixture: BAML tool streaming. Prompt returns a calculation session plan (2+3 default).
-function ChooseCalcTool(user_message: string) -> InternalDevCalculateSessionPlan {
+function ChooseCalcTool(user_message: string) -> SupportCalculateSessionPlan {
   client DefaultClient
   prompt #"
     The user says: {{ user_message }}

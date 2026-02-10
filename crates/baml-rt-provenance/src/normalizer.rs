@@ -720,6 +720,10 @@ fn normalize_event_with_registry(
         } => {
             let message_id = message_entity_id(id);
             let mut message_attrs = base_attrs(event);
+            message_attrs.insert(
+                a2a::MESSAGE_ID.to_string(),
+                Value::String(id.as_str().to_string()),
+            );
             message_attrs.insert(a2a::ROLE.to_string(), Value::String(role.clone()));
             let content_values: Vec<Value> = content
                 .iter()
@@ -769,32 +773,22 @@ fn normalize_event_with_registry(
                 },
             );
 
-            // Look up executing agent by agent_id from metadata - REQUIRED, no fallbacks
-            let agent_id = if let Some(metadata) = metadata {
-                // agent_id is REQUIRED in metadata
-                let agent_id_str =
-                    metadata
-                        .get("agent_id")
-                        .ok_or_else(|| ProvenanceError::MissingField {
-                            event_id: event.id().as_str().to_string(),
-                            field: "metadata.agent_id".to_string(),
-                        })?;
-                parse_agent_id(event, agent_id_str)?
-            } else {
-                return Err(ProvenanceError::MissingField {
-                    event_id: event.id().as_str().to_string(),
-                    field: "metadata".to_string(),
-                });
-            };
-
-            let executing_agent_id =
-                get_agent_runtime_instance(&doc, &agent_id, agent_registry, &mut agent_labels)?;
-            insert_was_associated_with(
-                &mut doc,
-                processing_id.clone(),
-                executing_agent_id,
-                Some(prov_roles::EXECUTING_AGENT.to_string()),
-            );
+            // metadata is optional for A2A messages; only associate executing agent when present.
+            let agent_id = metadata
+                .as_ref()
+                .and_then(|m| m.get("agent_id"))
+                .map(|raw| parse_agent_id(event, raw))
+                .transpose()?;
+            if let Some(agent_id) = agent_id.as_ref() {
+                let executing_agent_id =
+                    get_agent_runtime_instance(&doc, agent_id, agent_registry, &mut agent_labels)?;
+                insert_was_associated_with(
+                    &mut doc,
+                    processing_id.clone(),
+                    executing_agent_id,
+                    Some(prov_roles::EXECUTING_AGENT.to_string()),
+                );
+            }
 
             let invoking_agent_id = runner_runtime_instance_id();
             ensure_runner_runtime_instance(&mut doc);
@@ -831,11 +825,13 @@ fn normalize_event_with_registry(
                 let task_entity_id = task_entity_id(task_id);
                 if let Some(entity) = doc.entity(&task_entity_id) {
                     let mut attrs = entity.attributes.clone();
-                    // Set agent_id on task entity from message metadata if not already set
-                    if !attrs.contains_key(a2a::AGENT_ID) {
+                    // Set agent_id on task entity when available from message metadata.
+                    if !attrs.contains_key(a2a::AGENT_ID)
+                        && let Some(agent_id_ref) = agent_id.as_ref()
+                    {
                         attrs.insert(
                             a2a::AGENT_ID.to_string(),
-                            Value::String(agent_id.as_str().to_string()),
+                            Value::String(agent_id_ref.as_str().to_string()),
                         );
                         doc.insert_entity(
                             task_entity_id.clone(),
@@ -889,13 +885,23 @@ fn normalize_event_with_registry(
 
 pub fn validate_event(event: &ProvEvent) -> Result<()> {
     match event.data() {
-        ProvEventData::LlmCallStarted { scope, .. }
-        | ProvEventData::LlmCallCompleted { scope, .. } => {
-            validate_call_scope(event, scope, "llm call")?;
+        ProvEventData::LlmCallStarted {
+            scope, metadata, ..
         }
-        ProvEventData::ToolCallStarted { scope, .. }
-        | ProvEventData::ToolCallCompleted { scope, .. } => {
+        | ProvEventData::LlmCallCompleted {
+            scope, metadata, ..
+        } => {
+            validate_call_scope(event, scope, "llm call")?;
+            validate_required_call_metadata(event, scope, metadata, "llm call")?;
+        }
+        ProvEventData::ToolCallStarted {
+            scope, metadata, ..
+        }
+        | ProvEventData::ToolCallCompleted {
+            scope, metadata, ..
+        } => {
             validate_call_scope(event, scope, "tool call")?;
+            validate_required_call_metadata(event, scope, metadata, "tool call")?;
         }
         _ => {}
     }
@@ -927,6 +933,41 @@ fn validate_call_scope(event: &ProvEvent, scope: &CallScope, call_kind: &str) ->
             }
         }
     }
+}
+
+fn validate_required_call_metadata(
+    event: &ProvEvent,
+    scope: &CallScope,
+    metadata: &Value,
+    call_kind: &str,
+) -> Result<()> {
+    let event_id = event.id().as_str().to_string();
+    let obj = metadata
+        .as_object()
+        .ok_or_else(|| ProvenanceError::MissingField {
+            event_id: event_id.clone(),
+            field: "metadata".to_string(),
+        })?;
+
+    let agent_id = obj
+        .get("agent_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ProvenanceError::MissingField {
+            event_id: event_id.clone(),
+            field: "metadata.agent_id".to_string(),
+        })?;
+    parse_agent_id(event, agent_id)?;
+
+    if matches!(scope, CallScope::Message { .. })
+        && obj.get("message_id").and_then(|v| v.as_str()).is_none()
+    {
+        return Err(ProvenanceError::MissingField {
+            event_id,
+            field: format!("metadata.message_id ({call_kind})"),
+        });
+    }
+
+    Ok(())
 }
 
 fn base_attrs(event: &ProvEvent) -> HashMap<String, Value> {

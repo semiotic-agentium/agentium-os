@@ -9,6 +9,7 @@ use crate::tool_fsm::{ToolFailure, ToolSession, ToolSessionError, ToolSessionId,
 use crate::tool_schema::{ToolType, json_schema_value};
 use crate::ts_gen::render_tool_typescript;
 use async_trait::async_trait;
+use baml_rt_core::context::RuntimeScope;
 use baml_rt_core::{BamlRtError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -639,6 +640,7 @@ pub enum ToolOrigin {
 pub struct ToolSessionContext {
     pub session_id: ToolSessionId,
     pub tool_name: ToolName,
+    pub scope: RuntimeScope,
 }
 
 #[async_trait]
@@ -727,10 +729,11 @@ pub struct ToolSessionHandle<State: SessionState> {
 impl ToolSessionHandle<AwaitingInput> {
     pub async fn open(
         registry: Arc<ToolRegistry>,
+        scope: &RuntimeScope,
         name: &str,
         open_input: Value,
     ) -> Result<ToolSessionHandle<AwaitingInput>> {
-        let session_id = registry.open_session(name, open_input).await?;
+        let session_id = registry.open_session(scope, name, open_input).await?;
         Ok(ToolSessionHandle {
             id: session_id,
             registry,
@@ -1254,7 +1257,12 @@ impl ToolRegistry {
     }
 
     /// Open a tool session and return its session id.
-    pub async fn open_session(&self, name: &str, open_input: Value) -> Result<ToolSessionId> {
+    pub async fn open_session(
+        &self,
+        scope: &RuntimeScope,
+        name: &str,
+        open_input: Value,
+    ) -> Result<ToolSessionId> {
         let start = std::time::Instant::now();
         let parsed = ToolName::parse(name)?;
         let session_id = ToolSessionId::random();
@@ -1281,6 +1289,7 @@ impl ToolRegistry {
         let ctx = ToolSessionContext {
             session_id: session_id.clone(),
             tool_name: metadata.name.clone(),
+            scope: scope.clone(),
         };
         let session = handler.open_session(ctx, open_input).await?;
         {
@@ -1400,7 +1409,7 @@ impl ToolRegistry {
     }
 
     /// Execute a tool function by name (single-shot convenience).
-    pub async fn execute(&self, name: &str, args: Value) -> Result<Value> {
+    pub async fn execute(&self, scope: &RuntimeScope, name: &str, args: Value) -> Result<Value> {
         let start = std::time::Instant::now();
         let span = crate::spans::execute_tool(name);
         let _guard = span.enter();
@@ -1428,7 +1437,7 @@ impl ToolRegistry {
 
         // For execute, open_input is always () (empty object)
         let session_id = self
-            .open_session(&parsed.to_string(), empty_open_input())
+            .open_session(scope, &parsed.to_string(), empty_open_input())
             .await?;
         self.session_send(&session_id, args).await?;
         let result = match self.session_next(&session_id).await? {
