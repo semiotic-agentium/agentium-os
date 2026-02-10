@@ -75,10 +75,9 @@ fn enforce_tool_access(tool_name: &str, allowlist: &Option<HashSet<ToolAccess>>)
                 )));
             }
         } else {
-            warn!(
-                tool = tool_name,
-                "Tool access not declared; allowlist is set but tool was allowed"
-            );
+            return Err(BamlRtError::InvalidArgument(format!(
+                "Tool '{tool_name}' has no declared access; BAML_TOOL_ACCESS_ALLOWLIST requires explicit access"
+            )));
         }
     }
     Ok(())
