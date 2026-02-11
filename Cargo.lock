@@ -1219,6 +1219,7 @@ dependencies = [
 name = "baml-rt-builder"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "baml-rt",
  "baml-rt-core",
@@ -1226,6 +1227,7 @@ dependencies = [
  "baml-rt-quickjs",
  "baml-rt-tools",
  "baml-runtime",
+ "baml-types",
  "clap",
  "flate2",
  "genco",

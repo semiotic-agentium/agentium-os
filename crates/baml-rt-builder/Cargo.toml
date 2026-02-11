@@ -15,7 +15,9 @@ baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-quickjs = { path = "../baml-rt-quickjs" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 baml-runtime = { workspace = true }
+baml-types = { workspace = true }
 internal-baml-core = { workspace = true }
+anyhow = { workspace = true }
 serde_json = { workspace = true }
 oxc_parser = { workspace = true }
 oxc_allocator = { workspace = true }

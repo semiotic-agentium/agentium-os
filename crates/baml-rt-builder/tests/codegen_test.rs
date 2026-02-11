@@ -4,11 +4,16 @@
 //! during development and catching regressions.
 
 use baml_rt_builder::builder::{
-    baml_gen::render_baml_tool_interfaces, schema_to_baml::generate_baml_types_from_schemas,
-    ts_gen::render_ts_declarations,
+    baml_gen::render_baml_tool_interfaces,
+    baml_signature_gen::extract_baml_signatures,
+    schema_to_baml::generate_baml_types_from_schemas,
+    ts_gen::{load_manifest_tools, render_ts_declarations},
 };
+use baml_runtime::BamlRuntime;
+use internal_baml_core::feature_flags::FeatureFlags;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 // ---------------------------------------------------------------------------
 // ClickUp tool codegen — validates that schemars 1.x nullable types
@@ -52,6 +57,7 @@ fn test_schema_to_baml_nullable_types() {
     insta::assert_snapshot!("baml_nullable_types", baml_output);
 }
 
+// Single-tool BAML interface snapshot. For multiple tools, add a test with a distinct tool list.
 #[test]
 fn test_baml_tool_interface_generation() {
     let tool_names = vec!["support/calculate".to_string()];
@@ -61,22 +67,37 @@ fn test_baml_tool_interface_generation() {
     insta::assert_snapshot!("baml_tool_interfaces", baml_output);
 }
 
-#[test]
-fn test_baml_tool_interface_with_multiple_tools() {
-    // Test with multiple tools (if we had more)
-    let tool_names = vec!["support/calculate".to_string()];
-    let baml_output =
-        render_baml_tool_interfaces(&tool_names).expect("Should generate BAML tool interfaces");
-
-    insta::assert_snapshot!("baml_tool_interfaces_multiple", baml_output);
+fn fixture_baml_src(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("workspace root")
+        .join("tests")
+        .join("fixtures")
+        .join("agents")
+        .join(name)
+        .join("baml_src")
 }
 
-#[test]
-fn test_typescript_declaration_generation() {
-    let tool_names = vec!["support/calculate".to_string()];
-    let function_names = vec!["ChooseRiteTool".to_string()];
+// Full TS output (typed BAML functions + tool declarations). BAML→TS behavior is also
+// asserted in baml_to_ts_test.rs (snapshot + typed/tool assertions).
+#[tokio::test]
+async fn test_typescript_declaration_generation() {
+    let baml_src = fixture_baml_src("stream-baml-tool");
+    if !baml_src.exists() {
+        eprintln!(
+            "Skipping: fixture stream-baml-tool not found at {}",
+            baml_src.display()
+        );
+        return;
+    }
+    let env_vars: HashMap<String, String> = HashMap::new();
+    let runtime = BamlRuntime::from_directory(&baml_src, env_vars, FeatureFlags::default())
+        .expect("load BAML runtime from fixture");
+    let ir_signature = extract_baml_signatures(&runtime).expect("extract IR signatures");
+    let tool_names = load_manifest_tools(&baml_src).expect("load manifest tools");
 
-    let ts_output = render_ts_declarations(&function_names, &tool_names)
+    let ts_output = render_ts_declarations(&ir_signature, &tool_names)
         .expect("Should generate TypeScript declarations");
 
     insta::assert_snapshot!("typescript_declarations", ts_output);
@@ -226,17 +247,6 @@ fn test_baml_generation_with_unit_open_input() {
     let open_step_section = &baml_output[open_step_start..open_step_start + open_step_end];
 
     insta::assert_snapshot!("baml_open_step_unit_input", open_step_section);
-}
-
-#[test]
-fn test_typescript_generation_includes_tool_functions() {
-    let tool_names = vec!["support/calculate".to_string()];
-    let function_names = vec!["TestFunction".to_string()];
-
-    let ts_output = render_ts_declarations(&function_names, &tool_names)
-        .expect("Should generate TypeScript declarations");
-
-    insta::assert_snapshot!("typescript_tool_functions", ts_output);
 }
 
 #[test]
