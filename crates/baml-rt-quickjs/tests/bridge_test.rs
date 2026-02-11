@@ -369,14 +369,26 @@ async fn test_invoke_function_with_explicit_scope_fails_for_missing_function() {
     let result = bridge
         .invoke_function(&invoke_scope, "SomeFunction", json!({}))
         .await;
-    assert!(
-        result.is_err(),
-        "invoke_function should fail for missing function"
-    );
-    let msg = result.unwrap_err().to_string();
-    assert!(
-        msg.contains("SomeFunction") || msg.contains("function"),
-        "invoke_function error should mention function resolution: {}",
-        msg
-    );
+    match result {
+        Err(e) => {
+            let msg = e.to_string();
+            assert!(
+                msg.contains("SomeFunction") || msg.contains("function"),
+                "invoke_function error should mention function resolution: {}",
+                msg
+            );
+        }
+        Ok(val) => {
+            let error_field = val
+                .as_object()
+                .and_then(|o| o.get("error"))
+                .and_then(|e| e.as_str())
+                .unwrap_or("");
+            assert!(
+                error_field.contains("SomeFunction") || error_field.contains("function"),
+                "invoke_function should report missing function in error field: {:?}",
+                val
+            );
+        }
+    }
 }

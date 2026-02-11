@@ -932,7 +932,8 @@ impl BamlRuntimeManager {
     /// # Example
     /// ```rust,no_run
     /// use baml_rt::baml::BamlRuntimeManager;
-    /// use baml_rt::tools::BamlTool;
+    /// use baml_rt_tools::tools::BamlTool;
+    /// use baml_rt_tools::{BundleType, Support};
     /// use async_trait::async_trait;
     /// use schemars::JsonSchema;
     /// use serde::{Deserialize, Serialize};
@@ -952,7 +953,9 @@ impl BamlRuntimeManager {
     ///
     /// #[async_trait]
     /// impl BamlTool for MyTool {
-    ///     const NAME: &'static str = "my_tool";
+    ///     type Bundle = Support;
+    ///     const LOCAL_NAME: &'static str = "my_tool";
+    ///     type OpenInput = ();
     ///     type Input = MyInput;
     ///     type Output = MyOutput;
     ///     fn description(&self) -> &'static str { "Does something" }
@@ -1087,7 +1090,8 @@ impl BamlRuntimeManager {
     /// # Example
     /// ```rust,no_run
     /// # use baml_rt::baml::BamlRuntimeManager;
-    /// # use baml_rt::tools::BamlTool;
+    /// # use baml_rt_tools::{BundleType, Support};
+    /// # use baml_rt_tools::tools::BamlTool;
     /// # use async_trait::async_trait;
     /// # use schemars::JsonSchema;
     /// # use serde::{Deserialize, Serialize};
@@ -1101,7 +1105,9 @@ impl BamlRuntimeManager {
     /// # struct WeatherOutput { temperature: String }
     /// # #[async_trait]
     /// # impl BamlTool for WeatherTool {
-    /// #     const NAME: &'static str = "support/get_weather";
+    /// #     type Bundle = Support;
+    /// #     const LOCAL_NAME: &'static str = "get_weather";
+    /// #     type OpenInput = ();
     /// #     type Input = WeatherInput;
     /// #     type Output = WeatherOutput;
     /// #     fn description(&self) -> &'static str { "" }
