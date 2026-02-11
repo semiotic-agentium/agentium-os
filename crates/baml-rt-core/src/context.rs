@@ -205,3 +205,11 @@ where
 {
     RUNTIME_SCOPE.scope(scope, fut).await
 }
+
+/// Returns the current runtime scope when running inside `with_scope`.
+/// Errors when no scope is set.
+pub fn current_scope() -> Result<RuntimeScope> {
+    RUNTIME_SCOPE
+        .try_with(|scope| scope.clone())
+        .map_err(|_| crate::error::BamlRtError::InvalidArgument(NO_SCOPE_MESSAGE.to_string()))
+}

@@ -24,11 +24,29 @@ enum ToolSessionOp {
   Abort @description("Close the session with an error. Use this if something went wrong and you need to terminate the session.")
 }
 
-// Domain types generated from JSON schemas
+// Domain types generated from #[derive(BamlType)]
+/// Which Notion action to perform.
 enum NotionAction {
   SearchPages
   GetPage
   GetPageBlocks
+}
+
+/// Input for the Notion tool (single tool with action discriminator).
+class NotionInput {
+  action NotionAction
+  query string?
+  start_cursor string?
+  page_size int?
+  page_id string?
+  block_id string?
+}
+
+class NotionPageSummary {
+  id string
+  title string
+  url string
+  last_edited_time string?
 }
 
 class NotionBlockSummary {
@@ -38,13 +56,9 @@ class NotionBlockSummary {
   has_children bool
 }
 
-class NotionInput {
-  action NotionAction
-  query string?
-  start_cursor string?
-  page_size int?
-  page_id string?
-  block_id string?
+class NotionSource {
+  page_id string
+  url string
 }
 
 class NotionOutput {
@@ -55,19 +69,6 @@ class NotionOutput {
   sources NotionSource[]
   message string
 }
-
-class NotionPageSummary {
-  id string
-  title string
-  url string
-  last_edited_time string?
-}
-
-class NotionSource {
-  page_id string
-  url string
-}
-
 
 class SupportNotionOpenStep {
   op "Open"

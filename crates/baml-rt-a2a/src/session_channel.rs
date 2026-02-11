@@ -9,7 +9,7 @@
 //! - **Worker:** Every HandleA2a runs with_scope(msg.scope, ...); exactly one response (stream of values or error) per message.
 
 use crate::A2aRequestHandler;
-use baml_rt_core::context::RuntimeScope;
+use baml_rt_core::context::{self, RuntimeScope};
 use baml_rt_observability::{metrics, spans};
 use baml_rt_tools::ToolSessionId;
 use serde_json::Value;
@@ -53,8 +53,7 @@ pub enum RuntimeWorkerMsg {
 }
 
 /// Runtime worker loop: a tokio task. Receives HandleA2a and delegates to
-/// `handler.run_handle_a2a(...)`, which enqueues work and posts a fire-and-forget
-/// bridge drain on the QuickJS worker event loop.
+/// `handler.handle_a2a(...)` inside an explicit scope.
 pub async fn run_runtime_worker(
     handler: Arc<dyn A2aRequestHandler>,
     mut rx: mpsc::UnboundedReceiver<RuntimeWorkerMsg>,
@@ -69,7 +68,9 @@ pub async fn run_runtime_worker(
                 response_tx,
             } => {
                 let start = Instant::now();
-                let outcome = handler.run_handle_a2a(scope, request).await;
+                let outcome =
+                    context::with_scope(scope.clone(), async { handler.handle_a2a(request).await })
+                        .await;
                 let duration = start.elapsed();
                 let result_str = if outcome.is_ok() { "success" } else { "error" };
                 metrics::record_a2a_worker_handle(result_str, duration);

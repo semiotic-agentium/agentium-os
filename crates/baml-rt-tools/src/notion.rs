@@ -6,6 +6,8 @@ use crate::bundles::Support;
 use crate::register_tool_metadata;
 use crate::tools::{BamlTool, ToolAccess, ToolFunctionMetadata, ToolSecretRequirement};
 use async_trait::async_trait;
+use baml_derive::BamlType;
+use baml_derive_core::BamlType as BamlTypeTrait;
 use baml_rt_core::{BamlRtError, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -20,7 +22,7 @@ pub const NOTION_VERSION: &str = "2025-09-03";
 // Input types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct NotionSearchPagesInput {
     pub query: Option<String>,
@@ -29,7 +31,7 @@ pub struct NotionSearchPagesInput {
 }
 
 /// Which Notion action to perform.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub enum NotionAction {
     SearchPages,
@@ -38,7 +40,7 @@ pub enum NotionAction {
 }
 
 /// Input for the Notion tool (single tool with action discriminator).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct NotionInput {
     pub action: NotionAction,
@@ -49,13 +51,13 @@ pub struct NotionInput {
     pub block_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct NotionGetPageInput {
     pub page_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct NotionGetPageBlocksInput {
     pub block_id: String,
@@ -67,7 +69,7 @@ pub struct NotionGetPageBlocksInput {
 // Output types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct NotionPageSummary {
     pub id: String,
@@ -76,7 +78,7 @@ pub struct NotionPageSummary {
     pub last_edited_time: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct NotionBlockSummary {
     pub id: String,
@@ -85,14 +87,14 @@ pub struct NotionBlockSummary {
     pub has_children: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct NotionSource {
     pub page_id: String,
     pub url: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct NotionOutput {
     pub pages: Vec<NotionPageSummary>,
@@ -720,11 +722,20 @@ pub fn notion_search_pages_metadata() -> ToolFunctionMetadata {
     use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
     let (name, class_name) = parse_tool_name_and_class("support/notionSearchPages")
         .expect("support/notionSearchPages is a compile-time constant");
+    let baml_decl = [
+        NotionSearchPagesInput::baml_decl(),
+        NotionPageSummary::baml_decl(),
+        NotionBlockSummary::baml_decl(),
+        NotionSource::baml_decl(),
+        NotionOutput::baml_decl(),
+    ]
+    .join("\n\n");
     TypeBasedMetadataBuilder::<(), NotionSearchPagesInput, NotionOutput>::new(
         name,
         class_name,
         "Search Notion pages by query.".to_string(),
     )
+    .with_baml_decl(baml_decl)
     .with_tags(vec![
         "support".to_string(),
         "notion".to_string(),
@@ -748,11 +759,21 @@ pub fn notion_metadata() -> ToolFunctionMetadata {
     if let Some(decl) = ts_decl::<NotionAction>() {
         extra_ts_decls.push(decl);
     }
+    let baml_decl = [
+        NotionAction::baml_decl(),
+        NotionInput::baml_decl(),
+        NotionPageSummary::baml_decl(),
+        NotionBlockSummary::baml_decl(),
+        NotionSource::baml_decl(),
+        NotionOutput::baml_decl(),
+    ]
+    .join("\n\n");
     TypeBasedMetadataBuilder::<(), NotionInput, NotionOutput>::new(
         name,
         class_name,
         "Read-only Notion access (search pages, get page, get page blocks).".to_string(),
     )
+    .with_baml_decl(baml_decl)
     .with_extra_ts_decls(extra_ts_decls)
     .with_tags(vec![
         "support".to_string(),
@@ -772,11 +793,20 @@ pub fn notion_get_page_metadata() -> ToolFunctionMetadata {
     use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
     let (name, class_name) = parse_tool_name_and_class("support/notionGetPage")
         .expect("support/notionGetPage is a compile-time constant");
+    let baml_decl = [
+        NotionGetPageInput::baml_decl(),
+        NotionPageSummary::baml_decl(),
+        NotionBlockSummary::baml_decl(),
+        NotionSource::baml_decl(),
+        NotionOutput::baml_decl(),
+    ]
+    .join("\n\n");
     TypeBasedMetadataBuilder::<(), NotionGetPageInput, NotionOutput>::new(
         name,
         class_name,
         "Fetch a Notion page by id.".to_string(),
     )
+    .with_baml_decl(baml_decl)
     .with_tags(vec![
         "support".to_string(),
         "notion".to_string(),
@@ -795,11 +825,20 @@ pub fn notion_get_page_blocks_metadata() -> ToolFunctionMetadata {
     use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
     let (name, class_name) = parse_tool_name_and_class("support/notionGetPageBlocks")
         .expect("support/notionGetPageBlocks is a compile-time constant");
+    let baml_decl = [
+        NotionGetPageBlocksInput::baml_decl(),
+        NotionPageSummary::baml_decl(),
+        NotionBlockSummary::baml_decl(),
+        NotionSource::baml_decl(),
+        NotionOutput::baml_decl(),
+    ]
+    .join("\n\n");
     TypeBasedMetadataBuilder::<(), NotionGetPageBlocksInput, NotionOutput>::new(
         name,
         class_name,
         "Retrieve Notion block children for a page or block.".to_string(),
     )
+    .with_baml_decl(baml_decl)
     .with_tags(vec![
         "support".to_string(),
         "notion".to_string(),

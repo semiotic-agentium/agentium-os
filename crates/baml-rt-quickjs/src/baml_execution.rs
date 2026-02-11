@@ -255,7 +255,7 @@ impl BamlExecutor {
         }
 
         if let Some(tool_result) =
-            maybe_execute_tool_from_result(&self.tool_registry, scope, &json_value).await?
+            maybe_execute_tool_from_result(&self.tool_registry, &json_value).await?
         {
             return Ok(tool_result);
         }
@@ -417,14 +417,13 @@ impl BamlExecutor {
 
 async fn maybe_execute_tool_from_result(
     tool_registry: &Arc<ToolRegistry>,
-    scope: &context::RuntimeScope,
     result: &Value,
 ) -> Result<Option<Value>> {
     let Some((tool_name, tool_args)) = extract_tool_call(result)? else {
         return Ok(None);
     };
 
-    let tool_result = tool_registry.execute(scope, &tool_name, tool_args).await?;
+    let tool_result = tool_registry.execute(&tool_name, tool_args).await?;
     Ok(Some(tool_result))
 }
 
@@ -527,20 +526,19 @@ mod tests {
 
     #[tokio::test]
     async fn executes_tool_when_explicit_variant_is_present() {
-        use baml_rt_core::context::InvocationScope;
         use baml_rt_core::ids::{AgentId, UuidId};
         let registry = Arc::new(ToolRegistry::new());
         registry.register(EchoTool).unwrap();
         let agent_id =
             AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000040").unwrap());
-        let scope = InvocationScope::synthetic_message(agent_id);
+        let _scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id);
 
         let result = json!({
             "tool_name": "test/echo_tool",
             "message": "hello"
         });
 
-        let tool_result = maybe_execute_tool_from_result(&registry, scope.as_scope(), &result)
+        let tool_result = maybe_execute_tool_from_result(&registry, &result)
             .await
             .unwrap()
             .expect("expected tool execution");
@@ -550,14 +548,13 @@ mod tests {
 
     #[tokio::test]
     async fn leaves_non_tool_results_untouched() {
-        use baml_rt_core::context::InvocationScope;
         use baml_rt_core::ids::{AgentId, UuidId};
         let registry = Arc::new(ToolRegistry::new());
         let agent_id =
             AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000041").unwrap());
-        let scope = InvocationScope::synthetic_message(agent_id);
+        let _scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id);
         let result = json!({ "value": "not a tool" });
-        let tool_result = maybe_execute_tool_from_result(&registry, scope.as_scope(), &result)
+        let tool_result = maybe_execute_tool_from_result(&registry, &result)
             .await
             .unwrap();
 

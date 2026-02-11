@@ -74,6 +74,7 @@ async fn tool_index_creates_nodes_and_fulltext() {
             ts_decl: None,
         },
         baml_decl: None,
+        extra_ts_decls: Vec::new(),
         tags: vec!["weather".to_string(), "forecast".to_string()],
         secret_requirements: vec![ToolSecretRequirement {
             name: "WEATHER_KEY".to_string(),

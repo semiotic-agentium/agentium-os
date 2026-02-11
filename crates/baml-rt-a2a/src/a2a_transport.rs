@@ -19,12 +19,14 @@ use crate::stream_normalizer::{A2aStreamNormalizer, StreamNormalizer};
 
 use crate::tools::A2aSessionBundle;
 use async_trait::async_trait;
-use baml_rt_core::context::{self, InvocationContext, InvocationScope};
+use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::correlation;
 use baml_rt_core::effects::EffectEmitter;
+use baml_rt_core::ids::{ExternalId, MessageId};
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_observability::{metrics, spans};
-use baml_rt_provenance::{InMemoryProvenanceStore, ProvenanceInterceptor, ProvenanceWriter};
+use baml_rt_provenance::{ProvenanceContextReader, ProvenanceInterceptor, ProvenanceWriter};
+use baml_rt_quickjs::baml_execution::ConversationContextProvider;
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, QuickJSConfig};
 use baml_rt_tools::tools::ToolFunctionMetadata;
 use baml_rt_tools::tools::ToolSessionContext;
@@ -34,6 +36,50 @@ use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::broadcast;
+
+struct ProvenanceConversationContextProvider {
+    reader: Arc<dyn ProvenanceContextReader>,
+}
+
+impl ProvenanceConversationContextProvider {
+    fn new(reader: Arc<dyn ProvenanceContextReader>) -> Self {
+        Self { reader }
+    }
+}
+
+#[async_trait]
+impl ConversationContextProvider for ProvenanceConversationContextProvider {
+    async fn conversation_history_json(
+        &self,
+        scope: &context::RuntimeScope,
+    ) -> Result<Option<Value>> {
+        let context_id = scope.context_id();
+        let items = self
+            .reader
+            .conversation_context(context_id, Some(40))
+            .await
+            .map_err(|err| BamlRtError::ProvenanceContextRead {
+                source: Box::new(err),
+            })?;
+        if items.is_empty() {
+            return Ok(None);
+        }
+        let messages: Vec<Value> = items
+            .into_iter()
+            .map(|item| {
+                let content = match item.content {
+                    Value::String(s) => s,
+                    other => serde_json::to_string(&other).unwrap_or_else(|_| other.to_string()),
+                };
+                serde_json::json!({
+                    "role": item.role,
+                    "content": content,
+                })
+            })
+            .collect();
+        Ok(Some(Value::Array(messages)))
+    }
+}
 
 /// Top-level agent type that owns runtime, JS bridge, and A2A comms.
 #[derive(Clone)]
@@ -130,6 +176,7 @@ impl A2aAgent {
             },
             baml_decl: None,
             extra_ts_decls: Vec::new(),
+            access: None,
             tags: Vec::new(),
             secret_requirements: Vec::new(),
             origin: baml_rt_tools::ToolOrigin::Guest,
@@ -232,8 +279,8 @@ impl A2aAgentBuilder {
     /// - `quickjs_config`: `QuickJSConfig::default()`
     /// - `register_baml_functions`: `true`
     /// - `init_js`: Empty vec
-    /// - `task_store`: `InMemoryProvenanceStore` + `ProvenanceTaskStore`
-    /// - `provenance_writer`: `InMemoryProvenanceStore`
+    /// - `task_store`: `ProvenanceTaskStore` (no provenance writer)
+    /// - `provenance_writer`: None
     /// - `agent_id`: Auto-generated UUID
     ///
     /// **REQUIRED**: Call `with_effect_emitter()` before `build()`.
@@ -516,9 +563,8 @@ impl A2aAgentBuilderWithEffectEmitter {
                 (task_store, Some(writer))
             }
             (TaskStoreConfig::Provided(task_store), ProvenanceWriterConfig::Default) => {
-                // Task store provided but no writer - create default writer
-                let writer: Arc<dyn ProvenanceWriter> = Arc::new(InMemoryProvenanceStore::new());
-                (task_store, Some(writer))
+                // Task store provided but no writer
+                (task_store, None)
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Provided(writer)) => {
                 // Writer provided but no task store - create task store with writer
@@ -529,13 +575,10 @@ impl A2aAgentBuilderWithEffectEmitter {
                 (store, Some(writer))
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Default) => {
-                // Both default - create both
-                let writer: Arc<dyn ProvenanceWriter> = Arc::new(InMemoryProvenanceStore::new());
-                let store: Arc<dyn TaskStoreBackend> = Arc::new(ProvenanceTaskStore::new(
-                    Some(writer.clone()),
-                    agent_id.clone(),
-                ));
-                (store, Some(writer))
+                // Both default - task store without provenance writer
+                let store: Arc<dyn TaskStoreBackend> =
+                    Arc::new(ProvenanceTaskStore::new(None, agent_id.clone()));
+                (store, None)
             }
         };
 
@@ -572,13 +615,18 @@ impl A2aAgentBuilderWithEffectEmitter {
         let error_classifier: Arc<dyn ErrorClassifier> = Arc::new(A2aErrorClassifier);
 
         if let Some(writer) = provenance_writer.clone() {
-            let runtime_guard = runtime.lock().await;
-            runtime_guard
-                .register_llm_interceptor(ProvenanceInterceptor::new(writer.clone()))
-                .await;
-            runtime_guard
-                .register_tool_interceptor(ProvenanceInterceptor::new(writer))
-                .await;
+            {
+                let mut runtime_guard = runtime.lock().await;
+                runtime_guard.set_conversation_context_provider(Arc::new(
+                    ProvenanceConversationContextProvider::new(writer.clone()),
+                ));
+                runtime_guard
+                    .register_llm_interceptor(ProvenanceInterceptor::new(writer.clone()))
+                    .await;
+                runtime_guard
+                    .register_tool_interceptor(ProvenanceInterceptor::new(writer))
+                    .await;
+            }
         }
         let agent = A2aAgent {
             agent_id,
@@ -638,16 +686,6 @@ impl A2aRequestHandler for A2aAgent {
             correlation::generate_correlation_id()
         };
 
-        let span = if parsed_request.is_stream {
-            spans::a2a_stream(parsed_request.method.as_str(), correlation_id.as_str())
-        } else {
-            spans::a2a_request(parsed_request.method.as_str(), correlation_id.as_str())
-        };
-        let _guard = span.enter();
-        let start = std::time::Instant::now();
-        let method = parsed_request.method;
-        let is_stream = parsed_request.is_stream;
-
         // One scope per request (per conversation). Multiple concurrent A2A requests each get
         // their own scope; the handler runs inside with_scope(scope, ...) so routing is to the
         // correct conversation and yielded chunks are attributed to that context.
@@ -655,16 +693,49 @@ impl A2aRequestHandler for A2aAgent {
             .context_id
             .clone()
             .unwrap_or_else(context::generate_context_id);
-        let request_message_id = parsed_request.message_id.clone();
+        let request_message_id = parsed_request.message_id.clone().unwrap_or_else(|| {
+            MessageId::from_external(ExternalId::new(format!(
+                "a2a-{}-{}",
+                parsed_request.method.as_str(),
+                correlation_id.as_str()
+            )))
+        });
         let request_task_id = parsed_request.task_id.clone();
         let agent_id = self.agent_id.clone();
+        let scope = if let Some(task_id) = request_task_id.clone() {
+            context::RuntimeScope::task_scope(
+                request_context_id.clone(),
+                agent_id.clone(),
+                request_message_id.clone(),
+                task_id,
+            )
+        } else {
+            context::RuntimeScope::message_scope(
+                request_context_id.clone(),
+                agent_id.clone(),
+                request_message_id.clone(),
+            )
+        };
+
+        let span = if parsed_request.is_stream {
+            spans::a2a_stream(
+                Some(&scope),
+                parsed_request.method.as_str(),
+                correlation_id.as_str(),
+            )
+        } else {
+            spans::a2a_request(
+                Some(&scope),
+                parsed_request.method.as_str(),
+                correlation_id.as_str(),
+            )
+        };
+        let _guard = span.enter();
+        let start = std::time::Instant::now();
+        let method = parsed_request.method;
+        let is_stream = parsed_request.is_stream;
+
         let outcome = correlation::with_correlation_id(correlation_id, async move {
-            let scope = context::RuntimeScope::new(
-                request_context_id,
-                agent_id,
-                request_message_id,
-                request_task_id,
-            );
             let invocation_scope = InvocationScope::new(scope.clone());
             context::with_scope(scope, async move {
                 if parsed_request.method == a2a::A2aMethod::MessageSendStream
@@ -775,20 +846,21 @@ impl ToolSession for JsToolSession {
                 self.ctx.session_id
             )))
         })?;
-        let scope = context::task_local_context()
-            .current_scope()
-            .map(InvocationScope::new)
-            .ok();
+        let scope = context::current_scope().map(InvocationScope::new).ok();
         let bridge = self.bridge.clone();
         let tool_name = self.tool_name.clone();
         let handle = tokio::runtime::Handle::current();
         let result = tokio::task::spawn_blocking(move || {
             handle.block_on(async move {
                 let mut bridge = bridge.lock().await;
-                match &scope {
-                    Some(s) => bridge.invoke_js_tool_with_scope(s, &tool_name, input).await,
-                    None => bridge.invoke_js_tool(&tool_name, input).await,
-                }
+                let scope = scope.ok_or_else(|| {
+                    BamlRtError::InvalidArgument(
+                        "No invocation scope available for JS tool execution".to_string(),
+                    )
+                })?;
+                bridge
+                    .invoke_js_tool_with_scope(&scope, &tool_name, input)
+                    .await
             })
         })
         .await
@@ -857,7 +929,7 @@ mod tests {
             .await
             .expect("register js tool");
 
-        let scope = InvocationScope::standalone(agent.agent_id().clone());
+        let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
         let runtime = agent.runtime();
         let result = {
             let mgr = runtime.lock().await;

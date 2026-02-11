@@ -212,7 +212,7 @@ impl ToolExecutionHandle {
         let final_args = args;
 
         // Execute the tool
-        let result = self.tool_registry.execute(&scope, name, final_args).await;
+        let result = self.tool_registry.execute(name, final_args).await;
 
         // Calculate duration
         let duration = start.elapsed();
@@ -283,10 +283,7 @@ impl ToolSessionExecutionHandle {
         let _ = interceptor_registry.intercept_tool_call(&context).await?;
         drop(interceptor_registry);
 
-        let result = self
-            .tool_registry
-            .open_session(&scope, tool_name, open_input)
-            .await;
+        let result = self.tool_registry.open_session(tool_name, open_input).await;
         let duration_ms = start.elapsed().as_millis() as u64;
         let completion_result: Result<Value> = match &result {
             Ok(_) => Ok(Value::Null),

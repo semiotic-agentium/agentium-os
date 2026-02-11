@@ -6,6 +6,7 @@ use baml_rt_core::Result;
 use baml_rt_tools::register_tool_metadata;
 use baml_rt_tools::tools::ToolFunctionMetadata;
 use baml_rt_tools::tools::ToolSessionContext;
+use baml_rt_tools::tools::validate_open_input;
 use baml_rt_tools::{
     BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler, ToolName,
     ToolSession, ToolSessionError, ToolStep, ToolTypeSpec, json_schema_value, ts_decl, ts_name,
@@ -14,7 +15,9 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::VecDeque;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
+use tokio::runtime::RuntimeFlavor;
 use ts_rs::TS;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -90,6 +93,7 @@ fn a2a_session_metadata(name: &str) -> ToolFunctionMetadata {
         },
         baml_decl: None,
         extra_ts_decls: Vec::new(),
+        access: None,
         tags: vec!["a2a".to_string(), "session".to_string()],
         secret_requirements: Vec::new(),
         // ALL Rust tools are host tools - they must be declared in manifest.json
@@ -118,9 +122,8 @@ impl ToolHandler for A2aSessionHandler {
         ctx: ToolSessionContext,
         open_input: Value,
     ) -> Result<Box<dyn ToolSession>> {
-        // For A2A session, open_input should be empty object (unit type)
-        let _: () = serde_json::from_value(open_input)
-            .map_err(|err| baml_rt_core::BamlRtError::InvalidOpenInput { source: err })?;
+        // For A2A session, open_input should be empty object or null (unit type).
+        validate_open_input::<()>(open_input)?;
 
         Ok(Box::new(A2aSession {
             ctx,
@@ -154,10 +157,32 @@ impl ToolSession for A2aSession {
             )))
         })?;
         let handle = tokio::runtime::Handle::current();
-        let responses = tokio::task::block_in_place(|| {
-            handle.block_on(self.handler.handle_a2a(parsed.request))
-        })
-        .map_err(|e| ToolSessionError::Tool(ToolFailure::execution_failed(e.to_string())))?;
+        let responses = match handle.runtime_flavor() {
+            RuntimeFlavor::CurrentThread => {
+                let handler = self.handler.clone();
+                let request = parsed.request;
+                let join = catch_unwind(AssertUnwindSafe(|| {
+                    tokio::task::spawn_local(async move { handler.handle_a2a(request).await })
+                }))
+                .map_err(|_| {
+                    ToolSessionError::Tool(ToolFailure::execution_failed(
+                        "A2A session requires a LocalSet when running on a current-thread runtime"
+                            .to_string(),
+                    ))
+                })?;
+                join.await
+                    .map_err(|e| {
+                        ToolSessionError::Tool(ToolFailure::execution_failed(e.to_string()))
+                    })?
+                    .map_err(|e| {
+                        ToolSessionError::Tool(ToolFailure::execution_failed(e.to_string()))
+                    })?
+            }
+            _ => tokio::task::block_in_place(|| {
+                handle.block_on(self.handler.handle_a2a(parsed.request))
+            })
+            .map_err(|e| ToolSessionError::Tool(ToolFailure::execution_failed(e.to_string())))?,
+        };
         for response in responses {
             self.queue.push_back(response);
         }
