@@ -1193,6 +1193,19 @@ impl BamlRuntimeManager {
         steps: Vec<ToolSessionOp>,
     ) -> Result<Value> {
         let plan_scope = scope.clone();
+        let mut steps = steps;
+        if let Some(first) = steps.first()
+            && !matches!(first, ToolSessionOp::Open { .. })
+        {
+            // Be lenient: if plan starts with Send/Next, implicitly open with empty input.
+            steps.insert(
+                0,
+                ToolSessionOp::Open {
+                    initial_input: None,
+                    reason: Some("auto-open for plan missing explicit Open".to_string()),
+                },
+            );
+        }
         // Validate FSM: no Send before first Open
         let first_open = steps
             .iter()

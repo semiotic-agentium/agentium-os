@@ -381,8 +381,22 @@ impl AgentRunner {
             ))
         })?;
         let scope = InvocationScope::synthetic_message(booted.agent.agent_id().clone());
-        let runtime_scope = scope.as_scope().clone();
-        booted.agent.run_handle_a2a(runtime_scope, request).await
+        let agent = booted.agent.clone();
+        tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| BamlRtError::InvalidArgument(e.to_string()))?;
+            let local = tokio::task::LocalSet::new();
+            rt.block_on(local.run_until(async move {
+                context::with_scope(scope.as_scope().clone(), async move {
+                    agent.handle_a2a(request).await
+                })
+                .await
+            }))
+        })
+        .await
+        .map_err(|e| BamlRtError::InvalidArgument(e.to_string()))?
     }
 
     /// Run the A2A JSON-RPC loop over the given reader/writer (one JSON-RPC request per line).

@@ -66,6 +66,7 @@ impl ConversationContextProvider for ProvenanceConversationContextProvider {
         }
         let messages: Vec<Value> = items
             .into_iter()
+            .filter(|item| item.source == "message")
             .map(|item| {
                 let content = match item.content {
                     Value::String(s) => s,

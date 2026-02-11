@@ -35,6 +35,6 @@ name: string | null, description: string | null,
  */
 priority: number | null, 
 /**
- * Task status string (e.g. "in progress"). Used by `UpdateTask`.
+ * Task status string (e.g. \"in progress\"). Used by `UpdateTask`.
  */
 status: string | null, };
