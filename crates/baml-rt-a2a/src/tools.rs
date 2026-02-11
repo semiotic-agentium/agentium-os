@@ -1,40 +1,24 @@
 //! A2A tool bundle for session-based interactions.
-//!
-//! Channel-based design: send() only enqueues; dispatcher and runtime worker are tokio tasks.
-//! A2A work is dispatched via handler.run_handle_a2a(), which uses bridge post_to_worker_void.
-//! No threads for orchestration.
-//! See `docs/A2A_SESSION_CHANNEL_DESIGN.md` and `docs/INVARIANTS_AND_LIVENESS.md`.
 
 use crate::A2aRequestHandler;
-use crate::session_channel::{
-    DispatcherMsg, RuntimeWorkerMsg, SessionCmd, run_dispatcher, run_runtime_worker,
-};
 use async_trait::async_trait;
-use baml_rt_core::context::RuntimeScope;
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::Result;
 use baml_rt_tools::register_tool_metadata;
 use baml_rt_tools::tools::ToolFunctionMetadata;
 use baml_rt_tools::tools::ToolSessionContext;
+use baml_rt_tools::tools::validate_open_input;
 use baml_rt_tools::{
     BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler, ToolName,
-    ToolSession, ToolSessionError, ToolSessionId, ToolStep, ToolTypeSpec, json_schema_value,
-    ts_decl, ts_name,
+    ToolSession, ToolSessionError, ToolStep, ToolTypeSpec, json_schema_value, ts_decl, ts_name,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::VecDeque;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::runtime::RuntimeFlavor;
 use ts_rs::TS;
-
-/// Session phase for host-side FSM; mirrors JS wrapper terminal-state checks.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionPhase {
-    Open,
-    Running,
-    Closing,
-    Closed,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
@@ -51,114 +35,44 @@ pub struct A2aSessionOutput {
 }
 
 pub struct A2aSessionBundle {
-    dispatcher: Arc<A2aRequestDispatcher>,
-    bundle_metadata: ToolBundleMetadata,
-    session_tool_metadata: ToolFunctionMetadata,
+    handler: Arc<dyn A2aRequestHandler>,
 }
 
 impl A2aSessionBundle {
-    /// Creates the bundle: spawns the dispatcher and runtime worker as tokio tasks.
-    /// Work runs through handler.run_handle_a2a() and bridge post_to_worker_void.
-    /// Validates protocol constants ("a2a" bundle name, "a2a/session" tool name) at construction.
-    pub fn new(handler: Arc<dyn A2aRequestHandler>) -> Result<Self> {
-        let name = BundleName::new("a2a".to_string())
-            .map_err(|_| BamlRtError::InvalidArgument("Invalid a2a bundle name".into()))?;
-        let bundle_metadata = ToolBundleMetadata {
-            name,
-            description: "Agent-to-agent session interface".to_string(),
-            config_schema: None,
-            secret_requirements: Vec::new(),
-        };
-        let session_tool_metadata = a2a_session_metadata_result("a2a/session")?;
-        Ok(Self {
-            dispatcher: Arc::new(A2aRequestDispatcher::new(handler)),
-            bundle_metadata,
-            session_tool_metadata,
-        })
+    pub fn new(handler: Arc<dyn A2aRequestHandler>) -> Self {
+        Self { handler }
     }
 }
 
 impl ToolBundle for A2aSessionBundle {
     fn metadata(&self) -> ToolBundleMetadata {
-        self.bundle_metadata.clone()
+        let name = BundleName::new("a2a".to_string()).expect("a2a bundle name must be valid");
+        ToolBundleMetadata {
+            name,
+            description: "Agent-to-agent session interface".to_string(),
+            config_schema: None,
+            secret_requirements: Vec::new(),
+        }
     }
 
     fn functions(&self) -> Vec<Arc<dyn ToolHandler>> {
-        let metadata = self.session_tool_metadata.clone();
+        let metadata = a2a_session_metadata("a2a/session");
         vec![Arc::new(A2aSessionHandler {
-            dispatcher: self.dispatcher.clone(),
+            handler: self.handler.clone(),
             metadata,
         })]
     }
 }
 
 struct A2aSessionHandler {
-    dispatcher: Arc<A2aRequestDispatcher>,
+    handler: Arc<dyn A2aRequestHandler>,
     metadata: ToolFunctionMetadata,
 }
 
-/// Dispatcher handle: sends Register/Cmd to the dispatcher task (MT). Scope is in the message.
-struct A2aRequestDispatcher {
-    tx: mpsc::UnboundedSender<DispatcherMsg>,
-}
-
-impl A2aRequestDispatcher {
-    fn new(handler: Arc<dyn A2aRequestHandler>) -> Self {
-        let (worker_tx, worker_rx) = mpsc::unbounded_channel::<RuntimeWorkerMsg>();
-        let (dispatcher_tx, dispatcher_rx) = mpsc::unbounded_channel::<DispatcherMsg>();
-
-        let parent = tracing::Span::current();
-        tokio::spawn(async move {
-            let _guard = parent.enter();
-            run_dispatcher(dispatcher_rx, worker_tx).await
-        });
-        let parent_worker = tracing::Span::current();
-        tokio::spawn(async move {
-            let _guard = parent_worker.enter();
-            run_runtime_worker(handler, worker_rx).await
-        });
-
-        Self { tx: dispatcher_tx }
-    }
-
-    fn register(
-        &self,
-        session_id: ToolSessionId,
-        scope: RuntimeScope,
-        response_tx: mpsc::UnboundedSender<Value>,
-    ) -> std::result::Result<(), ToolSessionError> {
-        self.tx
-            .send(DispatcherMsg::Register {
-                session_id,
-                scope,
-                response_tx,
-            })
-            .map_err(|_| {
-                ToolSessionError::Tool(ToolFailure::execution_failed(
-                    "A2A session dispatcher channel closed".to_string(),
-                ))
-            })
-    }
-
-    fn send_cmd(
-        &self,
-        session_id: ToolSessionId,
-        cmd: SessionCmd,
-    ) -> std::result::Result<(), ToolSessionError> {
-        self.tx
-            .send(DispatcherMsg::Cmd { session_id, cmd })
-            .map_err(|_| {
-                ToolSessionError::Tool(ToolFailure::execution_failed(
-                    "A2A session dispatcher channel closed".to_string(),
-                ))
-            })
-    }
-}
-
-fn a2a_session_metadata_result(name: &str) -> Result<ToolFunctionMetadata> {
-    let parsed = ToolName::parse(name)?;
+fn a2a_session_metadata(name: &str) -> ToolFunctionMetadata {
+    let parsed = ToolName::parse(name).expect("a2a tool name must be valid");
     let class_name = ToolFunctionMetadata::derive_class_name(parsed.bundle(), parsed.local());
-    Ok(ToolFunctionMetadata {
+    ToolFunctionMetadata {
         name: parsed.clone(),
         class_name,
         description: "Bidirectional A2A session call".to_string(),
@@ -178,15 +92,13 @@ fn a2a_session_metadata_result(name: &str) -> Result<ToolFunctionMetadata> {
             ts_decl: ts_decl::<A2aSessionOutput>(),
         },
         baml_decl: None,
+        extra_ts_decls: Vec::new(),
+        access: None,
         tags: vec!["a2a".to_string(), "session".to_string()],
         secret_requirements: Vec::new(),
         // ALL Rust tools are host tools - they must be declared in manifest.json
         origin: baml_rt_tools::ToolOrigin::Host,
-    })
-}
-
-fn a2a_session_metadata(name: &str) -> ToolFunctionMetadata {
-    a2a_session_metadata_result(name).expect("a2a/session is a validated protocol constant")
+    }
 }
 
 fn a2a_session_metadata_qualified() -> ToolFunctionMetadata {
@@ -210,94 +122,97 @@ impl ToolHandler for A2aSessionHandler {
         ctx: ToolSessionContext,
         open_input: Value,
     ) -> Result<Box<dyn ToolSession>> {
-        // Scope must be in open_input (channel-based design: context in messages).
-        let scope_value = open_input.get("scope").cloned().ok_or_else(|| {
-            baml_rt_core::BamlRtError::InvalidArgument(
-                "A2A session requires scope in open_input; use explicit-scope open_tool_session API".into(),
-            )
-        })?;
-        let scope: RuntimeScope = serde_json::from_value(scope_value)
-            .map_err(|e| baml_rt_core::BamlRtError::InvalidOpenInput { source: e })?;
-
-        let (response_tx, response_rx) = mpsc::unbounded_channel::<Value>();
-        self.dispatcher
-            .register(ctx.session_id.clone(), scope, response_tx)
-            .map_err(|e| baml_rt_core::BamlRtError::ToolExecution(format!("{:?}", e)))?;
+        // For A2A session, open_input should be empty object or null (unit type).
+        validate_open_input::<()>(open_input)?;
 
         Ok(Box::new(A2aSession {
             ctx,
-            dispatcher: self.dispatcher.clone(),
-            response_rx,
-            phase: SessionPhase::Open,
+            handler: self.handler.clone(),
+            queue: VecDeque::new(),
+            closed: false,
         }))
     }
 }
 
 struct A2aSession {
     ctx: ToolSessionContext,
-    dispatcher: Arc<A2aRequestDispatcher>,
-    response_rx: mpsc::UnboundedReceiver<Value>,
-    phase: SessionPhase,
+    handler: Arc<dyn A2aRequestHandler>,
+    queue: VecDeque<Value>,
+    closed: bool,
 }
 
 #[async_trait]
 impl ToolSession for A2aSession {
-    /// Enqueues request only; returns immediately (sub-5ms). Worker on LocalSet runs handle_a2a.
     async fn send(&mut self, input: Value) -> std::result::Result<(), ToolSessionError> {
-        if self.phase == SessionPhase::Closing || self.phase == SessionPhase::Closed {
+        if self.closed {
             return Err(ToolSessionError::Tool(ToolFailure::invalid_input(format!(
-                "A2A session {} cannot send after terminal phase {:?}",
-                self.ctx.session_id, self.phase
+                "A2A session {session_id} is closed",
+                session_id = self.ctx.session_id
             ))));
         }
         let parsed: A2aSessionInput = serde_json::from_value(input).map_err(|e| {
             ToolSessionError::Tool(ToolFailure::invalid_input(format!(
-                "Invalid A2A input: {}",
-                e
+                "Invalid A2A input: {error}",
+                error = e
             )))
         })?;
-        self.dispatcher.send_cmd(
-            self.ctx.session_id.clone(),
-            SessionCmd::Send(parsed.request),
-        )?;
-        self.phase = SessionPhase::Running;
+        let handle = tokio::runtime::Handle::current();
+        let responses = match handle.runtime_flavor() {
+            RuntimeFlavor::CurrentThread => {
+                let handler = self.handler.clone();
+                let request = parsed.request;
+                let join = catch_unwind(AssertUnwindSafe(|| {
+                    tokio::task::spawn_local(async move { handler.handle_a2a(request).await })
+                }))
+                .map_err(|_| {
+                    ToolSessionError::Tool(ToolFailure::execution_failed(
+                        "A2A session requires a LocalSet when running on a current-thread runtime"
+                            .to_string(),
+                    ))
+                })?;
+                join.await
+                    .map_err(|e| {
+                        ToolSessionError::Tool(ToolFailure::execution_failed(e.to_string()))
+                    })?
+                    .map_err(|e| {
+                        ToolSessionError::Tool(ToolFailure::execution_failed(e.to_string()))
+                    })?
+            }
+            _ => tokio::task::block_in_place(|| {
+                handle.block_on(self.handler.handle_a2a(parsed.request))
+            })
+            .map_err(|e| ToolSessionError::Tool(ToolFailure::execution_failed(e.to_string())))?,
+        };
+        for response in responses {
+            self.queue.push_back(response);
+        }
         Ok(())
     }
 
-    /// Drains per-session response channel; Done when channel closed (worker sent Finish/Abort).
     async fn next(&mut self) -> std::result::Result<ToolStep, ToolSessionError> {
-        match self.response_rx.recv().await {
-            Some(response) => {
-                let output = A2aSessionOutput { response };
-                let value = serde_json::to_value(output).map_err(|e| {
-                    ToolSessionError::Tool(ToolFailure::execution_failed(format!(
-                        "Invalid A2A output: {}",
-                        e
-                    )))
-                })?;
-                Ok(ToolStep::Streaming { output: value })
-            }
-            None => Ok(ToolStep::Done { output: None }),
+        if let Some(response) = self.queue.pop_front() {
+            let output = A2aSessionOutput { response };
+            let value = serde_json::to_value(output).map_err(|e| {
+                ToolSessionError::Tool(ToolFailure::execution_failed(format!(
+                    "Invalid A2A output: {error}",
+                    error = e
+                )))
+            })?;
+            return Ok(ToolStep::Streaming { output: value });
         }
+        Ok(ToolStep::Done { output: None })
     }
 
     async fn finish(&mut self) -> std::result::Result<(), ToolSessionError> {
-        if self.phase == SessionPhase::Closed {
-            return Ok(());
-        }
-        self.dispatcher
-            .send_cmd(self.ctx.session_id.clone(), SessionCmd::Finish)?;
-        self.phase = SessionPhase::Closed;
+        self.closed = true;
         Ok(())
     }
 
-    async fn abort(&mut self, reason: Option<String>) -> std::result::Result<(), ToolSessionError> {
-        if self.phase == SessionPhase::Closed {
-            return Ok(());
-        }
-        self.dispatcher
-            .send_cmd(self.ctx.session_id.clone(), SessionCmd::Abort(reason))?;
-        self.phase = SessionPhase::Closed;
+    async fn abort(
+        &mut self,
+        _reason: Option<String>,
+    ) -> std::result::Result<(), ToolSessionError> {
+        self.closed = true;
         Ok(())
     }
 }

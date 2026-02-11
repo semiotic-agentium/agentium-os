@@ -212,7 +212,7 @@ impl ToolExecutionHandle {
         let final_args = args;
 
         // Execute the tool
-        let result = self.tool_registry.execute(&scope, name, final_args).await;
+        let result = self.tool_registry.execute(name, final_args).await;
 
         // Calculate duration
         let duration = start.elapsed();
@@ -283,10 +283,7 @@ impl ToolSessionExecutionHandle {
         let _ = interceptor_registry.intercept_tool_call(&context).await?;
         drop(interceptor_registry);
 
-        let result = self
-            .tool_registry
-            .open_session(&scope, tool_name, open_input)
-            .await;
+        let result = self.tool_registry.open_session(tool_name, open_input).await;
         let duration_ms = start.elapsed().as_millis() as u64;
         let completion_result: Result<Value> = match &result {
             Ok(_) => Ok(Value::Null),
@@ -933,6 +930,7 @@ impl BamlRuntimeManager {
     /// ```rust,no_run
     /// use baml_rt::baml::BamlRuntimeManager;
     /// use baml_rt::tools::BamlTool;
+    /// use baml_rt_tools::bundles::Support;
     /// use async_trait::async_trait;
     /// use schemars::JsonSchema;
     /// use serde::{Deserialize, Serialize};
@@ -952,7 +950,9 @@ impl BamlRuntimeManager {
     ///
     /// #[async_trait]
     /// impl BamlTool for MyTool {
-    ///     const NAME: &'static str = "my_tool";
+    ///     type Bundle = Support;
+    ///     const LOCAL_NAME: &'static str = "my_tool";
+    ///     type OpenInput = ();
     ///     type Input = MyInput;
     ///     type Output = MyOutput;
     ///     fn description(&self) -> &'static str { "Does something" }
@@ -1088,6 +1088,7 @@ impl BamlRuntimeManager {
     /// ```rust,no_run
     /// # use baml_rt::baml::BamlRuntimeManager;
     /// # use baml_rt::tools::BamlTool;
+    /// # use baml_rt_tools::bundles::Support;
     /// # use async_trait::async_trait;
     /// # use schemars::JsonSchema;
     /// # use serde::{Deserialize, Serialize};
@@ -1101,7 +1102,9 @@ impl BamlRuntimeManager {
     /// # struct WeatherOutput { temperature: String }
     /// # #[async_trait]
     /// # impl BamlTool for WeatherTool {
-    /// #     const NAME: &'static str = "support/get_weather";
+    /// #     type Bundle = Support;
+    /// #     const LOCAL_NAME: &'static str = "get_weather";
+    /// #     type OpenInput = ();
     /// #     type Input = WeatherInput;
     /// #     type Output = WeatherOutput;
     /// #     fn description(&self) -> &'static str { "" }
@@ -1190,6 +1193,19 @@ impl BamlRuntimeManager {
         steps: Vec<ToolSessionOp>,
     ) -> Result<Value> {
         let plan_scope = scope.clone();
+        let mut steps = steps;
+        if let Some(first) = steps.first()
+            && !matches!(first, ToolSessionOp::Open { .. })
+        {
+            // Be lenient: if plan starts with Send/Next, implicitly open with empty input.
+            steps.insert(
+                0,
+                ToolSessionOp::Open {
+                    initial_input: None,
+                    reason: Some("auto-open for plan missing explicit Open".to_string()),
+                },
+            );
+        }
         // Validate FSM: no Send before first Open
         let first_open = steps
             .iter()

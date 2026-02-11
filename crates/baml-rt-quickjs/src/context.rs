@@ -73,7 +73,10 @@ impl BamlContext {
     /// context.quickjs.register_baml_functions().await?;
     ///
     /// // Execute JavaScript in isolated context
-    /// let result = context.quickjs.evaluate("SimpleGreeting({name: 'World'})").await?;
+    /// let result = context
+    ///     .quickjs
+    ///     .evaluate(None, "SimpleGreeting({name: 'World'})")
+    ///     .await?;
     /// # Ok::<(), baml_rt::BamlRtError>(())
     /// # }).unwrap();
     /// ```

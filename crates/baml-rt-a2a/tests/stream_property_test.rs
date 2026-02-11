@@ -3,6 +3,8 @@
 //! **Purpose:** Assert that when the agent yields K chunks, we get K responses in order
 //! and exactly one response is marked final (the last). Validates order preservation and finality.
 
+#![recursion_limit = "256"]
+
 use baml_rt::BamlRuntimeManager;
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use proptest::prelude::*;

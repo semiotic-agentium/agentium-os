@@ -1,5 +1,7 @@
 //! BAML runtime with QuickJS integration.
 
+#![recursion_limit = "256"]
+
 pub mod a2a_stream;
 pub mod baml;
 pub mod baml_collector;

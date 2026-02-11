@@ -5,6 +5,8 @@
 //! Liveness:
 //!   Every posted closure eventually executes on the QuickJS worker thread.
 
+#![recursion_limit = "256"]
+
 use baml_rt_core::ids::{AgentId, UuidId};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge};
 use proptest::prelude::*;

@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest};
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::{A2aAgent, A2aRequestHandler, QuickJSConfig};
@@ -269,7 +271,11 @@ async fn test_message_send_baml_tool_calling() {
 async fn test_a2a_session_send_returns_fast_and_next_drains() {
     let _permit = acquire_test_permit().await;
     let (agent, local_set) = setup_agent_with_a2a_session_tool().await;
-    let handle = agent.tool_session_handle().await;
+    let handle = {
+        let runtime = agent.runtime();
+        let mgr = runtime.lock().await;
+        mgr.tool_session_handle()
+    };
     local_set
         .run_until(async move {
             let context_id = context::generate_context_id();
@@ -284,11 +290,7 @@ async fn test_a2a_session_send_returns_fast_and_next_drains() {
             let scope_for_open = scope.clone();
             context::with_scope(scope, async move {
                 let session_id = handle
-                    .open_tool_session(
-                        &scope_for_open,
-                        "a2a/session",
-                        json!({ "scope": scope_for_open }),
-                    )
+                    .open_tool_session(&scope_for_open, "a2a/session", json!({}))
                     .await
                     .expect("open a2a/session");
                 let request = serde_json::from_value::<JSONRPCRequest>(send_stream_request(
@@ -342,7 +344,11 @@ async fn test_a2a_session_send_returns_fast_and_next_drains() {
 async fn test_a2a_session_send_after_finish_fails() {
     let _permit = acquire_test_permit().await;
     let (agent, local_set) = setup_agent_with_a2a_session_tool().await;
-    let handle = agent.tool_session_handle().await;
+    let handle = {
+        let runtime = agent.runtime();
+        let mgr = runtime.lock().await;
+        mgr.tool_session_handle()
+    };
     local_set
         .run_until(async move {
             let context_id = context::generate_context_id();
@@ -357,11 +363,7 @@ async fn test_a2a_session_send_after_finish_fails() {
             let scope_for_open = scope.clone();
             context::with_scope(scope, async move {
                 let session_id = handle
-                    .open_tool_session(
-                        &scope_for_open,
-                        "a2a/session",
-                        json!({ "scope": scope_for_open }),
-                    )
+                    .open_tool_session(&scope_for_open, "a2a/session", json!({}))
                     .await
                     .expect("open a2a/session");
                 let request = serde_json::from_value::<JSONRPCRequest>(send_stream_request(
@@ -401,12 +403,14 @@ async fn test_a2a_session_send_after_finish_fails() {
                     .tool_session_send(&session_id, send_input)
                     .await
                     .expect_err("send after finish must fail");
+                let err_msg = err.to_string();
                 assert!(
-                    err.to_string().contains("terminal")
-                        || err.to_string().contains("closed")
-                        || err.to_string().contains("Unknown tool session"),
+                    err_msg.contains("terminal")
+                        || err_msg.contains("closed")
+                        || err_msg.contains("Unknown tool session")
+                        || err_msg.contains("Unknown session"),
                     "error should mention terminal/closed/unknown-session: {}",
-                    err
+                    err_msg
                 );
             })
             .await

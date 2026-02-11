@@ -3,6 +3,8 @@
 //! Single test runs all sandbox checks (require blocked, console.log works, fetch blocked)
 //! with one agent build.
 
+#![recursion_limit = "256"]
+
 use baml_rt::A2aAgent;
 use std::sync::Arc;
 

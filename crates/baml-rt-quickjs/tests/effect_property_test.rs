@@ -8,6 +8,8 @@
 //! ## Invariants tested:
 //!
 //! **I1 (Start/Complete Pairing)**
+
+#![recursion_limit = "256"]
 //!   For every `EffectEvent::*Started`, there must be exactly one corresponding
 //!   `EffectEvent::*Completed` with the same context_id and kind.
 //!

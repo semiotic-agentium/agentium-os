@@ -1,9 +1,17 @@
 //! Tests for JavaScript invocation of BAML functions
 
-use test_support::common::{setup_baml_runtime_from_fixture, setup_bridge};
+#![recursion_limit = "256"]
+
+use test_support::common::{agent_fixture, setup_baml_runtime_from_fixture, setup_bridge};
 
 #[tokio::test]
 async fn test_js_invoke_baml_function() {
+    let agent_dir = agent_fixture("voidship-rites");
+    if !agent_dir.join("baml_src").exists() {
+        eprintln!("Skipping test: voidship-rites fixture not found");
+        return;
+    }
+
     // Set up BAML runtime
     let baml_manager = setup_baml_runtime_from_fixture("voidship-rites");
     let mut bridge = setup_bridge(baml_manager.clone()).await;

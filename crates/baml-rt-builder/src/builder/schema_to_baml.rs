@@ -7,6 +7,10 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
+fn escape_baml_string(value: &str) -> String {
+    value.chars().flat_map(|c| c.escape_default()).collect()
+}
+
 /// Generate BAML type definitions from JSON schemas
 pub fn generate_baml_types_from_schemas(
     schemas: &HashMap<String, Value>,
@@ -189,7 +193,7 @@ fn generate_baml_enum_from_one_of(
         let desc = obj
             .get("description")
             .and_then(|v| v.as_str())
-            .map(|s| format!(" @description(\"{}\")", s.replace('"', "\\\"")))
+            .map(|s| format!(" @description(\"{}\")", escape_baml_string(s)))
             .unwrap_or_default();
 
         write_line(output, &format!("  {}{}", variant_name, desc))?;
@@ -277,13 +281,16 @@ fn generate_baml_class(
             .as_object()
             .and_then(|obj| obj.get("description"))
             .and_then(|v| v.as_str())
-            .map(|s| format!(" @description(\"{}\")", s.replace('"', "\\\"")))
+            .map(|s| format!("@description(\"{}\")", escape_baml_string(s)))
             .unwrap_or_default();
-
-        write_line(
-            output,
-            &format!("  {} {} {}", prop_name, type_str, description),
-        )?;
+        if description.is_empty() {
+            write_line(output, &format!("  {} {}", prop_name, type_str))?;
+        } else {
+            write_line(
+                output,
+                &format!("  {} {} {}", prop_name, type_str, description),
+            )?;
+        }
     }
 
     write_line(output, "}")?;
@@ -311,6 +318,67 @@ fn json_schema_to_baml_type(
         if let Some(type_name) = ref_path.split('/').next_back() {
             return Ok(type_name.to_string());
         }
+    }
+
+    // Handle nullable types represented as type: ["string", "null"]
+    if let Some(Value::Array(type_array)) = schema_obj.get("type") {
+        let mut mapped = Vec::new();
+        for value in type_array {
+            let mapped_type = match value {
+                Value::String(type_str) => {
+                    if type_str == "null" {
+                        continue;
+                    }
+                    match type_str.as_str() {
+                        "string" => "string".to_string(),
+                        "integer" => "int".to_string(),
+                        "number" => "float".to_string(),
+                        "boolean" => "bool".to_string(),
+                        "object" => "object".to_string(),
+                        "array" => {
+                            if let Some(items) = schema_obj.get("items") {
+                                let item_type = json_schema_to_baml_type(
+                                    items,
+                                    _generated,
+                                    _all_schemas,
+                                    _type_names,
+                                )?;
+                                format!("{}[]", item_type)
+                            } else {
+                                "any[]".to_string()
+                            }
+                        }
+                        other => format!("any /* {} */", other),
+                    }
+                }
+                Value::Object(_) => {
+                    json_schema_to_baml_type(value, _generated, _all_schemas, _type_names)?
+                }
+                _ => "any".to_string(),
+            };
+            mapped.push(mapped_type);
+        }
+        if mapped.is_empty() {
+            return Ok("any".to_string());
+        }
+        if mapped.len() == 1 {
+            return Ok(mapped.remove(0));
+        }
+        return Ok(mapped.join(" | "));
+    }
+
+    // Handle anyOf/oneOf (union types)
+    if let Some(any_of) = schema_obj.get("anyOf").and_then(|v| v.as_array()) {
+        let mut types = Vec::new();
+        for variant in any_of {
+            types.push(json_schema_to_baml_type(
+                variant,
+                _generated,
+                _all_schemas,
+                _type_names,
+            )?);
+        }
+        return Ok(types.join(" | "));
     }
 
     // Handle oneOf (union types)

@@ -190,7 +190,7 @@ impl FalkorDbProvenanceWriter {
 
         let mut entity_entries: Vec<(&ProvEntityId, &Entity)> =
             normalized.document.entities().collect();
-        entity_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        entity_entries.sort_by_key(|(a, _)| *a);
         let mut entity_labels = HashMap::new();
         for (id, entity) in &entity_entries {
             let label = label_from_prov_type(entity.prov_type.as_deref(), "ProvEntity");
@@ -215,7 +215,7 @@ impl FalkorDbProvenanceWriter {
 
         let mut activity_entries: Vec<(&ProvActivityId, &Activity)> =
             normalized.document.activities().collect();
-        activity_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        activity_entries.sort_by_key(|(a, _)| *a);
         let mut activity_labels = HashMap::new();
         for (id, activity) in &activity_entries {
             let label = label_from_prov_type(activity.prov_type.as_deref(), "ProvActivity");
@@ -239,7 +239,7 @@ impl FalkorDbProvenanceWriter {
         }
 
         let mut agent_entries: Vec<(&ProvAgentId, &Agent)> = normalized.document.agents().collect();
-        agent_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        agent_entries.sort_by_key(|(a, _)| *a);
         let mut agent_labels = HashMap::new();
         for (id, agent) in &agent_entries {
             let label = label_from_prov_type(agent.prov_type.as_deref(), "ProvAgent");
@@ -260,7 +260,7 @@ impl FalkorDbProvenanceWriter {
         }
 
         let mut used_entries: Vec<(&String, &Used)> = normalized.document.used().collect();
-        used_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        used_entries.sort_by_key(|(a, _)| *a);
         for (_, used) in used_entries {
             let props = used_props(used);
             let activity_label = label_for_activity(&activity_labels, used.activity.as_str());
@@ -302,7 +302,7 @@ impl FalkorDbProvenanceWriter {
         }
         let mut generated_entries: Vec<(&String, &WasGeneratedBy)> =
             normalized.document.was_generated_by().collect();
-        generated_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        generated_entries.sort_by_key(|(a, _)| *a);
         for (_, generated) in generated_entries {
             let props = was_generated_by_props(generated);
             let entity_label = label_for_ref(
@@ -329,7 +329,7 @@ impl FalkorDbProvenanceWriter {
         }
         let mut qualified_gen_entries: Vec<(&String, &QualifiedGeneration)> =
             normalized.document.qualified_generation().collect();
-        qualified_gen_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        qualified_gen_entries.sort_by_key(|(a, _)| *a);
         for (_, generation) in qualified_gen_entries {
             let props = qualified_generation_props(generation);
             let entity_label = label_for_ref(
@@ -356,7 +356,7 @@ impl FalkorDbProvenanceWriter {
         }
         let mut assoc_entries: Vec<(&String, &WasAssociatedWith)> =
             normalized.document.was_associated_with().collect();
-        assoc_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        assoc_entries.sort_by_key(|(a, _)| *a);
         for (_, assoc) in assoc_entries {
             let props = was_associated_with_props(assoc);
             let activity_label = label_for_activity(&activity_labels, assoc.activity.as_str());
@@ -378,7 +378,7 @@ impl FalkorDbProvenanceWriter {
         }
         let mut derived_entries: Vec<(&String, &WasDerivedFrom)> =
             normalized.document.was_derived_from().collect();
-        derived_entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+        derived_entries.sort_by_key(|(a, _)| *a);
         for (_, derived) in derived_entries {
             let props = was_derived_from_props(derived);
             let generated_label =
@@ -1331,7 +1331,7 @@ fn cypher_map(map: &HashMap<String, Value>) -> String {
         return "{}".to_string();
     }
     let mut entries: Vec<(&String, &Value)> = map.iter().collect();
-    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+    entries.sort_by_key(|(a, _)| *a);
     let mut parts = Vec::new();
     for (key, value) in entries {
         parts.push(format!("{}: {}", cypher_key(key), cypher_value(value)));

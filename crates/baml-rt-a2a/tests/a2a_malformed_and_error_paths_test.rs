@@ -8,6 +8,8 @@
 //! **Tests:**
 //! - Malformed JSON-RPC: wrong version, unsupported method, invalid params → single error response.
 //! - Concurrency: valid and malformed requests run together → valid succeed, malformed return error.
+
+#![recursion_limit = "256"]
 //! - Streaming tool failure: tool returns `Err` during a stream → stream contains error content.
 //! - Allowlist during stream: JS opens a tool not in the runtime allowlist → stream contains allowlist error.
 

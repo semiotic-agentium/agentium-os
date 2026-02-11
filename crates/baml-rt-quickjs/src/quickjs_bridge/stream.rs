@@ -141,7 +141,7 @@ impl QuickJSBridge {
     /// This method starts the async function but does NOT wait for promise resolution.
     ///
     /// **Property:**
-    /// ```
+    /// ```text
     /// ∀ stream request s:
     ///   invoke_js_function_stream(s) starts async execution AND returns immediately
     ///   The promise from onChatMessage() never resolves (by design)

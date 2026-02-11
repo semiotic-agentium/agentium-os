@@ -4,6 +4,8 @@
 //! Each agent package is a tar.gz containing BAML schemas, compiled TypeScript,
 //! and metadata.
 
+#![recursion_limit = "256"]
+
 mod package;
 
 use anyhow::Context;
@@ -23,6 +25,8 @@ use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_provenance::{AgentType, ProvEvent, ToolIndexConfig, index_tools};
 use baml_rt_provenance::{FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, ProvenanceWriter};
 use baml_rt_quickjs::BamlRuntimeManager;
+use baml_rt_tools::tools::ToolAccess;
+use baml_rt_tools::{enforce_tool_access, parse_access_allowlist};
 use clap::{Parser, ValueEnum};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -61,6 +65,7 @@ impl AgentPackage {
         &self,
         provenance_writer: Option<Arc<dyn ProvenanceWriter>>,
         tool_index: Option<ToolIndexConfig>,
+        access_allowlist: &Option<HashSet<ToolAccess>>,
     ) -> Result<(A2aAgent, AgentId)> {
         let span = spans::load_agent_package(&self.extract_dir);
         let _guard = span.enter();
@@ -83,6 +88,7 @@ impl AgentPackage {
 
         // Register tool instances for every tool declared in the manifest
         for tool_name in &self.manifest.tools {
+            enforce_tool_access(tool_name, access_allowlist)?;
             match tool_name.as_str() {
                 "support/calculate" => {
                     runtime_manager
@@ -92,6 +98,26 @@ impl AgentPackage {
                 "support/clickup" => {
                     runtime_manager
                         .register_tool(baml_rt_tools::clickup::ClickUpTool::new())
+                        .await?;
+                }
+                "support/notion" => {
+                    runtime_manager
+                        .register_tool(baml_rt_tools::notion::NotionTool::new())
+                        .await?;
+                }
+                "support/notionSearchPages" => {
+                    runtime_manager
+                        .register_tool(baml_rt_tools::notion::NotionSearchPagesTool::new())
+                        .await?;
+                }
+                "support/notionGetPage" => {
+                    runtime_manager
+                        .register_tool(baml_rt_tools::notion::NotionGetPageTool::new())
+                        .await?;
+                }
+                "support/notionGetPageBlocks" => {
+                    runtime_manager
+                        .register_tool(baml_rt_tools::notion::NotionGetPageBlocksTool::new())
                         .await?;
                 }
                 other => {
@@ -226,17 +252,20 @@ struct AgentRunner {
     agents: HashMap<String, BootedAgent>,
     provenance_writer: Option<Arc<dyn ProvenanceWriter>>,
     tool_index: Option<ToolIndexConfig>,
+    access_allowlist: Option<HashSet<ToolAccess>>,
 }
 
 impl AgentRunner {
     fn new(
         provenance_writer: Option<Arc<dyn ProvenanceWriter>>,
         tool_index: Option<ToolIndexConfig>,
+        access_allowlist: Option<HashSet<ToolAccess>>,
     ) -> Self {
         Self {
             agents: HashMap::new(),
             provenance_writer,
             tool_index,
+            access_allowlist,
         }
     }
 
@@ -246,7 +275,11 @@ impl AgentRunner {
         let name = package.name().to_string();
         // Boot the package into a running agent
         let (agent, _agent_id) = package
-            .boot(self.provenance_writer.clone(), self.tool_index.clone())
+            .boot(
+                self.provenance_writer.clone(),
+                self.tool_index.clone(),
+                &self.access_allowlist,
+            )
             .await?;
 
         let version = package.version().to_string();
@@ -300,8 +333,22 @@ impl AgentRunner {
             ))
         })?;
         let scope = InvocationScope::synthetic_message(booted.agent.agent_id().clone());
-        let runtime_scope = scope.as_scope().clone();
-        booted.agent.run_handle_a2a(runtime_scope, request).await
+        let agent = booted.agent.clone();
+        tokio::task::spawn_blocking(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| BamlRtError::InvalidArgument(e.to_string()))?;
+            let local = tokio::task::LocalSet::new();
+            rt.block_on(local.run_until(async move {
+                context::with_scope(scope.as_scope().clone(), async move {
+                    agent.handle_a2a(request).await
+                })
+                .await
+            }))
+        })
+        .await
+        .map_err(|e| BamlRtError::InvalidArgument(e.to_string()))?
     }
 
     /// Run the A2A JSON-RPC loop over the given reader/writer (one JSON-RPC request per line).
@@ -698,6 +745,10 @@ fn build_provenance_writer(store: &ProvenanceStoreKind) -> Option<Arc<dyn Proven
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing
     tracing_setup::init_tracing();
+    match dotenvy::dotenv() {
+        Ok(path) => tracing::debug!(path = ?path, "Loaded .env"),
+        Err(err) => tracing::debug!(error = ?err, "No .env loaded"),
+    }
 
     info!("BAML Agent Runner starting");
 
@@ -706,12 +757,13 @@ async fn main() -> anyhow::Result<()> {
         .into_config()
         .context("Failed to parse arguments")?;
     let provenance_writer = build_provenance_writer(&config.provenance_store);
+    let access_allowlist = parse_access_allowlist();
     let tool_index = match &config.provenance_store {
         ProvenanceStoreKind::FalkorDb { url, graph } => {
             Some(ToolIndexConfig::new(url.clone(), graph.clone()))
         }
     };
-    let mut runner = AgentRunner::new(provenance_writer, tool_index);
+    let mut runner = AgentRunner::new(provenance_writer, tool_index, access_allowlist);
 
     for package in &config.packages {
         let package_path = Path::new(package);

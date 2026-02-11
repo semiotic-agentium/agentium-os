@@ -4,6 +4,8 @@
 //! all complete successfully when run sequentially; validates that valid session
 //! plans do not leak state and complete consistently.
 
+#![recursion_limit = "256"]
+
 use async_trait::async_trait;
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt_core::context::{self, InvocationScope, RuntimeScope};

@@ -5,6 +5,8 @@
 //! 2. Finish removes session routing (no more forwards).
 //! 3. Worker eventually emits a response and binds it to message-carried scope.
 
+#![recursion_limit = "256"]
+
 use async_trait::async_trait;
 use baml_rt_a2a::A2aRequestHandler;
 use baml_rt_a2a::session_channel::{
@@ -16,7 +18,6 @@ use baml_rt_core::{BamlRtError, Result};
 use baml_rt_tools::ToolSessionId;
 use proptest::prelude::*;
 use serde_json::{Value, json};
-use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
@@ -35,23 +36,13 @@ struct MockHandler;
 
 #[async_trait(?Send)]
 impl A2aRequestHandler for MockHandler {
-    async fn handle_a2a(&self, _request: Value) -> Result<Vec<Value>> {
-        Err(BamlRtError::ToolExecution(
-            "mock handler should not call handle_a2a directly".to_string(),
-        ))
-    }
-
-    fn run_handle_a2a(
-        &self,
-        scope: RuntimeScope,
-        request: Value,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<Value>>> + Send>> {
-        Box::pin(async move {
-            Ok(vec![json!({
-                "context_id": scope.context_id().to_string(),
-                "echo": request,
-            })])
-        })
+    async fn handle_a2a(&self, request: Value) -> Result<Vec<Value>> {
+        let scope = baml_rt_core::context::current_scope()
+            .map_err(|_| BamlRtError::ToolExecution("missing scope in mock handler".to_string()))?;
+        Ok(vec![json!({
+            "context_id": scope.context_id().to_string(),
+            "echo": request,
+        })])
     }
 }
 
@@ -150,7 +141,13 @@ proptest! {
         rt.block_on(async move {
             let (worker_tx, worker_rx) = mpsc::unbounded_channel::<RuntimeWorkerMsg>();
             let handler: Arc<dyn A2aRequestHandler> = Arc::new(MockHandler);
-            tokio::spawn(run_runtime_worker(handler, worker_rx));
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("runtime");
+                rt.block_on(run_runtime_worker(handler, worker_rx));
+            });
 
             let scope = test_scope(seed);
             let request = json!({"payload": seed});

@@ -5,6 +5,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Agent directory path - validated to exist and contain required structure
 #[derive(Debug, Clone)]
@@ -130,11 +131,18 @@ pub struct BuildDir(PathBuf);
 impl BuildDir {
     /// Create a new temporary build directory
     pub fn new() -> baml_rt_core::Result<Self> {
+        static BUILD_COUNTER: AtomicU64 = AtomicU64::new(0);
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(baml_rt_core::BamlRtError::SystemTime)?;
 
-        let build_dir = std::env::temp_dir().join(format!("baml-build-{}", timestamp.as_secs()));
+        let counter = BUILD_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let build_dir = std::env::temp_dir().join(format!(
+            "baml-build-{}-{}-{}",
+            timestamp.as_secs(),
+            timestamp.subsec_nanos(),
+            counter
+        ));
         std::fs::create_dir_all(&build_dir).map_err(baml_rt_core::BamlRtError::Io)?;
 
         Ok(Self(build_dir))

@@ -63,6 +63,9 @@ jobs:
       - name: Clean build artifacts
         run: cargo clean
 
+      - name: Pre-pull FalkorDB image
+        run: docker pull falkordb/falkordb:latest
+
       - name: Run heavy crate tests (serial)
         run: cargo test --workspace --all-features --exclude baml-rt-core --exclude baml-rt-id --exclude baml-rt-observability --exclude baml-derive-core --exclude baml-derive --exclude baml-derive-tests --exclude baml-rt-a2a -j 1
         env:

@@ -1,5 +1,7 @@
 //! A2A protocol support.
 
+#![recursion_limit = "256"]
+
 pub mod a2a;
 pub mod a2a_store;
 pub mod a2a_transport;

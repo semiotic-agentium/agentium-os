@@ -9,7 +9,6 @@ use crate::tool_fsm::{ToolFailure, ToolSession, ToolSessionError, ToolSessionId,
 use crate::tool_schema::{ToolType, json_schema_value};
 use crate::ts_gen::render_tool_typescript;
 use async_trait::async_trait;
-use baml_rt_core::context::RuntimeScope;
 use baml_rt_core::{BamlRtError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,6 +18,24 @@ use std::marker::PhantomData;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::Mutex as TokioMutex;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum ToolAccess {
+    Read,
+    Write,
+    Delete,
+}
+
+impl std::fmt::Display for ToolAccess {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            ToolAccess::Read => "read",
+            ToolAccess::Write => "write",
+            ToolAccess::Delete => "delete",
+        };
+        write!(f, "{}", value)
+    }
+}
 
 /// Capitalize the first character of a string
 ///
@@ -67,7 +84,7 @@ fn tool_registry_trace(message: &str) {
 ///
 /// Centralizes the validation pattern for open_input parameters.
 /// For unit type `()`, both `null` and empty object `{}` are accepted (registry uses `{}` for one-shot execute).
-fn validate_open_input<T: for<'de> Deserialize<'de>>(open_input: Value) -> Result<()> {
+pub fn validate_open_input<T: for<'de> Deserialize<'de>>(open_input: Value) -> Result<()> {
     match serde_json::from_value::<T>(open_input.clone()) {
         Ok(_) => Ok(()),
         Err(err) => {
@@ -442,6 +459,10 @@ pub struct ToolFunctionMetadata {
     /// JSON schemas via `schema_to_baml`. Populated by tools that derive
     /// `BamlType`; `None` for JS/guest tools that rely on the JSON Schema path.
     pub baml_decl: Option<String>,
+    /// Extra TypeScript declarations required by tool types (e.g. dependent enums).
+    pub extra_ts_decls: Vec<String>,
+    /// Access level required to invoke this tool.
+    pub access: Option<ToolAccess>,
     /// Tool tags for indexing/search
     pub tags: Vec<String>,
     /// Secrets required to execute this tool
@@ -477,6 +498,7 @@ impl ToolFunctionMetadata {
     ///
     /// This helper consolidates the common pattern of building metadata
     /// from type information, reducing duplication across registration sites.
+    #[allow(clippy::too_many_arguments)] // prefer TypeBasedMetadataBuilder for new call sites
     pub fn from_types<OpenInput, Input, Output>(
         name: ToolName,
         class_name: String,
@@ -484,6 +506,8 @@ impl ToolFunctionMetadata {
         tags: Vec<String>,
         secret_requirements: Vec<ToolSecretRequirement>,
         origin: ToolOrigin,
+        extra_ts_decls: Vec<String>,
+        access: Option<ToolAccess>,
     ) -> Self
     where
         OpenInput: crate::tool_schema::ToolType,
@@ -511,6 +535,8 @@ impl ToolFunctionMetadata {
                 ts_decl: ts_decl::<Output>(),
             },
             baml_decl: None,
+            extra_ts_decls,
+            access,
             tags,
             secret_requirements,
             origin,
@@ -527,6 +553,8 @@ pub struct TypeBasedMetadataBuilder<OpenInput, Input, Output> {
     tags: Vec<String>,
     secret_requirements: Vec<ToolSecretRequirement>,
     origin: ToolOrigin,
+    extra_ts_decls: Vec<String>,
+    access: Option<ToolAccess>,
     _phantom: std::marker::PhantomData<(OpenInput, Input, Output)>,
 }
 
@@ -543,6 +571,8 @@ where
             class_name,
             description,
             baml_decl: None,
+            extra_ts_decls: Vec::new(),
+            access: None,
             tags: Vec::new(),
             secret_requirements: Vec::new(),
             origin: ToolOrigin::Host,
@@ -576,6 +606,18 @@ where
         self.origin = origin;
         self
     }
+
+    /// Add extra TypeScript declarations required by tool types.
+    pub fn with_extra_ts_decls(mut self, extra_ts_decls: Vec<String>) -> Self {
+        self.extra_ts_decls = extra_ts_decls;
+        self
+    }
+
+    /// Set access level for this tool.
+    pub fn with_access(mut self, access: ToolAccess) -> Self {
+        self.access = Some(access);
+        self
+    }
 }
 
 impl<OpenInput, Input, Output> ToolMetadataBuilder
@@ -593,6 +635,8 @@ where
             self.tags,
             self.secret_requirements,
             self.origin,
+            self.extra_ts_decls,
+            self.access,
         );
         metadata.baml_decl = self.baml_decl;
         metadata
@@ -611,6 +655,8 @@ pub struct ToolFunctionMetadataExport {
     pub input_type: ToolTypeSpec,
     pub output_type: ToolTypeSpec,
     pub baml_decl: Option<String>,
+    pub extra_ts_decls: Vec<String>,
+    pub access: Option<ToolAccess>,
     pub tags: Vec<String>,
     pub secret_requirements: Vec<ToolSecretRequirement>,
     pub origin: ToolOrigin,
@@ -629,6 +675,8 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
             input_type: metadata.input_type.clone(),
             output_type: metadata.output_type.clone(),
             baml_decl: metadata.baml_decl.clone(),
+            extra_ts_decls: metadata.extra_ts_decls.clone(),
+            access: metadata.access,
             tags: metadata.tags.clone(),
             secret_requirements: metadata.secret_requirements.clone(),
             origin: metadata.origin,
@@ -662,7 +710,6 @@ pub enum ToolOrigin {
 pub struct ToolSessionContext {
     pub session_id: ToolSessionId,
     pub tool_name: ToolName,
-    pub scope: RuntimeScope,
 }
 
 #[async_trait]
@@ -751,11 +798,10 @@ pub struct ToolSessionHandle<State: SessionState> {
 impl ToolSessionHandle<AwaitingInput> {
     pub async fn open(
         registry: Arc<ToolRegistry>,
-        scope: &RuntimeScope,
         name: &str,
         open_input: Value,
     ) -> Result<ToolSessionHandle<AwaitingInput>> {
-        let session_id = registry.open_session(scope, name, open_input).await?;
+        let session_id = registry.open_session(name, open_input).await?;
         Ok(ToolSessionHandle {
             id: session_id,
             registry,
@@ -1279,12 +1325,7 @@ impl ToolRegistry {
     }
 
     /// Open a tool session and return its session id.
-    pub async fn open_session(
-        &self,
-        scope: &RuntimeScope,
-        name: &str,
-        open_input: Value,
-    ) -> Result<ToolSessionId> {
+    pub async fn open_session(&self, name: &str, open_input: Value) -> Result<ToolSessionId> {
         let start = std::time::Instant::now();
         let parsed = ToolName::parse(name)?;
         let session_id = ToolSessionId::random();
@@ -1311,7 +1352,6 @@ impl ToolRegistry {
         let ctx = ToolSessionContext {
             session_id: session_id.clone(),
             tool_name: metadata.name.clone(),
-            scope: scope.clone(),
         };
         let session = handler.open_session(ctx, open_input).await?;
         {
@@ -1431,7 +1471,7 @@ impl ToolRegistry {
     }
 
     /// Execute a tool function by name (single-shot convenience).
-    pub async fn execute(&self, scope: &RuntimeScope, name: &str, args: Value) -> Result<Value> {
+    pub async fn execute(&self, name: &str, args: Value) -> Result<Value> {
         let start = std::time::Instant::now();
         let span = crate::spans::execute_tool(name);
         let _guard = span.enter();
@@ -1459,7 +1499,7 @@ impl ToolRegistry {
 
         // For execute, open_input is always () (empty object)
         let session_id = self
-            .open_session(scope, &parsed.to_string(), empty_open_input())
+            .open_session(&parsed.to_string(), empty_open_input())
             .await?;
         self.session_send(&session_id, args).await?;
         let result = match self.session_next(&session_id).await? {
