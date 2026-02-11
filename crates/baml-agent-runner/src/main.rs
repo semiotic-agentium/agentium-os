@@ -96,29 +96,79 @@ impl AgentPackage {
                         .await?;
                 }
                 "support/clickup" => {
-                    runtime_manager
-                        .register_tool(baml_rt_tools::clickup::ClickUpTool::new())
-                        .await?;
+                    #[cfg(feature = "clickup")]
+                    {
+                        runtime_manager
+                            .register_tool(baml_rt_tools::clickup::ClickUpTool::new())
+                            .await?;
+                    }
+                    #[cfg(not(feature = "clickup"))]
+                    {
+                        return Err(BamlRtError::InvalidArgument(
+                            "ClickUp tool not compiled: enable baml-agent-runner feature 'clickup'"
+                                .to_string(),
+                        ));
+                    }
                 }
                 "support/notion" => {
-                    runtime_manager
-                        .register_tool(baml_rt_tools::notion::NotionTool::new())
-                        .await?;
+                    #[cfg(feature = "notion")]
+                    {
+                        runtime_manager
+                            .register_tool(baml_rt_tools::notion::NotionTool::new())
+                            .await?;
+                    }
+                    #[cfg(not(feature = "notion"))]
+                    {
+                        return Err(BamlRtError::InvalidArgument(
+                            "Notion tool not compiled: enable baml-agent-runner feature 'notion'"
+                                .to_string(),
+                        ));
+                    }
                 }
                 "support/notionSearchPages" => {
-                    runtime_manager
-                        .register_tool(baml_rt_tools::notion::NotionSearchPagesTool::new())
-                        .await?;
+                    #[cfg(feature = "notion")]
+                    {
+                        runtime_manager
+                            .register_tool(baml_rt_tools::notion::NotionSearchPagesTool::new())
+                            .await?;
+                    }
+                    #[cfg(not(feature = "notion"))]
+                    {
+                        return Err(BamlRtError::InvalidArgument(
+                            "Notion tool not compiled: enable baml-agent-runner feature 'notion'"
+                                .to_string(),
+                        ));
+                    }
                 }
                 "support/notionGetPage" => {
-                    runtime_manager
-                        .register_tool(baml_rt_tools::notion::NotionGetPageTool::new())
-                        .await?;
+                    #[cfg(feature = "notion")]
+                    {
+                        runtime_manager
+                            .register_tool(baml_rt_tools::notion::NotionGetPageTool::new())
+                            .await?;
+                    }
+                    #[cfg(not(feature = "notion"))]
+                    {
+                        return Err(BamlRtError::InvalidArgument(
+                            "Notion tool not compiled: enable baml-agent-runner feature 'notion'"
+                                .to_string(),
+                        ));
+                    }
                 }
                 "support/notionGetPageBlocks" => {
-                    runtime_manager
-                        .register_tool(baml_rt_tools::notion::NotionGetPageBlocksTool::new())
-                        .await?;
+                    #[cfg(feature = "notion")]
+                    {
+                        runtime_manager
+                            .register_tool(baml_rt_tools::notion::NotionGetPageBlocksTool::new())
+                            .await?;
+                    }
+                    #[cfg(not(feature = "notion"))]
+                    {
+                        return Err(BamlRtError::InvalidArgument(
+                            "Notion tool not compiled: enable baml-agent-runner feature 'notion'"
+                                .to_string(),
+                        ));
+                    }
                 }
                 other => {
                     warn!(

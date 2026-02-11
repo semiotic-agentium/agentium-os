@@ -13,7 +13,7 @@ path = "src/baml-agent-builder.rs"
 baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-quickjs = { path = "../baml-rt-quickjs" }
-baml-rt-tools = { path = "../baml-rt-tools" }
+baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
 baml-runtime = { workspace = true }
 baml-types = { workspace = true }
 internal-baml-core = { workspace = true }
@@ -42,3 +42,9 @@ test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
 tempfile = { workspace = true }
 insta = { workspace = true }
+
+[features]
+default = []
+clickup = ["baml-rt-tools/clickup"]
+notion = ["baml-rt-tools/notion"]
+http-tools = ["clickup", "notion"]

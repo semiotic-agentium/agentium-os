@@ -20,6 +20,7 @@ use std::path::PathBuf;
 // (Option<T> → "type": ["T", "null"]) and u8 integers are mapped correctly.
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "clickup")]
 #[test]
 fn test_clickup_tool_baml_interfaces() {
     let tool_names = vec!["support/clickup".to_string()];

@@ -2,8 +2,10 @@
 
 pub mod access;
 pub mod bundles;
+#[cfg(feature = "clickup")]
 pub mod clickup;
 mod metrics;
+#[cfg(feature = "notion")]
 pub mod notion;
 mod spans;
 pub mod support;
