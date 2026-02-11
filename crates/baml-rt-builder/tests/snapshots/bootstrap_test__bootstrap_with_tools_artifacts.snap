@@ -41,6 +41,7 @@ client DefaultClient {
 
 
 === src/index.ts ===
+/// <reference path="./baml-runtime.d.ts" />
 // @ts-nocheck
 // Types from ./a2a.ts (normal TS include).
 

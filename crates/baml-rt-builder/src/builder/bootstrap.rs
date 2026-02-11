@@ -49,6 +49,9 @@ fn capitalize_first(s: &str) -> String {
 }
 
 /// Create directory layout and template files, then run the type generator.
+///
+/// The generated index.ts includes `/// <reference path="./baml-runtime.d.ts" />` so
+/// TypeScript resolves BAML function names (e.g. ChooseCalcTool) and openToolSession.
 pub async fn run_bootstrap(
     root: &Path,
     name: &str,
@@ -207,7 +210,8 @@ fn index_ts_template(prompt_name: &str, no_tools: bool) -> String {
         "{ user_message: text }"
     };
     format!(
-        r#"// @ts-nocheck
+        r#"/// <reference path="./baml-runtime.d.ts" />
+// @ts-nocheck
 // Types from ./a2a.ts (normal TS include).
 
 function extractText(message: unknown): string {{

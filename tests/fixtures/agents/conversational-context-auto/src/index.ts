@@ -1,3 +1,4 @@
+/// <reference path="./baml-runtime.d.ts" />
 import type { ChatMessage, ChatStreamChunk, Task } from "./a2a";
 
 function extractText(message: ChatMessage | null | undefined): string {
@@ -23,16 +24,12 @@ function shouldCompute(text: string): boolean {
   return /\d+\s*[\+\-\*\/]\s*\d+/.test(text) || text.toLowerCase().includes("compute");
 }
 
-async function onChatMessage(message: ChatMessage & { __baml_invocation_token?: string }): Promise<void> {
+async function onChatMessage(message: ChatMessage): Promise<void> {
   const text = extractText(message);
-  const token = message.__baml_invocation_token;
 
   try {
     if (shouldCompute(text)) {
-      const toolResult = await ChooseCalcTool({
-        user_message: text,
-        __baml_invocation_token: token,
-      });
+      const toolResult = await ChooseCalcTool({ ...message, user_message: text });
       if (toolResult != null && typeof toolResult === "object" && "result" in toolResult) {
         const result = (toolResult as { result: number }).result;
         const chunk: ChatStreamChunk = {
@@ -45,10 +42,7 @@ async function onChatMessage(message: ChatMessage & { __baml_invocation_token?: 
       throw new Error("BAML tool returned no output");
     }
 
-    const reply = await ChatWithContext({
-      user_message: text,
-      __baml_invocation_token: token,
-    });
+    const reply = await ChatWithContext({ ...message, user_message: text });
     const chunk: ChatStreamChunk = {
       message: newMessage(String(reply)),
       task: newTask(message),

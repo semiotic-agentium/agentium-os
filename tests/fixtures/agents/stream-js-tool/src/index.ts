@@ -1,3 +1,4 @@
+/// <reference path="./baml-runtime.d.ts" />
 /**
  * Fixture: stream-js-tool.
  * Tests streaming of a JS-only result (statusUpdate, artifactUpdate, message).

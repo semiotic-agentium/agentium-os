@@ -1,3 +1,4 @@
+/// <reference path="./baml-runtime.d.ts" />
 /**
  * Fixture: stream-baml-tool.
  * Tests async streaming of a BAML tool (FSM) result driven by message.sendStream.
@@ -24,14 +25,10 @@ function newTask(message?: { parts: { text: string }[] }): Task {
   };
 }
 
-async function onChatMessage(message: ChatMessage & { __baml_invocation_token?: string }): Promise<void> {
+async function onChatMessage(message: ChatMessage): Promise<void> {
   const text = extractText(message);
-  const token = message.__baml_invocation_token;
   try {
-    const toolResult = await ChooseCalcTool({
-      user_message: text,
-      __baml_invocation_token: token,
-    });
+    const toolResult = await ChooseCalcTool({ ...message, user_message: text });
     if (toolResult != null && typeof toolResult === "object" && "result" in toolResult) {
       const chunk: ChatStreamChunk = {
         message: newMessage(`BAML tool result: sum=${(toolResult as { result: number }).result}`),
