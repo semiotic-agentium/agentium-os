@@ -155,10 +155,7 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
 
         if !emitted_decl_types.contains(&tool.output_type.name) {
             schemas.insert(tool.output_type.name.clone(), tool.output_schema.clone());
-            type_names.insert(
-                tool.output_type.name.clone(),
-                tool.output_type.name.clone(),
-            );
+            type_names.insert(tool.output_type.name.clone(), tool.output_type.name.clone());
         }
 
         if tool.open_input_type.name != "()"
@@ -176,8 +173,7 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     }
 
     if !schemas.is_empty() {
-        let domain_types =
-            schema_to_baml::generate_baml_types_from_schemas(&schemas, &type_names)?;
+        let domain_types = schema_to_baml::generate_baml_types_from_schemas(&schemas, &type_names)?;
         if !domain_types.is_empty() {
             write_line(&mut output, "// Domain types generated from JSON schemas")?;
             write_line(&mut output, &domain_types)?;
