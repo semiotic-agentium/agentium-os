@@ -24,7 +24,8 @@ enum ToolSessionOp {
   Abort @description("Close the session with an error. Use this if something went wrong and you need to terminate the session.")
 }
 
-// Domain types generated from JSON schemas
+// Domain types generated from #[derive(BamlType)]
+/// Which ClickUp action to perform.
 enum ClickUpAction {
   ListTeams
   ListSpaces
@@ -35,40 +36,50 @@ enum ClickUpAction {
   UpdateTask
 }
 
+/// Input for the ClickUp tool.
+///
+/// Uses a flat struct with an `action` discriminator instead of a Rust enum
+/// so that BAML (which lacks sum types) can represent it as a single class
+/// with an enum field. Per-action field requirements are validated at runtime
+/// in [`ClickUpTool::execute`].
 class ClickUpInput {
-  action ClickUpAction 
-  team_id string?  @description("Required for `ListSpaces`.")
-  space_id string?  @description("Required for `ListLists`.")
-  list_id string?  @description("Required for `ListTasks` and `CreateTask`.")
-  task_id string?  @description("Required for `GetTask` and `UpdateTask`.")
-  name string?  @description("Required for `CreateTask`.")
-  description string? 
-  priority int?  @description("ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")
-  status string?  @description("Task status string (e.g. \"in progress\"). Used by `UpdateTask`.")
+  action ClickUpAction
+  team_id string? @description("Required for ListSpaces.")
+  space_id string? @description("Required for ListLists.")
+  list_id string? @description("Required for ListTasks and CreateTask.")
+  task_id string? @description("Required for GetTask and UpdateTask.")
+  name string? @description("Required for CreateTask.")
+  description string?
+  priority int? @description("ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")
+  status string? @description("Task status string. Used by UpdateTask.")
 }
 
-class ClickUpItem {
-  id string 
-  name string 
-  kind string  @description("The kind of resource: \"team\", \"space\", or \"list\".")
-}
-
-class ClickUpOutput {
-  tasks ClickUpTaskSummary[] 
-  items ClickUpItem[]  @description("Teams, spaces, or lists returned by navigation actions.")
-  message string 
-}
-
+/// Summary of a single ClickUp task, projected from the API response.
 class ClickUpTaskSummary {
-  id string 
-  name string 
-  status string 
-  url string 
-  assignees string[] 
-  priority string? 
-  due_date string? 
+  id string
+  name string
+  status string
+  url string
+  assignees string[]
+  priority string?
+  due_date string?
 }
 
+/// A generic item returned by navigation actions (teams, spaces, lists).
+class ClickUpItem {
+  id string
+  name string
+  kind string @description("The kind of resource: team, space, or list.")
+}
+
+/// Output returned by every ClickUp tool action.
+///
+/// Task actions populate `tasks`; navigation actions populate `items`.
+class ClickUpOutput {
+  tasks ClickUpTaskSummary[]
+  items ClickUpItem[] @description("Teams, spaces, or lists returned by navigation actions.")
+  message string
+}
 
 class SupportClickupOpenStep {
   op "Open"
