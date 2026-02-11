@@ -1,0 +1,27 @@
+[package]
+name = "baml-rt-api"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "HTTP API surface for BAML agent routing and discovery"
+
+[dependencies]
+axum = { workspace = true }
+baml-rt-a2a = { path = "../baml-rt-a2a" }
+baml-rt-core = { path = "../baml-rt-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+tracing = { workspace = true }
+opentelemetry = { workspace = true }
+http-api-problem = { workspace = true }
+utoipa = { workspace = true }
+utoipa-axum = { workspace = true }
+
+[dev-dependencies]
+async-trait = { workspace = true }
+axum = { workspace = true }
+insta = { workspace = true, features = ["json", "redactions"] }
+tower = { version = "0.5", features = ["util"] }

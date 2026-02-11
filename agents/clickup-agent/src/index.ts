@@ -1,3 +1,4 @@
+/// <reference path="./baml-runtime.d.ts" />
 import type { ChatMessage, ChatStreamChunk, Task } from "./a2a";
 
 function extractText(message: ChatMessage | null | undefined): string {
@@ -20,16 +21,12 @@ function newTask(message?: { parts: { text: string }[] }): Task {
 }
 
 async function onChatMessage(
-  message: ChatMessage & { __baml_invocation_token?: string }
+  message: ChatMessage
 ): Promise<void> {
   const text = extractText(message);
-  const token = message.__baml_invocation_token;
 
   try {
-    const toolResult = await ChooseClickUpAction({
-      user_message: text,
-      __baml_invocation_token: token,
-    });
+    const toolResult = await ChooseClickUpAction({ ...message, user_message: text });
 
     if (toolResult != null && typeof toolResult === "object") {
       const output = toolResult as {

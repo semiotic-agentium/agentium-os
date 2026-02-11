@@ -7,15 +7,18 @@
 mod package;
 
 use anyhow::Context;
+use async_trait::async_trait;
 use baml_rt_a2a::a2a_types::A2aMessageId;
 use baml_rt_a2a::a2a_types::{
     JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER, SendMessageConfiguration,
     SendMessageRequest,
 };
-use baml_rt_a2a::{A2aAgent, A2aRequestHandler, a2a};
+use baml_rt_a2a::{A2aAgent, A2aRequestHandler, AgentRegistry, a2a};
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::ids::{AgentId, DerivedId, ExternalId, TaskId};
-use baml_rt_core::{AgentManifest, BamlRtError, ContextId, Result};
+use baml_rt_core::{
+    AgentDiscoveryEntry, AgentManifest, AgentRouteKey, BamlRtError, ContextId, Result,
+};
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_provenance::{AgentType, ProvEvent, ToolIndexConfig, index_tools};
 use baml_rt_provenance::{FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, ProvenanceWriter};
@@ -81,6 +84,11 @@ impl AgentPackage {
         // Register tool instances for every tool declared in the manifest
         for tool_name in &self.manifest.tools {
             match tool_name.as_str() {
+                "support/calculate" => {
+                    runtime_manager
+                        .register_tool(baml_rt_tools::support::CalculatorTool)
+                        .await?;
+                }
                 "support/clickup" => {
                     runtime_manager
                         .register_tool(baml_rt_tools::clickup::ClickUpTool::new())
@@ -184,11 +192,18 @@ impl AgentPackage {
     fn name(&self) -> &str {
         &self.manifest.name
     }
+
+    /// Get the manifest version
+    fn version(&self) -> &str {
+        &self.manifest.version
+    }
 }
 
-/// Booted agent - holds the running A2aAgent
+/// Booted agent - holds the running A2aAgent and metadata for discovery.
 struct BootedAgent {
     agent: A2aAgent,
+    name: String,
+    version: String,
 }
 
 impl BootedAgent {
@@ -234,7 +249,12 @@ impl AgentRunner {
             .boot(self.provenance_writer.clone(), self.tool_index.clone())
             .await?;
 
-        let booted = BootedAgent { agent };
+        let version = package.version().to_string();
+        let booted = BootedAgent {
+            agent,
+            name: name.clone(),
+            version: version.clone(),
+        };
 
         info!(agent = name, "Agent loaded and booted successfully");
         self.agents.insert(name.clone(), booted);
@@ -253,9 +273,35 @@ impl AgentRunner {
         agent.invoke_function(function_name, args).await
     }
 
-    /// List all loaded agents
+    /// List loaded agent names (for CLI display).
     fn list_agents(&self) -> Vec<String> {
         self.agents.keys().cloned().collect()
+    }
+
+    /// List running agents as discovery entries (for HTTP GET /agents).
+    fn discovery_entries(&self) -> Vec<AgentDiscoveryEntry> {
+        self.agents
+            .iter()
+            .map(|(pkg, booted)| AgentDiscoveryEntry {
+                agent_package: pkg.clone(),
+                agent_instance_id: "default".to_string(),
+                name: booted.name.clone(),
+                version: booted.version.clone(),
+            })
+            .collect()
+    }
+
+    /// Handle A2A request by route key (for HTTP POST /agents/.../a2a).
+    async fn handle_a2a_by_key(&self, key: &AgentRouteKey, request: Value) -> Result<Vec<Value>> {
+        let booted = self.agents.get(&key.agent_package).ok_or_else(|| {
+            BamlRtError::InvalidArgument(format!(
+                "Agent {}/{} not found",
+                key.agent_package, key.agent_instance_id
+            ))
+        })?;
+        let scope = InvocationScope::synthetic_message(booted.agent.agent_id().clone());
+        let runtime_scope = scope.as_scope().clone();
+        booted.agent.run_handle_a2a(runtime_scope, request).await
     }
 
     /// Run the A2A JSON-RPC loop over the given reader/writer (one JSON-RPC request per line).
@@ -435,6 +481,20 @@ impl AgentRunner {
     }
 }
 
+/// Thin wrapper so we can pass the runner as `Arc<dyn AgentRegistry>` to the HTTP API.
+struct RunnerRegistry(Arc<AgentRunner>);
+
+#[async_trait]
+impl AgentRegistry for RunnerRegistry {
+    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
+        self.0.discovery_entries()
+    }
+
+    async fn handle_a2a(&self, key: &AgentRouteKey, request: Value) -> Result<Vec<Value>> {
+        self.0.handle_a2a_by_key(key, request).await
+    }
+}
+
 fn strip_stream_suffix(method: &str) -> (String, bool) {
     for suffix in ["/stream", ".stream", ":stream"] {
         if let Some(stripped) = method.strip_suffix(suffix) {
@@ -555,6 +615,7 @@ struct RunnerConfig {
     packages: Vec<PathBuf>,
     invoke: Option<(String, String, String)>,
     a2a_stdio: bool,
+    serve_http: Option<String>,
     provenance_store: ProvenanceStoreKind,
 }
 
@@ -578,6 +639,10 @@ struct Cli {
     /// Run an A2A JSON-RPC loop over stdio.
     #[arg(long)]
     a2a_stdio: bool,
+
+    /// Bind HTTP API (discovery + A2A routing) on the given address (e.g. 127.0.0.1:8080).
+    #[arg(long, value_name = "ADDR")]
+    serve_http: Option<String>,
 
     /// Provenance storage backend.
     #[arg(long, value_enum, default_value_t = ProvenanceStoreChoice::Falkordb)]
@@ -614,6 +679,7 @@ impl Cli {
             packages: self.packages,
             invoke,
             a2a_stdio: self.a2a_stdio,
+            serve_http: self.serve_http,
             provenance_store,
         })
     }
@@ -691,6 +757,16 @@ async fn main() -> anyhow::Result<()> {
     println!("✅ Loaded {} agent(s):", agents.len());
     for agent_name in &agents {
         println!("  - {}", agent_name);
+    }
+
+    if let Some(bind) = &config.serve_http {
+        let runner = Arc::new(runner);
+        let registry: Arc<dyn AgentRegistry> = Arc::new(RunnerRegistry(runner));
+        info!(bind = %bind, "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a, GET /openapi.json)");
+        baml_rt_api::serve(registry, bind)
+            .await
+            .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))?;
+        return Ok(());
     }
 
     if config.a2a_stdio {

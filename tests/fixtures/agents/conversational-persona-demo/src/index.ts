@@ -1,3 +1,4 @@
+/// <reference path="./baml-runtime.d.ts" />
 import type { ChatMessage, ChatStreamChunk, Task } from "./a2a";
 
 function extractText(message: ChatMessage | null | undefined): string {
@@ -19,15 +20,11 @@ function newTask(message?: { parts: { text: string }[] }): Task {
   };
 }
 
-async function onChatMessage(message: ChatMessage & { __baml_invocation_token?: string }): Promise<void> {
+async function onChatMessage(message: ChatMessage): Promise<void> {
   const text = extractText(message);
-  const token = message.__baml_invocation_token;
 
   try {
-    const reply = await PersonaChat({
-      user_message: text,
-      __baml_invocation_token: token,
-    });
+    const reply = await PersonaChat({ ...message, user_message: text });
 
     const chunk: ChatStreamChunk = {
       message: newMessage(String(reply)),

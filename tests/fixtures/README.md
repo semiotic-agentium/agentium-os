@@ -4,31 +4,36 @@ This directory contains test fixtures used by the test suite.
 
 ## Structure
 
-- `agents/` - Complete test agent applications
-  - `voidship-rites/` - Grimdark hybrid A2A + streaming fixture
+- **`agents/`** — Complete test agent applications (each has `baml_src/`, `src/`, `manifest.json`, `tsconfig.json`):
+  - `stream-baml-tool` — BAML tool (FSM) + streaming response
+  - `stream-js-tool` — JS-only tool + streaming
+  - `conversational-context-auto` — Multi-turn chat with BAML functions and tool routing
+  - `conversational-persona-demo` — Persona-based chat
 
-- `baml/` - BAML schema fixtures
-  - `simple_prompt.baml` - Simple greeting function
-  - `tool_calling.baml` - Tool calling example
-  - `tool_union.baml` - Union type tool calling
-  - `weather_tool.baml` - Weather tool definition
+  Each agent’s `src/baml-runtime.d.ts` is **generated** from its `baml_src/` by the runtime type generator. To refresh all fixture declarations after changing the generator or BAML:
 
-- `packages/` - Pre-built test packages (generated during tests)
-  - This directory is for packages created during test execution
+  ```bash
+  cargo run -p baml-rt-builder --bin regen_fixtures
+  ```
+
+- **`baml/`** — BAML schema fixtures (if present)
+  - Used for schema-level tests
+
+- **`packages/`** — Pre-built test packages (generated during tests)
+  - For packages created during test execution
 
 ## Usage
 
-Use the fixture helpers in `tests/support/fixtures.rs`:
+Use the fixture helpers in `test-support` and test modules:
 
 ```rust
-use tests::support::*;
-
-let baml_path = baml_fixture("simple_prompt.baml");
-let agent_path = agent_fixture("voidship-rites");
+let baml_src = fixture_baml_src("stream-baml-tool");  // path to agents/stream-baml-tool/baml_src
+let agent_root = agent_fixture("stream-baml-tool");   // path to agents/stream-baml-tool
 ```
 
 ## Adding New Fixtures
 
-1. Place BAML files in `baml/`
-2. Place agent applications in `agents/{name}/`
-3. Update this README if adding new categories
+1. Add an agent under `agents/{name}/` with `baml_src/`, `src/`, `manifest.json`, `tsconfig.json`.
+2. Add `{name}` to the `regen_fixtures` binary in `crates/baml-rt-builder/src/bin/regen_fixtures.rs`.
+3. Run `cargo run -p baml-rt-builder --bin regen_fixtures` to generate `src/baml-runtime.d.ts`.
+4. Update this README if adding new categories.

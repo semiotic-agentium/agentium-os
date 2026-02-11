@@ -7,9 +7,11 @@
 //! not in the lib. See [`bootstrap`].
 
 pub mod baml_gen;
+pub mod baml_signature_gen;
 pub mod bootstrap;
 pub mod compiler;
 pub mod filesystem;
+pub mod ir_to_ts;
 pub mod linter;
 pub mod packager;
 pub mod schema_to_baml;

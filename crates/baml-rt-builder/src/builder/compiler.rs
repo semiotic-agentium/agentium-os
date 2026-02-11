@@ -1,6 +1,7 @@
 //! Compiler implementations for BAML and TypeScript
 
 use crate::builder::baml_gen::render_baml_tool_interfaces;
+use crate::builder::baml_signature_gen::extract_baml_signatures;
 use crate::builder::traits::{FileSystem, TypeGenerator, TypeScriptCompiler};
 use crate::builder::ts_gen::{load_manifest_tools, render_ts_declarations};
 use crate::builder::types::BuildDir;
@@ -167,11 +168,10 @@ impl TypeGenerator for RuntimeTypeGenerator {
         let runtime = BamlRuntime::from_directory(baml_src, env_vars, feature_flags)
             .map_err(|e| BamlRtError::RuntimeLoadFailed { source: e })?;
 
-        // Get function names from runtime
-        let function_names: Vec<String> = runtime.function_names().map(|s| s.to_string()).collect();
-
-        // Generate TypeScript declarations
-        let declarations = render_ts_declarations(&function_names, &tool_names)?;
+        // Typed signatures from IR (no BAML source parsing); TS emitter gets IR + tool names so
+        // it emits typed BAML function declarations and preserves tool type generation.
+        let ir_signature = extract_baml_signatures(&runtime)?;
+        let declarations = render_ts_declarations(&ir_signature, &tool_names)?;
         let ts_output_path = build_dir.join("dist").join("baml-runtime.d.ts");
         if let Some(parent) = ts_output_path.parent() {
             fs::create_dir_all(parent).map_err(BamlRtError::Io)?;
