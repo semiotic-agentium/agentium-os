@@ -81,7 +81,7 @@ codegen-units = 1
 
 [profile.dev]
 opt-level = 0
-debug = true
+debug = "line-tables-only"
 
 [profile.test]
 opt-level = 0
