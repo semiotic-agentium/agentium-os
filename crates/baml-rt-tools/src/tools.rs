@@ -498,6 +498,7 @@ impl ToolFunctionMetadata {
     ///
     /// This helper consolidates the common pattern of building metadata
     /// from type information, reducing duplication across registration sites.
+    #[allow(clippy::too_many_arguments)] // prefer TypeBasedMetadataBuilder for new call sites
     pub fn from_types<OpenInput, Input, Output>(
         name: ToolName,
         class_name: String,
