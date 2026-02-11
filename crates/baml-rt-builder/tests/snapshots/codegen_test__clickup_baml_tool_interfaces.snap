@@ -48,11 +48,11 @@ enum ClickUpAction {
 /// in [`ClickUpTool::execute`].
 class ClickUpInput {
   action ClickUpAction
-  team_id string? @description("Required for `ListSpaces`.")
-  space_id string? @description("Required for `ListLists`.")
-  list_id string? @description("Required for `ListTasks` and `CreateTask`.")
-  task_id string? @description("Required for `GetTask` and `UpdateTask`.")
-  name string? @description("Required for `CreateTask`.")
+  team_id string? @description("Required for ListSpaces.")
+  space_id string? @description("Required for ListLists.")
+  list_id string? @description("Required for ListTasks and CreateTask.")
+  task_id string? @description("Required for GetTask and UpdateTask.")
+  name string? @description("Required for CreateTask.")
   description string?
   priority int? @description("ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")
   status string? @description("Task status string (e.g. \"in progress\"). Used by `UpdateTask`.")

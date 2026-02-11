@@ -9,7 +9,6 @@ use crate::tool_fsm::{ToolFailure, ToolSession, ToolSessionError, ToolSessionId,
 use crate::tool_schema::{ToolType, json_schema_value};
 use crate::ts_gen::render_tool_typescript;
 use async_trait::async_trait;
-use baml_rt_core::context::RuntimeScope;
 use baml_rt_core::{BamlRtError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -448,8 +447,6 @@ pub struct ToolFunctionMetadata {
     pub tags: Vec<String>,
     /// Secrets required to execute this tool
     pub secret_requirements: Vec<ToolSecretRequirement>,
-    /// Access classification for policy and UI hints
-    pub access: Option<ToolAccess>,
     /// Origin of this tool (host vs guest)
     pub origin: ToolOrigin,
 }
@@ -481,14 +478,12 @@ impl ToolFunctionMetadata {
     ///
     /// This helper consolidates the common pattern of building metadata
     /// from type information, reducing duplication across registration sites.
-    #[allow(clippy::too_many_arguments)] // internal builder helper
     pub fn from_types<OpenInput, Input, Output>(
         name: ToolName,
         class_name: String,
         description: String,
         tags: Vec<String>,
         secret_requirements: Vec<ToolSecretRequirement>,
-        access: Option<ToolAccess>,
         origin: ToolOrigin,
         extra_ts_decls: Vec<String>,
     ) -> Self
@@ -521,7 +516,6 @@ impl ToolFunctionMetadata {
             extra_ts_decls,
             tags,
             secret_requirements,
-            access,
             origin,
         }
     }
@@ -535,7 +529,6 @@ pub struct TypeBasedMetadataBuilder<OpenInput, Input, Output> {
     baml_decl: Option<String>,
     tags: Vec<String>,
     secret_requirements: Vec<ToolSecretRequirement>,
-    access: Option<ToolAccess>,
     origin: ToolOrigin,
     extra_ts_decls: Vec<String>,
     _phantom: std::marker::PhantomData<(OpenInput, Input, Output)>,
@@ -556,7 +549,6 @@ where
             baml_decl: None,
             tags: Vec::new(),
             secret_requirements: Vec::new(),
-            access: None,
             origin: ToolOrigin::Host,
             extra_ts_decls: Vec::new(),
             _phantom: std::marker::PhantomData,
@@ -581,12 +573,6 @@ where
     /// Set secret requirements for the tool
     pub fn with_secrets(mut self, secrets: Vec<ToolSecretRequirement>) -> Self {
         self.secret_requirements = secrets;
-        self
-    }
-
-    /// Set access classification for the tool
-    pub fn with_access(mut self, access: ToolAccess) -> Self {
-        self.access = Some(access);
         self
     }
 
@@ -617,7 +603,6 @@ where
             self.description,
             self.tags,
             self.secret_requirements,
-            self.access,
             self.origin,
             self.extra_ts_decls,
         );
@@ -640,7 +625,6 @@ pub struct ToolFunctionMetadataExport {
     pub baml_decl: Option<String>,
     pub tags: Vec<String>,
     pub secret_requirements: Vec<ToolSecretRequirement>,
-    pub access: Option<ToolAccess>,
     pub origin: ToolOrigin,
 }
 
@@ -659,7 +643,6 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
             baml_decl: metadata.baml_decl.clone(),
             tags: metadata.tags.clone(),
             secret_requirements: metadata.secret_requirements.clone(),
-            access: metadata.access,
             origin: metadata.origin,
         }
     }
@@ -679,24 +662,6 @@ pub enum ToolCapability {
     Streaming,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum ToolAccess {
-    Read,
-    Write,
-    Delete,
-}
-
-impl std::fmt::Display for ToolAccess {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let label = match self {
-            ToolAccess::Read => "read",
-            ToolAccess::Write => "write",
-            ToolAccess::Delete => "delete",
-        };
-        f.write_str(label)
-    }
-}
-
 /// Origin of a tool invocation (host vs guest)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ToolOrigin {
@@ -709,7 +674,6 @@ pub enum ToolOrigin {
 pub struct ToolSessionContext {
     pub session_id: ToolSessionId,
     pub tool_name: ToolName,
-    pub scope: RuntimeScope,
 }
 
 #[async_trait]
@@ -798,11 +762,10 @@ pub struct ToolSessionHandle<State: SessionState> {
 impl ToolSessionHandle<AwaitingInput> {
     pub async fn open(
         registry: Arc<ToolRegistry>,
-        scope: &RuntimeScope,
         name: &str,
         open_input: Value,
     ) -> Result<ToolSessionHandle<AwaitingInput>> {
-        let session_id = registry.open_session(scope, name, open_input).await?;
+        let session_id = registry.open_session(name, open_input).await?;
         Ok(ToolSessionHandle {
             id: session_id,
             registry,
@@ -1326,12 +1289,7 @@ impl ToolRegistry {
     }
 
     /// Open a tool session and return its session id.
-    pub async fn open_session(
-        &self,
-        scope: &RuntimeScope,
-        name: &str,
-        open_input: Value,
-    ) -> Result<ToolSessionId> {
+    pub async fn open_session(&self, name: &str, open_input: Value) -> Result<ToolSessionId> {
         let start = std::time::Instant::now();
         let parsed = ToolName::parse(name)?;
         let session_id = ToolSessionId::random();
@@ -1358,7 +1316,6 @@ impl ToolRegistry {
         let ctx = ToolSessionContext {
             session_id: session_id.clone(),
             tool_name: metadata.name.clone(),
-            scope: scope.clone(),
         };
         let session = handler.open_session(ctx, open_input).await?;
         {
@@ -1478,7 +1435,7 @@ impl ToolRegistry {
     }
 
     /// Execute a tool function by name (single-shot convenience).
-    pub async fn execute(&self, scope: &RuntimeScope, name: &str, args: Value) -> Result<Value> {
+    pub async fn execute(&self, name: &str, args: Value) -> Result<Value> {
         let start = std::time::Instant::now();
         let span = crate::spans::execute_tool(name);
         let _guard = span.enter();
@@ -1506,7 +1463,7 @@ impl ToolRegistry {
 
         // For execute, open_input is always () (empty object)
         let session_id = self
-            .open_session(scope, &parsed.to_string(), empty_open_input())
+            .open_session(&parsed.to_string(), empty_open_input())
             .await?;
         self.session_send(&session_id, args).await?;
         let result = match self.session_next(&session_id).await? {
