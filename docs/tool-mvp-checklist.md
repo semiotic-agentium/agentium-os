@@ -24,6 +24,8 @@ Use this checklist before merging a new host tool.
 - Output includes stable source identifiers (IDs + URLs).
 
 ## Tooling & Integration
+- All public input/output types derive `BamlType` (alongside `JsonSchema` and `TS`).
+- `baml_decl` is wired into tool metadata via `with_baml_decl()`.
 - Tool is registered in `baml-agent-runner`.
 - Tool is allowlisted in agent `manifest.json`.
 - Generated artifacts updated if required.

@@ -7,7 +7,10 @@ This guide describes how to add a new host tool to the agent platform. Host tool
 Create a new Rust module in `crates/baml-rt-tools/src/` and implement the `BamlTool` trait.
 
 Key requirements:
-- Provide `Input` and `Output` types (serde + schemars + ts-rs).
+- Provide `Input` and `Output` types (serde + schemars + ts-rs + `BamlType`).
+- Derive `BamlType` on all public types used in the tool's input/output schema. Use
+  `#[baml(description = "...")]` for field docs and `#[baml(alias = "...")]` for
+  variant renames that must appear in the generated BAML.
 - Provide a `description()` string (avoid unescaped quotes in descriptions).
 - Enforce action-specific required fields at runtime.
 - Map tool errors to `BamlRtError`.
@@ -22,6 +25,9 @@ Expose a metadata function and register it for codegen:
 
 - Use `TypeBasedMetadataBuilder` and `register_tool_metadata!`.
 - The tool name should be a namespaced string like `support/<tool>`.
+- Collect BAML declarations from your types via `BamlType::baml_decl()` and pass
+  them to the builder with `.with_baml_decl(decl)`. This lets `baml_gen.rs` emit
+  accurate domain type definitions instead of inferring them from JSON Schema.
 
 This metadata is used by the builder to generate BAML and TypeScript interfaces.
 
