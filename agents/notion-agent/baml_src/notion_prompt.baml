@@ -1,22 +1,34 @@
-function ChooseNotionAction(user_message: string) -> SupportNotionSearchPagesSessionPlan | SupportNotionGetPageSessionPlan | SupportNotionGetPageBlocksSessionPlan {
+class ReadOnlyResponse {
+  message string
+  next_step string?
+}
+
+function ChooseNotionAction(user_message: string) -> ReadOnlyResponse | SupportNotionSessionPlan {
   client DeepSeekOpenRouter
   prompt #"
     You are a Notion assistant. This tool is read-only and must be auditable.
     Use prior turns if present in ctx.tags.conversation_history.
 
     Available tools:
-    - support/notionSearchPages: search Notion pages by query (optional query).
-    - support/notionGetPage: get details of a page (needs page_id).
-    - support/notionGetPageBlocks: retrieve block content for a page or block (needs block_id).
+    - support/notion: a single tool with action enum:
+      - SearchPages (query, start_cursor, page_size)
+      - GetPage (page_id)
+      - GetPageBlocks (block_id, start_cursor, page_size)
 
     Guidance:
     - If the user provides a page_id or block_id, prefer the matching get tool.
     - If the user asks "what are we working on" or similar, start with search.
+    - If the user asks for a summary/brief/commitments/roadmap/status, include GetPageBlocks in the plan.
     - If no identifier is provided, return search results and ask a follow-up.
     - Do not attempt writes or edits.
+    - If the user asks to write/edit/delete/archive/create:
+      - Return ReadOnlyResponse with a short apology and a read-only next step.
 
-    Produce a session plan that opens a tool session, sends the appropriate input,
-    retrieves the result, and finishes.
+    Otherwise, choose exactly one session plan and produce steps:
+    Open -> Send -> Next -> Finish.
+    You may chain multiple Send -> Next steps to discover IDs.
+    Example (user wants summary but no page_id):
+      Open -> Send(action=SearchPages) -> Next -> Send(action=GetPageBlocks, block_id=<from pages>) -> Next -> Finish.
 
     {{ ctx.output_format }}
 

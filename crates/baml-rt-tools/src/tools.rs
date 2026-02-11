@@ -442,6 +442,8 @@ pub struct ToolFunctionMetadata {
     /// JSON schemas via `schema_to_baml`. Populated by tools that derive
     /// `BamlType`; `None` for JS/guest tools that rely on the JSON Schema path.
     pub baml_decl: Option<String>,
+    /// Extra TypeScript declarations required by tool types (e.g. dependent enums)
+    pub extra_ts_decls: Vec<String>,
     /// Tool tags for indexing/search
     pub tags: Vec<String>,
     /// Secrets required to execute this tool
@@ -479,6 +481,7 @@ impl ToolFunctionMetadata {
     ///
     /// This helper consolidates the common pattern of building metadata
     /// from type information, reducing duplication across registration sites.
+    #[allow(clippy::too_many_arguments)] // internal builder helper
     pub fn from_types<OpenInput, Input, Output>(
         name: ToolName,
         class_name: String,
@@ -487,6 +490,7 @@ impl ToolFunctionMetadata {
         secret_requirements: Vec<ToolSecretRequirement>,
         access: Option<ToolAccess>,
         origin: ToolOrigin,
+        extra_ts_decls: Vec<String>,
     ) -> Self
     where
         OpenInput: crate::tool_schema::ToolType,
@@ -514,6 +518,7 @@ impl ToolFunctionMetadata {
                 ts_decl: ts_decl::<Output>(),
             },
             baml_decl: None,
+            extra_ts_decls,
             tags,
             secret_requirements,
             access,
@@ -532,6 +537,7 @@ pub struct TypeBasedMetadataBuilder<OpenInput, Input, Output> {
     secret_requirements: Vec<ToolSecretRequirement>,
     access: Option<ToolAccess>,
     origin: ToolOrigin,
+    extra_ts_decls: Vec<String>,
     _phantom: std::marker::PhantomData<(OpenInput, Input, Output)>,
 }
 
@@ -552,6 +558,7 @@ where
             secret_requirements: Vec::new(),
             access: None,
             origin: ToolOrigin::Host,
+            extra_ts_decls: Vec::new(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -588,6 +595,12 @@ where
         self.origin = origin;
         self
     }
+
+    /// Add extra TypeScript declarations required by tool types.
+    pub fn with_extra_ts_decls(mut self, extra_ts_decls: Vec<String>) -> Self {
+        self.extra_ts_decls = extra_ts_decls;
+        self
+    }
 }
 
 impl<OpenInput, Input, Output> ToolMetadataBuilder
@@ -606,6 +619,7 @@ where
             self.secret_requirements,
             self.access,
             self.origin,
+            self.extra_ts_decls,
         );
         metadata.baml_decl = self.baml_decl;
         metadata

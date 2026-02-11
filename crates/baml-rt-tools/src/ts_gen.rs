@@ -54,6 +54,12 @@ pub fn render_tool_typescript(tools: &[ToolFunctionMetadata]) -> Result<String> 
     tokens.line();
 
     for tool in tools {
+        for extra in &tool.extra_ts_decls {
+            for line in extra.lines() {
+                quote_in!(tokens => $(line));
+            }
+            tokens.line();
+        }
         if let Some(ts) = &tool.input_type.ts_decl {
             for line in ts.lines() {
                 quote_in!(tokens => $(line));

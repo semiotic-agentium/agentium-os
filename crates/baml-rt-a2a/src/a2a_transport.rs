@@ -215,6 +215,7 @@ impl A2aAgent {
                 ts_decl: None,
             },
             baml_decl: None,
+            extra_ts_decls: Vec::new(),
             tags: Vec::new(),
             secret_requirements: Vec::new(),
             access: None,

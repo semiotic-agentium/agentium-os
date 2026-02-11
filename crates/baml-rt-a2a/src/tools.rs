@@ -178,6 +178,7 @@ fn a2a_session_metadata_result(name: &str) -> Result<ToolFunctionMetadata> {
             ts_decl: ts_decl::<A2aSessionOutput>(),
         },
         baml_decl: None,
+        extra_ts_decls: Vec::new(),
         tags: vec!["a2a".to_string(), "session".to_string()],
         secret_requirements: Vec::new(),
         access: None,

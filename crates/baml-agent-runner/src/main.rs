@@ -148,6 +148,11 @@ impl AgentPackage {
                         .register_tool(baml_rt_tools::clickup::ClickUpTool::new())
                         .await?;
                 }
+                "support/notion" => {
+                    runtime_manager
+                        .register_tool(baml_rt_tools::notion::NotionTool::new())
+                        .await?;
+                }
                 "support/notionSearchPages" => {
                     runtime_manager
                         .register_tool(baml_rt_tools::notion::NotionSearchPagesTool::new())

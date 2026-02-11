@@ -19,23 +19,6 @@ function newTask(message?: { parts: { text: string }[] }): Task {
   };
 }
 
-function isWriteRequest(text: string): boolean {
-  const lowered = text.toLowerCase();
-  const keywords = ["create", "edit", "delete", "archive", "write"];
-  const phrases = [
-    "create page",
-    "update page",
-    "edit page",
-    "delete page",
-    "archive page",
-    "add page",
-  ];
-  return (
-    keywords.some((k) => lowered.includes(`${k} `)) ||
-    phrases.some((p) => lowered.includes(p))
-  );
-}
-
 function wantsSummary(text: string): boolean {
   const lowered = text.toLowerCase();
   const keywords = [
@@ -51,9 +34,35 @@ function wantsSummary(text: string): boolean {
   return keywords.some((k) => lowered.includes(k));
 }
 
+type NotionPageSummary = { id: string; title: string; url: string };
+type NotionBlockSummary = { text?: string | null };
+type NotionSource = { page_id: string; url: string };
+
+type NotionOutput = {
+  message?: string;
+  pages?: NotionPageSummary[];
+  blocks?: NotionBlockSummary[];
+  sources?: NotionSource[];
+};
+
+type ReadOnlyResponse = {
+  message: string;
+  next_step?: string;
+};
+
+type NotionActionResult = NotionOutput | ReadOnlyResponse | null;
+
+function isReadOnlyResponse(action: NotionActionResult): action is ReadOnlyResponse {
+  if (!action || typeof action !== "object") return false;
+  const candidate = action as Record<string, unknown>;
+  if (typeof candidate.message !== "string") return false;
+  const hasPages = "pages" in candidate || "blocks" in candidate || "sources" in candidate;
+  return !hasPages;
+}
+
 function formatSources(
-  sources?: { page_id: string; url: string }[],
-  pages?: { id: string; title: string; url: string }[]
+  sources?: NotionSource[],
+  pages?: NotionPageSummary[]
 ): string {
   if (!sources || sources.length === 0) return "";
   const pageTitleById = new Map<string, string>();
@@ -65,7 +74,7 @@ function formatSources(
   return "\n\nSources:\n" + lines.join("\n");
 }
 
-function formatPages(pages?: { title: string; url: string }[]): string {
+function formatPages(pages?: NotionPageSummary[]): string {
   if (!pages || pages.length === 0) return "";
   const lines = pages.map((p) => `• ${p.title} — ${p.url}`);
   return "\n\nPages:\n" + lines.join("\n");
@@ -90,77 +99,11 @@ async function summarizeBlocks(args: {
   return null;
 }
 
-async function fetchBlocksForPage(args: {
-  page_id: string;
-  token?: string;
-}): Promise<{
-  pages?: { id: string; title: string; url: string }[];
-  blocks?: { text?: string | null }[];
-  sources?: { page_id: string; url: string }[];
-  message?: string;
-  } | null> {
-  if (!args.token) return null;
-  let session: { send: (input: { block_id: string }) => Promise<void>; continue: () => Promise<{ output?: unknown } | null>; finish: () => Promise<void> } | null = null;
-  try {
-    session = await openToolSession("support/notionGetPageBlocks", args.token);
-    await session.send({ block_id: args.page_id });
-    const step = await session.continue();
-    if (step && step.output && typeof step.output === "object") {
-      return step.output as {
-        pages?: { id: string; title: string; url: string }[];
-        blocks?: { text?: string | null }[];
-        sources?: { page_id: string; url: string }[];
-        message?: string;
-      };
-    }
-  } catch {
-    return null;
-  } finally {
-    if (session) {
-      try {
-        await session.finish();
-      } catch {
-        // ignore
-      }
-    }
-  }
-  return null;
-}
-
-function mergeOutputs(
-  base: {
-    message?: string;
-    pages?: { id: string; title: string; url: string }[];
-    blocks?: { text?: string | null }[];
-    sources?: { page_id: string; url: string }[];
-  },
-  extra: {
-    message?: string;
-    pages?: { id: string; title: string; url: string }[];
-    blocks?: { text?: string | null }[];
-    sources?: { page_id: string; url: string }[];
-  }
-) {
-  return {
-    message: extra.message || base.message,
-    pages: (extra.pages && extra.pages.length > 0 ? extra.pages : base.pages) || [],
-    blocks: (extra.blocks && extra.blocks.length > 0 ? extra.blocks : base.blocks) || [],
-    sources: (extra.sources && extra.sources.length > 0 ? extra.sources : base.sources) || [],
-  };
-}
-
 async function onChatMessage(
   message: ChatMessage & { __baml_invocation_token?: string }
 ): Promise<void> {
   const text = extractText(message);
   const token = message.__baml_invocation_token;
-
-  if (isWriteRequest(text)) {
-    const msg =
-      "This Notion tool is read-only in the MVP. I can search pages or summarize page content.";
-    __baml_chat_yield({ message: newMessage(msg), task: newTask(newMessage(msg)) });
-    return;
-  }
 
   try {
     const toolResult = await ChooseNotionAction({
@@ -168,50 +111,29 @@ async function onChatMessage(
       __baml_invocation_token: token,
     });
 
+    if (isReadOnlyResponse(toolResult)) {
+      const nextStep = toolResult.next_step
+        ? `\n\nNext step:\n- ${toolResult.next_step}`
+        : "";
+      const msg = `${toolResult.message}${nextStep}`;
+      __baml_chat_yield({ message: newMessage(msg), task: newTask(newMessage(msg)) });
+      return;
+    }
+
     if (toolResult != null && typeof toolResult === "object") {
-      const output = toolResult as {
-        message?: string;
-        pages?: { id: string; title: string; url: string }[];
-        blocks?: { text?: string | null }[];
-        sources?: { page_id: string; url: string }[];
-      };
+      const output = toolResult as NotionOutput;
 
-      let merged = output;
-      if (
-        wantsSummary(text) &&
-        output.pages &&
-        output.pages.length > 0 &&
-        (!output.blocks || output.blocks.length === 0)
-      ) {
-        const pagesToExpand = output.pages.slice(0, 3);
-        const mergedBlocks: { text?: string | null }[] = [];
-        const mergedSources: { page_id: string; url: string }[] = [];
-        for (const page of pagesToExpand) {
-          const blocksResult = await fetchBlocksForPage({
-            page_id: page.id,
-            token,
-          });
-          if (blocksResult) {
-            mergedBlocks.push(...(blocksResult.blocks || []));
-            mergedSources.push(...(blocksResult.sources || []));
-          }
-        }
-        if (mergedBlocks.length > 0) {
-          merged = mergeOutputs(output, { blocks: mergedBlocks, sources: mergedSources });
-        }
-      }
+      let response = output.message || "Done.";
+      response += formatPages(output.pages);
 
-      let response = merged.message || "Done.";
-      response += formatPages(merged.pages);
-
-      const blocksText = (merged.blocks || [])
+      const blocksText = (output.blocks || [])
         .map((b) => b.text)
         .filter((t): t is string => Boolean(t && t.trim()))
         .join("\n");
 
       if (blocksText.length > 0) {
-        const pageTitle = merged.pages && merged.pages[0] ? merged.pages[0].title : null;
-        const pageUrl = merged.pages && merged.pages[0] ? merged.pages[0].url : null;
+        const pageTitle = output.pages && output.pages[0] ? output.pages[0].title : null;
+        const pageUrl = output.pages && output.pages[0] ? output.pages[0].url : null;
         const truncated = blocksText.length > 8000 ? blocksText.slice(0, 8000) : blocksText;
         const summary = await summarizeBlocks({
           user_message: text,
@@ -227,12 +149,12 @@ async function onChatMessage(
           "\n\nMissing:\n- Page content not retrieved. Provide a Notion page link or ID, or ensure the integration has access.";
       }
 
-      if ((!merged.pages || merged.pages.length === 0) && (!merged.blocks || merged.blocks.length === 0)) {
+      if ((!output.pages || output.pages.length === 0) && (!output.blocks || output.blocks.length === 0)) {
         response +=
           "\n\nMissing:\n- No Notion pages found for this request. Provide a page link or adjust the query, or ensure the integration has access.";
       }
 
-      response += formatSources(merged.sources, merged.pages);
+      response += formatSources(output.sources, output.pages);
 
       __baml_chat_yield({
         message: newMessage(response),

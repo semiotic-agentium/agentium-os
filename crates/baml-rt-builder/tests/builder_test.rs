@@ -92,8 +92,8 @@ async fn test_full_integration_package_load_execute() {
 
     use baml_rt::baml::BamlRuntimeManager;
     use baml_rt::quickjs_bridge::QuickJSBridge;
-    use baml_rt_quickjs::begin_a2a_yield_session;
     use baml_rt_core::ids::{AgentId, UuidId};
+    use baml_rt_quickjs::begin_a2a_yield_session;
     use serde_json::json;
     use std::fs;
     use std::sync::Arc;

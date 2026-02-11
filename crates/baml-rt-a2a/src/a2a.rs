@@ -696,8 +696,7 @@ mod tests {
         let spans = _otel.spans();
         let span = find_span_with_attr(&spans, "baml_rt.a2a_stream", "correlation_id", "corr-1-19")
             .unwrap_or_else(|| {
-                find_span(&spans, "baml_rt.a2a_stream")
-                    .expect("expected baml_rt.a2a_stream span")
+                find_span(&spans, "baml_rt.a2a_stream").expect("expected baml_rt.a2a_stream span")
             });
         assert_eq!(
             attr_value(span, "method").as_deref(),
@@ -754,8 +753,7 @@ mod tests {
         let spans = _otel.spans();
         let span = find_span_with_attr(&spans, "baml_rt.a2a_stream", "correlation_id", "corr-1-20")
             .unwrap_or_else(|| {
-                find_span(&spans, "baml_rt.a2a_stream")
-                    .expect("expected baml_rt.a2a_stream span")
+                find_span(&spans, "baml_rt.a2a_stream").expect("expected baml_rt.a2a_stream span")
             });
         assert_eq!(
             attr_value(span, "method").as_deref(),

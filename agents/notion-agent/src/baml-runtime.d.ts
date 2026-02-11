@@ -1,4 +1,5 @@
 declare function ChooseNotionAction(args?: Record<string, unknown>): Promise<unknown>;
+
 declare function SummarizeNotionContent(args?: Record<string, unknown>): Promise<unknown>;
 
 export type ToolFailureKind =
@@ -24,18 +25,11 @@ export interface ToolSession<I, O> {
     finish(): Promise<void>;
     abort(reason?: string): Promise<void>;
 }
-export type ToolName = "support/notionSearchPages" | "support/notionGetPage" | "support/notionGetPageBlocks";
-type NotionSearchPagesInput = { query: string | null, start_cursor: string | null, page_size: number | null, };
-type NotionGetPageInput = { page_id: string, };
-type NotionGetPageBlocksInput = { block_id: string, start_cursor: string | null, page_size: number | null, };
+export type ToolName = "support/notion";
+type NotionAction = "SearchPages" | "GetPage" | "GetPageBlocks";
+type NotionInput = { action: NotionAction, query: string | null, start_cursor: string | null, page_size: number | null, page_id: string | null, block_id: string | null, };
 type NotionOutput = { pages: Array<NotionPageSummary>, blocks: Array<NotionBlockSummary>, next_cursor: string | null, has_more: boolean, sources: Array<NotionSource>, message: string, };
-type NotionPageSummary = { id: string, title: string, url: string, last_edited_time: string | null, };
-type NotionBlockSummary = { id: string, block_type: string, text: string | null, has_children: boolean, };
-type NotionSource = { page_id: string, url: string, };
-type NotionSummary = { summary: string, };
-export interface ToolInputMap { "support/notionSearchPages": NotionSearchPagesInput; "support/notionGetPage": NotionGetPageInput; "support/notionGetPageBlocks": NotionGetPageBlocksInput;
- }export interface ToolOutputMap { "support/notionSearchPages": NotionOutput; "support/notionGetPage": NotionOutput; "support/notionGetPageBlocks": NotionOutput;
+export interface ToolInputMap { "support/notion": NotionInput;
+ }export interface ToolOutputMap { "support/notion": NotionOutput;
  }export type ToolInput<T extends ToolName> = ToolInputMap[T];export type ToolOutput<T extends ToolName> = ToolOutputMap[T];declare function openToolSession<T extends ToolName>(toolName: T): Promise<ToolSession<ToolInput<T>, ToolOutput<T>>>;
-declare function openSupportNotionSearchPagesSession(): Promise<ToolSession<ToolInput<"support/notionSearchPages">, ToolOutput<"support/notionSearchPages">>>;
-declare function openSupportNotionGetPageSession(): Promise<ToolSession<ToolInput<"support/notionGetPage">, ToolOutput<"support/notionGetPage">>>;
-declare function openSupportNotionGetPageBlocksSession(): Promise<ToolSession<ToolInput<"support/notionGetPageBlocks">, ToolOutput<"support/notionGetPageBlocks">>>;
+declare function openSupportNotionSession(): Promise<ToolSession<ToolInput<"support/notion">, ToolOutput<"support/notion">>>;
