@@ -26,9 +26,9 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
+# tokio-test = { workspace = true }
 test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
-tokio-test = { workspace = true }
 schemars = { workspace = true }
 ts-rs = { workspace = true }
 proptest = "1.5"
