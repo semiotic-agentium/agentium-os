@@ -469,16 +469,46 @@ async fn load_agent_package(
                 enforce_tool_access(tool_name, access_allowlist)?;
                 match tool_name.as_str() {
                     "support/notionSearchPages" => {
-                        rm.register_tool(baml_rt_tools::notion::NotionSearchPagesTool::new())
-                            .await?;
+                        #[cfg(feature = "notion")]
+                        {
+                            rm.register_tool(baml_rt_tools::notion::NotionSearchPagesTool::new())
+                                .await?;
+                        }
+                        #[cfg(not(feature = "notion"))]
+                        {
+                            return Err(BamlRtError::InvalidArgument(
+                                "Notion tool not compiled: enable baml-rt-builder feature 'notion'"
+                                    .to_string(),
+                            ));
+                        }
                     }
                     "support/notionGetPage" => {
-                        rm.register_tool(baml_rt_tools::notion::NotionGetPageTool::new())
-                            .await?;
+                        #[cfg(feature = "notion")]
+                        {
+                            rm.register_tool(baml_rt_tools::notion::NotionGetPageTool::new())
+                                .await?;
+                        }
+                        #[cfg(not(feature = "notion"))]
+                        {
+                            return Err(BamlRtError::InvalidArgument(
+                                "Notion tool not compiled: enable baml-rt-builder feature 'notion'"
+                                    .to_string(),
+                            ));
+                        }
                     }
                     "support/notionGetPageBlocks" => {
-                        rm.register_tool(baml_rt_tools::notion::NotionGetPageBlocksTool::new())
-                            .await?;
+                        #[cfg(feature = "notion")]
+                        {
+                            rm.register_tool(baml_rt_tools::notion::NotionGetPageBlocksTool::new())
+                                .await?;
+                        }
+                        #[cfg(not(feature = "notion"))]
+                        {
+                            return Err(BamlRtError::InvalidArgument(
+                                "Notion tool not compiled: enable baml-rt-builder feature 'notion'"
+                                    .to_string(),
+                            ));
+                        }
                     }
                     other => {
                         warn!(

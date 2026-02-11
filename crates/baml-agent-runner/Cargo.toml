@@ -13,7 +13,7 @@ baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-quickjs = { path = "../baml-rt-quickjs" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
-baml-rt-tools = { path = "../baml-rt-tools" }
+baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 flate2 = { workspace = true }
@@ -35,3 +35,9 @@ serde = { workspace = true }
 ts-rs = { workspace = true }
 testcontainers = { workspace = true }
 text-to-cypher = { workspace = true }
+
+[features]
+default = []
+clickup = ["baml-rt-tools/clickup"]
+notion = ["baml-rt-tools/notion"]
+http-tools = ["clickup", "notion"]
