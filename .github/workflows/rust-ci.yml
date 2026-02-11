@@ -38,7 +38,12 @@ jobs:
         run: cargo clean
 
       - name: Run cargo test (light crates only)
-        run: cargo test -p baml-rt-core -p baml-rt-id -p baml-rt-observability -p baml-derive-core -p baml-derive -p baml-derive-tests
+        run: cargo test -p baml-rt-core -p baml-rt-id -p baml-rt-observability
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Run baml-derive-tests
+        run: cargo test -p baml-derive-tests
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 

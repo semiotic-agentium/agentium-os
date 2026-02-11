@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/baml-agent-runner",
+    "crates/baml-derive-tests",
     "crates/baml-rt",
     "crates/baml-rt-a2a",
     "crates/baml-rt-builder",
