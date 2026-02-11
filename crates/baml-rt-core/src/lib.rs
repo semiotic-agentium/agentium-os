@@ -1,5 +1,6 @@
 //! BAML runtime core types and shared utilities.
 
+pub mod agent_routing;
 pub mod context;
 pub mod correlation;
 pub mod effects;
@@ -8,6 +9,7 @@ pub mod ids;
 pub mod package;
 pub mod types;
 
+pub use agent_routing::{AgentDiscoveryEntry, AgentRouteKey};
 pub use context::{InvocationContext, InvocationScope, RuntimeScope, Scoped};
 pub use effects::{
     EffectBus, EffectEmitter, EffectEvent, EffectKind, EffectLiveness, EffectSubscriber,

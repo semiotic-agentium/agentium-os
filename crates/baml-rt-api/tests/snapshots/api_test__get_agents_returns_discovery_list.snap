@@ -1,0 +1,21 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+expression: snapshot
+---
+{
+  "status": 200,
+  "body": [
+    {
+      "agent_package": "pkg-a",
+      "agent_instance_id": "default",
+      "name": "Agent A",
+      "version": "0.1.0"
+    },
+    {
+      "agent_package": "pkg-b",
+      "agent_instance_id": "default",
+      "name": "Agent B",
+      "version": "0.2.0"
+    }
+  ]
+}

@@ -64,6 +64,10 @@ ts-rs = "11.1.0"
 genco = "0.19.0"
 inventory = "0.3.20"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+axum = "0.8"
+utoipa = { version = "5", features = ["axum_extras"] }
+utoipa-axum = "0.2"
+http-api-problem = { version = "0.60", features = ["axum"] }
 
 [profile.release]
 opt-level = 3

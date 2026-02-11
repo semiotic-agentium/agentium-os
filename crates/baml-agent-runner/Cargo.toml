@@ -8,12 +8,14 @@ license = "MIT"
 
 [dependencies]
 baml-rt-a2a = { path = "../baml-rt-a2a" }
+baml-rt-api = { path = "../baml-rt-api" }
 baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-quickjs = { path = "../baml-rt-quickjs" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 serde_json = { workspace = true }

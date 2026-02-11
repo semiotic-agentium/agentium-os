@@ -49,7 +49,7 @@ This is a Rust workspace (edition 2024) for the BAML agent runtime — executing
 - **baml-rt-interceptor** — Interceptor trait + pipeline (pre/post execution hooks)
 - **baml-rt-observability** — OpenTelemetry tracing setup, spans, metrics
 - **baml-rt-quickjs** — QuickJS runtime host: loads JS, bridges JS↔Rust, manages BAML runtime invocations
-- **baml-rt-a2a** — Agent-to-agent protocol: JSON-RPC types, WebSocket transport, streaming task handling
+- **baml-rt-a2a** — Agent-to-agent protocol: JSON-RPC types, SSE streaming transport, streaming task handling
 - **baml-rt-provenance** — Provenance graph: event normalization, FalkorDB persistence via text-to-cypher
 - **baml-rt-builder** — Agent build pipeline: OXC lint/compile TypeScript, BAML type generation, tar.gz packaging. Binary: `baml-agent-builder`
 - **baml-agent-runner** — Loads packaged agent tar.gz, serves A2A requests. Binary: `baml-agent-runner`

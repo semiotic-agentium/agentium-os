@@ -1,0 +1,12 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+expression: snapshot
+---
+{
+  "status": 404,
+  "body": {
+    "status": 404,
+    "title": "Not Found",
+    "detail": "Agent other/default not found"
+  }
+}

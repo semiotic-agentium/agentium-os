@@ -1,0 +1,190 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+expression: snapshot
+---
+{
+  "status": 200,
+  "body": {
+    "openapi": "3.1.0",
+    "info": {
+      "title": "utoipa-axum",
+      "description": "Utoipa's axum bindings for seamless integration for the two",
+      "contact": {
+        "name": "Juha Kukkonen",
+        "email": "juha7kukkonen@gmail.com"
+      },
+      "license": {
+        "name": "MIT OR Apache-2.0",
+        "identifier": "MIT OR Apache-2.0"
+      },
+      "version": "0.2.0"
+    },
+    "paths": {
+      "/agents": {
+        "get": {
+          "tags": [
+            "agents"
+          ],
+          "summary": "List running agents (GET /agents).",
+          "operationId": "list_agents",
+          "responses": {
+            "200": {
+              "description": "List of running agents",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/AgentDiscoveryEntryDto"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/agents/{agent_package}/{agent_instance_id}/a2a": {
+        "post": {
+          "tags": [
+            "agents"
+          ],
+          "summary": "Forward A2A JSON-RPC request (POST /agents/{agent_package}/{agent_instance_id}/a2a).",
+          "operationId": "post_a2a",
+          "parameters": [
+            {
+              "name": "agent_package",
+              "in": "path",
+              "description": "Agent package identifier (e.g. manifest name)",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "agent_instance_id",
+              "in": "path",
+              "description": "Agent instance identifier",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "JSON-RPC responses",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {}
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Malformed request"
+            },
+            "404": {
+              "description": "Agent not found"
+            },
+            "500": {
+              "description": "Internal error"
+            }
+          }
+        }
+      },
+      "/agents/{agent_package}/{agent_instance_id}/a2a/sse": {
+        "post": {
+          "tags": [
+            "agents"
+          ],
+          "summary": "A2A over Server-Sent Events: POST /agents/{agent_package}/{agent_instance_id}/a2a/sse\nRequest body: JSON-RPC request. Response: Content-Type: text/event-stream; each event's\n`data` is one JSON-RPC response. Keep-alive comments sent on interval while stream is open.",
+          "operationId": "post_a2a_sse",
+          "parameters": [
+            {
+              "name": "agent_package",
+              "in": "path",
+              "description": "Agent package identifier",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "agent_instance_id",
+              "in": "path",
+              "description": "Agent instance identifier",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "SSE stream of JSON-RPC responses",
+              "content": {
+                "text/event-stream": {}
+              }
+            },
+            "400": {
+              "description": "Malformed request"
+            },
+            "404": {
+              "description": "Agent not found"
+            },
+            "500": {
+              "description": "Internal error"
+            }
+          }
+        }
+      }
+    },
+    "components": {
+      "schemas": {
+        "AgentDiscoveryEntryDto": {
+          "type": "object",
+          "description": "Discovery entry for one running agent (GET /agents response item).",
+          "required": [
+            "agent_package",
+            "agent_instance_id",
+            "name",
+            "version"
+          ],
+          "properties": {
+            "agent_instance_id": {
+              "type": "string"
+            },
+            "agent_package": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    }
+  }
+}
