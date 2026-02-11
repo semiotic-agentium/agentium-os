@@ -1,14 +1,16 @@
+use crate::register_tool_metadata;
 use async_trait::async_trait;
+use baml_derive::BamlType;
+use baml_derive_core::BamlType as BamlTypeTrait;
 use baml_rt_core::Result;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::bundles::Support;
-use crate::register_tool_metadata;
 use crate::tools::{BamlTool, ToolFunctionMetadata};
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct Expression {
     pub left: i64,
@@ -16,26 +18,30 @@ pub struct Expression {
     pub right: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub enum MathOperation {
     #[serde(alias = "+")]
+    #[baml(alias = "+")]
     Add,
     #[serde(alias = "-")]
+    #[baml(alias = "-")]
     Subtract,
     #[serde(alias = "*")]
+    #[baml(alias = "*")]
     Multiply,
     #[serde(alias = "/")]
+    #[baml(alias = "/")]
     Divide,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct CalculatorInput {
     pub expression: Expression,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct CalculatorOutput {
     pub expression: String,
@@ -48,11 +54,21 @@ pub fn support_calculate_metadata() -> ToolFunctionMetadata {
     // This is a compile-time constant, so parsing cannot fail
     let (name, class_name) = parse_tool_name_and_class("support/calculate")
         .expect("support/calculate is a compile-time constant and must be valid");
+
+    let baml_decl = [
+        Expression::baml_decl(),
+        MathOperation::baml_decl(),
+        CalculatorInput::baml_decl(),
+        CalculatorOutput::baml_decl(),
+    ]
+    .join("\n\n");
+
     TypeBasedMetadataBuilder::<(), CalculatorInput, CalculatorOutput>::new(
         name.clone(),
         class_name,
         "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division.".to_string(),
     )
+    .with_baml_decl(baml_decl)
     .with_tags(vec!["support".to_string(), "calculate".to_string()])
     .build_metadata()
 }

@@ -1075,15 +1075,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "baml-derive-tests"
-version = "0.1.0"
-dependencies = [
- "baml-derive 0.1.0",
- "baml-derive-core",
- "insta",
-]
-
-[[package]]
 name = "baml-ids"
 version = "0.0.1"
 source = "git+https://github.com/BoundaryML/baml?rev=d2cc1034826f3b56fa0ad3bcb5c4424de2de8b1c#d2cc1034826f3b56fa0ad3bcb5c4424de2de8b1c"
@@ -1383,6 +1374,8 @@ name = "baml-rt-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "baml-derive 0.1.0",
+ "baml-derive-core",
  "baml-rt",
  "baml-rt-core",
  "genco",

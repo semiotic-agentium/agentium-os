@@ -7,6 +7,8 @@ use crate::bundles::Support;
 use crate::register_tool_metadata;
 use crate::tools::{BamlTool, ToolFunctionMetadata, ToolSecretRequirement};
 use async_trait::async_trait;
+use baml_derive::BamlType;
+use baml_derive_core::BamlType as BamlTypeTrait;
 use baml_rt_core::{BamlRtError, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -16,7 +18,7 @@ use ts_rs::TS;
 pub const BASE_URL: &str = "https://api.clickup.com/api/v2";
 
 /// Which ClickUp action to perform.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub enum ClickUpAction {
     ListTeams,
@@ -34,24 +36,31 @@ pub enum ClickUpAction {
 /// so that BAML (which lacks sum types) can represent it as a single class
 /// with an enum field. Per-action field requirements are validated at runtime
 /// in [`ClickUpTool::execute`].
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct ClickUpInput {
     pub action: ClickUpAction,
     /// Required for `ListSpaces`.
+    #[baml(description = "Required for ListSpaces.")]
     pub team_id: Option<String>,
     /// Required for `ListLists`.
+    #[baml(description = "Required for ListLists.")]
     pub space_id: Option<String>,
     /// Required for `ListTasks` and `CreateTask`.
+    #[baml(description = "Required for ListTasks and CreateTask.")]
     pub list_id: Option<String>,
     /// Required for `GetTask` and `UpdateTask`.
+    #[baml(description = "Required for GetTask and UpdateTask.")]
     pub task_id: Option<String>,
     /// Required for `CreateTask`.
+    #[baml(description = "Required for CreateTask.")]
     pub name: Option<String>,
     pub description: Option<String>,
     /// ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+    #[baml(description = "ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")]
     pub priority: Option<u8>,
-    /// Task status string (e.g. "in progress"). Used by `UpdateTask`.
+    /// Task status string (e.g. \"in progress\"). Used by `UpdateTask`.
+    #[baml(description = "Task status string. Used by UpdateTask.")]
     pub status: Option<String>,
 }
 
@@ -60,7 +69,7 @@ pub struct ClickUpInput {
 // ---------------------------------------------------------------------------
 
 /// Summary of a single ClickUp task, projected from the API response.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct ClickUpTaskSummary {
     pub id: String,
@@ -73,23 +82,25 @@ pub struct ClickUpTaskSummary {
 }
 
 /// A generic item returned by navigation actions (teams, spaces, lists).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct ClickUpItem {
     pub id: String,
     pub name: String,
     /// The kind of resource: "team", "space", or "list".
+    #[baml(description = "The kind of resource: team, space, or list.")]
     pub kind: String,
 }
 
 /// Output returned by every ClickUp tool action.
 ///
 /// Task actions populate `tasks`; navigation actions populate `items`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct ClickUpOutput {
     pub tasks: Vec<ClickUpTaskSummary>,
     /// Teams, spaces, or lists returned by navigation actions.
+    #[baml(description = "Teams, spaces, or lists returned by navigation actions.")]
     pub items: Vec<ClickUpItem>,
     pub message: String,
 }
@@ -600,12 +611,23 @@ pub fn clickup_metadata() -> ToolFunctionMetadata {
     use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
     let (name, class_name) = parse_tool_name_and_class("support/clickup")
         .expect("support/clickup is a compile-time constant");
+
+    let baml_decl = [
+        ClickUpAction::baml_decl(),
+        ClickUpInput::baml_decl(),
+        ClickUpTaskSummary::baml_decl(),
+        ClickUpItem::baml_decl(),
+        ClickUpOutput::baml_decl(),
+    ]
+    .join("\n\n");
+
     TypeBasedMetadataBuilder::<(), ClickUpInput, ClickUpOutput>::new(
         name,
         class_name,
         "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks."
             .to_string(),
     )
+    .with_baml_decl(baml_decl)
     .with_tags(vec!["support".to_string(), "clickup".to_string()])
     .with_secrets(vec![ToolSecretRequirement {
         name: "CLICKUP_API_KEY".to_string(),

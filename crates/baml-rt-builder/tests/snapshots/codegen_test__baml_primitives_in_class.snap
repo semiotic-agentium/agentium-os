@@ -3,8 +3,8 @@ source: crates/baml-rt-builder/tests/codegen_test.rs
 expression: baml_output
 ---
 class PrimitiveTest {
-  int_field int
-  float_field float
-  string_field string
-  bool_field bool
+  int_field int 
+  float_field float 
+  string_field string 
+  bool_field bool 
 }

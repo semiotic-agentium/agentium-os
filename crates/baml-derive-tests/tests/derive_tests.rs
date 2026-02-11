@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use baml_derive::BamlType;
 use baml_derive_core::{BamlDefinition, BamlType as BamlTypeTrait};
 use std::collections::HashMap;
@@ -266,7 +268,7 @@ fn nested_generics() {
 
 #[derive(BamlType)]
 struct BoxedFields {
-    pub data: Box<String>,
+    pub data: Box<i32>,
     pub nested: Box<Priority>,
 }
 
@@ -274,7 +276,7 @@ struct BoxedFields {
 fn box_transparent() {
     insta::assert_snapshot!(BoxedFields::baml_decl(), @r"
     class BoxedFields {
-      data string
+      data int
       nested Priority
     }
     ");
