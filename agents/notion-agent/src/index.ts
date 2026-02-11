@@ -93,7 +93,8 @@ async function summarizeBlocks(args: {
       const output = result as { summary?: string };
       if (output.summary) return output.summary;
     }
-  } catch {
+  } catch (err) {
+    console.warn("SummarizeNotionContent failed", err);
     return null;
   }
   return null;

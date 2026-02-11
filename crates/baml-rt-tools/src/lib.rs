@@ -1,5 +1,6 @@
 //! Tool registry and mapping utilities.
 
+pub mod access;
 pub mod bundles;
 pub mod clickup;
 mod metrics;
@@ -12,6 +13,7 @@ pub mod tool_schema;
 pub mod tools;
 pub mod ts_gen;
 
+pub use access::{enforce_tool_access, parse_access_allowlist};
 pub use bundles::{BundleType, Support};
 pub use tool_catalog::{InventoryCatalog, ToolCatalog};
 pub use tool_fsm::{

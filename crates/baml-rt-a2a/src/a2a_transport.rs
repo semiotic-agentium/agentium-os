@@ -168,11 +168,11 @@ impl A2aAgent {
                 ts_decl: None,
             },
             input_type: ToolTypeSpec {
-                name: format!("{}Input", parsed.local().as_str()),
+                name: format!("{name}Input", name = parsed.local().as_str()),
                 ts_decl: None,
             },
             output_type: ToolTypeSpec {
-                name: format!("{}Output", parsed.local().as_str()),
+                name: format!("{name}Output", name = parsed.local().as_str()),
                 ts_decl: None,
             },
             baml_decl: None,
@@ -500,9 +500,10 @@ impl A2aAgentBuilderWithEffectEmitter {
                     .map_err(|_| BamlRtError::InvalidArgument(
                         "QuickJS bridge creation timed out after 20 seconds - possible deadlock".to_string()
                     ))?
-                    .map_err(|e| BamlRtError::InvalidArgument(
-                        format!("QuickJS bridge creation failed: {}", e)
-                    ))?;
+                    .map_err(|e| BamlRtError::InvalidArgument(format!(
+                        "QuickJS bridge creation failed: {error}",
+                        error = e
+                    )))?;
                 tracing::info!("A2aAgentBuilder::build: QuickJS bridge created successfully");
                 Arc::new(Mutex::new(bridge))
             }
@@ -542,9 +543,9 @@ impl A2aAgentBuilderWithEffectEmitter {
                 .await
                 .map_err(|_| {
                     BamlRtError::InvalidArgument(format!(
-                        "init_js evaluation timed out after 30 seconds - code may be blocking: {}",
-                        if code.len() > 100 {
-                            format!("{}...", &code[..100])
+                        "init_js evaluation timed out after 30 seconds - code may be blocking: {preview}",
+                        preview = if code.len() > 100 {
+                            format!("{code}...", code = &code[..100])
                         } else {
                             code.clone()
                         }
@@ -679,8 +680,8 @@ impl A2aRequestHandler for A2aAgent {
         let correlation_id = if let Some(raw) = parsed_request.correlation_id() {
             CorrelationId::parse_temporal(&raw).ok_or_else(|| {
                 BamlRtError::InvalidArgument(format!(
-                    "Invalid correlation_id '{}': expected corr-<millis>-<counter>",
-                    raw
+                    "Invalid correlation_id '{id}': expected corr-<millis>-<counter>",
+                    id = raw
                 ))
             })?
         } else {
@@ -696,9 +697,9 @@ impl A2aRequestHandler for A2aAgent {
             .unwrap_or_else(context::generate_context_id);
         let request_message_id = parsed_request.message_id.clone().unwrap_or_else(|| {
             MessageId::from_external(ExternalId::new(format!(
-                "a2a-{}-{}",
-                parsed_request.method.as_str(),
-                correlation_id.as_str()
+                "a2a-{method}-{correlation_id}",
+                method = parsed_request.method.as_str(),
+                correlation_id = correlation_id.as_str()
             )))
         });
         let request_task_id = parsed_request.task_id.clone();
@@ -848,8 +849,8 @@ impl ToolSession for JsToolSession {
         }
         let input = self.input.take().ok_or_else(|| {
             ToolSessionError::Tool(ToolFailure::invalid_input(format!(
-                "JS tool session {} has no input",
-                self.ctx.session_id
+                "JS tool session {session_id} has no input",
+                session_id = self.ctx.session_id
             )))
         })?;
         let scope = context::current_scope().map(InvocationScope::new).ok();

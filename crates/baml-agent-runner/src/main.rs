@@ -25,10 +25,8 @@ use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_provenance::{AgentType, ProvEvent, ToolIndexConfig, index_tools};
 use baml_rt_provenance::{FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, ProvenanceWriter};
 use baml_rt_quickjs::BamlRuntimeManager;
-use baml_rt_tools::ToolCatalog;
-use baml_rt_tools::ToolName;
-use baml_rt_tools::tool_catalog::InventoryCatalog;
 use baml_rt_tools::tools::ToolAccess;
+use baml_rt_tools::{enforce_tool_access, parse_access_allowlist};
 use clap::{Parser, ValueEnum};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -38,52 +36,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::Mutex;
 use tracing::{error, info, warn};
-
-fn parse_access_allowlist() -> Option<HashSet<ToolAccess>> {
-    let raw = std::env::var("BAML_TOOL_ACCESS_ALLOWLIST").ok()?;
-    let mut set = HashSet::new();
-    for token in raw.split(',') {
-        let value = token.trim().to_lowercase();
-        let access = match value.as_str() {
-            "read" => ToolAccess::Read,
-            "write" => ToolAccess::Write,
-            "delete" => ToolAccess::Delete,
-            "" => continue,
-            other => {
-                warn!(
-                    value = other,
-                    "Unknown access in BAML_TOOL_ACCESS_ALLOWLIST"
-                );
-                continue;
-            }
-        };
-        set.insert(access);
-    }
-    if set.is_empty() { None } else { Some(set) }
-}
-
-fn enforce_tool_access(tool_name: &str, allowlist: &Option<HashSet<ToolAccess>>) -> Result<()> {
-    let Some(allowlist) = allowlist else {
-        return Ok(());
-    };
-
-    let catalog = InventoryCatalog::new();
-    if let Some(metadata) = catalog.by_name(&ToolName::parse(tool_name)?) {
-        if let Some(access) = metadata.access {
-            if !allowlist.contains(&access) {
-                return Err(BamlRtError::InvalidArgument(format!(
-                    "Tool '{}' access '{}' is not allowed by BAML_TOOL_ACCESS_ALLOWLIST",
-                    tool_name, access
-                )));
-            }
-        } else {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "Tool '{tool_name}' has no declared access; BAML_TOOL_ACCESS_ALLOWLIST requires explicit access"
-            )));
-        }
-    }
-    Ok(())
-}
 
 /// Inert agent package - just holds package data
 struct AgentPackage {
@@ -793,7 +745,10 @@ fn build_provenance_writer(store: &ProvenanceStoreKind) -> Option<Arc<dyn Proven
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing
     tracing_setup::init_tracing();
-    let _ = dotenvy::dotenv();
+    match dotenvy::dotenv() {
+        Ok(path) => tracing::debug!(path = ?path, "Loaded .env"),
+        Err(err) => tracing::debug!(error = ?err, "No .env loaded"),
+    }
 
     info!("BAML Agent Runner starting");
 

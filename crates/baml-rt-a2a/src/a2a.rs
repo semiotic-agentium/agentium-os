@@ -69,8 +69,8 @@ impl A2aRequest {
         let request: JSONRPCRequest = serde_json::from_value(value).map_err(BamlRtError::Json)?;
         if request.jsonrpc != JSONRPC_VERSION {
             return Err(BamlRtError::InvalidArgument(format!(
-                "Unsupported jsonrpc version: {}",
-                request.jsonrpc
+                "Unsupported jsonrpc version: {version}",
+                version = request.jsonrpc
             )));
         }
 
@@ -219,7 +219,7 @@ fn normalize_params(value: Value) -> Value {
         Value::Array(items) => {
             let mut map = Map::new();
             for (idx, item) in items.into_iter().enumerate() {
-                map.insert(format!("arg{}", idx), item);
+                map.insert(format!("arg{idx}", idx = idx), item);
             }
             Value::Object(map)
         }
@@ -304,7 +304,10 @@ pub struct JsChunkNormalizer {
 impl JsChunkNormalizer {
     pub fn new(scope: &InvocationScope) -> Self {
         let task_id = scope.task_id_opt().cloned().unwrap_or_else(|| {
-            TaskId::from_external(ExternalId::new(format!("js-task-{}", Uuid::new_v4())))
+            TaskId::from_external(ExternalId::new(format!(
+                "js-task-{uuid}",
+                uuid = Uuid::new_v4()
+            )))
         });
         Self {
             context_id: scope.context_id().clone(),
@@ -347,9 +350,9 @@ impl JsChunkNormalizer {
     fn next_message_id(&mut self) -> String {
         self.message_counter += 1;
         let derived = DerivedId::new(format!(
-            "js-msg-{}-{}",
-            self.context_id.as_str(),
-            self.message_counter
+            "js-msg-{context_id}-{counter}",
+            context_id = self.context_id.as_str(),
+            counter = self.message_counter
         ));
         A2aMessageId::outgoing(derived)
             .as_message_id()

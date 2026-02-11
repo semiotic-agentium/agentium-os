@@ -137,14 +137,17 @@ pub enum NotionError {
 
     #[error("Invalid Notion id '{id}'")]
     InvalidId { id: String },
+
+    #[error("Invalid Notion header value: {message}")]
+    InvalidHeader { message: String },
 }
 
 impl From<NotionError> for BamlRtError {
     fn from(err: NotionError) -> Self {
         match &err {
-            NotionError::MissingApiKey | NotionError::Unauthorized { .. } => {
-                BamlRtError::Configuration(err.to_string())
-            }
+            NotionError::MissingApiKey
+            | NotionError::Unauthorized { .. }
+            | NotionError::InvalidHeader { .. } => BamlRtError::Configuration(err.to_string()),
             NotionError::InvalidId { .. } | NotionError::NotFound { .. } => {
                 BamlRtError::InvalidArgument(err.to_string())
             }
@@ -195,14 +198,28 @@ impl NotionClient {
         ))
     }
 
-    fn auth_headers(&self, api_key: &str) -> reqwest::header::HeaderMap {
+    fn auth_headers(
+        &self,
+        api_key: &str,
+    ) -> std::result::Result<reqwest::header::HeaderMap, NotionError> {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(
             reqwest::header::AUTHORIZATION,
-            format!("Bearer {api_key}").parse().unwrap(),
+            format!("Bearer {api_key}")
+                .parse::<reqwest::header::HeaderValue>()
+                .map_err(|e| NotionError::InvalidHeader {
+                    message: e.to_string(),
+                })?,
         );
-        headers.insert("Notion-Version", NOTION_VERSION.parse().unwrap());
-        headers
+        headers.insert(
+            "Notion-Version",
+            NOTION_VERSION
+                .parse::<reqwest::header::HeaderValue>()
+                .map_err(|e| NotionError::InvalidHeader {
+                    message: e.to_string(),
+                })?,
+        );
+        Ok(headers)
     }
 
     #[tracing::instrument(skip_all, fields(url))]
@@ -266,7 +283,7 @@ impl NotionClient {
             .send_request(
                 self.client
                     .post(format!("{BASE_URL}/search"))
-                    .headers(self.auth_headers(api_key))
+                    .headers(self.auth_headers(api_key)?)
                     .json(&serde_json::Value::Object(body)),
             )
             .await?;
@@ -299,7 +316,7 @@ impl NotionClient {
             .send_request(
                 self.client
                     .get(format!("{BASE_URL}/pages/{normalized}"))
-                    .headers(self.auth_headers(api_key)),
+                    .headers(self.auth_headers(api_key)?),
             )
             .await?;
 
@@ -331,7 +348,7 @@ impl NotionClient {
         let mut request = self
             .client
             .get(format!("{BASE_URL}/blocks/{normalized}/children"))
-            .headers(self.auth_headers(api_key));
+            .headers(self.auth_headers(api_key)?);
         let mut params: Vec<(&str, String)> = Vec::new();
         if let Some(cursor) = start_cursor {
             params.push(("start_cursor", cursor.to_string()));
@@ -388,7 +405,7 @@ impl NotionClient {
             .send_request(
                 self.client
                     .get(format!("{BASE_URL}/pages/{normalized}"))
-                    .headers(self.auth_headers(api_key)),
+                    .headers(self.auth_headers(api_key)?),
             )
             .await?;
         parse_page_summary(&json).ok_or_else(|| NotionError::UnexpectedShape {

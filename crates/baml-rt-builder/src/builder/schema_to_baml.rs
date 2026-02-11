@@ -7,6 +7,10 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write;
 
+fn escape_baml_string(value: &str) -> String {
+    value.chars().flat_map(|c| c.escape_default()).collect()
+}
+
 /// Generate BAML type definitions from JSON schemas
 pub fn generate_baml_types_from_schemas(
     schemas: &HashMap<String, Value>,
@@ -189,7 +193,7 @@ fn generate_baml_enum_from_one_of(
         let desc = obj
             .get("description")
             .and_then(|v| v.as_str())
-            .map(|s| format!(" @description(\"{}\")", s.replace('"', "\\\"")))
+            .map(|s| format!(" @description(\"{}\")", escape_baml_string(s)))
             .unwrap_or_default();
 
         write_line(output, &format!("  {}{}", variant_name, desc))?;
@@ -277,12 +281,7 @@ fn generate_baml_class(
             .as_object()
             .and_then(|obj| obj.get("description"))
             .and_then(|v| v.as_str())
-            .map(|s| {
-                format!(
-                    "@description(\"{}\")",
-                    s.replace('\\', "\\\\").replace('"', "\\\"")
-                )
-            })
+            .map(|s| format!("@description(\"{}\")", escape_baml_string(s)))
             .unwrap_or_default();
         if description.is_empty() {
             write_line(output, &format!("  {} {}", prop_name, type_str))?;

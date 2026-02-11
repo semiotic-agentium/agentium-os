@@ -146,14 +146,14 @@ impl ToolSession for A2aSession {
     async fn send(&mut self, input: Value) -> std::result::Result<(), ToolSessionError> {
         if self.closed {
             return Err(ToolSessionError::Tool(ToolFailure::invalid_input(format!(
-                "A2A session {} is closed",
-                self.ctx.session_id
+                "A2A session {session_id} is closed",
+                session_id = self.ctx.session_id
             ))));
         }
         let parsed: A2aSessionInput = serde_json::from_value(input).map_err(|e| {
             ToolSessionError::Tool(ToolFailure::invalid_input(format!(
-                "Invalid A2A input: {}",
-                e
+                "Invalid A2A input: {error}",
+                error = e
             )))
         })?;
         let handle = tokio::runtime::Handle::current();
@@ -194,8 +194,8 @@ impl ToolSession for A2aSession {
             let output = A2aSessionOutput { response };
             let value = serde_json::to_value(output).map_err(|e| {
                 ToolSessionError::Tool(ToolFailure::execution_failed(format!(
-                    "Invalid A2A output: {}",
-                    e
+                    "Invalid A2A output: {error}",
+                    error = e
                 )))
             })?;
             return Ok(ToolStep::Streaming { output: value });

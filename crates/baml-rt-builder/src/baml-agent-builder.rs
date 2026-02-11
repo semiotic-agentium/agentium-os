@@ -16,10 +16,8 @@ use baml_rt_core::ids::AgentId;
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge};
-use baml_rt_tools::ToolCatalog;
-use baml_rt_tools::ToolName;
-use baml_rt_tools::tool_catalog::{InventoryCatalog, all_tool_metadata};
-use baml_rt_tools::tools::ToolAccess;
+use baml_rt_tools::tool_catalog::all_tool_metadata;
+use baml_rt_tools::{enforce_tool_access, parse_access_allowlist};
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -31,50 +29,7 @@ use tokio::sync::Mutex;
 use tracing::warn;
 use uuid::Uuid;
 
-fn parse_access_allowlist() -> Option<HashSet<ToolAccess>> {
-    let raw = std::env::var("BAML_TOOL_ACCESS_ALLOWLIST").ok()?;
-    let mut set = HashSet::new();
-    for token in raw.split(',') {
-        let value = token.trim().to_lowercase();
-        let access = match value.as_str() {
-            "read" => ToolAccess::Read,
-            "write" => ToolAccess::Write,
-            "delete" => ToolAccess::Delete,
-            "" => continue,
-            other => {
-                warn!(
-                    value = other,
-                    "Unknown access in BAML_TOOL_ACCESS_ALLOWLIST"
-                );
-                continue;
-            }
-        };
-        set.insert(access);
-    }
-    if set.is_empty() { None } else { Some(set) }
-}
-
-fn enforce_tool_access(tool_name: &str, allowlist: &Option<HashSet<ToolAccess>>) -> Result<()> {
-    let Some(allowlist) = allowlist else {
-        return Ok(());
-    };
-    let catalog = InventoryCatalog::new();
-    if let Some(metadata) = catalog.by_name(&ToolName::parse(tool_name)?) {
-        if let Some(access) = metadata.access {
-            if !allowlist.contains(&access) {
-                return Err(BamlRtError::InvalidArgument(format!(
-                    "Tool '{}' access '{}' is not allowed by BAML_TOOL_ACCESS_ALLOWLIST",
-                    tool_name, access
-                )));
-            }
-        } else {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "Tool '{tool_name}' has no declared access; BAML_TOOL_ACCESS_ALLOWLIST requires explicit access"
-            )));
-        }
-    }
-    Ok(())
-}
+use baml_rt_tools::tools::ToolAccess;
 
 #[derive(Parser)]
 #[command(name = "baml-agent-builder")]
@@ -144,7 +99,10 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_setup::init_tracing();
-    let _ = dotenvy::dotenv();
+    match dotenvy::dotenv() {
+        Ok(path) => tracing::debug!(path = ?path, "Loaded .env"),
+        Err(err) => tracing::debug!(error = ?err, "No .env loaded"),
+    }
 
     let cli = Cli::parse();
 
