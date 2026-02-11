@@ -1,3 +1,5 @@
+#![cfg(feature = "falkordb-tests")]
+
 use baml_rt_provenance::{ToolIndexConfig, index_tools};
 use baml_rt_tools::{ToolFunctionMetadataExport, ToolName, ToolSecretRequirement, ToolTypeSpec};
 use serde_json::json;

@@ -7,6 +7,7 @@ use baml_rt::tools::BamlTool;
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::effects::EffectBus;
 use baml_rt_core::ids::{AgentId, ContextId, UuidId};
+#[cfg(feature = "falkordb-tests")]
 use baml_rt_provenance::{
     AgentType, FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, ProvEvent,
     ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
@@ -23,9 +24,13 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use tar::Builder;
+#[cfg(feature = "falkordb-tests")]
 use testcontainers::GenericImage;
+#[cfg(feature = "falkordb-tests")]
 use testcontainers::core::ContainerPort;
+#[cfg(feature = "falkordb-tests")]
 use testcontainers::runners::AsyncRunner;
+#[cfg(feature = "falkordb-tests")]
 use text_to_cypher::core::execute_cypher_query;
 use tokio::sync::Semaphore;
 use tokio::time::{Duration, sleep, timeout};
@@ -56,11 +61,13 @@ fn e2e_serial_gate() -> &'static Semaphore {
     GATE.get_or_init(|| Semaphore::new(1))
 }
 
+#[cfg(feature = "falkordb-tests")]
 #[derive(Clone)]
 struct StrictProvenanceWriter {
     inner: Arc<FalkorDbProvenanceWriter>,
 }
 
+#[cfg(feature = "falkordb-tests")]
 #[async_trait]
 impl ProvenanceWriter for StrictProvenanceWriter {
     async fn add_event(
@@ -74,6 +81,7 @@ impl ProvenanceWriter for StrictProvenanceWriter {
     }
 }
 
+#[cfg(feature = "falkordb-tests")]
 #[async_trait]
 impl ProvenanceContextReader for StrictProvenanceWriter {
     async fn context_messages(
@@ -97,6 +105,7 @@ impl ProvenanceContextReader for StrictProvenanceWriter {
     }
 }
 
+#[cfg(feature = "falkordb-tests")]
 async fn start_falkordb() -> Option<(testcontainers::ContainerAsync<GenericImage>, String)> {
     let image = GenericImage::new("falkordb/falkordb", "latest")
         .with_exposed_port(ContainerPort::Tcp(6379));
@@ -123,6 +132,7 @@ async fn start_falkordb() -> Option<(testcontainers::ContainerAsync<GenericImage
     Some((container, connection))
 }
 
+#[cfg(feature = "falkordb-tests")]
 async fn wait_for_falkordb(connection: &str, graph: &str) {
     sleep(Duration::from_secs(1)).await;
     let mut attempts = 0;
@@ -434,6 +444,7 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
     (agent, extract_dir)
 }
 
+#[cfg(feature = "falkordb-tests")]
 async fn setup_conversational_context_auto_agent(
     connection: String,
     graph: String,
@@ -764,6 +775,7 @@ async fn test_e2e_stream_js_tool() {
     let _ = task_id;
 }
 
+#[cfg(feature = "falkordb-tests")]
 #[tokio::test]
 async fn test_e2e_conversational_context_auto_via_provenance() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");

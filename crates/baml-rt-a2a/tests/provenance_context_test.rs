@@ -1,3 +1,4 @@
+#![cfg(feature = "falkordb-tests")]
 #![recursion_limit = "256"]
 
 use baml_rt::QuickJSConfig;

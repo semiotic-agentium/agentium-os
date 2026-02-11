@@ -23,6 +23,8 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 schemars = "1.1.0"
 ts-rs = "11.1.0"
+testcontainers = { workspace = true, optional = true }
+text-to-cypher = { workspace = true, default-features = false, optional = true }
 
 [dev-dependencies]
 opentelemetry = { workspace = true }
@@ -33,5 +35,7 @@ test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
 # insta = { workspace = true }
 proptest = "1.5"
-testcontainers = { workspace = true }
-text-to-cypher = { workspace = true, default-features = false }
+
+[features]
+default = []
+falkordb-tests = ["dep:testcontainers", "dep:text-to-cypher"]

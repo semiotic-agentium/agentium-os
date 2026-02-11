@@ -24,6 +24,8 @@ tracing = { workspace = true }
 clap = { workspace = true }
 dotenvy = { workspace = true }
 uuid = { workspace = true }
+testcontainers = { workspace = true, optional = true }
+text-to-cypher = { workspace = true, optional = true, default-features = false }
 
 [dev-dependencies]
 test-support = { path = "../test-support" }
@@ -33,11 +35,10 @@ dotenvy = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 ts-rs = { workspace = true }
-testcontainers = { workspace = true }
-text-to-cypher = { workspace = true }
 
 [features]
 default = []
 clickup = ["baml-rt-tools/clickup"]
 notion = ["baml-rt-tools/notion"]
 http-tools = ["clickup", "notion"]
+falkordb-tests = ["dep:testcontainers", "dep:text-to-cypher"]
