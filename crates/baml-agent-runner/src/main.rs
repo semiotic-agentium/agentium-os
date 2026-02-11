@@ -4,6 +4,8 @@
 //! Each agent package is a tar.gz containing BAML schemas, compiled TypeScript,
 //! and metadata.
 
+#![recursion_limit = "256"]
+
 mod package;
 
 use anyhow::Context;

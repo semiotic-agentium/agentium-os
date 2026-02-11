@@ -2,6 +2,8 @@
 //!
 //! Use short max_attempts so effect-gated poll doesn't hang when LLM-backed fixtures don't complete.
 
+#![recursion_limit = "256"]
+
 use baml_rt::A2aAgent;
 use baml_rt::QuickJSConfig;
 use baml_rt::baml::BamlRuntimeManager;

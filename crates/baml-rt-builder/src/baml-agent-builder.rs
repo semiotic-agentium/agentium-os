@@ -5,6 +5,8 @@
 //!
 //! Uses OXC for high-performance TypeScript compilation and linting.
 
+#![recursion_limit = "256"]
+
 use baml_rt_builder::builder::{
     AgentDir, BuildDir, BuilderService, FileSystem, FunctionName, Linter, OxcLinter,
     OxcTypeScriptCompiler, PackagePath, RuntimeTypeGenerator, StdFileSystem, StdPackager,

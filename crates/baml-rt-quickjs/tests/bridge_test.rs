@@ -1,5 +1,7 @@
 //! Tests for QuickJS bridge integration
 
+#![recursion_limit = "256"]
+
 use async_trait::async_trait;
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::quickjs_bridge::QuickJSBridge;

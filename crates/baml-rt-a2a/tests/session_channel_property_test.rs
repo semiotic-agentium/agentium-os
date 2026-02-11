@@ -5,6 +5,8 @@
 //! 2. Finish removes session routing (no more forwards).
 //! 3. Worker eventually emits a response and binds it to message-carried scope.
 
+#![recursion_limit = "256"]
+
 use async_trait::async_trait;
 use baml_rt_a2a::A2aRequestHandler;
 use baml_rt_a2a::session_channel::{

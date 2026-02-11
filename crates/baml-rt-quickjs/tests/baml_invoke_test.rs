@@ -1,5 +1,7 @@
 //! Tests for JavaScript invocation of BAML functions
 
+#![recursion_limit = "256"]
+
 use test_support::common::{agent_fixture, setup_baml_runtime_from_fixture, setup_bridge};
 
 #[tokio::test]

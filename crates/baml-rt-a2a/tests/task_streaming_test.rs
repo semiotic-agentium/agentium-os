@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest};
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::{A2aAgent, A2aRequestHandler, QuickJSConfig};

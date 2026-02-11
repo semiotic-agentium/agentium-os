@@ -8,6 +8,8 @@
 //! Liveness:
 //!   ∀ submitted request r_i, completion occurs within bounded time.
 
+#![recursion_limit = "256"]
+
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt_core::context::RuntimeScope;
 use baml_rt_core::ids::{ContextId, ExternalId, MessageId};
