@@ -18,7 +18,7 @@ env:
 
 jobs:
   cargo-test:
-    name: Cargo test
+    name: Cargo test (light)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +30,30 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Run cargo test
-        run: cargo test --workspace --all-features
+      - name: Run cargo test (exclude heavy crates)
+        run: cargo test --workspace --all-features --exclude baml-rt --exclude baml-rt-quickjs
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+  cargo-test-heavy:
+    name: Cargo test (heavy, serial)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run baml-rt tests (serial)
+        run: cargo test -p baml-rt -j 1
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Run baml-rt-quickjs tests (serial)
+        run: cargo test -p baml-rt-quickjs -j 1
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
