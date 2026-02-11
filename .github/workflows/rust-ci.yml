@@ -38,7 +38,7 @@ jobs:
         run: cargo clean
 
       - name: Run cargo test (light crates only)
-        run: cargo test -p baml-rt-core -p baml-rt-id -p baml-rt-observability
+        run: cargo test -p baml-rt-core -p baml-rt-id -p baml-rt-observability -p baml-derive-core -p baml-derive -p baml-derive-tests
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
@@ -59,6 +59,11 @@ jobs:
         run: cargo clean
 
       - name: Run heavy crate tests (serial)
-        run: cargo test --workspace --all-features --exclude baml-rt-core --exclude baml-rt-id --exclude baml-rt-observability -j 1
+        run: cargo test --workspace --all-features --exclude baml-rt-core --exclude baml-rt-id --exclude baml-rt-observability --exclude baml-derive-core --exclude baml-derive --exclude baml-derive-tests --exclude baml-rt-a2a -j 1
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Run baml-rt-a2a tests
+        run: cargo test -p baml-rt-a2a --all-features -j 1
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
