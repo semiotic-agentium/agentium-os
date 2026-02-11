@@ -92,6 +92,7 @@ async fn test_full_integration_package_load_execute() {
 
     use baml_rt::baml::BamlRuntimeManager;
     use baml_rt::quickjs_bridge::QuickJSBridge;
+    use baml_rt_quickjs::begin_a2a_yield_session;
     use baml_rt_core::ids::{AgentId, UuidId};
     use serde_json::json;
     use std::fs;
@@ -189,7 +190,8 @@ async fn test_full_integration_package_load_execute() {
         check_obj
     );
 
-    // STEP 5: Execute the function using the shared invoke_function implementation
+    // STEP 5: Execute the stream handler using the A2A yield session protocol.
+    // onChatMessage is a streaming handler and does not return a resolved value.
     let function_name = "onChatMessage";
     let args = json!({
         "method": "message.send",
@@ -203,44 +205,25 @@ async fn test_full_integration_package_load_execute() {
     });
 
     let scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id.clone());
-    let result = bridge.invoke_js_function(&scope, function_name, args).await;
+    let session = begin_a2a_yield_session(&mut bridge)
+        .await
+        .expect("setup A2A yield buffer");
+    let responses = session
+        .invoke(&scope, args)
+        .await
+        .expect("invoke onChatMessage")
+        .collect()
+        .await
+        .expect("collect yielded chunks");
 
-    // Assert the function is found and can be called
-    match result {
-        Ok(val) => {
-            // If we get an error, it should NOT be "Function not found"
-            if let Some(obj) = val.as_object() {
-                if let Some(error) = obj.get("error") {
-                    let error_str = error.as_str().unwrap_or("");
-                    assert!(
-                        !error_str.contains("Function not found")
-                            && !error_str.contains("is not defined"),
-                        "Function '{}' should be found after packaging. Got error: {}",
-                        function_name,
-                        error_str
-                    );
-                    // Other errors (like missing API keys) are acceptable - function was called correctly
-                    println!(
-                        "✓ Function found and invoked (got API error as expected): {}",
-                        error_str
-                    );
-                } else {
-                    println!("✓ Function found and executed successfully: {:?}", obj);
-                }
-            } else if val.is_string() {
-                println!("✓ Function found and returned string result");
-            }
-        }
-        Err(e) => {
-            let error_msg = format!("{}", e);
-            // Check for function not found errors (this is what we're testing for)
-            assert!(
-                !error_msg.contains("Function not found") && !error_msg.contains("is not defined"),
-                "Function '{}' should be found after packaging. Error: {}",
-                function_name,
-                e
-            );
-            panic!("Unexpected error: {}", e);
-        }
-    }
+    assert!(
+        !responses.is_empty(),
+        "Expected onChatMessage to yield at least one chunk. Raw: {}",
+        serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+    );
+    println!(
+        "✓ Function '{}' yielded {} chunk(s)",
+        function_name,
+        responses.len()
+    );
 }
