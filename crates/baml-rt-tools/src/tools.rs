@@ -436,6 +436,12 @@ pub struct ToolFunctionMetadata {
     pub input_type: ToolTypeSpec,
     /// Output type metadata
     pub output_type: ToolTypeSpec,
+    /// Pre-rendered BAML type declarations from `BamlType::baml_decl()`.
+    ///
+    /// When present, `baml_gen.rs` uses this directly instead of converting
+    /// JSON schemas via `schema_to_baml`. Populated by tools that derive
+    /// `BamlType`; `None` for JS/guest tools that rely on the JSON Schema path.
+    pub baml_decl: Option<String>,
     /// Tool tags for indexing/search
     pub tags: Vec<String>,
     /// Secrets required to execute this tool
@@ -504,6 +510,7 @@ impl ToolFunctionMetadata {
                 name: ts_name::<Output>(),
                 ts_decl: ts_decl::<Output>(),
             },
+            baml_decl: None,
             tags,
             secret_requirements,
             origin,
@@ -516,6 +523,7 @@ pub struct TypeBasedMetadataBuilder<OpenInput, Input, Output> {
     name: ToolName,
     class_name: String,
     description: String,
+    baml_decl: Option<String>,
     tags: Vec<String>,
     secret_requirements: Vec<ToolSecretRequirement>,
     origin: ToolOrigin,
@@ -534,11 +542,21 @@ where
             name,
             class_name,
             description,
+            baml_decl: None,
             tags: Vec::new(),
             secret_requirements: Vec::new(),
             origin: ToolOrigin::Host,
             _phantom: std::marker::PhantomData,
         }
+    }
+
+    /// Set pre-rendered BAML type declarations from `BamlType::baml_decl()`.
+    ///
+    /// When set, `baml_gen.rs` emits this directly instead of converting
+    /// JSON schemas via `schema_to_baml`.
+    pub fn with_baml_decl(mut self, decl: String) -> Self {
+        self.baml_decl = Some(decl);
+        self
     }
 
     /// Set tags for the tool
@@ -568,14 +586,16 @@ where
     Output: crate::tool_schema::ToolType,
 {
     fn build_metadata(self) -> ToolFunctionMetadata {
-        ToolFunctionMetadata::from_types::<OpenInput, Input, Output>(
+        let mut metadata = ToolFunctionMetadata::from_types::<OpenInput, Input, Output>(
             self.name,
             self.class_name,
             self.description,
             self.tags,
             self.secret_requirements,
             self.origin,
-        )
+        );
+        metadata.baml_decl = self.baml_decl;
+        metadata
     }
 }
 
@@ -590,6 +610,7 @@ pub struct ToolFunctionMetadataExport {
     pub open_input_type: ToolTypeSpec,
     pub input_type: ToolTypeSpec,
     pub output_type: ToolTypeSpec,
+    pub baml_decl: Option<String>,
     pub tags: Vec<String>,
     pub secret_requirements: Vec<ToolSecretRequirement>,
     pub origin: ToolOrigin,
@@ -607,6 +628,7 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
             open_input_type: metadata.open_input_type.clone(),
             input_type: metadata.input_type.clone(),
             output_type: metadata.output_type.clone(),
+            baml_decl: metadata.baml_decl.clone(),
             tags: metadata.tags.clone(),
             secret_requirements: metadata.secret_requirements.clone(),
             origin: metadata.origin,

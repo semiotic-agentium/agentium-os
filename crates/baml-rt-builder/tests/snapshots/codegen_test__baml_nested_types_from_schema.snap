@@ -3,9 +3,9 @@ source: crates/baml-rt-builder/tests/codegen_test.rs
 expression: baml_output
 ---
 class Expression {
-  left int
-  operation MathOperation
-  right int
+  left int 
+  operation MathOperation 
+  right int 
 }
 
 enum MathOperation {

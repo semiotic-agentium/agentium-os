@@ -455,7 +455,7 @@ mod tests {
     use opentelemetry_sdk::trace::TracerProvider;
     use serde_json::{Value, json};
     use std::collections::HashMap;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex, OnceLock};
     use tokio::time::{Duration, timeout};
     use tracing_subscriber::layer::SubscriberExt;
 
@@ -466,10 +466,21 @@ mod tests {
         exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
         provider: TracerProvider,
         _guard: tracing::subscriber::DefaultGuard,
+        _otel_lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    static OTEL_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn otel_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        OTEL_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("OTEL_TEST_LOCK poisoned")
     }
 
     impl OtelTestFixture {
         fn new() -> Self {
+            let _otel_lock = otel_test_lock();
             let exporter = InMemorySpanExporterBuilder::new().build();
             let provider = TracerProvider::builder()
                 .with_simple_exporter(exporter.clone())
@@ -485,6 +496,7 @@ mod tests {
                 exporter,
                 provider,
                 _guard: guard,
+                _otel_lock,
             }
         }
 

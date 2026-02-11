@@ -1049,12 +1049,38 @@ dependencies = [
 
 [[package]]
 name = "baml-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.111",
+]
+
+[[package]]
+name = "baml-derive"
 version = "0.218.1"
 source = "git+https://github.com/BoundaryML/baml?rev=d2cc1034826f3b56fa0ad3bcb5c4424de2de8b1c#d2cc1034826f3b56fa0ad3bcb5c4424de2de8b1c"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.111",
+]
+
+[[package]]
+name = "baml-derive-core"
+version = "0.1.0"
+dependencies = [
+ "insta",
+ "inventory",
+]
+
+[[package]]
+name = "baml-derive-tests"
+version = "0.1.0"
+dependencies = [
+ "baml-derive 0.1.0",
+ "baml-derive-core",
+ "insta",
 ]
 
 [[package]]
@@ -1357,6 +1383,8 @@ name = "baml-rt-tools"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "baml-derive 0.1.0",
+ "baml-derive-core",
  "baml-rt",
  "baml-rt-core",
  "genco",
@@ -4215,7 +4243,7 @@ source = "git+https://github.com/BoundaryML/baml?rev=d2cc1034826f3b56fa0ad3bcb5c
 dependencies = [
  "anyhow",
  "baml-compiler",
- "baml-derive",
+ "baml-derive 0.218.1",
  "baml-rpc",
  "baml-types",
  "bstd",
@@ -4308,7 +4336,7 @@ version = "0.218.1"
 source = "git+https://github.com/BoundaryML/baml?rev=d2cc1034826f3b56fa0ad3bcb5c4424de2de8b1c#d2cc1034826f3b56fa0ad3bcb5c4424de2de8b1c"
 dependencies = [
  "anyhow",
- "baml-derive",
+ "baml-derive 0.218.1",
  "baml-types",
  "colored",
  "either",
@@ -4349,7 +4377,7 @@ source = "git+https://github.com/BoundaryML/baml?rev=d2cc1034826f3b56fa0ad3bcb5c
 dependencies = [
  "anyhow",
  "aws-config",
- "baml-derive",
+ "baml-derive 0.218.1",
  "baml-types",
  "derive_more 0.99.20",
  "either",

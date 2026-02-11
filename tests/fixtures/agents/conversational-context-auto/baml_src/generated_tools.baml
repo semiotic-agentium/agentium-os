@@ -24,7 +24,20 @@ enum ToolSessionOp {
   Abort @description("Close the session with an error. Use this if something went wrong and you need to terminate the session.")
 }
 
-// Domain types generated from JSON schemas
+// Domain types generated from #[derive(BamlType)]
+class Expression {
+  left int
+  operation MathOperation
+  right int
+}
+
+enum MathOperation {
+  Add @alias("+")
+  Subtract @alias("-")
+  Multiply @alias("*")
+  Divide @alias("/")
+}
+
 class CalculatorInput {
   expression Expression
 }
@@ -34,20 +47,6 @@ class CalculatorOutput {
   result float
   formatted string
 }
-
-class Expression {
-  left int
-  operation MathOperation
-  right int
-}
-
-enum MathOperation {
-  Add
-  Subtract
-  Multiply
-  Divide
-}
-
 
 class SupportCalculateOpenStep {
   op "Open"
@@ -80,3 +79,4 @@ type SupportCalculateSessionStep = SupportCalculateOpenStep | SupportCalculateSe
 class SupportCalculateSessionPlan {
   steps SupportCalculateSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (with optional initial_input), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example valid plan: [{op: 'Open', initial_input: {...}}, {op: 'Next'}, {op: 'Finish'}]. Tool identity is inferred from the input schema (no tool_name field).")
 }
+

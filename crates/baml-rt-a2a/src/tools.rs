@@ -177,6 +177,7 @@ fn a2a_session_metadata_result(name: &str) -> Result<ToolFunctionMetadata> {
             name: ts_name::<A2aSessionOutput>(),
             ts_decl: ts_decl::<A2aSessionOutput>(),
         },
+        baml_decl: None,
         tags: vec!["a2a".to_string(), "session".to_string()],
         secret_requirements: Vec::new(),
         // ALL Rust tools are host tools - they must be declared in manifest.json

@@ -15,22 +15,60 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_INCREMENTAL: "false"
+  CARGO_PROFILE_TEST_INCREMENTAL: "false"
+  RUSTFLAGS: "-C debuginfo=0 -C link-arg=-fuse-ld=gold"
 
 jobs:
   cargo-test:
-    name: Cargo test
+    name: Cargo test (light)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev
+          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Run cargo test
-        run: cargo test --workspace --all-features
+      - name: Clean build artifacts
+        run: cargo clean
+
+      - name: Run cargo test (light crates only)
+        run: cargo test -p baml-rt-core -p baml-rt-id -p baml-rt-observability
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Run baml-derive-tests
+        run: cargo test -p baml-derive-tests
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+  cargo-test-heavy:
+    name: Cargo test (heavy, serial)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Clean build artifacts
+        run: cargo clean
+
+      - name: Run heavy crate tests (serial)
+        run: cargo test --workspace --all-features --exclude baml-rt-core --exclude baml-rt-id --exclude baml-rt-observability --exclude baml-derive-core --exclude baml-derive --exclude baml-derive-tests --exclude baml-rt-a2a -j 1
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Run baml-rt-a2a tests
+        run: cargo test -p baml-rt-a2a --all-features -j 1
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/baml-agent-runner",
+    "crates/baml-derive-tests",
     "crates/baml-rt",
     "crates/baml-rt-a2a",
     "crates/baml-rt-builder",
@@ -63,6 +64,9 @@ schemars = "1.1.0"
 ts-rs = "11.1.0"
 genco = "0.19.0"
 inventory = "0.3.20"
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 axum = "0.8"
 utoipa = { version = "5", features = ["axum_extras"] }

@@ -214,6 +214,7 @@ impl A2aAgent {
                 name: format!("{}Output", parsed.local().as_str()),
                 ts_decl: None,
             },
+            baml_decl: None,
             tags: Vec::new(),
             secret_requirements: Vec::new(),
             origin: baml_rt_tools::ToolOrigin::Guest,
