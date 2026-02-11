@@ -278,7 +278,7 @@ pub fn a2a_stdio_request(agent_name: &str, method: &str, correlation_id: &str) -
 /// Parent: a2a_request / a2a_stream / a2a_stdio_request
 #[inline]
 pub fn a2a_route(method: &str, context_id: &str) -> Span {
-    tracing::debug_span!(
+    tracing::info_span!(
         "baml_rt.a2a_route",
         method = method,
         context_id = context_id,
@@ -290,7 +290,7 @@ pub fn a2a_route(method: &str, context_id: &str) -> Span {
 /// Parent: a2a_route
 #[inline]
 pub fn a2a_js_invoke(method: &str, is_stream: bool) -> Span {
-    tracing::debug_span!(
+    tracing::info_span!(
         "baml_rt.a2a_js_invoke",
         method = method,
         is_stream = is_stream,

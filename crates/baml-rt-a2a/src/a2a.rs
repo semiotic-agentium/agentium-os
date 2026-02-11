@@ -548,6 +548,15 @@ mod tests {
             })
     }
 
+    fn maybe_print_spans(spans: &[opentelemetry_sdk::export::trace::SpanData]) {
+        if std::env::var("BAML_TEST_PRINT_SPANS").is_ok() {
+            eprintln!(
+                "spans: {:?}",
+                spans.iter().map(|s| s.name.as_ref()).collect::<Vec<_>>()
+            );
+        }
+    }
+
     async fn setup_agent_with_js() -> A2aAgent {
         timeout(
             Duration::from_secs(TEST_WATCHDOG_TIMEOUT_SECS),
@@ -694,6 +703,7 @@ mod tests {
             .expect("handle_a2a should succeed for span structure test");
 
         let spans = _otel.spans();
+        maybe_print_spans(&spans);
         let span = find_span_with_attr(&spans, "baml_rt.a2a_stream", "correlation_id", "corr-1-19")
             .unwrap_or_else(|| {
                 find_span(&spans, "baml_rt.a2a_stream").expect("expected baml_rt.a2a_stream span")
@@ -751,6 +761,7 @@ mod tests {
             .expect("handle_a2a should succeed for stream span structure test");
 
         let spans = _otel.spans();
+        maybe_print_spans(&spans);
         let span = find_span_with_attr(&spans, "baml_rt.a2a_stream", "correlation_id", "corr-1-20")
             .unwrap_or_else(|| {
                 find_span(&spans, "baml_rt.a2a_stream").expect("expected baml_rt.a2a_stream span")

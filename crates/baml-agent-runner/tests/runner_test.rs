@@ -97,10 +97,15 @@ impl ProvenanceContextReader for StrictProvenanceWriter {
     }
 }
 
-async fn start_falkordb() -> (testcontainers::ContainerAsync<GenericImage>, String) {
+async fn start_falkordb() -> Option<(testcontainers::ContainerAsync<GenericImage>, String)> {
     let image = GenericImage::new("falkordb/falkordb", "latest")
         .with_exposed_port(ContainerPort::Tcp(6379));
-    let container = image.start().await.expect("start falkordb container");
+    let container = match image.start().await {
+        Ok(container) => container,
+        Err(err) => {
+            panic!("start falkordb container: {err}");
+        }
+    };
     let mut attempts = 0;
     let host_port = loop {
         match container.get_host_port_ipv4(6379).await {
@@ -115,7 +120,7 @@ async fn start_falkordb() -> (testcontainers::ContainerAsync<GenericImage>, Stri
         }
     };
     let connection = format!("falkor://127.0.0.1:{host_port}");
-    (container, connection)
+    Some((container, connection))
 }
 
 async fn wait_for_falkordb(connection: &str, graph: &str) {
@@ -763,7 +768,7 @@ async fn test_e2e_stream_js_tool() {
 async fn test_e2e_conversational_context_auto_via_provenance() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     let _ = dotenvy::dotenv();
-    let (_container, connection) = start_falkordb().await;
+    let (_container, connection) = start_falkordb().await.expect("start falkordb");
     let graph = format!(
         "runner_conv_ctx_{}_{}",
         std::process::id(),
