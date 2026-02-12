@@ -6,6 +6,8 @@ use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::tools::BamlTool;
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::effects::EffectBus;
+#[cfg(feature = "falkordb-tests")]
+use baml_rt_core::ids::ContextId;
 use baml_rt_core::ids::{AgentId, UuidId};
 #[cfg(feature = "falkordb-tests")]
 use baml_rt_provenance::{
@@ -33,7 +35,7 @@ use testcontainers::runners::AsyncRunner;
 #[cfg(feature = "falkordb-tests")]
 use text_to_cypher::core::execute_cypher_query;
 use tokio::sync::Semaphore;
-#[cfg(any(feature = "falkordb-tests", feature = "llm-tests"))]
+#[cfg(feature = "falkordb-tests")]
 use tokio::time::{Duration, sleep, timeout};
 use ts_rs::TS;
 
@@ -369,7 +371,7 @@ fn extract_chunks(responses: &[serde_json::Value]) -> Vec<&serde_json::Value> {
         .collect()
 }
 
-#[cfg(feature = "llm-tests")]
+#[cfg(any(feature = "llm-tests", feature = "falkordb-tests"))]
 fn extract_message_texts<'a>(chunks: &'a [&serde_json::Value]) -> Vec<&'a str> {
     chunks
         .iter()
