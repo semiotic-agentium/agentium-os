@@ -27,13 +27,7 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use tar::Builder;
 #[cfg(feature = "falkordb-tests")]
-use testcontainers::GenericImage;
-#[cfg(feature = "falkordb-tests")]
-use testcontainers::core::ContainerPort;
-#[cfg(feature = "falkordb-tests")]
-use testcontainers::runners::AsyncRunner;
-#[cfg(feature = "falkordb-tests")]
-use text_to_cypher::core::execute_cypher_query;
+use test_support::common::{start_falkordb, wait_for_falkordb};
 use tokio::sync::Semaphore;
 #[cfg(feature = "falkordb-tests")]
 use tokio::time::{Duration, sleep, timeout};
@@ -105,52 +99,6 @@ impl ProvenanceContextReader for StrictProvenanceWriter {
         baml_rt_provenance::ProvenanceError,
     > {
         self.inner.conversation_context(context_id, limit).await
-    }
-}
-
-#[cfg(feature = "falkordb-tests")]
-async fn start_falkordb() -> Option<(testcontainers::ContainerAsync<GenericImage>, String)> {
-    let image = GenericImage::new("falkordb/falkordb", "latest")
-        .with_exposed_port(ContainerPort::Tcp(6379));
-    let container = match image.start().await {
-        Ok(container) => container,
-        Err(err) => {
-            panic!("start falkordb container: {err}");
-        }
-    };
-    let mut attempts = 0;
-    let host_port = loop {
-        match container.get_host_port_ipv4(6379).await {
-            Ok(port) => break port,
-            Err(err) => {
-                attempts += 1;
-                if attempts > 25 {
-                    panic!("get falkordb port: {err}");
-                }
-                sleep(Duration::from_millis(200)).await;
-            }
-        }
-    };
-    let connection = format!("falkor://127.0.0.1:{host_port}");
-    Some((container, connection))
-}
-
-#[cfg(feature = "falkordb-tests")]
-async fn wait_for_falkordb(connection: &str, graph: &str) {
-    sleep(Duration::from_secs(1)).await;
-    let mut attempts = 0;
-    loop {
-        match execute_cypher_query("RETURN 1", graph, connection, false).await {
-            Ok(_) => return,
-            Err(err) => {
-                let error_message = err.to_string();
-                attempts += 1;
-                if attempts > 120 {
-                    panic!("falkordb did not become ready; last error: {error_message}");
-                }
-            }
-        }
-        sleep(Duration::from_secs(1)).await;
     }
 }
 
@@ -795,7 +743,7 @@ async fn test_e2e_stream_js_tool() {
 async fn test_e2e_conversational_context_auto_via_provenance() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     let _ = dotenvy::dotenv();
-    let (_container, connection) = start_falkordb().await.expect("start falkordb");
+    let (_container, connection) = start_falkordb().await;
     let graph = format!(
         "runner_conv_ctx_{}_{}",
         std::process::id(),

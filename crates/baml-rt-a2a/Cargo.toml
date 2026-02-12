@@ -38,4 +38,4 @@ proptest = "1.5"
 
 [features]
 default = []
-falkordb-tests = ["dep:testcontainers", "dep:text-to-cypher"]
+falkordb-tests = ["dep:testcontainers", "dep:text-to-cypher", "test-support/falkordb-tests"]

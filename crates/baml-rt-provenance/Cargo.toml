@@ -27,10 +27,11 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true, features = ["json"] }
+test-support = { path = "../test-support" }
 
 [features]
 default = []
-falkordb-tests = ["dep:testcontainers"]
+falkordb-tests = ["dep:testcontainers", "test-support/falkordb-tests"]
 
 [[bin]]
 name = "validate_prov"
