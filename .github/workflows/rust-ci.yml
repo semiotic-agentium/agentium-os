@@ -131,11 +131,8 @@ jobs:
       - name: Pre-pull FalkorDB image
         run: docker pull falkordb/falkordb:latest
 
-      - name: Run FalkorDB-gated tests
-        run: |
-          cargo test -p baml-rt-provenance --features falkordb-tests -j 1
-          cargo test -p baml-rt-a2a --features falkordb-tests -j 1
-          cargo test -p baml-agent-runner --features falkordb-tests -j 1
+      - name: Run FalkorDB-gated tests (serial)
+        run: cargo test -p baml-rt-provenance -p baml-rt-a2a -p baml-agent-runner --features baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests -j 1
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
