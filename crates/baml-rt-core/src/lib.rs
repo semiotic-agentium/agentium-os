@@ -6,6 +6,7 @@ pub mod correlation;
 pub mod effects;
 pub mod error;
 pub mod ids;
+pub mod json;
 pub mod package;
 pub mod types;
 
@@ -17,4 +18,5 @@ pub use effects::{
 };
 pub use error::{BamlRtError, Result};
 pub use ids::{AgentId, ArtifactId, ContextId, CorrelationId, EventId, MessageId, TaskId};
+pub use json::to_json_value;
 pub use package::AgentManifest;

@@ -1,16 +1,18 @@
 use crate::a2a;
 use crate::a2a_store::{TaskEventRecorder, TaskRepository, TaskUpdateEvent, TaskUpdateQueue};
 use crate::a2a_types::{
-    GetTaskRequest, ListTasksRequest, ListTasksResponse, StreamResponse, SubscribeToTaskRequest,
+    GetTaskRequest, ListTasksRequest, ListTasksResponse, StreamChunk, SubscribeToTaskRequest,
     TaskStatusUpdateEvent,
 };
 use crate::events::EventEmitter;
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, Result, to_json_value};
 use baml_rt_quickjs::QuickJSBridge;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+const TASK_NOT_FOUND_MSG: &str = "Task not found";
 
 #[async_trait(?Send)]
 pub trait TaskHandler: Send + Sync {
@@ -72,14 +74,14 @@ impl TaskHandler for DefaultTaskHandler {
             .repository
             .get(request.id.as_str(), history_length)
             .await
-            .ok_or_else(|| BamlRtError::InvalidArgument("Task not found".to_string()))?;
-        let value = serde_json::to_value(task).map_err(BamlRtError::Json)?;
+            .ok_or_else(|| BamlRtError::InvalidArgument(TASK_NOT_FOUND_MSG.to_string()))?;
+        let value = to_json_value(&task)?;
         Ok(a2a::A2aOutcome::Response(value))
     }
 
     async fn handle_list(&self, request: ListTasksRequest) -> Result<a2a::A2aOutcome> {
         let response: ListTasksResponse = self.repository.list(&request).await;
-        let value = serde_json::to_value(response).map_err(BamlRtError::Json)?;
+        let value = to_json_value(&response)?;
         Ok(a2a::A2aOutcome::Response(value))
     }
 
@@ -92,45 +94,43 @@ impl TaskHandler for DefaultTaskHandler {
             .repository
             .get(request.id.as_str(), None)
             .await
-            .ok_or_else(|| BamlRtError::InvalidArgument("Task not found".to_string()))?;
-        let value = serde_json::to_value(&task).map_err(BamlRtError::Json)?;
+            .ok_or_else(|| BamlRtError::InvalidArgument(TASK_NOT_FOUND_MSG.to_string()))?;
+        let value = to_json_value(&task)?;
 
         if is_stream {
             let mut responses = Vec::new();
-            let status_update = task.status.as_ref().map(|status| TaskStatusUpdateEvent {
-                context_id: task.context_id.clone(),
-                task_id: task.id.clone(),
-                status: Some(status.clone()),
-                metadata: None,
-                extra: HashMap::new(),
-            });
-            let response = StreamResponse {
-                task: Some(task),
-                status_update,
-                message: None,
-                artifact_update: None,
+            let task_chunk = StreamChunk::Task {
+                task: task.clone(),
                 extra: HashMap::new(),
             };
-            responses.push(serde_json::to_value(response).map_err(BamlRtError::Json)?);
+            responses.push(to_json_value(&task_chunk)?);
+            if let Some(ref status) = task.status {
+                let status_update = TaskStatusUpdateEvent {
+                    context_id: task.context_id.clone(),
+                    task_id: task.id.clone(),
+                    status: Some(status.clone()),
+                    metadata: None,
+                    extra: HashMap::new(),
+                };
+                let status_chunk = StreamChunk::StatusUpdate {
+                    status_update,
+                    extra: HashMap::new(),
+                };
+                responses.push(to_json_value(&status_chunk)?);
+            }
 
             for update in self.update_queue.drain_updates(request.id.as_str()).await {
-                let stream_response = match update {
-                    TaskUpdateEvent::Status(status_update) => StreamResponse {
-                        status_update: Some(status_update),
-                        message: None,
-                        task: None,
-                        artifact_update: None,
+                let chunk = match update {
+                    TaskUpdateEvent::Status(internal) => StreamChunk::StatusUpdate {
+                        status_update: internal.into(),
                         extra: HashMap::new(),
                     },
-                    TaskUpdateEvent::Artifact(artifact_update) => StreamResponse {
-                        artifact_update: Some(artifact_update),
-                        message: None,
-                        task: None,
-                        status_update: None,
+                    TaskUpdateEvent::Artifact(internal) => StreamChunk::ArtifactUpdate {
+                        artifact_update: internal.into(),
                         extra: HashMap::new(),
                     },
                 };
-                responses.push(serde_json::to_value(stream_response).map_err(BamlRtError::Json)?);
+                responses.push(to_json_value(&chunk)?);
             }
 
             Ok(a2a::A2aOutcome::Stream(responses))

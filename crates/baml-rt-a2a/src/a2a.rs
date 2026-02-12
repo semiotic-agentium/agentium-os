@@ -4,12 +4,12 @@
 
 use crate::a2a_types::{
     A2aMessageId, JSONRPCError, JSONRPCErrorResponse, JSONRPCId, JSONRPCRequest,
-    JSONRPCSuccessResponse, ListTasksRequest, Message, ROLE_AGENT, SendMessageRequest,
+    JSONRPCSuccessResponse, ListTasksRequest, Message, ROLE_AGENT, SendMessageRequest, Task,
 };
 use baml_rt_core::context;
 use baml_rt_core::context::InvocationScope;
 use baml_rt_core::ids::{ContextId, DerivedId, ExternalId, MessageId, TaskId};
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, Result, to_json_value};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
@@ -90,7 +90,7 @@ impl A2aRequest {
                 context_id = params.message.context_id.clone();
                 message_id = Some(params.message.message_id.as_message_id().clone());
                 task_id = params.message.task_id.clone();
-                params_value = serde_json::to_value(&params).map_err(BamlRtError::Json)?;
+                params_value = to_json_value(&params)?;
                 params_value = augment_message_params(params_value, &params.message);
                 true
             }
@@ -316,20 +316,34 @@ impl JsChunkNormalizer {
         }
     }
 
+    /// Single normalization pass: ensure stream-chunk shape (wrap bare Message/Task) then fill scope-derived fields.
     pub fn normalize_value(&mut self, value: Value) -> Result<Value> {
-        if let Some(map) = value.as_object() {
-            let is_wrapped = map.contains_key("message")
-                || map.contains_key("task")
-                || map.contains_key("statusUpdate")
-                || map.contains_key("artifactUpdate");
-            if !is_wrapped && map.contains_key("parts") {
+        let is_wrapped = value
+            .as_object()
+            .map(|m| {
+                m.contains_key("message")
+                    || m.contains_key("task")
+                    || m.contains_key("statusUpdate")
+                    || m.contains_key("artifactUpdate")
+            })
+            .unwrap_or(false);
+
+        let mut value = if !is_wrapped {
+            if let Ok(message) = serde_json::from_value::<Message>(value.clone()) {
+                json!({ "message": to_json_value(&message)? })
+            } else if let Ok(task) = serde_json::from_value::<Task>(value.clone()) {
+                json!({ "task": to_json_value(&task)? })
+            } else if value.as_object().and_then(|m| m.get("parts")).is_some() {
                 let mut message_value = value;
                 self.ensure_message_fields(&mut message_value)?;
                 return Ok(json!({ "message": message_value }));
+            } else {
+                value
             }
-        }
+        } else {
+            value
+        };
 
-        let mut value = value;
         if let Some(map) = value.as_object_mut() {
             if let Some(message) = map.get_mut("message") {
                 self.ensure_message_fields(message)?;
@@ -590,7 +604,7 @@ mod tests {
         tracing::info!("setup_agent_with_js_inner: Creating builder");
         let builder = A2aAgent::builder()
             .with_init_js(js_code)
-            .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()));
+            .with_effect_bus(Arc::new(baml_rt_core::effects::EffectBus::new()));
         tracing::info!("setup_agent_with_js_inner: Calling build()");
         let agent = builder.build().await.expect("agent build");
         tracing::info!("setup_agent_with_js_inner: Agent built successfully");
