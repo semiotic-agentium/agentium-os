@@ -345,44 +345,16 @@ impl NotionClient {
         page_size: Option<u32>,
     ) -> Result<NotionOutput> {
         let normalized = Self::normalize_id(block_id)?;
-        let mut request = self
-            .client
-            .get(format!("{BASE_URL}/blocks/{normalized}/children"))
-            .headers(self.auth_headers(api_key)?);
-        let mut params: Vec<(&str, String)> = Vec::new();
-        if let Some(cursor) = start_cursor {
-            params.push(("start_cursor", cursor.to_string()));
-        }
-        if let Some(size) = page_size {
-            params.push(("page_size", size.to_string()));
-        }
-        if !params.is_empty() {
-            request = request.query(&params);
-        }
+        let (_json, pages, sources, mut blocks, next_cursor, has_more) = self
+            .fetch_blocks_page(api_key, &normalized, start_cursor, page_size)
+            .await?;
 
-        let json = self.send_request(request).await?;
-
-        let blocks = extract_blocks(&json);
-        let next_cursor = json
-            .get("next_cursor")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let has_more = json
-            .get("has_more")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        let mut pages = Vec::new();
-        let mut sources = Vec::new();
-        if let Some(parent_page_id) = extract_parent_page_id(&json)
-            && let Ok(page) = self.fetch_page_summary(api_key, &parent_page_id).await
-        {
-            sources.push(NotionSource {
-                page_id: page.id.clone(),
-                url: page.url.clone(),
-            });
-            pages.push(page);
-        }
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(normalized.clone());
+        let child_blocks = self
+            .fetch_child_blocks_recursive(api_key, &blocks, &mut visited)
+            .await?;
+        blocks.extend(child_blocks);
 
         Ok(NotionOutput {
             pages,
@@ -411,6 +383,92 @@ impl NotionClient {
         parse_page_summary(&json).ok_or_else(|| NotionError::UnexpectedShape {
             message: "unexpected page shape".to_string(),
         })
+    }
+
+    async fn fetch_blocks_page(
+        &self,
+        api_key: &str,
+        block_id: &str,
+        start_cursor: Option<&str>,
+        page_size: Option<u32>,
+    ) -> Result<(
+        serde_json::Value,
+        Vec<NotionPageSummary>,
+        Vec<NotionSource>,
+        Vec<NotionBlockSummary>,
+        Option<String>,
+        bool,
+    )> {
+        let mut request = self
+            .client
+            .get(format!("{BASE_URL}/blocks/{block_id}/children"))
+            .headers(self.auth_headers(api_key)?);
+        let mut params: Vec<(&str, String)> = Vec::new();
+        if let Some(cursor) = start_cursor {
+            params.push(("start_cursor", cursor.to_string()));
+        }
+        if let Some(size) = page_size {
+            params.push(("page_size", size.to_string()));
+        }
+        if !params.is_empty() {
+            request = request.query(&params);
+        }
+
+        let json = self.send_request(request).await?;
+        let blocks = extract_blocks(&json);
+        let next_cursor = json
+            .get("next_cursor")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let has_more = json
+            .get("has_more")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        let mut pages = Vec::new();
+        let mut sources = Vec::new();
+        if let Some(parent_page_id) = extract_parent_page_id(&json)
+            && let Ok(page) = self.fetch_page_summary(api_key, &parent_page_id).await
+        {
+            sources.push(NotionSource {
+                page_id: page.id.clone(),
+                url: page.url.clone(),
+            });
+            pages.push(page);
+        }
+
+        Ok((json, pages, sources, blocks, next_cursor, has_more))
+    }
+
+    async fn fetch_child_blocks_recursive(
+        &self,
+        api_key: &str,
+        blocks: &[NotionBlockSummary],
+        visited: &mut std::collections::HashSet<String>,
+    ) -> Result<Vec<NotionBlockSummary>> {
+        let mut all_children = Vec::new();
+        let mut stack: Vec<String> = blocks
+            .iter()
+            .filter(|b| b.has_children)
+            .map(|b| b.id.clone())
+            .collect();
+
+        while let Some(block_id) = stack.pop() {
+            if !visited.insert(block_id.clone()) {
+                continue;
+            }
+            let (_json, _pages, _sources, child_blocks, _next, _has_more) = self
+                .fetch_blocks_page(api_key, &block_id, None, None)
+                .await?;
+            for child in child_blocks.iter().filter(|b| b.has_children) {
+                if !visited.contains(&child.id) {
+                    stack.push(child.id.clone());
+                }
+            }
+            all_children.extend(child_blocks);
+        }
+
+        Ok(all_children)
     }
 }
 
