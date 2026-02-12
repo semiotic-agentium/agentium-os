@@ -105,6 +105,23 @@ that describes FSM steps (`Open`, `Send`, `Next`, `Finish`, `Abort`), and the
 runtime executes those steps **in Rust**. JavaScript never mediates host tool
 execution; JS only handles JS tools via `invokeTool`.
 
+## Conversation Handling (A2A DSL)
+
+The **best reference** for multi-turn conversation and task lifecycle is the
+**task-lifecycle-demo** fixture:
+
+- **Path:** `tests/fixtures/agents/task-lifecycle-demo/src/index.ts`
+- **Concepts:** `__chat_register({ run })` with a single `run(ctx)` entrypoint;
+  `ctx.text`, `ctx.message`, `ctx.emit` for working messages, artifacts, and
+  `await emit.awaitInput(prompt)` to suspend until the next user message.
+- **Flow:** Path choice → review loop (approve/reject/revise) → sign-off loop
+  (confirm/request-changes/cancel) → COMPLETED. No nested loops; sequential
+  phases only.
+
+All fixture agents under `tests/fixtures/agents/` use the same DSL (see
+`tests/fixtures/README.md`). Types and runtime are in the generated
+`baml-runtime.d.ts`; there is no separate `a2a.ts`.
+
 ## Binaries
 
 - `baml-agent-builder` (from `baml-rt-builder`): Lint, compile, and package agents.
@@ -115,9 +132,9 @@ execution; JS only handles JS tools via `invokeTool`.
 ```text
 baml-rt/
 ├── crates/
-├── baml_src/        # Example BAML schemas
-├── examples/        # Example agent packages
-└── tests/           # Workspace-level tests and fixtures
+├── baml_src/                    # Example BAML schemas
+├── tests/fixtures/agents/       # Example/demo agents (task-lifecycle-demo, stream-*, etc.)
+└── tests/                       # Workspace-level tests and fixtures
 ```
 
 ## Testing

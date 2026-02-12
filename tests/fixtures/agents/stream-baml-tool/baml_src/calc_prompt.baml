@@ -10,10 +10,21 @@ function ChooseCalcTool(user_message: string) -> SupportCalculateSessionPlan {
   "#
 }
 
+// Streaming variant for JS invoke/stream tests (replaces voidship-rites SimpleGreetingStream).
+function ChooseCalcToolStream(user_message: string) -> string {
+  client DefaultClient
+  prompt #"
+    The user says: {{ user_message }}
+    Reply briefly with one word: OK
+    {{ _.role('user') }}
+    {{ user_message }}
+  "#
+}
+
 client DefaultClient {
   provider openai-generic
   options {
-    model "meta-llama/llama-4-maverick"
+    model "openai/gpt-oss-120b"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }

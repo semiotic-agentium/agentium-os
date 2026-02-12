@@ -964,7 +964,7 @@ dependencies = [
  "itertools 0.14.0",
  "log",
  "pretty",
- "reqwest 0.12.28",
+ "reqwest 0.12.26",
  "serde_json",
 ]
 
@@ -1301,7 +1301,7 @@ dependencies = [
  "inventory",
  "notion-client",
  "opentelemetry",
- "reqwest 0.12.28",
+ "reqwest 0.12.26",
  "schemars 1.2.1",
  "serde",
  "serde_json",
@@ -1396,7 +1396,7 @@ dependencies = [
  "pin-project-lite",
  "pretty_assertions",
  "regex",
- "reqwest 0.12.28",
+ "reqwest 0.12.26",
  "reqwest-eventsource",
  "ring",
  "scopeguard",
@@ -5878,9 +5878,9 @@ dependencies = [
 
 [[package]]
 name = "reqwest"
-version = "0.12.28"
+version = "0.12.26"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
+checksum = "3b4c14b2d9afca6a60277086b0cc6a6ae0b568f6f7916c943a8cdc79f8be240f"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -5978,7 +5978,7 @@ dependencies = [
  "mime",
  "nom",
  "pin-project-lite",
- "reqwest 0.12.28",
+ "reqwest 0.12.26",
  "thiserror 1.0.69",
 ]
 

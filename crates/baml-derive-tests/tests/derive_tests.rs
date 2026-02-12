@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use baml_derive::BamlType;
 use baml_derive_core::{BamlDefinition, BamlType as BamlTypeTrait};
 use std::collections::HashMap;

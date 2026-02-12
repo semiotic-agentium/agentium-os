@@ -15,7 +15,7 @@ use tokio::time::Duration;
 async fn setup_agent(writer: Arc<FalkorDbProvenanceWriter>) -> A2aAgent {
     let js_code = r#"
         globalThis.onChatMessage = async function(message) {
-            __baml_chat_yield({
+            __chat_yield({
                 task: {
                     metadata: { agent: "test-agent" },
                     status: { state: "TASK_STATE_WORKING" }

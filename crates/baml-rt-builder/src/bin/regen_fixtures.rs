@@ -49,6 +49,7 @@ async fn regen_fixture(name: &str) -> Result<()> {
 async fn main() -> Result<()> {
     regen_fixture("stream-baml-tool").await?;
     regen_fixture("stream-js-tool").await?;
+    regen_fixture("task-lifecycle-demo").await?;
     regen_fixture("conversational-context-auto").await?;
     regen_fixture("conversational-persona-demo").await?;
     Ok(())

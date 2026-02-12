@@ -739,7 +739,7 @@ impl A2aRequestHandler for A2aAgent {
                     && let Ok(params) =
                         serde_json::from_value::<SendMessageRequest>(parsed_request.params.clone())
                 {
-                    self.task_store.insert_message(&params.message).await;
+                    self.task_store.insert_message(&params.message).await?;
                 }
                 let route_span = spans::a2a_route(
                     parsed_request.method.as_str(),

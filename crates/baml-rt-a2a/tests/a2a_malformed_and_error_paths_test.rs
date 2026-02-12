@@ -123,7 +123,7 @@ async fn test_malformed_a2a_invalid_params() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_concurrency_mixed_success_failure() {
     let agent = A2aAgent::builder()
-        .with_init_js(r#"globalThis.onChatMessage = async function() { __baml_chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } }); };"#)
+        .with_init_js(r#"globalThis.onChatMessage = async function() { __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } }); };"#)
         .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()
@@ -206,14 +206,14 @@ async fn test_streaming_tool_failure_mid_stream() {
         .with_runtime_manager(runtime)
         .with_init_js(r#"
             globalThis.onChatMessage = async function(message) {
-                __baml_chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
+                __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
                 try {
                     const session = await openToolSession("test/failing_tool", __baml_invocation_token);
                     await session.send({ msg: "fail" });
                     const step = await session.continue();
-                    __baml_chat_yield({ message: { parts: [{ text: step && step.error ? step.error.message : "no error" }] } });
+                    __chat_yield({ message: { parts: [{ text: step && step.error ? step.error.message : "no error" }] } });
                 } catch (e) {
-                    __baml_chat_yield({ message: { parts: [{ text: "err: " + String(e) }] } });
+                    __chat_yield({ message: { parts: [{ text: "err: " + String(e) }] } });
                 }
             };
         "#)
@@ -264,14 +264,14 @@ async fn test_allowlist_violation_during_stream() {
         .with_runtime_manager(runtime)
         .with_init_js(r#"
             globalThis.onChatMessage = async function(message) {
-                __baml_chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
+                __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
                 try {
                     const session = await openToolSession("support/calculate", __baml_invocation_token);
                     await session.send({ expression: { left: 1, operation: "Add", right: 2 } });
                     const step = await session.continue();
-                    __baml_chat_yield({ message: { parts: [{ text: "unexpected success" }] } });
+                    __chat_yield({ message: { parts: [{ text: "unexpected success" }] } });
                 } catch (e) {
-                    __baml_chat_yield({ message: { parts: [{ text: "allowlist: " + String(e) }] } });
+                    __chat_yield({ message: { parts: [{ text: "allowlist: " + String(e) }] } });
                 }
             };
         "#)

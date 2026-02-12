@@ -22,9 +22,6 @@ fn collect_artifacts(root_path: &std::path::Path) -> String {
     let d_ts_path = root_path.join("src").join("baml-runtime.d.ts");
     let d_ts = fs::read_to_string(&d_ts_path).unwrap_or_else(|_| "<missing>".into());
 
-    let a2a_ts_path = root_path.join("src").join("a2a.ts");
-    let a2a_ts = fs::read_to_string(&a2a_ts_path).unwrap_or_else(|_| "<missing>".into());
-
     let tsconfig_path = root_path.join("tsconfig.json");
     let tsconfig = fs::read_to_string(&tsconfig_path).unwrap_or_else(|_| "<missing>".into());
 
@@ -47,9 +44,6 @@ fn collect_artifacts(root_path: &std::path::Path) -> String {
 
 === src/baml-runtime.d.ts ===
 {d_ts}
-
-=== src/a2a.ts ===
-{a2a_ts}
 
 === tsconfig.json ===
 {tsconfig}
@@ -128,7 +122,6 @@ async fn bootstrap_no_tools_creates_layout_and_files() {
     );
     assert!(root_path.join("src").join("index.ts").exists());
     assert!(root_path.join("src").join("baml-runtime.d.ts").exists());
-    assert!(root_path.join("src").join("a2a.ts").exists());
     assert!(root_path.join("tsconfig.json").exists());
 }
 

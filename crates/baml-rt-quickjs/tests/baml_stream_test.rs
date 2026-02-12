@@ -17,9 +17,9 @@ async fn test_js_stream_baml_function() {
     let mut baml_manager = BamlRuntimeManager::new().unwrap();
 
     // Load BAML schema from agent fixture (which has baml_src directory)
-    let agent_dir = test_support::common::agent_fixture("voidship-rites");
+    let agent_dir = test_support::common::agent_fixture("stream-baml-tool");
     if !agent_dir.join("baml_src").exists() {
-        eprintln!("Skipping test: voidship-rites fixture not found");
+        eprintln!("Skipping test: stream-baml-tool fixture not found");
         return;
     }
     baml_manager
@@ -36,13 +36,13 @@ async fn test_js_stream_baml_function() {
     let bridge_handle = agent.bridge();
     let mut bridge = bridge_handle.lock().await;
 
-    // Test invoking SimpleGreeting stream from JavaScript
+    // Test invoking ChooseCalcToolStream from JavaScript (stream-baml-tool has this function)
     // Use __awaitAndStringify helper to handle async function calls
     // Note: This will fail without an API key, but we can test the invocation path
     let js_code = r#"
         (function() {
             try {
-                const promise = SimpleGreetingStream({ name: "World" });
+                const promise = ChooseCalcToolStream({ user_message: "add 2 and 3" });
                 return __awaitAndStringify(promise);
             } catch (e) {
                 return JSON.stringify({ success: false, error: e.toString() });

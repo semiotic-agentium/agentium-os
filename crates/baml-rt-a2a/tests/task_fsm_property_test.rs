@@ -10,6 +10,8 @@
 //!    be SUBMITTED or returns Err. HostInferred may seed any first state.
 //! 4. **Upsert merge-preserve**: If upsert(task) where task.status is None and the task already
 //!    exists with status S, the stored task retains S.
+//! 5. **I1 (FSM boundary)**: upsert(task) with task.status = Some(X) never mutates stored status;
+//!    status changes only via record_status_update.
 //!
 //! Tests at TaskStore level (sync) to exercise the FSM and upsert logic directly.
 
@@ -69,6 +71,8 @@ fn is_allowed(from: &str, to: &str) -> bool {
             | (S_INPUT_REQUIRED, S_WORKING)
             | (S_INPUT_REQUIRED, S_CANCELED)
             | (S_INPUT_REQUIRED, S_REJECTED)
+            | (S_INPUT_REQUIRED, S_COMPLETED)
+            | (S_INPUT_REQUIRED, S_FAILED)
             | (S_AUTH_REQUIRED, S_WORKING)
             | (S_AUTH_REQUIRED, S_CANCELED)
             | (S_AUTH_REQUIRED, S_REJECTED)
@@ -218,6 +222,45 @@ proptest! {
         assert!(
             state_str.is_some(),
             "stored status must have a valid state string"
+        );
+    }
+
+    /// PROPERTY I1: upsert with status=Some(X) must not mutate stored status; FSM boundary.
+    #[test]
+    fn prop_upsert_with_status_does_not_mutate_fsm(attempted_state_idx in 0u8..=7u8) {
+        let mut store = TaskStore::new();
+        let task_id = TaskId::from_external(ExternalId::new("task-prop-i1"));
+        let context_id = ContextId::new(1, 1);
+
+        seed_task_and_submitted(&mut store, &task_id, &context_id);
+        let _ = store.record_status_update(
+            Some(task_id.clone()),
+            Some(context_id.clone()),
+            task_status(S_WORKING),
+        );
+
+        let attempted = ALL_STATES[attempted_state_idx as usize % ALL_STATES.len()];
+        let task_with_status = minimal_task(
+            &task_id,
+            &context_id,
+            Some(task_status(attempted)),
+        );
+        store.upsert(task_with_status);
+
+        let stored = store.get(task_id.as_str(), None).expect("task exists");
+        let state_str = stored
+            .status
+            .as_ref()
+            .and_then(|s| s.state.as_ref())
+            .and_then(|st| match st {
+                TaskState::String(s) => Some(s.as_str()),
+                _ => None,
+            });
+        assert_eq!(
+            state_str,
+            Some(S_WORKING),
+            "I1: upsert(status=Some({})) must not mutate stored status; expected WORKING",
+            attempted
         );
     }
 

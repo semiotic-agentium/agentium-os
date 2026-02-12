@@ -345,6 +345,17 @@ impl JsChunkNormalizer {
         };
 
         if let Some(map) = value.as_object_mut() {
+            // Contract: status_update or artifact_update requires task in chunk. Inject task from scope when missing.
+            if (map.contains_key("statusUpdate") || map.contains_key("artifactUpdate"))
+                && !map.contains_key("task")
+            {
+                let mut task = json!({
+                    "id": self.task_id.as_str(),
+                    "contextId": self.context_id.as_str(),
+                });
+                self.ensure_task_fields(&mut task)?;
+                map.insert("task".to_string(), task);
+            }
             if let Some(message) = map.get_mut("message") {
                 self.ensure_message_fields(message)?;
             }
@@ -589,7 +600,7 @@ mod tests {
             globalThis.onChatMessage = async function(message) {
                 const text = (message && message.parts && message.parts[0] && message.parts[0].text) || "friend";
                 if (text === "task") {
-                    __baml_chat_yield({
+                    __chat_yield({
                         task: {
                             metadata: { agent: "test-agent" },
                             status: { state: "TASK_STATE_WORKING" }
@@ -597,8 +608,8 @@ mod tests {
                     });
                     return;
                 }
-                __baml_chat_yield({ message: { parts: [{ text: "hi " + text }] } });
-                __baml_chat_yield({ message: { parts: [{ text: "done" }] }, final: true });
+                __chat_yield({ message: { parts: [{ text: "hi " + text }] } });
+                __chat_yield({ message: { parts: [{ text: "done" }] }, final: true });
             };
         "#;
         tracing::info!("setup_agent_with_js_inner: Creating builder");

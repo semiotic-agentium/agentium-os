@@ -51,7 +51,7 @@ Notation: □ = always, ◇ = eventually.
 | Layer        | Mechanism                                                                 |
 |-------------|----------------------------------------------------------------------------|
 | Application | Invoker holds bridge lock for full sequence; no other caller runs JS.     |
-| Contract     | a2a.ts: agent must call `__baml_chat_yield(chunk)`; host ignores return.    |
+| Contract     | Agent uses `session(message).run(...)`; runtime shim calls `__chat_yield(chunk)`; host sets `__chat_yield` before stream requests and ignores return. |
 | Testing     | `stream_request_uses_only_invoke_stream_chunks` (mock invoker).            |
 
 ---

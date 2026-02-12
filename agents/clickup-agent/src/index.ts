@@ -1,31 +1,14 @@
-import type { ChatMessage, ChatStreamChunk, Task } from "./a2a";
+/// <reference path="./baml-runtime.d.ts" />
+declare function ChooseClickUpAction(args?: Record<string, unknown>): Promise<unknown>;
 
-function extractText(message: ChatMessage | null | undefined): string {
-  if (!message?.parts?.length) return "unknown";
-  const first = message.parts[0];
-  if (first && typeof (first as { text?: string }).text === "string") {
-    return (first as { text: string }).text;
-  }
-  return "unknown";
-}
+type ChatMessageWithToken = ChatMessage & { __baml_invocation_token?: string };
 
-function newMessage(text: string): { parts: { text: string }[] } {
-  return { parts: [{ text }] };
-}
+async function onChatMessage(message: ChatMessageWithToken): Promise<void> {
+  const s = session(message);
+  await s.run(async () => {
+    const text = s.text() || "unknown";
+    const token = message.__baml_invocation_token;
 
-function newTask(message?: { parts: { text: string }[] }): Task {
-  return {
-    status: { state: "TASK_STATE_WORKING", message },
-  };
-}
-
-async function onChatMessage(
-  message: ChatMessage & { __baml_invocation_token?: string }
-): Promise<void> {
-  const text = extractText(message);
-  const token = message.__baml_invocation_token;
-
-  try {
     const toolResult = await ChooseClickUpAction({
       user_message: text,
       __baml_invocation_token: token,
@@ -53,21 +36,11 @@ async function onChatMessage(
         response += "\n\n" + taskList;
       }
 
-      __baml_chat_yield({
-        message: newMessage(response),
-        task: newTask(newMessage(response)),
-      });
-      return;
+      return { message: response };
     }
 
-    __baml_chat_yield({
-      message: newMessage("ClickUp action completed but returned no data."),
-      task: newTask(),
-    });
-  } catch (e) {
-    const errMsg = e instanceof Error ? e.message : String(e);
-    __baml_chat_yield({ message: newMessage(`Error: ${errMsg}`) });
-  }
+    return { message: "ClickUp action completed but returned no data." };
+  });
 }
 
-__baml_chat_register({ onChatMessage });
+__chat_register({ onChatMessage });

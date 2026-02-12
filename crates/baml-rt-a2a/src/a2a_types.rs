@@ -344,6 +344,20 @@ pub struct TaskStatusUpdateEvent {
     pub extra: HashMap<String, Value>,
 }
 
+impl TaskStatusUpdateEvent {
+    /// Builds a status-update event from a task's current status, if present.
+    pub fn from_task_current_status(task: &Task) -> Option<Self> {
+        let status = task.status.clone()?;
+        Some(Self {
+            context_id: task.context_id.clone(),
+            task_id: task.id.clone(),
+            status: Some(status),
+            metadata: None,
+            extra: HashMap::new(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskArtifactUpdateEvent {
@@ -382,6 +396,29 @@ pub enum StreamChunk {
         #[serde(flatten)]
         extra: HashMap<String, Value>,
     },
+}
+
+impl StreamChunk {
+    pub fn task(task: Task) -> Self {
+        StreamChunk::Task {
+            task,
+            extra: HashMap::new(),
+        }
+    }
+
+    pub fn status_update(status_update: TaskStatusUpdateEvent) -> Self {
+        StreamChunk::StatusUpdate {
+            status_update,
+            extra: HashMap::new(),
+        }
+    }
+
+    pub fn artifact_update(artifact_update: TaskArtifactUpdateEvent) -> Self {
+        StreamChunk::ArtifactUpdate {
+            artifact_update,
+            extra: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

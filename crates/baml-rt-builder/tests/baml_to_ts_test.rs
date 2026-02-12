@@ -70,9 +70,10 @@ async fn baml_to_ts_typed_function_declaration() {
         "expected typed function declaration; got snippet: {}",
         ts.lines().take(10).collect::<Vec<_>>().join("\n")
     );
+    // BAML function declarations must be typed; BamlAgent.tools may still use Promise<unknown>
     assert!(
-        !ts.contains("Promise<unknown>"),
-        "generated TS should not contain Promise<unknown> for BAML functions"
+        !ts.contains("ChooseCalcTool(args: { user_message: string }): Promise<unknown>"),
+        "BAML function ChooseCalcTool should have typed return, not Promise<unknown>"
     );
     assert!(
         !ts.contains("Record<string, unknown>"),
@@ -112,18 +113,21 @@ async fn baml_to_ts_primitive_and_object_types_in_output() {
 }
 
 // ---------------------------------------------------------------------------
-// Tool section still present and unchanged
+// A2A runtime section present and typed
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn baml_to_ts_includes_tool_declarations() {
     let ts = generate_ts_from_fixture("stream-baml-tool").expect("generate TS");
-    assert!(ts.contains("ToolFailureKind"), "tool types present");
-    assert!(ts.contains("openToolSession"), "tool session declaration");
     assert!(
-        ts.contains("support/calculate"),
-        "tool name in ToolName union"
+        ts.contains("ToolFailureKind"),
+        "shared failure type present"
     );
+    assert!(
+        ts.contains("openA2aTaskSession"),
+        "A2A typed opener declaration present"
+    );
+    assert!(ts.contains("A2aNextStates"), "FSM transition type present");
 }
 
 // ---------------------------------------------------------------------------

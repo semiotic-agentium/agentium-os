@@ -8,7 +8,6 @@ use crate::events::EventEmitter;
 use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, Result, to_json_value};
 use baml_rt_quickjs::QuickJSBridge;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -99,36 +98,15 @@ impl TaskHandler for DefaultTaskHandler {
 
         if is_stream {
             let mut responses = Vec::new();
-            let task_chunk = StreamChunk::Task {
-                task: task.clone(),
-                extra: HashMap::new(),
-            };
-            responses.push(to_json_value(&task_chunk)?);
-            if let Some(ref status) = task.status {
-                let status_update = TaskStatusUpdateEvent {
-                    context_id: task.context_id.clone(),
-                    task_id: task.id.clone(),
-                    status: Some(status.clone()),
-                    metadata: None,
-                    extra: HashMap::new(),
-                };
-                let status_chunk = StreamChunk::StatusUpdate {
-                    status_update,
-                    extra: HashMap::new(),
-                };
-                responses.push(to_json_value(&status_chunk)?);
+            responses.push(to_json_value(&StreamChunk::task(task.clone()))?);
+            if let Some(status_ev) = TaskStatusUpdateEvent::from_task_current_status(&task) {
+                responses.push(to_json_value(&StreamChunk::status_update(status_ev))?);
             }
 
             for update in self.update_queue.drain_updates(request.id.as_str()).await {
                 let chunk = match update {
-                    TaskUpdateEvent::Status(internal) => StreamChunk::StatusUpdate {
-                        status_update: internal,
-                        extra: HashMap::new(),
-                    },
-                    TaskUpdateEvent::Artifact(internal) => StreamChunk::ArtifactUpdate {
-                        artifact_update: internal,
-                        extra: HashMap::new(),
-                    },
+                    TaskUpdateEvent::Status(internal) => StreamChunk::status_update(internal),
+                    TaskUpdateEvent::Artifact(internal) => StreamChunk::artifact_update(internal),
                 };
                 responses.push(to_json_value(&chunk)?);
             }

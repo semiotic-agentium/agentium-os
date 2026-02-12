@@ -17,11 +17,15 @@ fn fixture_js_code() -> String {
         const text = message?.parts?.[0]?.text || "";
 
         if (text.startsWith("long-rite:")) {
-            __baml_chat_yield({
+            // First status must be SUBMITTED per FSM; then WORKING so subscribe sees status updates
+            __chat_yield({
                 task: {
                     metadata: { agent: "test-agent" },
-                    status: { state: "TASK_STATE_WORKING" }
+                    status: { state: "TASK_STATE_SUBMITTED" }
                 }
+            });
+            __chat_yield({
+                statusUpdate: { status: { state: "TASK_STATE_WORKING" } }
             });
             return;
         }
@@ -31,9 +35,9 @@ fn fixture_js_code() -> String {
                 const session = await openToolSession("test/add_numbers", token);
                 await session.send({ a: 2, b: 3 });
                 await session.continue();
-                __baml_chat_yield({ message: { parts: [{ text: "sum=5" }] } });
+                __chat_yield({ message: { parts: [{ text: "sum=5" }] } });
             } catch (e) {
-                __baml_chat_yield({ message: { parts: [{ text: `tool_error=${String(e)}` }] } });
+                __chat_yield({ message: { parts: [{ text: `tool_error=${String(e)}` }] } });
             }
             return;
         }
@@ -43,14 +47,14 @@ fn fixture_js_code() -> String {
                 const session = await openToolSession("support/calculate", token);
                 await session.send({ expression: { left: 2, operation: "Add", right: 3 } });
                 await session.continue();
-                __baml_chat_yield({ message: { parts: [{ text: "sum=5" }] } });
+                __chat_yield({ message: { parts: [{ text: "sum=5" }] } });
             } catch (e) {
-                __baml_chat_yield({ message: { parts: [{ text: `tool_error=${String(e)}` }] } });
+                __chat_yield({ message: { parts: [{ text: `tool_error=${String(e)}` }] } });
             }
             return;
         }
-        __baml_chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
-        __baml_chat_yield({ artifactUpdate: { artifact: { name: "rite-log", parts: [{ text: "sealed" }] } } });
+        __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
+        __chat_yield({ artifactUpdate: { artifact: { name: "rite-log", parts: [{ text: "sealed" }] } } });
     };
     "#
     .to_string()

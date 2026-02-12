@@ -34,7 +34,7 @@ function ChatWithContext(user_message: string) -> string {
 client DefaultClient {
   provider openai-generic
   options {
-    model "meta-llama/llama-4-maverick"
+    model "openai/gpt-oss-120b"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }

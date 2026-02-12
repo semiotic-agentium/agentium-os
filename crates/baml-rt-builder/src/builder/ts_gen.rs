@@ -2,7 +2,6 @@ use crate::builder::ir_to_ts::{
     collect_type_decl_deps, emit_type_declarations_tokens, type_to_ts_expr,
 };
 use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::tool_catalog::resolve_manifest_tools;
 use baml_rt_tools::ts_gen::render_tool_typescript;
 use genco::lang::js;
 use genco::prelude::*;
@@ -76,11 +75,12 @@ pub fn render_ts_declarations(ir_signature: &IRSignature, tool_names: &[String])
     quote_in!(tokens => $(global_close));
     tokens.line();
 
-    let tool_comment = "/** Host tool session API: openToolSession, tool-specific openers, and shared types (ToolFailure, ToolStep, etc.). */";
+    let tool_comment =
+        "/** Runtime interaction API: A2A task FSM (message-first, typestate rails). */";
     quote_in!(tokens => $(tool_comment));
     tokens.line();
-    let tool_metadata = resolve_manifest_tools(tool_names)?;
-    let tool_ts = render_tool_typescript(&tool_metadata)?;
+    let _ = tool_names;
+    let tool_ts = render_tool_typescript(&[])?;
     for line in tool_ts.lines() {
         quote_in!(tokens => $(line));
         tokens.push();

@@ -17,7 +17,7 @@ async fn build_agent(writer: Arc<FalkorDbProvenanceWriter>) -> A2aAgent {
     let js = r#"
         globalThis.onChatMessage = async function(message) {
             const text = message?.parts?.[0]?.text || "";
-            __baml_chat_yield({ message: { parts: [{ text: `echo:${text}` }] } });
+            __chat_yield({ message: { parts: [{ text: `echo:${text}` }] } });
         };
     "#;
     A2aAgent::builder()

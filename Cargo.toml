@@ -6,7 +6,6 @@ members = [
     "crates/baml-rt-a2a",
     "crates/baml-rt-builder",
     "crates/baml-rt-core",
-    "crates/baml-derive-tests",
     "crates/baml-rt-id",
     "crates/baml-rt-interceptor",
     "crates/baml-rt-observability",
