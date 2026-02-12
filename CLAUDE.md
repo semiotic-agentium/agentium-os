@@ -5,13 +5,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Development Commands
 
 ```bash
-# Build
+# Build (requires Rust nightly — edition 2024; use the flake.nix devShell)
 cargo build
 cargo build --release
 
 # Test (source .env first for API-key-dependent tests)
 set -a && source .env && set +a
-cargo test
+cargo test                                     # runs default-members only
+cargo test --workspace                         # runs all crates
 cargo test -- --nocapture
 
 # Run a single test
@@ -19,27 +20,34 @@ cargo test test_name
 cargo test -p baml-rt test_name               # specific crate
 cargo test -p baml-rt-a2a test_name -- --nocapture
 
+# Feature-gated test suites
+cargo test -p baml-rt-provenance --features falkordb-tests -j 1
+cargo test -p baml-rt --features llm-tests -j 1
+
 # Lint (run before committing)
 cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --check
 
-# Full pre-commit checks (also runs cargo-deny, cargo-machete, cargo-outdated, typos)
+# Full pre-commit checks (fmt, clippy, typos, cargo-check)
 pre-commit run --all-files
 
 # Snapshot testing (provenance crate uses insta)
 cargo insta review
+
+# Regenerate TypeScript type declarations from baml_src/ changes
+cargo run -p baml-rt-builder --bin regen_fixtures
 
 # Binaries
 cargo run -p baml-rt-builder --bin baml-agent-builder   # lint, compile, package agents
 cargo run -p baml-agent-runner                           # load packaged agents, serve A2A
 
 # FalkorDB for provenance graph tests
-./scripts/falkordb.sh
+./scripts/falkordb.sh              # commands: up, down, restart, status, logs
 ```
 
 ## Architecture
 
-This is a Rust workspace (edition 2024) for the BAML agent runtime — executing BAML functions, running JavaScript agents via QuickJS, tool orchestration, and serving A2A (agent-to-agent) protocol requests.
+This is a Rust workspace (edition 2024, requires nightly) for the BAML agent runtime — executing BAML functions, running JavaScript agents via QuickJS, tool orchestration, and serving A2A (agent-to-agent) protocol requests.
 
 ### Crate Dependency Graph (bottom-up)
 
@@ -51,9 +59,14 @@ This is a Rust workspace (edition 2024) for the BAML agent runtime — executing
 - **baml-rt-quickjs** — QuickJS runtime host: loads JS, bridges JS↔Rust, manages BAML runtime invocations
 - **baml-rt-a2a** — Agent-to-agent protocol: JSON-RPC types, SSE streaming transport, streaming task handling
 - **baml-rt-provenance** — Provenance graph: event normalization, FalkorDB persistence via text-to-cypher
+- **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors
 - **baml-rt-builder** — Agent build pipeline: OXC lint/compile TypeScript, BAML type generation, tar.gz packaging. Binary: `baml-agent-builder`
 - **baml-agent-runner** — Loads packaged agent tar.gz, serves A2A requests. Binary: `baml-agent-runner`
 - **baml-rt** — Facade crate re-exporting subcrates via feature flags (default: all enabled)
+- **baml-derive-core** — Core types and rendering for derive macro (`BamlType` trait)
+- **baml-derive** — Proc-macro: `#[derive(BamlType)]` with `#[baml(dynamic)]`, `#[baml(union)]`, `#[baml(alias)]`, `#[baml(skip)]` etc.
+- **baml-derive-tests** — Integration tests for derive macro (not published)
+- **tools/internal-dev** — Test tool implementations (Calculator, Delay, Uppercase, Weather, A2aRelay) registered via `inventory`
 - **test-support** — Shared test fixtures and helpers (not published)
 
 ### Key Runtime Flow
@@ -72,6 +85,24 @@ Host tools are session-based. BAML returns a declarative `ToolSessionPlan` descr
 - `quickjs` → baml-rt-quickjs (implies tools + interceptor + observability)
 - `a2a` → baml-rt-a2a (implies quickjs)
 - `builder` → baml-rt-builder (implies observability)
+
+### Test-Gating Feature Flags
+
+- `llm-tests` — LLM-dependent tests requiring API keys; run nightly in `llm-smoke.yml`
+- `falkordb-tests` — FalkorDB-dependent tests using testcontainers; run in dedicated CI job
+- `http-tools` — HTTP-dependent tools (ClickUp, Notion); tested separately in CI
+
+## CI Structure
+
+Three parallel jobs in `rust-ci.yml` (push/PR to main):
+
+1. **cargo-test (light)** — `baml-rt-core`, `baml-rt-id`, `baml-rt-observability`, `baml-derive-tests`
+2. **cargo-test-heavy (serial, -j 1)** — Remaining workspace crates, http-tools tests, baml-rt-a2a
+3. **cargo-test-falkordb (serial, -j 1)** — `--features falkordb-tests` for provenance, a2a, runner
+
+Nightly `llm-smoke.yml` runs `--features llm-tests` on a cron schedule.
+
+All jobs use sccache (GHA backend) + rust-cache with shared key.
 
 ## Testing Conventions
 

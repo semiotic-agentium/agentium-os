@@ -1,3 +1,4 @@
+#![cfg(feature = "falkordb-tests")]
 #![allow(dead_code)]
 
 use baml_rt_core::ids::{

@@ -27,15 +27,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Configure sccache
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: 'ci'
+          cache-on-failure: true
+          cache-targets: 'false'
+
       - name: Install build dependencies
         run: |
           sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Clean build artifacts
-        run: cargo clean
 
       - name: Run cargo test (light crates only)
         run: cargo test -p baml-rt-core -p baml-rt-id -p baml-rt-observability
@@ -47,11 +59,30 @@ jobs:
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats
+
   cargo-test-heavy:
     name: Cargo test (heavy, serial)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Configure sccache
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: 'ci'
+          cache-on-failure: true
+          cache-targets: 'false'
 
       - name: Install build dependencies
         run: |
@@ -59,12 +90,6 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Clean build artifacts
-        run: cargo clean
-
-      - name: Pre-pull FalkorDB image
-        run: docker pull falkordb/falkordb:latest
 
       - name: Run heavy crate tests (serial, default features only)
         run: cargo test --workspace --exclude baml-rt-core --exclude baml-rt-id --exclude baml-rt-observability --exclude baml-derive-core --exclude baml-derive --exclude baml-derive-tests --exclude baml-rt-a2a -j 1
@@ -77,6 +102,53 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
       - name: Run baml-rt-a2a tests
-        run: cargo test -p baml-rt-a2a --all-features -j 1
+        run: cargo test -p baml-rt-a2a -j 1
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats
+
+  cargo-test-falkordb:
+    name: Cargo test (falkordb)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Configure sccache
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: 'ci'
+          cache-on-failure: true
+          cache-targets: 'false'
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Pre-pull FalkorDB image
+        run: docker pull falkordb/falkordb:latest
+
+      - name: Run FalkorDB-gated tests
+        run: |
+          cargo test -p baml-rt-provenance --features falkordb-tests -j 1
+          cargo test -p baml-rt-a2a --features falkordb-tests -j 1
+          cargo test -p baml-agent-runner --features falkordb-tests -j 1
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+      - name: Show sccache stats
+        if: always()
+        run: sccache --show-stats

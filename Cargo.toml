@@ -16,6 +16,16 @@ members = [
     "crates/test-support",
     "crates/tools/internal-dev",
 ]
+default-members = [
+    "crates/baml-rt-core",
+    "crates/baml-rt-id",
+    "crates/baml-rt-observability",
+    "crates/baml-rt-interceptor",
+    "crates/baml-rt-quickjs",
+    "crates/baml-rt-tools",
+    "crates/baml-rt-a2a",
+    "crates/baml-rt-provenance",
+]
 resolver = "2"
 
 [workspace.package]

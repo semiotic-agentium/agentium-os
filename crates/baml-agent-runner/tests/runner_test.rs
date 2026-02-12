@@ -6,7 +6,10 @@ use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::tools::BamlTool;
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::effects::EffectBus;
-use baml_rt_core::ids::{AgentId, ContextId, UuidId};
+#[cfg(feature = "falkordb-tests")]
+use baml_rt_core::ids::ContextId;
+use baml_rt_core::ids::{AgentId, UuidId};
+#[cfg(feature = "falkordb-tests")]
 use baml_rt_provenance::{
     AgentType, FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, ProvEvent,
     ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
@@ -23,11 +26,16 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use tar::Builder;
+#[cfg(feature = "falkordb-tests")]
 use testcontainers::GenericImage;
+#[cfg(feature = "falkordb-tests")]
 use testcontainers::core::ContainerPort;
+#[cfg(feature = "falkordb-tests")]
 use testcontainers::runners::AsyncRunner;
+#[cfg(feature = "falkordb-tests")]
 use text_to_cypher::core::execute_cypher_query;
 use tokio::sync::Semaphore;
+#[cfg(feature = "falkordb-tests")]
 use tokio::time::{Duration, sleep, timeout};
 use ts_rs::TS;
 
@@ -56,11 +64,13 @@ fn e2e_serial_gate() -> &'static Semaphore {
     GATE.get_or_init(|| Semaphore::new(1))
 }
 
+#[cfg(feature = "falkordb-tests")]
 #[derive(Clone)]
 struct StrictProvenanceWriter {
     inner: Arc<FalkorDbProvenanceWriter>,
 }
 
+#[cfg(feature = "falkordb-tests")]
 #[async_trait]
 impl ProvenanceWriter for StrictProvenanceWriter {
     async fn add_event(
@@ -74,6 +84,7 @@ impl ProvenanceWriter for StrictProvenanceWriter {
     }
 }
 
+#[cfg(feature = "falkordb-tests")]
 #[async_trait]
 impl ProvenanceContextReader for StrictProvenanceWriter {
     async fn context_messages(
@@ -97,6 +108,7 @@ impl ProvenanceContextReader for StrictProvenanceWriter {
     }
 }
 
+#[cfg(feature = "falkordb-tests")]
 async fn start_falkordb() -> Option<(testcontainers::ContainerAsync<GenericImage>, String)> {
     let image = GenericImage::new("falkordb/falkordb", "latest")
         .with_exposed_port(ContainerPort::Tcp(6379));
@@ -123,6 +135,7 @@ async fn start_falkordb() -> Option<(testcontainers::ContainerAsync<GenericImage
     Some((container, connection))
 }
 
+#[cfg(feature = "falkordb-tests")]
 async fn wait_for_falkordb(connection: &str, graph: &str) {
     sleep(Duration::from_secs(1)).await;
     let mut attempts = 0;
@@ -358,6 +371,7 @@ fn extract_chunks(responses: &[serde_json::Value]) -> Vec<&serde_json::Value> {
         .collect()
 }
 
+#[cfg(any(feature = "llm-tests", feature = "falkordb-tests"))]
 fn extract_message_texts<'a>(chunks: &'a [&serde_json::Value]) -> Vec<&'a str> {
     chunks
         .iter()
@@ -373,6 +387,7 @@ fn extract_message_texts<'a>(chunks: &'a [&serde_json::Value]) -> Vec<&'a str> {
         .collect()
 }
 
+#[cfg(feature = "llm-tests")]
 async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
     ensure_fixture_runtime_types();
     let built = build_fixture_to_temp_async("stream-baml-tool").await;
@@ -434,6 +449,7 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
     (agent, extract_dir)
 }
 
+#[cfg(feature = "falkordb-tests")]
 async fn setup_conversational_context_auto_agent(
     connection: String,
     graph: String,
@@ -599,8 +615,13 @@ async fn test_e2e_agent_runner_load_package() {
     fs::remove_dir_all(&extract_dir).ok();
 }
 
+#[cfg(feature = "llm-tests")]
 #[tokio::test]
 async fn test_e2e_agent_runner_invoke_function() {
+    if std::env::var("BAML_SKIP_LLM_TESTS").is_ok() {
+        eprintln!("Skipping LLM test: BAML_SKIP_LLM_TESTS set");
+        return;
+    }
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     // E2E via packaged agent loaded in-process, then invoked through A2A.
     // This avoids recursive `cargo run` subprocess behavior and validates
@@ -670,8 +691,13 @@ async fn test_e2e_agent_runner_invoke_function() {
 
 /// Fixture: stream-baml-tool. Tests async streaming of a BAML tool (FSM) result via message.sendStream.
 /// Requires .env with OPENROUTER_API_KEY (source .env or set in test env).
+#[cfg(feature = "llm-tests")]
 #[tokio::test]
 async fn test_e2e_stream_baml_tool() {
+    if std::env::var("BAML_SKIP_LLM_TESTS").is_ok() {
+        eprintln!("Skipping LLM test: BAML_SKIP_LLM_TESTS set");
+        return;
+    }
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     let _ = dotenvy::dotenv();
 
@@ -764,6 +790,7 @@ async fn test_e2e_stream_js_tool() {
     let _ = task_id;
 }
 
+#[cfg(feature = "falkordb-tests")]
 #[tokio::test]
 async fn test_e2e_conversational_context_auto_via_provenance() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");

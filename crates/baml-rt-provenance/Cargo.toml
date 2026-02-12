@@ -22,11 +22,15 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 text-to-cypher = { workspace = true }
+testcontainers = { workspace = true, optional = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-testcontainers = { workspace = true }
 insta = { workspace = true, features = ["json"] }
+
+[features]
+default = []
+falkordb-tests = ["dep:testcontainers"]
 
 [[bin]]
 name = "validate_prov"

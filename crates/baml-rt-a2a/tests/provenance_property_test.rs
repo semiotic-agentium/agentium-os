@@ -1,8 +1,10 @@
+#![cfg(feature = "falkordb-tests")]
 //! Provenance attribution test using FalkorDB.
 
 #![recursion_limit = "256"]
 
 use baml_rt::QuickJSConfig;
+
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt_core::ids::{ContextId, CorrelationId};
 use baml_rt_provenance::{FalkorDbProvenanceConfig, FalkorDbProvenanceWriter};
