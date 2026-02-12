@@ -6,7 +6,7 @@ use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::tools::BamlTool;
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::effects::EffectBus;
-use baml_rt_core::ids::{AgentId, ContextId, UuidId};
+use baml_rt_core::ids::{AgentId, UuidId};
 #[cfg(feature = "falkordb-tests")]
 use baml_rt_provenance::{
     AgentType, FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, ProvEvent,
@@ -33,6 +33,7 @@ use testcontainers::runners::AsyncRunner;
 #[cfg(feature = "falkordb-tests")]
 use text_to_cypher::core::execute_cypher_query;
 use tokio::sync::Semaphore;
+#[cfg(any(feature = "falkordb-tests", feature = "llm-tests"))]
 use tokio::time::{Duration, sleep, timeout};
 use ts_rs::TS;
 
@@ -368,6 +369,7 @@ fn extract_chunks(responses: &[serde_json::Value]) -> Vec<&serde_json::Value> {
         .collect()
 }
 
+#[cfg(feature = "llm-tests")]
 fn extract_message_texts<'a>(chunks: &'a [&serde_json::Value]) -> Vec<&'a str> {
     chunks
         .iter()
@@ -383,6 +385,7 @@ fn extract_message_texts<'a>(chunks: &'a [&serde_json::Value]) -> Vec<&'a str> {
         .collect()
 }
 
+#[cfg(feature = "llm-tests")]
 async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
     ensure_fixture_runtime_types();
     let built = build_fixture_to_temp_async("stream-baml-tool").await;
