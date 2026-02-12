@@ -38,9 +38,9 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: 'ci'
+          shared-key: 'ci-light'
           cache-on-failure: true
-          cache-targets: 'false'
+          cache-targets: 'true'
 
       - name: Install build dependencies
         run: |
@@ -80,9 +80,9 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: 'ci'
+          shared-key: 'ci-heavy'
           cache-on-failure: true
-          cache-targets: 'false'
+          cache-targets: 'true'
 
       - name: Install build dependencies
         run: |
@@ -127,9 +127,9 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: 'ci'
+          shared-key: 'ci-falkordb'
           cache-on-failure: true
-          cache-targets: 'false'
+          cache-targets: 'true'
 
       - name: Install build dependencies
         run: |
