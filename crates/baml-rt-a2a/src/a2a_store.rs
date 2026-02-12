@@ -380,16 +380,68 @@ fn status_to_string(status: &TaskStatus) -> Option<String> {
     })
 }
 
+// FSM: terminal states and allowed transitions (A2A task lifecycle).
+const S_SUBMITTED: &str = "TASK_STATE_SUBMITTED";
+const S_WORKING: &str = "TASK_STATE_WORKING";
+const S_COMPLETED: &str = "TASK_STATE_COMPLETED";
+const S_FAILED: &str = "TASK_STATE_FAILED";
+const S_CANCELED: &str = "TASK_STATE_CANCELED";
+const S_REJECTED: &str = "TASK_STATE_REJECTED";
+const S_INPUT_REQUIRED: &str = "TASK_STATE_INPUT_REQUIRED";
+const S_AUTH_REQUIRED: &str = "TASK_STATE_AUTH_REQUIRED";
+
+fn is_terminal_state(s: &str) -> bool {
+    matches!(s, S_COMPLETED | S_FAILED | S_CANCELED | S_REJECTED)
+}
+
+fn is_allowed_transition(from: &str, to: &str) -> bool {
+    if from == to {
+        return true;
+    }
+    if is_terminal_state(from) {
+        return false;
+    }
+    matches!(
+        (from, to),
+        (S_SUBMITTED, S_WORKING)
+            | (S_SUBMITTED, S_COMPLETED)
+            | (S_SUBMITTED, S_FAILED)
+            | (S_SUBMITTED, S_CANCELED)
+            | (S_SUBMITTED, S_REJECTED)
+            | (S_SUBMITTED, S_INPUT_REQUIRED)
+            | (S_SUBMITTED, S_AUTH_REQUIRED)
+            | (S_WORKING, S_INPUT_REQUIRED)
+            | (S_WORKING, S_AUTH_REQUIRED)
+            | (S_WORKING, S_COMPLETED)
+            | (S_WORKING, S_FAILED)
+            | (S_WORKING, S_CANCELED)
+            | (S_WORKING, S_REJECTED)
+            | (S_INPUT_REQUIRED, S_WORKING)
+            | (S_INPUT_REQUIRED, S_CANCELED)
+            | (S_INPUT_REQUIRED, S_REJECTED)
+            | (S_AUTH_REQUIRED, S_WORKING)
+            | (S_AUTH_REQUIRED, S_CANCELED)
+            | (S_AUTH_REQUIRED, S_REJECTED)
+    )
+}
+
 impl TaskStore {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn upsert(&mut self, task: Task) -> Option<Task> {
+    pub fn upsert(&mut self, mut task: Task) -> Option<Task> {
         let id = task.id.clone()?;
         let id_str = id.as_str();
         if !self.tasks.contains_key(id_str) {
             self.order.push(id_str.to_string());
+        }
+        // Merge-preserve: if incoming task has no status and existing has one, keep existing status.
+        if task.status.is_none()
+            && let Some(existing) = self.tasks.get(id_str)
+            && existing.status.is_some()
+        {
+            task.status = existing.status.clone();
         }
         self.tasks.insert(id_str.to_string(), task.clone());
         Some(task)
@@ -492,23 +544,41 @@ impl TaskStore {
         context_id: Option<ContextId>,
         status: TaskStatus,
     ) -> Option<TaskUpdateEvent> {
-        if let Some(task_id) = task_id {
-            let task_id_str = task_id.as_str().to_string();
-            let update = TaskStatusUpdateEvent {
-                context_id,
-                task_id: Some(task_id.clone()),
-                status: Some(status),
-                metadata: None,
-                extra: HashMap::new(),
-            };
-            let event = TaskUpdateEvent::Status(update.clone());
-            self.updates
-                .entry(task_id_str)
-                .or_default()
-                .push(event.clone());
-            return Some(event);
+        let task_id = task_id?;
+        let task_id_str = task_id.as_str().to_string();
+        let new_state = status_to_string(&status);
+        let new_state = match &new_state {
+            Some(s) => s.as_str(),
+            None => return None,
+        };
+
+        let task = self.tasks.get_mut(&task_id_str)?;
+        let current_state_str = task.status.as_ref().and_then(status_to_string);
+        let current_state = current_state_str.as_deref();
+
+        let allowed = match current_state {
+            None => new_state == S_SUBMITTED,
+            Some(current) if is_terminal_state(current) => false,
+            Some(current) => is_allowed_transition(current, new_state),
+        };
+        if !allowed {
+            return None;
         }
-        None
+
+        task.status = Some(status.clone());
+        let update = TaskStatusUpdateEvent {
+            context_id,
+            task_id: Some(task_id.clone()),
+            status: Some(status),
+            metadata: None,
+            extra: HashMap::new(),
+        };
+        let event = TaskUpdateEvent::Status(update.clone());
+        self.updates
+            .entry(task_id_str)
+            .or_default()
+            .push(event.clone());
+        Some(event)
     }
 
     pub fn record_artifact_update(
