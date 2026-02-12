@@ -4,7 +4,7 @@ pub use crate::support::tools::*;
 #[cfg(feature = "falkordb-tests")]
 mod falkordb;
 #[cfg(feature = "falkordb-tests")]
-pub use falkordb::{start_falkordb, wait_for_falkordb};
+pub use falkordb::shared_falkordb;
 mod a2a_test_helpers;
 pub use a2a_test_helpers::{
     chunk_content, first_message_text_from_stream, first_task_id_from_stream, send_stream_request,

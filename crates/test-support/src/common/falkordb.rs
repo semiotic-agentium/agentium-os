@@ -4,11 +4,37 @@ use testcontainers::GenericImage;
 use testcontainers::core::ContainerPort;
 use testcontainers::runners::AsyncRunner;
 use text_to_cypher::core::execute_cypher_query;
+use tokio::sync::OnceCell;
 use tokio::time::{Duration, sleep};
 
-/// Starts a FalkorDB container and returns the container handle and connection string.
-/// The container handle must be held alive for the duration of the test.
-pub async fn start_falkordb() -> (testcontainers::ContainerAsync<GenericImage>, String) {
+struct SharedFalkorDb {
+    _container: testcontainers::ContainerAsync<GenericImage>,
+    connection: String,
+}
+
+static SHARED: OnceCell<SharedFalkorDb> = OnceCell::const_new();
+
+/// Returns a connection string to a shared FalkorDB container that lives for the
+/// entire test process. The container is started lazily on first call and reused
+/// by all subsequent callers.
+///
+/// All tests within a binary share this single container, so each test **must**
+/// use a distinct graph name to avoid cross-contamination.
+pub async fn shared_falkordb() -> &'static str {
+    let shared = SHARED
+        .get_or_init(|| async {
+            let (container, connection) = start_falkordb().await;
+            wait_for_falkordb(&connection, "_shared_init").await;
+            SharedFalkorDb {
+                _container: container,
+                connection,
+            }
+        })
+        .await;
+    &shared.connection
+}
+
+async fn start_falkordb() -> (testcontainers::ContainerAsync<GenericImage>, String) {
     let image = GenericImage::new("falkordb/falkordb", "latest")
         .with_exposed_port(ContainerPort::Tcp(6379));
     let container = image.start().await.expect("start falkordb container");
@@ -27,7 +53,7 @@ pub async fn start_falkordb() -> (testcontainers::ContainerAsync<GenericImage>, 
 }
 
 /// Polls FalkorDB until a simple query succeeds, up to 120 attempts at 1-second intervals.
-pub async fn wait_for_falkordb(connection: &str, graph: &str) {
+async fn wait_for_falkordb(connection: &str, graph: &str) {
     for _ in 0..120 {
         if execute_cypher_query("RETURN 1", graph, connection, false)
             .await

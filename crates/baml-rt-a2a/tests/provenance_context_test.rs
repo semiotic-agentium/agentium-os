@@ -8,7 +8,7 @@ use baml_rt_provenance::{FalkorDbProvenanceConfig, FalkorDbProvenanceWriter};
 use serde_json::Value;
 use std::sync::Arc;
 use test_support::common::send_stream_request;
-use test_support::common::{start_falkordb, wait_for_falkordb};
+use test_support::common::shared_falkordb;
 use test_support::support::a2a::A2aInMemoryClient;
 use tokio::time::Duration;
 
@@ -49,17 +49,15 @@ fn expect_context_id(responses: Vec<Value>) -> String {
 
 #[tokio::test]
 async fn test_context_id_propagates_across_agents() {
-    let (_container, connection) = start_falkordb().await;
+    let connection = shared_falkordb().await;
     let graph1 = format!("baml_a2a_ctx_prop_{}_1", std::process::id());
     let graph2 = format!("baml_a2a_ctx_prop_{}_2", std::process::id());
-    wait_for_falkordb(&connection, &graph1).await;
-    wait_for_falkordb(&connection, &graph2).await;
 
     let writer1 = Arc::new(FalkorDbProvenanceWriter::new(
-        FalkorDbProvenanceConfig::new(connection.clone(), graph1),
+        FalkorDbProvenanceConfig::new(connection.to_owned(), graph1),
     ));
     let writer2 = Arc::new(FalkorDbProvenanceWriter::new(
-        FalkorDbProvenanceConfig::new(connection.clone(), graph2),
+        FalkorDbProvenanceConfig::new(connection.to_owned(), graph2),
     ));
     let agent1 = setup_agent(writer1).await;
     let agent2 = setup_agent(writer2.clone()).await;
@@ -85,11 +83,10 @@ async fn test_context_id_propagates_across_agents() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_context_id_is_task_local_under_concurrency() {
-    let (_container, connection) = start_falkordb().await;
+    let connection = shared_falkordb().await;
     let graph = format!("baml_a2a_ctx_concurrency_{}", std::process::id());
-    wait_for_falkordb(&connection, &graph).await;
     let writer = Arc::new(FalkorDbProvenanceWriter::new(
-        FalkorDbProvenanceConfig::new(connection, graph),
+        FalkorDbProvenanceConfig::new(connection.to_owned(), graph),
     ));
     let agent = setup_agent(writer).await;
 
