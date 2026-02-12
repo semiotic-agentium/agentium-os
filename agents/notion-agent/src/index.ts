@@ -85,13 +85,18 @@ async function summarizeBlocks(args: {
   page_title: string | null;
   page_url: string | null;
   blocks_text: string;
+  __baml_invocation_token?: string;
 }): Promise<string | null> {
   try {
     const result = await SummarizeNotionContent(args);
     if (result && typeof result === "string") return result;
     if (result && typeof result === "object") {
-      const output = result as { summary?: string };
+      const output = result as { summary?: string; message?: string; text?: string };
       if (output.summary) return output.summary;
+      if (output.message) return output.message;
+      if (output.text) return output.text;
+      console.warn("SummarizeNotionContent returned unexpected shape", result);
+      return JSON.stringify(result);
     }
   } catch (err) {
     console.warn("SummarizeNotionContent failed", err);
@@ -125,25 +130,46 @@ async function onChatMessage(
       const output = toolResult as NotionOutput;
 
       let response = output.message || "Done.";
+      if (response === "Retrieved page blocks") {
+        response = "Notion summary:";
+      }
       response += formatPages(output.pages);
 
       const blocksText = (output.blocks || [])
         .map((b) => b.text)
         .filter((t): t is string => Boolean(t && t.trim()))
         .join("\n");
+      const notableLines = (output.blocks || [])
+        .filter((b) => b.block_type === "bulleted_list_item" && b.text)
+        .map((b) => b.text as string)
+        .filter((t) => t.trim().length > 0);
+      const notableSection =
+        notableLines.length > 0
+          ? `Notable lines:\n- ${Array.from(new Set(notableLines)).join("\n- ")}\n\n`
+          : "";
 
       if (blocksText.length > 0) {
         const pageTitle = output.pages && output.pages[0] ? output.pages[0].title : null;
         const pageUrl = output.pages && output.pages[0] ? output.pages[0].url : null;
-        const truncated = blocksText.length > 8000 ? blocksText.slice(0, 8000) : blocksText;
+        const combinedText = `${notableSection}Full content:\n${blocksText}`;
+        const truncated =
+          combinedText.length > 8000 ? combinedText.slice(0, 8000) : combinedText;
         const summary = await summarizeBlocks({
           user_message: text,
           page_title: pageTitle,
           page_url: pageUrl,
           blocks_text: truncated,
+          __baml_invocation_token: token,
         });
         if (summary) {
-          response += `\n\nSummary:\n${summary}`;
+          let formattedSummary = summary;
+          if (output.sources && output.sources.length > 0) {
+            formattedSummary = formattedSummary.replace(
+              /Sources:\s*(?:-?\s*None.*)?/gi,
+              ""
+            );
+          }
+          response += `\n\nSummary:\n${formattedSummary.trim()}`;
         }
       } else if (wantsSummary(text)) {
         response +=

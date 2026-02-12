@@ -4,6 +4,7 @@
 
 use crate::bundles::Support;
 use crate::register_tool_metadata;
+use crate::spans;
 use crate::tools::{BamlTool, ToolAccess, ToolFunctionMetadata, ToolSecretRequirement};
 use async_trait::async_trait;
 use baml_derive::BamlType;
@@ -222,11 +223,17 @@ impl NotionClient {
         Ok(headers)
     }
 
-    #[tracing::instrument(skip_all, fields(url))]
     async fn send_request(
         &self,
         request: reqwest::RequestBuilder,
     ) -> std::result::Result<serde_json::Value, NotionError> {
+        let url = request
+            .try_clone()
+            .and_then(|req| req.build().ok())
+            .map(|req| req.url().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let span = spans::notion_request(&url);
+        let _guard = span.enter();
         let resp = request.send().await.map_err(NotionError::Http)?;
 
         let status = resp.status();
@@ -250,7 +257,6 @@ impl NotionClient {
         resp.json().await.map_err(NotionError::Deserialize)
     }
 
-    #[tracing::instrument(skip(self, api_key))]
     async fn search_pages(
         &self,
         api_key: &str,
@@ -258,6 +264,8 @@ impl NotionClient {
         start_cursor: Option<&str>,
         page_size: Option<u32>,
     ) -> Result<NotionOutput> {
+        let span = spans::notion_search_pages(query.map(|q| q.len()), page_size);
+        let _guard = span.enter();
         let mut body = serde_json::Map::new();
         if let Some(q) = query {
             body.insert(
@@ -309,8 +317,9 @@ impl NotionClient {
         })
     }
 
-    #[tracing::instrument(skip(self, api_key))]
     async fn get_page(&self, api_key: &str, page_id: &str) -> Result<NotionOutput> {
+        let span = spans::notion_get_page(page_id);
+        let _guard = span.enter();
         let normalized = Self::normalize_id(page_id)?;
         let json = self
             .send_request(
@@ -336,7 +345,6 @@ impl NotionClient {
         })
     }
 
-    #[tracing::instrument(skip(self, api_key))]
     async fn get_page_blocks(
         &self,
         api_key: &str,
@@ -344,10 +352,69 @@ impl NotionClient {
         start_cursor: Option<&str>,
         page_size: Option<u32>,
     ) -> Result<NotionOutput> {
+        let span = spans::notion_get_page_blocks(block_id);
+        let _guard = span.enter();
         let normalized = Self::normalize_id(block_id)?;
+        let (_json, pages, sources, mut blocks, next_cursor, has_more) = self
+            .fetch_blocks_page(api_key, &normalized, start_cursor, page_size)
+            .await?;
+
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(normalized.clone());
+        let child_blocks = self
+            .fetch_child_blocks_recursive(api_key, &blocks, &mut visited)
+            .await?;
+        blocks.extend(child_blocks);
+
+        Ok(NotionOutput {
+            pages,
+            blocks,
+            next_cursor,
+            has_more,
+            sources,
+            message: "Retrieved page blocks".to_string(),
+        })
+    }
+
+    async fn fetch_page_summary(
+        &self,
+        api_key: &str,
+        page_id: &str,
+    ) -> std::result::Result<NotionPageSummary, NotionError> {
+        let span = spans::notion_fetch_page_summary(page_id);
+        let _guard = span.enter();
+        let normalized = Self::normalize_id(page_id)?;
+        let json = self
+            .send_request(
+                self.client
+                    .get(format!("{BASE_URL}/pages/{normalized}"))
+                    .headers(self.auth_headers(api_key)?),
+            )
+            .await?;
+        parse_page_summary(&json).ok_or_else(|| NotionError::UnexpectedShape {
+            message: "unexpected page shape".to_string(),
+        })
+    }
+
+    async fn fetch_blocks_page(
+        &self,
+        api_key: &str,
+        block_id: &str,
+        start_cursor: Option<&str>,
+        page_size: Option<u32>,
+    ) -> Result<(
+        serde_json::Value,
+        Vec<NotionPageSummary>,
+        Vec<NotionSource>,
+        Vec<NotionBlockSummary>,
+        Option<String>,
+        bool,
+    )> {
+        let span = spans::notion_get_page_blocks(block_id);
+        let _guard = span.enter();
         let mut request = self
             .client
-            .get(format!("{BASE_URL}/blocks/{normalized}/children"))
+            .get(format!("{BASE_URL}/blocks/{block_id}/children"))
             .headers(self.auth_headers(api_key)?);
         let mut params: Vec<(&str, String)> = Vec::new();
         if let Some(cursor) = start_cursor {
@@ -361,7 +428,6 @@ impl NotionClient {
         }
 
         let json = self.send_request(request).await?;
-
         let blocks = extract_blocks(&json);
         let next_cursor = json
             .get("next_cursor")
@@ -384,33 +450,40 @@ impl NotionClient {
             pages.push(page);
         }
 
-        Ok(NotionOutput {
-            pages,
-            blocks,
-            next_cursor,
-            has_more,
-            sources,
-            message: "Retrieved page blocks".to_string(),
-        })
+        Ok((json, pages, sources, blocks, next_cursor, has_more))
     }
 
-    #[tracing::instrument(skip(self, api_key))]
-    async fn fetch_page_summary(
+    async fn fetch_child_blocks_recursive(
         &self,
         api_key: &str,
-        page_id: &str,
-    ) -> std::result::Result<NotionPageSummary, NotionError> {
-        let normalized = Self::normalize_id(page_id)?;
-        let json = self
-            .send_request(
-                self.client
-                    .get(format!("{BASE_URL}/pages/{normalized}"))
-                    .headers(self.auth_headers(api_key)?),
-            )
-            .await?;
-        parse_page_summary(&json).ok_or_else(|| NotionError::UnexpectedShape {
-            message: "unexpected page shape".to_string(),
-        })
+        blocks: &[NotionBlockSummary],
+        visited: &mut std::collections::HashSet<String>,
+    ) -> Result<Vec<NotionBlockSummary>> {
+        let mut all_children = Vec::new();
+        let mut stack: Vec<String> = blocks
+            .iter()
+            .filter(|b| b.has_children)
+            .map(|b| b.id.clone())
+            .collect();
+
+        while let Some(block_id) = stack.pop() {
+            if !visited.insert(block_id.clone()) {
+                continue;
+            }
+            let span = spans::notion_fetch_child_blocks(&block_id);
+            let _guard = span.enter();
+            let (_json, _pages, _sources, child_blocks, _next, _has_more) = self
+                .fetch_blocks_page(api_key, &block_id, None, None)
+                .await?;
+            for child in child_blocks.iter().filter(|b| b.has_children) {
+                if !visited.contains(&child.id) {
+                    stack.push(child.id.clone());
+                }
+            }
+            all_children.extend(child_blocks);
+        }
+
+        Ok(all_children)
     }
 }
 

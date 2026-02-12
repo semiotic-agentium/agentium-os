@@ -91,3 +91,40 @@ pub(crate) fn session_abort(session_id: &ToolSessionId, reason: Option<&str>) ->
         reason = reason,
     )
 }
+
+#[inline]
+pub(crate) fn notion_request(url: &str) -> Span {
+    tracing::debug_span!("baml_rt_tools.notion_request", url = url)
+}
+
+#[inline]
+pub(crate) fn notion_search_pages(query_len: Option<usize>, page_size: Option<u32>) -> Span {
+    tracing::debug_span!(
+        "baml_rt_tools.notion_search_pages",
+        query_len = query_len,
+        page_size = page_size
+    )
+}
+
+#[inline]
+pub(crate) fn notion_get_page(page_id: &str) -> Span {
+    tracing::debug_span!("baml_rt_tools.notion_get_page", page_id = page_id)
+}
+
+#[inline]
+pub(crate) fn notion_get_page_blocks(block_id: &str) -> Span {
+    tracing::debug_span!("baml_rt_tools.notion_get_page_blocks", block_id = block_id)
+}
+
+#[inline]
+pub(crate) fn notion_fetch_page_summary(page_id: &str) -> Span {
+    tracing::debug_span!("baml_rt_tools.notion_fetch_page_summary", page_id = page_id)
+}
+
+#[inline]
+pub(crate) fn notion_fetch_child_blocks(parent_id: &str) -> Span {
+    tracing::debug_span!(
+        "baml_rt_tools.notion_fetch_child_blocks",
+        parent_id = parent_id
+    )
+}

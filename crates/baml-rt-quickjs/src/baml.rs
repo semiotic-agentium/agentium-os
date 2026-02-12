@@ -1231,7 +1231,9 @@ impl BamlRuntimeManager {
         let mut last_output: Option<Value> = None;
         let mut streaming_outputs: Vec<Value> = Vec::new();
 
-        for step in steps {
+        let total_steps = steps.len();
+        for (index, step) in steps.into_iter().enumerate() {
+            let has_remaining_steps = index + 1 < total_steps;
             match step {
                 ToolSessionOp::Open {
                     initial_input,
@@ -1289,8 +1291,10 @@ impl BamlRuntimeManager {
                             }
                             ToolStep::Done { output } => {
                                 last_output = output;
-                                self.tool_session_finish(session).await?;
-                                session_id = None;
+                                if !has_remaining_steps {
+                                    self.tool_session_finish(session).await?;
+                                    session_id = None;
+                                }
                                 break;
                             }
                             ToolStep::Error { error } => {

@@ -20,6 +20,10 @@ function ChooseNotionAction(user_message: string) -> ReadOnlyResponse | SupportN
     - If the user asks "what are we working on" or similar, start with search.
     - If the user asks for a summary/brief/commitments/roadmap/status, include GetPageBlocks in the plan.
     - If no identifier is provided, return search results and ask a follow-up.
+    - Never call GetPageBlocks without a concrete page_id or block_id from SearchPages or the user.
+      If you don't have an id yet, stop after SearchPages and ask the user to pick a page.
+    - Use only ONE action per plan. Do NOT chain GetPage then GetPageBlocks in the same plan.
+      If a summary is needed and you have a page_id or block_id, call GetPageBlocks only.
     - Do not attempt writes or edits.
     - If the user asks to write/edit/delete/archive/create:
       - Return ReadOnlyResponse with a short apology and a read-only next step.
@@ -71,9 +75,12 @@ function SummarizeNotionContent(
     Requirements:
     - Use plain language.
     - Extract concrete commitments (timelines, UX expectations, performance).
+    - If a "Notable lines" section is present, treat it as highest priority and ensure key items appear in Commitments.
     - If no conflicts or missing items, say \"None found\" under the heading.
     - If no sources are available, list \"None\" under Sources.
     - Keep it concise.
+
+    {{ ctx.output_format }}
 
     Page title: {{ page_title }}
     Page url: {{ page_url }}
