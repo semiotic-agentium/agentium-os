@@ -27,7 +27,7 @@ This project uses a split CI matrix to keep memory usage and compile times under
    - Command:
      - `cargo test -p baml-rt-provenance --features falkordb-tests -j 1`
      - `cargo test -p baml-rt-a2a --features falkordb-tests -j 1`
-    - `cargo test -p baml-agent-runner --features falkordb-tests -j 1`
+     - `cargo test -p baml-agent-runner --features falkordb-tests -j 1`
 
 5. **LLM smoke tests (scheduled)**
    - Purpose: validate OpenRouter integration without blocking PRs.

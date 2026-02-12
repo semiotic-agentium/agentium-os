@@ -127,6 +127,8 @@ Source `.env` before running tests so API-key–dependent e2e and contract tests
 ```bash
 set -a && source .env && set +a
 cargo test
+# Note: this runs only workspace `default-members` now. To run everything:
+# cargo test --workspace
 
 # With output
 cargo test -- --nocapture
