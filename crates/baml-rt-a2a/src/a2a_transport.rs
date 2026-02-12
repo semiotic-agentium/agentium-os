@@ -15,8 +15,6 @@ use crate::result_deduplicator::{
     DeduplicatingPipeline, HashResultDeduplicator, ResultDeduplicator,
 };
 use crate::result_pipeline::{A2aResultPipeline, ResultStoragePipeline};
-use crate::stream_normalizer::{A2aStreamNormalizer, StreamNormalizer};
-
 use crate::tools::A2aSessionBundle;
 use async_trait::async_trait;
 use baml_rt_core::context::{self, InvocationScope};
@@ -592,7 +590,6 @@ impl A2aAgentBuilderWithEffectEmitter {
         let result_pipeline: Arc<dyn ResultStoragePipeline> =
             Arc::new(DeduplicatingPipeline::new(result_pipeline, deduplicator));
         let response_formatter: Arc<dyn ResponseFormatter> = Arc::new(JsonRpcResponseFormatter);
-        let stream_normalizer: Arc<dyn StreamNormalizer> = Arc::new(A2aStreamNormalizer);
         let repository: Arc<dyn TaskRepository> = task_store.clone();
         let recorder: Arc<dyn TaskEventRecorder> = task_store.clone();
         let update_queue: Arc<dyn TaskUpdateQueue> = task_store.clone();
@@ -603,10 +600,8 @@ impl A2aAgentBuilderWithEffectEmitter {
             bridge.clone(),
             emitter.clone(),
         ));
-        let js_invoker: Arc<dyn crate::request_router::JsInvoker> = Arc::new(QuickJsInvoker::new(
-            bridge.clone(),
-            stream_normalizer.clone(),
-        ));
+        let js_invoker: Arc<dyn crate::request_router::JsInvoker> =
+            Arc::new(QuickJsInvoker::new(bridge.clone()));
         let request_router: Arc<dyn RequestRouter> = Arc::new(MethodBasedRouter::new(
             task_handler.clone(),
             js_invoker,

@@ -13,7 +13,7 @@
 //!
 //! Tests at TaskStore level (sync) to exercise the FSM and upsert logic directly.
 
-use baml_rt_a2a::a2a_store::{TaskStore, TaskUpdateSource};
+use baml_rt_a2a::a2a_store::TaskStore;
 use baml_rt_a2a::a2a_types::{Task, TaskState, TaskStatus};
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
 use proptest::prelude::*;
@@ -101,7 +101,6 @@ fn seed_task_and_submitted(store: &mut TaskStore, task_id: &TaskId, context_id: 
         Some(task_id.clone()),
         Some(context_id.clone()),
         task_status(S_SUBMITTED),
-        TaskUpdateSource::HostInferred,
     );
 }
 
@@ -128,7 +127,6 @@ proptest! {
                     Some(task_id.clone()),
                     Some(context_id.clone()),
                     task_status(next_state),
-                    TaskUpdateSource::AgentEmitted,
                 );
                 assert!(result.is_none(), "terminal {} must reject any further update", current);
                 continue;
@@ -138,7 +136,6 @@ proptest! {
                     Some(task_id.clone()),
                     Some(context_id.clone()),
                     task_status(next_state),
-                    TaskUpdateSource::AgentEmitted,
                 );
                 assert!(result.is_none(), "invalid transition {} -> {} should fail", current, next_state);
                 continue;
@@ -147,7 +144,6 @@ proptest! {
                 Some(task_id.clone()),
                 Some(context_id.clone()),
                 task_status(next_state),
-                TaskUpdateSource::AgentEmitted,
             );
             assert!(result.is_some(), "valid transition {} -> {} should succeed: {:?}", current, next_state, result);
             current = next_state;
@@ -172,7 +168,6 @@ proptest! {
             Some(task_id.clone()),
             Some(context_id.clone()),
             task_status(state),
-            TaskUpdateSource::AgentEmitted,
         );
 
         if state == S_SUBMITTED {
@@ -199,7 +194,6 @@ proptest! {
                 Some(task_id.clone()),
                 Some(context_id.clone()),
                 task_status(intermediate),
-                TaskUpdateSource::AgentEmitted,
             );
         }
 
@@ -244,7 +238,6 @@ proptest! {
             Some(task_id.clone()),
             Some(context_id.clone()),
             task_status(terminal),
-            TaskUpdateSource::AgentEmitted,
         );
 
         // Any further update must fail
@@ -253,7 +246,6 @@ proptest! {
             Some(task_id.clone()),
             Some(context_id.clone()),
             task_status(attempt),
-            TaskUpdateSource::AgentEmitted,
         );
         assert!(
             result.is_none(),

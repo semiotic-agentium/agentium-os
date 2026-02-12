@@ -122,11 +122,11 @@ impl TaskHandler for DefaultTaskHandler {
             for update in self.update_queue.drain_updates(request.id.as_str()).await {
                 let chunk = match update {
                     TaskUpdateEvent::Status(internal) => StreamChunk::StatusUpdate {
-                        status_update: internal.into(),
+                        status_update: internal,
                         extra: HashMap::new(),
                     },
                     TaskUpdateEvent::Artifact(internal) => StreamChunk::ArtifactUpdate {
-                        artifact_update: internal.into(),
+                        artifact_update: internal,
                         extra: HashMap::new(),
                     },
                 };

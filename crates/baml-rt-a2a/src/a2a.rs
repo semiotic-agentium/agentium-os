@@ -604,7 +604,7 @@ mod tests {
         tracing::info!("setup_agent_with_js_inner: Creating builder");
         let builder = A2aAgent::builder()
             .with_init_js(js_code)
-            .with_effect_bus(Arc::new(baml_rt_core::effects::EffectBus::new()));
+            .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()));
         tracing::info!("setup_agent_with_js_inner: Calling build()");
         let agent = builder.build().await.expect("agent build");
         tracing::info!("setup_agent_with_js_inner: Agent built successfully");
