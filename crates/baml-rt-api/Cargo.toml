@@ -23,5 +23,5 @@ utoipa-axum = { workspace = true }
 [dev-dependencies]
 async-trait = { workspace = true }
 axum = { workspace = true }
-insta = { workspace = true, features = ["json", "redactions"] }
-tower = { version = "0.5", features = ["util"] }
+insta = { workspace = true, features = ["json"] }
+tower = { workspace = true }

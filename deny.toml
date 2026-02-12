@@ -19,7 +19,10 @@ ignore = true
 
 [sources]
 # BAML runtime/compiler from git (contract tests, builder).
-allow-git = ["https://github.com/BoundaryML/baml"]
+allow-git = [
+    "https://github.com/BoundaryML/baml",
+    "https://github.com/ryan-s-roberts/baml",
+]
 
 [advisories]
 # Vulnerability exceptions

@@ -35,30 +35,16 @@ authors = ["BAML Runtime Team"]
 description = "BAML Runtime"
 
 [workspace.dependencies]
-clap = { version = "4.4", features = ["derive"] }
-oxc_parser = "0.112"
-oxc_allocator = "0.112"
-oxc_span = "0.112"
-oxc_codegen = "0.112"
-oxc_transformer = "0.112"
-oxc_semantic = "0.112"
-quickjs_runtime = "0.15"
+# Core
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "io-std", "io-util", "net"] }
+async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-anyhow = "1.0"
-thiserror = "1.0"
-tokio = { version = "1.0", features = ["full"] }
-async-channel = "2"
-regex = "1.0"
-async-trait = "0.1"
-flate2 = "1.0"
-tar = "0.4"
-tokio-test = "0.4"
-tracing-test = "0.2"
-tempfile = "3.10"
-dotenvy = "0.15"
 opentelemetry = "0.26"
 opentelemetry_sdk = "0.26"
 tracing-opentelemetry = "0.27"
@@ -68,9 +54,6 @@ text-to-cypher = { version = "0.1", default-features = false }
 testcontainers = "0.23"
 insta = "1.46.3"
 uuid = { version = "1.10", features = ["v4", "serde"] }
-baml-runtime = { git = "https://github.com/BoundaryML/baml", rev = "d2cc1034826f3b56fa0ad3bcb5c4424de2de8b1c" }
-baml-types = { git = "https://github.com/BoundaryML/baml", rev = "d2cc1034826f3b56fa0ad3bcb5c4424de2de8b1c" }
-internal-baml-core = { git = "https://github.com/BoundaryML/baml", rev = "d2cc1034826f3b56fa0ad3bcb5c4424de2de8b1c" }
 schemars = "1.1.0"
 ts-rs = "11.1.0"
 genco = "0.19.0"
@@ -82,10 +65,36 @@ proc-macro2 = "1"
 # ("decryption failed or bad record mac" connecting to OpenRouter).
 # Bump deliberately after testing; do not use `cargo generate-lockfile`.
 reqwest = { version = "=0.12.26", default-features = false, features = ["json", "rustls-tls"] }
+regex = "1"
+async-channel = "2"
+flate2 = "1"
+tar = "0.4"
+# OXC (TypeScript compilation)
+oxc_parser = "0"
+oxc_allocator = "0"
+oxc_span = "0"
+oxc_codegen = "0"
+oxc_transformer = "0"
+oxc_semantic = "0"
+quickjs_runtime = "0.15"
 axum = "0.8"
+# Testing / dev
+tokio-test = "0.4"
+tracing-test = "0.2"
+tempfile = "3"
+dotenvy = "0.15"
+proptest = "1"
+# Builder / tools
+inquire = "0.9"
+# API
 utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-axum = "0.2"
 http-api-problem = { version = "0.60", features = ["axum"] }
+tower = { version = "0.5", features = ["util"] }
+# BAML (fork with minimal-runtime; branch for softer semver)
+baml-runtime = { git = "https://github.com/ryan-s-roberts/baml", branch = "canary", default-features = false, features = ["minimal-runtime"] }
+baml-types = { git = "https://github.com/ryan-s-roberts/baml", branch = "canary" }
+internal-baml-core = { git = "https://github.com/ryan-s-roberts/baml", branch = "canary" }
 
 [profile.release]
 opt-level = 3
