@@ -23,7 +23,7 @@ env:
 jobs:
   cargo-test:
     name: Cargo test (light)
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
 
@@ -65,7 +65,7 @@ jobs:
 
   cargo-test-heavy:
     name: Cargo test (heavy, serial)
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
 
@@ -107,7 +107,7 @@ jobs:
 
   cargo-test-falkordb:
     name: Cargo test (falkordb)
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
 
