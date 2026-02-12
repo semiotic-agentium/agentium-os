@@ -11,17 +11,14 @@ use baml_rt_provenance::{
 use insta::assert_json_snapshot;
 use serde::Serialize;
 use serde_json::{Value, json};
-use test_support::common::{start_falkordb, wait_for_falkordb};
+use test_support::common::shared_falkordb;
 use text_to_cypher::core::execute_cypher_query;
 
 #[tokio::test]
 async fn falkordb_writer_persists_task_and_artifact() {
-    let (_container, connection) = start_falkordb().await;
+    let connection = shared_falkordb().await;
     let graph = "baml_prov_test";
-    wait_for_falkordb(&connection, graph).await;
-
-    let writer =
-        FalkorDbProvenanceWriter::new(FalkorDbProvenanceConfig::new(connection.clone(), graph));
+    let writer = FalkorDbProvenanceWriter::new(FalkorDbProvenanceConfig::new(connection, graph));
     let context_id = ContextId::new(1, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-1"));
     let agent_id =
@@ -76,7 +73,7 @@ async fn falkordb_writer_persists_task_and_artifact() {
     let task_count = execute_cypher_query(
         "MATCH (t:A2ATask {name: \"task:task-1\"}) RETURN COUNT(t)",
         graph,
-        &connection,
+        connection,
         true,
     )
     .await
@@ -86,7 +83,7 @@ async fn falkordb_writer_persists_task_and_artifact() {
     let edge_count = execute_cypher_query(
         "MATCH (:A2ATask {name: \"task:task-1\"})-[:WAS_GENERATED_BY]->(:Artifact) RETURN COUNT(*)",
         graph,
-        &connection,
+        connection,
         true,
     )
     .await
@@ -100,7 +97,7 @@ async fn falkordb_writer_persists_task_and_artifact() {
                 labels(m), m.name, properties(m) \
          ORDER BY n.name, type(r), m.name",
         graph,
-        &connection,
+        connection,
         true,
     )
     .await
@@ -113,12 +110,9 @@ async fn falkordb_writer_persists_task_and_artifact() {
 
 #[tokio::test]
 async fn falkordb_writer_persists_large_document() {
-    let (_container, connection) = start_falkordb().await;
+    let connection = shared_falkordb().await;
     let graph = "baml_prov_large_test";
-    wait_for_falkordb(&connection, graph).await;
-
-    let writer =
-        FalkorDbProvenanceWriter::new(FalkorDbProvenanceConfig::new(connection.clone(), graph));
+    let writer = FalkorDbProvenanceWriter::new(FalkorDbProvenanceConfig::new(connection, graph));
     let context_id = ContextId::new(2, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-42"));
     let agent_id = "00000000-0000-0000-0000-000000000010";
@@ -318,20 +312,20 @@ async fn falkordb_writer_persists_large_document() {
          WHERE n.`a2a:context_id` = \"ctx-2-1\" AND NOT (n)--() \
          RETURN COUNT(n)",
         graph,
-        &connection,
+        connection,
         true,
     )
     .await
     .expect("query isolated node count");
     assert_eq!(isolated_count.trim(), "0");
 
-    let node_count = execute_cypher_query("MATCH (n) RETURN COUNT(n)", graph, &connection, true)
+    let node_count = execute_cypher_query("MATCH (n) RETURN COUNT(n)", graph, connection, true)
         .await
         .expect("query node count");
     assert!(node_count.trim().parse::<usize>().unwrap_or_default() > 5);
 
     let edge_count =
-        execute_cypher_query("MATCH ()-[r]->() RETURN COUNT(r)", graph, &connection, true)
+        execute_cypher_query("MATCH ()-[r]->() RETURN COUNT(r)", graph, connection, true)
             .await
             .expect("query edge count");
     assert!(edge_count.trim().parse::<usize>().unwrap_or_default() > 5);
@@ -343,7 +337,7 @@ async fn falkordb_writer_persists_large_document() {
                 labels(m), m.name, properties(m) \
          ORDER BY n.name, type(r), m.name",
         graph,
-        &connection,
+        connection,
         true,
     )
     .await
@@ -356,12 +350,9 @@ async fn falkordb_writer_persists_large_document() {
 
 #[tokio::test]
 async fn falkordb_writer_persists_send_message_calls_without_task() {
-    let (_container, connection) = start_falkordb().await;
+    let connection = shared_falkordb().await;
     let graph = "baml_prov_send_message_test";
-    wait_for_falkordb(&connection, graph).await;
-
-    let writer =
-        FalkorDbProvenanceWriter::new(FalkorDbProvenanceConfig::new(connection.clone(), graph));
+    let writer = FalkorDbProvenanceWriter::new(FalkorDbProvenanceConfig::new(connection, graph));
     let context_id = ContextId::new(3, 1);
     let agent_id = "00000000-0000-0000-0000-000000000010";
     let agent_uuid = AgentId::from_uuid(UuidId::parse_str(agent_id).unwrap());
@@ -500,7 +491,7 @@ async fn falkordb_writer_persists_send_message_calls_without_task() {
     let task_count = execute_cypher_query(
         "MATCH (t:A2ATask) WHERE t.`a2a:context_id` = \"ctx-3-1\" RETURN COUNT(t)",
         graph,
-        &connection,
+        connection,
         true,
     )
     .await
@@ -510,7 +501,7 @@ async fn falkordb_writer_persists_send_message_calls_without_task() {
     let llm_link_count = execute_cypher_query(
         "MATCH (:A2AMessageProcessing {name: \"message_processing:msg-10\"})-[:WAS_INVOKED_BY]->(:LlmCall) RETURN COUNT(*)",
         graph,
-        &connection,
+        connection,
         true,
     )
     .await
@@ -520,7 +511,7 @@ async fn falkordb_writer_persists_send_message_calls_without_task() {
     let tool_link_count = execute_cypher_query(
         "MATCH (:A2AMessageProcessing {name: \"message_processing:msg-10\"})-[:WAS_EXECUTED_BY]->(:ToolCall) RETURN COUNT(*)",
         graph,
-        &connection,
+        connection,
         true,
     )
     .await
@@ -532,7 +523,7 @@ async fn falkordb_writer_persists_send_message_calls_without_task() {
          WHERE n.`a2a:context_id` = \"ctx-3-1\" AND NOT (n)--() \
          RETURN COUNT(n)",
         graph,
-        &connection,
+        connection,
         true,
     )
     .await
@@ -546,7 +537,7 @@ async fn falkordb_writer_persists_send_message_calls_without_task() {
                 labels(m), m.name, properties(m) \
          ORDER BY n.name, type(r), m.name",
         graph,
-        &connection,
+        connection,
         true,
     )
     .await
@@ -559,12 +550,9 @@ async fn falkordb_writer_persists_send_message_calls_without_task() {
 
 #[tokio::test]
 async fn falkordb_conversation_history_and_attribution_snapshot() {
-    let (_container, connection) = start_falkordb().await;
+    let connection = shared_falkordb().await;
     let graph = "baml_prov_conversation_history_test";
-    wait_for_falkordb(&connection, graph).await;
-
-    let writer =
-        FalkorDbProvenanceWriter::new(FalkorDbProvenanceConfig::new(connection.clone(), graph));
+    let writer = FalkorDbProvenanceWriter::new(FalkorDbProvenanceConfig::new(connection, graph));
     let context_id = ContextId::new(4, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-ctx-4"));
     let agent_id =
@@ -760,7 +748,7 @@ async fn falkordb_conversation_history_and_attribution_snapshot() {
          RETURN mp.name, type(r), target.name, properties(r) \
          ORDER BY mp.name, type(r), target.name",
         graph,
-        &connection,
+        connection,
         true,
     )
     .await

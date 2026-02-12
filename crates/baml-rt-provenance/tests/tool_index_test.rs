@@ -3,15 +3,14 @@
 use baml_rt_provenance::{ToolIndexConfig, index_tools};
 use baml_rt_tools::{ToolFunctionMetadataExport, ToolName, ToolSecretRequirement, ToolTypeSpec};
 use serde_json::json;
-use test_support::common::{start_falkordb, wait_for_falkordb};
+use test_support::common::shared_falkordb;
 use text_to_cypher::core::execute_cypher_query;
 use tokio::time::{Duration, sleep};
 
 #[tokio::test]
 async fn tool_index_creates_nodes_and_fulltext() {
-    let (_container, connection) = start_falkordb().await;
+    let connection = shared_falkordb().await;
     let graph = "baml_tool_index_test";
-    wait_for_falkordb(&connection, graph).await;
 
     let name = ToolName::parse("support/get_weather").expect("valid tool name");
     let tools = vec![ToolFunctionMetadataExport {
@@ -45,13 +44,13 @@ async fn tool_index_creates_nodes_and_fulltext() {
         origin: baml_rt_tools::ToolOrigin::Host,
     }];
 
-    let config = ToolIndexConfig::new(connection.clone(), graph);
+    let config = ToolIndexConfig::new(connection, graph);
     index_tools(&config, &tools).await.expect("index tools");
 
     let node_count = execute_cypher_query(
         "MATCH (t:ToolFunction {name: \"support/get_weather\"}) RETURN COUNT(t)",
         graph,
-        &connection,
+        connection,
         true,
     )
     .await
@@ -63,7 +62,7 @@ async fn tool_index_creates_nodes_and_fulltext() {
         let search_count = execute_cypher_query(
             "CALL db.idx.fulltext.queryNodes('ToolFunction', 'weather') YIELD node RETURN COUNT(node)",
             graph,
-            &connection,
+            connection,
             true,
         )
         .await

@@ -10,7 +10,7 @@ use baml_rt_core::ids::{ContextId, CorrelationId};
 use baml_rt_provenance::{FalkorDbProvenanceConfig, FalkorDbProvenanceWriter};
 use std::sync::Arc;
 use test_support::common::send_stream_request;
-use test_support::common::{start_falkordb, wait_for_falkordb};
+use test_support::common::shared_falkordb;
 use tokio::time::Duration;
 
 async fn build_agent(writer: Arc<FalkorDbProvenanceWriter>) -> A2aAgent {
@@ -32,12 +32,11 @@ async fn build_agent(writer: Arc<FalkorDbProvenanceWriter>) -> A2aAgent {
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_scope_attribution_without_cross_contamination() {
-    let (_container, connection) = start_falkordb().await;
+    let connection = shared_falkordb().await;
     let graph = format!("baml_a2a_scope_prop_{}", std::process::id());
-    wait_for_falkordb(&connection, &graph).await;
 
     let writer = Arc::new(FalkorDbProvenanceWriter::new(
-        FalkorDbProvenanceConfig::new(connection, graph),
+        FalkorDbProvenanceConfig::new(connection.to_owned(), graph),
     ));
     let agent = build_agent(writer.clone()).await;
 

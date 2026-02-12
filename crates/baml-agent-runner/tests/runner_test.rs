@@ -27,7 +27,7 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use tar::Builder;
 #[cfg(feature = "falkordb-tests")]
-use test_support::common::{start_falkordb, wait_for_falkordb};
+use test_support::common::shared_falkordb;
 use tokio::sync::Semaphore;
 #[cfg(feature = "falkordb-tests")]
 use tokio::time::{Duration, sleep, timeout};
@@ -743,7 +743,7 @@ async fn test_e2e_stream_js_tool() {
 async fn test_e2e_conversational_context_auto_via_provenance() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     let _ = dotenvy::dotenv();
-    let (_container, connection) = start_falkordb().await;
+    let connection = shared_falkordb().await;
     let graph = format!(
         "runner_conv_ctx_{}_{}",
         std::process::id(),
@@ -752,11 +752,10 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
             .expect("system clock")
             .as_millis()
     );
-    wait_for_falkordb(&connection, &graph).await;
     eprintln!("conversational-context-auto: setup start");
     let (agent, provenance_reader) = timeout(
         Duration::from_secs(90),
-        setup_conversational_context_auto_agent(connection, graph),
+        setup_conversational_context_auto_agent(connection.to_owned(), graph),
     )
     .await
     .expect("agent setup timed out");
