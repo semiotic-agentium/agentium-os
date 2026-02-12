@@ -91,7 +91,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Run heavy crate tests (serial, including http-tools)
+      - name: Build heavy crate test binaries (parallel)
+        run: cargo test --workspace --exclude baml-rt-core --exclude baml-rt-id --exclude baml-rt-observability --exclude baml-derive-core --exclude baml-derive --exclude baml-derive-tests --features baml-rt-tools/http-tools,baml-agent-runner/http-tools,baml-rt-builder/http-tools --no-run
+
+      - name: Run heavy crate tests (serial)
         run: cargo test --workspace --exclude baml-rt-core --exclude baml-rt-id --exclude baml-rt-observability --exclude baml-derive-core --exclude baml-derive --exclude baml-derive-tests --features baml-rt-tools/http-tools,baml-agent-runner/http-tools,baml-rt-builder/http-tools -j 1
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -130,6 +133,9 @@ jobs:
 
       - name: Pre-pull FalkorDB image
         run: docker pull falkordb/falkordb:latest
+
+      - name: Build FalkorDB test binaries (parallel)
+        run: cargo test -p baml-rt-provenance -p baml-rt-a2a -p baml-agent-runner --features baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests --no-run
 
       - name: Run FalkorDB-gated tests (serial)
         run: cargo test -p baml-rt-provenance -p baml-rt-a2a -p baml-agent-runner --features baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests -j 1
