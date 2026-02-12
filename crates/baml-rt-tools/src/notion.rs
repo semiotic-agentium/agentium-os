@@ -4,6 +4,7 @@
 
 use crate::bundles::Support;
 use crate::register_tool_metadata;
+use crate::spans;
 use crate::tools::{BamlTool, ToolAccess, ToolFunctionMetadata, ToolSecretRequirement};
 use async_trait::async_trait;
 use baml_derive::BamlType;
@@ -222,11 +223,17 @@ impl NotionClient {
         Ok(headers)
     }
 
-    #[tracing::instrument(skip_all, fields(url))]
     async fn send_request(
         &self,
         request: reqwest::RequestBuilder,
     ) -> std::result::Result<serde_json::Value, NotionError> {
+        let url = request
+            .try_clone()
+            .and_then(|req| req.build().ok())
+            .map(|req| req.url().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let span = spans::notion_request(&url);
+        let _guard = span.enter();
         let resp = request.send().await.map_err(NotionError::Http)?;
 
         let status = resp.status();
@@ -250,7 +257,6 @@ impl NotionClient {
         resp.json().await.map_err(NotionError::Deserialize)
     }
 
-    #[tracing::instrument(skip(self, api_key))]
     async fn search_pages(
         &self,
         api_key: &str,
@@ -258,6 +264,8 @@ impl NotionClient {
         start_cursor: Option<&str>,
         page_size: Option<u32>,
     ) -> Result<NotionOutput> {
+        let span = spans::notion_search_pages(query.map(|q| q.len()), page_size);
+        let _guard = span.enter();
         let mut body = serde_json::Map::new();
         if let Some(q) = query {
             body.insert(
@@ -309,8 +317,9 @@ impl NotionClient {
         })
     }
 
-    #[tracing::instrument(skip(self, api_key))]
     async fn get_page(&self, api_key: &str, page_id: &str) -> Result<NotionOutput> {
+        let span = spans::notion_get_page(page_id);
+        let _guard = span.enter();
         let normalized = Self::normalize_id(page_id)?;
         let json = self
             .send_request(
@@ -336,7 +345,6 @@ impl NotionClient {
         })
     }
 
-    #[tracing::instrument(skip(self, api_key))]
     async fn get_page_blocks(
         &self,
         api_key: &str,
@@ -344,6 +352,8 @@ impl NotionClient {
         start_cursor: Option<&str>,
         page_size: Option<u32>,
     ) -> Result<NotionOutput> {
+        let span = spans::notion_get_page_blocks(block_id);
+        let _guard = span.enter();
         let normalized = Self::normalize_id(block_id)?;
         let (_json, pages, sources, mut blocks, next_cursor, has_more) = self
             .fetch_blocks_page(api_key, &normalized, start_cursor, page_size)
@@ -366,12 +376,13 @@ impl NotionClient {
         })
     }
 
-    #[tracing::instrument(skip(self, api_key))]
     async fn fetch_page_summary(
         &self,
         api_key: &str,
         page_id: &str,
     ) -> std::result::Result<NotionPageSummary, NotionError> {
+        let span = spans::notion_fetch_page_summary(page_id);
+        let _guard = span.enter();
         let normalized = Self::normalize_id(page_id)?;
         let json = self
             .send_request(
@@ -399,6 +410,8 @@ impl NotionClient {
         Option<String>,
         bool,
     )> {
+        let span = spans::notion_get_page_blocks(block_id);
+        let _guard = span.enter();
         let mut request = self
             .client
             .get(format!("{BASE_URL}/blocks/{block_id}/children"))
@@ -457,6 +470,8 @@ impl NotionClient {
             if !visited.insert(block_id.clone()) {
                 continue;
             }
+            let span = spans::notion_fetch_child_blocks(&block_id);
+            let _guard = span.enter();
             let (_json, _pages, _sources, child_blocks, _next, _has_more) = self
                 .fetch_blocks_page(api_key, &block_id, None, None)
                 .await?;
