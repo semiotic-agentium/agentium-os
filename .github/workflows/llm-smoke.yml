@@ -45,8 +45,8 @@ jobs:
 
       - name: Run LLM smoke tests
         run: |
-          cargo test -p baml-rt --features llm-tests -j 1
-          cargo test -p baml-agent-runner --features llm-tests -j 1
+          cargo test --locked -p baml-rt --features llm-tests -j 1
+          cargo test --locked -p baml-agent-runner --features llm-tests -j 1
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 

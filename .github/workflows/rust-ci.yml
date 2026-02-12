@@ -50,12 +50,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Run cargo test (light crates only)
-        run: cargo test -p baml-rt-core -p baml-rt-id -p baml-rt-observability
+        run: cargo test --locked -p baml-rt-core -p baml-rt-id -p baml-rt-observability
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
       - name: Run baml-derive-tests
-        run: cargo test -p baml-derive-tests
+        run: cargo test --locked -p baml-derive-tests
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
@@ -93,11 +93,11 @@ jobs:
 
       - name: Build heavy crate test binaries and builder tools (parallel)
         run: |
-          cargo test --workspace --exclude baml-rt-core --exclude baml-rt-id --exclude baml-rt-observability --exclude baml-derive-core --exclude baml-derive --exclude baml-derive-tests --exclude baml-rt-provenance --exclude baml-rt-a2a --exclude baml-agent-runner --features baml-rt-tools/http-tools,baml-rt-builder/http-tools --no-run
-          cargo build -p baml-rt-builder
+          cargo test --locked --workspace --exclude baml-rt-core --exclude baml-rt-id --exclude baml-rt-observability --exclude baml-derive-core --exclude baml-derive --exclude baml-derive-tests --exclude baml-rt-provenance --exclude baml-rt-a2a --exclude baml-agent-runner --features baml-rt-tools/http-tools,baml-rt-builder/http-tools --no-run
+          cargo build --locked -p baml-rt-builder
 
       - name: Run heavy crate tests (serial)
-        run: cargo test --workspace --exclude baml-rt-core --exclude baml-rt-id --exclude baml-rt-observability --exclude baml-derive-core --exclude baml-derive --exclude baml-derive-tests --exclude baml-rt-provenance --exclude baml-rt-a2a --exclude baml-agent-runner --features baml-rt-tools/http-tools,baml-rt-builder/http-tools -j 1
+        run: cargo test --locked --workspace --exclude baml-rt-core --exclude baml-rt-id --exclude baml-rt-observability --exclude baml-derive-core --exclude baml-derive --exclude baml-derive-tests --exclude baml-rt-provenance --exclude baml-rt-a2a --exclude baml-agent-runner --features baml-rt-tools/http-tools,baml-rt-builder/http-tools -j 1
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
@@ -138,11 +138,11 @@ jobs:
 
       - name: Build FalkorDB test binaries and builder tools (parallel)
         run: |
-          cargo test -p baml-rt-provenance -p baml-rt-a2a -p baml-agent-runner --features baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests,baml-agent-runner/http-tools --no-run
-          cargo build -p baml-rt-builder
+          cargo test --locked -p baml-rt-provenance -p baml-rt-a2a -p baml-agent-runner --features baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests,baml-agent-runner/http-tools --no-run
+          cargo build --locked -p baml-rt-builder
 
       - name: Run FalkorDB-gated tests (serial)
-        run: cargo test -p baml-rt-provenance -p baml-rt-a2a -p baml-agent-runner --features baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests,baml-agent-runner/http-tools -j 1
+        run: cargo test --locked -p baml-rt-provenance -p baml-rt-a2a -p baml-agent-runner --features baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests,baml-agent-runner/http-tools -j 1
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 

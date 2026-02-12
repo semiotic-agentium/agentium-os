@@ -78,7 +78,10 @@ inventory = "0.3.20"
 syn = { version = "2", features = ["full", "extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Pinned: h2 0.4.13 / hyper-util 0.1.20 introduce TLS regression with rustls
+# ("decryption failed or bad record mac" connecting to OpenRouter).
+# Bump deliberately after testing; do not use `cargo generate-lockfile`.
+reqwest = { version = "=0.12.26", default-features = false, features = ["json", "rustls-tls"] }
 axum = "0.8"
 utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-axum = "0.2"
