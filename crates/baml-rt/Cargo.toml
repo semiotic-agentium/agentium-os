@@ -31,7 +31,15 @@ baml-rt-builder = { path = "../baml-rt-builder", optional = true }
 baml-rt-observability = { path = "../baml-rt-observability", optional = true }
 
 [features]
-default = ["tools", "interceptor", "quickjs", "a2a", "builder", "observability"]
+default = [
+    "tools",
+    "interceptor",
+    "quickjs",
+    "a2a",
+    "builder",
+    "observability",
+]
+llm-tests = []
 tools = ["dep:baml-rt-tools"]
 interceptor = ["dep:baml-rt-interceptor"]
 quickjs = ["dep:baml-rt-quickjs", "tools", "interceptor", "observability"]
