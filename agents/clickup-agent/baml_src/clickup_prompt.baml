@@ -35,7 +35,7 @@ function ChooseClickUpAction(user_message: string) -> SupportClickupSessionPlan 
 client DefaultClient {
   provider openai-generic
   options {
-    model "deepseek/deepseek-chat"
+    model "deepseek/deepseek-v3.2"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }

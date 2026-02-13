@@ -4,6 +4,8 @@
 //! ensuring the contract between JavaScript/BAML functions and the runtime is correct.
 //! Uses fixture `stream-baml-tool` and BAML function `ChooseCalcTool` (returns session plan object).
 //!
+//! Parse failures from LLM output are retried automatically (up to 3 attempts) in baml_execution.
+//!
 //! Use short max_attempts_ms so effect-gated poll doesn't hang when LLM is used (e.g. missing API key).
 
 use baml_rt::A2aAgent;

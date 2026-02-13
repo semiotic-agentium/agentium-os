@@ -34,7 +34,7 @@ function ChatWithContext(user_message: string) -> string {
 client DefaultClient {
   provider openai-generic
   options {
-    model "openai/gpt-oss-120b"
+    model "deepseek/deepseek-v3.2"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }

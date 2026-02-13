@@ -1,3 +1,6 @@
+// Fixture types are used only by the derive macro; fields are serialized/deserialized by generated impls, not read in test code.
+#![allow(dead_code)]
+
 use baml_derive::BamlType;
 use baml_derive_core::{BamlDefinition, BamlType as BamlTypeTrait};
 use std::collections::HashMap;

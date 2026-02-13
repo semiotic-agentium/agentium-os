@@ -325,7 +325,6 @@ fn extract_chunks(responses: &[serde_json::Value]) -> Vec<&serde_json::Value> {
         .collect()
 }
 
-#[cfg(any(feature = "llm-tests", feature = "falkordb-tests"))]
 fn extract_message_texts<'a>(chunks: &'a [&serde_json::Value]) -> Vec<&'a str> {
     chunks
         .iter()
@@ -1157,24 +1156,33 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
         first_texts
     );
 
-    // FalkorDB writes may lag slightly behind turn completion; wait until turn-1
-    // conversation context is queryable before issuing turn-2 memory read.
+    // FalkorDB writes may lag behind turn completion (normalization + Cypher execution);
+    // wait until turn-1 conversation context is queryable before issuing turn-2 memory read.
     let context_id = ContextId::new(1, 1);
+    sleep(Duration::from_millis(400)).await; // let async writes settle before first poll
     let mut history_ready = false;
-    for _ in 0..50 {
+    let mut last_messages: Vec<ProvenanceContextMessage> = Vec::new();
+    for _ in 0..80 {
         let messages = provenance_reader
             .context_messages(&context_id, Some(10))
             .await
             .unwrap_or_default();
+        last_messages = messages.clone();
         if messages.len() >= 2 {
             history_ready = true;
             break;
         }
-        sleep(Duration::from_millis(200)).await;
+        sleep(Duration::from_millis(300)).await;
     }
     assert!(
         history_ready,
-        "Expected FalkorDB-backed conversation history to contain turn-1 messages before turn-2"
+        "Expected FalkorDB-backed conversation history to contain turn-1 messages before turn-2. \
+         After ~25s poll: got {} messages (roles: {:?})",
+        last_messages.len(),
+        last_messages
+            .iter()
+            .map(|m| m.role.as_str())
+            .collect::<Vec<_>>()
     );
 
     let second_turn = SendMessageRequest {

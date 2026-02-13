@@ -11,7 +11,7 @@ pub(crate) use tool_extraction::{
     resolve_tool_name_from_input_with_registry,
 };
 
-use crate::baml_execution::{BamlExecutor, ConversationContextProvider};
+use crate::baml_execution::{BamlExecutor, ConversationContextProvider, ParseRetryPolicy};
 use crate::traits::{BamlFunctionExecutor, SchemaLoader};
 use async_trait::async_trait;
 use baml_rt_core::context;
@@ -90,6 +90,7 @@ pub struct BamlRuntimeManager {
     tool_session_states: Arc<TokioMutex<HashMap<ToolSessionId, ToolCallSessionState>>>,
     effect_emitter: Option<Arc<dyn EffectEmitter>>,
     conversation_context_provider: Option<Arc<dyn ConversationContextProvider>>,
+    pending_parse_retry_policy: Option<ParseRetryPolicy>,
 }
 
 #[derive(Debug, Clone)]
@@ -702,6 +703,7 @@ impl BamlRuntimeManager {
             tool_session_states: Arc::new(TokioMutex::new(HashMap::new())),
             effect_emitter: None,
             conversation_context_provider: None,
+            pending_parse_retry_policy: None,
         })
     }
 
@@ -717,6 +719,15 @@ impl BamlRuntimeManager {
         self.conversation_context_provider = Some(provider.clone());
         if let Some(executor) = self.executor.as_mut() {
             executor.set_conversation_context_provider(provider);
+        }
+    }
+
+    /// Set the policy for retrying BAML calls on parse failure. May be called before or after [`load_schema`](Self::load_schema).
+    /// Use `ParseRetryPolicy { max_attempts: 1, .. }` in tests to avoid retry delay.
+    pub fn set_parse_retry_policy(&mut self, policy: ParseRetryPolicy) {
+        self.pending_parse_retry_policy = Some(policy.clone());
+        if let Some(executor) = self.executor.as_mut() {
+            executor.set_parse_retry_policy(policy);
         }
     }
 
@@ -782,6 +793,9 @@ impl BamlRuntimeManager {
         }
         if let Some(ref provider) = self.conversation_context_provider {
             executor.set_conversation_context_provider(provider.clone());
+        }
+        if let Some(policy) = self.pending_parse_retry_policy.take() {
+            executor.set_parse_retry_policy(policy);
         }
 
         // Discover functions from the BAML runtime
@@ -1406,6 +1420,7 @@ impl Default for BamlRuntimeManager {
             tool_session_states: Arc::new(TokioMutex::new(HashMap::new())),
             effect_emitter: None,
             conversation_context_provider: None,
+            pending_parse_retry_policy: None,
         }
     }
 }
