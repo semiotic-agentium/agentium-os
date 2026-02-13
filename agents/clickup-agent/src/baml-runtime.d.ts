@@ -27,7 +27,7 @@ export type ToolName = "support/clickup";
 type ClickUpAction = "ListTasks" | "GetTask" | "CreateTask" | "UpdateTask";
 type ClickUpInput = { action: ClickUpAction, list_id: string | null, task_id: string | null, name: string | null, description: string | null, priority: number | null, status: string | null, };
 type ClickUpOutput = { tasks: Array<ClickUpTaskSummary>, message: string, };
-type ClickUpTaskSummary = { id: string, name: string, status: string, url: string, assignees: Array<string>, priority: string | null, due_date: string | null, };
+type ClickUpTaskSummary = { id: string, name: string, status: string, description: string | null, url: string, assignees: Array<string>, priority: string | null, due_date: string | null, };
 export interface ToolInputMap { "support/clickup": ClickUpInput;
  }export interface ToolOutputMap { "support/clickup": ClickUpOutput;
  }export type ToolInput<T extends ToolName> = ToolInputMap[T];export type ToolOutput<T extends ToolName> = ToolOutputMap[T];declare function openToolSession<T extends ToolName>(toolName: T): Promise<ToolSession<ToolInput<T>, ToolOutput<T>>>;
