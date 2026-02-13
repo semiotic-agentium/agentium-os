@@ -13,6 +13,38 @@ expression: snapshot
       "source": "message"
     },
     {
+      "event_id": "prov-46",
+      "role": "assistant",
+      "content": {
+        "tool_call": {
+          "name": "support/calculate",
+          "args": {
+            "expression": {
+              "left": 2,
+              "operation": "Add",
+              "right": 3
+            }
+          },
+          "fsm_phase": "send"
+        }
+      },
+      "source": "tool_call"
+    },
+    {
+      "event_id": "prov-46",
+      "role": "tool",
+      "content": {
+        "tool_name": "support/calculate",
+        "fsm_phase": "send",
+        "result": {
+          "expression": "2 + 3",
+          "result": 5,
+          "formatted": "2 + 3 = 5"
+        }
+      },
+      "source": "tool_result"
+    },
+    {
       "event_id": "prov-47",
       "role": "assistant",
       "content": "Computed result is 5. I will remember ORBIT.",
@@ -171,5 +203,27 @@ expression: snapshot
       }
     }
   ],
-  "tool_call_history": []
+  "tool_call_history": [
+    {
+      "event_id": "prov-46",
+      "tool_call": "tool_call:prov-46",
+      "tool_name": "support/calculate",
+      "function_name": null,
+      "metadata": {},
+      "args": {
+        "expression": {
+          "left": 2,
+          "operation": "Add",
+          "right": 3
+        }
+      },
+      "args_relation_props": {},
+      "result": {
+        "expression": "2 + 3",
+        "result": 5,
+        "formatted": "2 + 3 = 5"
+      },
+      "result_relation_props": {}
+    }
+  ]
 }
