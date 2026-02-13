@@ -19,6 +19,8 @@ declare global {
 
 declare function ChooseCalcTool(args: { user_message: string }): Promise<SupportCalculateSessionPlan>;
 
+declare function ChooseCalcToolStream(args: { user_message: string }): Promise<string>;
+
 }
 
 /** Runtime interaction API: A2A task FSM (message-first, typestate rails). */
@@ -157,9 +159,24 @@ export interface SessionBuilder {
   run(fn: (emit: SessionEmitter) => Promise<SessionResult>): Promise<void>;
   run(fn: () => Promise<SessionResult>): Promise<void>;
 }
+/**
+ * Context passed to the run entrypoint when using __chat_register({ run }).
+ * The real entrypoint is run(ctx): you receive text, message, and emit; return SessionResult.
+ */
+export interface RunContext {
+  /** First text part of the message (same as session(message).text()). */
+  text: string;
+  /** Inbound message (parts, optional .text() from awaitInput). */
+  message: ChatMessage;
+  /** Emitter for working message, artifact, awaitInput; use when you need to stream or suspend. */
+  emit: SessionEmitter;
+}
 /** Agent contract: register this; host invokes onChatMessage per message. */
 export interface BamlAgent {
-  onChatMessage(message: ChatMessage): Promise<void>;
+  /** Optional: run(ctx) is the entrypoint; runtime wraps it into onChatMessage. Prefer this over onChatMessage. */
+  run?(ctx: RunContext): Promise<SessionResult>;
+  /** Optional: raw handler when run is not used. */
+  onChatMessage?(message: ChatMessage): Promise<void>;
   tools?: Record<string, (args: unknown) => Promise<unknown>>;
 }
 declare global {

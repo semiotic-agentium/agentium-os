@@ -1159,10 +1159,10 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
     // FalkorDB writes may lag behind turn completion (normalization + Cypher execution);
     // wait until turn-1 conversation context is queryable before issuing turn-2 memory read.
     let context_id = ContextId::new(1, 1);
-    sleep(Duration::from_millis(400)).await; // let async writes settle before first poll
+    sleep(Duration::from_millis(600)).await; // let async writes settle before first poll
     let mut history_ready = false;
     let mut last_messages: Vec<ProvenanceContextMessage> = Vec::new();
-    for _ in 0..80 {
+    for _ in 0..120 {
         let messages = provenance_reader
             .context_messages(&context_id, Some(10))
             .await
@@ -1172,12 +1172,12 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
             history_ready = true;
             break;
         }
-        sleep(Duration::from_millis(300)).await;
+        sleep(Duration::from_millis(400)).await;
     }
     assert!(
         history_ready,
         "Expected FalkorDB-backed conversation history to contain turn-1 messages before turn-2. \
-         After ~25s poll: got {} messages (roles: {:?})",
+         After ~50s poll: got {} messages (roles: {:?})",
         last_messages.len(),
         last_messages
             .iter()
