@@ -23,7 +23,7 @@ use test_support::common::{CalculatorTool, agent_fixture, ensure_fixture_runtime
 /// QuickJS config for LLM-dependent contract tests. Timeout must accommodate combined retries
 /// (parse retry + BAML client retry) which can exceed 15s; 45s provides margin.
 fn test_quickjs_config() -> QuickJSConfig {
-    QuickJSConfig::new().with_max_attempts_ms(Some(45_000))
+    QuickJSConfig::new().with_max_attempts_ms(Some(60_000))
 }
 
 fn load_env() {

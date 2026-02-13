@@ -23,7 +23,7 @@ function ChooseCalcToolStream(user_message: string) -> string {
 }
 
 retry_policy ParseRetry {
-  max_retries 2
+  max_retries 0
   strategy {
     type constant_delay
     delay_ms 200
