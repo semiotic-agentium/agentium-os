@@ -76,9 +76,11 @@ pub fn render_a2a_shim() -> Result<String> {
 
   function sessionKey(message) {
     if (message && typeof message === 'object') {
-      if (typeof message.taskId === 'string' && message.taskId.length > 0) return "task:" + message.taskId;
-      if (message.task && typeof message.task.id === 'string' && message.task.id.length > 0) return "task:" + message.task.id;
       if (typeof message.contextId === 'string' && message.contextId.length > 0) return "ctx:" + message.contextId;
+      if (typeof message.context_id === 'string' && message.context_id.length > 0) return "ctx:" + message.context_id;
+      if (typeof message.taskId === 'string' && message.taskId.length > 0) return "task:" + message.taskId;
+      if (typeof message.task_id === 'string' && message.task_id.length > 0) return "task:" + message.task_id;
+      if (message.task && typeof message.task.id === 'string' && message.task.id.length > 0) return "task:" + message.task.id;
     }
     return "__default__";
   }

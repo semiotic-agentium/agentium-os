@@ -21,7 +21,7 @@ use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::correlation;
 use baml_rt_core::effects::EffectEmitter;
 use baml_rt_core::ids::{ExternalId, MessageId};
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, Result, to_json_value};
 use baml_rt_observability::{metrics, spans};
 use baml_rt_provenance::{ProvenanceContextReader, ProvenanceInterceptor, ProvenanceWriter};
 use baml_rt_quickjs::baml_execution::ConversationContextProvider;
@@ -664,7 +664,7 @@ pub trait A2aRequestHandler: Send + Sync {
 impl A2aRequestHandler for A2aAgent {
     async fn handle_a2a(&self, request: Value) -> Result<Vec<Value>> {
         let request_id = a2a::extract_jsonrpc_id(&request);
-        let parsed_request = match a2a::A2aRequest::from_value(request) {
+        let mut parsed_request = match a2a::A2aRequest::from_value(request) {
             Ok(parsed) => parsed,
             Err(err) => {
                 let formatter = JsonRpcResponseFormatter;
@@ -682,6 +682,35 @@ impl A2aRequestHandler for A2aAgent {
         } else {
             correlation::generate_correlation_id()
         };
+
+        if parsed_request.method == a2a::A2aMethod::MessageSendStream
+            && parsed_request.task_id_was_generated
+            && let Some(ctx) = parsed_request.context_id.clone()
+        {
+            let list_request = crate::a2a_types::ListTasksRequest {
+                context_id: Some(ctx),
+                history_length: None,
+                include_artifacts: None,
+                page_size: None,
+                page_token: None,
+                status: Some(TaskState::String("TASK_STATE_INPUT_REQUIRED".to_string())),
+                status_timestamp_after: None,
+                tenant: None,
+                extra: HashMap::new(),
+            };
+            let list_response = self.task_store.list(&list_request).await;
+            if let Some(task) = list_response.tasks.first().and_then(|task| task.id.clone()) {
+                parsed_request.task_id = Some(task.clone());
+                if let Ok(mut params) =
+                    serde_json::from_value::<SendMessageRequest>(parsed_request.params.clone())
+                {
+                    params.message.task_id = Some(task);
+                    if let Ok(updated) = to_json_value(&params) {
+                        parsed_request.params = updated;
+                    }
+                }
+            }
+        }
 
         // One scope per request (per conversation). Multiple concurrent A2A requests each get
         // their own scope; the handler runs inside with_scope(scope, ...) so routing is to the

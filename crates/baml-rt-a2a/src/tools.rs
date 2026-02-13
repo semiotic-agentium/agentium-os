@@ -18,6 +18,7 @@ use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use tokio::runtime::RuntimeFlavor;
+use tokio::sync::mpsc;
 use ts_rs::TS;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -125,10 +126,13 @@ impl ToolHandler for A2aSessionHandler {
         // For A2A session, open_input should be empty object or null (unit type).
         validate_open_input::<()>(open_input)?;
 
+        let (response_tx, response_rx) = mpsc::unbounded_channel();
         Ok(Box::new(A2aSession {
             ctx,
             handler: self.handler.clone(),
             queue: VecDeque::new(),
+            response_tx,
+            response_rx,
             closed: false,
         }))
     }
@@ -138,6 +142,8 @@ struct A2aSession {
     ctx: ToolSessionContext,
     handler: Arc<dyn A2aRequestHandler>,
     queue: VecDeque<Value>,
+    response_tx: mpsc::UnboundedSender<Value>,
+    response_rx: mpsc::UnboundedReceiver<Value>,
     closed: bool,
 }
 
@@ -156,41 +162,59 @@ impl ToolSession for A2aSession {
                 error = e
             )))
         })?;
+        let handler = self.handler.clone();
+        let request = parsed.request;
+        let response_tx = self.response_tx.clone();
         let handle = tokio::runtime::Handle::current();
-        let responses = match handle.runtime_flavor() {
+        match handle.runtime_flavor() {
             RuntimeFlavor::CurrentThread => {
-                let handler = self.handler.clone();
-                let request = parsed.request;
-                let join = catch_unwind(AssertUnwindSafe(|| {
-                    tokio::task::spawn_local(async move { handler.handle_a2a(request).await })
-                }))
-                .map_err(|_| {
-                    ToolSessionError::Tool(ToolFailure::execution_failed(
-                        "A2A session requires a LocalSet when running on a current-thread runtime"
-                            .to_string(),
-                    ))
-                })?;
-                join.await
-                    .map_err(|e| {
-                        ToolSessionError::Tool(ToolFailure::execution_failed(e.to_string()))
-                    })?
-                    .map_err(|e| {
-                        ToolSessionError::Tool(ToolFailure::execution_failed(e.to_string()))
-                    })?
+                drop(
+                    catch_unwind(AssertUnwindSafe(|| {
+                        tokio::task::spawn_local(async move {
+                            let responses = match handler.handle_a2a(request).await {
+                                Ok(values) => values,
+                                Err(e) => vec![serde_json::json!({ "error": e.to_string() })],
+                            };
+                            for response in responses {
+                                let _ = response_tx.send(response);
+                            }
+                        })
+                    }))
+                    .map_err(|_| {
+                        ToolSessionError::Tool(ToolFailure::execution_failed(
+                            "A2A session requires a LocalSet when running on a current-thread runtime"
+                                .to_string(),
+                        ))
+                    })?,
+                );
             }
-            _ => tokio::task::block_in_place(|| {
-                handle.block_on(self.handler.handle_a2a(parsed.request))
-            })
-            .map_err(|e| ToolSessionError::Tool(ToolFailure::execution_failed(e.to_string())))?,
-        };
-        for response in responses {
-            self.queue.push_back(response);
+            _ => {
+                drop(tokio::task::spawn_blocking(move || {
+                    let responses = match handle.block_on(handler.handle_a2a(request)) {
+                        Ok(values) => values,
+                        Err(e) => vec![serde_json::json!({ "error": e.to_string() })],
+                    };
+                    for response in responses {
+                        let _ = response_tx.send(response);
+                    }
+                }));
+            }
         }
         Ok(())
     }
 
     async fn next(&mut self) -> std::result::Result<ToolStep, ToolSessionError> {
         if let Some(response) = self.queue.pop_front() {
+            let output = A2aSessionOutput { response };
+            let value = serde_json::to_value(output).map_err(|e| {
+                ToolSessionError::Tool(ToolFailure::execution_failed(format!(
+                    "Invalid A2A output: {error}",
+                    error = e
+                )))
+            })?;
+            return Ok(ToolStep::Streaming { output: value });
+        }
+        if let Some(response) = self.response_rx.recv().await {
             let output = A2aSessionOutput { response };
             let value = serde_json::to_value(output).map_err(|e| {
                 ToolSessionError::Tool(ToolFailure::execution_failed(format!(

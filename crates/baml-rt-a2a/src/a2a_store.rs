@@ -224,6 +224,74 @@ impl ProvenanceTaskStore {
         });
         (task, message)
     }
+
+    async fn record_message_provenance(
+        &self,
+        message: &Message,
+        emit_task_created: bool,
+    ) -> Result<()> {
+        let context_id = require_context_id(message.context_id.clone(), "message insert")?;
+        let task_id = message.task_id.clone();
+        let role = message_role_string(&message.role);
+        let content = message_content(message);
+        tracing::trace!(
+            context_id = context_id.as_str(),
+            task_id = task_id.as_ref().map(|t| t.as_str()),
+            message_id = message.message_id.as_message_id().as_str(),
+            role = role.as_str(),
+            content_parts = content.len(),
+            has_writer = self.writer.is_some(),
+            "Storing message in provenance",
+        );
+
+        let mut msg_metadata = message.metadata.clone();
+        ensure_agent_id_in_metadata(&mut msg_metadata, &self.agent_id);
+        let metadata = msg_metadata.as_ref().map(metadata_string_map);
+
+        if emit_task_created && let Some(task_id) = task_id.clone() {
+            let event = ProvEvent::task_created(context_id.clone(), task_id, self.agent_id.clone());
+            self.record_event(event).await;
+        }
+
+        let event = match (role.as_str(), task_id.clone()) {
+            (ROLE_USER, Some(task_id)) => ProvEvent::message_received_task(
+                context_id.clone(),
+                task_id,
+                message.message_id.as_message_id().clone(),
+                role,
+                content,
+                metadata,
+                now_millis(),
+            ),
+            (ROLE_USER, None) => ProvEvent::message_received_global(
+                context_id.clone(),
+                message.message_id.as_message_id().clone(),
+                role,
+                content,
+                metadata,
+                now_millis(),
+            ),
+            (_, Some(task_id)) => ProvEvent::message_sent_task(
+                context_id.clone(),
+                task_id,
+                message.message_id.as_message_id().clone(),
+                role,
+                content,
+                metadata,
+                now_millis(),
+            ),
+            (_, None) => ProvEvent::message_sent_global(
+                context_id.clone(),
+                message.message_id.as_message_id().clone(),
+                role,
+                content,
+                metadata,
+                now_millis(),
+            ),
+        };
+        self.record_event(event).await;
+        Ok(())
+    }
 }
 
 fn now_millis() -> u64 {
@@ -300,68 +368,7 @@ impl TaskRepository for ProvenanceTaskStore {
     }
 
     async fn insert_message(&self, message: &Message) -> Result<()> {
-        let context_id = require_context_id(message.context_id.clone(), "message insert")?;
-        let task_id = message.task_id.clone();
-        let role = message_role_string(&message.role);
-        let content = message_content(message);
-        tracing::trace!(
-            context_id = context_id.as_str(),
-            task_id = task_id.as_ref().map(|t| t.as_str()),
-            message_id = message.message_id.as_message_id().as_str(),
-            role = role.as_str(),
-            content_parts = content.len(),
-            has_writer = self.writer.is_some(),
-            "Storing message in provenance",
-        );
-
-        let mut msg_metadata = message.metadata.clone();
-        ensure_agent_id_in_metadata(&mut msg_metadata, &self.agent_id);
-        let metadata = msg_metadata.as_ref().map(metadata_string_map);
-
-        // agent_id is always available from store level
-        if let Some(task_id) = task_id.clone() {
-            let event = ProvEvent::task_created(context_id.clone(), task_id, self.agent_id.clone());
-            self.record_event(event).await;
-        }
-        let task_id_for_event = task_id.clone();
-
-        let event = match (role.as_str(), task_id_for_event.clone()) {
-            (ROLE_USER, Some(task_id)) => ProvEvent::message_received_task(
-                context_id.clone(),
-                task_id,
-                message.message_id.as_message_id().clone(),
-                role,
-                content,
-                metadata,
-                now_millis(),
-            ),
-            (ROLE_USER, None) => ProvEvent::message_received_global(
-                context_id.clone(),
-                message.message_id.as_message_id().clone(),
-                role,
-                content,
-                metadata,
-                now_millis(),
-            ),
-            (_, Some(task_id)) => ProvEvent::message_sent_task(
-                context_id.clone(),
-                task_id,
-                message.message_id.as_message_id().clone(),
-                role,
-                content,
-                metadata,
-                now_millis(),
-            ),
-            (_, None) => ProvEvent::message_sent_global(
-                context_id.clone(),
-                message.message_id.as_message_id().clone(),
-                role,
-                content,
-                metadata,
-                now_millis(),
-            ),
-        };
-        self.record_event(event).await;
+        self.record_message_provenance(message, true).await?;
 
         let start = Instant::now();
         let mut store = self.inner.lock().await;
@@ -482,6 +489,7 @@ impl TaskChunkApplier for ProvenanceTaskStore {
             Some((tid, cid))
         });
         let (task, message) = Self::inject_agent_id_into_chunk(task, message, &self.agent_id);
+        let provenance_message = message.clone();
         let start = Instant::now();
         let events = {
             let mut store = self.inner.lock().await;
@@ -489,11 +497,16 @@ impl TaskChunkApplier for ProvenanceTaskStore {
         };
         record_task_store_metrics("apply_task_delta", "success", start);
         // I3: emit provenance only after store accepted the updates
+        let emit_task_created = task_created_prov.is_none();
         if let Some((tid, cid)) = task_created_prov
             && let Ok(context_id) = require_context_id(Some(cid), "provenance task_created")
         {
             let event = ProvEvent::task_created(context_id, tid, self.agent_id.clone());
             self.record_event(event).await;
+        }
+        if let Some(msg) = provenance_message {
+            self.record_message_provenance(&msg, emit_task_created)
+                .await?;
         }
         for event in &events {
             if let Ok(context_id) =

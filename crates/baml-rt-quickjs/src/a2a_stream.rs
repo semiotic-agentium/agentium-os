@@ -113,6 +113,9 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
         let timeout = Duration::from_secs(30);
         let interval = Duration::from_millis(50);
         let read_timeout = Duration::from_secs(2);
+        let settle_duration = Duration::from_millis(1000);
+        let mut collected: Vec<Value> = Vec::new();
+        let mut last_nonempty: Option<Instant> = None;
 
         loop {
             // Liveness guard: a single buffer-read must not stall collection forever.
@@ -126,12 +129,18 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
                 Err(_) => Vec::new(),
             };
             if !responses.is_empty() {
+                collected.extend(responses);
+                last_nonempty = Some(Instant::now());
+            }
+            if let Some(last) = last_nonempty
+                && last.elapsed() >= settle_duration
+            {
                 self.bridge.finalize_a2a_stream_invocation();
-                return Ok(responses);
+                return Ok(collected);
             }
             if start.elapsed() >= timeout {
                 self.bridge.finalize_a2a_stream_invocation();
-                return Ok(responses);
+                return Ok(collected);
             }
             sleep(interval).await;
         }

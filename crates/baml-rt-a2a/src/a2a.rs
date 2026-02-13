@@ -62,6 +62,7 @@ pub struct A2aRequest {
     pub context_id: Option<ContextId>,
     pub message_id: Option<MessageId>,
     pub task_id: Option<TaskId>,
+    pub task_id_was_generated: bool,
 }
 
 impl A2aRequest {
@@ -80,6 +81,7 @@ impl A2aRequest {
         let mut context_id = None;
         let mut message_id = None;
         let mut task_id = None;
+        let mut task_id_was_generated = false;
         let is_stream = match method {
             A2aMethod::MessageSendStream => {
                 let mut params: SendMessageRequest =
@@ -93,6 +95,7 @@ impl A2aRequest {
                         uuid = Uuid::new_v4()
                     )));
                     params.message.task_id = Some(generated);
+                    task_id_was_generated = true;
                 }
                 context_id = params.message.context_id.clone();
                 message_id = Some(params.message.message_id.as_message_id().clone());
@@ -140,6 +143,7 @@ impl A2aRequest {
             context_id,
             message_id,
             task_id,
+            task_id_was_generated,
         })
     }
 
@@ -408,14 +412,26 @@ impl JsChunkNormalizer {
         let Some(map) = message.as_object_mut() else {
             return Ok(());
         };
+        let message_id = map
+            .get("messageId")
+            .or_else(|| map.get("message_id"))
+            .cloned()
+            .unwrap_or_else(|| Value::String(self.next_message_id()));
         map.entry("messageId".to_string())
-            .or_insert_with(|| Value::String(self.next_message_id()));
+            .or_insert_with(|| message_id.clone());
+        map.entry("message_id".to_string())
+            .or_insert_with(|| message_id);
         map.entry("role".to_string())
             .or_insert_with(|| Value::String(ROLE_AGENT.to_string()));
+        let context_id = Value::String(self.context_id.as_str().to_string());
         map.entry("contextId".to_string())
-            .or_insert_with(|| Value::String(self.context_id.as_str().to_string()));
+            .or_insert_with(|| context_id.clone());
+        map.entry("context_id".to_string())
+            .or_insert_with(|| context_id);
+        let task_id = Value::String(self.task_id.as_str().to_string());
         map.entry("taskId".to_string())
-            .or_insert_with(|| Value::String(self.task_id.as_str().to_string()));
+            .or_insert_with(|| task_id.clone());
+        map.entry("task_id".to_string()).or_insert_with(|| task_id);
         Ok(())
     }
 
@@ -449,10 +465,15 @@ impl JsChunkNormalizer {
     }
 
     fn ensure_context_and_task_fields(&self, map: &mut Map<String, Value>) {
+        let context_id = Value::String(self.context_id.as_str().to_string());
         map.entry("contextId".to_string())
-            .or_insert_with(|| Value::String(self.context_id.as_str().to_string()));
+            .or_insert_with(|| context_id.clone());
+        map.entry("context_id".to_string())
+            .or_insert_with(|| context_id);
+        let task_id = Value::String(self.task_id.as_str().to_string());
         map.entry("taskId".to_string())
-            .or_insert_with(|| Value::String(self.task_id.as_str().to_string()));
+            .or_insert_with(|| task_id.clone());
+        map.entry("task_id".to_string()).or_insert_with(|| task_id);
     }
 
     fn ensure_status_update_fields(&mut self, status_update: &mut Value) -> Result<()> {
@@ -487,10 +508,22 @@ impl JsChunkNormalizer {
 pub fn request_to_js_value(request: &A2aRequest) -> Value {
     match request.method {
         A2aMethod::MessageSendStream => {
-            serde_json::from_value::<SendMessageRequest>(request.params.clone())
+            let mut value = serde_json::from_value::<SendMessageRequest>(request.params.clone())
                 .ok()
                 .and_then(|params| serde_json::to_value(params.message).ok())
-                .unwrap_or_else(|| json!({ "parts": [] }))
+                .unwrap_or_else(|| json!({ "parts": [] }));
+            if let Value::Object(ref mut map) = value {
+                if let Some(task_id) = map.get("task_id").cloned() {
+                    map.entry("taskId".to_string()).or_insert(task_id);
+                }
+                if let Some(context_id) = map.get("context_id").cloned() {
+                    map.entry("contextId".to_string()).or_insert(context_id);
+                }
+                if let Some(message_id) = map.get("message_id").cloned() {
+                    map.entry("messageId".to_string()).or_insert(message_id);
+                }
+            }
+            value
         }
         _ => request.params.clone(),
     }
