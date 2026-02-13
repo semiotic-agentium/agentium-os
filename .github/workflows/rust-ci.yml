@@ -44,7 +44,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold
+          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold libclang-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -86,7 +86,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold
+          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold libclang-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -128,7 +128,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold
+          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold libclang-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
