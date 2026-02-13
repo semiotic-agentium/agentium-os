@@ -377,6 +377,25 @@ pub struct TaskArtifactUpdateEvent {
     pub extra: HashMap<String, Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct A2aEvent {
+    #[serde(rename = "type")]
+    pub event_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<ContextId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
 /// Stream chunk variant for tasks.subscribe stream responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged, rename_all = "camelCase")]
@@ -396,6 +415,12 @@ pub enum StreamChunk {
     ArtifactUpdate {
         #[serde(rename = "artifactUpdate")]
         artifact_update: TaskArtifactUpdateEvent,
+        #[serde(flatten)]
+        extra: HashMap<String, Value>,
+    },
+    Event {
+        #[serde(rename = "event")]
+        event: A2aEvent,
         #[serde(flatten)]
         extra: HashMap<String, Value>,
     },
@@ -422,6 +447,13 @@ impl StreamChunk {
             extra: HashMap::new(),
         }
     }
+
+    pub fn event(event: A2aEvent) -> Self {
+        StreamChunk::Event {
+            event,
+            extra: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -435,6 +467,8 @@ pub struct StreamResponse {
     pub status_update: Option<TaskStatusUpdateEvent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub artifact_update: Option<TaskArtifactUpdateEvent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event: Option<A2aEvent>,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
 }

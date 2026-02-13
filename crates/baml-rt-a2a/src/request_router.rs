@@ -224,11 +224,60 @@ impl RequestRouter for MethodBasedRouter {
                     let mut normalizer = a2a::JsChunkNormalizer::new(scope);
                     if request.is_stream {
                         let chunks = self.js_invoker.invoke_stream(request, scope).await?;
-                        let mut normalized_chunks = Vec::with_capacity(chunks.len());
+                        let mut normalized_chunks = Vec::with_capacity(chunks.len() + 2);
+                        if matches!(request.method, a2a::A2aMethod::MessageSendStream) {
+                            normalized_chunks.push(build_event_chunk(
+                                "agent_start",
+                                &normalizer,
+                                None,
+                            ));
+                        }
                         for chunk in chunks {
                             let normalized = normalizer.normalize_value(chunk)?;
                             self.result_pipeline.store_result(&normalized).await?;
-                            normalized_chunks.push(normalized);
+                            if matches!(request.method, a2a::A2aMethod::MessageSendStream)
+                                && normalized.get("message").is_some()
+                            {
+                                let message_id = extract_message_id(&normalized);
+                                let is_partial = is_partial_message(&normalized);
+                                normalized_chunks.push(build_event_chunk(
+                                    "turn_start",
+                                    &normalizer,
+                                    message_id.as_deref(),
+                                ));
+                                normalized_chunks.push(build_event_chunk(
+                                    "message_start",
+                                    &normalizer,
+                                    message_id.as_deref(),
+                                ));
+                                normalized_chunks.push(normalized);
+                                if is_partial {
+                                    normalized_chunks.push(build_event_chunk(
+                                        "message_update",
+                                        &normalizer,
+                                        message_id.as_deref(),
+                                    ));
+                                }
+                                normalized_chunks.push(build_event_chunk(
+                                    "message_end",
+                                    &normalizer,
+                                    message_id.as_deref(),
+                                ));
+                                normalized_chunks.push(build_event_chunk(
+                                    "turn_end",
+                                    &normalizer,
+                                    message_id.as_deref(),
+                                ));
+                            } else {
+                                normalized_chunks.push(normalized);
+                            }
+                        }
+                        if matches!(request.method, a2a::A2aMethod::MessageSendStream) {
+                            normalized_chunks.push(build_event_chunk(
+                                "agent_end",
+                                &normalizer,
+                                None,
+                            ));
                         }
                         Ok(a2a::A2aOutcome::Stream(normalized_chunks))
                     } else {
@@ -267,6 +316,46 @@ impl RequestRouter for MethodBasedRouter {
             }
         }
     }
+}
+
+fn build_event_chunk(
+    event_type: &str,
+    normalizer: &a2a::JsChunkNormalizer,
+    message_id: Option<&str>,
+) -> Value {
+    let mut event = serde_json::json!({
+        "type": event_type,
+        "contextId": normalizer.context_id().as_str(),
+        "taskId": normalizer.task_id().as_str(),
+        "source": "runtime"
+    });
+    if let Some(message_id) = message_id
+        && let Some(map) = event.as_object_mut()
+    {
+        map.insert(
+            "messageId".to_string(),
+            Value::String(message_id.to_string()),
+        );
+    }
+    serde_json::json!({ "event": event })
+}
+
+fn extract_message_id(chunk: &Value) -> Option<String> {
+    chunk
+        .get("message")
+        .and_then(|message| message.get("messageId"))
+        .and_then(Value::as_str)
+        .map(|s| s.to_string())
+}
+
+fn is_partial_message(chunk: &Value) -> bool {
+    let Some(message) = chunk.get("message") else {
+        return false;
+    };
+    message.get("delta").is_some()
+        || message.get("streaming").is_some()
+        || chunk.get("delta").is_some()
+        || chunk.get("partial").is_some()
 }
 
 #[cfg(test)]
@@ -373,9 +462,15 @@ mod tests {
         let outcome = router.route(&request, &scope).await.unwrap();
         match outcome {
             a2a::A2aOutcome::Stream(chunks) => {
-                assert_eq!(chunks.len(), 2);
+                let content_chunks: Vec<&Value> = chunks
+                    .iter()
+                    .filter(|chunk| {
+                        chunk.get("message").is_some() || chunk.get("statusUpdate").is_some()
+                    })
+                    .collect();
+                assert_eq!(content_chunks.len(), 2);
                 assert_eq!(
-                    chunks[0]
+                    content_chunks[0]
                         .get("message")
                         .and_then(|m| m.get("parts"))
                         .and_then(|p| p.get(0))
@@ -383,7 +478,7 @@ mod tests {
                         .and_then(|t| t.as_str()),
                     Some("a")
                 );
-                assert!(chunks[1].get("statusUpdate").is_some());
+                assert!(content_chunks[1].get("statusUpdate").is_some());
             }
             a2a::A2aOutcome::Response(_) => panic!("expected Stream outcome"),
         }

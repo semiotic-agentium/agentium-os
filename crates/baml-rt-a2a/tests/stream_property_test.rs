@@ -57,23 +57,43 @@ proptest! {
             .expect("runtime");
         let responses = rt.block_on(run_stream_test(k));
         let k_usize = k as usize;
+        let content_responses: Vec<&Value> = responses
+            .iter()
+            .filter(|response| {
+                response
+                    .get("result")
+                    .and_then(|r| r.get("chunk"))
+                    .and_then(|chunk| chunk.get("task"))
+                    .and_then(|task| task.get("index"))
+                    .is_some()
+            })
+            .collect();
         assert_eq!(
-            responses.len(),
+            content_responses.len(),
             k_usize,
             "expected {} stream responses, got {}",
             k_usize,
-            responses.len()
+            content_responses.len()
         );
         let mut final_count = 0u32;
-        for (i, response) in responses.iter().enumerate() {
+        for (i, response) in content_responses.iter().enumerate() {
             let result = response.get("result").and_then(|r| r.as_object()).expect("result");
-            let index = result.get("index").and_then(Value::as_u64).unwrap_or(i as u64);
-            assert_eq!(index, i as u64, "chunk order: index {} should be {}", i, index);
             let chunk = result.get("chunk").cloned().unwrap_or(Value::Null);
-            if let Some(chunk_index) = chunk.get("index").and_then(Value::as_u64) {
+            if let Some(chunk_index) = chunk
+                .get("task")
+                .and_then(|task| task.get("index"))
+                .and_then(Value::as_u64)
+            {
                 assert_eq!(chunk_index, i as u64, "chunk content index");
             }
-            if result.get("final").and_then(Value::as_bool).unwrap_or(false) {
+        }
+        for response in responses.iter() {
+            if response
+                .get("result")
+                .and_then(|r| r.get("final"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
                 final_count += 1;
             }
         }

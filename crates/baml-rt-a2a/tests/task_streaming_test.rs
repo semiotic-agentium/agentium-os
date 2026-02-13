@@ -4,7 +4,7 @@ use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest};
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::{A2aAgent, A2aRequestHandler, QuickJSConfig};
 use baml_rt_core::context;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::sync::{Arc, OnceLock};
 use test_support::common::{
     AddNumbersTool, CalculatorTool, first_message_text_from_stream, first_task_id_from_stream,
@@ -111,14 +111,11 @@ async fn test_message_send_deterministic_task() {
     );
 
     let responses = agent.handle_a2a(request).await.unwrap();
-    let result = responses[0].get("result").cloned().unwrap_or(Value::Null);
-    let content = result.get("chunk").cloned().unwrap_or(result);
-    let task_id = content
-        .get("task")
-        .and_then(|task| task.get("id"))
-        .and_then(|value| value.as_str());
+    let task_id = first_task_id_from_stream(&responses);
     assert!(
-        task_id.is_some_and(|id| id.starts_with("js-task-")),
+        task_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("js-task-")),
         "expected generated js-task-* id, got {:?}",
         task_id
     );

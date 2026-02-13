@@ -490,6 +490,16 @@ impl QuickJSBridge {
             if (!token) {
                 throw new Error("Missing invocation token for openToolSession.");
             }
+            const emitToolEvent = (type, payload) => {
+                if (typeof __chat_yield !== "function") return;
+                __chat_yield({
+                    event: {
+                        type,
+                        source: "runtime",
+                        tool: payload
+                    }
+                });
+            };
             const sessionId = await __tool_session_open(
                 token,
                 toolName
@@ -509,13 +519,26 @@ impl QuickJSBridge {
                 send: async function(args) {
                     assertNotTerminal("send");
                     const argObj = args ?? {};
-                    const out = await __tool_session_send(token, sessionId, JSON.stringify(argObj));
-                    phase = "Send";
-                    return out;
+                    emitToolEvent("tool_execution_start", { name: toolName, sessionId, args: argObj });
+                    try {
+                        const out = await __tool_session_send(token, sessionId, JSON.stringify(argObj));
+                        phase = "Send";
+                        return out;
+                    } catch (e) {
+                        emitToolEvent("tool_execution_end", { name: toolName, sessionId, isError: true, error: String(e) });
+                        throw e;
+                    }
                 },
                 continue: async function() {
                     assertNotTerminal("continue");
                     const out = await __tool_session_next(token, sessionId);
+                    if (out && out.status === "streaming") {
+                        emitToolEvent("tool_execution_update", { name: toolName, sessionId, output: out.output });
+                    } else if (out && out.status === "done") {
+                        emitToolEvent("tool_execution_end", { name: toolName, sessionId, isError: false, result: out.output });
+                    } else if (out && out.status === "error") {
+                        emitToolEvent("tool_execution_end", { name: toolName, sessionId, isError: true, error: out.error });
+                    }
                     phase = "Next";
                     return out;
                 },
@@ -528,6 +551,7 @@ impl QuickJSBridge {
                 abort: async function(reason) {
                     assertNotTerminal("abort");
                     const out = await __tool_session_abort(token, sessionId, reason);
+                    emitToolEvent("tool_execution_end", { name: toolName, sessionId, isError: true, error: reason ?? "aborted" });
                     phase = "Abort";
                     return out;
                 }

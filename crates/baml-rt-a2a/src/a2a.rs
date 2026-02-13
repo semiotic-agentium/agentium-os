@@ -332,6 +332,7 @@ impl JsChunkNormalizer {
                     || m.contains_key("task")
                     || m.contains_key("statusUpdate")
                     || m.contains_key("artifactUpdate")
+                    || m.contains_key("event")
             })
             .unwrap_or(false);
 
@@ -375,8 +376,19 @@ impl JsChunkNormalizer {
             if let Some(artifact_update) = map.get_mut("artifactUpdate") {
                 self.ensure_artifact_update_fields(artifact_update)?;
             }
+            if let Some(event) = map.get_mut("event") {
+                self.ensure_event_fields(event)?;
+            }
         }
         Ok(value)
+    }
+
+    pub fn context_id(&self) -> &ContextId {
+        &self.context_id
+    }
+
+    pub fn task_id(&self) -> &TaskId {
+        &self.task_id
     }
 
     fn next_message_id(&mut self) -> String {
@@ -456,6 +468,14 @@ impl JsChunkNormalizer {
 
     fn ensure_artifact_update_fields(&mut self, artifact_update: &mut Value) -> Result<()> {
         let Some(map) = artifact_update.as_object_mut() else {
+            return Ok(());
+        };
+        self.ensure_context_and_task_fields(map);
+        Ok(())
+    }
+
+    fn ensure_event_fields(&mut self, event: &mut Value) -> Result<()> {
+        let Some(map) = event.as_object_mut() else {
             return Ok(());
         };
         self.ensure_context_and_task_fields(map);
@@ -687,7 +707,22 @@ mod tests {
         let request_value = serde_json::to_value(request).expect("serialize request");
 
         let responses = agent.handle_a2a(request_value).await.expect("a2a handle");
-        let result = expect_success_result(responses);
+        let result = responses
+            .into_iter()
+            .filter_map(|response| {
+                if response.get("error").is_some() {
+                    return None;
+                }
+                let result = response.get("result")?.clone();
+                let chunk = result.get("chunk").cloned().unwrap_or(result);
+                if chunk.get("message").is_some() {
+                    Some(chunk)
+                } else {
+                    None
+                }
+            })
+            .next()
+            .expect("response message chunk");
         let message = result
             .get("message")
             .and_then(Value::as_object)
