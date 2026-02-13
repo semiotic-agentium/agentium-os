@@ -13,9 +13,9 @@ export interface SupportCalculateSessionPlan { steps: SupportCalculateOpenStep |
 
 declare global {
 
-declare function ChatWithContext(args: { user_message: string }): Promise<string>;
-
 declare function ChooseCalcTool(args: { user_message: string }): Promise<SupportCalculateSessionPlan>;
+
+declare function ChatWithContext(args: { user_message: string }): Promise<string>;
 
 }
 
