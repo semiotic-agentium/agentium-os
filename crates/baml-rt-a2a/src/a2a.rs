@@ -87,6 +87,13 @@ impl A2aRequest {
                 if params.message.context_id.is_none() {
                     params.message.context_id = Some(context::generate_context_id());
                 }
+                if params.message.task_id.is_none() {
+                    let generated = TaskId::from_external(ExternalId::new(format!(
+                        "js-task-{uuid}",
+                        uuid = Uuid::new_v4()
+                    )));
+                    params.message.task_id = Some(generated);
+                }
                 context_id = params.message.context_id.clone();
                 message_id = Some(params.message.message_id.as_message_id().clone());
                 task_id = params.message.task_id.clone();
@@ -462,7 +469,7 @@ pub fn request_to_js_value(request: &A2aRequest) -> Value {
         A2aMethod::MessageSendStream => {
             serde_json::from_value::<SendMessageRequest>(request.params.clone())
                 .ok()
-                .map(|params| json!({ "parts": params.message.parts }))
+                .and_then(|params| serde_json::to_value(params.message).ok())
                 .unwrap_or_else(|| json!({ "parts": [] }))
         }
         _ => request.params.clone(),

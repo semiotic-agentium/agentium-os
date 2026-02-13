@@ -53,9 +53,9 @@ export type A2aNextStates<S extends A2aTaskState> =
     : S extends "TASK_STATE_WORKING"
         ? "TASK_STATE_INPUT_REQUIRED" | "TASK_STATE_AUTH_REQUIRED" | "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
     : S extends "TASK_STATE_INPUT_REQUIRED"
-        ? "TASK_STATE_WORKING" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
+        ? "TASK_STATE_WORKING" | "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
     : S extends "TASK_STATE_AUTH_REQUIRED"
-        ? "TASK_STATE_WORKING" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
+        ? "TASK_STATE_WORKING" | "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
     : never;
 export interface A2aTaskContext<S extends A2aTaskState> {
     taskId: string;
@@ -100,6 +100,26 @@ export interface A2aSessionClosed {
     closed: true;
 }
 declare function openA2aTaskSession<I = unknown>(token: string): Promise<A2aSessionAwaitingInput<I>>;
+/**
+ * ReAct-style loop helper.
+ * plan(ctx) returns either a final response or a tool call.
+ */
+export type ReActPlan =
+    | { kind: "final"; message: string }
+    | { kind: "tool"; tool: string; args: unknown };
+export interface ReActLoopContext {
+    observations: Array<{ plan: ReActPlan; observation: unknown }>;
+    step: number;
+}
+export interface ReActLoopOptions {
+    plan: (ctx: ReActLoopContext) => Promise<ReActPlan> | ReActPlan;
+    execute: (step: Extract<ReActPlan, { kind: "tool" }>) => Promise<unknown> | unknown;
+    maxSteps?: number;
+    observations?: Array<{ plan: ReActPlan; observation: unknown }>;
+    dedupeKey?: (step: ReActPlan) => string;
+    onStep?: (step: ReActPlan, index: number) => void;
+}
+declare function runReActLoop(opts: ReActLoopOptions): Promise<string>;
 /**
  * Bootstrap-generated: handler types. Incoming message (parts only; IDs/context are host-managed).
  * Session lifecycle: host invokes onChatMessage(message); agent uses session(message).run(...) to run work and emit outcomes.

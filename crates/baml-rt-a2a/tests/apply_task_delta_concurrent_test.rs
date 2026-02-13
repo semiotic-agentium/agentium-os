@@ -4,7 +4,7 @@
 mod common;
 
 use baml_rt_a2a::a2a_store::{TaskChunkApplier, TaskStore};
-use baml_rt_a2a::a2a_types::{TaskState, TaskStatus};
+use baml_rt_a2a::a2a_types::TaskState;
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
 use std::collections::HashMap;
 use std::sync::Arc;

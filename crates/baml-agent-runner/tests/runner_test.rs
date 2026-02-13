@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use baml_rt::A2aRequestHandler;
 use baml_rt::baml::BamlRuntimeManager;
+use baml_rt::baml_execution::ParseRetryPolicy;
 use baml_rt::tools::BamlTool;
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::effects::EffectBus;
@@ -291,12 +292,18 @@ fn send_message_request(params: SendMessageRequest, id: &str) -> JSONRPCRequest 
         id,
     )
 }
-
+fn set_single_parse_attempt(manager: &mut BamlRuntimeManager) {
+    manager.set_parse_retry_policy(ParseRetryPolicy {
+        max_attempts: 1,
+        delay_ms: 0,
+    });
+}
 #[cfg(feature = "llm-tests")]
 async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
     ensure_fixture_runtime_types();
     let built = build_fixture_to_temp_async("stream-baml-tool").await;
     let mut manager = BamlRuntimeManager::new().unwrap();
+    set_single_parse_attempt(&mut manager);
     manager.load_schema(built.to_str().unwrap()).unwrap();
     manager.register_tool(CalculatorTool).await.unwrap();
     let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
@@ -349,6 +356,7 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
     let extract_dir = build_fixture_to_temp_async("stream-baml-tool").await;
 
     let mut manager = BamlRuntimeManager::new().expect("runtime manager");
+    set_single_parse_attempt(&mut manager);
     manager
         .load_schema(extract_dir.to_str().expect("utf8 path"))
         .expect("load schema from extracted package");
@@ -378,6 +386,7 @@ async fn setup_conversational_context_auto_agent(
     ensure_fixture_runtime_types();
     let built = build_fixture_to_temp_async("conversational-context-auto").await;
     let mut manager = BamlRuntimeManager::new().unwrap();
+    set_single_parse_attempt(&mut manager);
     manager.load_schema(built.to_str().unwrap()).unwrap();
     manager.register_tool(CalculatorTool).await.unwrap();
     let provenance = Arc::new(FalkorDbProvenanceWriter::new(

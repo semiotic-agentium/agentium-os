@@ -1,9 +1,12 @@
 [workspace]
 members = [
     "crates/baml-agent-runner",
+    "crates/baml-derive",
+    "crates/baml-derive-core",
     "crates/baml-derive-tests",
     "crates/baml-rt",
     "crates/baml-rt-a2a",
+    "crates/baml-rt-api",
     "crates/baml-rt-builder",
     "crates/baml-rt-core",
     "crates/baml-rt-id",
@@ -60,9 +63,8 @@ inventory = "0.3.20"
 syn = { version = "2", features = ["full", "extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
-# Pinned: h2 0.4.13 / hyper-util 0.1.20 introduce TLS regression with rustls
-# ("decryption failed or bad record mac" connecting to OpenRouter).
-# Bump deliberately after testing; do not use `cargo generate-lockfile`.
+# Pinned: reqwest updates introduced TLS regressions with rustls in prior CI runs.
+# Keep lockfile stable; bump deliberately after testing. Do not use `cargo generate-lockfile`.
 reqwest = { version = "=0.12.26", default-features = false, features = ["json", "rustls-tls"] }
 regex = "1"
 async-channel = "2"

@@ -11,7 +11,7 @@ function ChooseCalcTool(user_message: string) -> SupportCalculateSessionPlan {
   "#
 }
 
-// Streaming variant for JS invoke/stream tests (replaces voidship-rites SimpleGreetingStream).
+// Streaming variant for JS invoke/stream tests.
 function ChooseCalcToolStream(user_message: string) -> string {
   client DefaultClient
   prompt #"

@@ -85,8 +85,8 @@ impl AutoWorkingStatusSubscriber {
             .await
         {
             Ok(Some(event)) => {
-                if self.update_tx.send(event).is_err() {
-                    tracing::debug!("Broadcast send failed (no receivers)");
+                if let Err(err) = self.update_tx.send(event) {
+                    tracing::debug!(error = ?err, "Auto WORKING status update dropped");
                 }
             }
             Ok(None) => {

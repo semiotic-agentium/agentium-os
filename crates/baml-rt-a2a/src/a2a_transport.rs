@@ -5,7 +5,7 @@ use crate::a2a_store::{
     ProvenanceTaskStore, TaskEventRecorder, TaskRepository, TaskStoreBackend, TaskUpdateEvent,
     TaskUpdateQueue,
 };
-use crate::a2a_types::SendMessageRequest;
+use crate::a2a_types::{SendMessageRequest, Task, TaskState, TaskStatus};
 use crate::error_classifier::{A2aErrorClassifier, ErrorClassifier};
 use crate::events::{BroadcastEventEmitter, EventEmitter};
 use crate::handlers::{DefaultTaskHandler, TaskHandler};
@@ -31,6 +31,7 @@ use baml_rt_tools::tools::ToolSessionContext;
 use baml_rt_tools::{ToolFailure, ToolSessionError};
 use baml_rt_tools::{ToolHandler, ToolName, ToolSession, ToolTypeSpec};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::broadcast;
@@ -738,6 +739,43 @@ impl A2aRequestHandler for A2aAgent {
                     && let Ok(params) =
                         serde_json::from_value::<SendMessageRequest>(parsed_request.params.clone())
                 {
+                    if let Some(task_id) = params.message.task_id.clone() {
+                        let existing = self.task_store.get(task_id.as_str(), None).await;
+                        if existing.is_none() {
+                            let status = TaskStatus {
+                                state: Some(TaskState::String("TASK_STATE_SUBMITTED".to_string())),
+                                message: None,
+                                timestamp: None,
+                                extra: HashMap::new(),
+                            };
+                            let task = Task {
+                                id: Some(task_id.clone()),
+                                context_id: params.message.context_id.clone(),
+                                artifacts: Vec::new(),
+                                history: Vec::new(),
+                                status: Some(status.clone()),
+                                metadata: params.message.metadata.clone(),
+                                extra: HashMap::new(),
+                            };
+                            let upserted = self.task_store.upsert(task).await?;
+                            debug_assert!(upserted.is_some(), "auto-created task missing id");
+                            if self
+                                .task_store
+                                .record_status_update(
+                                    Some(task_id.clone()),
+                                    params.message.context_id.clone(),
+                                    status,
+                                )
+                                .await?
+                                .is_none()
+                            {
+                                tracing::debug!(
+                                    task_id = %task_id.as_str(),
+                                    "Auto-created task SUBMITTED status rejected by FSM"
+                                );
+                            }
+                        }
+                    }
                     self.task_store.insert_message(&params.message).await?;
                 }
                 let route_span = spans::a2a_route(

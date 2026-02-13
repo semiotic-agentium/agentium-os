@@ -4,9 +4,14 @@
  * Use these types and function declarations in your agent code (e.g. index.ts).
  */
 
-/** BAML functions: call these from your agent (e.g. await MyFunction(args)). */
+/** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
+
+declare global {
+
 declare function ChooseNotionAction(args?: Record<string, unknown>): Promise<unknown>;
 declare function SummarizeNotionContent(args?: Record<string, unknown>): Promise<unknown>;
+
+}
 
 /** Runtime interaction API: A2A task FSM (message-first, typestate rails). */
 
@@ -42,9 +47,9 @@ export type A2aNextStates<S extends A2aTaskState> =
     : S extends "TASK_STATE_WORKING"
         ? "TASK_STATE_INPUT_REQUIRED" | "TASK_STATE_AUTH_REQUIRED" | "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
     : S extends "TASK_STATE_INPUT_REQUIRED"
-        ? "TASK_STATE_WORKING" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
+        ? "TASK_STATE_WORKING" | "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
     : S extends "TASK_STATE_AUTH_REQUIRED"
-        ? "TASK_STATE_WORKING" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
+        ? "TASK_STATE_WORKING" | "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
     : never;
 export interface A2aTaskContext<S extends A2aTaskState> {
     taskId: string;

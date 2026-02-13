@@ -9,14 +9,20 @@ the `baml-rt` facade crate, which re-exports feature-gated subcrates.
 ### Crate Map (Bottom-Up)
 
 - `baml-rt-core`: Core errors/results, correlation helpers, and shared types.
+- `baml-rt-id`: Newtype ID wrappers (UUID-based).
 - `baml-rt-tools`: Tool traits, registry/executor, and session FSM primitives.
 - `baml-rt-interceptor`: Interceptor traits, pipelines, and tracing interceptors.
 - `baml-rt-observability`: Tracing setup, spans, and metrics helpers.
 - `baml-rt-quickjs`: QuickJS runtime host, schema loading, JS bridge, and context.
 - `baml-rt-a2a`: Agent-to-agent protocol types, transport, and request handling.
+- `baml-rt-provenance`: Provenance graph + FalkorDB persistence.
+- `baml-rt-api`: HTTP API surface (agent discovery, A2A forwarding, OpenAPI).
 - `baml-rt-builder`: Agent build pipeline and `baml-agent-builder` CLI.
 - `baml-agent-runner`: Binary that loads packaged agents and serves A2A requests.
 - `baml-rt`: Facade crate that re-exports the above via feature flags.
+- `baml-derive-core`: Core types + rendering for `#[derive(BamlType)]`.
+- `baml-derive`: Proc-macro for `#[derive(BamlType)]`.
+- `baml-derive-tests`: Integration tests for derive macro (not published).
 - `test-support`: Shared fixtures and helper utilities for tests.
 
 ### Runtime Flow (QuickJS + BAML)

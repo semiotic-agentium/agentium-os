@@ -111,6 +111,7 @@ pub fn render_a2a_shim() -> Result<String> {
     }
     var onCompletedCb = null;
     var onFailedCb = null;
+    var emittedMessage = false;
     return {
       text: function () { return messageText(message); },
       onCompleted: function (fn) { onCompletedCb = fn; return this; },
@@ -118,7 +119,7 @@ pub fn render_a2a_shim() -> Result<String> {
       run: function (fn) {
         if (routedToPendingInput) return Promise.resolve();
         var emit = {
-          message: emitMessage,
+          message: function (text) { emittedMessage = true; emitMessage(text); },
           artifact: emitArtifact,
           statusChanged: emitStatusChanged,
           awaitInput: function (prompt) {
@@ -130,6 +131,12 @@ pub fn render_a2a_shim() -> Result<String> {
         };
         var work = (typeof fn.length === 'number' && fn.length >= 1) ? function () { return fn(emit); } : fn;
         return Promise.resolve().then(work).then(function (out) {
+          if (out == null) {
+            if (emittedMessage) {
+              emitCompleted();
+              return;
+            }
+          }
           if (out != null && typeof out === 'object' && 'message' in out && typeof out.message === 'string') {
             if (typeof onCompletedCb === 'function') onCompletedCb(out.message);
             emitMessage(out.message);
@@ -171,6 +178,37 @@ pub fn render_a2a_shim() -> Result<String> {
     }
   }
   globalThis.__chat_register = __chat_register;
+
+  /**
+   * ReAct-style loop helper.
+   * plan(ctx) -> { kind: "final", message } | { kind: "tool", tool, args }
+   * execute(step) -> observation (any)
+   */
+  async function runReActLoop(opts) {
+    if (!opts || typeof opts.plan !== 'function' || typeof opts.execute !== 'function') {
+      throw new Error('runReActLoop requires { plan, execute }');
+    }
+    var maxSteps = (opts.maxSteps != null) ? opts.maxSteps : 5;
+    var observations = Array.isArray(opts.observations) ? opts.observations.slice() : [];
+    var seen = new Set();
+    for (var i = 0; i < maxSteps; i++) {
+      var plan = await opts.plan({ observations: observations.slice(), step: i });
+      if (plan && plan.kind === 'final') return plan.message || '';
+      if (!plan || plan.kind !== 'tool') {
+        throw new Error('runReActLoop expected { kind: \"tool\" | \"final\" }');
+      }
+      var key = opts.dedupeKey ? String(opts.dedupeKey(plan)) : JSON.stringify(plan);
+      if (seen.has(key)) {
+        throw new Error('runReActLoop detected repeated tool call');
+      }
+      seen.add(key);
+      if (typeof opts.onStep === 'function') opts.onStep(plan, i);
+      var observation = await opts.execute(plan);
+      observations.push({ plan: plan, observation: observation });
+    }
+    throw new Error('runReActLoop exceeded maxSteps');
+  }
+  globalThis.runReActLoop = runReActLoop;
 })();
 "#;
 

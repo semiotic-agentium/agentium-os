@@ -3,9 +3,13 @@
  * Auto-generated from BAML runtime IR — do not edit manually.
  * Use these types and function declarations in your agent code (e.g. index.ts).
  */
+/** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
-/** BAML functions: call these from your agent (e.g. await MyFunction(args)). */
+declare global {
+
 declare function ChooseClickUpAction(args?: Record<string, unknown>): Promise<unknown>;
+
+}
 
 /** Runtime interaction API: A2A task FSM (message-first, typestate rails). */
 

@@ -18,7 +18,7 @@
 mod common;
 
 use baml_rt_a2a::a2a_store::TaskStore;
-use baml_rt_a2a::a2a_types::{TaskState, TaskStatus};
+use baml_rt_a2a::a2a_types::TaskState;
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
 use proptest::prelude::*;
 

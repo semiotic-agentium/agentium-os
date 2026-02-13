@@ -142,7 +142,7 @@ All jobs use sccache (GHA backend) + rust-cache with shared key.
 
 ## External Dependencies
 
-- **BAML runtime**: pinned git rev from BoundaryML/baml
+- **BAML runtime**: pinned git rev from ryan-s-roberts/baml (canary branch)
 - **OXC**: TypeScript parsing/compilation (oxc_parser, oxc_codegen, oxc_transformer, oxc_semantic)
 - **QuickJS**: `quickjs_runtime` crate for JS execution
 - **text-to-cypher**: Cypher query generation for FalkorDB provenance graphs

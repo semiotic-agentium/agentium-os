@@ -379,19 +379,22 @@ pub struct TaskArtifactUpdateEvent {
 
 /// Stream chunk variant for tasks.subscribe stream responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(untagged, rename_all = "camelCase")]
 pub enum StreamChunk {
     Task {
+        #[serde(rename = "task")]
         task: Task,
         #[serde(flatten)]
         extra: HashMap<String, Value>,
     },
     StatusUpdate {
+        #[serde(rename = "statusUpdate")]
         status_update: TaskStatusUpdateEvent,
         #[serde(flatten)]
         extra: HashMap<String, Value>,
     },
     ArtifactUpdate {
+        #[serde(rename = "artifactUpdate")]
         artifact_update: TaskArtifactUpdateEvent,
         #[serde(flatten)]
         extra: HashMap<String, Value>,

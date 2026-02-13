@@ -5,7 +5,7 @@
 
 mod common;
 
-use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
+use baml_rt_a2a::A2aRequestHandler;
 use baml_rt_core::ids::{ContextId, CorrelationId};
 use baml_rt_provenance::{FalkorDbProvenanceConfig, FalkorDbProvenanceWriter};
 use std::sync::Arc;

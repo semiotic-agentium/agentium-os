@@ -12,6 +12,7 @@
 use baml_rt::A2aAgent;
 use baml_rt::QuickJSConfig;
 use baml_rt::baml::BamlRuntimeManager;
+use baml_rt::baml_execution::ParseRetryPolicy;
 use baml_rt_core::context::{self, InvocationScope};
 use serde_json::json;
 use std::fs;
@@ -29,6 +30,13 @@ fn load_env() {
     let _ = dotenvy::dotenv();
 }
 
+fn set_single_parse_attempt(manager: &mut BamlRuntimeManager) {
+    manager.set_parse_retry_policy(ParseRetryPolicy {
+        max_attempts: 1,
+        delay_ms: 0,
+    });
+}
+
 #[tokio::test]
 async fn test_baml_function_returns_actual_result() {
     // Contract: invoke_function must return the actual BAML result (not wrapped in success object).
@@ -37,6 +45,7 @@ async fn test_baml_function_returns_actual_result() {
     ensure_fixture_runtime_types();
 
     let mut baml_manager = BamlRuntimeManager::new().unwrap();
+    set_single_parse_attempt(&mut baml_manager);
     let agent_dir = agent_fixture("stream-baml-tool");
     baml_manager
         .load_schema(agent_dir.to_str().unwrap())
@@ -101,6 +110,7 @@ async fn test_js_function_invocation_returns_actual_result() {
     ensure_fixture_runtime_types();
 
     let mut baml_manager = BamlRuntimeManager::new().unwrap();
+    set_single_parse_attempt(&mut baml_manager);
     let agent_dir = agent_fixture("stream-baml-tool");
     baml_manager
         .load_schema(agent_dir.to_str().unwrap())
@@ -169,6 +179,7 @@ async fn test_invoke_function_api_contract() {
 
     let agent_dir = agent_fixture("stream-baml-tool");
     let mut baml_manager = BamlRuntimeManager::new().unwrap();
+    set_single_parse_attempt(&mut baml_manager);
     baml_manager
         .load_schema(agent_dir.to_str().unwrap())
         .unwrap();
