@@ -160,6 +160,7 @@ impl ToolInterceptor for ProvenanceInterceptor {
                 metadata.clone(),
             )
         };
+
         self.writer
             .add_event_with_logging(event, "tool call start")
             .await;
@@ -174,7 +175,7 @@ impl ToolInterceptor for ProvenanceInterceptor {
     ) {
         let success = result.is_ok();
         let task_id = context.runtime_scope.task_id_opt().cloned();
-        let metadata = metadata_with_runtime_scope(&context.metadata, &context.runtime_scope);
+        let metadata = metadata_with_tool_result(&context.metadata, &context.runtime_scope, result);
         let message_id = message_id_from_scope(&context.runtime_scope);
         if task_id.is_none() && message_id.is_none() {
             tracing::error!("Tool call completion missing metadata.message_id");
@@ -210,6 +211,7 @@ impl ToolInterceptor for ProvenanceInterceptor {
                 success,
             )
         };
+
         self.writer
             .add_event_with_logging(event, "tool call completion")
             .await;
@@ -238,6 +240,26 @@ fn metadata_with_runtime_scope(metadata: &Value, scope: &RuntimeScope) -> Value 
             "task_id".to_string(),
             Value::String(task_id.as_str().to_string()),
         );
+    }
+    Value::Object(out)
+}
+
+fn metadata_with_tool_result(
+    metadata: &Value,
+    scope: &RuntimeScope,
+    result: &Result<Value>,
+) -> Value {
+    let mut out = match metadata_with_runtime_scope(metadata, scope) {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    match result {
+        Ok(value) => {
+            out.insert("result".to_string(), value.clone());
+        }
+        Err(error) => {
+            out.insert("error".to_string(), Value::String(error.to_string()));
+        }
     }
     Value::Object(out)
 }
