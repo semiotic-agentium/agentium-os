@@ -866,7 +866,8 @@ impl ProvenanceContextReader for FalkorDbProvenanceWriter {
             let include_call = !matches!(
                 phase,
                 ToolSessionPhase::Open | ToolSessionPhase::Finish | ToolSessionPhase::Abort
-            ) && (!is_empty_object(&tool_row.args) || has_meaningful_result(&result));
+            ) && (!is_empty_object(&tool_row.args)
+                || has_meaningful_result(&result));
 
             if include_call {
                 items.push(ProvenanceConversationContextItem {
