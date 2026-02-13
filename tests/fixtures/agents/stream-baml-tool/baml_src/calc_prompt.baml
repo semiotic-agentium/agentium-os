@@ -4,6 +4,7 @@ function ChooseCalcTool(user_message: string) -> SupportCalculateSessionPlan {
   prompt #"
     The user says: {{ user_message }}
     Extract the mathematical calculation. If they mention numbers, use those; otherwise use 2 + 3.
+    Respond with a single JSON object matching the schema below. Output only the JSON object, no markdown or explanation.
     {{ ctx.output_format }}
     {{ _.role('user') }}
     {{ user_message }}

@@ -56,7 +56,7 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     write_line(&mut output, "// - Open MUST come before any Send step")?;
     write_line(
         &mut output,
-        "// - Open uses 'initial_input' field (for first input when opening)",
+        "// - Open may include 'initial_input' only when the step schema defines that field",
     )?;
     write_line(
         &mut output,
@@ -76,7 +76,7 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     write_line(&mut output, "enum ToolSessionOp {")?;
     write_line(
         &mut output,
-        "  Open @description(\"Open a new tool session. MUST be the first step in any plan. Use 'initial_input' field to provide the first input when opening the session.\")",
+        "  Open @description(\"Open a new tool session. MUST be the first step in any plan. Include 'initial_input' only when the step schema defines that field.\")",
     )?;
     write_line(
         &mut output,
@@ -295,7 +295,7 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
     write_line(
         output,
         &format!(
-            "  steps {}[] @description(\"Array of FSM steps. MUST follow this strict order: 1) Open (with optional initial_input), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example valid plan: [{{op: 'Open', initial_input: {{...}}}}, {{op: 'Next'}}, {{op: 'Finish'}}]. Tool identity is inferred from the input schema (no tool_name field).{}\")",
+            "  steps {}[] @description(\"Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{{op: 'Open'}}, {{op: 'Send', input: {{...}}}}, {{op: 'Next'}}, {{op: 'Finish'}}].{}\")",
             step_union_name, access_note
         ),
     )?;
