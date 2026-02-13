@@ -7,7 +7,8 @@ mod falkordb;
 pub use falkordb::shared_falkordb;
 mod a2a_test_helpers;
 pub use a2a_test_helpers::{
-    chunk_content, first_message_text_from_stream, first_task_id_from_stream, send_stream_request,
+    chunk_content, chunks_from_responses, first_message_text_from_stream,
+    first_task_id_from_stream, is_error_response, message_texts_from_chunks, send_stream_request,
     user_message,
 };
 mod test_tools;
@@ -201,6 +202,18 @@ pub async fn assert_tool_registered_in_js(
         "Tool '{}' should be registered in QuickJS. Error: {}. Full result: {:?}",
         tool_name, error_detail, obj
     );
+}
+
+/// Builds a minimal A2aAgent for malformed/error-path A2A tests: no BAML schema or tools.
+/// Uses EffectBus and QuickJSConfig with max_attempts_ms(15_000).
+pub async fn build_minimal_a2a_agent(init_js: &str) -> A2aAgent {
+    A2aAgent::builder()
+        .with_init_js(init_js)
+        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
+        .build()
+        .await
+        .expect("build minimal a2a agent")
 }
 
 /// Builds an A2aAgent for contract tests: stream-baml-tool fixture, CalculatorTool,

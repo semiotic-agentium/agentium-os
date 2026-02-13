@@ -1,31 +1,14 @@
 //! I2: Concurrency test for apply_task_delta. Ensures no interleaving violations:
 //! concurrent apply_task_delta calls for the same task result in a valid store state.
 
+mod common;
+
 use baml_rt_a2a::a2a_store::{TaskChunkApplier, TaskStore};
-use baml_rt_a2a::a2a_types::{Task, TaskState, TaskStatus};
+use baml_rt_a2a::a2a_types::{TaskState, TaskStatus};
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-
-fn minimal_task(task_id: &TaskId, context_id: &ContextId, status: Option<TaskStatus>) -> Task {
-    Task {
-        id: Some(task_id.clone()),
-        context_id: Some(context_id.clone()),
-        status,
-        artifacts: vec![],
-        history: vec![],
-        metadata: None,
-        extra: HashMap::new(),
-    }
-}
-
-fn task_status(state: &str) -> TaskStatus {
-    TaskStatus {
-        state: Some(TaskState::String(state.to_string())),
-        ..Default::default()
-    }
-}
 
 #[tokio::test]
 async fn apply_task_delta_concurrent_same_task_valid_final_state() {
@@ -34,17 +17,17 @@ async fn apply_task_delta_concurrent_same_task_valid_final_state() {
     let context_id = ContextId::new(1, 1);
 
     // Chunk 1: create task and set SUBMITTED (task shell + first status)
-    let chunk1_task = minimal_task(
+    let chunk1_task = common::minimal_task(
         &task_id,
         &context_id,
-        Some(task_status("TASK_STATE_SUBMITTED")),
+        Some(common::task_status("TASK_STATE_SUBMITTED")),
     );
     let _ = (*store)
         .apply_task_delta(Some(chunk1_task), None, None, None)
         .await
         .unwrap();
     // Chunk 2: move to WORKING (task required when status_update present)
-    let chunk2_task = minimal_task(&task_id, &context_id, None);
+    let chunk2_task = common::minimal_task(&task_id, &context_id, None);
     let _ = (*store)
         .apply_task_delta(
             Some(chunk2_task),
@@ -52,7 +35,7 @@ async fn apply_task_delta_concurrent_same_task_valid_final_state() {
             Some(baml_rt_a2a::a2a_types::TaskStatusUpdateEvent {
                 context_id: Some(context_id.clone()),
                 task_id: Some(task_id.clone()),
-                status: Some(task_status("TASK_STATE_WORKING")),
+                status: Some(common::task_status("TASK_STATE_WORKING")),
                 metadata: None,
                 extra: HashMap::new(),
             }),
@@ -66,7 +49,7 @@ async fn apply_task_delta_concurrent_same_task_valid_final_state() {
     let store2 = store.clone();
     let task_id2 = task_id.clone();
     let context_id2 = context_id.clone();
-    let chunk_h1 = minimal_task(&task_id2, &context_id2, None);
+    let chunk_h1 = common::minimal_task(&task_id2, &context_id2, None);
     let h1 = tokio::spawn(async move {
         (*store2)
             .apply_task_delta(
@@ -75,7 +58,7 @@ async fn apply_task_delta_concurrent_same_task_valid_final_state() {
                 Some(baml_rt_a2a::a2a_types::TaskStatusUpdateEvent {
                     context_id: Some(context_id2.clone()),
                     task_id: Some(task_id2.clone()),
-                    status: Some(task_status("TASK_STATE_INPUT_REQUIRED")),
+                    status: Some(common::task_status("TASK_STATE_INPUT_REQUIRED")),
                     metadata: None,
                     extra: HashMap::new(),
                 }),
@@ -86,7 +69,7 @@ async fn apply_task_delta_concurrent_same_task_valid_final_state() {
     let store3 = store.clone();
     let task_id3 = task_id.clone();
     let context_id3 = context_id.clone();
-    let chunk_h2 = minimal_task(&task_id3, &context_id3, None);
+    let chunk_h2 = common::minimal_task(&task_id3, &context_id3, None);
     let h2 = tokio::spawn(async move {
         (*store3)
             .apply_task_delta(
@@ -95,7 +78,7 @@ async fn apply_task_delta_concurrent_same_task_valid_final_state() {
                 Some(baml_rt_a2a::a2a_types::TaskStatusUpdateEvent {
                     context_id: Some(context_id3.clone()),
                     task_id: Some(task_id3.clone()),
-                    status: Some(task_status("TASK_STATE_COMPLETED")),
+                    status: Some(common::task_status("TASK_STATE_COMPLETED")),
                     metadata: None,
                     extra: HashMap::new(),
                 }),

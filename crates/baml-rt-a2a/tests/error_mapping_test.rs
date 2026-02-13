@@ -25,48 +25,47 @@ fn assert_retryable_classifier(
 }
 
 #[test]
-fn error_mapping_invalid_argument_has_retryable_false() {
-    let err = BamlRtError::InvalidArgument("bad param".into());
-    assert_retryable_classifier(&err, "invalid_argument", false);
-}
+fn error_mapping_table_driven() {
+    let cases: &[(BamlRtError, &str, bool)] = &[
+        (
+            BamlRtError::InvalidArgument("bad param".into()),
+            "invalid_argument",
+            false,
+        ),
+        (
+            BamlRtError::FunctionNotFound("foo".into()),
+            "function_not_found",
+            false,
+        ),
+        (
+            BamlRtError::ToolExecution("timeout".into()),
+            "tool_execution",
+            true,
+        ),
+        (
+            BamlRtError::ProvenanceContextRead {
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "test",
+                )),
+            },
+            "provenance",
+            true,
+        ),
+        (BamlRtError::QuickJs("script error".into()), "quickjs", true),
+        (
+            BamlRtError::Configuration("missing key".into()),
+            "configuration",
+            false,
+        ),
+        (
+            BamlRtError::ToolRegistration("duplicate".into()),
+            "tool_registration",
+            false,
+        ),
+    ];
 
-#[test]
-fn error_mapping_function_not_found_has_retryable_false() {
-    let err = BamlRtError::FunctionNotFound("foo".into());
-    assert_retryable_classifier(&err, "function_not_found", false);
-}
-
-#[test]
-fn error_mapping_tool_execution_has_retryable_true() {
-    let err = BamlRtError::ToolExecution("timeout".into());
-    assert_retryable_classifier(&err, "tool_execution", true);
-}
-
-#[test]
-fn error_mapping_provenance_context_read_has_retryable_true() {
-    let err = BamlRtError::ProvenanceContextRead {
-        source: Box::new(std::io::Error::new(
-            std::io::ErrorKind::ConnectionRefused,
-            "test",
-        )),
-    };
-    assert_retryable_classifier(&err, "provenance", true);
-}
-
-#[test]
-fn error_mapping_quickjs_has_retryable_true() {
-    let err = BamlRtError::QuickJs("script error".into());
-    assert_retryable_classifier(&err, "quickjs", true);
-}
-
-#[test]
-fn error_mapping_configuration_has_retryable_false() {
-    let err = BamlRtError::Configuration("missing key".into());
-    assert_retryable_classifier(&err, "configuration", false);
-}
-
-#[test]
-fn error_mapping_tool_registration_has_retryable_false() {
-    let err = BamlRtError::ToolRegistration("duplicate".into());
-    assert_retryable_classifier(&err, "tool_registration", false);
+    for (err, expected_classifier, expected_retryable) in cases {
+        assert_retryable_classifier(err, expected_classifier, *expected_retryable);
+    }
 }

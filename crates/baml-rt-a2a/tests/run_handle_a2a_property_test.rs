@@ -14,6 +14,7 @@ use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use proptest::prelude::*;
 use serde_json::json;
 use std::sync::Arc;
+use test_support::common::is_error_response;
 use tokio::time::{Duration, timeout};
 
 proptest! {
@@ -46,7 +47,7 @@ proptest! {
                 assert_eq!(responses.len(), 1, "exactly one response envelope");
                 let response = &responses[0];
                 assert!(
-                    response.get("error").is_some(),
+                    is_error_response(response),
                     "malformed request must produce JSON-RPC error envelope: {response}"
                 );
             }

@@ -6,9 +6,7 @@ use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::tools::BamlTool;
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::effects::EffectBus;
-#[cfg(feature = "falkordb-tests")]
-use baml_rt_core::ids::ContextId;
-use baml_rt_core::ids::{AgentId, UuidId};
+use baml_rt_core::ids::{AgentId, ContextId, UuidId};
 #[cfg(feature = "falkordb-tests")]
 use baml_rt_provenance::{
     AgentType, FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, ProvEvent,
@@ -42,13 +40,11 @@ impl BundleType for Test {
         "Test tools for unit testing"
     }
 }
-use baml_rt::a2a_types::{
-    JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest,
-};
+use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, SendMessageRequest};
 
 use test_support::common::{
-    CalculatorTool, agent_fixture, ensure_baml_src_exists, ensure_fixture_runtime_types,
-    workspace_root,
+    CalculatorTool, agent_fixture, chunks_from_responses, ensure_baml_src_exists,
+    ensure_fixture_runtime_types, message_texts_from_chunks, user_message, workspace_root,
 };
 use test_support::support::cli::CliHarness;
 
@@ -279,25 +275,6 @@ fn test_runner_tool_types_for_package_build() {
     assert_eq!(Test::NAME, "test");
 }
 
-fn user_message(message_id: &str, text: &str) -> Message {
-    use baml_rt_a2a::a2a_types::A2aMessageId;
-    use baml_rt_core::ids::{ContextId, ExternalId};
-    Message {
-        message_id: A2aMessageId::incoming(ExternalId::new(message_id)),
-        role: MessageRole::String("ROLE_USER".to_string()),
-        parts: vec![Part {
-            text: Some(text.to_string()),
-            ..Part::default()
-        }],
-        context_id: Some(ContextId::new(1, 1)),
-        task_id: None,
-        reference_task_ids: Vec::new(),
-        extensions: Vec::new(),
-        metadata: None,
-        extra: std::collections::HashMap::new(),
-    }
-}
-
 fn jsonrpc_request(method: &str, params: serde_json::Value, id: &str) -> JSONRPCRequest {
     JSONRPCRequest {
         jsonrpc: "2.0".to_string(),
@@ -313,31 +290,6 @@ fn send_message_request(params: SendMessageRequest, id: &str) -> JSONRPCRequest 
         serde_json::to_value(params).unwrap(),
         id,
     )
-}
-
-fn extract_chunks(responses: &[serde_json::Value]) -> Vec<&serde_json::Value> {
-    responses
-        .iter()
-        .filter_map(|r| {
-            r.get("result")
-                .and_then(|res| res.get("chunk").or(Some(res)))
-        })
-        .collect()
-}
-
-fn extract_message_texts<'a>(chunks: &'a [&serde_json::Value]) -> Vec<&'a str> {
-    chunks
-        .iter()
-        .filter_map(|chunk| {
-            chunk
-                .get("message")
-                .and_then(|m| m.get("parts"))
-                .and_then(|p| p.as_array())
-                .and_then(|p| p.first())
-                .and_then(|part| part.get("text"))
-                .and_then(|v| v.as_str())
-        })
-        .collect()
 }
 
 #[cfg(feature = "llm-tests")]
@@ -602,7 +554,7 @@ async fn test_e2e_agent_runner_invoke_function() {
     // Invoke through A2A request path.
     let request = send_message_request(
         SendMessageRequest {
-            message: user_message("e2e-invoke-1", "compute 2+3"),
+            message: user_message("e2e-invoke-1", "compute 2+3", Some(ContextId::new(1, 1))),
             configuration: None,
             metadata: None,
             tenant: None,
@@ -616,8 +568,8 @@ async fn test_e2e_agent_runner_invoke_function() {
 
     match outcome {
         Ok(responses) => {
-            let chunks = extract_chunks(&responses);
-            let texts = extract_message_texts(&chunks);
+            let chunks = chunks_from_responses(&responses);
+            let texts = message_texts_from_chunks(&chunks);
             let pretty =
                 serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string());
             let has_sum = texts
@@ -673,7 +625,7 @@ async fn test_e2e_stream_baml_tool() {
     let agent = setup_stream_baml_tool_agent().await;
 
     let params = SendMessageRequest {
-        message: user_message("vox-1", "compute 2+3"),
+        message: user_message("vox-1", "compute 2+3", Some(ContextId::new(1, 1))),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -684,8 +636,8 @@ async fn test_e2e_stream_baml_tool() {
         .handle_a2a(serde_json::to_value(request).unwrap())
         .await
         .unwrap();
-    let chunks = extract_chunks(&responses);
-    let texts = extract_message_texts(&chunks);
+    let chunks = chunks_from_responses(&responses);
+    let texts = message_texts_from_chunks(&chunks);
     let text = texts
         .iter()
         .find(|t| t.contains("sum=5"))
@@ -706,7 +658,7 @@ async fn test_e2e_stream_js_tool() {
     let agent = setup_stream_js_tool_agent().await;
 
     let params = SendMessageRequest {
-        message: user_message("vox-1", "stream-task: run"),
+        message: user_message("vox-1", "stream-task: run", Some(ContextId::new(1, 1))),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -717,7 +669,7 @@ async fn test_e2e_stream_js_tool() {
         .handle_a2a(serde_json::to_value(request).unwrap())
         .await
         .unwrap();
-    let chunks = extract_chunks(&responses);
+    let chunks = chunks_from_responses(&responses);
     let task_id = chunks
         .iter()
         .find_map(|chunk| {
@@ -768,7 +720,7 @@ async fn test_e2e_task_lifecycle_demo() {
     let agent = setup_task_lifecycle_demo_agent().await;
 
     let params = SendMessageRequest {
-        message: user_message("vox-1", "lifecycle-demo"),
+        message: user_message("vox-1", "lifecycle-demo", Some(ContextId::new(1, 1))),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -779,7 +731,7 @@ async fn test_e2e_task_lifecycle_demo() {
         .handle_a2a(serde_json::to_value(first_request).unwrap())
         .await
         .unwrap();
-    let first_chunks = extract_chunks(&first_responses);
+    let first_chunks = chunks_from_responses(&first_responses);
 
     fn task_state(chunk: &serde_json::Value) -> Option<&str> {
         chunk
@@ -825,7 +777,7 @@ async fn test_e2e_task_lifecycle_demo() {
         first_chunks.len()
     );
 
-    let first_texts = extract_message_texts(&first_chunks);
+    let first_texts = message_texts_from_chunks(&first_chunks);
     assert!(
         first_texts.iter().any(|t| t.contains("Task started.")),
         "Expected startup message in first stream; texts: {:?}",
@@ -833,7 +785,7 @@ async fn test_e2e_task_lifecycle_demo() {
     );
 
     let second_params = SendMessageRequest {
-        message: user_message("vox-2", "review-path"),
+        message: user_message("vox-2", "review-path", Some(ContextId::new(1, 1))),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -844,7 +796,7 @@ async fn test_e2e_task_lifecycle_demo() {
         .handle_a2a(serde_json::to_value(second_request).unwrap())
         .await
         .unwrap();
-    let second_chunks = extract_chunks(&second_responses);
+    let second_chunks = chunks_from_responses(&second_responses);
     let second_states: Vec<&str> = second_chunks.iter().filter_map(|c| task_state(c)).collect();
     let has_input_required_second = second_states.contains(&"TASK_STATE_INPUT_REQUIRED");
     let has_completed_second = second_states.contains(&"TASK_STATE_COMPLETED");
@@ -858,7 +810,7 @@ async fn test_e2e_task_lifecycle_demo() {
         "Did not expect TASK_STATE_COMPLETED in second stream; states: {:?}",
         second_states
     );
-    let second_texts = extract_message_texts(&second_chunks);
+    let second_texts = message_texts_from_chunks(&second_chunks);
     assert!(
         second_texts
             .iter()
@@ -868,7 +820,7 @@ async fn test_e2e_task_lifecycle_demo() {
     );
 
     let third_params = SendMessageRequest {
-        message: user_message("vox-3", "revise"),
+        message: user_message("vox-3", "revise", Some(ContextId::new(1, 1))),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -879,7 +831,7 @@ async fn test_e2e_task_lifecycle_demo() {
         .handle_a2a(serde_json::to_value(third_request).unwrap())
         .await
         .unwrap();
-    let third_chunks = extract_chunks(&third_responses);
+    let third_chunks = chunks_from_responses(&third_responses);
     let third_states: Vec<&str> = third_chunks.iter().filter_map(|c| task_state(c)).collect();
     assert!(
         third_states.contains(&"TASK_STATE_INPUT_REQUIRED"),
@@ -891,7 +843,7 @@ async fn test_e2e_task_lifecycle_demo() {
         "Did not expect TASK_STATE_COMPLETED in third stream; states: {:?}",
         third_states
     );
-    let third_texts = extract_message_texts(&third_chunks);
+    let third_texts = message_texts_from_chunks(&third_chunks);
     assert!(
         third_texts
             .iter()
@@ -901,7 +853,11 @@ async fn test_e2e_task_lifecycle_demo() {
     );
 
     let fourth_params = SendMessageRequest {
-        message: user_message("vox-4", "apply redaction and tighten summary"),
+        message: user_message(
+            "vox-4",
+            "apply redaction and tighten summary",
+            Some(ContextId::new(1, 1)),
+        ),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -912,14 +868,14 @@ async fn test_e2e_task_lifecycle_demo() {
         .handle_a2a(serde_json::to_value(fourth_request).unwrap())
         .await
         .unwrap();
-    let fourth_chunks = extract_chunks(&fourth_responses);
+    let fourth_chunks = chunks_from_responses(&fourth_responses);
     let fourth_states: Vec<&str> = fourth_chunks.iter().filter_map(|c| task_state(c)).collect();
     assert!(
         fourth_states.contains(&"TASK_STATE_INPUT_REQUIRED"),
         "Expected TASK_STATE_INPUT_REQUIRED in fourth stream after revision notes; states: {:?}",
         fourth_states
     );
-    let fourth_texts = extract_message_texts(&fourth_chunks);
+    let fourth_texts = message_texts_from_chunks(&fourth_chunks);
     assert!(
         fourth_texts
             .iter()
@@ -930,7 +886,7 @@ async fn test_e2e_task_lifecycle_demo() {
 
     // Turn 5: approve review -> exits review loop, enters sign-off loop (INPUT_REQUIRED).
     let fifth_params = SendMessageRequest {
-        message: user_message("vox-5", "approve"),
+        message: user_message("vox-5", "approve", Some(ContextId::new(1, 1))),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -941,14 +897,14 @@ async fn test_e2e_task_lifecycle_demo() {
         .handle_a2a(serde_json::to_value(fifth_request).unwrap())
         .await
         .unwrap();
-    let fifth_chunks = extract_chunks(&fifth_responses);
+    let fifth_chunks = chunks_from_responses(&fifth_responses);
     let fifth_states: Vec<&str> = fifth_chunks.iter().filter_map(|c| task_state(c)).collect();
     assert!(
         fifth_states.contains(&"TASK_STATE_INPUT_REQUIRED"),
         "Expected TASK_STATE_INPUT_REQUIRED for sign-off in fifth stream; states: {:?}",
         fifth_states
     );
-    let fifth_texts = extract_message_texts(&fifth_chunks);
+    let fifth_texts = message_texts_from_chunks(&fifth_chunks);
     assert!(
         fifth_texts
             .iter()
@@ -959,7 +915,7 @@ async fn test_e2e_task_lifecycle_demo() {
 
     // Turn 6: confirm sign-off -> COMPLETED.
     let sixth_params = SendMessageRequest {
-        message: user_message("vox-6", "confirm"),
+        message: user_message("vox-6", "confirm", Some(ContextId::new(1, 1))),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -970,14 +926,14 @@ async fn test_e2e_task_lifecycle_demo() {
         .handle_a2a(serde_json::to_value(sixth_request).unwrap())
         .await
         .unwrap();
-    let sixth_chunks = extract_chunks(&sixth_responses);
+    let sixth_chunks = chunks_from_responses(&sixth_responses);
     let sixth_states: Vec<&str> = sixth_chunks.iter().filter_map(|c| task_state(c)).collect();
     assert!(
         sixth_states.contains(&"TASK_STATE_COMPLETED"),
         "Expected TASK_STATE_COMPLETED in sixth stream; states: {:?}",
         sixth_states
     );
-    let sixth_texts = extract_message_texts(&sixth_chunks);
+    let sixth_texts = message_texts_from_chunks(&sixth_chunks);
     assert!(
         sixth_texts
             .iter()
@@ -1013,7 +969,7 @@ async fn test_e2e_task_lifecycle_demo_reject_path() {
     // Turn 1: trigger lifecycle, expect INPUT_REQUIRED.
     let first_request = send_message_request(
         SendMessageRequest {
-            message: user_message("vox-r-1", "lifecycle-demo"),
+            message: user_message("vox-r-1", "lifecycle-demo", Some(ContextId::new(1, 1))),
             configuration: None,
             metadata: None,
             tenant: None,
@@ -1025,7 +981,7 @@ async fn test_e2e_task_lifecycle_demo_reject_path() {
         .handle_a2a(serde_json::to_value(first_request).unwrap())
         .await
         .unwrap();
-    let first_chunks = extract_chunks(&first_responses);
+    let first_chunks = chunks_from_responses(&first_responses);
     let first_states: Vec<&str> = first_chunks.iter().filter_map(|c| task_state(c)).collect();
     assert!(
         first_states.contains(&"TASK_STATE_INPUT_REQUIRED"),
@@ -1036,7 +992,7 @@ async fn test_e2e_task_lifecycle_demo_reject_path() {
     // Turn 2: choose review path, expect another INPUT_REQUIRED for review decision.
     let second_request = send_message_request(
         SendMessageRequest {
-            message: user_message("vox-r-2", "review-path"),
+            message: user_message("vox-r-2", "review-path", Some(ContextId::new(1, 1))),
             configuration: None,
             metadata: None,
             tenant: None,
@@ -1048,7 +1004,7 @@ async fn test_e2e_task_lifecycle_demo_reject_path() {
         .handle_a2a(serde_json::to_value(second_request).unwrap())
         .await
         .unwrap();
-    let second_chunks = extract_chunks(&second_responses);
+    let second_chunks = chunks_from_responses(&second_responses);
     let second_states: Vec<&str> = second_chunks.iter().filter_map(|c| task_state(c)).collect();
     assert!(
         second_states.contains(&"TASK_STATE_INPUT_REQUIRED"),
@@ -1059,7 +1015,7 @@ async fn test_e2e_task_lifecycle_demo_reject_path() {
     // Turn 3: reject -> terminal failure.
     let third_request = send_message_request(
         SendMessageRequest {
-            message: user_message("vox-r-3", "reject"),
+            message: user_message("vox-r-3", "reject", Some(ContextId::new(1, 1))),
             configuration: None,
             metadata: None,
             tenant: None,
@@ -1071,14 +1027,14 @@ async fn test_e2e_task_lifecycle_demo_reject_path() {
         .handle_a2a(serde_json::to_value(third_request).unwrap())
         .await
         .unwrap();
-    let third_chunks = extract_chunks(&third_responses);
+    let third_chunks = chunks_from_responses(&third_responses);
     let third_states: Vec<&str> = third_chunks.iter().filter_map(|c| task_state(c)).collect();
     assert!(
         third_states.contains(&"TASK_STATE_FAILED"),
         "Expected TASK_STATE_FAILED after reject; states: {:?}",
         third_states
     );
-    let third_texts = extract_message_texts(&third_chunks);
+    let third_texts = message_texts_from_chunks(&third_chunks);
     let failed_status_texts: Vec<&str> = third_chunks
         .iter()
         .filter_map(|chunk| {
@@ -1096,7 +1052,8 @@ async fn test_e2e_task_lifecycle_demo_reject_path() {
     assert!(
         third_texts
             .iter()
-            .chain(failed_status_texts.iter())
+            .map(|s| s.as_str())
+            .chain(failed_status_texts.iter().copied())
             .any(|t| t.contains("Rejected during review.")),
         "Expected rejection failure message; chunk texts: {:?}, failed-status texts: {:?}",
         third_texts,
@@ -1129,7 +1086,11 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
     let per_turn_timeout = Duration::from_secs(45);
 
     let first_turn = SendMessageRequest {
-        message: user_message("vox-auto-1", "Remember the codeword ORBIT and compute 2+3"),
+        message: user_message(
+            "vox-auto-1",
+            "Remember the codeword ORBIT and compute 2+3",
+            Some(ContextId::new(1, 1)),
+        ),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -1146,8 +1107,8 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
     .expect("first turn timed out")
     .unwrap();
     eprintln!("conversational-context-auto: first turn complete");
-    let first_chunks = extract_chunks(&first_response);
-    let first_texts = extract_message_texts(&first_chunks);
+    let first_chunks = chunks_from_responses(&first_response);
+    let first_texts = message_texts_from_chunks(&first_chunks);
     assert!(
         first_texts
             .iter()
@@ -1189,6 +1150,7 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
         message: user_message(
             "vox-auto-2",
             "What codeword did I ask you to remember? Reply with just the codeword.",
+            Some(ContextId::new(1, 1)),
         ),
         configuration: None,
         metadata: None,
@@ -1206,8 +1168,8 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
     .expect("second turn timed out")
     .unwrap();
     eprintln!("conversational-context-auto: second turn complete");
-    let second_chunks = extract_chunks(&second_response);
-    let second_texts = extract_message_texts(&second_chunks);
+    let second_chunks = chunks_from_responses(&second_response);
+    let second_texts = message_texts_from_chunks(&second_chunks);
     let expected_codeword = "ORBIT";
     assert!(
         second_texts.iter().any(|text| {

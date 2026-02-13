@@ -15,11 +15,12 @@
 //!
 //! Tests at TaskStore level (sync) to exercise the FSM and upsert logic directly.
 
+mod common;
+
 use baml_rt_a2a::a2a_store::TaskStore;
-use baml_rt_a2a::a2a_types::{Task, TaskState, TaskStatus};
+use baml_rt_a2a::a2a_types::{TaskState, TaskStatus};
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
 use proptest::prelude::*;
-use std::collections::HashMap;
 
 const S_SUBMITTED: &str = "TASK_STATE_SUBMITTED";
 const S_WORKING: &str = "TASK_STATE_WORKING";
@@ -81,32 +82,13 @@ fn is_allowed(from: &str, to: &str) -> bool {
     )
 }
 
-fn task_status(state: &str) -> TaskStatus {
-    TaskStatus {
-        state: Some(TaskState::String(state.to_string())),
-        ..Default::default()
-    }
-}
-
-fn minimal_task(task_id: &TaskId, context_id: &ContextId, status: Option<TaskStatus>) -> Task {
-    Task {
-        id: Some(task_id.clone()),
-        context_id: Some(context_id.clone()),
-        status,
-        artifacts: vec![],
-        history: vec![],
-        metadata: None,
-        extra: HashMap::new(),
-    }
-}
-
 fn seed_task_and_submitted(store: &mut TaskStore, task_id: &TaskId, context_id: &ContextId) {
-    let task = minimal_task(task_id, context_id, None);
+    let task = common::minimal_task(task_id, context_id, None);
     store.upsert(task);
     let _ = store.record_status_update(
         Some(task_id.clone()),
         Some(context_id.clone()),
-        task_status(S_SUBMITTED),
+        common::task_status(S_SUBMITTED),
     );
 }
 
@@ -132,7 +114,7 @@ proptest! {
                 let result = store.record_status_update(
                     Some(task_id.clone()),
                     Some(context_id.clone()),
-                    task_status(next_state),
+                    common::task_status(next_state),
                 );
                 assert!(result.is_none(), "terminal {} must reject any further update", current);
                 continue;
@@ -141,7 +123,7 @@ proptest! {
                 let result = store.record_status_update(
                     Some(task_id.clone()),
                     Some(context_id.clone()),
-                    task_status(next_state),
+                    common::task_status(next_state),
                 );
                 assert!(result.is_none(), "invalid transition {} -> {} should fail", current, next_state);
                 continue;
@@ -149,7 +131,7 @@ proptest! {
             let result = store.record_status_update(
                 Some(task_id.clone()),
                 Some(context_id.clone()),
-                task_status(next_state),
+                common::task_status(next_state),
             );
             assert!(result.is_some(), "valid transition {} -> {} should succeed: {:?}", current, next_state, result);
             current = next_state;
@@ -166,14 +148,14 @@ proptest! {
         let context_id = ContextId::new(1, 1);
 
         // Upsert task with no status (simulates task created before any status)
-        let task = minimal_task(&task_id, &context_id, None);
+        let task = common::minimal_task(&task_id, &context_id, None);
         store.upsert(task);
 
         let state = ALL_STATES[state_idx as usize % ALL_STATES.len()];
         let result = store.record_status_update(
             Some(task_id.clone()),
             Some(context_id.clone()),
-            task_status(state),
+            common::task_status(state),
         );
 
         if state == S_SUBMITTED {
@@ -199,12 +181,12 @@ proptest! {
             let _ = store.record_status_update(
                 Some(task_id.clone()),
                 Some(context_id.clone()),
-                task_status(intermediate),
+                common::task_status(intermediate),
             );
         }
 
         // Upsert task with status=None (simulates TaskProcessor flow)
-        let task_without_status = minimal_task(&task_id, &context_id, None);
+        let task_without_status = common::minimal_task(&task_id, &context_id, None);
         store.upsert(task_without_status);
 
         // Stored task must still have a status (the one we set)
@@ -238,14 +220,14 @@ proptest! {
         let _ = store.record_status_update(
             Some(task_id.clone()),
             Some(context_id.clone()),
-            task_status(S_WORKING),
+            common::task_status(S_WORKING),
         );
 
         let attempted = ALL_STATES[attempted_state_idx as usize % ALL_STATES.len()];
-        let task_with_status = minimal_task(
+        let task_with_status = common::minimal_task(
             &task_id,
             &context_id,
-            Some(task_status(attempted)),
+            Some(common::task_status(attempted)),
         );
         store.upsert(task_with_status);
 
@@ -282,7 +264,7 @@ proptest! {
         let _ = store.record_status_update(
             Some(task_id.clone()),
             Some(context_id.clone()),
-            task_status(terminal),
+            common::task_status(terminal),
         );
 
         // Any further update must fail
@@ -290,7 +272,7 @@ proptest! {
         let result = store.record_status_update(
             Some(task_id.clone()),
             Some(context_id.clone()),
-            task_status(attempt),
+            common::task_status(attempt),
         );
         assert!(
             result.is_none(),

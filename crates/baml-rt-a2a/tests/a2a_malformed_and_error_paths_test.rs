@@ -8,10 +8,10 @@
 //! **Tests:**
 //! - Malformed JSON-RPC: wrong version, unsupported method, invalid params → single error response.
 //! - Concurrency: valid and malformed requests run together → valid succeed, malformed return error.
-
-#![recursion_limit = "256"]
 //! - Streaming tool failure: tool returns `Err` during a stream → stream contains error content.
 //! - Allowlist during stream: JS opens a tool not in the runtime allowlist → stream contains allowlist error.
+
+#![recursion_limit = "256"]
 
 use baml_rt::a2a_types::SendMessageRequest;
 use baml_rt::baml::BamlRuntimeManager;
@@ -23,7 +23,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
-use test_support::common::{AddNumbersTool, send_stream_request, user_message};
+use test_support::common::{
+    AddNumbersTool, build_minimal_a2a_agent, chunk_content, is_error_response, send_stream_request,
+    user_message,
+};
 use ts_rs::TS;
 
 struct Test;
@@ -34,101 +37,71 @@ impl BundleType for Test {
     }
 }
 
-fn is_error_response(response: &Value) -> bool {
-    response.get("error").is_some()
-}
-
-/// **Purpose:** Sending a request with `jsonrpc` other than `"2.0"` must yield a single JSON-RPC error response (not success).
+/// Table-driven malformed A2A request cases: (jsonrpc, method, params) → single JSON-RPC error response.
 #[tokio::test(flavor = "current_thread")]
-async fn test_malformed_a2a_invalid_jsonrpc_version() {
-    let agent = A2aAgent::builder()
-        .with_init_js("globalThis.onChatMessage = async () => {};")
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
-        .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(5_000)))
-        .build()
-        .await
-        .unwrap();
+async fn test_malformed_a2a_table_driven() {
+    let agent = build_minimal_a2a_agent("globalThis.onChatMessage = async () => {};").await;
 
-    let request = json!({
-        "jsonrpc": "1.0",
-        "method": "message.sendStream",
-        "params": serde_json::to_value(SendMessageRequest {
-            message: user_message("m1", "hi", None),
-            configuration: None,
-            metadata: None,
-            tenant: None,
-            extra: HashMap::new(),
-        }).unwrap(),
-        "id": "corr-1700000000001-1"
-    });
-    let responses = agent.handle_a2a(request).await.unwrap();
-    assert_eq!(responses.len(), 1);
-    assert!(
-        is_error_response(&responses[0]),
-        "invalid jsonrpc version should return error"
-    );
-}
+    let malformed_params = serde_json::to_value(SendMessageRequest {
+        message: user_message("m1", "hi", None),
+        configuration: None,
+        metadata: None,
+        tenant: None,
+        extra: HashMap::new(),
+    })
+    .unwrap();
 
-/// **Purpose:** Sending a request with an unsupported method (e.g. `message.send` instead of `message.sendStream`) must yield a single JSON-RPC error response.
-#[tokio::test(flavor = "current_thread")]
-async fn test_malformed_a2a_unsupported_method() {
-    let agent = A2aAgent::builder()
-        .with_init_js("globalThis.onChatMessage = async () => {};")
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
-        .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(5_000)))
-        .build()
-        .await
-        .unwrap();
+    let cases: [(Value, &str); 3] = [
+        (
+            json!({
+                "jsonrpc": "1.0",
+                "method": "message.sendStream",
+                "params": malformed_params,
+                "id": "corr-invalid-version"
+            }),
+            "invalid jsonrpc version",
+        ),
+        (
+            json!({
+                "jsonrpc": "2.0",
+                "method": "message.send",
+                "params": null,
+                "id": "corr-unsupported-method"
+            }),
+            "unsupported method",
+        ),
+        (
+            json!({
+                "jsonrpc": "2.0",
+                "method": "message.sendStream",
+                "params": {},
+                "id": "corr-invalid-params"
+            }),
+            "invalid params (missing message)",
+        ),
+    ];
 
-    let request = json!({
-        "jsonrpc": "2.0",
-        "method": "message.send",
-        "params": null,
-        "id": "corr-1700000000002-1"
-    });
-    let responses = agent.handle_a2a(request).await.unwrap();
-    assert_eq!(responses.len(), 1);
-    assert!(
-        is_error_response(&responses[0]),
-        "unsupported method should return error"
-    );
-}
-
-/// **Purpose:** Sending `message.sendStream` with params that cannot deserialize to `SendMessageRequest` (e.g. missing `message`) must yield a single JSON-RPC error response.
-#[tokio::test(flavor = "current_thread")]
-async fn test_malformed_a2a_invalid_params() {
-    let agent = A2aAgent::builder()
-        .with_init_js("globalThis.onChatMessage = async () => {};")
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
-        .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(5_000)))
-        .build()
-        .await
-        .unwrap();
-
-    let request = json!({
-        "jsonrpc": "2.0",
-        "method": "message.sendStream",
-        "params": {},
-        "id": "corr-1700000000003-1"
-    });
-    let responses = agent.handle_a2a(request).await.unwrap();
-    assert_eq!(responses.len(), 1);
-    assert!(
-        is_error_response(&responses[0]),
-        "invalid params (missing message) should return error"
-    );
+    for (request, desc) in cases {
+        let responses = agent.handle_a2a(request).await.unwrap();
+        assert_eq!(
+            responses.len(),
+            1,
+            "malformed case '{desc}' must yield exactly one response"
+        );
+        assert!(
+            is_error_response(&responses[0]),
+            "malformed case '{desc}' must return JSON-RPC error"
+        );
+    }
 }
 
 /// **Purpose:** When valid and malformed requests are handled concurrently, valid requests complete with stream success and malformed requests return a single error response (no cross-talk or panic).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_concurrency_mixed_success_failure() {
-    let agent = A2aAgent::builder()
-        .with_init_js(r#"globalThis.onChatMessage = async function() { __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } }); };"#)
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
-        .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
-        .build()
-        .await
-        .unwrap();
+    let agent = build_minimal_a2a_agent(
+        r#"globalThis.onChatMessage = async function() { __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } }); };"#,
+    )
+    .await;
 
     let valid1 = send_stream_request("v1", "hi", "corr-1700000000010-1", None);
     let valid2 = send_stream_request("v2", "ho", "corr-1700000000011-1", None);
@@ -230,12 +203,11 @@ async fn test_streaming_tool_failure_mid_stream() {
         "stream should return at least one chunk"
     );
     let has_error = responses.iter().any(|r| {
-        let chunk = r
-            .get("result")
-            .and_then(|res| res.get("chunk"))
-            .or_else(|| r.get("result"));
+        let Some(chunk) = chunk_content(r) else {
+            return false;
+        };
         let text = chunk
-            .and_then(|c| c.get("message"))
+            .get("message")
             .and_then(|m| m.get("parts"))
             .and_then(|p| p.as_array())
             .and_then(|a| a.first())
@@ -285,12 +257,11 @@ async fn test_allowlist_violation_during_stream() {
     let responses = agent.handle_a2a(request).await.unwrap();
     assert!(!responses.is_empty());
     let has_allowlist_msg = responses.iter().any(|r| {
-        let chunk = r
-            .get("result")
-            .and_then(|res| res.get("chunk"))
-            .or_else(|| r.get("result"));
+        let Some(chunk) = chunk_content(r) else {
+            return false;
+        };
         let text = chunk
-            .and_then(|c| c.get("message"))
+            .get("message")
             .and_then(|m| m.get("parts"))
             .and_then(|p| p.as_array())
             .and_then(|a| a.first())
