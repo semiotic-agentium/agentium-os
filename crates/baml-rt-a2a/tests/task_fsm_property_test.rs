@@ -76,6 +76,8 @@ fn is_allowed(from: &str, to: &str) -> bool {
             | (S_AUTH_REQUIRED, S_WORKING)
             | (S_AUTH_REQUIRED, S_CANCELED)
             | (S_AUTH_REQUIRED, S_REJECTED)
+            | (S_AUTH_REQUIRED, S_COMPLETED)
+            | (S_AUTH_REQUIRED, S_FAILED)
     )
 }
 

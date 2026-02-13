@@ -6,7 +6,8 @@
 //!
 //! Parse failures from LLM output are retried automatically (up to 3 attempts) in baml_execution.
 //!
-//! Use short max_attempts_ms so effect-gated poll doesn't hang when LLM is used (e.g. missing API key).
+//! Use bounded max_attempts_ms so effect-gated poll doesn't hang when LLM is used (e.g. missing API key).
+//! Must be long enough for combined retries: parse retry (3 attempts) + BAML client retry can exceed 15s.
 
 use baml_rt::A2aAgent;
 use baml_rt::QuickJSConfig;
@@ -18,9 +19,10 @@ use std::sync::Arc;
 
 use test_support::common::{CalculatorTool, agent_fixture, ensure_fixture_runtime_types};
 
-/// QuickJS config for tests: short max_attempts so effect-gated poll doesn't hang (LLM fixtures).
+/// QuickJS config for LLM-dependent contract tests. Timeout must accommodate combined retries
+/// (parse retry + BAML client retry) which can exceed 15s; 45s provides margin.
 fn test_quickjs_config() -> QuickJSConfig {
-    QuickJSConfig::new().with_max_attempts_ms(Some(15_000)) // 15s instead of 30 min
+    QuickJSConfig::new().with_max_attempts_ms(Some(45_000))
 }
 
 fn load_env() {

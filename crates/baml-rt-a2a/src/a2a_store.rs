@@ -574,6 +574,8 @@ fn is_allowed_transition(from: &str, to: &str) -> bool {
             | (S_AUTH_REQUIRED, S_WORKING)
             | (S_AUTH_REQUIRED, S_CANCELED)
             | (S_AUTH_REQUIRED, S_REJECTED)
+            | (S_AUTH_REQUIRED, S_COMPLETED)
+            | (S_AUTH_REQUIRED, S_FAILED)
     )
 }
 
@@ -791,7 +793,11 @@ impl TaskStore {
             let context_id = t.context_id.clone();
             let task_id = t.id.clone();
             let artifacts = std::mem::take(&mut t.artifacts);
-            let _ = self.upsert(t);
+            let result = self.upsert(t);
+            debug_assert!(
+                result.is_some(),
+                "apply_task_delta: task without id is a logic error"
+            );
             if let Some(status) = status
                 && let Some(ev) =
                     self.record_status_update(task_id.clone(), context_id.clone(), status)

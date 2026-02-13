@@ -101,9 +101,9 @@ pub fn setup_baml_runtime_from_fixture(fixture_name: &str) -> Arc<Mutex<BamlRunt
     setup_baml_runtime(agent_dir.to_str().expect("Fixture path should be valid"))
 }
 
-/// QuickJS config for tests: short max_attempts so effect-gated poll doesn't hang (LLM fixtures).
+/// QuickJS config for tests. Must accommodate combined retries (parse + BAML client) which can exceed 15s.
 fn quickjs_config_for_tests() -> QuickJSConfig {
-    QuickJSConfig::new().with_max_attempts_ms(Some(15_000)) // 15s instead of 30 min
+    QuickJSConfig::new().with_max_attempts_ms(Some(45_000))
 }
 
 pub async fn setup_bridge(baml_manager: Arc<Mutex<BamlRuntimeManager>>) -> QuickJSBridge {
@@ -216,7 +216,7 @@ pub async fn setup_stream_baml_tool_agent_for_contract(init_js: Option<&str>) ->
         .register_tool(CalculatorTool)
         .await
         .expect("register CalculatorTool");
-    let config = QuickJSConfig::new().with_max_attempts_ms(Some(15_000));
+    let config = QuickJSConfig::new().with_max_attempts_ms(Some(45_000));
     let mut builder = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))

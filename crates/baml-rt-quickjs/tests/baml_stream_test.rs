@@ -29,7 +29,7 @@ async fn test_js_stream_baml_function() {
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
-        .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
+        .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(45_000))) // Combined retries can exceed 15s
         .build()
         .await
         .unwrap();
