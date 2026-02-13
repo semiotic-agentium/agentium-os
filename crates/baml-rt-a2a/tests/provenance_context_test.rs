@@ -28,17 +28,16 @@ async fn setup_agent(writer: Arc<FalkorDbProvenanceWriter>) -> A2aAgent {
 }
 
 fn expect_context_id(responses: Vec<Value>) -> String {
-    let response = responses.into_iter().next().expect("response");
-    let result = response.get("result").cloned().expect("missing result");
-    let content = result.get("chunk").cloned().unwrap_or(result);
-    let task = content
-        .get("task")
-        .and_then(Value::as_object)
-        .expect("task");
-    task.get("contextId")
-        .and_then(Value::as_str)
-        .expect("contextId")
-        .to_string()
+    for response in responses {
+        let result = response.get("result").cloned().unwrap_or(response);
+        let content = result.get("chunk").cloned().unwrap_or(result);
+        if let Some(task) = content.get("task").and_then(Value::as_object)
+            && let Some(context_id) = task.get("contextId").and_then(Value::as_str)
+        {
+            return context_id.to_string();
+        }
+    }
+    panic!("task");
 }
 
 #[tokio::test]
