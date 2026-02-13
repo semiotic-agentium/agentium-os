@@ -1250,6 +1250,8 @@ fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
     let mut depth_brace: usize = 0;
     let mut depth_paren: usize = 0;
     let mut in_string = false;
+    let mut string_brace_depth: usize = 0;
+    let mut string_bracket_depth: usize = 0;
     let mut escape = false;
     for ch in input.chars() {
         if in_string {
@@ -1260,7 +1262,15 @@ fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
             }
             if ch == '\\' {
                 escape = true;
-            } else if ch == '"' {
+            } else if ch == '{' {
+                string_brace_depth += 1;
+            } else if ch == '}' {
+                string_brace_depth = string_brace_depth.saturating_sub(1);
+            } else if ch == '[' {
+                string_bracket_depth += 1;
+            } else if ch == ']' {
+                string_bracket_depth = string_bracket_depth.saturating_sub(1);
+            } else if ch == '"' && string_brace_depth == 0 && string_bracket_depth == 0 {
                 in_string = false;
             }
             continue;
@@ -1268,6 +1278,8 @@ fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
         match ch {
             '"' => {
                 in_string = true;
+                string_brace_depth = 0;
+                string_bracket_depth = 0;
                 current.push(ch);
             }
             '[' => {
@@ -1340,11 +1352,26 @@ fn parse_debug_value(input: &str) -> Option<Value> {
         return parse_bracket_array(value);
     }
     if value.starts_with('"') && value.ends_with('"') {
-        return serde_json::from_str::<String>(value)
-            .ok()
-            .map(Value::String);
+        return parse_quoted_string_with_json_fallback(value);
     }
     Some(Value::String(value.to_string()))
+}
+
+fn parse_quoted_string_with_json_fallback(value: &str) -> Option<Value> {
+    if let Ok(parsed) = serde_json::from_str::<String>(value) {
+        return Some(Value::String(parsed));
+    }
+    let inner = value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .unwrap_or(value);
+    if let Ok(parsed_json) = serde_json::from_str::<Value>(inner) {
+        return serde_json::to_string(&parsed_json)
+            .ok()
+            .map(Value::String)
+            .or_else(|| Some(Value::String(inner.to_string())));
+    }
+    Some(Value::String(inner.to_string()))
 }
 
 fn parse_debug_string(value: &str) -> Option<String> {

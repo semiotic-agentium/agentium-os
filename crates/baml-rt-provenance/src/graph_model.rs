@@ -243,7 +243,7 @@ pub struct ConversationReadModel;
 
 impl ConversationReadModel {
     pub const MESSAGE_COLUMN_COUNT: usize = 5;
-    pub const TOOL_COLUMN_COUNT: usize = 6;
+    pub const TOOL_COLUMN_COUNT: usize = 7;
 
     pub fn message_query(context: &str) -> String {
         let message_label = GraphNodeLabel::Message.as_str();
@@ -256,14 +256,24 @@ impl ConversationReadModel {
     }
 
     pub fn tool_query(context: &str) -> String {
-        let message_processing_label = GraphNodeLabel::MessageProcessing.as_str();
+        let tool_call_label = GraphNodeLabel::ToolCall.as_str();
+        let tool_args_label = GraphNodeLabel::ToolArgs.as_str();
+        let tool_args_edge = TOOL_CALL_ARGS_EDGE.edge_label;
         let tool_args_role = TOOL_CALL_ARGS_EDGE.role_key;
         let tool_args_type = TOOL_CALL_ARGS_EDGE.target_type_key;
+        // Match ToolCall nodes directly by context_id. Every ToolCall activity
+        // carries a2a:context_id from base_attrs, so we don't need to traverse
+        // the parent (A2AMessageProcessing or A2ATaskExecution) at all. This
+        // works for both message-scoped and task-scoped tool calls.
+        //
+        // The second MATCH is constrained to WAS_USED_BY edges targeting
+        // ToolArgs nodes to avoid picking up other outgoing edges (e.g.
+        // WAS_EXECUTED_BY to AgentRuntimeInstance).
         format!(
-            "MATCH (mp:{message_processing_label})-[:{EDGE_WAS_EXECUTED_BY}]->(t) \
-             WHERE mp.`a2a:context_id` = \"{context}\" AND t.name STARTS WITH \"tool_call:\" \
-             MATCH (t)-[used]->(args) \
-             RETURN t.`a2a:event_id`, t.`a2a:tool_name`, toString(t.`a2a:metadata`), toString(args.`a2a:args`), used.`{tool_args_role}`, args.`{tool_args_type}` \
+            "MATCH (t:{tool_call_label}) \
+             WHERE t.`a2a:context_id` = \"{context}\" \
+             MATCH (t)-[used:{tool_args_edge}]->(args:{tool_args_label}) \
+             RETURN t.`a2a:event_id`, t.`a2a:tool_name`, toString(t.`a2a:metadata`), toString(args.`a2a:args`), used.`{tool_args_role}`, args.`{tool_args_type}`, t.`a2a:success` \
              ORDER BY t.`a2a:event_id`"
         )
     }

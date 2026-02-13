@@ -32,8 +32,11 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex as TokioMutex;
 
-// Helper function to build metadata map with correlation_id and message_id.
-fn build_metadata_map(scope: &context::RuntimeScope) -> Value {
+// Helper function to build metadata map with correlation/message/task/agent ids.
+fn build_metadata_map_with_phase(
+    scope: &context::RuntimeScope,
+    phase: Option<&'static str>,
+) -> Value {
     let mut map = serde_json::Map::new();
     if let Some(correlation_id) = current_correlation_id() {
         map.insert(
@@ -55,6 +58,9 @@ fn build_metadata_map(scope: &context::RuntimeScope) -> Value {
         "agent_id".to_string(),
         Value::String(scope.agent_id().as_str().to_owned()),
     );
+    if let Some(phase) = phase {
+        map.insert("phase".to_string(), Value::String(phase.to_string()));
+    }
     Value::Object(map)
 }
 
@@ -149,7 +155,7 @@ impl ToolExecutionHandle {
 
         let start = Instant::now();
         let context_id = scope.context_id().clone();
-        let metadata = build_metadata_map(&scope);
+        let metadata = build_metadata_map_with_phase(&scope, Some("execute"));
 
         // Build context for interceptors
         let context = ToolCallContext {
@@ -263,7 +269,7 @@ impl ToolSessionExecutionHandle {
         let context_id = scope.context_id().clone();
 
         let start = Instant::now();
-        let metadata = build_metadata_map(&scope);
+        let metadata = build_metadata_map_with_phase(&scope, Some("open"));
         let context = ToolCallContext {
             tool_name: tool_name.to_string(),
             function_name: None,
@@ -379,19 +385,7 @@ impl ToolSessionExecutionHandle {
 
         let run = || async {
             let start = Instant::now();
-            let correlation_id = current_correlation_id();
-            let mut metadata_map = serde_json::Map::new();
-            if let Some(correlation_id) = correlation_id {
-                metadata_map.insert(
-                    "correlation_id".to_string(),
-                    Value::String(correlation_id.to_string()),
-                );
-            }
-            metadata_map.insert(
-                "message_id".to_string(),
-                Value::String(session_scope.scope.message_id().as_str().to_string()),
-            );
-            let metadata = Value::Object(metadata_map);
+            let metadata = build_metadata_map_with_phase(&session_scope.scope, Some("send"));
 
             let context = ToolCallContext {
                 tool_name: session_scope.tool_name.clone(),

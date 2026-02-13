@@ -107,6 +107,7 @@ struct ToolCallRow {
     args: Value,
     used_role: Option<String>,
     args_prov_type: Option<String>,
+    success: Option<bool>,
 }
 
 impl ToolCallRow {
@@ -133,6 +134,7 @@ impl ToolCallRow {
             args: decode_embedded_json(&row[3]),
             used_role: row[4].as_str().map(ToString::to_string),
             args_prov_type: row[5].as_str().map(ToString::to_string),
+            success: value_as_bool(&row[6]),
         })
     }
 
@@ -161,6 +163,10 @@ impl ToolCallRow {
             });
         }
         Ok(())
+    }
+
+    fn is_completed(&self) -> bool {
+        self.success.is_some()
     }
 }
 
@@ -797,6 +803,13 @@ impl ProvenanceContextReader for FalkorDbProvenanceWriter {
         let message_query = ConversationReadModel::message_query(context);
         let tool_query = ConversationReadModel::tool_query(context);
 
+        tracing::debug!(
+            context_id = context,
+            message_query = %message_query,
+            tool_query = %tool_query,
+            "Provenance conversation_context: executing queries"
+        );
+
         let message_rows_raw = execute_cypher_query(
             &message_query,
             &self.config.graph,
@@ -812,9 +825,12 @@ impl ProvenanceContextReader for FalkorDbProvenanceWriter {
         )
         .await?;
 
+        let message_parsed = parse_rows(&message_rows_raw);
+        let tool_parsed = parse_rows(&tool_rows_raw);
+
         let mut items: Vec<ProvenanceConversationContextItem> = Vec::new();
 
-        for row in parse_rows(&message_rows_raw) {
+        for row in message_parsed {
             let message_row = MessageRow::parse(&row)?;
             let direction = message_row.direction;
             let role = if direction == message_directions::RECEIVED {
@@ -835,45 +851,63 @@ impl ProvenanceContextReader for FalkorDbProvenanceWriter {
             });
         }
 
-        let tool_rows = parse_rows(&tool_rows_raw);
-        for row in tool_rows {
+        for row in tool_parsed {
             let tool_row = ToolCallRow::parse(&row)?;
             tool_row.validate()?;
+            if !tool_row.is_completed() {
+                continue;
+            }
             let phase = ToolSessionPhase::from_metadata(&tool_row.metadata);
-
-            items.push(ProvenanceConversationContextItem {
-                timestamp_ms: event_id_counter(&tool_row.event_id),
-                event_id: tool_row.event_id.clone(),
-                role: "assistant".to_string(),
-                content: serde_json::json!({
-                    "tool_call": {
-                        "name": tool_row.tool_name,
-                        "args": tool_row.args,
-                        "fsm_phase": phase.label()
-                    }
-                }),
-                source: "tool_call".to_string(),
-            });
-
             let result = tool_row
                 .metadata
                 .get("result")
                 .cloned()
                 .unwrap_or_else(|| serde_json::json!({}));
-            if has_meaningful_result(&result) {
+            let include_call = !matches!(
+                phase,
+                ToolSessionPhase::Open | ToolSessionPhase::Finish | ToolSessionPhase::Abort
+            ) && !(is_empty_object(&tool_row.args)
+                && !has_meaningful_result(&result));
+
+            if include_call {
+                items.push(ProvenanceConversationContextItem {
+                    timestamp_ms: event_id_counter(&tool_row.event_id),
+                    event_id: tool_row.event_id.clone(),
+                    role: "assistant".to_string(),
+                    content: serde_json::json!({
+                        "tool_call": {
+                            "name": tool_row.tool_name,
+                            "args": tool_row.args,
+                            "fsm_phase": phase.label()
+                        }
+                    }),
+                    source: "tool_call".to_string(),
+                });
+            }
+
+            if include_call && has_meaningful_result(&result) {
                 items.push(ProvenanceConversationContextItem {
                     timestamp_ms: event_id_counter(&tool_row.event_id),
                     event_id: tool_row.event_id,
                     role: "tool".to_string(),
                     content: serde_json::json!({
                         "tool_name": tool_row.tool_name,
-                        "result": result,
-                        "metadata": tool_row.metadata
+                        "fsm_phase": phase.label(),
+                        "result": result
                     }),
                     source: "tool_result".to_string(),
                 });
             }
         }
+
+        tracing::debug!(
+            context_id = context,
+            total_items = items.len(),
+            message_items = items.iter().filter(|i| i.source == "message").count(),
+            tool_call_items = items.iter().filter(|i| i.source == "tool_call").count(),
+            tool_result_items = items.iter().filter(|i| i.source == "tool_result").count(),
+            "Provenance conversation_context: assembled items"
+        );
 
         items.sort_by_key(|item| {
             (
@@ -1407,7 +1441,7 @@ fn parse_graph_snapshot(raw: &str) -> Option<Value> {
         return Some(Value::Array(Vec::new()));
     }
     let mut rows = Vec::new();
-    for line in raw.lines() {
+    for (line_idx, line) in raw.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -1419,16 +1453,27 @@ fn parse_graph_snapshot(raw: &str) -> Option<Value> {
         };
         let record_str = record_str.trim();
         if !record_str.starts_with('[') || !record_str.ends_with(']') {
+            tracing::debug!(
+                line_idx,
+                line_preview = %record_str.chars().take(240).collect::<String>(),
+                "Skipping FalkorDB line that is not a row record"
+            );
             continue;
         }
         let inner = &record_str[1..record_str.len() - 1];
         let parts = split_top_level(inner, ',');
         let mut values = Vec::new();
         let mut row_ok = true;
-        for part in parts {
+        for (part_idx, part) in parts.into_iter().enumerate() {
             match parse_debug_value(part.trim()) {
                 Some(value) => values.push(value),
                 None => {
+                    tracing::debug!(
+                        line_idx,
+                        part_idx,
+                        part_preview = %part.chars().take(240).collect::<String>(),
+                        "Skipping FalkorDB row due to unparsable value"
+                    );
                     row_ok = false;
                     break;
                 }
@@ -1449,6 +1494,12 @@ fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
     let mut depth_brace: usize = 0;
     let mut depth_paren: usize = 0;
     let mut in_string = false;
+    // FalkorDB returns string properties containing JSON with unescaped
+    // inner quotes, e.g. `"{"key":"value"}"`. Track brace/bracket depth
+    // inside strings so we only exit the string when the embedded JSON is
+    // fully closed.
+    let mut string_brace_depth: usize = 0;
+    let mut string_bracket_depth: usize = 0;
     let mut escape = false;
     for ch in input.chars() {
         if in_string {
@@ -1459,14 +1510,25 @@ fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
             }
             if ch == '\\' {
                 escape = true;
-            } else if ch == '"' {
+            } else if ch == '{' {
+                string_brace_depth += 1;
+            } else if ch == '}' {
+                string_brace_depth = string_brace_depth.saturating_sub(1);
+            } else if ch == '[' {
+                string_bracket_depth += 1;
+            } else if ch == ']' {
+                string_bracket_depth = string_bracket_depth.saturating_sub(1);
+            } else if ch == '"' && string_brace_depth == 0 && string_bracket_depth == 0 {
                 in_string = false;
             }
+            // else: stay in string — unescaped quote inside embedded JSON
             continue;
         }
         match ch {
             '"' => {
                 in_string = true;
+                string_brace_depth = 0;
+                string_bracket_depth = 0;
                 current.push(ch);
             }
             '[' => {
@@ -1553,11 +1615,32 @@ fn parse_debug_value(input: &str) -> Option<Value> {
         return parse_bracket_array(value);
     }
     if value.starts_with('"') && value.ends_with('"') {
-        return serde_json::from_str::<String>(value)
-            .ok()
-            .map(Value::String);
+        return parse_quoted_string_with_json_fallback(value);
     }
     Some(Value::String(value.to_string()))
+}
+
+fn parse_quoted_string_with_json_fallback(value: &str) -> Option<Value> {
+    if let Ok(parsed) = serde_json::from_str::<String>(value) {
+        return Some(Value::String(parsed));
+    }
+
+    let inner = value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .unwrap_or(value);
+
+    // FalkorDB text snapshots sometimes return a quoted payload whose inner
+    // quotes are unescaped, e.g. `"{"k":"v"}"`. Treat the inner segment as
+    // JSON and re-serialize so downstream `decode_embedded_json` can parse it.
+    if let Ok(parsed_json) = serde_json::from_str::<Value>(inner) {
+        return serde_json::to_string(&parsed_json)
+            .ok()
+            .map(Value::String)
+            .or_else(|| Some(Value::String(inner.to_string())));
+    }
+
+    Some(Value::String(inner.to_string()))
 }
 
 fn parse_debug_string(value: &str) -> Option<String> {
@@ -1667,6 +1750,18 @@ fn value_as_string(value: &Value) -> String {
     }
 }
 
+fn value_as_bool(value: &Value) -> Option<bool> {
+    match value {
+        Value::Bool(b) => Some(*b),
+        Value::String(s) => match s.trim() {
+            "true" | "True" | "TRUE" => Some(true),
+            "false" | "False" | "FALSE" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn event_id_counter(event_id: &str) -> u64 {
     event_id
         .strip_prefix("prov-")
@@ -1681,5 +1776,56 @@ fn has_meaningful_result(value: &Value) -> bool {
         Value::Array(items) => !items.is_empty(),
         Value::String(s) => !s.trim().is_empty(),
         _ => true,
+    }
+}
+
+fn is_empty_object(value: &Value) -> bool {
+    matches!(value, Value::Object(map) if map.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_debug_value_handles_unescaped_json_inside_quoted_string() {
+        let raw = r#""{"correlation_id":"corr-123","message_id":"cli-msg-1"}""#;
+        let parsed = parse_debug_value(raw).expect("quoted value should parse");
+        assert_eq!(
+            parsed,
+            Value::String(r#"{"correlation_id":"corr-123","message_id":"cli-msg-1"}"#.to_string())
+        );
+
+        let decoded = decode_embedded_json(&parsed);
+        assert_eq!(decoded["correlation_id"], "corr-123");
+        assert_eq!(decoded["message_id"], "cli-msg-1");
+    }
+
+    #[test]
+    fn split_top_level_does_not_split_unescaped_json_string_body() {
+        let input = r#""{"correlation_id":"corr-123","message_id":"cli-msg-1"}", "assistant""#;
+        let parts = split_top_level(input, ',');
+        assert_eq!(parts.len(), 2);
+        assert_eq!(
+            parts[0],
+            r#""{"correlation_id":"corr-123","message_id":"cli-msg-1"}""#
+        );
+        assert_eq!(parts[1], r#""assistant""#);
+    }
+
+    #[test]
+    fn parse_graph_snapshot_keeps_tool_rows_with_unescaped_json_columns() {
+        let raw = r#"["prov-11", "support/clickup", "{"correlation_id":"corr-123","result":{"items":[{"id":"901"}]}}", "{"action":"ListTeams"}", "a2a:args", "a2a:ToolArgs"]"#;
+        let parsed = parse_graph_snapshot(raw).expect("snapshot should parse");
+        let rows = parsed.as_array().expect("rows array");
+        assert_eq!(rows.len(), 1);
+        let cols = rows[0].as_array().expect("row columns");
+        assert_eq!(cols.len(), 6);
+
+        let metadata = decode_embedded_json(&cols[2]);
+        let args = decode_embedded_json(&cols[3]);
+        assert_eq!(metadata["correlation_id"], "corr-123");
+        assert_eq!(metadata["result"]["items"][0]["id"], "901");
+        assert_eq!(args["action"], "ListTeams");
     }
 }
