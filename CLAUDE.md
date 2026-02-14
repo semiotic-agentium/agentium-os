@@ -22,7 +22,6 @@ cargo test -p baml-rt-a2a test_name -- --nocapture
 
 # Feature-gated test suites
 cargo test -p baml-rt-provenance --features falkordb-tests -j 1
-cargo test -p baml-rt --features llm-tests -j 1
 
 # Lint (run before committing)
 cargo clippy --all-targets --all-features -- -D warnings
@@ -100,7 +99,6 @@ Other fixtures (stream-js-tool, stream-baml-tool, conversational-context-auto, e
 
 ### Test-Gating Feature Flags
 
-- `llm-tests` — LLM-dependent tests requiring API keys; run nightly in `llm-smoke.yml`
 - `falkordb-tests` — FalkorDB-dependent tests using testcontainers; run in dedicated CI job
 - `http-tools` — HTTP-dependent tools (ClickUp, Notion); tested separately in CI
 
@@ -111,8 +109,6 @@ Three parallel jobs in `rust-ci.yml` (push/PR to main):
 1. **cargo-test (light)** — `baml-rt-core`, `baml-rt-id`, `baml-rt-observability`, `baml-derive-tests`
 2. **cargo-test-heavy (serial, -j 1)** — Remaining workspace crates, http-tools tests, baml-rt-a2a
 3. **cargo-test-falkordb (serial, -j 1)** — `--features falkordb-tests` for provenance, a2a, runner
-
-Nightly `llm-smoke.yml` runs `--features llm-tests` on a cron schedule.
 
 All jobs use sccache (GHA backend) + rust-cache with shared key.
 

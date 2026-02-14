@@ -298,7 +298,6 @@ fn set_single_parse_attempt(manager: &mut BamlRuntimeManager) {
         delay_ms: 0,
     });
 }
-#[cfg(feature = "llm-tests")]
 async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
     ensure_fixture_runtime_types();
     let built = build_fixture_to_temp_async("stream-baml-tool").await;
@@ -545,13 +544,8 @@ async fn test_e2e_agent_runner_load_package() {
     fs::remove_dir_all(&extract_dir).ok();
 }
 
-#[cfg(feature = "llm-tests")]
 #[tokio::test]
 async fn test_e2e_agent_runner_invoke_function() {
-    if std::env::var("BAML_SKIP_LLM_TESTS").is_ok() {
-        eprintln!("Skipping LLM test: BAML_SKIP_LLM_TESTS set");
-        return;
-    }
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     // E2E via packaged agent loaded in-process, then invoked through A2A.
     // This avoids recursive `cargo run` subprocess behavior and validates
@@ -621,13 +615,8 @@ async fn test_e2e_agent_runner_invoke_function() {
 
 /// Fixture: stream-baml-tool. Tests async streaming of a BAML tool (FSM) result via message.sendStream.
 /// Requires .env with OPENROUTER_API_KEY (source .env or set in test env).
-#[cfg(feature = "llm-tests")]
 #[tokio::test]
 async fn test_e2e_stream_baml_tool() {
-    if std::env::var("BAML_SKIP_LLM_TESTS").is_ok() {
-        eprintln!("Skipping LLM test: BAML_SKIP_LLM_TESTS set");
-        return;
-    }
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     let _ = dotenvy::dotenv();
 

@@ -109,9 +109,9 @@ export type A2aNextStates<S extends A2aTaskState> =
     : S extends "TASK_STATE_WORKING"
         ? "TASK_STATE_INPUT_REQUIRED" | "TASK_STATE_AUTH_REQUIRED" | "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
     : S extends "TASK_STATE_INPUT_REQUIRED"
-        ? "TASK_STATE_WORKING" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
+        ? "TASK_STATE_WORKING" | "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
     : S extends "TASK_STATE_AUTH_REQUIRED"
-        ? "TASK_STATE_WORKING" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
+        ? "TASK_STATE_WORKING" | "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
     : never;
 export interface A2aTaskContext<S extends A2aTaskState> {
     taskId: string;
@@ -157,11 +157,46 @@ export interface A2aSessionClosed {
 }
 declare function openA2aTaskSession<I = unknown>(token: string): Promise<A2aSessionAwaitingInput<I>>;
 /**
+ * ReAct-style loop helper.
+ * plan(ctx) returns either a final response or a tool call.
+ */
+export type ReActPlan =
+    | { kind: "final"; message: string }
+    | { kind: "tool"; tool: string; args: unknown };
+export interface ReActLoopContext {
+    observations: Array<{ plan: ReActPlan; observation: unknown }>;
+    step: number;
+}
+export interface ReActLoopOptions {
+    plan: (ctx: ReActLoopContext) => Promise<ReActPlan> | ReActPlan;
+    execute: (step: Extract<ReActPlan, { kind: "tool" }>) => Promise<unknown> | unknown;
+    maxSteps?: number;
+    observations?: Array<{ plan: ReActPlan; observation: unknown }>;
+    dedupeKey?: (step: ReActPlan) => string;
+    onStep?: (step: ReActPlan, index: number) => void;
+}
+declare function runReActLoop(opts: ReActLoopOptions): Promise<string>;
+/**
+ * Host-native ReAct loop helper.
+ * Executes the plan function and tool calls in Rust; JS only passes options.
+ */
+export interface ReActLoopHostOptions {
+    planFunction: string;
+    userMessage: string;
+    maxSteps?: number;
+    dedupe?: boolean;
+}
+declare function runReActLoopHost(token: string, opts: ReActLoopHostOptions): Promise<string>;
+/**
  * Bootstrap-generated: handler types. Incoming message (parts only; IDs/context are host-managed).
  * Session lifecycle: host invokes onChatMessage(message); agent uses session(message).run(...) to run work and emit outcomes.
  */
 export interface Part { text?: string; data?: unknown; [key: string]: unknown; }
-export interface Message { parts: Part[]; }
+export interface Message {
+  parts: Part[];
+  /** First text part. Present on messages from awaitInput(); for the initial message use session(message).text(). */
+  text?(): string;
+}
 export type ChatMessage = Message;
 /**
  * Result shape for session.run() callback. Return { message } on success (runtime emits message and completed);
@@ -207,9 +242,24 @@ export interface SessionBuilder {
   run(fn: (emit: SessionEmitter) => Promise<SessionResult>): Promise<void>;
   run(fn: () => Promise<SessionResult>): Promise<void>;
 }
+/**
+ * Context passed to the run entrypoint when using __chat_register({ run }).
+ * The real entrypoint is run(ctx): you receive text, message, and emit; return SessionResult.
+ */
+export interface RunContext {
+  /** First text part of the message (same as session(message).text()). */
+  text: string;
+  /** Inbound message (parts, optional .text() from awaitInput). */
+  message: ChatMessage;
+  /** Emitter for working message, artifact, awaitInput; use when you need to stream or suspend. */
+  emit: SessionEmitter;
+}
 /** Agent contract: register this; host invokes onChatMessage per message. */
 export interface BamlAgent {
-  onChatMessage(message: ChatMessage): Promise<void>;
+  /** Optional: run(ctx) is the entrypoint; runtime wraps it into onChatMessage. Prefer this over onChatMessage. */
+  run?(ctx: RunContext): Promise<SessionResult>;
+  /** Optional: raw handler when run is not used. */
+  onChatMessage?(message: ChatMessage): Promise<void>;
   tools?: Record<string, (args: unknown) => Promise<unknown>>;
 }
 declare global {
@@ -218,6 +268,11 @@ declare global {
    * This keeps bootstrap/index.ts ergonomic without local type shims.
    */
   type ChatMessage = Message;
+  /**
+   * First text part of a message. Use for any ChatMessage (e.g. from awaitInput).
+   * For the initial message you can also use session(message).text().
+   */
+  function messageText(message: ChatMessage | null | undefined): string;
   /**
    * Start a session for this message. Use the returned builder to get .text(), then .run(async () => ...).
    * Legal transitions and emission are handled by the runtime; you only return success or error from run().
@@ -261,13 +316,13 @@ export interface ToolFailure {
 //
 // CRITICAL FSM RULES:
 // - Open MUST come before any Send step
-// - Open uses 'initial_input' field (for first input when opening)
+// - Open may include 'initial_input' only when the step schema defines that field
 // - Send uses 'input' field (for subsequent inputs)
 // - After Send, call Next to retrieve results
 // - Always Finish or Abort to close the session
 
 enum ToolSessionOp {
-  Open @description("Open a new tool session. MUST be the first step in any plan. Use 'initial_input' field to provide the first input when opening the session.")
+  Open @description("Open a new tool session. MUST be the first step in any plan. Include 'initial_input' only when the step schema defines that field.")
   Send @description("Send input to an already-open session. Can ONLY be used after an Open step. Use 'input' field (NOT 'initial_input').")
   Next @description("Retrieve the next output from the session. Call this after Send to get results. For streaming tools, call Next multiple times until Done.")
   Finish @description("Close the session gracefully after completing all operations. Always call Finish when done with a tool session.")
@@ -327,5 +382,5 @@ class SupportCalculateAbortStep {
 type SupportCalculateSessionStep = SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateNextStep | SupportCalculateFinishStep | SupportCalculateAbortStep
 
 class SupportCalculateSessionPlan {
-  steps SupportCalculateSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (with optional initial_input), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example valid plan: [{op: 'Open', initial_input: {...}}, {op: 'Next'}, {op: 'Finish'}]. Tool identity is inferred from the input schema (no tool_name field).")
+  steps SupportCalculateSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{op: 'Open'}, {op: 'Send', input: {...}}, {op: 'Next'}, {op: 'Finish'}].")
 }

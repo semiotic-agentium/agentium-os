@@ -41,7 +41,6 @@ default = [
     "builder",
     "observability",
 ]
-llm-tests = []
 tools = ["dep:baml-rt-tools"]
 interceptor = ["dep:baml-rt-interceptor"]
 quickjs = ["dep:baml-rt-quickjs", "tools", "interceptor", "observability"]

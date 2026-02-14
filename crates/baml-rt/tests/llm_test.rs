@@ -1,5 +1,9 @@
 #![allow(clippy::print_stdout)]
-//! End-to-end test using actual LLM via OpenRouter
+//! End-to-end tests verifying the BAML → QuickJS → LLM pipeline completes.
+//!
+//! These tests assert on **runtime contracts** (invocation succeeds, returns a
+//! string, streaming yields chunks) — never on the content of LLM responses,
+//! which is non-deterministic.
 
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::ids::{AgentId, UuidId};
@@ -15,61 +19,20 @@ async fn test_e2e_simple_greeting_with_llm() {
     let baml_manager = setup_baml_runtime_default();
     let mut bridge = setup_bridge(baml_manager).await;
 
-    // Call BAML function via invoke_function (uses task-local scope; evaluate()+scope has worker-thread subtleties).
-    let mut last_value = None;
-    let mut response_str = String::new();
-    for attempt in 1..=2 {
-        let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
-        let scope = InvocationScope::synthetic_message(agent_id);
-        tracing::info!(
-            "Invoking SimpleGreeting BAML function (attempt {})...",
-            attempt
-        );
-        let result = context::with_scope(scope.as_scope().clone(), async {
-            bridge
-                .invoke_function(&scope, "SimpleGreeting", json!({ "name": "E2E Test User" }))
-                .await
-        })
-        .await;
+    let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
+    let scope = InvocationScope::synthetic_message(agent_id);
 
-        match result {
-            Ok(value) => {
-                let candidate = value.as_str().unwrap_or("").trim().to_string();
-                tracing::info!("✅ BAML function executed successfully!");
-                tracing::info!("Response: {}", candidate);
-                last_value = Some(value);
-                response_str = candidate;
-                if !response_str.is_empty() {
-                    break;
-                }
-                tracing::warn!("Empty response; retrying SimpleGreeting");
-            }
-            Err(e) => {
-                tracing::error!("❌ BAML function execution failed: {}", e);
-                panic!(
-                    "BAML function should execute successfully, but got error: {}",
-                    e
-                );
-            }
-        }
-    }
+    let result = context::with_scope(scope.as_scope().clone(), async {
+        bridge
+            .invoke_function(&scope, "SimpleGreeting", json!({ "name": "E2E Test User" }))
+            .await
+    })
+    .await;
 
-    let response_value = last_value.expect("expected a response value");
-    if response_str.is_empty() {
-        tracing::warn!(
-            "Empty response after retries; treating as transient provider failure. Value: {}",
-            response_value
-        );
-        return;
-    }
-
-    let response_lower = response_str.to_lowercase();
+    let value = result.expect("BAML invocation should succeed");
     assert!(
-        response_lower.contains("e2e")
-            || response_lower.contains("test")
-            || response_lower.contains("user")
-            || response_str.len() > 5,
-        "Response should be meaningful or mention the name"
+        value.is_string(),
+        "BAML SimpleGreeting should return a string"
     );
 }
 
@@ -77,12 +40,9 @@ async fn test_e2e_simple_greeting_with_llm() {
 async fn test_e2e_streaming_greeting() {
     let _ = require_api_key();
 
-    tracing::info!("Testing streaming BAML function call");
-
     let baml_manager = setup_baml_runtime_default();
     let mut bridge = setup_bridge(baml_manager).await;
 
-    // Call streaming BAML function from JavaScript with scope (streaming path uses worker-thread scope).
     let js_code = r#"
         (() => __awaitAndStringify(
             (async () => {
@@ -98,30 +58,21 @@ async fn test_e2e_streaming_greeting() {
 
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
     let scope = InvocationScope::synthetic_message(agent_id);
-    tracing::info!("Executing streaming JavaScript call...");
+
     let result = context::with_scope(scope.as_scope().clone(), async {
         bridge.evaluate(Some(&scope), js_code).await
     })
     .await;
 
-    match result {
-        Ok(response_value) => {
-            let response_str = response_value.as_str().unwrap_or("");
-            tracing::info!("✅ Streaming function executed successfully!");
-            tracing::info!("Response: {}", response_str);
-
-            // Parse the response to verify chunks were received
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(response_str)
-                && let Some(obj) = parsed.as_object()
-                && let Some(chunks) = obj.get("chunks")
-            {
-                assert!(chunks.as_array().is_some(), "Should have chunks array");
-                tracing::info!("Received {} chunks", chunks.as_array().unwrap().len());
-            }
-        }
-        Err(e) => {
-            tracing::warn!("Streaming test failed (may not be supported yet): {}", e);
-            // Don't fail the test if streaming isn't fully implemented yet
-        }
-    }
+    let response_value = result.expect("Streaming invocation should succeed");
+    let response_str = response_value
+        .as_str()
+        .expect("Streaming result should be a string");
+    let parsed: serde_json::Value =
+        serde_json::from_str(response_str).expect("Streaming result should be valid JSON");
+    let chunks = parsed
+        .get("chunks")
+        .and_then(|c| c.as_array())
+        .expect("Streaming result should contain a chunks array");
+    assert!(!chunks.is_empty(), "Stream should yield at least one chunk");
 }
