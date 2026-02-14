@@ -55,6 +55,22 @@ fn is_tool_event_chunk(value: &Value) -> bool {
     event_type.starts_with("tool_execution")
 }
 
+fn is_output_chunk(value: &Value) -> bool {
+    if value.get("message").is_some() {
+        return true;
+    }
+    if value.get("artifactUpdate").is_some() {
+        return true;
+    }
+    if let Some(task) = value.get("task").and_then(|v| v.as_object())
+        && let Some(status) = task.get("status").and_then(|v| v.as_object())
+        && status.get("message").is_some()
+    {
+        return true;
+    }
+    false
+}
+
 /// State marker: yield buffer is installed and ready for one stream invocation.
 pub struct YieldBufferReady;
 
@@ -126,12 +142,13 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
     /// async handlers to yield before the buffer is read.
     pub async fn collect(self) -> Result<Vec<Value>> {
         let start = Instant::now();
-        let timeout = Duration::from_secs(30);
+        let timeout = Duration::from_secs(120);
         let interval = Duration::from_millis(50);
         let read_timeout = Duration::from_secs(2);
         let settle_duration = Duration::from_millis(1000);
         let mut collected: Vec<Value> = Vec::new();
         let mut last_nonempty: Option<Instant> = None;
+        let mut saw_output = false;
 
         loop {
             // Liveness guard: a single buffer-read must not stall collection forever.
@@ -146,12 +163,17 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
             };
             if !responses.is_empty() {
                 let has_signal = responses.iter().any(|v| !is_tool_event_chunk(v));
+                let has_output = responses.iter().any(is_output_chunk);
+                if has_output {
+                    saw_output = true;
+                }
                 collected.extend(responses);
                 if has_signal {
                     last_nonempty = Some(Instant::now());
                 }
             }
-            if let Some(last) = last_nonempty
+            if saw_output
+                && let Some(last) = last_nonempty
                 && last.elapsed() >= settle_duration
             {
                 self.bridge.finalize_a2a_stream_invocation();
