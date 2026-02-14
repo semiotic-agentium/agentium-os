@@ -39,6 +39,22 @@ use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
+fn is_tool_event_chunk(value: &Value) -> bool {
+    let Some(event) = value.get("event").and_then(|v| v.as_object()) else {
+        return false;
+    };
+    let Some(source) = event.get("source").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    if source != "runtime" {
+        return false;
+    }
+    let Some(event_type) = event.get("type").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    event_type.starts_with("tool_execution")
+}
+
 /// State marker: yield buffer is installed and ready for one stream invocation.
 pub struct YieldBufferReady;
 
@@ -129,8 +145,11 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
                 Err(_) => Vec::new(),
             };
             if !responses.is_empty() {
+                let has_signal = responses.iter().any(|v| !is_tool_event_chunk(v));
                 collected.extend(responses);
-                last_nonempty = Some(Instant::now());
+                if has_signal {
+                    last_nonempty = Some(Instant::now());
+                }
             }
             if let Some(last) = last_nonempty
                 && last.elapsed() >= settle_duration

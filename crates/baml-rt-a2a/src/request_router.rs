@@ -234,7 +234,9 @@ impl RequestRouter for MethodBasedRouter {
                         }
                         for chunk in chunks {
                             let normalized = normalizer.normalize_value(chunk)?;
-                            self.result_pipeline.store_result(&normalized).await?;
+                            if !is_tool_event_chunk(&normalized) {
+                                self.result_pipeline.store_result(&normalized).await?;
+                            }
                             if matches!(request.method, a2a::A2aMethod::MessageSendStream)
                                 && normalized.get("message").is_some()
                             {
@@ -283,7 +285,9 @@ impl RequestRouter for MethodBasedRouter {
                     } else {
                         let result = self.js_invoker.invoke_handler(request, scope).await?;
                         let normalized = normalizer.normalize_value(result)?;
-                        self.result_pipeline.store_result(&normalized).await?;
+                        if !is_tool_event_chunk(&normalized) {
+                            self.result_pipeline.store_result(&normalized).await?;
+                        }
                         Ok(a2a::A2aOutcome::Response(normalized))
                     }
                 }
@@ -338,6 +342,22 @@ fn build_event_chunk(
         );
     }
     serde_json::json!({ "event": event })
+}
+
+fn is_tool_event_chunk(value: &Value) -> bool {
+    let Some(event) = value.get("event").and_then(|v| v.as_object()) else {
+        return false;
+    };
+    let Some(source) = event.get("source").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    if source != "runtime" {
+        return false;
+    }
+    let Some(event_type) = event.get("type").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    event_type.starts_with("tool_execution")
 }
 
 fn extract_message_id(chunk: &Value) -> Option<String> {
