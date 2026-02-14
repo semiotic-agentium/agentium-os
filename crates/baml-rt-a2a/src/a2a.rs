@@ -666,6 +666,9 @@ mod tests {
                             status: { state: "TASK_STATE_WORKING" }
                         }
                     });
+                    __chat_yield({
+                        statusUpdate: { status: { state: "TASK_STATE_COMPLETED" } }
+                    });
                     return;
                 }
                 __chat_yield({ message: { parts: [{ text: "hi " + text }] } });

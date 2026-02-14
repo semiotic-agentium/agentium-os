@@ -62,11 +62,38 @@ fn is_output_chunk(value: &Value) -> bool {
     if value.get("artifactUpdate").is_some() {
         return true;
     }
-    if let Some(task) = value.get("task").and_then(|v| v.as_object())
-        && let Some(status) = task.get("status").and_then(|v| v.as_object())
-        && status.get("message").is_some()
+    if let Some(status) = value
+        .get("statusUpdate")
+        .and_then(|v| v.get("status"))
+        .and_then(|v| v.get("state"))
+        .and_then(|v| v.as_str())
+        && matches!(
+            status,
+            "TASK_STATE_COMPLETED"
+                | "TASK_STATE_FAILED"
+                | "TASK_STATE_REJECTED"
+                | "TASK_STATE_CANCELED"
+        )
     {
         return true;
+    }
+    if let Some(task) = value.get("task").and_then(|v| v.as_object())
+        && let Some(status) = task.get("status").and_then(|v| v.as_object())
+    {
+        if let Some(state) = status.get("state").and_then(|v| v.as_str())
+            && matches!(
+                state,
+                "TASK_STATE_COMPLETED"
+                    | "TASK_STATE_FAILED"
+                    | "TASK_STATE_REJECTED"
+                    | "TASK_STATE_CANCELED"
+            )
+        {
+            return true;
+        }
+        if status.get("message").is_some() {
+            return true;
+        }
     }
     false
 }
