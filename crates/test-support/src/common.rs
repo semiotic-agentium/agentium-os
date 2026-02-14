@@ -104,7 +104,7 @@ pub fn setup_baml_runtime_from_fixture(fixture_name: &str) -> Arc<Mutex<BamlRunt
 
 /// QuickJS config for tests. Must accommodate combined retries (parse + BAML client) which can exceed 15s.
 fn quickjs_config_for_tests() -> QuickJSConfig {
-    QuickJSConfig::new().with_max_attempts_ms(Some(45_000))
+    QuickJSConfig::new().with_max_attempts_ms(Some(120_000))
 }
 
 pub async fn setup_bridge(baml_manager: Arc<Mutex<BamlRuntimeManager>>) -> QuickJSBridge {
