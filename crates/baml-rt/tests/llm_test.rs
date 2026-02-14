@@ -43,31 +43,16 @@ async fn test_e2e_streaming_greeting() {
     let baml_manager = setup_baml_runtime_default();
     let mut bridge = setup_bridge(baml_manager).await;
 
-    let js_code = r#"
-        (() => __awaitAndStringify(
-            (async () => {
-                const chunks = [];
-                const stream = SimpleGreetingStream({ name: "Streaming Test" });
-                for await (const chunk of stream) {
-                    chunks.push(chunk);
-                }
-                return { chunks: chunks, totalChunks: chunks.length };
-            })()
-        ))()
-    "#;
-
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
     let scope = InvocationScope::synthetic_message(agent_id);
 
-    let result = context::with_scope(scope.as_scope().clone(), async {
-        bridge.evaluate(Some(&scope), js_code).await
+    let chunks = context::with_scope(scope.as_scope().clone(), async {
+        bridge
+            .invoke_function_stream(&scope, "SimpleGreeting", json!({ "name": "Streaming Test" }))
+            .await
     })
-    .await;
+    .await
+    .expect("Streaming invocation should succeed");
 
-    let parsed = result.expect("Streaming invocation should succeed");
-    let chunks = parsed
-        .get("chunks")
-        .and_then(|c| c.as_array())
-        .expect("Streaming result should contain a chunks array");
     assert!(!chunks.is_empty(), "Stream should yield at least one chunk");
 }
