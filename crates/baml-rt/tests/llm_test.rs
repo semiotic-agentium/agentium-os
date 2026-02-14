@@ -64,12 +64,7 @@ async fn test_e2e_streaming_greeting() {
     })
     .await;
 
-    let response_value = result.expect("Streaming invocation should succeed");
-    let response_str = response_value
-        .as_str()
-        .expect("Streaming result should be a string");
-    let parsed: serde_json::Value =
-        serde_json::from_str(response_str).expect("Streaming result should be valid JSON");
+    let parsed = result.expect("Streaming invocation should succeed");
     let chunks = parsed
         .get("chunks")
         .and_then(|c| c.as_array())
