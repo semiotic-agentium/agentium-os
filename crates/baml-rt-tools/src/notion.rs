@@ -1,6 +1,9 @@
 //! Notion tools — `support/notionSearchPages`, `support/notionGetPage`, `support/notionGetPageBlocks`.
 //!
 //! Provides read-only access to the Notion REST API.
+//! Supports optional block processing controls:
+//! - `raw_blocks`: skip Notable lines and Missing info hints.
+//! - `max_depth`: limit child block expansion depth (0 disables expansion).
 
 use crate::bundles::Support;
 use crate::register_tool_metadata;
@@ -50,6 +53,10 @@ pub struct NotionInput {
     pub page_size: Option<u32>,
     pub page_id: Option<String>,
     pub block_id: Option<String>,
+    /// If true, do not inject Notable lines or Missing info hints.
+    pub raw_blocks: Option<bool>,
+    /// Max child block depth to expand (0 = no child expansion).
+    pub max_depth: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
@@ -64,6 +71,10 @@ pub struct NotionGetPageBlocksInput {
     pub block_id: String,
     pub start_cursor: Option<String>,
     pub page_size: Option<u32>,
+    /// If true, do not inject Notable lines or Missing info hints.
+    pub raw_blocks: Option<bool>,
+    /// Max child block depth to expand (0 = no child expansion).
+    pub max_depth: Option<u32>,
 }
 
 // ---------------------------------------------------------------------------
@@ -351,22 +362,28 @@ impl NotionClient {
         block_id: &str,
         start_cursor: Option<&str>,
         page_size: Option<u32>,
+        raw_blocks: bool,
+        max_depth: u32,
     ) -> Result<NotionOutput> {
         let span = spans::notion_get_page_blocks(block_id);
         let _guard = span.enter();
         let normalized = Self::normalize_id(block_id)?;
         let (pages, sources, mut blocks, next_cursor, has_more) = self
-            .fetch_blocks_all_pages(api_key, &normalized, start_cursor, page_size)
+            .fetch_blocks_all_pages(api_key, &normalized, start_cursor, page_size, raw_blocks)
             .await?;
 
         let mut visited = std::collections::HashSet::new();
         visited.insert(normalized.clone());
-        let child_blocks = self
-            .fetch_child_blocks_recursive(api_key, &blocks, &mut visited)
-            .await?;
-        blocks.extend(child_blocks);
+        if max_depth > 0 {
+            let child_blocks = self
+                .fetch_child_blocks_recursive(api_key, &blocks, &mut visited, max_depth, raw_blocks)
+                .await?;
+            blocks.extend(child_blocks);
+        }
 
-        if let Some(notable) = extract_notable_lines(&blocks) {
+        if !raw_blocks
+            && let Some(notable) = extract_notable_lines(&blocks)
+        {
             blocks.insert(0, notable);
         }
 
@@ -406,6 +423,7 @@ impl NotionClient {
         block_id: &str,
         start_cursor: Option<&str>,
         page_size: Option<u32>,
+        raw_blocks: bool,
     ) -> Result<(
         serde_json::Value,
         Vec<NotionPageSummary>,
@@ -432,7 +450,7 @@ impl NotionClient {
         }
 
         let json = self.send_request(request).await?;
-        let blocks = extract_blocks(&json);
+        let blocks = extract_blocks(&json, raw_blocks);
         let next_cursor = json
             .get("next_cursor")
             .and_then(|v| v.as_str())
@@ -463,6 +481,7 @@ impl NotionClient {
         block_id: &str,
         start_cursor: Option<&str>,
         page_size: Option<u32>,
+        raw_blocks: bool,
     ) -> Result<(
         Vec<NotionPageSummary>,
         Vec<NotionSource>,
@@ -481,7 +500,7 @@ impl NotionClient {
 
         while has_more {
             let (_json, pages, sources, blocks, next, more) = self
-                .fetch_blocks_page(api_key, block_id, cursor.as_deref(), page_size)
+                .fetch_blocks_page(api_key, block_id, cursor.as_deref(), page_size, raw_blocks)
                 .await?;
             if pages_out.is_empty() {
                 pages_out = pages;
@@ -507,27 +526,31 @@ impl NotionClient {
         api_key: &str,
         blocks: &[NotionBlockSummary],
         visited: &mut std::collections::HashSet<String>,
+        max_depth: u32,
+        raw_blocks: bool,
     ) -> Result<Vec<NotionBlockSummary>> {
         const MAX_CHILD_BLOCKS_TOTAL: usize = 2000;
         let mut all_children = Vec::new();
-        let mut stack: Vec<String> = blocks
+        let mut stack: Vec<(String, u32)> = blocks
             .iter()
             .filter(|b| b.has_children)
-            .map(|b| b.id.clone())
+            .map(|b| (b.id.clone(), 1))
             .collect();
 
-        while let Some(block_id) = stack.pop() {
+        while let Some((block_id, depth)) = stack.pop() {
             if !visited.insert(block_id.clone()) {
                 continue;
             }
             let span = spans::notion_fetch_child_blocks(&block_id);
             let _guard = span.enter();
             let (_pages, _sources, child_blocks, _next, _has_more) = self
-                .fetch_blocks_all_pages(api_key, &block_id, None, None)
+                .fetch_blocks_all_pages(api_key, &block_id, None, None, raw_blocks)
                 .await?;
-            for child in child_blocks.iter().filter(|b| b.has_children) {
-                if !visited.contains(&child.id) {
-                    stack.push(child.id.clone());
+            if depth < max_depth {
+                for child in child_blocks.iter().filter(|b| b.has_children) {
+                    if !visited.contains(&child.id) {
+                        stack.push((child.id.clone(), depth + 1));
+                    }
                 }
             }
             all_children.extend(child_blocks);
@@ -650,12 +673,16 @@ impl BamlTool for NotionTool {
             }
             NotionAction::GetPageBlocks => {
                 let block_id = require_id(args.block_id, "block_id")?;
+                let raw_blocks = args.raw_blocks.unwrap_or(false);
+                let max_depth = args.max_depth.unwrap_or(2);
                 self.client
                     .get_page_blocks(
                         api_key,
                         &block_id,
                         args.start_cursor.as_deref(),
                         args.page_size,
+                        raw_blocks,
+                        max_depth,
                     )
                     .await
             }
@@ -774,12 +801,16 @@ impl BamlTool for NotionGetPageBlocksTool {
 
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         let api_key = self.client.api_key()?;
+        let raw_blocks = args.raw_blocks.unwrap_or(false);
+        let max_depth = args.max_depth.unwrap_or(2);
         self.client
             .get_page_blocks(
                 api_key,
                 &args.block_id,
                 args.start_cursor.as_deref(),
                 args.page_size,
+                raw_blocks,
+                max_depth,
             )
             .await
     }
@@ -854,7 +885,7 @@ fn extract_page_title(json: &serde_json::Value) -> Option<String> {
     None
 }
 
-fn extract_blocks(json: &serde_json::Value) -> Vec<NotionBlockSummary> {
+fn extract_blocks(json: &serde_json::Value, raw_blocks: bool) -> Vec<NotionBlockSummary> {
     let Some(results) = json.get("results").and_then(|v| v.as_array()) else {
         return Vec::new();
     };
@@ -864,7 +895,9 @@ fn extract_blocks(json: &serde_json::Value) -> Vec<NotionBlockSummary> {
         if let Some(summary) = parse_block_summary(block) {
             blocks.push(summary);
         }
-        if let Some(hint) = extract_missing_hint(block) {
+        if !raw_blocks
+            && let Some(hint) = extract_missing_hint(block)
+        {
             blocks.push(hint);
         }
     }
