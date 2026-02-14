@@ -48,7 +48,11 @@ async fn test_e2e_streaming_greeting() {
 
     let chunks = context::with_scope(scope.as_scope().clone(), async {
         bridge
-            .invoke_function_stream(&scope, "SimpleGreeting", json!({ "name": "Streaming Test" }))
+            .invoke_function_stream(
+                &scope,
+                "SimpleGreeting",
+                json!({ "name": "Streaming Test" }),
+            )
             .await
     })
     .await

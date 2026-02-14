@@ -1104,15 +1104,20 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
     .await
     .expect("first turn timed out")
     .unwrap();
-    eprintln!("conversational-context-auto: first turn complete");
+    eprintln!(
+        "conversational-context-auto: first turn complete, raw response count={}",
+        first_response.len()
+    );
+    for (i, r) in first_response.iter().enumerate() {
+        eprintln!("  response[{i}]: {r}");
+    }
     let first_chunks = chunks_from_responses(&first_response);
     let first_texts = message_texts_from_chunks(&first_chunks);
     assert!(
         first_texts
             .iter()
             .any(|text| text.contains("Computed result is 5")),
-        "Expected first turn to run tool and return computed result. Texts: {:?}",
-        first_texts
+        "Expected first turn to run tool and return computed result. Texts: {first_texts:?}, raw responses: {first_response:?}",
     );
 
     // FalkorDB writes may lag behind turn completion (normalization + Cypher execution);

@@ -381,9 +381,7 @@ impl NotionClient {
             blocks.extend(child_blocks);
         }
 
-        if !raw_blocks
-            && let Some(notable) = extract_notable_lines(&blocks)
-        {
+        if !raw_blocks && let Some(notable) = extract_notable_lines(&blocks) {
             blocks.insert(0, notable);
         }
 
@@ -895,9 +893,7 @@ fn extract_blocks(json: &serde_json::Value, raw_blocks: bool) -> Vec<NotionBlock
         if let Some(summary) = parse_block_summary(block) {
             blocks.push(summary);
         }
-        if !raw_blocks
-            && let Some(hint) = extract_missing_hint(block)
-        {
+        if !raw_blocks && let Some(hint) = extract_missing_hint(block) {
             blocks.push(hint);
         }
     }
