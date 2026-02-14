@@ -59,6 +59,7 @@ class ClickUpTaskSummary {
   id string
   name string
   status string
+  description string?
   url string
   assignees string[]
   priority string?

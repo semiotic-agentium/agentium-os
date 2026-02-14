@@ -55,6 +55,7 @@ pub struct ClickUpInput {
     /// Required for `CreateTask`.
     #[baml(description = "Required for CreateTask.")]
     pub name: Option<String>,
+    /// The clickup-task description
     pub description: Option<String>,
     /// ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
     #[baml(description = "ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")]
@@ -75,6 +76,7 @@ pub struct ClickUpTaskSummary {
     pub id: String,
     pub name: String,
     pub status: String,
+    pub description: Option<String>,
     pub url: String,
     pub assignees: Vec<String>,
     pub priority: Option<String>,
@@ -110,6 +112,7 @@ pub(crate) struct RawClickUpTask {
     pub id: String,
     pub name: String,
     pub status: RawStatus,
+    pub description: Option<String>,
     pub url: String,
     #[serde(default)]
     pub assignees: Vec<RawAssignee>,
@@ -180,6 +183,7 @@ impl From<RawClickUpTask> for ClickUpTaskSummary {
             id: raw.id,
             name: raw.name,
             status: raw.status.status,
+            description: raw.description,
             url: raw.url,
             assignees: raw
                 .assignees
