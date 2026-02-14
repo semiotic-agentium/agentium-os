@@ -14,6 +14,8 @@
 __chat_register({
   run: async (ctx) => {
     const text = ctx.text || "unknown";
+    // Emit a progress signal early so streaming consumers get a chunk even if the LLM is slow.
+    ctx.emit.statusChanged("TASK_STATE_WORKING");
     const toolResult = await ChooseCalcTool({ ...ctx.message, user_message: text });
     if (toolResult != null && typeof toolResult === "object" && "result" in toolResult) {
       return { message: `BAML tool result: sum=${(toolResult as { result: number }).result}` };
