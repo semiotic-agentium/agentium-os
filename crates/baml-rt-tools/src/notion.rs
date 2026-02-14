@@ -355,8 +355,8 @@ impl NotionClient {
         let span = spans::notion_get_page_blocks(block_id);
         let _guard = span.enter();
         let normalized = Self::normalize_id(block_id)?;
-        let (_json, pages, sources, mut blocks, next_cursor, has_more) = self
-            .fetch_blocks_page(api_key, &normalized, start_cursor, page_size)
+        let (pages, sources, mut blocks, next_cursor, has_more) = self
+            .fetch_blocks_all_pages(api_key, &normalized, start_cursor, page_size)
             .await?;
 
         let mut visited = std::collections::HashSet::new();
@@ -365,6 +365,10 @@ impl NotionClient {
             .fetch_child_blocks_recursive(api_key, &blocks, &mut visited)
             .await?;
         blocks.extend(child_blocks);
+
+        if let Some(notable) = extract_notable_lines(&blocks) {
+            blocks.insert(0, notable);
+        }
 
         Ok(NotionOutput {
             pages,
@@ -453,12 +457,58 @@ impl NotionClient {
         Ok((json, pages, sources, blocks, next_cursor, has_more))
     }
 
+    async fn fetch_blocks_all_pages(
+        &self,
+        api_key: &str,
+        block_id: &str,
+        start_cursor: Option<&str>,
+        page_size: Option<u32>,
+    ) -> Result<(
+        Vec<NotionPageSummary>,
+        Vec<NotionSource>,
+        Vec<NotionBlockSummary>,
+        Option<String>,
+        bool,
+    )> {
+        const MAX_BLOCK_PAGES: usize = 10;
+        let mut pages_out = Vec::new();
+        let mut sources_out = Vec::new();
+        let mut blocks_out = Vec::new();
+        let mut cursor = start_cursor.map(|s| s.to_string());
+        let mut has_more = true;
+        let mut next_cursor = None;
+        let mut pages_fetched = 0usize;
+
+        while has_more {
+            let (_json, pages, sources, blocks, next, more) = self
+                .fetch_blocks_page(api_key, block_id, cursor.as_deref(), page_size)
+                .await?;
+            if pages_out.is_empty() {
+                pages_out = pages;
+            }
+            if sources_out.is_empty() {
+                sources_out = sources;
+            }
+            blocks_out.extend(blocks);
+            next_cursor = next.clone();
+            has_more = more;
+            pages_fetched += 1;
+            if !has_more || pages_fetched >= MAX_BLOCK_PAGES {
+                break;
+            }
+            cursor = next;
+        }
+
+        Ok((pages_out, sources_out, blocks_out, next_cursor, has_more))
+    }
+
     async fn fetch_child_blocks_recursive(
         &self,
         api_key: &str,
         blocks: &[NotionBlockSummary],
         visited: &mut std::collections::HashSet<String>,
     ) -> Result<Vec<NotionBlockSummary>> {
+        const MAX_CHILD_BLOCKS_TOTAL: usize = 2000;
         let mut all_children = Vec::new();
         let mut stack: Vec<String> = blocks
             .iter()
@@ -472,8 +522,8 @@ impl NotionClient {
             }
             let span = spans::notion_fetch_child_blocks(&block_id);
             let _guard = span.enter();
-            let (_json, _pages, _sources, child_blocks, _next, _has_more) = self
-                .fetch_blocks_page(api_key, &block_id, None, None)
+            let (_pages, _sources, child_blocks, _next, _has_more) = self
+                .fetch_blocks_all_pages(api_key, &block_id, None, None)
                 .await?;
             for child in child_blocks.iter().filter(|b| b.has_children) {
                 if !visited.contains(&child.id) {
@@ -481,10 +531,62 @@ impl NotionClient {
                 }
             }
             all_children.extend(child_blocks);
+            if all_children.len() >= MAX_CHILD_BLOCKS_TOTAL {
+                break;
+            }
         }
 
         Ok(all_children)
     }
+}
+
+fn extract_notable_lines(blocks: &[NotionBlockSummary]) -> Option<NotionBlockSummary> {
+    const MAX_LINES: usize = 12;
+    let mut lines = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for block in blocks {
+        let Some(text) = block.text.as_ref() else {
+            continue;
+        };
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let keep = matches!(
+            block.block_type.as_str(),
+            "heading_1"
+                | "heading_2"
+                | "heading_3"
+                | "bulleted_list_item"
+                | "numbered_list_item"
+                | "to_do"
+                | "paragraph"
+        );
+        if !keep {
+            continue;
+        }
+        let key = trimmed.to_lowercase();
+        if seen.insert(key) {
+            lines.push(trimmed.to_string());
+        }
+        if lines.len() >= MAX_LINES {
+            break;
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    let body = lines
+        .into_iter()
+        .map(|line| format!("- {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(NotionBlockSummary {
+        id: "notable-lines".to_string(),
+        block_type: "notable_lines".to_string(),
+        text: Some(format!("Notable lines:\n{body}")),
+        has_children: false,
+    })
 }
 
 // ---------------------------------------------------------------------------
