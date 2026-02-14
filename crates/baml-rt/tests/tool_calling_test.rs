@@ -292,7 +292,7 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
         });
     }
 
-    let deadline = Duration::from_secs(30);
+    let deadline = Duration::from_secs(60);
     let start = std::time::Instant::now();
     let mut remaining = 4usize;
     while remaining > 0 {

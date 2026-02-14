@@ -92,11 +92,13 @@ impl QuickJSBridge {
     ///
     /// **Liveness:** Requires that `setup_a2a_yield_buffer` was called.
     pub async fn get_a2a_yield_buffer(&mut self) -> Result<Vec<Value>> {
-        // INVARIANT (stream progress): before every buffer read, drive pending JS jobs once.
-        // Without this, async stream continuations may never run, yielding empty polls forever.
-        self.runtime.exe_rt_task_in_event_loop(|rt| {
-            rt.run_pending_jobs_if_any();
-        });
+        // INVARIANT (stream progress): before every buffer read, drive the QuickJS event loop
+        // so that externally-resolved promises (from JsValueFacade::new_promise tokio tasks)
+        // are picked up and their JS continuations executed. Using eval() processes the full
+        // event loop task queue, not just internal microtasks, ensuring BAML function results
+        // that resolved on a tokio thread are delivered back to JS.
+        let noop = quickjs_runtime::jsutils::Script::new("drive_event_loop.js", "void 0");
+        let _ = self.runtime.eval(None, noop).await;
 
         let mut responses = Vec::new();
         if let Some(rx) = self.a2a_yield_rx.as_mut() {
