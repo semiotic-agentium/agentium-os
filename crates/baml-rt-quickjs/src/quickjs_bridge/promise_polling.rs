@@ -35,8 +35,9 @@ pub(crate) struct PollPromiseParams<'a> {
 
 /// Poll until `__eval_result` is set for the given token or timeout.
 ///
-/// Runs `runtime.run_pending_jobs_if_any()` each iteration so promise
-/// continuations can run. Uses effect-gated timeout: long timeout when
+/// Drives the full QuickJS event loop each iteration via `eval("void 0")`
+/// so that externally-resolved promises (from tokio tasks) are delivered
+/// back to JS continuations. Uses effect-gated timeout: long timeout when
 /// effects are in-flight, short idle timeout otherwise. When the loop
 /// exits (success or timeout), removes the invocation token from
 /// `invocation_scope_by_token` if `token_to_remove` is `Some`.
@@ -66,10 +67,12 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
     let _poll_guard = tracing::trace_span!("baml_rt.poll_promise_resolution").entered();
 
     loop {
-        runtime.exe_rt_task_in_event_loop(|rt| {
-            rt.run_pending_jobs_if_any();
-        });
-        tokio::task::yield_now().await;
+        // Drive the full QuickJS event loop (including the external task queue)
+        // so that promises resolved on tokio threads via JsValueFacade::new_promise
+        // are delivered back to JS continuations. Using eval() rather than
+        // exe_rt_task_in_event_loop ensures the external task queue is processed.
+        let noop = quickjs_runtime::jsutils::Script::new("drive_event_loop.js", "void 0");
+        let _ = runtime.eval(None, noop).await;
 
         let result_str = {
             let mut guard = eval_results_by_token
