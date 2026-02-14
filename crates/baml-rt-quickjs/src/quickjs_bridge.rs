@@ -490,6 +490,7 @@ impl QuickJSBridge {
                         let (tx, mut rx) = mpsc::channel::<serde_json::Value>(100);
                         let func_name_stream = func_name_clone.clone();
                         let args_json_stream = args_json.clone();
+                        let args_json_fallback = args_json_stream.clone();
                         let spawn_correlation_id = correlation_id_for_spawn.clone();
                         let spawn_scope = scope.clone();
                         let scope_for_stream = spawn_scope.clone();
@@ -566,41 +567,78 @@ impl QuickJSBridge {
                                 // tool calls (or other re-entry) during the stream can take the lock.
                                 drop(manager);
                                 let env_vars = HashMap::new();
-                                let (final_result, _call_id) = stream
-                                    .run(
-                                        None::<fn()>, // on_tick
-                                        Some(|result: baml_runtime::FunctionResult| {
-                                            if let Some(Ok(parsed)) = result.parsed()
-                                                && let Ok(parsed_value) =
-                                                    serde_json::to_value(parsed.serialize_partial())
-                                                && let Err(e) = tx.try_send(parsed_value)
-                                            {
-                                                tracing::warn!(error = ?e, "Stream channel try_send failed");
-                                            }
-                                        }),
-                                        &ctx_manager,
-                                        None, // type_builder
-                                        None, // client_registry
-                                        env_vars,
-                                    )
-                                    .await;
-
-                                // Send final result
-                                match final_result {
-                                    Ok(result) => {
-                                        // parsed() returns Option<Result<ResponseBamlValue, Error>>
+                                let stream_run = stream.run(
+                                    None::<fn()>, // on_tick
+                                    Some(|result: baml_runtime::FunctionResult| {
                                         if let Some(Ok(parsed)) = result.parsed()
-                                            && let Ok(final_value) =
+                                            && let Ok(parsed_value) =
                                                 serde_json::to_value(parsed.serialize_partial())
-                                            && let Err(e) = tx.send(final_value).await
+                                            && let Err(e) = tx.try_send(parsed_value)
                                         {
-                                            tracing::warn!(error = ?e, "Stream channel send failed");
+                                            tracing::warn!(error = ?e, "Stream channel try_send failed");
+                                        }
+                                    }),
+                                    &ctx_manager,
+                                    None, // type_builder
+                                    None, // client_registry
+                                    env_vars,
+                                );
+
+                                let stream_result = tokio::time::timeout(
+                                    std::time::Duration::from_secs(35),
+                                    stream_run,
+                                )
+                                .await;
+
+                                match stream_result {
+                                    Ok((final_result, _call_id)) => {
+                                        // Send final result
+                                        match final_result {
+                                            Ok(result) => {
+                                                if let Some(Ok(parsed)) = result.parsed()
+                                                    && let Ok(final_value) =
+                                                        serde_json::to_value(parsed.serialize_partial())
+                                                    && let Err(e) = tx.send(final_value).await
+                                                {
+                                                    tracing::warn!(error = ?e, "Stream channel send failed");
+                                                }
+                                            }
+                                            Err(e) => {
+                                                let error_value = serde_json::json!({"error": format!("{}", e)});
+                                                if let Err(e) = tx.send(error_value).await {
+                                                    tracing::warn!(error = ?e, "Stream channel send failed");
+                                                }
+                                            }
                                         }
                                     }
-                                    Err(e) => {
-                                        let error_value = serde_json::json!({"error": format!("{}", e)});
-                                        if let Err(e) = tx.send(error_value).await {
-                                            tracing::warn!(error = ?e, "Stream channel send failed");
+                                    Err(_) => {
+                                        tracing::warn!(
+                                            function = %func_name_stream,
+                                            "BAML stream timed out; falling back to non-stream invoke"
+                                        );
+                                        let manager = manager_for_stream.lock().await;
+                                        let invocation_scope =
+                                            InvocationScope::new(scope_for_stream.clone());
+                                        match manager
+                                            .invoke_function(
+                                                &invocation_scope,
+                                                &func_name_stream,
+                                                args_json_fallback,
+                                            )
+                                            .await
+                                        {
+                                            Ok(value) => {
+                                                if let Err(e) = tx.send(value).await {
+                                                    tracing::warn!(error = ?e, "Stream channel send failed");
+                                                }
+                                            }
+                                            Err(e) => {
+                                                let error_value =
+                                                    serde_json::json!({"error": format!("{}", e)});
+                                                if let Err(e) = tx.send(error_value).await {
+                                                    tracing::warn!(error = ?e, "Stream channel send failed");
+                                                }
+                                            }
                                         }
                                     }
                                 }
