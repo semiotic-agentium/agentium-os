@@ -859,7 +859,16 @@ fn extract_blocks(json: &serde_json::Value) -> Vec<NotionBlockSummary> {
         return Vec::new();
     };
 
-    results.iter().filter_map(parse_block_summary).collect()
+    let mut blocks = Vec::new();
+    for block in results {
+        if let Some(summary) = parse_block_summary(block) {
+            blocks.push(summary);
+        }
+        if let Some(hint) = extract_missing_hint(block) {
+            blocks.push(hint);
+        }
+    }
+    blocks
 }
 
 fn parse_block_summary(json: &serde_json::Value) -> Option<NotionBlockSummary> {
@@ -884,6 +893,20 @@ fn parse_block_summary(json: &serde_json::Value) -> Option<NotionBlockSummary> {
 
 fn extract_block_text(json: &serde_json::Value, block_type: &str) -> Option<String> {
     let block = json.get(block_type)?;
+    if block_type == "table_row" {
+        let cells = block.get("cells")?.as_array()?;
+        let mut parts = Vec::new();
+        for cell in cells {
+            let text = extract_rich_text(cell);
+            parts.push(text);
+        }
+        let text = parts.join(" | ");
+        return if text.trim().is_empty() {
+            None
+        } else {
+            Some(text)
+        };
+    }
     let rich_text = block.get("rich_text")?.as_array()?;
     let text = rich_text
         .iter()
@@ -891,6 +914,50 @@ fn extract_block_text(json: &serde_json::Value, block_type: &str) -> Option<Stri
         .collect::<Vec<_>>()
         .join("");
     if text.is_empty() { None } else { Some(text) }
+}
+
+fn extract_rich_text(value: &serde_json::Value) -> String {
+    let Some(array) = value.as_array() else {
+        return String::new();
+    };
+    array
+        .iter()
+        .filter_map(|t| t.get("plain_text").and_then(|v| v.as_str()))
+        .collect::<Vec<_>>()
+        .join("")
+}
+
+fn extract_missing_hint(json: &serde_json::Value) -> Option<NotionBlockSummary> {
+    if json.get("object")?.as_str()? != "block" {
+        return None;
+    }
+    let id = json.get("id")?.as_str()?.to_string();
+    let block_type = json.get("type")?.as_str()?;
+    if block_type != "table_row" {
+        return None;
+    }
+    let row = json.get("table_row")?;
+    let cells = row.get("cells")?.as_array()?;
+    let mut empty = 0usize;
+    let mut total = 0usize;
+    for cell in cells {
+        total += 1;
+        let text = extract_rich_text(cell);
+        if text.trim().is_empty() {
+            empty += 1;
+        }
+    }
+    if empty == 0 {
+        return None;
+    }
+    Some(NotionBlockSummary {
+        id: format!("{id}-missing"),
+        block_type: "missing_hint".to_string(),
+        text: Some(format!(
+            "Missing info: table row has {empty} empty cells out of {total}."
+        )),
+        has_children: false,
+    })
 }
 
 fn extract_parent_page_id(json: &serde_json::Value) -> Option<String> {

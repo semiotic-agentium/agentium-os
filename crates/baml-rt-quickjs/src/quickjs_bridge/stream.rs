@@ -1,4 +1,5 @@
 use super::QuickJSBridge;
+use crate::quickjs_bridge::eval::drive_event_loop;
 use baml_rt_core::context::InvocationScope;
 use baml_rt_core::{BamlRtError, Result};
 use quickjs_runtime::jsutils::Script;
@@ -97,8 +98,7 @@ impl QuickJSBridge {
         // are picked up and their JS continuations executed. Using eval() processes the full
         // event loop task queue, not just internal microtasks, ensuring BAML function results
         // that resolved on a tokio thread are delivered back to JS.
-        let noop = quickjs_runtime::jsutils::Script::new("drive_event_loop.js", "void 0");
-        let _ = self.runtime.eval(None, noop).await;
+        let _ = drive_event_loop(&self.runtime).await;
 
         let mut responses = Vec::new();
         if let Some(rx) = self.a2a_yield_rx.as_mut() {
@@ -233,9 +233,7 @@ impl QuickJSBridge {
 
         // Run pending jobs to allow the async function to start executing
         // This ensures the function begins running and can yield chunks
-        self.runtime.exe_rt_task_in_event_loop(|rt| {
-            rt.run_pending_jobs_if_any();
-        });
+        let _ = drive_event_loop(&self.runtime).await;
 
         // Yield to tokio to allow the async function to progress
         tokio::task::yield_now().await;

@@ -5,7 +5,7 @@
 //! Effect-gated timeout (L5–L6) distinguishes "waiting on effect" from
 //! "will never yield". See docs/HOST_QUICKJS_STREAM_INVARIANTS.md.
 
-use crate::quickjs_bridge::eval::EffectGatedPoller;
+use crate::quickjs_bridge::eval::{EffectGatedPoller, drive_event_loop};
 use baml_rt_core::context::{InvocationScope, RuntimeScope};
 use baml_rt_core::effects::EffectLiveness;
 use baml_rt_core::{BamlRtError, Result};
@@ -71,8 +71,7 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
         // so that promises resolved on tokio threads via JsValueFacade::new_promise
         // are delivered back to JS continuations. Using eval() rather than
         // exe_rt_task_in_event_loop ensures the external task queue is processed.
-        let noop = quickjs_runtime::jsutils::Script::new("drive_event_loop.js", "void 0");
-        let _ = runtime.eval(None, noop).await;
+        let _ = drive_event_loop(runtime).await;
 
         let result_str = {
             let mut guard = eval_results_by_token

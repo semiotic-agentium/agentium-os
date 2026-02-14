@@ -2,7 +2,10 @@
 
 #![recursion_limit = "256"]
 
+use baml_rt_core::context::{InvocationScope, RuntimeScope};
+use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
 use test_support::common::{agent_fixture, setup_baml_runtime_from_fixture, setup_bridge};
+use uuid::Uuid;
 
 #[tokio::test]
 async fn test_js_invoke_baml_function() {
@@ -65,4 +68,44 @@ async fn test_js_invoke_baml_function() {
 
     // At minimum, verify that we received a non-null response payload.
     assert!(!json_result.is_null(), "Expected a non-null response value");
+}
+
+#[tokio::test]
+async fn test_tool_session_promise_resolves_via_event_loop_drive() {
+    // Exercise host-resolved promises without LLM calls by using support/calculate tool session.
+    let baml_manager = setup_baml_runtime_from_fixture("stream-baml-tool");
+    let mut bridge = setup_bridge(baml_manager.clone()).await;
+
+    let scope = InvocationScope::new(RuntimeScope::task_scope(
+        ContextId::new(1700000000000, 1),
+        AgentId::from_uuid(UuidId::new(Uuid::new_v4())),
+        MessageId::from_external(ExternalId::new("msg-1")),
+        TaskId::from_external(ExternalId::new("task-1")),
+    ));
+
+    let js_code = r#"
+        (function() {
+            const promise = (async function() {
+                const session = await openToolSession("support/calculate", __baml_invocation_token);
+                await session.send({ expression: { left: 2, operation: "+", right: 3 }});
+                const step = await session.continue();
+                await session.finish();
+                return JSON.stringify(step);
+            })();
+            return __awaitAndStringify(promise);
+        })()
+    "#;
+
+    let result = bridge.evaluate(Some(&scope), js_code).await;
+    let json_result = match result {
+        Ok(val) => val,
+        Err(e) => {
+            panic!("Expected tool session promise to resolve, got error: {e:?}");
+        }
+    };
+
+    assert!(
+        !json_result.is_null(),
+        "Expected non-null tool session result"
+    );
 }
