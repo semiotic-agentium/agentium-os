@@ -211,6 +211,14 @@ pub fn render_a2a_shim() -> Result<String> {
     throw new Error('runReActLoop exceeded maxSteps');
   }
   globalThis.runReActLoop = runReActLoop;
+
+  async function runReActLoopHost(token, opts) {
+    if (!token) {
+      throw new Error('Missing invocation token for runReActLoopHost.');
+    }
+    return await __run_react_loop_host(token, JSON.stringify(opts || {}));
+  }
+  globalThis.runReActLoopHost = runReActLoopHost;
 })();
 "#;
 

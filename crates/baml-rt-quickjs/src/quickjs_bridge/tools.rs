@@ -1,5 +1,6 @@
 use super::wrappers;
 use super::{QuickJSBridge, empty_open_input, tool_step_to_value};
+use crate::baml::{extract_tool_call, extract_tool_session_plan};
 use crate::js_value_converter::value_to_js_value_facade;
 use baml_rt_core::context;
 use baml_rt_core::correlation;
@@ -8,7 +9,9 @@ use baml_rt_tools::ToolSessionId;
 use quickjs_runtime::jsutils::Script;
 use quickjs_runtime::quickjsrealmadapter::QuickJsRealmAdapter;
 use quickjs_runtime::values::JsValueFacade;
+use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashSet;
 
 impl QuickJSBridge {
     /// Register all tool functions with QuickJS
@@ -17,6 +20,7 @@ impl QuickJSBridge {
 
         // Register helper function to execute tools
         self.register_tool_invoke_helper().await?;
+        self.register_react_loop_host().await?;
         self.register_tool_session_helpers().await?;
         self.register_tool_session_wrapper().await?;
 
@@ -28,6 +32,132 @@ impl QuickJSBridge {
         for tool_name in tool_names {
             self.register_single_tool(&tool_name).await?;
         }
+
+        Ok(())
+    }
+
+    pub(crate) async fn register_react_loop_host(&mut self) -> Result<()> {
+        #[derive(Deserialize)]
+        struct ReActLoopHostOptions {
+            #[serde(rename = "planFunction", alias = "plan_function")]
+            plan_function: String,
+            #[serde(rename = "userMessage", alias = "user_message")]
+            user_message: String,
+            #[serde(rename = "maxSteps", alias = "max_steps")]
+            max_steps: Option<u32>,
+            #[serde(default)]
+            dedupe: Option<bool>,
+        }
+
+        let manager_clone = self.baml_manager.clone();
+        let scope_map = self.invocation_scope_by_token.clone();
+        let correlation_map = self.correlation_id_by_token.clone();
+
+        self.runtime
+            .set_function(
+                &[],
+                "__run_react_loop_host",
+                move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
+                    let token = super::scope::token_from_args(&args).ok_or_else(|| {
+                        quickjs_runtime::jsutils::JsError::new_str(
+                            "Missing or invalid invocation token (first arg must be token string)",
+                        )
+                    })?;
+                    let (scope, skip) = super::resolve_scope_from_token_arg(&scope_map, &args)?;
+                    if args.len() < skip + 1 {
+                        return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (token, opts_json)"));
+                    }
+                    let opts_json_str = if args[skip].is_string() {
+                        args[skip].get_str().to_string()
+                    } else {
+                        return Err(quickjs_runtime::jsutils::JsError::new_str("Options must be a JSON string"));
+                    };
+                    let opts: ReActLoopHostOptions = serde_json::from_str(&opts_json_str)
+                        .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&format!("Failed to parse options JSON: {}", e)))?;
+                    let manager_for_promise = manager_clone.clone();
+                    let correlation_id = correlation_map
+                        .lock()
+                        .ok()
+                        .and_then(|map| map.get(&token).cloned());
+
+                    Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                        let run = async move {
+                            context::with_scope(scope.clone(), async move {
+                                let max_steps = opts.max_steps.unwrap_or(5);
+                                let mut seen: HashSet<String> = HashSet::new();
+                                for _ in 0..max_steps {
+                                    let args = serde_json::json!({ "user_message": &opts.user_message });
+                                    let plan_value = {
+                                        let manager = manager_for_promise.lock().await;
+                                        manager.invoke_function(&scope, &opts.plan_function, args).await
+                                    };
+                                    let plan_value = match plan_value {
+                                        Ok(value) => value,
+                                        Err(e) => {
+                                            return Err(quickjs_runtime::jsutils::JsError::new_str(
+                                                &format!("ReAct plan function error: {}", e),
+                                            ));
+                                        }
+                                    };
+
+                                    let is_plan = extract_tool_session_plan(&plan_value)
+                                        .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&format!("Plan extraction error: {}", e)))?
+                                        .is_some()
+                                        || extract_tool_call(&plan_value)
+                                            .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&format!("Plan extraction error: {}", e)))?
+                                            .is_some();
+
+                                    if !is_plan {
+                                        if let Some(message) = match &plan_value {
+                                            Value::String(s) => Some(s.clone()),
+                                            Value::Object(map) => map.get("message").and_then(|v| v.as_str()).map(|s| s.to_string()),
+                                            _ => None,
+                                        } {
+                                            return Ok(JsValueFacade::new_string(message));
+                                        }
+                                        return Err(quickjs_runtime::jsutils::JsError::new_str(
+                                            "ReAct plan did not return a tool call or final message",
+                                        ));
+                                    }
+
+                                    if opts.dedupe.unwrap_or(true) {
+                                        let key = serde_json::to_string(&plan_value).unwrap_or_default();
+                                        if seen.contains(&key) {
+                                            return Err(quickjs_runtime::jsutils::JsError::new_str(
+                                                "runReActLoopHost detected repeated tool call",
+                                            ));
+                                        }
+                                        seen.insert(key);
+                                    }
+
+                                    let observation = {
+                                        let manager = manager_for_promise.lock().await;
+                                        manager.execute_tool_from_baml_result_or_value(&scope, plan_value).await
+                                    };
+                                    if let Err(e) = observation {
+                                        return Err(quickjs_runtime::jsutils::JsError::new_str(
+                                            &format!("ReAct tool execution error: {}", e),
+                                        ));
+                                    }
+                                }
+                                Err(quickjs_runtime::jsutils::JsError::new_str(
+                                    "runReActLoopHost exceeded maxSteps",
+                                ))
+                            })
+                            .await
+                        };
+                        if let Some(correlation_id) = correlation_id {
+                            correlation::with_correlation_id(correlation_id, run).await
+                        } else {
+                            run.await
+                        }
+                    }))
+                },
+            )
+            .map_err(|e| BamlRtError::QuickJsWithSource {
+                context: "Failed to register runReActLoopHost".to_string(),
+                source: Box::new(e),
+            })?;
 
         Ok(())
     }

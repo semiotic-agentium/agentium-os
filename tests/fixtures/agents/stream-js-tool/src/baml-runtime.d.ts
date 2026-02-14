@@ -114,6 +114,17 @@ export interface ReActLoopOptions {
 }
 declare function runReActLoop(opts: ReActLoopOptions): Promise<string>;
 /**
+ * Host-native ReAct loop helper.
+ * Executes the plan function and tool calls in Rust; JS only passes options.
+ */
+export interface ReActLoopHostOptions {
+    planFunction: string;
+    userMessage: string;
+    maxSteps?: number;
+    dedupe?: boolean;
+}
+declare function runReActLoopHost(token: string, opts: ReActLoopHostOptions): Promise<string>;
+/**
  * Bootstrap-generated: handler types. Incoming message (parts only; IDs/context are host-managed).
  * Session lifecycle: host invokes onChatMessage(message); agent uses session(message).run(...) to run work and emit outcomes.
  */

@@ -9,7 +9,6 @@
 declare global {
 
 declare function ChooseNotionAction(args?: Record<string, unknown>): Promise<unknown>;
-declare function SummarizeNotionContent(args?: Record<string, unknown>): Promise<unknown>;
 
 }
 
@@ -94,6 +93,18 @@ export interface A2aSessionClosed {
     closed: true;
 }
 declare function openA2aTaskSession<I = unknown>(token: string): Promise<A2aSessionAwaitingInput<I>>;
+
+/**
+ * Host-native ReAct loop helper.
+ * Executes the plan function and tool calls in Rust; JS only passes options.
+ */
+export interface ReActLoopHostOptions {
+    planFunction: string;
+    userMessage: string;
+    maxSteps?: number;
+    dedupe?: boolean;
+}
+declare function runReActLoopHost(token: string, opts: ReActLoopHostOptions): Promise<string>;
 export type ToolFailureKind =
     | "InvalidInput"
     | "ExecutionFailed"
