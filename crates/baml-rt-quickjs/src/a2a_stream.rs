@@ -197,6 +197,9 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
                 collected.extend(responses);
                 if has_signal {
                     last_nonempty = Some(Instant::now());
+                } else if last_nonempty.is_none() {
+                    // Tool-heavy streams should still settle after terminal output.
+                    last_nonempty = Some(Instant::now());
                 }
             }
             if saw_output

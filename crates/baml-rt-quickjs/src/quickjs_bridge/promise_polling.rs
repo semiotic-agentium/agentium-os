@@ -71,7 +71,9 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
         // so that promises resolved on tokio threads via JsValueFacade::new_promise
         // are delivered back to JS continuations. Using eval() rather than
         // exe_rt_task_in_event_loop ensures the external task queue is processed.
-        let _ = drive_event_loop(runtime).await;
+        if let Err(err) = drive_event_loop(runtime).await {
+            tracing::warn!(error = ?err, "QuickJS drive_event_loop failed");
+        }
 
         let result_str = {
             let mut guard = eval_results_by_token

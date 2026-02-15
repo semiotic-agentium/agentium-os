@@ -176,7 +176,11 @@ impl ToolSession for A2aSession {
                                 Err(e) => vec![serde_json::json!({ "error": e.to_string() })],
                             };
                             for response in responses {
-                                let _ = response_tx.send(response);
+                                if response_tx.send(response).is_err() {
+                                    tracing::debug!(
+                                        "A2A session response dropped: receiver closed"
+                                    );
+                                }
                             }
                         })
                     }))
@@ -195,7 +199,9 @@ impl ToolSession for A2aSession {
                         Err(e) => vec![serde_json::json!({ "error": e.to_string() })],
                     };
                     for response in responses {
-                        let _ = response_tx.send(response);
+                        if response_tx.send(response).is_err() {
+                            tracing::debug!("A2A session response dropped: receiver closed");
+                        }
                     }
                 }));
             }

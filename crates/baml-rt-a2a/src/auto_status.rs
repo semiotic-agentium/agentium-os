@@ -20,6 +20,7 @@ static STATUS_MESSAGE_COUNTER: AtomicU64 = AtomicU64::new(1);
 pub struct AutoWorkingStatusSubscriber {
     task_store: Arc<dyn TaskStoreBackend>,
     update_tx: broadcast::Sender<TaskUpdateEvent>,
+    broadcast_guard: tokio::sync::Mutex<()>,
 }
 
 impl AutoWorkingStatusSubscriber {
@@ -30,6 +31,7 @@ impl AutoWorkingStatusSubscriber {
         Self {
             task_store,
             update_tx,
+            broadcast_guard: tokio::sync::Mutex::new(()),
         }
     }
 
@@ -79,6 +81,7 @@ impl AutoWorkingStatusSubscriber {
             timestamp: None,
             extra: HashMap::new(),
         };
+        let _guard = self.broadcast_guard.lock().await;
         match self
             .task_store
             .record_status_update(Some(task_id.clone()), Some(context_id.clone()), status)

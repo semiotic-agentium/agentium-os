@@ -121,7 +121,11 @@ impl QuickJSBridge {
                                     }
 
                                     if opts.dedupe.unwrap_or(true) {
-                                        let key = serde_json::to_string(&plan_value).unwrap_or_default();
+                                        let key = serde_json::to_string(&plan_value).map_err(|e| {
+                                            quickjs_runtime::jsutils::JsError::new_str(
+                                                &format!("Failed to serialize plan for dedupe: {e}"),
+                                            )
+                                        })?;
                                         if seen.contains(&key) {
                                             return Err(quickjs_runtime::jsutils::JsError::new_str(
                                                 "runReActLoopHost detected repeated tool call",
