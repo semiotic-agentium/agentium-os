@@ -33,8 +33,9 @@ use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::ids::{AgentId, UuidId};
 use test_support::common::{
     CalculatorTool, WeatherTool, agent_fixture, assert_tool_registered_in_js,
-    ensure_fixture_runtime_types, require_api_key, setup_baml_runtime_default,
-    setup_baml_runtime_from_fixture, setup_bridge,
+    ensure_fixture_runtime_types, require_api_key, run_live_llm_with_retry,
+    run_live_llm_with_retry_no_gate, setup_baml_runtime_default, setup_baml_runtime_from_fixture,
+    setup_bridge,
 };
 
 /// **Purpose:** Verify tool registration and direct execution from Rust (execute_tool_with_scope,
@@ -194,35 +195,37 @@ async fn test_e2e_voidship_baml_tool_calling() {
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-0000000000b1").unwrap());
     let scope = InvocationScope::synthetic_message(agent_id);
 
-    let result = context::with_scope(scope.as_scope().clone(), async {
-        let manager = baml_manager.lock().await;
-        manager
-            .invoke_function(
-                scope.as_scope(),
-                "ChooseCalcTool",
-                json!({"user_message": "Perform the rite of sums."}),
-            )
+    let tool_choice = run_live_llm_with_retry(
+        "ChooseCalcTool single",
+        3,
+        Duration::from_secs(120),
+        |_| async {
+            context::with_scope(scope.as_scope().clone(), async {
+                let manager = baml_manager.lock().await;
+                manager
+                    .invoke_function(
+                        scope.as_scope(),
+                        "ChooseCalcTool",
+                        json!({"user_message": "Perform the rite of sums."}),
+                    )
+                    .await
+            })
             .await
-    })
-    .await;
+        },
+    )
+    .await
+    .expect("BAML tool selection should succeed");
 
-    match result {
-        Ok(tool_choice) => {
-            let manager = baml_manager.lock().await;
-            let tool_result = manager
-                .execute_tool_from_baml_result_or_value(scope.as_scope(), tool_choice)
-                .await
-                .expect("Should execute tool from BAML result");
-            let value = tool_result
-                .get("result")
-                .and_then(|v| v.as_f64())
-                .unwrap_or_default();
-            assert_eq!(value, 5.0, "Expected 2 + 3 = 5");
-        }
-        Err(e) => {
-            tracing::warn!("BAML tool selection failed: {}", e);
-        }
-    }
+    let manager = baml_manager.lock().await;
+    let tool_result = manager
+        .execute_tool_from_baml_result_or_value(scope.as_scope(), tool_choice)
+        .await
+        .expect("Should execute tool from BAML result");
+    let value = tool_result
+        .get("result")
+        .and_then(|v| v.as_f64())
+        .unwrap_or_default();
+    assert_eq!(value, 5.0, "Expected 2 + 3 = 5");
 }
 
 /// **Purpose:** Authoritative concurrent E2E: four requests with distinct agent IDs run
@@ -263,19 +266,27 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
             let left = (idx as f64) + 2.0;
             let right = (idx as f64) + 3.0;
             let expected = left + right;
-            let result = context::with_scope(scope.as_scope().clone(), async {
-                let tool_choice = manager
-                    .invoke_function(
-                        scope.as_scope(),
-                        "ChooseCalcTool",
-                        json!({"user_message": format!("Compute {} + {} (req {})", left, right, idx)}),
-                    )
-                    .await?;
-                println!("ChooseCalcTool result (req {}): {:?}", idx, tool_choice);
-                manager
-                    .execute_tool_from_baml_result_or_value(scope.as_scope(), tool_choice)
+            let result = run_live_llm_with_retry_no_gate(
+                "ChooseCalcTool concurrent",
+                3,
+                Duration::from_secs(120),
+                |_| async {
+                    context::with_scope(scope.as_scope().clone(), async {
+                        let tool_choice = manager
+                            .invoke_function(
+                                scope.as_scope(),
+                                "ChooseCalcTool",
+                                json!({"user_message": format!("Compute {} + {} (req {})", left, right, idx)}),
+                            )
+                            .await?;
+                        println!("ChooseCalcTool result (req {}): {:?}", idx, tool_choice);
+                        manager
+                            .execute_tool_from_baml_result_or_value(scope.as_scope(), tool_choice)
+                            .await
+                    })
                     .await
-            })
+                },
+            )
             .await?;
 
             let value = result

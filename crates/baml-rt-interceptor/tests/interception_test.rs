@@ -1,7 +1,6 @@
 //! Integration and end-to-end tests for LLM interception.
 
 use baml_rt::{
-    BamlRtError,
     error::Result,
     interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor},
 };
@@ -12,7 +11,9 @@ use tokio::sync::Mutex;
 
 use baml_rt_core::context;
 use baml_rt_core::ids::{AgentId, UuidId};
-use test_support::common::{require_api_key, setup_baml_runtime_manager_default};
+use test_support::common::{
+    require_api_key, run_live_llm_with_retry, setup_baml_runtime_manager_default,
+};
 /// Test interceptor that tracks pre-execution calls
 struct PreExecutionTracker {
     pre_execution_calls: Arc<Mutex<Vec<LLMCallContext>>>,
@@ -608,45 +609,28 @@ async fn test_e2e_llm_interceptor_with_baml_execution() {
     baml_manager.register_llm_interceptor(interceptor).await;
 
     // Execute a BAML function that makes an LLM call.
-    // CI can see occasional OpenRouter timeouts; retry with a bounded per-attempt timeout.
     tracing::info!("Calling SimpleGreeting BAML function (should trigger LLM interceptor)");
     let baml_manager = Arc::new(baml_manager);
-    let mut last_err: Option<String> = None;
-    let mut result = None;
-    for attempt in 1..=3 {
-        let mgr = Arc::clone(&baml_manager);
-        let call = with_test_agent_scope(|scope| async move {
-            mgr.invoke_function(
-                scope.as_scope(),
-                "SimpleGreeting",
-                serde_json::json!({"name": "E2E Test"}),
-            )
-            .await
-        });
-
-        match tokio::time::timeout(tokio::time::Duration::from_secs(90), call).await {
-            Ok(Ok(value)) => {
-                result = Some(Ok(value));
-                break;
+    let result = run_live_llm_with_retry(
+        "SimpleGreeting interceptor",
+        3,
+        Duration::from_secs(120),
+        |_| {
+            let mgr = Arc::clone(&baml_manager);
+            async move {
+                with_test_agent_scope(|scope| async move {
+                    mgr.invoke_function(
+                        scope.as_scope(),
+                        "SimpleGreeting",
+                        serde_json::json!({"name": "E2E Test"}),
+                    )
+                    .await
+                })
+                .await
             }
-            Ok(Err(err)) => {
-                last_err = Some(format!("attempt {attempt}: {err:?}"));
-            }
-            Err(_) => {
-                last_err = Some(format!("attempt {attempt}: timed out"));
-            }
-        }
-
-        if attempt < 3 {
-            tokio::time::sleep(tokio::time::Duration::from_secs(2 * attempt)).await;
-        }
-    }
-
-    let result = result.unwrap_or_else(|| {
-        Err(BamlRtError::BamlRuntime(
-            last_err.unwrap_or_else(|| "LLM call failed".to_string()),
-        ))
-    });
+        },
+    )
+    .await;
 
     // Verify the function executed successfully
     assert!(result.is_ok(), "BAML function should execute successfully");

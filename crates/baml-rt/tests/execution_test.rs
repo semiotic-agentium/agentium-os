@@ -3,7 +3,11 @@
 use baml_rt_core::context::InvocationScope;
 use baml_rt_core::ids::{AgentId, UuidId};
 use serde_json::json;
-use test_support::common::{ensure_baml_src_exists, setup_baml_runtime_manager_default};
+use std::time::Duration;
+use test_support::common::{
+    ensure_baml_src_exists, require_api_key, run_live_llm_with_retry,
+    setup_baml_runtime_manager_default,
+};
 
 #[tokio::test]
 async fn test_load_and_execute_simple_greeting() {
@@ -12,6 +16,7 @@ async fn test_load_and_execute_simple_greeting() {
     if !ensure_baml_src_exists() {
         return;
     }
+    let _ = require_api_key();
     let manager = setup_baml_runtime_manager_default();
 
     // Verify function was discovered
@@ -28,52 +33,22 @@ async fn test_load_and_execute_simple_greeting() {
     let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
         UuidId::parse_str("00000000-0000-0000-0000-0000000000e1").unwrap(),
     ));
-    let mut last_value = None;
-    let mut response = String::new();
-    for attempt in 1..=2 {
-        let result = manager
-            .invoke_function(scope.as_scope(), "SimpleGreeting", json!({"name": "Alice"}))
-            .await;
+    let value = run_live_llm_with_retry(
+        "SimpleGreeting execute",
+        3,
+        Duration::from_secs(120),
+        |_| async {
+            manager
+                .invoke_function(scope.as_scope(), "SimpleGreeting", json!({"name": "Alice"}))
+                .await
+        },
+    )
+    .await
+    .expect("BAML function should execute successfully");
 
-        match result {
-            Ok(value) => {
-                // If it succeeds, should return a string
-                assert!(value.is_string(), "Result should be a string");
-                response = value.as_str().unwrap_or("").trim().to_string();
-                last_value = Some(value);
-                if !response.is_empty() {
-                    println!("Function executed successfully: {}", response);
-                    break;
-                }
-                println!("Empty response on attempt {attempt}; retrying");
-            }
-            Err(e) => {
-                // Check error is not "not implemented" or "not found"
-                let err_msg = format!("{}", e);
-                assert!(
-                    !err_msg.contains("not yet implemented")
-                        && !err_msg.contains("not implemented")
-                        && !err_msg.contains("FunctionNotFound"),
-                    "Should not fail with implementation errors. Error: {}",
-                    err_msg
-                );
-                // Other errors (like missing API keys) are acceptable for now
-                println!(
-                    "Function execution failed (likely API/config issue): {}",
-                    err_msg
-                );
-                return;
-            }
-        }
-    }
-
-    if response.is_empty() {
-        println!(
-            "Empty response after retries (likely transient provider issue). Value: {:?}",
-            last_value
-        );
-        return;
-    }
+    assert!(value.is_string(), "Result should be a string");
+    let response = value.as_str().unwrap_or("").trim().to_string();
+    assert!(!response.is_empty(), "Response should not be empty");
 }
 
 #[tokio::test]

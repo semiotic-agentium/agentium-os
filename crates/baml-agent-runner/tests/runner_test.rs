@@ -24,6 +24,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use tar::Builder;
 #[cfg(feature = "falkordb-tests")]
 use test_support::common::shared_falkordb;
@@ -45,7 +46,8 @@ use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, SendMessageRequest};
 
 use test_support::common::{
     CalculatorTool, agent_fixture, chunks_from_responses, ensure_baml_src_exists,
-    ensure_fixture_runtime_types, message_texts_from_chunks, user_message, workspace_root,
+    ensure_fixture_runtime_types, message_texts_from_chunks, run_live_llm_with_retry,
+    user_message, workspace_root,
 };
 use test_support::support::cli::CliHarness;
 
@@ -565,9 +567,21 @@ async fn test_e2e_agent_runner_invoke_function() {
         },
         "corr-1-1",
     );
-    let outcome = agent
-        .handle_a2a(serde_json::to_value(request).expect("request json"))
-        .await;
+    let outcome = run_live_llm_with_retry(
+        "agent_runner_invoke_function",
+        3,
+        Duration::from_secs(120),
+        |_| {
+            let agent = agent.clone();
+            let req = request.clone();
+            async move {
+                agent
+                    .handle_a2a(serde_json::to_value(req).expect("request json"))
+                    .await
+            }
+        },
+    )
+    .await;
 
     match outcome {
         Ok(responses) => {
@@ -630,10 +644,18 @@ async fn test_e2e_stream_baml_tool() {
         extra: std::collections::HashMap::new(),
     };
     let request = send_message_request(params, "corr-1-1");
-    let responses = agent
-        .handle_a2a(serde_json::to_value(request).unwrap())
-        .await
-        .unwrap();
+    let responses = run_live_llm_with_retry(
+        "agent_runner_stream_baml_tool",
+        3,
+        Duration::from_secs(120),
+        |_| {
+            let agent = agent.clone();
+            let req = request.clone();
+            async move { agent.handle_a2a(serde_json::to_value(req).unwrap()).await }
+        },
+    )
+    .await
+    .unwrap();
     let chunks = chunks_from_responses(&responses);
     let texts = message_texts_from_chunks(&chunks);
     let text = texts

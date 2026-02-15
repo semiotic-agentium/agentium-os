@@ -17,8 +17,11 @@ use baml_rt_core::context::{self, InvocationScope};
 use serde_json::json;
 use std::fs;
 use std::sync::Arc;
+use std::time::Duration;
 
-use test_support::common::{CalculatorTool, agent_fixture, ensure_fixture_runtime_types};
+use test_support::common::{
+    CalculatorTool, agent_fixture, ensure_fixture_runtime_types, run_live_llm_with_retry,
+};
 
 /// QuickJS config for LLM-dependent contract tests. Timeout must accommodate combined retries
 /// (parse retry + BAML client retry) which can exceed 15s; 45s provides margin.
@@ -60,16 +63,28 @@ async fn test_baml_function_returns_actual_result() {
         .unwrap();
     let bridge_handle = agent.bridge();
     let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
-    let result = context::with_scope(scope.as_scope().clone(), async {
-        let mut bridge = bridge_handle.lock().await;
-        bridge
-            .invoke_function(
-                &scope,
-                "ChooseCalcTool",
-                json!({"user_message": "compute 2+3"}),
-            )
-            .await
-    })
+    let result = run_live_llm_with_retry(
+        "ChooseCalcTool contract",
+        3,
+        Duration::from_secs(120),
+        |_| {
+            let bh = bridge_handle.clone();
+            let scope = scope.clone();
+            async move {
+                context::with_scope(scope.as_scope().clone(), async {
+                    let mut bridge = bh.lock().await;
+                    bridge
+                        .invoke_function(
+                            &scope,
+                            "ChooseCalcTool",
+                            json!({"user_message": "compute 2+3"}),
+                        )
+                        .await
+                })
+                .await
+            }
+        },
+    )
     .await;
 
     // Contract assertion: Result must be the actual value (plan with "steps" or tool output with "result"/"formatted"), not a wrapper
@@ -134,11 +149,19 @@ async fn test_js_function_invocation_returns_actual_result() {
         .await
         .unwrap();
     let bridge_handle = agent.bridge();
-    let mut bridge = bridge_handle.lock().await;
     let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
 
-    let result = bridge
-        .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
+    let result =
+        run_live_llm_with_retry("JS invoke getCalcPlan", 3, Duration::from_secs(120), |_| {
+            let bh = bridge_handle.clone();
+            let scope = scope.clone();
+            async move {
+                let mut bridge = bh.lock().await;
+                bridge
+                    .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
+                    .await
+            }
+        })
         .await;
 
     match result {
@@ -202,12 +225,24 @@ async fn test_invoke_function_api_contract() {
         .await
         .unwrap();
     let bridge_handle = agent.bridge();
-    let mut bridge = bridge_handle.lock().await;
     let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
 
-    let result = bridge
-        .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
-        .await;
+    let result = run_live_llm_with_retry(
+        "API invoke getCalcPlan",
+        3,
+        Duration::from_secs(120),
+        |_| {
+            let bh = bridge_handle.clone();
+            let scope = scope.clone();
+            async move {
+                let mut bridge = bh.lock().await;
+                bridge
+                    .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
+                    .await
+            }
+        },
+    )
+    .await;
 
     match result {
         Ok(val) => {
@@ -231,11 +266,11 @@ async fn test_invoke_function_api_contract() {
             );
         }
         Err(e) => {
-            let error_str = format!("{}", e);
+            let error_str = format!("{e}");
             if error_str.contains("Promise did not resolve") {
-                panic!("CONTRACT VIOLATION: Promise resolution failed: {}", e);
+                panic!("CONTRACT VIOLATION: Promise resolution failed: {e}");
             }
-            panic!("CONTRACT VIOLATION: Unexpected error: {}", e);
+            panic!("CONTRACT VIOLATION: Unexpected error: {e}");
         }
     }
 }
@@ -283,12 +318,24 @@ async fn test_loaded_agent_invoke_function_contract() {
         .await
         .unwrap();
     let bridge_handle = agent.bridge();
-    let mut bridge = bridge_handle.lock().await;
     let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
 
-    let result = bridge
-        .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
-        .await;
+    let result = run_live_llm_with_retry(
+        "Loaded agent getCalcPlan",
+        3,
+        Duration::from_secs(120),
+        |_| {
+            let bh = bridge_handle.clone();
+            let scope = scope.clone();
+            async move {
+                let mut bridge = bh.lock().await;
+                bridge
+                    .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
+                    .await
+            }
+        },
+    )
+    .await;
 
     match result {
         Ok(val) => {
