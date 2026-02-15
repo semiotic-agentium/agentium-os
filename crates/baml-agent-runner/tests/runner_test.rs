@@ -30,7 +30,7 @@ use tar::Builder;
 use test_support::common::shared_falkordb;
 use tokio::sync::Semaphore;
 #[cfg(feature = "falkordb-tests")]
-use tokio::time::{Duration, sleep, timeout};
+use tokio::time::{sleep, timeout};
 use ts_rs::TS;
 
 // Bundle type for test tools (used as AddNumbersTool::Bundle; referenced in test_runner_tool_types_for_package_build).
