@@ -85,8 +85,15 @@ impl QuickJSBridge {
                             context::with_scope(scope.clone(), async move {
                                 let max_steps = opts.max_steps.unwrap_or(5);
                                 let mut seen: HashSet<String> = HashSet::new();
+                                let mut observations: Vec<Value> = Vec::new();
+                                let mut last_observation: Option<Value> = None;
                                 for _ in 0..max_steps {
-                                    let args = serde_json::json!({ "user_message": &opts.user_message });
+                                    let obs_snapshot = observations.clone();
+                                    let args = serde_json::json!({
+                                        "user_message": &opts.user_message,
+                                        "observations": obs_snapshot,
+                                        "step": observations.len()
+                                    });
                                     let plan_value = {
                                         let manager = manager_for_promise.lock().await;
                                         manager.invoke_function(&scope, &opts.plan_function, args).await
@@ -127,6 +134,21 @@ impl QuickJSBridge {
                                             )
                                         })?;
                                         if seen.contains(&key) {
+                                            if let Some(value) = last_observation.clone() {
+                                                if let Some(message) = match &value {
+                                                    Value::String(s) => Some(s.clone()),
+                                                    Value::Object(map) => map
+                                                        .get("message")
+                                                        .and_then(|v| v.as_str())
+                                                        .map(|s| s.to_string()),
+                                                    _ => None,
+                                                } {
+                                                    return Ok(JsValueFacade::new_string(message));
+                                                }
+                                                if let Ok(serialized) = serde_json::to_string(&value) {
+                                                    return Ok(JsValueFacade::new_string(serialized));
+                                                }
+                                            }
                                             return Err(quickjs_runtime::jsutils::JsError::new_str(
                                                 "runReActLoopHost detected repeated tool call",
                                             ));
@@ -134,6 +156,7 @@ impl QuickJSBridge {
                                         seen.insert(key);
                                     }
 
+                                    let plan_for_obs = plan_value.clone();
                                     let observation = {
                                         let manager = manager_for_promise.lock().await;
                                         manager.execute_tool_from_baml_result_or_value(&scope, plan_value).await
@@ -143,6 +166,12 @@ impl QuickJSBridge {
                                             &format!("ReAct tool execution error: {}", e),
                                         ));
                                     }
+                                    let observation_value = observation.unwrap();
+                                    last_observation = Some(observation_value.clone());
+                                    observations.push(serde_json::json!({
+                                        "plan": plan_for_obs,
+                                        "observation": observation_value
+                                    }));
                                 }
                                 Err(quickjs_runtime::jsutils::JsError::new_str(
                                     "runReActLoopHost exceeded maxSteps",

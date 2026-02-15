@@ -154,10 +154,10 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
     /// async handlers to yield before the buffer is read.
     pub async fn collect(self) -> Result<Vec<Value>> {
         let start = Instant::now();
-        let timeout = Duration::from_secs(120);
+        let timeout = Duration::from_millis(self.bridge.stream_settle_timeout_ms());
         let interval = Duration::from_millis(50);
         let read_timeout = Duration::from_secs(2);
-        let settle_duration = Duration::from_millis(1000);
+        let settle_duration = Duration::from_millis(self.bridge.stream_settle_quiet_ms());
         let mut collected: Vec<Value> = Vec::new();
         let mut last_nonempty: Option<Instant> = None;
         let mut saw_output = false;
@@ -180,10 +180,7 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
                     saw_output = true;
                 }
                 collected.extend(responses);
-                if has_signal {
-                    last_nonempty = Some(Instant::now());
-                } else if saw_output && last_nonempty.is_none() {
-                    // Tool-heavy streams should still settle once output has been observed.
+                if has_signal || has_output {
                     last_nonempty = Some(Instant::now());
                 }
             }

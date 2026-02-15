@@ -700,7 +700,8 @@ impl A2aRequestHandler for A2aAgent {
                 extra: HashMap::new(),
             };
             let list_response = self.task_store.list(&list_request).await;
-            let task_id = match list_response.tasks.as_slice() {
+            let mut selected_from_input_required = false;
+            let mut task_id = match list_response.tasks.as_slice() {
                 [] => {
                     let fallback_request = crate::a2a_types::ListTasksRequest {
                         context_id: Some(ctx.clone()),
@@ -733,13 +734,17 @@ impl A2aRequestHandler for A2aAgent {
                         }
                     }
                 }
-                [task] => task.id.clone(),
+                [task] => {
+                    selected_from_input_required = true;
+                    task.id.clone()
+                }
                 tasks => {
                     warn!(
                         context_id = %ctx,
                         count = tasks.len(),
                         "Multiple INPUT_REQUIRED tasks found for context; selecting most recent by status timestamp"
                     );
+                    selected_from_input_required = true;
                     tasks
                         .iter()
                         .max_by_key(|task| {
@@ -751,6 +756,26 @@ impl A2aRequestHandler for A2aAgent {
                         .and_then(|task| task.id.clone())
                 }
             };
+            if selected_from_input_required && let Some(selected) = task_id.clone() {
+                let claim_status = TaskStatus {
+                    state: Some(TaskState::String("TASK_STATE_WORKING".to_string())),
+                    message: None,
+                    timestamp: None,
+                    extra: HashMap::new(),
+                };
+                let claimed = self
+                    .task_store
+                    .record_status_update(Some(selected.clone()), Some(ctx.clone()), claim_status)
+                    .await?;
+                if claimed.is_none() {
+                    warn!(
+                        context_id = %ctx,
+                        task_id = %selected.as_str(),
+                        "Failed to claim INPUT_REQUIRED task for routing; leaving generated task_id"
+                    );
+                    task_id = None;
+                }
+            }
             if let Some(task) = task_id {
                 parsed_request.task_id = Some(task.clone());
                 if let Ok(mut params) =

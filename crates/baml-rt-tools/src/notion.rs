@@ -21,6 +21,7 @@ use ts_rs::TS;
 pub const BASE_URL: &str = "https://api.notion.com/v1";
 /// Notion API version header value.
 pub const NOTION_VERSION: &str = "2025-09-03";
+const MAX_BLOCK_DEPTH: u32 = 10;
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -672,7 +673,7 @@ impl BamlTool for NotionTool {
             NotionAction::GetPageBlocks => {
                 let block_id = require_id(args.block_id, "block_id")?;
                 let raw_blocks = args.raw_blocks.unwrap_or(false);
-                let max_depth = args.max_depth.unwrap_or(2);
+                let max_depth = args.max_depth.unwrap_or(2).min(MAX_BLOCK_DEPTH);
                 self.client
                     .get_page_blocks(
                         api_key,
@@ -800,7 +801,7 @@ impl BamlTool for NotionGetPageBlocksTool {
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         let api_key = self.client.api_key()?;
         let raw_blocks = args.raw_blocks.unwrap_or(false);
-        let max_depth = args.max_depth.unwrap_or(2);
+        let max_depth = args.max_depth.unwrap_or(2).min(MAX_BLOCK_DEPTH);
         self.client
             .get_page_blocks(
                 api_key,

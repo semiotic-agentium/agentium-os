@@ -40,6 +40,13 @@ pub struct QuickJSConfig {
     /// Timeout in milliseconds before stream invocation falls back to non-streaming invoke
     /// (default: 35_000ms).
     pub stream_fallback_timeout_ms: Option<u64>,
+
+    /// Stream collection timeout in milliseconds (default: 120_000ms).
+    pub stream_settle_timeout_ms: Option<u64>,
+
+    /// Quiet window in milliseconds before a stream is considered settled
+    /// after output has been observed (default: 1_000ms).
+    pub stream_settle_quiet_ms: Option<u64>,
 }
 
 impl QuickJSConfig {
@@ -96,6 +103,18 @@ impl QuickJSConfig {
     /// Default is 35,000ms.
     pub fn with_stream_fallback_timeout_ms(mut self, timeout_ms: Option<u64>) -> Self {
         self.stream_fallback_timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Set stream collection timeout in milliseconds.
+    pub fn with_stream_settle_timeout_ms(mut self, timeout_ms: Option<u64>) -> Self {
+        self.stream_settle_timeout_ms = timeout_ms;
+        self
+    }
+
+    /// Set stream quiet window in milliseconds before settling.
+    pub fn with_stream_settle_quiet_ms(mut self, quiet_ms: Option<u64>) -> Self {
+        self.stream_settle_quiet_ms = quiet_ms;
         self
     }
 }

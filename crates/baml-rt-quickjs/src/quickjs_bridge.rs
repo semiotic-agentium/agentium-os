@@ -18,6 +18,7 @@ use quickjs_runtime::values::JsValueFacade;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::Duration;
 use tokio::sync::{Mutex, Semaphore, mpsc};
 
 mod eval;
@@ -79,6 +80,8 @@ pub struct QuickJSBridge {
     idle_timeout_ms: u64,
     max_attempts_ms: u64,
     stream_fallback_timeout_ms: u64,
+    stream_settle_timeout_ms: u64,
+    stream_settle_quiet_ms: u64,
     /// Token → scope for native callbacks; host issues token, JS passes it, natives look up scope.
     invocation_scope_by_token: InvocationScopeMap,
     /// Token -> correlation id captured at invocation entry and propagated through native callbacks.
@@ -133,6 +136,8 @@ impl QuickJSBridge {
             gc_threshold = ?config.gc_threshold,
             gc_interval = ?config.gc_interval,
             stream_fallback_timeout_ms = ?config.stream_fallback_timeout_ms,
+            stream_settle_timeout_ms = ?config.stream_settle_timeout_ms,
+            stream_settle_quiet_ms = ?config.stream_settle_quiet_ms,
             "Initializing QuickJS bridge with configuration"
         );
 
@@ -169,6 +174,8 @@ impl QuickJSBridge {
                 .max_attempts_ms
                 .unwrap_or(EffectGatedPoller::DEFAULT_MAX_ATTEMPTS as u64), // Default 30 minutes
             stream_fallback_timeout_ms: config.stream_fallback_timeout_ms.unwrap_or(35_000),
+            stream_settle_timeout_ms: config.stream_settle_timeout_ms.unwrap_or(120_000),
+            stream_settle_quiet_ms: config.stream_settle_quiet_ms.unwrap_or(1_000),
             invocation_scope_by_token: Arc::new(StdMutex::new(HashMap::new())),
             correlation_id_by_token: Arc::new(StdMutex::new(HashMap::new())),
             eval_results_by_token: Arc::new(StdMutex::new(HashMap::new())),
@@ -190,6 +197,14 @@ impl QuickJSBridge {
     /// Set the effect liveness tracker (for effects-first liveness gating)
     pub fn set_effect_liveness(&mut self, liveness: Arc<dyn EffectLiveness>) {
         self.effect_liveness = Some(liveness);
+    }
+
+    pub fn stream_settle_timeout_ms(&self) -> u64 {
+        self.stream_settle_timeout_ms
+    }
+
+    pub fn stream_settle_quiet_ms(&self) -> u64 {
+        self.stream_settle_quiet_ms
     }
 
     /// Agent ID for this bridge (set at construction; used for attribution and scope).
@@ -622,7 +637,23 @@ impl QuickJSBridge {
                                             function = %func_name_stream,
                                             "BAML stream timed out; falling back to non-stream invoke"
                                         );
-                                        let manager = manager_for_stream.lock().await;
+                                        let manager = match tokio::time::timeout(
+                                            Duration::from_secs(5),
+                                            manager_for_stream.lock(),
+                                        )
+                                        .await
+                                        {
+                                            Ok(lock) => lock,
+                                            Err(_) => {
+                                                let error_value = serde_json::json!({
+                                                    "error": "Timed out acquiring manager lock for stream fallback"
+                                                });
+                                                if let Err(e) = tx.send(error_value).await {
+                                                    tracing::warn!(error = ?e, "Stream channel send failed");
+                                                }
+                                                return;
+                                            }
+                                        };
                                         let invocation_scope =
                                             InvocationScope::new(scope_for_stream.clone());
                                         match manager
