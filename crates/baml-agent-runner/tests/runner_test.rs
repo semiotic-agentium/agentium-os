@@ -639,7 +639,7 @@ async fn test_e2e_stream_baml_tool() {
     let text = texts
         .iter()
         .find(|t| t.contains("sum=5"))
-        .copied()
+        .map(|t| t.as_str())
         .unwrap_or("");
     assert!(
         !text.is_empty(),
