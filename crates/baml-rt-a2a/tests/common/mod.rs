@@ -1,4 +1,6 @@
 //! Shared helpers for baml-rt-a2a integration tests.
+//! Not every test binary uses every helper; allow dead code at module level.
+#![allow(dead_code)]
 
 use baml_rt_a2a::a2a_types::{Task, TaskState, TaskStatus};
 use baml_rt_core::ids::{ContextId, TaskId};
@@ -29,7 +31,7 @@ pub fn task_status(state: &str) -> TaskStatus {
 pub mod provenance {
     use baml_rt::QuickJSConfig;
     use baml_rt_a2a::A2aAgent;
-    use baml_rt_provenance::{FalkorDbProvenanceConfig, FalkorDbProvenanceWriter};
+    use baml_rt_provenance::FalkorDbProvenanceWriter;
     use std::sync::Arc;
 
     /// Builds an A2aAgent with FalkorDB provenance writer for FalkorDB-backed tests.

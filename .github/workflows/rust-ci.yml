@@ -99,6 +99,7 @@ jobs:
       - name: Run heavy crate tests (serial)
         run: cargo test --locked --workspace --exclude baml-rt-core --exclude baml-rt-id --exclude baml-rt-observability --exclude baml-derive-core --exclude baml-derive --exclude baml-derive-tests --exclude baml-rt-provenance --exclude baml-rt-a2a --exclude baml-agent-runner --features baml-rt-tools/http-tools,baml-rt-builder/http-tools -j 1
         env:
+          LLM_TEST_CONCURRENCY: "2"
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
       - name: Show sccache stats
@@ -144,6 +145,7 @@ jobs:
       - name: Run FalkorDB-gated tests (serial)
         run: cargo test --locked -p baml-rt-provenance -p baml-rt-a2a -p baml-agent-runner --features baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests,baml-agent-runner/http-tools -j 1
         env:
+          LLM_TEST_CONCURRENCY: "2"
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
       - name: Show sccache stats

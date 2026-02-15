@@ -33,8 +33,8 @@ use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::ids::{AgentId, UuidId};
 use test_support::common::{
     CalculatorTool, WeatherTool, agent_fixture, assert_tool_registered_in_js,
-    ensure_fixture_runtime_types, require_api_key, setup_baml_runtime_default,
-    setup_baml_runtime_from_fixture, setup_bridge,
+    ensure_fixture_runtime_types, require_api_key, run_live_llm_with_retry,
+    setup_baml_runtime_default, setup_baml_runtime_from_fixture, setup_bridge,
 };
 
 /// **Purpose:** Verify tool registration and direct execution from Rust (execute_tool_with_scope,
@@ -263,19 +263,27 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
             let left = (idx as f64) + 2.0;
             let right = (idx as f64) + 3.0;
             let expected = left + right;
-            let result = context::with_scope(scope.as_scope().clone(), async {
-                let tool_choice = manager
-                    .invoke_function(
-                        scope.as_scope(),
-                        "ChooseCalcTool",
-                        json!({"user_message": format!("Compute {} + {} (req {})", left, right, idx)}),
-                    )
-                    .await?;
-                println!("ChooseCalcTool result (req {}): {:?}", idx, tool_choice);
-                manager
-                    .execute_tool_from_baml_result_or_value(scope.as_scope(), tool_choice)
+            let result = run_live_llm_with_retry(
+                "ChooseCalcTool concurrent",
+                3,
+                Duration::from_secs(120),
+                |_| async {
+                    context::with_scope(scope.as_scope().clone(), async {
+                        let tool_choice = manager
+                            .invoke_function(
+                                scope.as_scope(),
+                                "ChooseCalcTool",
+                                json!({"user_message": format!("Compute {} + {} (req {})", left, right, idx)}),
+                            )
+                            .await?;
+                        println!("ChooseCalcTool result (req {}): {:?}", idx, tool_choice);
+                        manager
+                            .execute_tool_from_baml_result_or_value(scope.as_scope(), tool_choice)
+                            .await
+                    })
                     .await
-            })
+                },
+            )
             .await?;
 
             let value = result
@@ -292,7 +300,7 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
         });
     }
 
-    let deadline = Duration::from_secs(30);
+    let deadline = Duration::from_secs(180);
     let start = std::time::Instant::now();
     let mut remaining = 4usize;
     while remaining > 0 {

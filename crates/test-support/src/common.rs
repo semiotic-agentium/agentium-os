@@ -18,10 +18,15 @@ pub use test_tools::{
 };
 
 // Fixture helpers
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Once;
+use std::sync::OnceLock;
+use std::time::Duration;
 use tokio::sync::Mutex;
+use tokio::sync::Semaphore;
+use tokio::time::{sleep, timeout};
 
 use baml_rt::A2aAgent;
 use baml_rt::QuickJSConfig;
@@ -129,6 +134,74 @@ pub fn require_api_key() -> String {
         .expect("OPENROUTER_API_KEY environment variable must be set");
     assert!(!api_key.is_empty(), "OPENROUTER_API_KEY must not be empty");
     api_key
+}
+
+fn llm_test_gate() -> &'static Semaphore {
+    static GATE: OnceLock<Semaphore> = OnceLock::new();
+    let permits = std::env::var("LLM_TEST_CONCURRENCY")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(1);
+    GATE.get_or_init(|| Semaphore::new(permits))
+}
+
+pub async fn run_live_llm_with_retry<T, Fut, F>(
+    label: &str,
+    max_attempts: usize,
+    per_attempt_timeout: Duration,
+    f: F,
+) -> baml_rt_core::Result<T>
+where
+    F: FnMut(usize) -> Fut,
+    Fut: Future<Output = baml_rt_core::Result<T>>,
+{
+    let _permit = llm_test_gate()
+        .acquire()
+        .await
+        .expect("acquire LLM test gate");
+    run_live_llm_with_retry_no_gate(label, max_attempts, per_attempt_timeout, f).await
+}
+
+pub async fn run_live_llm_with_retry_no_gate<T, Fut, F>(
+    label: &str,
+    max_attempts: usize,
+    per_attempt_timeout: Duration,
+    mut f: F,
+) -> baml_rt_core::Result<T>
+where
+    F: FnMut(usize) -> Fut,
+    Fut: Future<Output = baml_rt_core::Result<T>>,
+{
+    let mut last_err: Option<String> = None;
+    for attempt in 1..=max_attempts {
+        let fut = f(attempt);
+        match timeout(per_attempt_timeout, fut).await {
+            Ok(Ok(value)) => return Ok(value),
+            Ok(Err(err)) => {
+                let msg = format!("attempt {attempt}: {err}");
+                tracing::warn!(label, "{msg}");
+                last_err = Some(msg);
+            }
+            Err(_) => {
+                let msg = format!(
+                    "attempt {attempt}: timed out after {}s",
+                    per_attempt_timeout.as_secs()
+                );
+                tracing::warn!(label, "{msg}");
+                last_err = Some(msg);
+            }
+        }
+
+        if attempt < max_attempts {
+            sleep(Duration::from_secs((attempt as u64) * 2)).await;
+        }
+    }
+
+    Err(baml_rt_core::BamlRtError::BamlRuntime(format!(
+        "{label} failed after {max_attempts} attempts: {}",
+        last_err.unwrap_or_else(|| "unknown error".to_string())
+    )))
 }
 
 pub fn ensure_baml_src_exists() -> bool {

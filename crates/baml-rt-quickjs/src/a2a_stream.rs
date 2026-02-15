@@ -34,10 +34,54 @@
 use crate::quickjs_bridge::QuickJSBridge;
 use baml_rt_core::Result;
 use baml_rt_core::context::InvocationScope;
+use baml_rt_core::json::is_a2a_tool_event_chunk;
 use serde_json::Value;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
+
+fn is_output_chunk(value: &Value) -> bool {
+    if value.get("message").is_some() {
+        return true;
+    }
+    if value.get("artifactUpdate").is_some() {
+        return true;
+    }
+    if let Some(status) = value
+        .get("statusUpdate")
+        .and_then(|v| v.get("status"))
+        .and_then(|v| v.get("state"))
+        .and_then(|v| v.as_str())
+        && matches!(
+            status,
+            "TASK_STATE_COMPLETED"
+                | "TASK_STATE_FAILED"
+                | "TASK_STATE_REJECTED"
+                | "TASK_STATE_CANCELED"
+        )
+    {
+        return true;
+    }
+    if let Some(task) = value.get("task").and_then(|v| v.as_object())
+        && let Some(status) = task.get("status").and_then(|v| v.as_object())
+    {
+        if let Some(state) = status.get("state").and_then(|v| v.as_str())
+            && matches!(
+                state,
+                "TASK_STATE_COMPLETED"
+                    | "TASK_STATE_FAILED"
+                    | "TASK_STATE_REJECTED"
+                    | "TASK_STATE_CANCELED"
+            )
+        {
+            return true;
+        }
+        if status.get("message").is_some() {
+            return true;
+        }
+    }
+    false
+}
 
 /// State marker: yield buffer is installed and ready for one stream invocation.
 pub struct YieldBufferReady;
@@ -113,6 +157,10 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
         let timeout = Duration::from_secs(30);
         let interval = Duration::from_millis(50);
         let read_timeout = Duration::from_secs(2);
+        let settle_duration = Duration::from_millis(1000);
+        let mut collected: Vec<Value> = Vec::new();
+        let mut last_nonempty: Option<Instant> = None;
+        let mut saw_output = false;
 
         loop {
             // Liveness guard: a single buffer-read must not stall collection forever.
@@ -126,12 +174,26 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
                 Err(_) => Vec::new(),
             };
             if !responses.is_empty() {
+                let has_signal = responses.iter().any(|v| !is_a2a_tool_event_chunk(v));
+                let has_output = responses.iter().any(is_output_chunk);
+                if has_output {
+                    saw_output = true;
+                }
+                collected.extend(responses);
+                if has_signal || has_output {
+                    last_nonempty = Some(Instant::now());
+                }
+            }
+            if saw_output
+                && let Some(last) = last_nonempty
+                && last.elapsed() >= settle_duration
+            {
                 self.bridge.finalize_a2a_stream_invocation();
-                return Ok(responses);
+                return Ok(collected);
             }
             if start.elapsed() >= timeout {
                 self.bridge.finalize_a2a_stream_invocation();
-                return Ok(responses);
+                return Ok(collected);
             }
             sleep(interval).await;
         }
