@@ -2,8 +2,8 @@
 
 use crate::a2a;
 use crate::a2a_store::{
-    ProvenanceTaskStore, TaskEventRecorder, TaskRepository, TaskStoreBackend, TaskUpdateEvent,
-    TaskUpdateQueue,
+    ConversationContextSource, ProvenanceTaskStore, TaskEventRecorder, TaskRepository,
+    TaskStoreBackend, TaskUpdateEvent, TaskUpdateQueue,
 };
 use crate::a2a_types::SendMessageRequest;
 use crate::error_classifier::{A2aErrorClassifier, ErrorClassifier};
@@ -23,7 +23,7 @@ use baml_rt_core::effects::EffectEmitter;
 use baml_rt_core::ids::{ExternalId, MessageId};
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_observability::{metrics, spans};
-use baml_rt_provenance::{ProvenanceContextReader, ProvenanceInterceptor, ProvenanceWriter};
+use baml_rt_provenance::{ProvenanceInterceptor, ProvenanceWriter};
 use baml_rt_quickjs::baml_execution::ConversationContextProvider;
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, QuickJSConfig};
 use baml_rt_tools::tools::ToolFunctionMetadata;
@@ -35,30 +35,40 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::broadcast;
 
-struct ProvenanceConversationContextProvider {
-    reader: Arc<dyn ProvenanceContextReader>,
+/// Conversation context from the unified task store (single source of truth).
+/// No separate provenance read path; store view and provenance write are one concept.
+struct TaskStoreConversationContextProvider {
+    store: Arc<dyn ConversationContextSource>,
 }
 
-impl ProvenanceConversationContextProvider {
-    fn new(reader: Arc<dyn ProvenanceContextReader>) -> Self {
-        Self { reader }
+impl TaskStoreConversationContextProvider {
+    fn new(store: Arc<dyn ConversationContextSource>) -> Self {
+        Self { store }
     }
 }
 
+fn conversation_content_to_string(v: &Value) -> String {
+    serde_json::to_string(v)
+        .inspect_err(|e| {
+            tracing::warn!(
+                error = %e,
+                "conversation context content serialization failed, using Debug"
+            );
+        })
+        .unwrap_or_else(|_| v.to_string())
+}
+
 #[async_trait]
-impl ConversationContextProvider for ProvenanceConversationContextProvider {
+impl ConversationContextProvider for TaskStoreConversationContextProvider {
     async fn conversation_history_json(
         &self,
         scope: &context::RuntimeScope,
     ) -> Result<Option<Value>> {
         let context_id = scope.context_id();
         let items = self
-            .reader
+            .store
             .conversation_context(context_id, Some(40))
-            .await
-            .map_err(|err| BamlRtError::ProvenanceContextRead {
-                source: Box::new(err),
-            })?;
+            .await?;
         if items.is_empty() {
             return Ok(None);
         }
@@ -68,10 +78,14 @@ impl ConversationContextProvider for ProvenanceConversationContextProvider {
         let entries: Vec<Value> = items
             .into_iter()
             .map(|item| {
+                let content = match &item.content {
+                    Value::String(s) => s.clone(),
+                    other => conversation_content_to_string(other),
+                };
                 serde_json::json!({
                     "role": item.role,
                     "source": item.source,
-                    "content": item.content,
+                    "content": content,
                 })
             })
             .collect();
@@ -610,12 +624,12 @@ impl A2aAgentBuilderWithEffectEmitter {
         ));
         let error_classifier: Arc<dyn ErrorClassifier> = Arc::new(A2aErrorClassifier);
 
-        if let Some(writer) = provenance_writer.clone() {
-            {
-                let mut runtime_guard = runtime.lock().await;
-                runtime_guard.set_conversation_context_provider(Arc::new(
-                    ProvenanceConversationContextProvider::new(writer.clone()),
-                ));
+        {
+            let mut runtime_guard = runtime.lock().await;
+            runtime_guard.set_conversation_context_provider(Arc::new(
+                TaskStoreConversationContextProvider::new(task_store.clone()),
+            ));
+            if let Some(writer) = provenance_writer.clone() {
                 runtime_guard
                     .register_llm_interceptor(ProvenanceInterceptor::new(writer.clone()))
                     .await;

@@ -10,3 +10,13 @@ Agent-to-agent (A2A) protocol support for the runtime.
 - Agent builder wiring for runtime + bridge integration.
 
 JavaScript agents use the A2A DSL provided by the runtime shim (`session`, `__chat_register({ run })`, `RunContext`, `emit.awaitInput`). See **task-lifecycle-demo** (`tests/fixtures/agents/task-lifecycle-demo/src/index.ts`) for the reference implementation.
+
+## Task store and provenance (unified design)
+
+The A2A task store and conversation context share a **single source of truth**: the in-memory task store (materialized view). Provenance (e.g. FalkorDB) is a **write-only** audit log; the runtime never reads conversation from it.
+
+- **Read path:** Task state (`get`, `list`, `cancel`) and **conversation context** both come from the same backend. `TaskStoreBackend` extends `ConversationContextSource`: `conversation_context(context_id, limit)` returns messages from task histories in that context. The runtime’s conversation provider uses this, so there is no separate “provenance read” for context.
+- **Write path:** All mutations (upsert, insert_message, apply_task_delta, record_status_update, record_artifact_update, cancel) go through the store. When a `ProvenanceWriter` is present, the store emits corresponding `ProvEvent`s after accepting the update (provenance lags the view; no path updates only the view or only provenance).
+- **Invariant:** No code path updates the in-memory view without also emitting the matching provenance events when a writer is configured. Cancel is included: `ProvenanceTaskStore::cancel` emits `task_status_changed(..., CANCELED)`.
+
+Custom backends must implement `ConversationContextSource` (e.g. by delegating to an inner store or returning an empty list). The agent builder always sets the conversation context provider from the task store; provenance interceptors (LLM/tool events) are registered only when a writer is provided.
