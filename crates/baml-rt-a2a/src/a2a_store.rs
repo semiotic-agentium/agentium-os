@@ -304,6 +304,15 @@ impl TaskRepository for ProvenanceTaskStore {
         let task_id = message.task_id.clone();
         let role = message_role_string(&message.role);
         let content = message_content(message);
+        tracing::trace!(
+            context_id = context_id.as_str(),
+            task_id = task_id.as_ref().map(|t| t.as_str()),
+            message_id = message.message_id.as_message_id().as_str(),
+            role = role.as_str(),
+            content_parts = content.len(),
+            has_writer = self.writer.is_some(),
+            "Storing message in provenance",
+        );
 
         let mut msg_metadata = message.metadata.clone();
         ensure_agent_id_in_metadata(&mut msg_metadata, &self.agent_id);

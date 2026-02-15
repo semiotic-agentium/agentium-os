@@ -62,21 +62,20 @@ impl ConversationContextProvider for ProvenanceConversationContextProvider {
         if items.is_empty() {
             return Ok(None);
         }
-        let messages: Vec<Value> = items
+        // Include all provenance items (messages, tool_call, tool_result)
+        // so that BAML templates receive the full conversation context
+        // including tool interactions from prior turns.
+        let entries: Vec<Value> = items
             .into_iter()
-            .filter(|item| item.source == "message")
             .map(|item| {
-                let content = match item.content {
-                    Value::String(s) => s,
-                    other => serde_json::to_string(&other).unwrap_or_else(|_| other.to_string()),
-                };
                 serde_json::json!({
                     "role": item.role,
-                    "content": content,
+                    "source": item.source,
+                    "content": item.content,
                 })
             })
             .collect();
-        Ok(Some(Value::Array(messages)))
+        Ok(Some(Value::Array(entries)))
     }
 }
 

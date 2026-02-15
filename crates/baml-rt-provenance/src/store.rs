@@ -41,6 +41,7 @@ pub struct ProvenanceConversationContextItem {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolSessionPhase {
+    Execute,
     Open,
     Send,
     Next,
@@ -56,6 +57,7 @@ impl ToolSessionPhase {
             .and_then(Value::as_str)
             .unwrap_or("unknown");
         match phase {
+            "execute" => Self::Execute,
             "open" => Self::Open,
             "send" => Self::Send,
             "next" => Self::Next,
@@ -67,6 +69,7 @@ impl ToolSessionPhase {
 
     pub fn label(&self) -> String {
         match self {
+            Self::Execute => "execute".to_string(),
             Self::Open => "open".to_string(),
             Self::Send => "send".to_string(),
             Self::Next => "next".to_string(),

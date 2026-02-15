@@ -1,5 +1,6 @@
 ---
 source: crates/baml-rt-provenance/tests/falkordb_store_test.rs
+assertion_line: 771
 expression: snapshot
 ---
 {

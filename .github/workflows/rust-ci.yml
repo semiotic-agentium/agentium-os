@@ -23,7 +23,7 @@ env:
 jobs:
   cargo-test:
     name: Cargo test (light)
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
 
@@ -44,7 +44,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold
+          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold libclang-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -65,7 +65,7 @@ jobs:
 
   cargo-test-heavy:
     name: Cargo test (heavy, serial)
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
 
@@ -86,7 +86,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold
+          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold libclang-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -107,7 +107,7 @@ jobs:
 
   cargo-test-falkordb:
     name: Cargo test (falkordb)
-    runs-on: ubuntu-latest
+    runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
 
@@ -128,7 +128,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold
+          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold libclang-dev
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
