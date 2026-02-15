@@ -771,8 +771,13 @@ impl A2aRequestHandler for A2aAgent {
                     warn!(
                         context_id = %ctx,
                         task_id = %selected.as_str(),
-                        "Failed to claim INPUT_REQUIRED task for routing; leaving generated task_id"
+                        "Concurrent race: INPUT_REQUIRED task already claimed; \
+                         falling back to auto-create with the generated task_id"
                     );
+                    // Set local task_id to None so the routing block below does NOT
+                    // overwrite parsed_request.task_id with the lost claim target.
+                    // parsed_request.task_id retains the originally generated UUID,
+                    // and the auto-create path (below) will create a fresh task for it.
                     task_id = None;
                 }
             }

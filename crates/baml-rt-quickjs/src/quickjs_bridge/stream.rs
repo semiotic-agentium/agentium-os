@@ -162,6 +162,12 @@ impl QuickJSBridge {
         function_name: &str,
         args: Value,
     ) -> Result<()> {
+        // Release any stale permit from a prior invocation that failed after acquiring the permit
+        // but before collect()/finalize_a2a_stream_invocation() ran. Without this, the capacity-1
+        // semaphore would deadlock because acquire_owned() blocks while we hold &mut self (so the
+        // old permit can never be dropped).
+        self.stream_permit = None;
+
         // Only one stream active at a time so invocation token state is not overwritten by a concurrent stream.
         let permit = self
             .stream_semaphore
