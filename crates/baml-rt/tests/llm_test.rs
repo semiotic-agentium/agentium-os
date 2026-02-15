@@ -58,7 +58,7 @@ async fn test_e2e_streaming_greeting() {
     let scope = InvocationScope::synthetic_message(agent_id);
 
     let chunks =
-        run_live_llm_with_retry("SimpleGreetingStream", 3, Duration::from_secs(120), |_| {
+        run_live_llm_with_retry("SimpleGreetingStream", 4, Duration::from_secs(180), |_| {
             let bridge = Arc::clone(&bridge);
             let scope = scope.clone();
             async move {
