@@ -1,23 +1,6 @@
-import type { ChatMessage, ChatStreamChunk, Task } from "./a2a";
+/// <reference path="./baml-runtime.d.ts" />
 
-function extractText(message: ChatMessage | null | undefined): string {
-  if (!message?.parts?.length) return "unknown";
-  const first = message.parts[0];
-  if (first && typeof (first as { text?: string }).text === "string") {
-    return (first as { text: string }).text;
-  }
-  return "unknown";
-}
-
-function newMessage(text: string): { parts: { text: string }[] } {
-  return { parts: [{ text }] };
-}
-
-function newTask(message?: { parts: { text: string }[] }): Task {
-  return {
-    status: { state: "TASK_STATE_WORKING", message },
-  };
-}
+type ChatMessageWithToken = ChatMessage & { __baml_invocation_token?: string };
 
 function wantsSummary(text: string): boolean {
   const lowered = text.toLowerCase();
@@ -105,13 +88,12 @@ async function summarizeBlocks(args: {
   return null;
 }
 
-async function onChatMessage(
-  message: ChatMessage & { __baml_invocation_token?: string }
-): Promise<void> {
-  const text = extractText(message);
-  const token = message.__baml_invocation_token;
+async function onChatMessage(message: ChatMessageWithToken): Promise<void> {
+  const s = session(message);
+  await s.run(async () => {
+    const text = s.text() || "unknown";
+    const token = message.__baml_invocation_token;
 
-  try {
     const toolResult = await ChooseNotionAction({
       user_message: text,
       __baml_invocation_token: token,
@@ -121,9 +103,7 @@ async function onChatMessage(
       const nextStep = toolResult.next_step
         ? `\n\nNext step:\n- ${toolResult.next_step}`
         : "";
-      const msg = `${toolResult.message}${nextStep}`;
-      __baml_chat_yield({ message: newMessage(msg), task: newTask(newMessage(msg)) });
-      return;
+      return { message: `${toolResult.message}${nextStep}` };
     }
 
     if (toolResult != null && typeof toolResult === "object") {
@@ -183,21 +163,11 @@ async function onChatMessage(
 
       response += formatSources(output.sources, output.pages);
 
-      __baml_chat_yield({
-        message: newMessage(response),
-        task: newTask(newMessage(response)),
-      });
-      return;
+      return { message: response };
     }
 
-    __baml_chat_yield({
-      message: newMessage("Notion action completed but returned no data."),
-      task: newTask(),
-    });
-  } catch (e) {
-    const errMsg = e instanceof Error ? e.message : String(e);
-    __baml_chat_yield({ message: newMessage(`Error: ${errMsg}`) });
-  }
+    return { message: "Notion action completed but returned no data." };
+  });
 }
 
-__baml_chat_register({ onChatMessage });
+__chat_register({ onChatMessage });

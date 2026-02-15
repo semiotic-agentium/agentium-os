@@ -6,22 +6,22 @@ use test_support::common::{agent_fixture, setup_baml_runtime_from_fixture, setup
 
 #[tokio::test]
 async fn test_js_invoke_baml_function() {
-    let agent_dir = agent_fixture("voidship-rites");
+    let agent_dir = agent_fixture("stream-baml-tool");
     if !agent_dir.join("baml_src").exists() {
-        eprintln!("Skipping test: voidship-rites fixture not found");
+        eprintln!("Skipping test: stream-baml-tool fixture not found");
         return;
     }
 
     // Set up BAML runtime
-    let baml_manager = setup_baml_runtime_from_fixture("voidship-rites");
+    let baml_manager = setup_baml_runtime_from_fixture("stream-baml-tool");
     let mut bridge = setup_bridge(baml_manager.clone()).await;
 
-    // Test invoking SimpleGreeting from JavaScript (voidship-rites has this function)
+    // Test invoking ChooseCalcTool from JavaScript (stream-baml-tool has this function)
     // Use __awaitAndStringify helper to handle async function calls
     let js_code = r#"
         (function() {
             try {
-                const promise = SimpleGreeting({ name: "World" });
+                const promise = ChooseCalcTool({ user_message: "add 2 and 3" });
                 return __awaitAndStringify(promise);
             } catch (e) {
                 return JSON.stringify({ success: false, error: e.toString() });

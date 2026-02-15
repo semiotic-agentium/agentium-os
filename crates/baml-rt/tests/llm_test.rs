@@ -1,4 +1,3 @@
-#![cfg(feature = "llm-tests")]
 #![allow(clippy::print_stdout)]
 //! End-to-end test using actual LLM via OpenRouter
 

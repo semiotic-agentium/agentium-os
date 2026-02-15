@@ -7,7 +7,8 @@ mod falkordb;
 pub use falkordb::shared_falkordb;
 mod a2a_test_helpers;
 pub use a2a_test_helpers::{
-    chunk_content, first_message_text_from_stream, first_task_id_from_stream, send_stream_request,
+    chunk_content, chunks_from_responses, first_message_text_from_stream,
+    first_task_id_from_stream, is_error_response, message_texts_from_chunks, send_stream_request,
     user_message,
 };
 mod test_tools;
@@ -101,9 +102,9 @@ pub fn setup_baml_runtime_from_fixture(fixture_name: &str) -> Arc<Mutex<BamlRunt
     setup_baml_runtime(agent_dir.to_str().expect("Fixture path should be valid"))
 }
 
-/// QuickJS config for tests: short max_attempts so effect-gated poll doesn't hang (LLM fixtures).
+/// QuickJS config for tests. Must accommodate combined retries (parse + BAML client) which can exceed 15s.
 fn quickjs_config_for_tests() -> QuickJSConfig {
-    QuickJSConfig::new().with_max_attempts_ms(Some(15_000)) // 15s instead of 30 min
+    QuickJSConfig::new().with_max_attempts_ms(Some(45_000))
 }
 
 pub async fn setup_bridge(baml_manager: Arc<Mutex<BamlRuntimeManager>>) -> QuickJSBridge {
@@ -203,6 +204,18 @@ pub async fn assert_tool_registered_in_js(
     );
 }
 
+/// Builds a minimal A2aAgent for malformed/error-path A2A tests: no BAML schema or tools.
+/// Uses EffectBus and QuickJSConfig with max_attempts_ms(15_000).
+pub async fn build_minimal_a2a_agent(init_js: &str) -> A2aAgent {
+    A2aAgent::builder()
+        .with_init_js(init_js)
+        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
+        .build()
+        .await
+        .expect("build minimal a2a agent")
+}
+
 /// Builds an A2aAgent for contract tests: stream-baml-tool fixture, CalculatorTool,
 /// test QuickJS config. Call `ensure_fixture_runtime_types()` before this if not already done.
 /// Returns the agent; tests create scope via `InvocationScope::synthetic_message(agent.agent_id().clone())`.
@@ -216,7 +229,7 @@ pub async fn setup_stream_baml_tool_agent_for_contract(init_js: Option<&str>) ->
         .register_tool(CalculatorTool)
         .await
         .expect("register CalculatorTool");
-    let config = QuickJSConfig::new().with_max_attempts_ms(Some(15_000));
+    let config = QuickJSConfig::new().with_max_attempts_ms(Some(45_000));
     let mut builder = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))

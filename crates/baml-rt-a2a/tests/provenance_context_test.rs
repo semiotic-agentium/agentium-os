@@ -1,7 +1,8 @@
 #![cfg(feature = "falkordb-tests")]
 #![recursion_limit = "256"]
 
-use baml_rt::QuickJSConfig;
+mod common;
+
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt_core::ids::ContextId;
 use baml_rt_provenance::{FalkorDbProvenanceConfig, FalkorDbProvenanceWriter};
@@ -15,7 +16,7 @@ use tokio::time::Duration;
 async fn setup_agent(writer: Arc<FalkorDbProvenanceWriter>) -> A2aAgent {
     let js_code = r#"
         globalThis.onChatMessage = async function(message) {
-            __baml_chat_yield({
+            __chat_yield({
                 task: {
                     metadata: { agent: "test-agent" },
                     status: { state: "TASK_STATE_WORKING" }
@@ -23,14 +24,7 @@ async fn setup_agent(writer: Arc<FalkorDbProvenanceWriter>) -> A2aAgent {
             });
         };
     "#;
-    A2aAgent::builder()
-        .with_provenance_writer(writer)
-        .with_init_js(js_code)
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
-        .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
-        .build()
-        .await
-        .expect("agent build")
+    common::provenance::build_provenance_agent(writer, js_code).await
 }
 
 fn expect_context_id(responses: Vec<Value>) -> String {

@@ -18,7 +18,7 @@ fn js_yield_n_chunks() -> String {
         const match = /^count:(\d+)$/.exec(text.trim());
         const n = match ? Math.min(parseInt(match[1], 10), 50) : 1;
         for (let i = 0; i < n; i++) {
-            __baml_chat_yield({ index: i, total: n });
+            __chat_yield({ index: i, total: n });
         }
     };
     "#

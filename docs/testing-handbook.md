@@ -42,7 +42,7 @@ Use `crates/test-support` for setup and fixtures rather than duplicating logic:
 - `setup_bridge()` for QuickJS bridge setup
 - `agent_fixture()` and `fixture_path()` for fixture files
 - **`ensure_fixture_runtime_types()`** — call at the start of any E2E test that loads from
-  `tests/fixtures/agents/` (e.g. `agent_fixture("voidship-rites")` or `setup_baml_runtime_from_fixture(...)`).
+  `tests/fixtures/agents/` (e.g. `agent_fixture("stream-baml-tool")` or `setup_baml_runtime_from_fixture(...)`).
   Ensures fixture runtime types are regenerated once per test process before use.
 - `require_api_key()` to gate tests that require `OPENROUTER_API_KEY`
 - `ensure_baml_src_exists()` to skip tests when `baml_src` is missing

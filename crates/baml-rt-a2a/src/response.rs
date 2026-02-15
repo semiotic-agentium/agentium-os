@@ -1,5 +1,6 @@
 use crate::a2a;
 use crate::a2a_types::JSONRPCId;
+use crate::error_mapping;
 use baml_rt_core::BamlRtError;
 use serde_json::Value;
 
@@ -31,51 +32,7 @@ impl ResponseFormatter for JsonRpcResponseFormatter {
     }
 
     fn format_error(&self, id: Option<JSONRPCId>, error: &BamlRtError) -> Value {
-        let (code, message, data) = map_jsonrpc_error(error);
-        a2a::error_response(id, code, message, data)
-    }
-}
-
-fn map_jsonrpc_error(error: &BamlRtError) -> (i64, &'static str, Option<Value>) {
-    match error {
-        BamlRtError::InvalidArgument(message) => (
-            -32600,
-            "Invalid request",
-            Some(serde_json::json!({
-                "error": error.to_string(),
-                "details": message,
-            })),
-        ),
-        BamlRtError::FunctionNotFound(name) => (
-            -32601,
-            "Method not found",
-            Some(serde_json::json!({
-                "error": error.to_string(),
-                "function": name,
-            })),
-        ),
-        BamlRtError::Json(json_err) => (
-            -32700,
-            "Parse error",
-            Some(serde_json::json!({
-                "error": error.to_string(),
-                "details": json_err.to_string(),
-            })),
-        ),
-        BamlRtError::QuickJsWithSource { context, .. } => (
-            -32603,
-            "Internal error",
-            Some(serde_json::json!({
-                "error": error.to_string(),
-                "context": context,
-            })),
-        ),
-        _ => (
-            -32603,
-            "Internal error",
-            Some(serde_json::json!({
-                "error": error.to_string(),
-            })),
-        ),
+        let m = error_mapping::map_error(error);
+        a2a::error_response(id, m.code, m.message, m.data)
     }
 }

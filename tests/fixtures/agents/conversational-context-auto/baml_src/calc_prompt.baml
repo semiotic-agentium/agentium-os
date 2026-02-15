@@ -8,6 +8,7 @@ function ChooseCalcTool(user_message: string) -> SupportCalculateSessionPlan {
   prompt #"
     The user says: {{ user_message }}
     Extract the mathematical calculation. If they mention numbers, use those; otherwise use 2 + 3.
+    Respond with a single JSON object matching the schema below. Output only the JSON object, no markdown or explanation.
     {{ ctx.output_format }}
     {{ _.role('user') }}
     {{ user_message }}
@@ -34,7 +35,7 @@ function ChatWithContext(user_message: string) -> string {
 client DefaultClient {
   provider openai-generic
   options {
-    model "meta-llama/llama-4-maverick"
+    model "deepseek/deepseek-v3.2"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }

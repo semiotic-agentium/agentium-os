@@ -1,5 +1,4 @@
 #![cfg(feature = "falkordb-tests")]
-#![allow(dead_code)]
 
 use baml_rt_core::ids::{
     AgentId, ArtifactId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId,
@@ -182,7 +181,7 @@ async fn falkordb_writer_persists_large_document() {
                 task_id: task_id.clone(),
             },
             client: "TonyOpenRouter".to_string(),
-            model: "deepseek/deepseek-chat".to_string(),
+            model: "deepseek/deepseek-v3.2".to_string(),
             function_name: "TonyShrinkChat".to_string(),
             prompt: json!({
                 "messages": [
@@ -204,7 +203,7 @@ async fn falkordb_writer_persists_large_document() {
                 task_id: task_id.clone(),
             },
             client: "TonyOpenRouter".to_string(),
-            model: "deepseek/deepseek-chat".to_string(),
+            model: "deepseek/deepseek-v3.2".to_string(),
             function_name: "TonyShrinkChat".to_string(),
             prompt: json!({
                 "messages": [
@@ -406,7 +405,7 @@ async fn falkordb_writer_persists_send_message_calls_without_task() {
                 message_id: MessageId::from_external(ExternalId::new("msg-10")),
             },
             client: "TonyOpenRouter".to_string(),
-            model: "deepseek/deepseek-chat".to_string(),
+            model: "deepseek/deepseek-v3.2".to_string(),
             function_name: "TonyShrinkChat".to_string(),
             prompt: json!({
                 "messages": [
@@ -425,7 +424,7 @@ async fn falkordb_writer_persists_send_message_calls_without_task() {
                 message_id: MessageId::from_external(ExternalId::new("msg-10")),
             },
             client: "TonyOpenRouter".to_string(),
-            model: "deepseek/deepseek-chat".to_string(),
+            model: "deepseek/deepseek-v3.2".to_string(),
             function_name: "TonyShrinkChat".to_string(),
             prompt: json!({
                 "messages": [
@@ -790,14 +789,6 @@ struct TaskConversationDto {
 }
 
 #[derive(Debug, Serialize)]
-struct ConversationTurnDto {
-    event_id: String,
-    direction: String,
-    role: String,
-    content: Value,
-}
-
-#[derive(Debug, Serialize)]
 struct ConversationContextItemDto {
     event_id: String,
     role: String,
@@ -917,66 +908,6 @@ fn tool_history_from_context_items(
     calls.into_values().collect()
 }
 
-fn conversation_turns_dto(raw: &str) -> Vec<ConversationTurnDto> {
-    let rows = snapshot_rows(raw);
-    rows.into_iter()
-        .filter(|row| row.len() >= 4)
-        .map(|row| ConversationTurnDto {
-            event_id: value_as_string(&row[0]),
-            direction: value_as_string(&row[1]),
-            role: value_as_string(&row[2]),
-            content: row[3].clone(),
-        })
-        .collect()
-}
-
-fn conversation_context_dto(
-    message_turns: &[ConversationTurnDto],
-    tool_turns: &[ToolCallDto],
-) -> Vec<ConversationContextItemDto> {
-    let mut items: Vec<ConversationContextItemDto> = message_turns
-        .iter()
-        .map(|turn| ConversationContextItemDto {
-            event_id: turn.event_id.clone(),
-            role: match turn.direction.as_str() {
-                "received" => "user".to_string(),
-                _ => "assistant".to_string(),
-            },
-            content: turn.content.clone(),
-            source: "message".to_string(),
-        })
-        .collect();
-
-    for call in tool_turns {
-        items.push(ConversationContextItemDto {
-            event_id: call.event_id.clone(),
-            role: "assistant".to_string(),
-            content: json!({
-                "tool_call": {
-                    "name": call.tool_name,
-                    "args": call.args
-                }
-            }),
-            source: "tool_call".to_string(),
-        });
-        if has_meaningful_result(&call.result) {
-            items.push(ConversationContextItemDto {
-                event_id: call.event_id.clone(),
-                role: "tool".to_string(),
-                content: json!({
-                    "tool_name": call.tool_name,
-                    "result": call.result,
-                    "metadata": call.metadata
-                }),
-                source: "tool_result".to_string(),
-            });
-        }
-    }
-
-    items.sort_by_key(|item| event_id_counter(&item.event_id));
-    items
-}
-
 fn attribution_links_dto(raw: &str) -> Vec<AttributionLinkDto> {
     let rows = snapshot_rows(raw);
     rows.into_iter()
@@ -988,143 +919,6 @@ fn attribution_links_dto(raw: &str) -> Vec<AttributionLinkDto> {
             relation_props: normalize_value(row[3].clone()),
         })
         .collect()
-}
-
-fn synthetic_tool_calls_from_attribution(
-    links: &[AttributionLinkDto],
-    call_map: &std::collections::HashMap<String, (String, Option<String>, Value)>,
-    args_map: &std::collections::HashMap<String, Value>,
-) -> Vec<ToolCallDto> {
-    let mut tool_targets: Vec<String> = links
-        .iter()
-        .filter(|link| link.relation == "WAS_EXECUTED_BY" && link.target.starts_with("tool_call:"))
-        .map(|link| link.target.clone())
-        .collect();
-    tool_targets.sort();
-    tool_targets.dedup();
-
-    tool_targets
-        .into_iter()
-        .map(|target| {
-            let event_id = target
-                .strip_prefix("tool_call:")
-                .unwrap_or("prov-0")
-                .to_string();
-            let (tool_name, function_name, metadata) =
-                call_map.get(&event_id).cloned().unwrap_or_else(|| {
-                    (
-                        "support/calculate".to_string(),
-                        None,
-                        json!({"source": "attribution_fallback"}),
-                    )
-                });
-            let args = args_map
-                .get(&event_id)
-                .cloned()
-                .unwrap_or_else(|| json!({}));
-            let result = metadata.get("result").cloned().unwrap_or_else(|| json!({}));
-            ToolCallDto {
-                event_id,
-                tool_call: target,
-                tool_name,
-                function_name,
-                metadata,
-                args,
-                args_relation_props: json!({}),
-                result,
-                result_relation_props: json!({}),
-            }
-        })
-        .collect()
-}
-
-fn tool_call_nodes_map(
-    raw: &str,
-) -> std::collections::HashMap<String, (String, Option<String>, Value)> {
-    let mut out = std::collections::HashMap::new();
-    for row in snapshot_rows(raw) {
-        if row.len() < 5 {
-            continue;
-        }
-        let event_id = value_as_nullable_string(&row[1]).unwrap_or_default();
-        if event_id.is_empty() {
-            continue;
-        }
-        let tool_name = value_as_nullable_string(&row[2]).unwrap_or_default();
-        let function_name = value_as_nullable_string(&row[3]);
-        let metadata = decode_embedded_json(&row[4]);
-        out.insert(event_id, (tool_name, function_name, metadata));
-    }
-    out
-}
-
-fn tool_args_map(raw: &str) -> std::collections::HashMap<String, Value> {
-    let mut out = std::collections::HashMap::new();
-    for row in snapshot_rows(raw) {
-        if row.len() < 2 {
-            continue;
-        }
-        let event_id = value_as_nullable_string(&row[0]).unwrap_or_default();
-        if event_id.is_empty() {
-            continue;
-        }
-        out.insert(event_id, decode_embedded_json(&row[1]));
-    }
-    out
-}
-
-type ToolSeedMaps = (
-    std::collections::HashMap<String, (String, Option<String>, Value)>,
-    std::collections::HashMap<String, Value>,
-);
-
-fn tool_seed_maps_from_events(events: &[ProvEvent]) -> ToolSeedMaps {
-    let mut calls = std::collections::HashMap::new();
-    let mut args = std::collections::HashMap::new();
-
-    let mut seed = |id: &EventId,
-                    tool_name: &str,
-                    function_name: &Option<String>,
-                    call_args: &Value,
-                    metadata: &Value| {
-        let eid = id.to_string();
-        calls.insert(
-            eid.clone(),
-            (
-                tool_name.to_string(),
-                function_name.clone(),
-                metadata.clone(),
-            ),
-        );
-        args.insert(eid, call_args.clone());
-    };
-
-    for ev in events {
-        match ev {
-            ProvEvent::Global(GlobalEvent { id, data, .. })
-            | ProvEvent::Task(TaskScopedEvent { id, data, .. }) => match data {
-                ProvEventData::ToolCallStarted {
-                    tool_name,
-                    function_name,
-                    args: call_args,
-                    metadata,
-                    ..
-                }
-                | ProvEventData::ToolCallCompleted {
-                    tool_name,
-                    function_name,
-                    args: call_args,
-                    metadata,
-                    ..
-                } => {
-                    seed(id, tool_name, function_name, call_args, metadata);
-                }
-                _ => {}
-            },
-        }
-    }
-
-    (calls, args)
 }
 
 fn snapshot_rows(raw: &str) -> Vec<Vec<Value>> {
@@ -1144,41 +938,6 @@ fn value_as_string(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         other => other.to_string(),
-    }
-}
-
-fn value_as_nullable_string(value: &Value) -> Option<String> {
-    match value {
-        Value::Null => None,
-        Value::String(s) if s == "null" => None,
-        Value::String(s) => Some(s.clone()),
-        other => Some(other.to_string()),
-    }
-}
-
-fn decode_embedded_json(value: &Value) -> Value {
-    match value {
-        Value::String(s) => {
-            serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.clone()))
-        }
-        other => other.clone(),
-    }
-}
-
-fn event_id_counter(event_id: &str) -> u64 {
-    event_id
-        .strip_prefix("prov-")
-        .and_then(|id| id.parse::<u64>().ok())
-        .unwrap_or(0)
-}
-
-fn has_meaningful_result(value: &Value) -> bool {
-    match value {
-        Value::Null => false,
-        Value::Object(map) => !map.is_empty(),
-        Value::Array(items) => !items.is_empty(),
-        Value::String(s) => !s.trim().is_empty(),
-        _ => true,
     }
 }
 

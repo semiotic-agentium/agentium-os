@@ -165,4 +165,4 @@ async function onChatMessage(
   }
 }
 
-__baml_chat_register({ onChatMessage });
+__chat_register({ onChatMessage });

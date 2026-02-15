@@ -77,6 +77,18 @@ JS code → `QuickJSBridge` → checks `globalThis` for JS function → if missi
 
 Host tools are session-based. BAML returns a declarative `ToolSessionPlan` describing FSM steps (Open → Send* → Next → Finish/Abort). The Rust runtime executes these steps; JavaScript never mediates host tool execution.
 
+### Conversation Handling (A2A DSL) — Reference Example
+
+The **best example** of multi-turn conversation and task lifecycle is the **task-lifecycle-demo** fixture: `tests/fixtures/agents/task-lifecycle-demo/src/index.ts`.
+
+- **Entrypoint:** `__chat_register({ run })` — the agent implements `run(ctx: RunContext)`; the runtime wraps it into `onChatMessage`. No boilerplate `session(message).run(...)` in agent code.
+- **Context:** `ctx.text` (first text part), `ctx.message` (inbound message), `ctx.emit` (message, artifact, `awaitInput`).
+- **Suspension:** `await ctx.emit.awaitInput(prompt)` emits INPUT_REQUIRED and resumes when the next message is routed to the same task/context.
+- **Helpers:** `messageText(message)` for any message; `session(message).text()` for the initial message. Messages from `awaitInput` have `.text()`.
+- **Flow:** Path choice → review loop → sign-off loop → COMPLETED (sequential loops, no nesting).
+
+Other fixtures (stream-js-tool, stream-baml-tool, conversational-context-auto, etc.) use the same DSL; task-lifecycle-demo is the most complete reference.
+
 ### Feature Flags (baml-rt facade)
 
 - `tools` → baml-rt-tools

@@ -5,6 +5,9 @@ edition = { workspace = true }
 authors = { workspace = true }
 publish = false
 
+[package.metadata.cargo-machete]
+ignored = ["futures-util", "inventory"]
+
 [dependencies]
 baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-tools = { path = "../baml-rt-tools" }
@@ -17,12 +20,11 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 async-channel = { workspace = true }
 async-trait = { workspace = true }
-# tokio-tungstenite = { workspace = true }
 futures-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
-schemars = "1.1.0"
-ts-rs = "11.1.0"
+schemars = { workspace = true }
+ts-rs = { workspace = true }
 testcontainers = { workspace = true, optional = true }
 text-to-cypher = { workspace = true, default-features = false, optional = true }
 
@@ -33,8 +35,8 @@ tracing-subscriber = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
-# insta = { workspace = true }
-proptest = "1.5"
+insta = { workspace = true }
+proptest = { workspace = true }
 
 [features]
 default = []

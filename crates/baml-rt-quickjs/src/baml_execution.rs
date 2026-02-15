@@ -19,6 +19,27 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
+use tokio::time::{Duration, sleep};
+
+/// Policy for retrying BAML calls when the LLM response fails to parse.
+///
+/// Allows tests to use `max_attempts: 1` to avoid retry delay and non-determinism.
+#[derive(Clone, Debug)]
+pub struct ParseRetryPolicy {
+    /// Total attempts (initial call + retries). Must be at least 1.
+    pub max_attempts: u32,
+    /// Base delay in milliseconds between attempts. Delay for attempt N is `delay_ms * N`.
+    pub delay_ms: u64,
+}
+
+impl Default for ParseRetryPolicy {
+    fn default() -> Self {
+        Self {
+            max_attempts: 3,
+            delay_ms: 300,
+        }
+    }
+}
 
 /// BAML execution engine that executes BAML IL
 #[async_trait]
@@ -37,6 +58,7 @@ pub struct BamlExecutor {
     tool_registry: Arc<ToolRegistry>,
     effect_emitter: Option<Arc<dyn EffectEmitter>>,
     conversation_context_provider: Option<Arc<dyn ConversationContextProvider>>,
+    parse_retry_policy: ParseRetryPolicy,
 }
 
 impl BamlExecutor {
@@ -74,7 +96,13 @@ impl BamlExecutor {
             tool_registry,
             effect_emitter: None,
             conversation_context_provider: None,
+            parse_retry_policy: ParseRetryPolicy::default(),
         })
+    }
+
+    /// Set the policy for retrying on parse failure (e.g. use `max_attempts: 1` in tests).
+    pub fn set_parse_retry_policy(&mut self, policy: ParseRetryPolicy) {
+        self.parse_retry_policy = policy;
     }
 
     /// Set the effect emitter (for effects-first liveness)
@@ -119,7 +147,6 @@ impl BamlExecutor {
             }
         }
         let tags = None;
-        let cancel_tripwire = baml_runtime::TripWire::new(None);
 
         // Track execution start time for effect completion (our clock, not BAML trace)
         let start_time = Instant::now();
@@ -184,83 +211,127 @@ impl BamlExecutor {
             None
         };
 
-        tracing::info!(
-            function = function_name,
-            context_id = %scope.context_id().as_str(),
-            message_id = %scope.message_id().as_str(),
-            task_id = %scope.task_id_opt().map(|id| id.as_str()).unwrap_or("none"),
-            "BAML call_function: start"
-        );
-        let (result, _call_id) = self
-            .runtime
-            .call_function(
-                function_name.to_string(),
-                &params,
-                &ctx_manager,
-                None,       // type_builder
-                None,       // client_registry
-                collectors, // collectors - now wired up to track execution
-                env_vars,
-                tags,
-                cancel_tripwire,
-            )
-            .await;
+        let max_attempts = self.parse_retry_policy.max_attempts.max(1);
+        let delay_ms = self.parse_retry_policy.delay_ms;
+        let mut last_parse_err: Option<anyhow::Error> = None;
+        for attempt in 0..max_attempts {
+            if attempt > 0 {
+                let backoff_ms = delay_ms * attempt as u64;
+                tracing::warn!(
+                    function = function_name,
+                    attempt = attempt + 1,
+                    delay_ms = backoff_ms,
+                    "Parse failed, retrying BAML call"
+                );
+                sleep(Duration::from_millis(backoff_ms)).await;
+            }
 
-        if let Err(ref e) = result {
-            tracing::warn!(
-                function = function_name,
-                error = ?e,
-                elapsed_ms = start_time.elapsed().as_millis() as u64,
-                "BAML call_function: error"
-            );
-        } else {
             tracing::info!(
                 function = function_name,
-                elapsed_ms = start_time.elapsed().as_millis() as u64,
-                "BAML call_function: ok"
+                context_id = %scope.context_id().as_str(),
+                message_id = %scope.message_id().as_str(),
+                task_id = %scope.task_id_opt().map(|id| id.as_str()).unwrap_or("none"),
+                attempt = attempt + 1,
+                "BAML call_function: start"
             );
-        }
-
-        // Complete LLM effect on all paths (success or failure). No BAML trace dependency.
-        if let Some(ref collector) = collector {
-            collector
-                .complete_pending_effects(result.is_ok(), start_time.elapsed().as_millis() as u64)
+            let cancel_tripwire = baml_runtime::TripWire::new(None);
+            // Use collectors only on first attempt to avoid duplicate trace events on retries
+            let attempt_collectors = if attempt == 0 {
+                collectors.clone()
+            } else {
+                None
+            };
+            let (result, _call_id) = self
+                .runtime
+                .call_function(
+                    function_name.to_string(),
+                    &params,
+                    &ctx_manager,
+                    None, // type_builder
+                    None, // client_registry
+                    attempt_collectors,
+                    env_vars.clone(),
+                    tags,
+                    cancel_tripwire,
+                )
                 .await;
-        }
 
-        let function_result = result.map_err(|e| BamlRtError::ExecutionFailed { source: e })?;
+            if let Err(ref e) = result {
+                tracing::warn!(
+                    function = function_name,
+                    error = ?e,
+                    elapsed_ms = start_time.elapsed().as_millis() as u64,
+                    "BAML call_function: error"
+                );
+                // Complete effect and return immediately; execution errors are not retried
+                if let Some(ref collector) = collector {
+                    collector
+                        .complete_pending_effects(false, start_time.elapsed().as_millis() as u64)
+                        .await;
+                }
+                return Err(BamlRtError::ExecutionFailed {
+                    source: result.unwrap_err(),
+                });
+            }
 
-        // Extract the parsed value
-        let parsed_result = function_result.parsed().as_ref().ok_or_else(|| {
-            BamlRtError::BamlRuntime("Function returned no parsed result".to_string())
-        })?;
-        let parsed = parsed_result
-            .as_ref()
-            .map_err(|e| BamlRtError::ParsedResultFailed {
-                source: anyhow::Error::msg(e.to_string()),
+            let function_result = result.unwrap();
+            let parsed_result = function_result.parsed().as_ref().ok_or_else(|| {
+                BamlRtError::BamlRuntime("Function returned no parsed result".to_string())
             })?;
 
-        // Convert ResponseBamlValue to JSON using serialize_partial
-        let json_value =
-            serde_json::to_value(parsed.serialize_partial()).map_err(BamlRtError::Json)?;
+            match parsed_result.as_ref() {
+                Ok(parsed) => {
+                    tracing::info!(
+                        function = function_name,
+                        elapsed_ms = start_time.elapsed().as_millis() as u64,
+                        "BAML call_function: ok"
+                    );
+                    if let Some(ref collector) = collector {
+                        collector
+                            .complete_pending_effects(true, start_time.elapsed().as_millis() as u64)
+                            .await;
+                    }
+                    // Success path continues below with `parsed`
+                    let json_value = serde_json::to_value(parsed.serialize_partial())
+                        .map_err(BamlRtError::Json)?;
 
-        // Process trace events to notify LLM interceptors of completion
-        // This extracts LLM call information from BAML's trace events
-        if let Some(ref collector) = collector {
-            // Process trace events to extract LLM call context and notify interceptors
-            // The collector tracks the function call via the collector we passed to call_function
-            if let Err(e) = collector.process_trace_events(scope).await {
-                tracing::warn!(error = ?e, "Failed to process trace events for LLM interception");
+                    // Process trace events to notify LLM interceptors of completion
+                    if let Some(ref collector) = collector
+                        && let Err(e) = collector.process_trace_events(scope).await
+                    {
+                        tracing::warn!(error = ?e, "Failed to process trace events for LLM interception");
+                    }
+
+                    if let Some(tool_result) =
+                        maybe_execute_tool_from_result(&self.tool_registry, &json_value).await?
+                    {
+                        return Ok(tool_result);
+                    }
+                    return Ok(json_value);
+                }
+                Err(e) => {
+                    last_parse_err = Some(anyhow::Error::msg(e.to_string()));
+                    if attempt + 1 >= max_attempts {
+                        if let Some(ref collector) = collector {
+                            collector
+                                .complete_pending_effects(
+                                    false,
+                                    start_time.elapsed().as_millis() as u64,
+                                )
+                                .await;
+                        }
+                        return Err(BamlRtError::ParsedResultFailed {
+                            source: last_parse_err.unwrap(),
+                        });
+                    }
+                }
             }
         }
 
-        if let Some(tool_result) =
-            maybe_execute_tool_from_result(&self.tool_registry, &json_value).await?
-        {
-            return Ok(tool_result);
-        }
-
-        Ok(json_value)
+        // Unreachable (loop returns on success or last attempt), but satisfy type checker
+        Err(BamlRtError::ParsedResultFailed {
+            source: last_parse_err.unwrap_or_else(|| anyhow::Error::msg("Parse failed")),
+        })
     }
 
     /// Execute a BAML function with streaming support

@@ -1,5 +1,6 @@
 //! Compiler implementations for BAML and TypeScript
 
+use crate::builder::a2a_shim_gen::render_a2a_shim;
 use crate::builder::baml_gen::render_baml_tool_interfaces;
 use crate::builder::baml_signature_gen::extract_baml_signatures;
 use crate::builder::traits::{FileSystem, TypeGenerator, TypeScriptCompiler};
@@ -121,7 +122,7 @@ impl<FS: FileSystem> TypeScriptCompiler for OxcTypeScriptCompiler<FS> {
             }
 
             if output_path.file_name() == Some(OsStr::new("index.js")) {
-                let a2a_shim = include_str!("a2a.js");
+                let a2a_shim = render_a2a_shim()?;
                 js_code = format!("{}\n{}", a2a_shim.trim_end(), js_code);
             }
 

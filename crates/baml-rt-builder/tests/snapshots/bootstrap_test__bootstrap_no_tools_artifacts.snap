@@ -33,25 +33,17 @@ client DefaultClient {
 
 === src/index.ts ===
 /// <reference path="./baml-runtime.d.ts" />
-// @ts-nocheck
-// Types from ./a2a.ts (normal TS include).
+// Types from baml-runtime.d.ts (bootstrap-generated). DSL-only; no protocol plumbing.
 
-function extractText(message: unknown): string {
-  if (!message || typeof message !== 'object') return 'unknown';
-  const m = message as Record<string, unknown>;
-  if (Array.isArray(m.parts) && m.parts.length > 0) {
-    const first = (m.parts as Record<string, unknown>[])[0];
-    if (first && typeof first.text === 'string') return first.text;
-  }
-  return 'unknown';
+async function onChatMessage(message: ChatMessage): Promise<void> {
+  const s = session(message);
+  await s.run(async () => {
+    const text = s.text() || 'unknown';
+    const result = await Exploreragent({ input: text });
+    return { message: String(result) };
+  });
 }
-
-async function onChatMessage(message: unknown): Promise<void> {
-  const text = extractText(message);
-  const result = await Exploreragent({ input: text });
-  __baml_chat_yield({ message: { parts: [{ text: String(result) }] } });
-}
-__baml_chat_register({ onChatMessage });
+__chat_register({ onChatMessage });
 
 
 === src/baml-runtime.d.ts ===
@@ -71,8 +63,157 @@ declare function Exploreragent(args: { input: string }): Promise<string>;
 
 }
 
-/** Host tool session API: openToolSession, tool-specific openers, and shared types (ToolFailure, ToolStep, etc.). */
+/** Runtime interaction API: A2A task FSM (message-first, typestate rails). */
 
+/**
+ * A2A task-only FSM API (message-first).
+ *
+ * This is the canonical interface for A2A task flows in TypeScript.
+ * It intentionally models legal task/session transitions in the type system
+ * so invalid transition wiring fails at compile-time.
+ */
+export type A2aTaskState =
+    | "TASK_STATE_SUBMITTED"
+    | "TASK_STATE_WORKING"
+    | "TASK_STATE_INPUT_REQUIRED"
+    | "TASK_STATE_AUTH_REQUIRED"
+    | "TASK_STATE_COMPLETED"
+    | "TASK_STATE_FAILED"
+    | "TASK_STATE_CANCELED"
+    | "TASK_STATE_REJECTED";
+export type A2aNonTerminalTaskState =
+    | "TASK_STATE_SUBMITTED"
+    | "TASK_STATE_WORKING"
+    | "TASK_STATE_INPUT_REQUIRED"
+    | "TASK_STATE_AUTH_REQUIRED";
+export type A2aTerminalTaskState =
+    | "TASK_STATE_COMPLETED"
+    | "TASK_STATE_FAILED"
+    | "TASK_STATE_CANCELED"
+    | "TASK_STATE_REJECTED";
+export type A2aNextStates<S extends A2aTaskState> =
+    S extends "TASK_STATE_SUBMITTED"
+        ? "TASK_STATE_WORKING" | "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED" | "TASK_STATE_INPUT_REQUIRED" | "TASK_STATE_AUTH_REQUIRED"
+    : S extends "TASK_STATE_WORKING"
+        ? "TASK_STATE_INPUT_REQUIRED" | "TASK_STATE_AUTH_REQUIRED" | "TASK_STATE_COMPLETED" | "TASK_STATE_FAILED" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
+    : S extends "TASK_STATE_INPUT_REQUIRED"
+        ? "TASK_STATE_WORKING" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
+    : S extends "TASK_STATE_AUTH_REQUIRED"
+        ? "TASK_STATE_WORKING" | "TASK_STATE_CANCELED" | "TASK_STATE_REJECTED"
+    : never;
+export interface A2aTaskContext<S extends A2aTaskState> {
+    taskId: string;
+    contextId?: string;
+    state: S;
+}
+export interface A2aTaskView<S extends A2aTaskState = A2aTaskState> extends A2aTaskContext<S> {}
+export interface A2aActiveTask<S extends A2aNonTerminalTaskState> extends A2aTaskView<S> {
+    onStatus<N extends A2aNextStates<S>>(expected: N, handler: (task: A2aActiveTask<N>) => Promise<void> | void): A2aActiveTask<S>;
+    cancel(): Promise<A2aTerminalTask<"TASK_STATE_CANCELED">>;
+}
+export interface A2aTerminalTask<S extends A2aTerminalTaskState> extends A2aTaskView<S> {}
+export interface A2aStateDispatcher<S extends A2aNonTerminalTaskState> {
+    on<N extends A2aNextStates<S>>(state: N, handler: (ctx: A2aTaskContext<N>) => Promise<void> | void): A2aStateDispatcher<S>;
+}
+export type A2aMessageEvent<S extends A2aTaskState = A2aTaskState> =
+    | { kind: "assistantMessage"; text: string; task: A2aTaskView<S> }
+    | { kind: "statusChanged"; from?: A2aTaskState; to: S; task: A2aTaskView<S> }
+    | { kind: "artifactPublished"; task: A2aTaskView<S>; artifact: unknown; append?: boolean; lastChunk?: boolean }
+    | { kind: "completed"; task: A2aTerminalTask<Extract<S, A2aTerminalTaskState>> }
+    | { kind: "failed"; task: A2aTerminalTask<Extract<S, A2aTerminalTaskState>>; error: ToolFailure };
+/**
+ * Session typestate rails:
+ * - AwaitingInput: only send/abort are legal
+ * - Streaming: event consumption + finish/abort
+ * - Closed: terminal state, no further operations
+ */
+export interface A2aSessionAwaitingInput<I> {
+    sessionId: string;
+    send(input: I): Promise<A2aSessionStreaming<"TASK_STATE_SUBMITTED">>;
+    abort(reason?: string): Promise<A2aSessionClosed>;
+}
+export interface A2aSessionStreaming<S extends A2aTaskState> {
+    sessionId: string;
+    events(): AsyncIterable<A2aMessageEvent<S | A2aNextStates<S>>>;
+    dispatch(task: A2aActiveTask<Extract<S, A2aNonTerminalTaskState>>): A2aStateDispatcher<Extract<S, A2aNonTerminalTaskState>>;
+    finish(): Promise<A2aSessionClosed>;
+    abort(reason?: string): Promise<A2aSessionClosed>;
+}
+export interface A2aSessionClosed {
+    sessionId: string;
+    closed: true;
+}
+declare function openA2aTaskSession<I = unknown>(token: string): Promise<A2aSessionAwaitingInput<I>>;
+/**
+ * Bootstrap-generated: handler types. Incoming message (parts only; IDs/context are host-managed).
+ * Session lifecycle: host invokes onChatMessage(message); agent uses session(message).run(...) to run work and emit outcomes.
+ */
+export interface Part { text?: string; data?: unknown; [key: string]: unknown; }
+export interface Message { parts: Part[]; }
+export type ChatMessage = Message;
+/**
+ * Result shape for session.run() callback. Return { message } on success (runtime emits message and completed);
+ * return { error } on failure (runtime emits failed with that error). No need to call emit helpers yourself.
+ */
+export type SessionResult = { message: string } | { error: string };
+/**
+ * Emitter passed into run(emit => ...) for intermediate emissions (working message, artifact, status).
+ * Use when you need to stream artifacts or status before returning the final SessionResult.
+ */
+export interface SessionEmitter {
+  /** Emit a working message (task state remains WORKING). */
+  message(text: string): void;
+  /** Emit an artifact chunk (append/lastChunk optional). */
+  artifact(artifact: unknown, append?: boolean, lastChunk?: boolean): void;
+  /** Emit a status transition (e.g. TASK_STATE_WORKING). */
+  statusChanged(to: A2aTaskState): void;
+  /**
+   * Suspend this flow until the next message for the same task/context arrives.
+   * Runtime emits TASK_STATE_INPUT_REQUIRED before suspension. Optional prompt is attached to that status.
+   */
+  awaitInput(prompt?: string): Promise<ChatMessage>;
+}
+/**
+ * Fluent session builder. Entrypoint for agent logic: session(message).run(async () => ...).
+ * - .text() returns the first text part of the message (no manual extraction).
+ * - .run(fn) runs fn(); if it returns { message }, runtime emits that and completed; if { error }, runtime emits failed.
+ * - .run(emit => fn(emit)) receives an emitter for intermediate message/artifact/status and await-input suspension.
+ * - .onCompleted / .onFailed are optional side-effect callbacks; emission is always done by the runtime.
+ */
+export interface SessionBuilder {
+  /** First text part of the message; use for BAML/tool args. Defaults to "" if missing. */
+  text(): string;
+  /** Optional: called with the success message before the runtime emits completed. */
+  onCompleted(fn: (message: string) => void): SessionBuilder;
+  /** Optional: called with the error string before the runtime emits failed. */
+  onFailed(fn: (error: string) => void): SessionBuilder;
+  /**
+   * Run async work. Return { message } to succeed (runtime emits message + completed);
+   * return { error } to fail (runtime emits failed). Rejected promise is treated as { error: err.message }.
+   * Overload: run(emit => ...) receives SessionEmitter for intermediate emissions.
+   */
+  run(fn: (emit: SessionEmitter) => Promise<SessionResult>): Promise<void>;
+  run(fn: () => Promise<SessionResult>): Promise<void>;
+}
+/** Agent contract: register this; host invokes onChatMessage per message. */
+export interface BamlAgent {
+  onChatMessage(message: ChatMessage): Promise<void>;
+  tools?: Record<string, (args: unknown) => Promise<unknown>>;
+}
+declare global {
+  /**
+   * Global alias for incoming chat messages in agent entrypoints.
+   * This keeps bootstrap/index.ts ergonomic without local type shims.
+   */
+  type ChatMessage = Message;
+  /**
+   * Start a session for this message. Use the returned builder to get .text(), then .run(async () => ...).
+   * Legal transitions and emission are handled by the runtime; you only return success or error from run().
+   */
+  function session(message: ChatMessage | null | undefined): SessionBuilder;
+  function __chat_register(agent: BamlAgent): void;
+  function __chat_yield(chunk: unknown): void;
+}
 export type ToolFailureKind =
     | "InvalidInput"
     | "ExecutionFailed"
@@ -84,107 +225,6 @@ export interface ToolFailure {
     kind: ToolFailureKind;
     message: string;
     retryable: boolean;
-}
-export type ToolStep<O> =
-    | { status: "streaming"; output: O }
-    | { status: "done"; output?: O }
-    | { status: "error"; error: ToolFailure };
-export interface ToolSession<I, O> {
-    sessionId: string;
-    send(input: I): Promise<void>;
-    continue(): Promise<ToolStep<O>>;
-    finish(): Promise<void>;
-    abort(reason?: string): Promise<void>;
-}
-export type ToolName = never;
-
-
-=== src/a2a.ts ===
-/**
- * A2A (Agent-to-Agent) types for BAML agent packages.
- * Only message.sendStream is supported; all message handling is async/stream.
- *
- * Conversation routing:
- * - The host invokes the handler once per incoming chat message and binds each invocation
- *   to the correct conversation (context). Multiple conversations may be in progress in parallel;
- *   each message is delivered with the correct conversation context, and yielded chunks are
- *   attributed to that conversation by the host.
- *
- * Stream contract:
- * - For message.sendStream the host sets globalThis.__baml_chat_yield_buffer and
- *   globalThis.__baml_chat_yield before invoking onChatMessage.
- * - The agent MUST call __baml_chat_yield(chunk) for each ChatStreamChunk it produces.
- *   The host reads the buffer after the promise resolves and uses it as the stream.
- * - Return value of onChatMessage is ignored. No fallback.
- * - IDs, history, tenant/config, and other protocol metadata are handled by the host.
- */
-
-export interface Part {
-  text?: string;
-  data?: unknown;
-  raw?: string;
-  url?: string;
-  filename?: string;
-  mediaType?: string;
-  metadata?: Record<string, unknown>;
-  [key: string]: unknown;
-}
-
-/** Incoming or outgoing message content (parts only; IDs/role/etc. are host-managed). */
-export interface Message {
-  parts: Part[];
-}
-
-/** Incoming chat message passed to the JS handler (parts only). */
-export type ChatMessage = Message;
-
-export interface Artifact {
-  name?: string;
-  description?: string;
-  parts: Part[];
-}
-
-export interface TaskStatus {
-  state?: string;
-  message?: Message;
-  timestamp?: string;
-  [key: string]: unknown;
-}
-
-export interface Task {
-  artifacts?: Artifact[];
-  status?: TaskStatus;
-}
-
-export interface TaskStatusUpdateEvent {
-  status?: TaskStatus;
-}
-
-export interface TaskArtifactUpdateEvent {
-  lastChunk?: boolean;
-  append?: boolean;
-  artifact?: Artifact;
-}
-
-/** One chunk in a message.sendStream response. */
-export type ChatStreamChunk =
-  | { message: Message; task?: never; statusUpdate?: never; artifactUpdate?: never }
-  | { message?: never; task: Task; statusUpdate?: never; artifactUpdate?: never }
-  | { message?: never; task?: never; statusUpdate: TaskStatusUpdateEvent; artifactUpdate?: never }
-  | { message?: never; task?: never; statusUpdate?: never; artifactUpdate: TaskArtifactUpdateEvent }
-  | { message?: Message; task?: Task; statusUpdate?: TaskStatusUpdateEvent; artifactUpdate?: TaskArtifactUpdateEvent; [key: string]: unknown };
-
-export interface BamlAgent {
-  /** Receives the incoming chat message (parts only). Yield each chunk via __baml_chat_yield(chunk); return value is ignored. */
-  onChatMessage(message: ChatMessage): Promise<void>;
-}
-
-declare global {
-  function __baml_chat_register(
-    agent: BamlAgent & { tools?: Record<string, (args: unknown) => Promise<unknown>> }
-  ): void;
-  /** Set by host before stream requests. Agent must call once per chunk. */
-  function __baml_chat_yield(chunk: ChatStreamChunk): void;
 }
 
 

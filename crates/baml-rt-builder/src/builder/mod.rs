@@ -6,6 +6,7 @@
 //! **Tool catalogue:** Tool list composition for bootstrap is done in the binary,
 //! not in the lib. See [`bootstrap`].
 
+pub mod a2a_shim_gen;
 pub mod baml_gen;
 pub mod baml_signature_gen;
 pub mod bootstrap;

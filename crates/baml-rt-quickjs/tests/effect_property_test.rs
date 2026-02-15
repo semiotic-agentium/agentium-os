@@ -58,7 +58,6 @@ impl MockEffectLiveness {
         }
     }
 
-    #[allow(dead_code)]
     async fn set_counts(&self, context_id: ContextId, counts: InFlightCounts) {
         let mut map = self.counts.write().await;
         if counts.any() {
@@ -224,6 +223,36 @@ async fn test_simulated_hang_always_in_flight_inner() {
     assert_eq!(
         timeout_attempts, TEST_MAX_ATTEMPTS_MS as u32,
         "Hang test: Mock always-in-flight should use max_attempts"
+    );
+}
+
+/// set_counts sets in-flight state without bus events; poller should use long timeout.
+#[tokio::test]
+async fn test_set_counts_directly_sets_in_flight() {
+    use baml_rt_quickjs::quickjs_bridge::EffectGatedPoller;
+
+    let mock = Arc::new(MockEffectLiveness::new(false));
+    let context_id = ContextId::new(1000, 10);
+    mock.set_counts(
+        context_id.clone(),
+        InFlightCounts {
+            tool: 1,
+            llm: 0,
+            a2a: 0,
+        },
+    )
+    .await;
+
+    let poller = EffectGatedPoller::new(
+        Some(mock as Arc<dyn EffectLiveness>),
+        Some(context_id),
+        5000,
+        TEST_MAX_ATTEMPTS_MS,
+    );
+    let timeout_attempts = poller.timeout_attempts().await;
+    assert_eq!(
+        timeout_attempts, TEST_MAX_ATTEMPTS_MS as u32,
+        "set_counts in-flight should yield max_attempts timeout"
     );
 }
 

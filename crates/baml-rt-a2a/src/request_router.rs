@@ -2,7 +2,6 @@ use crate::a2a;
 use crate::a2a_types;
 use crate::handlers::TaskHandler;
 use crate::result_pipeline::ResultStoragePipeline;
-use crate::stream_normalizer::StreamNormalizer;
 use async_trait::async_trait;
 use baml_rt_core::context::InvocationScope;
 use baml_rt_core::effects::{A2aEffectMetadata, EffectEmitter, EffectEvent};
@@ -55,18 +54,11 @@ pub trait JsStreamInvoker: Send + Sync {
 
 pub struct QuickJsInvoker {
     bridge: Arc<Mutex<QuickJSBridge>>,
-    stream_normalizer: Arc<dyn StreamNormalizer>,
 }
 
 impl QuickJsInvoker {
-    pub fn new(
-        bridge: Arc<Mutex<QuickJSBridge>>,
-        stream_normalizer: Arc<dyn StreamNormalizer>,
-    ) -> Self {
-        Self {
-            bridge,
-            stream_normalizer,
-        }
+    pub fn new(bridge: Arc<Mutex<QuickJSBridge>>) -> Self {
+        Self { bridge }
     }
 }
 
@@ -107,11 +99,7 @@ impl JsStreamInvoker for QuickJsInvoker {
         let session = begin_a2a_yield_session(&mut bridge).await?;
         let session = session.invoke(scope, js_request).await?;
         let yielded = session.collect().await?;
-
-        yielded
-            .into_iter()
-            .map(|v| self.stream_normalizer.normalize_chunk(v))
-            .collect::<Result<Vec<Value>>>()
+        Ok(yielded)
     }
 }
 

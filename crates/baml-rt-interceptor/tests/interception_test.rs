@@ -356,7 +356,7 @@ async fn test_blocking_interception_integration() {
 
     // If blocking worked, we should get an error containing "blocked"
     // The blocking interceptor checks if model/client contains "deepseek" or "openrouter"
-    // Since our test uses "deepseek/deepseek-chat", it should be blocked
+    // Since our test uses "deepseek/deepseek-v3.2", it should be blocked
     match result {
         Ok(_) => {
             // If we get here, blocking didn't work - the model pattern might not have matched

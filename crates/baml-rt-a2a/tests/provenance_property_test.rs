@@ -3,7 +3,7 @@
 
 #![recursion_limit = "256"]
 
-use baml_rt::QuickJSConfig;
+mod common;
 
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt_core::ids::{ContextId, CorrelationId};
@@ -13,23 +13,6 @@ use test_support::common::send_stream_request;
 use test_support::common::shared_falkordb;
 use tokio::time::Duration;
 
-async fn build_agent(writer: Arc<FalkorDbProvenanceWriter>) -> A2aAgent {
-    let js = r#"
-        globalThis.onChatMessage = async function(message) {
-            const text = message?.parts?.[0]?.text || "";
-            __baml_chat_yield({ message: { parts: [{ text: `echo:${text}` }] } });
-        };
-    "#;
-    A2aAgent::builder()
-        .with_provenance_writer(writer)
-        .with_init_js(js)
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
-        .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
-        .build()
-        .await
-        .expect("agent build")
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn test_scope_attribution_without_cross_contamination() {
     let connection = shared_falkordb().await;
@@ -38,7 +21,13 @@ async fn test_scope_attribution_without_cross_contamination() {
     let writer = Arc::new(FalkorDbProvenanceWriter::new(
         FalkorDbProvenanceConfig::new(connection.to_owned(), graph),
     ));
-    let agent = build_agent(writer.clone()).await;
+    let js = r#"
+        globalThis.onChatMessage = async function(message) {
+            const text = message?.parts?.[0]?.text || "";
+            __chat_yield({ message: { parts: [{ text: `echo:${text}` }] } });
+        };
+    "#;
+    let agent = common::provenance::build_provenance_agent(writer.clone(), js).await;
 
     let context_ids: Vec<ContextId> = (0..4).map(|i| ContextId::new(10, i as u64)).collect();
     for (idx, context_id) in context_ids.iter().enumerate() {

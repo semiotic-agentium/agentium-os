@@ -8,7 +8,7 @@ use serde_json::Value;
 use tokio::sync::mpsc::error::TryRecvError;
 
 impl QuickJSBridge {
-    /// Set up the chat stream yield buffer and __baml_chat_yield so JS can yield chunks asynchronously
+    /// Set up the chat stream yield buffer and __chat_yield so JS can yield chunks asynchronously
     /// instead of collecting and returning an array. Call before invoking onChatMessage for stream requests.
     ///
     /// **Lifecycle:** Clears any previous yield channel (no stale sender/receiver across sessions).
@@ -70,7 +70,7 @@ impl QuickJSBridge {
             })?;
 
         let js_code = r#"
-            globalThis.__baml_chat_yield = function(chunk) {
+            globalThis.__chat_yield = function(chunk) {
                 __baml_chat_yield_host(JSON.stringify(chunk));
             };
         "#;
@@ -137,7 +137,7 @@ impl QuickJSBridge {
     ///
     /// **INVARIANT L6 (Stream Promise Non-Termination):**
     /// For stream requests, the promise from `onChatMessage()` is DESIGNED to never resolve.
-    /// It yields chunks via `__baml_chat_yield()` and only completes on agent exit or crash.
+    /// It yields chunks via `__chat_yield()` and only completes on agent exit or crash.
     /// This method starts the async function but does NOT wait for promise resolution.
     ///
     /// **Property:**
@@ -180,7 +180,7 @@ impl QuickJSBridge {
         let scope_prelude = super::build_scope_prelude(scope, &token_prelude)?;
 
         // For stream requests, we start the async function but DON'T wait for promise resolution.
-        // The function yields chunks via __baml_chat_yield() and the promise never resolves (by design).
+        // The function yields chunks via __chat_yield() and the promise never resolves (by design).
         // We just need to ensure the function starts executing and can yield chunks.
         let js_code = format!(
             r#"
@@ -195,7 +195,7 @@ impl QuickJSBridge {
                     // Preserve token in args so async handlers can pass it explicitly.
                     args.__baml_invocation_token = __baml_invocation_token;
                     // Start the async function but don't await it - it's designed to never resolve
-                    // for stream requests. Chunks are collected via __baml_chat_yield_buffer.
+                    // for stream requests. Chunks are collected via the yield channel.
                     func(args);
                     return JSON.stringify({{ success: true }});
                 }} catch (error) {{

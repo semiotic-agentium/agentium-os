@@ -99,18 +99,18 @@ async fn test_full_integration_package_load_execute() {
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
-    // Use voidship-rites fixture
+    // Use stream-baml-tool fixture
     ensure_fixture_runtime_types();
-    let agent_dir = agent_fixture("voidship-rites");
+    let agent_dir = agent_fixture("stream-baml-tool");
 
     if !agent_dir.exists() || !agent_dir.join("baml_src").exists() {
-        println!("Skipping test: voidship-rites fixture not found");
+        println!("Skipping test: stream-baml-tool fixture not found");
         return;
     }
 
     // STEP 1: Package the agent (compiles TypeScript to JavaScript)
     let package_dir = TempDir::new().unwrap();
-    let package_path = package_dir.path().join("voidship-rites.tar.gz");
+    let package_path = package_dir.path().join("stream-baml-tool.tar.gz");
 
     let mut package_cmd = harness.builder_command();
     package_cmd

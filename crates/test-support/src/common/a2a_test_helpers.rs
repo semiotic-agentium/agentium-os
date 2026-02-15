@@ -45,10 +45,37 @@ pub fn send_stream_request(
     serde_json::to_value(request).expect("serialize JSONRPCRequest")
 }
 
+/// Returns true if the JSON-RPC response envelope contains an error field.
+pub fn is_error_response(response: &Value) -> bool {
+    response.get("error").is_some()
+}
+
 pub fn chunk_content(response: &Value) -> Option<&Value> {
     response
         .get("result")
         .and_then(|result| result.get("chunk").or(Some(result)))
+}
+
+/// Extracts chunk contents from A2A stream responses (result.chunk or result).
+pub fn chunks_from_responses(responses: &[Value]) -> Vec<&Value> {
+    responses.iter().filter_map(chunk_content).collect()
+}
+
+/// Extracts message text from the first part of each chunk.
+pub fn message_texts_from_chunks(chunks: &[&Value]) -> Vec<String> {
+    chunks
+        .iter()
+        .filter_map(|chunk| {
+            chunk
+                .get("message")
+                .and_then(|m| m.get("parts"))
+                .and_then(|p| p.as_array())
+                .and_then(|p| p.first())
+                .and_then(|part| part.get("text"))
+                .and_then(Value::as_str)
+        })
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 pub fn first_message_text_from_stream(responses: &[Value]) -> String {

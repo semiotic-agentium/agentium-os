@@ -6,9 +6,7 @@ use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::tools::BamlTool;
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::effects::EffectBus;
-#[cfg(feature = "falkordb-tests")]
-use baml_rt_core::ids::ContextId;
-use baml_rt_core::ids::{AgentId, UuidId};
+use baml_rt_core::ids::{AgentId, ContextId, UuidId};
 #[cfg(feature = "falkordb-tests")]
 use baml_rt_provenance::{
     AgentType, FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, ProvEvent,
@@ -33,8 +31,7 @@ use tokio::sync::Semaphore;
 use tokio::time::{Duration, sleep, timeout};
 use ts_rs::TS;
 
-// Test bundle for test tools
-#[allow(dead_code)]
+// Bundle type for test tools (used as AddNumbersTool::Bundle; referenced in test_runner_tool_types_for_package_build).
 struct Test;
 
 impl BundleType for Test {
@@ -43,13 +40,11 @@ impl BundleType for Test {
         "Test tools for unit testing"
     }
 }
-use baml_rt::a2a_types::{
-    JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest,
-};
+use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, SendMessageRequest};
 
 use test_support::common::{
-    CalculatorTool, agent_fixture, ensure_baml_src_exists, ensure_fixture_runtime_types,
-    workspace_root,
+    CalculatorTool, agent_fixture, chunks_from_responses, ensure_baml_src_exists,
+    ensure_fixture_runtime_types, message_texts_from_chunks, user_message, workspace_root,
 };
 use test_support::support::cli::CliHarness;
 
@@ -238,7 +233,7 @@ fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), Box<dyn std::error::Error>
     Ok(())
 }
 
-#[allow(dead_code)]
+// Tool type for package build and ts_rs/JsonSchema; referenced in test_runner_tool_types_for_package_build.
 struct AddNumbersTool;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -273,23 +268,11 @@ impl BamlTool for AddNumbersTool {
     }
 }
 
-fn user_message(message_id: &str, text: &str) -> Message {
-    use baml_rt_a2a::a2a_types::A2aMessageId;
-    use baml_rt_core::ids::{ContextId, ExternalId};
-    Message {
-        message_id: A2aMessageId::incoming(ExternalId::new(message_id)),
-        role: MessageRole::String("ROLE_USER".to_string()),
-        parts: vec![Part {
-            text: Some(text.to_string()),
-            ..Part::default()
-        }],
-        context_id: Some(ContextId::new(1, 1)),
-        task_id: None,
-        reference_task_ids: Vec::new(),
-        extensions: Vec::new(),
-        metadata: None,
-        extra: std::collections::HashMap::new(),
-    }
+/// References Test and AddNumbersTool so they are not reported dead (used for package build / impls).
+#[test]
+fn test_runner_tool_types_for_package_build() {
+    let _ = AddNumbersTool;
+    assert_eq!(Test::NAME, "test");
 }
 
 fn jsonrpc_request(method: &str, params: serde_json::Value, id: &str) -> JSONRPCRequest {
@@ -307,32 +290,6 @@ fn send_message_request(params: SendMessageRequest, id: &str) -> JSONRPCRequest 
         serde_json::to_value(params).unwrap(),
         id,
     )
-}
-
-fn extract_chunks(responses: &[serde_json::Value]) -> Vec<&serde_json::Value> {
-    responses
-        .iter()
-        .filter_map(|r| {
-            r.get("result")
-                .and_then(|res| res.get("chunk").or(Some(res)))
-        })
-        .collect()
-}
-
-#[cfg(any(feature = "llm-tests", feature = "falkordb-tests"))]
-fn extract_message_texts<'a>(chunks: &'a [&serde_json::Value]) -> Vec<&'a str> {
-    chunks
-        .iter()
-        .filter_map(|chunk| {
-            chunk
-                .get("message")
-                .and_then(|m| m.get("parts"))
-                .and_then(|p| p.as_array())
-                .and_then(|p| p.first())
-                .and_then(|part| part.get("text"))
-                .and_then(|v| v.as_str())
-        })
-        .collect()
 }
 
 #[cfg(feature = "llm-tests")]
@@ -360,6 +317,22 @@ async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
     manager.load_schema(built.to_str().unwrap()).unwrap();
     let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
         .expect("stream-js-tool dist/index.js");
+    baml_rt::A2aAgent::builder()
+        .with_runtime_manager(manager)
+        .with_init_js(agent_code)
+        .with_effect_emitter(Arc::new(EffectBus::new()))
+        .build()
+        .await
+        .unwrap()
+}
+
+async fn setup_task_lifecycle_demo_agent() -> baml_rt::A2aAgent {
+    ensure_fixture_runtime_types();
+    let built = build_fixture_to_temp_async("task-lifecycle-demo").await;
+    let mut manager = BamlRuntimeManager::new().unwrap();
+    manager.load_schema(built.to_str().unwrap()).unwrap();
+    let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
+        .expect("task-lifecycle-demo dist/index.js");
     baml_rt::A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
@@ -581,7 +554,7 @@ async fn test_e2e_agent_runner_invoke_function() {
     // Invoke through A2A request path.
     let request = send_message_request(
         SendMessageRequest {
-            message: user_message("e2e-invoke-1", "compute 2+3"),
+            message: user_message("e2e-invoke-1", "compute 2+3", Some(ContextId::new(1, 1))),
             configuration: None,
             metadata: None,
             tenant: None,
@@ -595,8 +568,8 @@ async fn test_e2e_agent_runner_invoke_function() {
 
     match outcome {
         Ok(responses) => {
-            let chunks = extract_chunks(&responses);
-            let texts = extract_message_texts(&chunks);
+            let chunks = chunks_from_responses(&responses);
+            let texts = message_texts_from_chunks(&chunks);
             let pretty =
                 serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string());
             let has_sum = texts
@@ -652,7 +625,7 @@ async fn test_e2e_stream_baml_tool() {
     let agent = setup_stream_baml_tool_agent().await;
 
     let params = SendMessageRequest {
-        message: user_message("vox-1", "compute 2+3"),
+        message: user_message("vox-1", "compute 2+3", Some(ContextId::new(1, 1))),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -663,8 +636,8 @@ async fn test_e2e_stream_baml_tool() {
         .handle_a2a(serde_json::to_value(request).unwrap())
         .await
         .unwrap();
-    let chunks = extract_chunks(&responses);
-    let texts = extract_message_texts(&chunks);
+    let chunks = chunks_from_responses(&responses);
+    let texts = message_texts_from_chunks(&chunks);
     let text = texts
         .iter()
         .find(|t| t.contains("sum=5"))
@@ -685,7 +658,7 @@ async fn test_e2e_stream_js_tool() {
     let agent = setup_stream_js_tool_agent().await;
 
     let params = SendMessageRequest {
-        message: user_message("vox-1", "stream-task: run"),
+        message: user_message("vox-1", "stream-task: run", Some(ContextId::new(1, 1))),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -696,7 +669,7 @@ async fn test_e2e_stream_js_tool() {
         .handle_a2a(serde_json::to_value(request).unwrap())
         .await
         .unwrap();
-    let chunks = extract_chunks(&responses);
+    let chunks = chunks_from_responses(&responses);
     let task_id = chunks
         .iter()
         .find_map(|chunk| {
@@ -738,6 +711,356 @@ async fn test_e2e_stream_js_tool() {
     let _ = task_id;
 }
 
+/// Fixture: task-lifecycle-demo.
+/// Tests sequential loops (no nesting): review loop then sign-off loop.
+/// Path: start -> path -> review loop (revise/notes/approve) -> sign-off loop (confirm) -> completed.
+#[tokio::test]
+async fn test_e2e_task_lifecycle_demo() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+    let agent = setup_task_lifecycle_demo_agent().await;
+
+    let params = SendMessageRequest {
+        message: user_message("vox-1", "lifecycle-demo", Some(ContextId::new(1, 1))),
+        configuration: None,
+        metadata: None,
+        tenant: None,
+        extra: std::collections::HashMap::new(),
+    };
+    let first_request = send_message_request(params, "corr-1-3");
+    let first_responses = agent
+        .handle_a2a(serde_json::to_value(first_request).unwrap())
+        .await
+        .unwrap();
+    let first_chunks = chunks_from_responses(&first_responses);
+
+    fn task_state(chunk: &serde_json::Value) -> Option<&str> {
+        chunk
+            .get("task")
+            .and_then(|t| t.get("status"))
+            .and_then(|s| s.get("state"))
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                chunk
+                    .get("statusUpdate")
+                    .and_then(|s| s.get("status"))
+                    .and_then(|s| s.get("state"))
+                    .and_then(|v| v.as_str())
+            })
+    }
+
+    let first_states: Vec<&str> = first_chunks.iter().filter_map(|c| task_state(c)).collect();
+    let has_working = first_states.contains(&"TASK_STATE_WORKING");
+    let has_input_required = first_states.contains(&"TASK_STATE_INPUT_REQUIRED");
+    let has_completed_first = first_states.contains(&"TASK_STATE_COMPLETED");
+    let has_artifact = first_chunks
+        .iter()
+        .any(|c| c.get("artifactUpdate").is_some());
+
+    assert!(
+        has_working,
+        "Expected TASK_STATE_WORKING in first stream; states: {:?}",
+        first_states
+    );
+    assert!(
+        has_input_required,
+        "Expected TASK_STATE_INPUT_REQUIRED in first stream; states: {:?}",
+        first_states
+    );
+    assert!(
+        !has_completed_first,
+        "Did not expect TASK_STATE_COMPLETED before resume; states: {:?}",
+        first_states
+    );
+    assert!(
+        has_artifact,
+        "Expected artifactUpdate in first stream; chunks: {}",
+        first_chunks.len()
+    );
+
+    let first_texts = message_texts_from_chunks(&first_chunks);
+    assert!(
+        first_texts.iter().any(|t| t.contains("Task started.")),
+        "Expected startup message in first stream; texts: {:?}",
+        first_texts
+    );
+
+    let second_params = SendMessageRequest {
+        message: user_message("vox-2", "review-path", Some(ContextId::new(1, 1))),
+        configuration: None,
+        metadata: None,
+        tenant: None,
+        extra: std::collections::HashMap::new(),
+    };
+    let second_request = send_message_request(second_params, "corr-1-4");
+    let second_responses = agent
+        .handle_a2a(serde_json::to_value(second_request).unwrap())
+        .await
+        .unwrap();
+    let second_chunks = chunks_from_responses(&second_responses);
+    let second_states: Vec<&str> = second_chunks.iter().filter_map(|c| task_state(c)).collect();
+    let has_input_required_second = second_states.contains(&"TASK_STATE_INPUT_REQUIRED");
+    let has_completed_second = second_states.contains(&"TASK_STATE_COMPLETED");
+    assert!(
+        has_input_required_second,
+        "Expected TASK_STATE_INPUT_REQUIRED in second stream; states: {:?}",
+        second_states
+    );
+    assert!(
+        !has_completed_second,
+        "Did not expect TASK_STATE_COMPLETED in second stream; states: {:?}",
+        second_states
+    );
+    let second_texts = message_texts_from_chunks(&second_chunks);
+    assert!(
+        second_texts
+            .iter()
+            .any(|t| t.contains("Review path selected.")),
+        "Expected review-path progress message in second stream; texts: {:?}",
+        second_texts
+    );
+
+    let third_params = SendMessageRequest {
+        message: user_message("vox-3", "revise", Some(ContextId::new(1, 1))),
+        configuration: None,
+        metadata: None,
+        tenant: None,
+        extra: std::collections::HashMap::new(),
+    };
+    let third_request = send_message_request(third_params, "corr-1-5");
+    let third_responses = agent
+        .handle_a2a(serde_json::to_value(third_request).unwrap())
+        .await
+        .unwrap();
+    let third_chunks = chunks_from_responses(&third_responses);
+    let third_states: Vec<&str> = third_chunks.iter().filter_map(|c| task_state(c)).collect();
+    assert!(
+        third_states.contains(&"TASK_STATE_INPUT_REQUIRED"),
+        "Expected TASK_STATE_INPUT_REQUIRED in third stream; states: {:?}",
+        third_states
+    );
+    assert!(
+        !third_states.contains(&"TASK_STATE_COMPLETED"),
+        "Did not expect TASK_STATE_COMPLETED in third stream; states: {:?}",
+        third_states
+    );
+    let third_texts = message_texts_from_chunks(&third_chunks);
+    assert!(
+        third_texts
+            .iter()
+            .any(|t| t.contains("Revision requested. Awaiting revision notes.")),
+        "Expected revision prompt message in third stream; texts: {:?}",
+        third_texts
+    );
+
+    let fourth_params = SendMessageRequest {
+        message: user_message(
+            "vox-4",
+            "apply redaction and tighten summary",
+            Some(ContextId::new(1, 1)),
+        ),
+        configuration: None,
+        metadata: None,
+        tenant: None,
+        extra: std::collections::HashMap::new(),
+    };
+    let fourth_request = send_message_request(fourth_params, "corr-1-6");
+    let fourth_responses = agent
+        .handle_a2a(serde_json::to_value(fourth_request).unwrap())
+        .await
+        .unwrap();
+    let fourth_chunks = chunks_from_responses(&fourth_responses);
+    let fourth_states: Vec<&str> = fourth_chunks.iter().filter_map(|c| task_state(c)).collect();
+    assert!(
+        fourth_states.contains(&"TASK_STATE_INPUT_REQUIRED"),
+        "Expected TASK_STATE_INPUT_REQUIRED in fourth stream after revision notes; states: {:?}",
+        fourth_states
+    );
+    let fourth_texts = message_texts_from_chunks(&fourth_chunks);
+    assert!(
+        fourth_texts
+            .iter()
+            .any(|t| t.contains("Revision notes captured: apply redaction and tighten summary")),
+        "Expected revision-captured message in fourth stream; texts: {:?}",
+        fourth_texts
+    );
+
+    // Turn 5: approve review -> exits review loop, enters sign-off loop (INPUT_REQUIRED).
+    let fifth_params = SendMessageRequest {
+        message: user_message("vox-5", "approve", Some(ContextId::new(1, 1))),
+        configuration: None,
+        metadata: None,
+        tenant: None,
+        extra: std::collections::HashMap::new(),
+    };
+    let fifth_request = send_message_request(fifth_params, "corr-1-10");
+    let fifth_responses = agent
+        .handle_a2a(serde_json::to_value(fifth_request).unwrap())
+        .await
+        .unwrap();
+    let fifth_chunks = chunks_from_responses(&fifth_responses);
+    let fifth_states: Vec<&str> = fifth_chunks.iter().filter_map(|c| task_state(c)).collect();
+    assert!(
+        fifth_states.contains(&"TASK_STATE_INPUT_REQUIRED"),
+        "Expected TASK_STATE_INPUT_REQUIRED for sign-off in fifth stream; states: {:?}",
+        fifth_states
+    );
+    let fifth_texts = message_texts_from_chunks(&fifth_chunks);
+    assert!(
+        fifth_texts
+            .iter()
+            .any(|t| t.contains("Review approved. Proceeding to sign-off.")),
+        "Expected review-approved message in fifth stream; texts: {:?}",
+        fifth_texts
+    );
+
+    // Turn 6: confirm sign-off -> COMPLETED.
+    let sixth_params = SendMessageRequest {
+        message: user_message("vox-6", "confirm", Some(ContextId::new(1, 1))),
+        configuration: None,
+        metadata: None,
+        tenant: None,
+        extra: std::collections::HashMap::new(),
+    };
+    let sixth_request = send_message_request(sixth_params, "corr-1-11");
+    let sixth_responses = agent
+        .handle_a2a(serde_json::to_value(sixth_request).unwrap())
+        .await
+        .unwrap();
+    let sixth_chunks = chunks_from_responses(&sixth_responses);
+    let sixth_states: Vec<&str> = sixth_chunks.iter().filter_map(|c| task_state(c)).collect();
+    assert!(
+        sixth_states.contains(&"TASK_STATE_COMPLETED"),
+        "Expected TASK_STATE_COMPLETED in sixth stream; states: {:?}",
+        sixth_states
+    );
+    let sixth_texts = message_texts_from_chunks(&sixth_chunks);
+    assert!(
+        sixth_texts
+            .iter()
+            .any(|t| t.contains("Task completed after review and sign-off.")),
+        "Expected final completion message in sixth stream; texts: {:?}",
+        sixth_texts
+    );
+}
+
+/// Fixture: task-lifecycle-demo.
+/// Exercises the failure rail on the review branch:
+/// start -> input_required(path) -> input_required(review decision) -> failed(reject).
+#[tokio::test]
+async fn test_e2e_task_lifecycle_demo_reject_path() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+    let agent = setup_task_lifecycle_demo_agent().await;
+
+    fn task_state(chunk: &serde_json::Value) -> Option<&str> {
+        chunk
+            .get("task")
+            .and_then(|t| t.get("status"))
+            .and_then(|s| s.get("state"))
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                chunk
+                    .get("statusUpdate")
+                    .and_then(|s| s.get("status"))
+                    .and_then(|s| s.get("state"))
+                    .and_then(|v| v.as_str())
+            })
+    }
+
+    // Turn 1: trigger lifecycle, expect INPUT_REQUIRED.
+    let first_request = send_message_request(
+        SendMessageRequest {
+            message: user_message("vox-r-1", "lifecycle-demo", Some(ContextId::new(1, 1))),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+            extra: std::collections::HashMap::new(),
+        },
+        "corr-1-7",
+    );
+    let first_responses = agent
+        .handle_a2a(serde_json::to_value(first_request).unwrap())
+        .await
+        .unwrap();
+    let first_chunks = chunks_from_responses(&first_responses);
+    let first_states: Vec<&str> = first_chunks.iter().filter_map(|c| task_state(c)).collect();
+    assert!(
+        first_states.contains(&"TASK_STATE_INPUT_REQUIRED"),
+        "Expected TASK_STATE_INPUT_REQUIRED after trigger; states: {:?}",
+        first_states
+    );
+
+    // Turn 2: choose review path, expect another INPUT_REQUIRED for review decision.
+    let second_request = send_message_request(
+        SendMessageRequest {
+            message: user_message("vox-r-2", "review-path", Some(ContextId::new(1, 1))),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+            extra: std::collections::HashMap::new(),
+        },
+        "corr-1-8",
+    );
+    let second_responses = agent
+        .handle_a2a(serde_json::to_value(second_request).unwrap())
+        .await
+        .unwrap();
+    let second_chunks = chunks_from_responses(&second_responses);
+    let second_states: Vec<&str> = second_chunks.iter().filter_map(|c| task_state(c)).collect();
+    assert!(
+        second_states.contains(&"TASK_STATE_INPUT_REQUIRED"),
+        "Expected TASK_STATE_INPUT_REQUIRED for review decision; states: {:?}",
+        second_states
+    );
+
+    // Turn 3: reject -> terminal failure.
+    let third_request = send_message_request(
+        SendMessageRequest {
+            message: user_message("vox-r-3", "reject", Some(ContextId::new(1, 1))),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+            extra: std::collections::HashMap::new(),
+        },
+        "corr-1-9",
+    );
+    let third_responses = agent
+        .handle_a2a(serde_json::to_value(third_request).unwrap())
+        .await
+        .unwrap();
+    let third_chunks = chunks_from_responses(&third_responses);
+    let third_states: Vec<&str> = third_chunks.iter().filter_map(|c| task_state(c)).collect();
+    assert!(
+        third_states.contains(&"TASK_STATE_FAILED"),
+        "Expected TASK_STATE_FAILED after reject; states: {:?}",
+        third_states
+    );
+    let third_texts = message_texts_from_chunks(&third_chunks);
+    let failed_status_texts: Vec<&str> = third_chunks
+        .iter()
+        .filter_map(|chunk| {
+            chunk
+                .get("task")
+                .and_then(|t| t.get("status"))
+                .and_then(|s| s.get("message"))
+                .and_then(|m| m.get("parts"))
+                .and_then(|p| p.as_array())
+                .and_then(|p| p.first())
+                .and_then(|part| part.get("text"))
+                .and_then(|v| v.as_str())
+        })
+        .collect();
+    assert!(
+        third_texts
+            .iter()
+            .map(|s| s.as_str())
+            .chain(failed_status_texts.iter().copied())
+            .any(|t| t.contains("Rejected during review.")),
+        "Expected rejection failure message; chunk texts: {:?}, failed-status texts: {:?}",
+        third_texts,
+        failed_status_texts
+    );
+}
+
 #[cfg(feature = "falkordb-tests")]
 #[tokio::test]
 async fn test_e2e_conversational_context_auto_via_provenance() {
@@ -763,7 +1086,11 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
     let per_turn_timeout = Duration::from_secs(45);
 
     let first_turn = SendMessageRequest {
-        message: user_message("vox-auto-1", "Remember the codeword ORBIT and compute 2+3"),
+        message: user_message(
+            "vox-auto-1",
+            "Remember the codeword ORBIT and compute 2+3",
+            Some(ContextId::new(1, 1)),
+        ),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -780,8 +1107,8 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
     .expect("first turn timed out")
     .unwrap();
     eprintln!("conversational-context-auto: first turn complete");
-    let first_chunks = extract_chunks(&first_response);
-    let first_texts = extract_message_texts(&first_chunks);
+    let first_chunks = chunks_from_responses(&first_response);
+    let first_texts = message_texts_from_chunks(&first_chunks);
     assert!(
         first_texts
             .iter()
@@ -790,30 +1117,40 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
         first_texts
     );
 
-    // FalkorDB writes may lag slightly behind turn completion; wait until turn-1
-    // conversation context is queryable before issuing turn-2 memory read.
+    // FalkorDB writes may lag behind turn completion (normalization + Cypher execution);
+    // wait until turn-1 conversation context is queryable before issuing turn-2 memory read.
     let context_id = ContextId::new(1, 1);
+    sleep(Duration::from_millis(600)).await; // let async writes settle before first poll
     let mut history_ready = false;
-    for _ in 0..50 {
+    let mut last_messages: Vec<ProvenanceContextMessage> = Vec::new();
+    for _ in 0..120 {
         let messages = provenance_reader
             .context_messages(&context_id, Some(10))
             .await
             .unwrap_or_default();
+        last_messages = messages.clone();
         if messages.len() >= 2 {
             history_ready = true;
             break;
         }
-        sleep(Duration::from_millis(200)).await;
+        sleep(Duration::from_millis(400)).await;
     }
     assert!(
         history_ready,
-        "Expected FalkorDB-backed conversation history to contain turn-1 messages before turn-2"
+        "Expected FalkorDB-backed conversation history to contain turn-1 messages before turn-2. \
+         After ~50s poll: got {} messages (roles: {:?})",
+        last_messages.len(),
+        last_messages
+            .iter()
+            .map(|m| m.role.as_str())
+            .collect::<Vec<_>>()
     );
 
     let second_turn = SendMessageRequest {
         message: user_message(
             "vox-auto-2",
             "What codeword did I ask you to remember? Reply with just the codeword.",
+            Some(ContextId::new(1, 1)),
         ),
         configuration: None,
         metadata: None,
@@ -831,8 +1168,8 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
     .expect("second turn timed out")
     .unwrap();
     eprintln!("conversational-context-auto: second turn complete");
-    let second_chunks = extract_chunks(&second_response);
-    let second_texts = extract_message_texts(&second_chunks);
+    let second_chunks = chunks_from_responses(&second_response);
+    let second_texts = message_texts_from_chunks(&second_chunks);
     let expected_codeword = "ORBIT";
     assert!(
         second_texts.iter().any(|text| {
