@@ -127,8 +127,13 @@ impl QuickJSBridge {
     pub(crate) fn finalize_a2a_stream_invocation(&mut self) {
         self.stream_permit = None;
         self.a2a_yield_rx = None;
-        if let Ok(mut slot) = self.a2a_yield_tx_slot.lock() {
-            *slot = None;
+        match self.a2a_yield_tx_slot.lock() {
+            Ok(mut slot) => {
+                *slot = None;
+            }
+            Err(err) => {
+                tracing::warn!(error = ?err, "A2A yield slot lock poisoned during finalize");
+            }
         }
     }
 

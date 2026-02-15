@@ -138,6 +138,8 @@ pub fn render_a2a_shim() -> Result<String> {
               emitCompleted();
               return;
             }
+            emitFailed('Agent run() returned no result and emitted no messages', false);
+            return;
           }
           if (out != null && typeof out === 'object' && 'message' in out && typeof out.message === 'string') {
             if (typeof onCompletedCb === 'function') onCompletedCb(out.message);

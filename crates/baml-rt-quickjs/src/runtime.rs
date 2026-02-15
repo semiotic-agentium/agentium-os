@@ -36,6 +36,10 @@ pub struct QuickJSConfig {
     /// Maximum timeout in milliseconds when effects are in-flight (default: 1,800,000ms = 30 minutes)
     /// This allows long-running I/O operations (tool calls, LLM calls) to complete.
     pub max_attempts_ms: Option<u64>,
+
+    /// Timeout in milliseconds before stream invocation falls back to non-streaming invoke
+    /// (default: 35_000ms).
+    pub stream_fallback_timeout_ms: Option<u64>,
 }
 
 impl QuickJSConfig {
@@ -84,6 +88,14 @@ impl QuickJSConfig {
     /// (tool calls, LLM calls, A2A requests) to complete.
     pub fn with_max_attempts_ms(mut self, timeout_ms: Option<u64>) -> Self {
         self.max_attempts_ms = timeout_ms;
+        self
+    }
+
+    /// Set stream fallback timeout in milliseconds.
+    ///
+    /// Default is 35,000ms.
+    pub fn with_stream_fallback_timeout_ms(mut self, timeout_ms: Option<u64>) -> Self {
+        self.stream_fallback_timeout_ms = timeout_ms;
         self
     }
 }

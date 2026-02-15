@@ -46,8 +46,8 @@ use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, SendMessageRequest};
 
 use test_support::common::{
     CalculatorTool, agent_fixture, chunks_from_responses, ensure_baml_src_exists,
-    ensure_fixture_runtime_types, message_texts_from_chunks, run_live_llm_with_retry,
-    user_message, workspace_root,
+    ensure_fixture_runtime_types, message_texts_from_chunks, run_live_llm_with_retry, user_message,
+    workspace_root,
 };
 use test_support::support::cli::CliHarness;
 

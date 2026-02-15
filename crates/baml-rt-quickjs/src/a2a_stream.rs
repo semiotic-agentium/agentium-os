@@ -34,26 +34,11 @@
 use crate::quickjs_bridge::QuickJSBridge;
 use baml_rt_core::Result;
 use baml_rt_core::context::InvocationScope;
+use baml_rt_core::json::is_a2a_tool_event_chunk;
 use serde_json::Value;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
-
-fn is_tool_event_chunk(value: &Value) -> bool {
-    let Some(event) = value.get("event").and_then(|v| v.as_object()) else {
-        return false;
-    };
-    let Some(source) = event.get("source").and_then(|v| v.as_str()) else {
-        return false;
-    };
-    if source != "runtime" {
-        return false;
-    }
-    let Some(event_type) = event.get("type").and_then(|v| v.as_str()) else {
-        return false;
-    };
-    event_type.starts_with("tool_execution")
-}
 
 fn is_output_chunk(value: &Value) -> bool {
     if value.get("message").is_some() {
@@ -189,7 +174,7 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
                 Err(_) => Vec::new(),
             };
             if !responses.is_empty() {
-                let has_signal = responses.iter().any(|v| !is_tool_event_chunk(v));
+                let has_signal = responses.iter().any(|v| !is_a2a_tool_event_chunk(v));
                 let has_output = responses.iter().any(is_output_chunk);
                 if has_output {
                     saw_output = true;
@@ -197,8 +182,8 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
                 collected.extend(responses);
                 if has_signal {
                     last_nonempty = Some(Instant::now());
-                } else if last_nonempty.is_none() {
-                    // Tool-heavy streams should still settle after terminal output.
+                } else if saw_output && last_nonempty.is_none() {
+                    // Tool-heavy streams should still settle once output has been observed.
                     last_nonempty = Some(Instant::now());
                 }
             }

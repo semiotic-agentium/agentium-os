@@ -78,6 +78,7 @@ pub struct QuickJSBridge {
     effect_liveness: Option<Arc<dyn EffectLiveness>>,
     idle_timeout_ms: u64,
     max_attempts_ms: u64,
+    stream_fallback_timeout_ms: u64,
     /// Token → scope for native callbacks; host issues token, JS passes it, natives look up scope.
     invocation_scope_by_token: InvocationScopeMap,
     /// Token -> correlation id captured at invocation entry and propagated through native callbacks.
@@ -131,6 +132,7 @@ impl QuickJSBridge {
             max_stack_size = ?config.max_stack_size,
             gc_threshold = ?config.gc_threshold,
             gc_interval = ?config.gc_interval,
+            stream_fallback_timeout_ms = ?config.stream_fallback_timeout_ms,
             "Initializing QuickJS bridge with configuration"
         );
 
@@ -166,6 +168,7 @@ impl QuickJSBridge {
             max_attempts_ms: config
                 .max_attempts_ms
                 .unwrap_or(EffectGatedPoller::DEFAULT_MAX_ATTEMPTS as u64), // Default 30 minutes
+            stream_fallback_timeout_ms: config.stream_fallback_timeout_ms.unwrap_or(35_000),
             invocation_scope_by_token: Arc::new(StdMutex::new(HashMap::new())),
             correlation_id_by_token: Arc::new(StdMutex::new(HashMap::new())),
             eval_results_by_token: Arc::new(StdMutex::new(HashMap::new())),
@@ -442,6 +445,7 @@ impl QuickJSBridge {
         let manager_clone = self.baml_manager.clone();
         let scope_map = self.invocation_scope_by_token.clone();
         let correlation_map = self.correlation_id_by_token.clone();
+        let stream_fallback_timeout_ms = self.stream_fallback_timeout_ms;
 
         self.runtime.set_function(
             &[],
@@ -585,7 +589,9 @@ impl QuickJSBridge {
                                 );
 
                                 let stream_result = tokio::time::timeout(
-                                    std::time::Duration::from_secs(35),
+                                    std::time::Duration::from_millis(
+                                        stream_fallback_timeout_ms,
+                                    ),
                                     stream_run,
                                 )
                                 .await;

@@ -412,6 +412,7 @@ impl JsChunkNormalizer {
         let Some(map) = message.as_object_mut() else {
             return Ok(());
         };
+        let has_message_id_snake = map.contains_key("message_id");
         let message_id = map
             .get("messageId")
             .or_else(|| map.get("message_id"))
@@ -419,19 +420,27 @@ impl JsChunkNormalizer {
             .unwrap_or_else(|| Value::String(self.next_message_id()));
         map.entry("messageId".to_string())
             .or_insert_with(|| message_id.clone());
-        map.entry("message_id".to_string())
-            .or_insert_with(|| message_id);
+        if has_message_id_snake {
+            map.entry("message_id".to_string())
+                .or_insert_with(|| message_id);
+        }
         map.entry("role".to_string())
             .or_insert_with(|| Value::String(ROLE_AGENT.to_string()));
         let context_id = Value::String(self.context_id.as_str().to_string());
+        let has_context_id_snake = map.contains_key("context_id");
         map.entry("contextId".to_string())
             .or_insert_with(|| context_id.clone());
-        map.entry("context_id".to_string())
-            .or_insert_with(|| context_id);
+        if has_context_id_snake {
+            map.entry("context_id".to_string())
+                .or_insert_with(|| context_id);
+        }
         let task_id = Value::String(self.task_id.as_str().to_string());
+        let has_task_id_snake = map.contains_key("task_id");
         map.entry("taskId".to_string())
             .or_insert_with(|| task_id.clone());
-        map.entry("task_id".to_string()).or_insert_with(|| task_id);
+        if has_task_id_snake {
+            map.entry("task_id".to_string()).or_insert_with(|| task_id);
+        }
         Ok(())
     }
 
@@ -466,14 +475,20 @@ impl JsChunkNormalizer {
 
     fn ensure_context_and_task_fields(&self, map: &mut Map<String, Value>) {
         let context_id = Value::String(self.context_id.as_str().to_string());
+        let has_context_id_snake = map.contains_key("context_id");
         map.entry("contextId".to_string())
             .or_insert_with(|| context_id.clone());
-        map.entry("context_id".to_string())
-            .or_insert_with(|| context_id);
+        if has_context_id_snake {
+            map.entry("context_id".to_string())
+                .or_insert_with(|| context_id);
+        }
         let task_id = Value::String(self.task_id.as_str().to_string());
+        let has_task_id_snake = map.contains_key("task_id");
         map.entry("taskId".to_string())
             .or_insert_with(|| task_id.clone());
-        map.entry("task_id".to_string()).or_insert_with(|| task_id);
+        if has_task_id_snake {
+            map.entry("task_id".to_string()).or_insert_with(|| task_id);
+        }
     }
 
     fn ensure_status_update_fields(&mut self, status_update: &mut Value) -> Result<()> {

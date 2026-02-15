@@ -35,6 +35,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::broadcast;
+use tracing::warn;
 
 struct ProvenanceConversationContextProvider {
     reader: Arc<dyn ProvenanceContextReader>,
@@ -688,7 +689,7 @@ impl A2aRequestHandler for A2aAgent {
             && let Some(ctx) = parsed_request.context_id.clone()
         {
             let list_request = crate::a2a_types::ListTasksRequest {
-                context_id: Some(ctx),
+                context_id: Some(ctx.clone()),
                 history_length: None,
                 include_artifacts: None,
                 page_size: None,
@@ -699,7 +700,27 @@ impl A2aRequestHandler for A2aAgent {
                 extra: HashMap::new(),
             };
             let list_response = self.task_store.list(&list_request).await;
-            if let Some(task) = list_response.tasks.first().and_then(|task| task.id.clone()) {
+            let task_id = match list_response.tasks.as_slice() {
+                [] => None,
+                [task] => task.id.clone(),
+                tasks => {
+                    warn!(
+                        context_id = %ctx,
+                        count = tasks.len(),
+                        "Multiple INPUT_REQUIRED tasks found for context; selecting most recent by status timestamp"
+                    );
+                    tasks
+                        .iter()
+                        .max_by_key(|task| {
+                            task.status
+                                .as_ref()
+                                .and_then(|status| status.timestamp.as_deref())
+                                .unwrap_or("")
+                        })
+                        .and_then(|task| task.id.clone())
+                }
+            };
+            if let Some(task) = task_id {
                 parsed_request.task_id = Some(task.clone());
                 if let Ok(mut params) =
                     serde_json::from_value::<SendMessageRequest>(parsed_request.params.clone())
