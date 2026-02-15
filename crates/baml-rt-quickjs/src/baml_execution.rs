@@ -193,6 +193,12 @@ impl BamlExecutor {
                         msg
                     )));
                 }
+                Ok(InterceptorDecision::Substitute(value)) => {
+                    if let Some(ref collector) = collector {
+                        collector.complete_pending_effects(true, 0).await;
+                    }
+                    return Ok(value);
+                }
                 Err(e) => {
                     if let Some(ref collector) = collector {
                         collector.complete_pending_effects(false, 0).await;

@@ -110,7 +110,8 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
     /// async handlers to yield before the buffer is read.
     pub async fn collect(self) -> Result<Vec<Value>> {
         let start = Instant::now();
-        let timeout = Duration::from_secs(30);
+        // Allow time for LLM + tool flow (e.g. ChooseCalcTool + calculator); 60s covers slow providers.
+        let timeout = Duration::from_secs(60);
         let interval = Duration::from_millis(50);
         let read_timeout = Duration::from_secs(2);
 

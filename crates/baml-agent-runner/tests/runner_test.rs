@@ -583,11 +583,33 @@ async fn test_e2e_agent_runner_invoke_function() {
 
             if !has_api_key && has_auth_error {
                 println!("Expected authentication error (no API key provided)");
-            } else {
-                assert!(
-                    has_sum,
-                    "Expected packaged A2A invocation to produce computed result. Texts: {:?}. Raw: {}",
-                    texts, pretty
+            } else if !has_sum {
+                // Diagnostic: when we get no computed result, show what we actually received
+                let first_response_keys = responses
+                    .first()
+                    .and_then(|r| r.as_object())
+                    .map(|o| o.keys().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                let first_result_keys = responses
+                    .first()
+                    .and_then(|r| r.get("result"))
+                    .and_then(|res| res.as_object())
+                    .map(|o| o.keys().cloned().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                let first_has_error = responses.first().and_then(|r| r.get("error")).is_some();
+                panic!(
+                    "Expected packaged A2A invocation to produce computed result. \
+                     responses.len()={}, chunks.len()={}, texts.len()={}. \
+                     First response keys: {:?}. First result keys: {:?}. First is error: {}. \
+                     Texts: {:?}. Raw: {}",
+                    responses.len(),
+                    chunks.len(),
+                    texts.len(),
+                    first_response_keys,
+                    first_result_keys,
+                    first_has_error,
+                    texts,
+                    pretty
                 );
             }
         }
@@ -641,8 +663,8 @@ async fn test_e2e_stream_baml_tool() {
     let text = texts
         .iter()
         .find(|t| t.contains("sum=5"))
-        .copied()
-        .unwrap_or("");
+        .cloned()
+        .unwrap_or_default();
     assert!(
         !text.is_empty(),
         "Expected BAML tool result (sum=5) in stream. Source .env for OPENROUTER_API_KEY. Message texts: {:?}. Raw: {}",
@@ -1120,10 +1142,12 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
     // FalkorDB writes may lag behind turn completion (normalization + Cypher execution);
     // wait until turn-1 conversation context is queryable before issuing turn-2 memory read.
     let context_id = ContextId::new(1, 1);
-    sleep(Duration::from_millis(600)).await; // let async writes settle before first poll
+    sleep(Duration::from_millis(1500)).await; // let async writes settle before first poll
     let mut history_ready = false;
     let mut last_messages: Vec<ProvenanceContextMessage> = Vec::new();
-    for _ in 0..120 {
+    let poll_attempts = 150; // 150 * 500ms = 75s max
+    let poll_interval_ms = 500;
+    for attempt in 0..poll_attempts {
         let messages = provenance_reader
             .context_messages(&context_id, Some(10))
             .await
@@ -1133,12 +1157,19 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
             history_ready = true;
             break;
         }
-        sleep(Duration::from_millis(400)).await;
+        if attempt < poll_attempts - 1 {
+            sleep(Duration::from_millis(poll_interval_ms)).await;
+        }
     }
     assert!(
         history_ready,
         "Expected FalkorDB-backed conversation history to contain turn-1 messages before turn-2. \
-         After ~50s poll: got {} messages (roles: {:?})",
+         FalkorDB is started via testcontainers (shared_falkordb). \
+         After ~{}s poll ({} attempts x {}ms): got {} messages (roles: {:?}). \
+         Failure may indicate provenance write lag or assistant message not yet written.",
+        (poll_attempts * poll_interval_ms) / 1000,
+        poll_attempts,
+        poll_interval_ms,
         last_messages.len(),
         last_messages
             .iter()
