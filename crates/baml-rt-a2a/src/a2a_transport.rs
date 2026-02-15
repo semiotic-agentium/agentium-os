@@ -701,7 +701,38 @@ impl A2aRequestHandler for A2aAgent {
             };
             let list_response = self.task_store.list(&list_request).await;
             let task_id = match list_response.tasks.as_slice() {
-                [] => None,
+                [] => {
+                    let fallback_request = crate::a2a_types::ListTasksRequest {
+                        context_id: Some(ctx.clone()),
+                        history_length: None,
+                        include_artifacts: None,
+                        page_size: None,
+                        page_token: None,
+                        status: None,
+                        status_timestamp_after: None,
+                        tenant: None,
+                        extra: HashMap::new(),
+                    };
+                    let fallback = self.task_store.list(&fallback_request).await;
+                    match fallback.tasks.as_slice() {
+                        [] => None,
+                        [task] => {
+                            warn!(
+                                context_id = %ctx,
+                                "No INPUT_REQUIRED tasks found; routing to the only task in context"
+                            );
+                            task.id.clone()
+                        }
+                        tasks => {
+                            warn!(
+                                context_id = %ctx,
+                                count = tasks.len(),
+                                "No INPUT_REQUIRED tasks found and multiple tasks exist; leaving generated task_id"
+                            );
+                            None
+                        }
+                    }
+                }
                 [task] => task.id.clone(),
                 tasks => {
                     warn!(
