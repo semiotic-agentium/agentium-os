@@ -482,7 +482,7 @@ impl TaskChunkApplier for ProvenanceTaskStore {
             Some((tid, cid))
         });
         let (task, message) = Self::inject_agent_id_into_chunk(task, message, &self.agent_id);
-        let provenance_message = message.clone();
+        let message_for_prov = message.clone();
         let start = Instant::now();
         let events = {
             let mut store = self.inner.lock().await;
@@ -529,8 +529,40 @@ impl TaskChunkApplier for ProvenanceTaskStore {
                 }
             }
         }
-        if let Some(message) = provenance_message {
-            self.insert_message(&message).await?;
+        // I3: emit MessageSent for agent reply when apply_task_delta receives a message chunk.
+        // (User messages go through insert_message; agent messages from stream go through here.)
+        if let Some(ref msg) = message_for_prov
+            && let Ok(context_id) = require_context_id(
+                msg.context_id.clone(),
+                "provenance message in apply_task_delta",
+            )
+        {
+            let role = message_role_string(&msg.role);
+            let content = message_content(msg);
+            let metadata = msg.metadata.as_ref().map(metadata_string_map);
+            let event = match (role.as_str(), msg.task_id.clone()) {
+                (ROLE_USER, _) => None,
+                (_, Some(task_id)) => Some(ProvEvent::message_sent_task(
+                    context_id,
+                    task_id,
+                    msg.message_id.as_message_id().clone(),
+                    role,
+                    content,
+                    metadata,
+                    now_millis(),
+                )),
+                (_, None) => Some(ProvEvent::message_sent_global(
+                    context_id,
+                    msg.message_id.as_message_id().clone(),
+                    role,
+                    content,
+                    metadata,
+                    now_millis(),
+                )),
+            };
+            if let Some(prov) = event {
+                self.record_event(prov).await;
+            }
         }
         Ok(events)
     }
