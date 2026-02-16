@@ -1,0 +1,39 @@
+# Nextest config for BAML runtime workspace.
+# See https://nexte.st/docs/configuration/
+
+[profile.ci]
+# JUnit output for GitHub Actions junit-report-action.
+[profile.ci.junit]
+path = "junit.xml"
+store-failure-output = true
+
+# Rate-limit FalkorDB/testcontainers tests to avoid CI overload and flakes.
+# Rate-limit LLM-dependent tests so they don't all hit the same backend concurrently
+# (avoids queueing, rate limits, and 180–300s wall clock when many run in parallel).
+[test-groups]
+falkordb = { max-threads = 2 }
+llm = { max-threads = 2 }
+
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-provenance)'
+test-group = "falkordb"
+
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-interceptor)'
+test-group = "llm"
+
+[[profile.ci.overrides]]
+filter = 'package(baml-rt)'
+test-group = "llm"
+
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-builder)'
+test-group = "llm"
+
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-a2a)'
+test-group = "falkordb"
+
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner)'
+test-group = "falkordb"
