@@ -5,6 +5,7 @@
 use async_trait::async_trait;
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::quickjs_bridge::QuickJSBridge;
+use baml_rt_core::bus::{BusWithEffects, EffectEmitter, EffectLiveness};
 use baml_rt_core::context::{self, InvocationScope, RuntimeScope};
 use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
 use baml_rt_tools::BamlTool;
@@ -68,9 +69,15 @@ async fn test_quickjs_concurrent_scope_propagation() {
         .await
         .expect("register tool");
     let manager = Arc::new(Mutex::new(manager));
+    let effect_bus = Arc::new(BusWithEffects::new());
+    {
+        let mut m = manager.lock().await;
+        m.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
+    }
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000013").unwrap());
     let mut bridge = QuickJSBridge::new(manager, agent_id).await.unwrap();
+    bridge.set_effect_liveness(effect_bus as Arc<dyn EffectLiveness>);
     bridge
         .register_baml_functions()
         .await
@@ -171,9 +178,15 @@ async fn test_quickjs_concurrent_scope_propagation() {
 async fn test_quickjs_concurrent_stream_scope_propagation() {
     let manager = BamlRuntimeManager::new().unwrap();
     let manager = Arc::new(Mutex::new(manager));
+    let effect_bus = Arc::new(BusWithEffects::new());
+    {
+        let mut m = manager.lock().await;
+        m.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
+    }
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000014").unwrap());
     let mut bridge = QuickJSBridge::new(manager, agent_id).await.unwrap();
+    bridge.set_effect_liveness(effect_bus as Arc<dyn EffectLiveness>);
     bridge
         .register_baml_functions()
         .await
@@ -359,6 +372,7 @@ async fn test_invoke_function_with_explicit_scope_fails_for_missing_function() {
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000030").unwrap());
     let mut bridge = QuickJSBridge::new(baml_manager, agent_id).await.unwrap();
+    bridge.set_effect_liveness(Arc::new(BusWithEffects::new()) as Arc<dyn EffectLiveness>);
     bridge
         .register_baml_functions()
         .await
