@@ -56,9 +56,12 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     write_line(&mut output, "// - Open MUST come before any Send step")?;
     write_line(
         &mut output,
-        "// - Open uses 'initial_input' for open-time session configuration when supported",
+        "// - Open may include 'initial_input' only when the step schema defines that field",
     )?;
-    write_line(&mut output, "// - Send uses 'input' for message payloads")?;
+    write_line(
+        &mut output,
+        "// - Send uses 'input' field (for subsequent inputs)",
+    )?;
     write_line(
         &mut output,
         "// - After Send, call Next to retrieve results",
@@ -73,11 +76,11 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     write_line(&mut output, "enum ToolSessionOp {")?;
     write_line(
         &mut output,
-        "  Open @description(\"Open a new tool session. MUST be the first step in any plan. Use 'initial_input' for open-time configuration when this step schema includes it.\")",
+        "  Open @description(\"Open a new tool session. MUST be the first step in any plan. Include 'initial_input' only when the step schema defines that field.\")",
     )?;
     write_line(
         &mut output,
-        "  Send @description(\"Send input to an already-open session. Can ONLY be used after an Open step. Provide payload in the 'input' field.\")",
+        "  Send @description(\"Send input to an already-open session. Can ONLY be used after an Open step. Use 'input' field (NOT 'initial_input').\")",
     )?;
     write_line(
         &mut output,
@@ -177,10 +180,33 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
         }
     }
 
-    // Generate tool-specific interfaces
+    // Generate ungrouped tool interfaces and collect grouped tools.
+    let mut grouped_tools: HashMap<String, Vec<&ToolFunctionMetadata>> = HashMap::new();
+    let mut grouped_order: Vec<String> = Vec::new();
+
     for tool in &tool_metadata {
+        if let Some(group_name) = &tool.session_plan_group {
+            ensure_valid_baml_identifier(group_name)?;
+            if !grouped_tools.contains_key(group_name) {
+                grouped_order.push(group_name.clone());
+            }
+            grouped_tools
+                .entry(group_name.clone())
+                .or_default()
+                .push(tool);
+            continue;
+        }
+
         generate_tool_baml_interface(&mut output, tool)?;
         write_line(&mut output, "")?;
+    }
+
+    // Generate one shared interface per group.
+    for group_name in grouped_order {
+        if let Some(tools) = grouped_tools.remove(&group_name) {
+            generate_grouped_tool_baml_interface(&mut output, &group_name, &tools)?;
+            write_line(&mut output, "")?;
+        }
     }
 
     Ok(output)
@@ -292,12 +318,215 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
     write_line(
         output,
         &format!(
-            "  steps {}[] @description(\"Array of FSM steps. MUST follow this strict order: 1) Open (with open-time initial_input when supported), 2) Send (with input payload), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{{op: 'Open'}}, {{op: 'Send', input: {{...}}}}, {{op: 'Next'}}, {{op: 'Finish'}}].{}\")",
+            "  steps {}[] @description(\"Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{{op: 'Open'}}, {{op: 'Send', input: {{...}}}}, {{op: 'Next'}}, {{op: 'Finish'}}].{}\")",
             step_union_name, access_note
         ),
     )?;
     write_line(output, "}")?;
 
+    Ok(())
+}
+
+fn generate_grouped_tool_baml_interface(
+    output: &mut String,
+    group_name: &str,
+    tools: &[&ToolFunctionMetadata],
+) -> Result<()> {
+    if tools.is_empty() {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "Session-plan group '{}' has no tools",
+            group_name
+        )));
+    }
+
+    let mut open_input_types: Vec<String> = Vec::new();
+    let mut send_input_types: Vec<String> = Vec::new();
+    for tool in tools {
+        if !is_unit_type(&tool.open_input_type.name) {
+            push_unique(&mut open_input_types, &tool.open_input_type.name);
+        }
+        push_unique(&mut send_input_types, &tool.input_type.name);
+    }
+
+    if send_input_types.is_empty() {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "Session-plan group '{}' has no input types",
+            group_name
+        )));
+    }
+
+    let access_note = match tools.first().and_then(|tool| tool.access) {
+        Some(access) if tools.iter().all(|tool| tool.access == Some(access)) => {
+            format!(" Access: {}.", access)
+        }
+        _ => String::new(),
+    };
+
+    let open_step_name = format!("{}OpenStep", group_name);
+    let send_step_name = format!("{}SendStep", group_name);
+    let next_step_name = format!("{}NextStep", group_name);
+    let finish_step_name = format!("{}FinishStep", group_name);
+    let abort_step_name = format!("{}AbortStep", group_name);
+    let step_union_name = format!("{}SessionStep", group_name);
+    let plan_type_name = format!("{}SessionPlan", group_name);
+
+    let open_input_type_name = if open_input_types.is_empty() {
+        None
+    } else if open_input_types.len() == 1 {
+        Some(open_input_types[0].clone())
+    } else {
+        let open_union_name = format!("{}SessionOpenInput", group_name);
+        write_line(
+            output,
+            &format!(
+                "type {} = {}",
+                open_union_name,
+                open_input_types.join(" | ")
+            ),
+        )?;
+        write_line(output, "")?;
+        Some(open_union_name)
+    };
+
+    let send_input_type_name = if send_input_types.len() == 1 {
+        send_input_types[0].clone()
+    } else {
+        let send_union_name = format!("{}SessionSendInput", group_name);
+        write_line(
+            output,
+            &format!(
+                "type {} = {}",
+                send_union_name,
+                send_input_types.join(" | ")
+            ),
+        )?;
+        write_line(output, "")?;
+        send_union_name
+    };
+
+    write_line(output, &format!("class {} {{", open_step_name))?;
+    write_line(output, "  op \"Open\"")?;
+    if let Some(initial_input_type_name) = open_input_type_name {
+        write_line(
+            output,
+            &format!(
+                "  initial_input {}? @description(\"Optional open-time configuration payload for the session. This is used only by Open and is not auto-sent as a Send input.\")",
+                initial_input_type_name
+            ),
+        )?;
+    }
+    write_line(
+        output,
+        "  reason string? @description(\"Optional explanation for this step.\")",
+    )?;
+    write_line(output, "}")?;
+    write_line(output, "")?;
+
+    write_line(output, &format!("class {} {{", send_step_name))?;
+    write_line(output, "  op \"Send\"")?;
+    write_line(
+        output,
+        &format!(
+            "  input {} @description(\"Input to send to the already-open session.\")",
+            send_input_type_name
+        ),
+    )?;
+    write_line(
+        output,
+        "  reason string? @description(\"Optional explanation for this step.\")",
+    )?;
+    write_line(output, "}")?;
+    write_line(output, "")?;
+
+    write_line(output, &format!("class {} {{", next_step_name))?;
+    write_line(output, "  op \"Next\"")?;
+    write_line(
+        output,
+        "  reason string? @description(\"Optional explanation for this step.\")",
+    )?;
+    write_line(output, "}")?;
+    write_line(output, "")?;
+
+    write_line(output, &format!("class {} {{", finish_step_name))?;
+    write_line(output, "  op \"Finish\"")?;
+    write_line(
+        output,
+        "  reason string? @description(\"Optional explanation for this step.\")",
+    )?;
+    write_line(output, "}")?;
+    write_line(output, "")?;
+
+    write_line(output, &format!("class {} {{", abort_step_name))?;
+    write_line(output, "  op \"Abort\"")?;
+    write_line(
+        output,
+        "  reason string? @description(\"Optional explanation for aborting the session.\")",
+    )?;
+    write_line(output, "}")?;
+    write_line(output, "")?;
+
+    write_line(
+        output,
+        &format!(
+            "type {} = {} | {} | {} | {} | {}",
+            step_union_name,
+            open_step_name,
+            send_step_name,
+            next_step_name,
+            finish_step_name,
+            abort_step_name
+        ),
+    )?;
+    write_line(output, "")?;
+
+    write_line(output, &format!("class {} {{", plan_type_name))?;
+    write_line(
+        output,
+        &format!(
+            "  steps {}[] @description(\"Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{{op: 'Open'}}, {{op: 'Send', input: {{...}}}}, {{op: 'Next'}}, {{op: 'Finish'}}].{}\")",
+            step_union_name, access_note
+        ),
+    )?;
+    write_line(output, "}")?;
+
+    Ok(())
+}
+
+fn is_unit_type(type_name: &str) -> bool {
+    type_name == "()" || type_name == "null" || type_name == "void"
+}
+
+fn push_unique(values: &mut Vec<String>, value: &str) {
+    if values.iter().any(|v| v == value) {
+        return;
+    }
+    values.push(value.to_string());
+}
+
+fn ensure_valid_baml_identifier(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(BamlRtError::InvalidArgument(
+            "session_plan_group must not be empty".to_string(),
+        ));
+    }
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return Err(BamlRtError::InvalidArgument(
+            "session_plan_group must not be empty".to_string(),
+        ));
+    };
+    if !first.is_ascii_alphabetic() && first != '_' {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "Invalid session_plan_group '{}': must start with [A-Za-z_]",
+            name
+        )));
+    }
+    if chars.any(|ch| !ch.is_ascii_alphanumeric() && ch != '_') {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "Invalid session_plan_group '{}': only [A-Za-z0-9_] is allowed",
+            name
+        )));
+    }
     Ok(())
 }
 

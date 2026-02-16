@@ -172,14 +172,14 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
             if !drain.chunks.is_empty() {
                 all.extend(drain.chunks);
                 if all.iter().any(chunk_has_final_state) {
-                    self.bridge.finalize_a2a_stream_invocation();
+                    self.bridge.finalize_a2a_stream_invocation().await;
                     return Ok(StreamResult {
                         chunks: all,
                         completion: StreamCompletion::SemanticFinal,
                     });
                 }
                 if all.iter().any(chunk_has_input_required_state) {
-                    self.bridge.finalize_a2a_stream_invocation();
+                    self.bridge.finalize_a2a_stream_invocation().await;
                     return Ok(StreamResult {
                         chunks: all,
                         completion: StreamCompletion::InputRequired,
@@ -187,14 +187,14 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
                 }
             }
             if drain.channel_closed {
-                self.bridge.finalize_a2a_stream_invocation();
+                self.bridge.finalize_a2a_stream_invocation().await;
                 return Ok(StreamResult {
                     chunks: all,
                     completion: StreamCompletion::ChannelClosed,
                 });
             }
             if start.elapsed() >= timeout {
-                self.bridge.finalize_a2a_stream_invocation();
+                self.bridge.finalize_a2a_stream_invocation().await;
                 return Ok(StreamResult {
                     chunks: all,
                     completion: StreamCompletion::Timeout,
