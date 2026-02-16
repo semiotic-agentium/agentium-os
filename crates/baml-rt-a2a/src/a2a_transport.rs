@@ -988,6 +988,7 @@ impl A2aAgent {
             }
             Ok(_) => metrics::record_a2a_request(method.as_str(), "success", is_stream, duration),
             Err(err) => {
+                tracing::warn!(error = %err, "handle_a2a: routing error");
                 metrics::record_a2a_request(method.as_str(), "error", is_stream, duration);
                 metrics::record_a2a_error(
                     method.as_str(),
