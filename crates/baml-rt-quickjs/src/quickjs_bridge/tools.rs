@@ -90,26 +90,24 @@ impl QuickJSBridge {
     pub(crate) async fn register_tool_invoke_helper(&mut self) -> Result<()> {
         let manager_clone = self.baml_manager.clone();
         let registry = self.invocation_context_registry.clone();
-        let scope_map = self.invocation_scope_by_token.clone();
-        let correlation_map = self.correlation_id_by_token.clone();
 
         self.runtime.set_function(
             &[],
             "__tool_invoke",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                let (scope, skip) = super::resolve_scope_from_active_context(&registry, &args, &scope_map)?;
-                if args.len() < skip + 2 {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (tool_name, args) or (token, tool_name, args)"));
+                let scope = super::resolve_scope_from_active_context(&registry)?;
+                if args.len() < 2 {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (tool_name, args)"));
                 }
 
-                let tool_name_js = &args[skip];
+                let tool_name_js = &args[0];
                 let tool_name = if tool_name_js.is_string() {
                     tool_name_js.get_str().to_string()
                 } else {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Tool name must be a string"));
                 };
 
-                let args_js = &args[skip + 1];
+                let args_js = &args[1];
                 let args_json_str = if args_js.is_string() {
                     args_js.get_str().to_string()
                 } else {
@@ -121,16 +119,11 @@ impl QuickJSBridge {
 
                 let tool_name_clone = tool_name.clone();
                 let manager_for_promise = manager_clone.clone();
-                let correlation_id = if skip == 0 {
-                    registry
-                        .lock()
-                        .ok()
-                        .and_then(|g| g.current_frame().ok())
-                        .and_then(|f| f.correlation_id)
-                } else {
-                    super::scope::token_from_args(&args)
-                        .and_then(|t| correlation_map.lock().ok().and_then(|m| m.get(&t).cloned()))
-                };
+                let correlation_id = registry
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.current_frame().ok())
+                    .and_then(|f| f.correlation_id);
 
                 Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
                     let run = async move {
@@ -169,18 +162,16 @@ impl QuickJSBridge {
         // Register __tool_from_baml_result: tokenless; host resolves from active context. JS calls (baml_result_json).
         let manager_clone = self.baml_manager.clone();
         let registry = self.invocation_context_registry.clone();
-        let scope_map = self.invocation_scope_by_token.clone();
-        let correlation_map = self.correlation_id_by_token.clone();
         self.runtime.set_function(
             &[],
             "__tool_from_baml_result",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                let (scope, skip) = super::resolve_scope_from_active_context(&registry, &args, &scope_map)?;
-                if args.len() < skip + 1 {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (baml_result_json) or (token, baml_result_json)"));
+                let scope = super::resolve_scope_from_active_context(&registry)?;
+                if args.is_empty() {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (baml_result_json)"));
                 }
 
-                let baml_result_js = &args[skip];
+                let baml_result_js = &args[0];
                 let baml_result_str = if baml_result_js.is_string() {
                     baml_result_js.get_str().to_string()
                 } else {
@@ -191,16 +182,11 @@ impl QuickJSBridge {
                     .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&format!("Failed to parse BAML result JSON: {}", e)))?;
 
                 let manager_for_promise = manager_clone.clone();
-                let correlation_id = if skip == 0 {
-                    registry
-                        .lock()
-                        .ok()
-                        .and_then(|g| g.current_frame().ok())
-                        .and_then(|f| f.correlation_id)
-                } else {
-                    super::scope::token_from_args(&args)
-                        .and_then(|t| correlation_map.lock().ok().and_then(|m| m.get(&t).cloned()))
-                };
+                let correlation_id = registry
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.current_frame().ok())
+                    .and_then(|f| f.correlation_id);
 
                 Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
                     let run = async move {
@@ -266,38 +252,32 @@ impl QuickJSBridge {
     pub(crate) async fn register_tool_session_helpers(&mut self) -> Result<()> {
         let manager_clone = self.baml_manager.clone();
         let registry = self.invocation_context_registry.clone();
-        let scope_map = self.invocation_scope_by_token.clone();
-        let correlation_map = self.correlation_id_by_token.clone();
 
         self.runtime.set_function(
             &[],
             "__tool_session_open",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                let (scope, skip) = super::resolve_scope_from_active_context(&registry, &args, &scope_map)?;
-                if args.len() < skip + 1 {
+                let scope = super::resolve_scope_from_active_context(&registry)?;
+                if args.is_empty() {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (tool_name, openInputJson?)"));
                 }
-                let tool_name_js = &args[skip];
+                let tool_name_js = &args[0];
                 let tool_name = if tool_name_js.is_string() {
                     tool_name_js.get_str().to_string()
                 } else {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Tool name must be a string"));
                 };
-                let open_input = if args.len() > skip + 1 && args[skip + 1].is_string() {
-                    serde_json::from_str(args[skip + 1].get_str()).unwrap_or_else(|_| empty_open_input())
+                let open_input = if args.len() > 1 && args[1].is_string() {
+                    serde_json::from_str(args[1].get_str()).unwrap_or_else(|_| empty_open_input())
                 } else {
                     empty_open_input()
                 };
                 let manager_for_promise = manager_clone.clone();
-                let correlation_id = if skip == 0 {
-                    registry
-                        .lock()
-                        .ok()
-                        .and_then(|g| g.current_frame().ok())
-                        .and_then(|f| f.correlation_id)
-                } else {
-                    super::scope::token_from_args(&args).and_then(|t| correlation_map.lock().ok().and_then(|m| m.get(&t).cloned()))
-                };
+                let correlation_id = registry
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.current_frame().ok())
+                    .and_then(|f| f.correlation_id);
 
                 Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
                     let run = async move {
@@ -327,23 +307,22 @@ impl QuickJSBridge {
 
         let manager_clone = self.baml_manager.clone();
         let registry = self.invocation_context_registry.clone();
-        let scope_map = self.invocation_scope_by_token.clone();
         self.runtime.set_function(
             &[],
             "__tool_session_send",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                let (scope, skip) = super::resolve_scope_from_active_context(&registry, &args, &scope_map)?;
-                if args.len() < skip + 2 {
+                let scope = super::resolve_scope_from_active_context(&registry)?;
+                if args.len() < 2 {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id, args)"));
                 }
-                let session_id = if args[skip].is_string() {
-                    ToolSessionId::parse(args[skip].get_str())
+                let session_id = if args[0].is_string() {
+                    ToolSessionId::parse(args[0].get_str())
                         .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?
                 } else {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Session id must be a string"));
                 };
-                let args_json_str = if args[skip + 1].is_string() {
-                    args[skip + 1].get_str().to_string()
+                let args_json_str = if args[1].is_string() {
+                    args[1].get_str().to_string()
                 } else {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Args must be a JSON string"));
                 };
@@ -373,17 +352,16 @@ impl QuickJSBridge {
 
         let manager_clone = self.baml_manager.clone();
         let registry = self.invocation_context_registry.clone();
-        let scope_map = self.invocation_scope_by_token.clone();
         self.runtime.set_function(
             &[],
             "__tool_session_next",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                let (scope, skip) = super::resolve_scope_from_active_context(&registry, &args, &scope_map)?;
-                if args.len() < skip + 1 {
+                let scope = super::resolve_scope_from_active_context(&registry)?;
+                if args.is_empty() {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id)"));
                 }
-                let session_id = if args[skip].is_string() {
-                    ToolSessionId::parse(args[skip].get_str())
+                let session_id = if args[0].is_string() {
+                    ToolSessionId::parse(args[0].get_str())
                         .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?
                 } else {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Session id must be a string"));
@@ -414,17 +392,16 @@ impl QuickJSBridge {
 
         let manager_clone = self.baml_manager.clone();
         let registry = self.invocation_context_registry.clone();
-        let scope_map = self.invocation_scope_by_token.clone();
         self.runtime.set_function(
             &[],
             "__tool_session_finish",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                let (scope, skip) = super::resolve_scope_from_active_context(&registry, &args, &scope_map)?;
-                if args.len() < skip + 1 {
+                let scope = super::resolve_scope_from_active_context(&registry)?;
+                if args.is_empty() {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id)"));
                 }
-                let session_id = if args[skip].is_string() {
-                    ToolSessionId::parse(args[skip].get_str())
+                let session_id = if args[0].is_string() {
+                    ToolSessionId::parse(args[0].get_str())
                         .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?
                 } else {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Session id must be a string"));
@@ -452,22 +429,21 @@ impl QuickJSBridge {
 
         let manager_clone = self.baml_manager.clone();
         let registry = self.invocation_context_registry.clone();
-        let scope_map = self.invocation_scope_by_token.clone();
         self.runtime.set_function(
             &[],
             "__tool_session_abort",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                let (scope, skip) = super::resolve_scope_from_active_context(&registry, &args, &scope_map)?;
-                if args.len() < skip + 1 {
+                let scope = super::resolve_scope_from_active_context(&registry)?;
+                if args.is_empty() {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id, reason?)"));
                 }
-                let session_id = if args[skip].is_string() {
-                    ToolSessionId::parse(args[skip].get_str())
+                let session_id = if args[0].is_string() {
+                    ToolSessionId::parse(args[0].get_str())
                         .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?
                 } else {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Session id must be a string"));
                 };
-                let reason = args.get(skip + 1).and_then(|value| {
+                let reason = args.get(1).and_then(|value| {
                     if value.is_string() {
                         Some(value.get_str().to_string())
                     } else {
