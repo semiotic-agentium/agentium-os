@@ -31,9 +31,10 @@
 //! **CG4 (Stream Promise Non-Resolution):** The type parameter `P` encodes promise semantics;
 //! `NonResolvingPromise` ensures only stream invocation (no wait for resolution) is used.
 
-use crate::quickjs_bridge::QuickJSBridge;
+use crate::quickjs_bridge::{BufferDrain, QuickJSBridge};
 use baml_rt_core::Result;
 use baml_rt_core::context::InvocationScope;
+use baml_rt_core::stream_completion::{StreamCompletion, StreamResult};
 use serde_json::Value;
 use std::marker::PhantomData;
 use std::time::{Duration, Instant};
@@ -102,37 +103,102 @@ impl<'a> A2aYieldSession<'a, YieldBufferReady, NonResolvingPromise> {
     }
 }
 
+fn chunk_has_final_state(chunk: &Value) -> bool {
+    if chunk.get("final").and_then(Value::as_bool).unwrap_or(false) {
+        return true;
+    }
+    let state = chunk
+        .get("task")
+        .and_then(|t| t.get("status"))
+        .and_then(|s| s.get("state"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            chunk
+                .get("statusUpdate")
+                .and_then(|s| s.get("status"))
+                .and_then(|s| s.get("state"))
+                .and_then(Value::as_str)
+        });
+    matches!(
+        state,
+        Some("TASK_STATE_COMPLETED") | Some("TASK_STATE_FAILED")
+    )
+}
+
+fn chunk_has_input_required_state(chunk: &Value) -> bool {
+    let state = chunk
+        .get("task")
+        .and_then(|t| t.get("status"))
+        .and_then(|s| s.get("state"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            chunk
+                .get("statusUpdate")
+                .and_then(|s| s.get("status"))
+                .and_then(|s| s.get("state"))
+                .and_then(Value::as_str)
+        });
+    matches!(state, Some("TASK_STATE_INPUT_REQUIRED"))
+}
+
 impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
-    /// Reads and clears the yield buffer. Returns the sequence of chunks yielded via
-    /// `__baml_chat_yield` during the preceding invoke.
+    /// Reads and clears the yield buffer. Returns chunks and an explicit completion reason.
     ///
-    /// **Liveness (L3):** This method returns in finite time. It polls briefly to allow
-    /// async handlers to yield before the buffer is read.
-    pub async fn collect(self) -> Result<Vec<Value>> {
+    /// Terminates only on: (1) semantic final chunk (TASK_STATE_COMPLETED/FAILED),
+    /// (2) channel closed (sender dropped), or (3) safety timeout. No quiescence heuristic.
+    ///
+    /// **Liveness (L3):** This method returns in finite time.
+    pub async fn collect(self) -> Result<StreamResult> {
         let start = Instant::now();
-        // Allow time for LLM + tool flow (e.g. ChooseCalcTool + calculator); 60s covers slow providers.
         let timeout = Duration::from_secs(60);
         let interval = Duration::from_millis(50);
         let read_timeout = Duration::from_secs(2);
+        let mut all = Vec::new();
 
         loop {
-            // Liveness guard: a single buffer-read must not stall collection forever.
-            let responses = match tokio::time::timeout(
+            let drain: BufferDrain = match tokio::time::timeout(
                 read_timeout,
                 self.bridge.get_a2a_yield_buffer(),
             )
             .await
             {
-                Ok(result) => result?,
-                Err(_) => Vec::new(),
+                Ok(Ok(d)) => d,
+                Ok(Err(e)) => return Err(e),
+                Err(_) => BufferDrain {
+                    chunks: vec![],
+                    channel_closed: false,
+                },
             };
-            if !responses.is_empty() {
+            if !drain.chunks.is_empty() {
+                all.extend(drain.chunks);
+                if all.iter().any(chunk_has_final_state) {
+                    self.bridge.finalize_a2a_stream_invocation();
+                    return Ok(StreamResult {
+                        chunks: all,
+                        completion: StreamCompletion::SemanticFinal,
+                    });
+                }
+                if all.iter().any(chunk_has_input_required_state) {
+                    self.bridge.finalize_a2a_stream_invocation();
+                    return Ok(StreamResult {
+                        chunks: all,
+                        completion: StreamCompletion::InputRequired,
+                    });
+                }
+            }
+            if drain.channel_closed {
                 self.bridge.finalize_a2a_stream_invocation();
-                return Ok(responses);
+                return Ok(StreamResult {
+                    chunks: all,
+                    completion: StreamCompletion::ChannelClosed,
+                });
             }
             if start.elapsed() >= timeout {
                 self.bridge.finalize_a2a_stream_invocation();
-                return Ok(responses);
+                return Ok(StreamResult {
+                    chunks: all,
+                    completion: StreamCompletion::Timeout,
+                });
             }
             sleep(interval).await;
         }

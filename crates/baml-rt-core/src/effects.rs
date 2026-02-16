@@ -1,14 +1,31 @@
-//! Effect system: primary source of truth for tool/LLM execution events.
+//! Stream-first command/event/effect bus for runtime orchestration.
 //!
-//! Effects drive provenance (provenance is a subscriber), and liveness gating uses
-//! in-flight effect counts to distinguish "waiting on effect" from "will never yield".
+//! This is the canonical transport-agnostic boundary for runtime observation and
+//! liveness. All command, domain-event, and effect signals flow as envelopes.
 
-use crate::ids::ContextId;
+use crate::context::RuntimeScope;
+use crate::correlation;
+use crate::ids::{AgentId, ContextId, CorrelationId};
+use async_channel::{Receiver, Sender};
 use async_trait::async_trait;
+use futures_util::stream::Stream;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::marker::PhantomData;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
+
+pub type BusStream<T> = Pin<Box<dyn Stream<Item = T> + Send + 'static>>;
+
+fn receiver_stream<T: Send + 'static>(rx: Receiver<T>) -> BusStream<T> {
+    Box::pin(async_stream::stream! {
+        while let Ok(item) = rx.recv().await {
+            yield item;
+        }
+    })
+}
 
 /// What kind of effect is being executed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -19,7 +36,6 @@ pub enum EffectKind {
 }
 
 impl EffectKind {
-    /// Message for underflow logging (Completed without matching Started).
     fn underflow_message(&self) -> &'static str {
         match self {
             EffectKind::Tool => {
@@ -31,12 +47,10 @@ impl EffectKind {
     }
 }
 
-/// Marker types for effect kind (used in typestate tokens).
 pub struct ToolKind;
 pub struct LlmKind;
 pub struct A2aKind;
 
-/// Effect metadata for tool calls (needed for provenance).
 #[derive(Debug, Clone)]
 pub struct ToolEffectMetadata {
     pub tool_name: String,
@@ -45,7 +59,6 @@ pub struct ToolEffectMetadata {
     pub metadata: serde_json::Value,
 }
 
-/// Effect metadata for LLM calls (needed for provenance).
 #[derive(Debug, Clone)]
 pub struct LlmEffectMetadata {
     pub client: String,
@@ -56,10 +69,6 @@ pub struct LlmEffectMetadata {
 }
 
 impl ToolEffectMetadata {
-    /// Validate that metadata contains message_id (for provenance requirements).
-    ///
-    /// This provides runtime validation of metadata capability requirements.
-    /// In the future, this could be encoded via phantom types for compile-time guarantees.
     pub fn has_message_id(&self) -> bool {
         self.metadata
             .get("message_id")
@@ -69,10 +78,6 @@ impl ToolEffectMetadata {
 }
 
 impl LlmEffectMetadata {
-    /// Validate that metadata contains message_id (for provenance requirements).
-    ///
-    /// This provides runtime validation of metadata capability requirements.
-    /// In the future, this could be encoded via phantom types for compile-time guarantees.
     pub fn has_message_id(&self) -> bool {
         self.metadata
             .get("message_id")
@@ -81,16 +86,23 @@ impl LlmEffectMetadata {
     }
 }
 
-/// Effect metadata for A2A calls (host-inbound).
+#[derive(Debug, Clone)]
+pub enum A2aLivenessRole {
+    /// Command envelope lifecycle (ingress/egress orchestration).
+    Command,
+    /// Progress-capable A2A effect work (e.g. nested or child transport work).
+    Effect,
+}
+
 #[derive(Debug, Clone)]
 pub struct A2aEffectMetadata {
-    pub agent_id: crate::ids::AgentId,
+    pub agent_id: AgentId,
     pub method: String,
     pub request_id: Option<String>,
+    pub liveness_role: A2aLivenessRole,
     pub metadata: serde_json::Value,
 }
 
-/// Effect lifecycle event: started or completed.
 #[derive(Debug, Clone)]
 pub enum EffectEvent {
     ToolStarted {
@@ -126,7 +138,6 @@ pub enum EffectEvent {
     },
 }
 
-/// LLM usage information (matches provenance).
 #[derive(Debug, Clone)]
 pub enum LlmUsage {
     Known {
@@ -158,26 +169,18 @@ impl EffectEvent {
     }
 }
 
-/// Typestate token representing a started effect.
-///
-/// **CG3 / E1 (Effect Token Completion):** The token must be completed via `complete()` or
-/// explicitly abandoned. If dropped without completion, effect counts leak. Drop logs an error
-/// and panics in debug builds. Fields are `Option` so `complete()` can take them without
-/// triggering drop of the token.
 pub struct EffectStartToken<K> {
     context_id: Option<ContextId>,
     metadata: Option<EffectStartMetadata>,
     _kind: PhantomData<K>,
 }
 
-/// Internal metadata storage for start tokens.
 enum EffectStartMetadata {
     Tool(ToolEffectMetadata),
     Llm(LlmEffectMetadata),
     A2a(A2aEffectMetadata),
 }
 
-/// DRY: take context_id and metadata from token fields (used by complete() impls).
 fn take_token_parts(
     context_id: &mut Option<ContextId>,
     metadata: &mut Option<EffectStartMetadata>,
@@ -196,7 +199,7 @@ impl<K> Drop for EffectStartToken<K> {
                 tracing::error!(
                     context_id = ?self.context_id,
                     kind = std::any::type_name::<K>(),
-                    "EffectStartToken dropped without completion - effect leak (CG3 violation)"
+                    "EffectStartToken dropped without completion - effect leak"
                 );
                 panic!(
                     "EffectStartToken dropped without completion: context_id={:?}, kind={}",
@@ -209,7 +212,7 @@ impl<K> Drop for EffectStartToken<K> {
                 tracing::error!(
                     context_id = ?self.context_id,
                     kind = std::any::type_name::<K>(),
-                    "EffectStartToken dropped without completion - effect leak (CG3 violation)"
+                    "EffectStartToken dropped without completion - effect leak"
                 );
             }
         }
@@ -217,7 +220,6 @@ impl<K> Drop for EffectStartToken<K> {
 }
 
 impl EffectStartToken<ToolKind> {
-    /// Complete a tool effect. Consumes the token (Drop will not run).
     pub async fn complete(
         mut self,
         emitter: &dyn EffectEmitter,
@@ -241,7 +243,6 @@ impl EffectStartToken<ToolKind> {
 }
 
 impl EffectStartToken<LlmKind> {
-    /// Complete an LLM effect. Consumes the token (Drop will not run).
     pub async fn complete(
         mut self,
         emitter: &dyn EffectEmitter,
@@ -267,7 +268,6 @@ impl EffectStartToken<LlmKind> {
 }
 
 impl EffectStartToken<A2aKind> {
-    /// Complete an A2A effect. Consumes the token (Drop will not run).
     pub async fn complete(
         mut self,
         emitter: &dyn EffectEmitter,
@@ -290,13 +290,10 @@ impl EffectStartToken<A2aKind> {
     }
 }
 
-/// Emitter trait: executors call this to declare effect start/complete.
 #[async_trait]
-pub trait EffectEmitter: Send + Sync {
-    /// Legacy emit method (for backward compatibility during migration).
+pub trait EffectEmitter: EffectLiveness + Send + Sync {
     async fn emit(&self, event: EffectEvent) -> crate::Result<()>;
 
-    /// Start a tool effect and return a token that must be completed.
     async fn start_tool(
         &self,
         context_id: ContextId,
@@ -315,7 +312,6 @@ pub trait EffectEmitter: Send + Sync {
         Ok(token)
     }
 
-    /// Start an LLM effect and return a token that must be completed.
     async fn start_llm(
         &self,
         context_id: ContextId,
@@ -334,7 +330,6 @@ pub trait EffectEmitter: Send + Sync {
         Ok(token)
     }
 
-    /// Start an A2A effect and return a token that must be completed.
     async fn start_a2a(
         &self,
         context_id: ContextId,
@@ -354,31 +349,35 @@ pub trait EffectEmitter: Send + Sync {
     }
 }
 
-/// Liveness query: check if any effects are in-flight for a context.
 #[async_trait]
 pub trait EffectLiveness: Send + Sync {
-    /// Get in-flight counts for a context (tool + LLM).
     async fn in_flight(&self, context_id: &ContextId) -> InFlightCounts;
 }
 
-/// In-flight counts per context (context-only scope).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InFlightCounts {
     pub tool: u32,
     pub llm: u32,
+    /// Progress-capable A2A effects.
     pub a2a: u32,
+    /// Command envelope lifecycle counters (non-progress for timeout gating).
+    pub a2a_command: u32,
 }
 
 impl InFlightCounts {
     pub fn any(&self) -> bool {
+        self.tool > 0 || self.llm > 0 || self.a2a > 0 || self.a2a_command > 0
+    }
+
+    /// True iff there is downstream work that can advance the current poll loop.
+    pub fn has_progress_effects(&self) -> bool {
         self.tool > 0 || self.llm > 0 || self.a2a > 0
     }
 
     pub fn total(&self) -> u32 {
-        self.tool + self.llm + self.a2a
+        self.tool + self.llm + self.a2a + self.a2a_command
     }
 
-    /// Mutable reference to the count for the given effect kind (for DRY count updates).
     pub fn get_mut(&mut self, kind: EffectKind) -> &mut u32 {
         match kind {
             EffectKind::Tool => &mut self.tool,
@@ -388,92 +387,255 @@ impl InFlightCounts {
     }
 }
 
-/// Effect bus: maintains in-flight index and fans out to subscribers.
-pub struct EffectBus {
-    counts: Arc<RwLock<HashMap<ContextId, InFlightCounts>>>,
-    subscribers: Arc<RwLock<Vec<Arc<dyn EffectSubscriber>>>>,
-}
-
-/// Subscriber trait: receives effect events (e.g. provenance adapter).
 #[async_trait]
 pub trait EffectSubscriber: Send + Sync {
     async fn on_effect(&self, event: &EffectEvent) -> crate::Result<()>;
 }
 
-impl EffectBus {
-    pub fn new() -> Self {
+/// Transport-agnostic command envelope payload.
+#[derive(Debug, Clone)]
+pub struct Command {
+    pub name: String,
+    pub metadata: Value,
+    pub input: Value,
+}
+
+/// Transport-agnostic domain event payload.
+#[derive(Debug, Clone)]
+pub struct DomainEvent {
+    pub name: String,
+    pub metadata: Value,
+    pub output: Value,
+    pub terminal: bool,
+}
+
+/// Payload emitted on the bus.
+#[derive(Debug, Clone)]
+pub enum Payload {
+    Command(Command),
+    DomainEvent(DomainEvent),
+    Effect(EffectEvent),
+}
+
+/// Canonical envelope emitted by runtime paths.
+#[derive(Debug, Clone)]
+pub struct Envelope {
+    pub scope: Option<RuntimeScope>,
+    pub correlation_id: Option<CorrelationId>,
+    pub timestamp_ms: u64,
+    pub payload: Payload,
+}
+
+impl Envelope {
+    pub fn now(scope: Option<RuntimeScope>, payload: Payload) -> Self {
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         Self {
-            counts: Arc::new(RwLock::new(HashMap::new())),
-            subscribers: Arc::new(RwLock::new(Vec::new())),
+            scope,
+            correlation_id: correlation::current_correlation_id(),
+            timestamp_ms,
+            payload,
         }
-    }
-
-    /// Add a subscriber (e.g. provenance adapter).
-    pub async fn subscribe(&self, subscriber: Arc<dyn EffectSubscriber>) {
-        let mut subs = self.subscribers.write().await;
-        subs.push(subscriber);
-    }
-
-    /// Update counts and notify subscribers.
-    async fn process_event(&self, event: EffectEvent) -> crate::Result<()> {
-        let context_id = event.context_id().clone();
-        let kind = event.kind();
-
-        // Update in-flight counts (DRY: single path per Started/Completed via EffectKind)
-        {
-            let mut counts = self.counts.write().await;
-            let entry = counts
-                .entry(context_id.clone())
-                .or_insert_with(InFlightCounts::default);
-            match event {
-                EffectEvent::ToolStarted { .. }
-                | EffectEvent::LlmStarted { .. }
-                | EffectEvent::A2aStarted { .. } => {
-                    let count = entry.get_mut(kind);
-                    *count = count.saturating_add(1);
-                }
-                EffectEvent::ToolCompleted { .. }
-                | EffectEvent::LlmCompleted { .. }
-                | EffectEvent::A2aCompleted { .. } => {
-                    let count = entry.get_mut(kind);
-                    if *count == 0 {
-                        tracing::error!(context_id = ?context_id, "{}", kind.underflow_message());
-                    }
-                    *count = count.saturating_sub(1);
-                    if !entry.any() {
-                        counts.remove(&context_id);
-                    }
-                }
-            }
-        }
-
-        // Fan out to subscribers
-        let subs = self.subscribers.read().await;
-        for sub in subs.iter() {
-            if let Err(e) = sub.on_effect(&event).await {
-                tracing::warn!(error = ?e, "Effect subscriber failed");
-            }
-        }
-
-        Ok(())
     }
 }
 
-impl Default for EffectBus {
+#[async_trait]
+pub trait Subscriber: Send + Sync {
+    async fn on_envelope(&self, envelope: &Envelope) -> crate::Result<()>;
+}
+
+#[async_trait]
+pub trait BusApi: Send + Sync {
+    async fn emit(&self, envelope: Envelope) -> crate::Result<()>;
+    async fn subscribe(&self, subscriber: Arc<dyn Subscriber>);
+    async fn stream(&self) -> BusStream<Envelope>;
+}
+
+/// Canonical runtime boundary: envelope bus + effect lifecycle + liveness.
+pub trait EffectRuntime: BusApi + EffectEmitter + EffectLiveness + Send + Sync {}
+
+impl<T> EffectRuntime for T where T: BusApi + EffectEmitter + EffectLiveness + Send + Sync {}
+
+/// In-memory fanout bus for envelopes.
+pub struct Bus {
+    subscribers: Arc<RwLock<Vec<Arc<dyn Subscriber>>>>,
+    streams: Arc<RwLock<Vec<Sender<Envelope>>>>,
+}
+
+impl Bus {
+    pub fn new() -> Self {
+        Self {
+            subscribers: Arc::new(RwLock::new(Vec::new())),
+            streams: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+}
+
+impl Default for Bus {
     fn default() -> Self {
         Self::new()
     }
 }
 
 #[async_trait]
-impl EffectEmitter for EffectBus {
-    async fn emit(&self, event: EffectEvent) -> crate::Result<()> {
-        self.process_event(event).await
+impl BusApi for Bus {
+    async fn emit(&self, envelope: Envelope) -> crate::Result<()> {
+        let subscribers = self.subscribers.read().await;
+        for subscriber in subscribers.iter() {
+            subscriber.on_envelope(&envelope).await?;
+        }
+
+        let streams = self.streams.read().await.clone();
+        for tx in streams {
+            let _ = tx.send(envelope.clone()).await;
+        }
+        let mut stream_guard = self.streams.write().await;
+        stream_guard.retain(|tx| !tx.is_closed());
+        Ok(())
+    }
+
+    async fn subscribe(&self, subscriber: Arc<dyn Subscriber>) {
+        let mut subscribers = self.subscribers.write().await;
+        subscribers.push(subscriber);
+    }
+
+    async fn stream(&self) -> BusStream<Envelope> {
+        let (tx, rx) = async_channel::unbounded();
+        let mut streams = self.streams.write().await;
+        streams.push(tx);
+        receiver_stream(rx)
+    }
+}
+
+/// Bus that also maintains effect liveness and effect-subscriber fanout.
+pub struct BusWithEffects {
+    bus: Bus,
+    counts: Arc<RwLock<HashMap<ContextId, InFlightCounts>>>,
+    effect_subscribers: Arc<RwLock<Vec<Arc<dyn EffectSubscriber>>>>,
+}
+
+impl BusWithEffects {
+    pub fn new() -> Self {
+        Self {
+            bus: Bus::new(),
+            counts: Arc::new(RwLock::new(HashMap::new())),
+            effect_subscribers: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
+    pub async fn subscribe_effect(&self, subscriber: Arc<dyn EffectSubscriber>) {
+        let mut subs = self.effect_subscribers.write().await;
+        subs.push(subscriber);
+    }
+
+    async fn process_effect(&self, event: EffectEvent) -> crate::Result<()> {
+        let context_id = event.context_id().clone();
+        {
+            let mut counts = self.counts.write().await;
+            let entry = counts
+                .entry(context_id.clone())
+                .or_insert_with(InFlightCounts::default);
+            match event {
+                EffectEvent::ToolStarted { .. } => entry.tool = entry.tool.saturating_add(1),
+                EffectEvent::LlmStarted { .. } => entry.llm = entry.llm.saturating_add(1),
+                EffectEvent::A2aStarted { ref metadata, .. } => match metadata.liveness_role {
+                    A2aLivenessRole::Command => {
+                        entry.a2a_command = entry.a2a_command.saturating_add(1)
+                    }
+                    A2aLivenessRole::Effect => entry.a2a = entry.a2a.saturating_add(1),
+                },
+                EffectEvent::ToolCompleted { .. } => {
+                    if entry.tool == 0 {
+                        tracing::error!(
+                            context_id = ?context_id,
+                            "{}",
+                            EffectKind::Tool.underflow_message()
+                        );
+                    }
+                    entry.tool = entry.tool.saturating_sub(1);
+                }
+                EffectEvent::LlmCompleted { .. } => {
+                    if entry.llm == 0 {
+                        tracing::error!(
+                            context_id = ?context_id,
+                            "{}",
+                            EffectKind::Llm.underflow_message()
+                        );
+                    }
+                    entry.llm = entry.llm.saturating_sub(1);
+                }
+                EffectEvent::A2aCompleted { ref metadata, .. } => match metadata.liveness_role {
+                    A2aLivenessRole::Command => {
+                        if entry.a2a_command == 0 {
+                            tracing::error!(
+                                context_id = ?context_id,
+                                "Effect count underflow: A2aCommandCompleted without matching A2aCommandStarted"
+                            );
+                        }
+                        entry.a2a_command = entry.a2a_command.saturating_sub(1);
+                    }
+                    A2aLivenessRole::Effect => {
+                        if entry.a2a == 0 {
+                            tracing::error!(
+                                context_id = ?context_id,
+                                "{}",
+                                EffectKind::A2a.underflow_message()
+                            );
+                        }
+                        entry.a2a = entry.a2a.saturating_sub(1);
+                    }
+                },
+            }
+            if !entry.any() {
+                counts.remove(&context_id);
+            }
+        }
+
+        let subs = self.effect_subscribers.read().await;
+        for sub in subs.iter() {
+            if let Err(e) = sub.on_effect(&event).await {
+                tracing::warn!(error = ?e, "Effect subscriber failed");
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Default for BusWithEffects {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
 #[async_trait]
-impl EffectLiveness for EffectBus {
+impl BusApi for BusWithEffects {
+    async fn emit(&self, envelope: Envelope) -> crate::Result<()> {
+        self.bus.emit(envelope).await
+    }
+
+    async fn subscribe(&self, subscriber: Arc<dyn Subscriber>) {
+        self.bus.subscribe(subscriber).await;
+    }
+
+    async fn stream(&self) -> BusStream<Envelope> {
+        self.bus.stream().await
+    }
+}
+
+#[async_trait]
+impl EffectEmitter for BusWithEffects {
+    async fn emit(&self, event: EffectEvent) -> crate::Result<()> {
+        self.process_effect(event.clone()).await?;
+        self.bus
+            .emit(Envelope::now(None, Payload::Effect(event)))
+            .await
+    }
+}
+
+#[async_trait]
+impl EffectLiveness for BusWithEffects {
     async fn in_flight(&self, context_id: &ContextId) -> InFlightCounts {
         let counts = self.counts.read().await;
         counts.get(context_id).copied().unwrap_or_default()
