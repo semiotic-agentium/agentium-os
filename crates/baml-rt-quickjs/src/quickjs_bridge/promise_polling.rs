@@ -23,6 +23,9 @@ const EFFECT_CHECK_INTERVAL: u32 = 100;
 /// For the first EFFECT_EARLY_CHECK_WINDOW attempts, re-check every N so we see effects soon.
 const EFFECT_EARLY_CHECK_INTERVAL: u32 = 10;
 const EFFECT_EARLY_CHECK_WINDOW: u32 = 500;
+/// For the first N attempts, never use the short idle timeout so the promise executor has time
+/// to run and emit effects on slow CI (where run_pending_jobs may be scheduled late).
+const EFFECT_WARMUP_ATTEMPTS: u32 = 2000;
 
 /// Parameters for promise resolution polling (keeps `poll_promise_until_result` under clippy's arg limit).
 pub(crate) struct PollPromiseParams<'a> {
@@ -60,7 +63,7 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
     } = params;
 
     let poller = EffectGatedTimeoutPolicy::new(
-        effect_liveness,
+        effect_liveness.clone(),
         scope.context_id().clone(),
         idle_timeout_ms,
         max_attempts_ms,
@@ -119,13 +122,25 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
             attempts.is_multiple_of(EFFECT_CHECK_INTERVAL)
         };
         if should_recheck {
+            let counts = effect_liveness.in_flight(scope.context_id()).await;
             let new_timeout = poller.timeout_attempts().await;
+            tracing::trace!(
+                attempts,
+                context_id = %scope.context_id(),
+                in_flight_llm = counts.llm,
+                in_flight_tool = counts.tool,
+                timeout_attempts = new_timeout,
+                "poll_promise: effect-gated timeout sample"
+            );
             timeout_attempts = Some(timeout_attempts.map_or(new_timeout, |t| t.max(new_timeout)));
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
         attempts += 1;
-        let limit = timeout_attempts.unwrap_or(u32::MAX);
+        let mut limit = timeout_attempts.unwrap_or(u32::MAX);
+        if attempts < EFFECT_WARMUP_ATTEMPTS {
+            limit = limit.max(max_attempts_ms as u32);
+        }
         if attempts >= limit {
             if let Some(t) = token_to_remove
                 && let Ok(mut map) = invocation_scope_by_token.lock()

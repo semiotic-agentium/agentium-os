@@ -1,6 +1,13 @@
 #![allow(clippy::print_stdout)]
-//! End-to-end test using actual LLM via OpenRouter
+//! End-to-end test using actual LLM via OpenRouter.
+//!
+//! To isolate effect-gated timeout issues locally, run with trace logs:
+//! `RUST_LOG=baml_rt_quickjs=trace cargo test -p baml-rt test_e2e_simple_greeting_with_llm -- --nocapture`
+//! Check for "LlmStarted emitting" vs "effect_emitter is None", and "poll_promise: effect-gated
+//! timeout sample" (in_flight_llm, context_id). The first 2s use a warm-up so the short idle
+//! timeout is not applied until the promise executor has had time to run.
 
+use baml_rt::baml_execution::ParseRetryPolicy;
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::ids::{AgentId, UuidId};
 use serde_json::json;
@@ -9,10 +16,22 @@ use uuid::Uuid;
 
 #[tokio::test]
 async fn test_e2e_simple_greeting_with_llm() {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
     let api_key = require_api_key();
     tracing::info!("Using OpenRouter API key (length: {})", api_key.len());
 
     let baml_manager = setup_baml_runtime_default();
+    // Single attempt: avoid retry flakiness (second attempt can return empty parsed response).
+    {
+        let mut mgr = baml_manager.lock().await;
+        mgr.set_parse_retry_policy(ParseRetryPolicy {
+            max_attempts: 1,
+            delay_ms: 0,
+        });
+    }
     let mut bridge = setup_bridge(baml_manager).await;
 
     // Call BAML function via invoke_function (uses task-local scope; evaluate()+scope has worker-thread subtleties).

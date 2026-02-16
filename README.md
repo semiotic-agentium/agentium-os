@@ -120,6 +120,15 @@ a long timeout is used; otherwise a short idle timeout applies. See
 `crates/baml-rt-quickjs/docs/HOST_QUICKJS_STREAM_INVARIANTS.md` and
 `crates/baml-rt-quickjs/src/quickjs_bridge/promise_polling.rs`.
 
+**Potential problem:** The Rust future that backs the JS promise (e.g. the BAML/LLM
+call) only runs when the QuickJS event loop runs pending jobs. On slow or busy CI,
+that can happen well after the first timeout sample, so the poll loop may see no
+effects and use the short idle timeout (e.g. 5s), causing “Promise did not resolve
+after 5000 attempts”. To mitigate this, the first 2 seconds of polling never use
+the short timeout (warm-up window). To isolate locally, run with
+`RUST_LOG=baml_rt_quickjs=trace` and check for “LlmStarted emitting” vs
+“poll_promise: effect-gated timeout sample” timing (see `crates/baml-rt/tests/llm_test.rs`).
+
 ## Conversation Handling (A2A DSL)
 
 The **best reference** for multi-turn conversation and task lifecycle is the
