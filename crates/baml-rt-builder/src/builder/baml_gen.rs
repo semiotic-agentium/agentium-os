@@ -5,6 +5,7 @@
 
 use crate::builder::schema_to_baml;
 use baml_rt_core::{BamlRtError, Result};
+use baml_rt_tools::support;
 use baml_rt_tools::tool_catalog::resolve_manifest_tools;
 use baml_rt_tools::tools::ToolFunctionMetadata;
 use serde_json::Value;
@@ -18,6 +19,8 @@ fn write_line(output: &mut String, line: &str) -> Result<()> {
 
 /// Generate BAML tool interface file with FSM-aware prompting hints
 pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
+    // Force link of support module so support/calculate is in inventory (regen_fixtures + builder).
+    let _ = support::support_calculate_metadata;
     let tool_metadata = resolve_manifest_tools(tool_names)?;
 
     let mut output = String::new();

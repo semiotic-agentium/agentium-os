@@ -701,9 +701,14 @@ impl BamlRuntimeManager {
         })
     }
 
-    /// Set the effect emitter (for effects-first liveness)
+    /// Set the effect emitter (for effects-first liveness).
+    /// If the executor is already loaded, forwards the emitter to it so LLM/tool effects
+    /// are emitted and the promise-polling loop can use effect-gated timeouts.
     pub fn set_effect_emitter(&mut self, emitter: Arc<dyn EffectEmitter>) {
-        self.effect_emitter = Some(emitter);
+        self.effect_emitter = Some(emitter.clone());
+        if let Some(executor) = self.executor.as_mut() {
+            executor.set_effect_emitter(emitter);
+        }
     }
 
     pub fn set_conversation_context_provider(

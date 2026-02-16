@@ -469,6 +469,10 @@ async fn load_agent_package(
             for tool_name in &tools {
                 enforce_tool_access(tool_name, access_allowlist)?;
                 match tool_name.as_str() {
+                    "support/calculate" => {
+                        rm.register_tool(baml_rt_tools::support::CalculatorTool)
+                            .await?;
+                    }
                     "support/notionSearchPages" => {
                         #[cfg(feature = "notion")]
                         {

@@ -43,6 +43,10 @@ cargo run -p baml-agent-runner                           # load packaged agents,
 
 # FalkorDB for provenance graph tests
 ./scripts/falkordb.sh              # commands: up, down, restart, status, logs
+
+# Nextest (CI-style: one run, JUnit, rate-limited FalkorDB tests)
+cargo install cargo-nextest        # once
+./scripts/nextest-ci-local.sh      # full workspace + falkordb/http-tools; JUnit at target/nextest/ci/junit.xml (Docker required for FalkorDB via testcontainers)
 ```
 
 ## Architecture

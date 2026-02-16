@@ -11,8 +11,8 @@ store-failure-output = true
 # Rate-limit LLM-dependent tests so they don't all hit the same backend concurrently
 # (avoids queueing, rate limits, and 180–300s wall clock when many run in parallel).
 [test-groups]
-falkordb = { max-threads = 2 }
-llm = { max-threads = 2 }
+falkordb = { max-threads = 4 }
+llm = { max-threads = 4 }
 
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-provenance)'
