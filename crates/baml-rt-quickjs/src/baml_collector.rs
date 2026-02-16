@@ -9,8 +9,8 @@
 //! to intercept LLM calls and route them through our interceptor system.
 
 use baml_rt_core::Result;
+use baml_rt_core::bus::{EffectEmitter, EffectStartToken, LlmKind};
 use baml_rt_core::context;
-use baml_rt_core::effects::{EffectEmitter, EffectStartToken, LlmKind};
 use baml_rt_core::ids::ContextId;
 use baml_rt_interceptor::{InterceptorRegistry, LLMCallContext};
 use baml_runtime::tracingv2::storage::storage::Collector;

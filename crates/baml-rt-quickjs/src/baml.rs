@@ -14,9 +14,9 @@ pub(crate) use tool_extraction::{
 use crate::baml_execution::{BamlExecutor, ConversationContextProvider, ParseRetryPolicy};
 use crate::traits::{BamlFunctionExecutor, SchemaLoader};
 use async_trait::async_trait;
+use baml_rt_core::bus::{EffectEmitter, ToolEffectMetadata};
 use baml_rt_core::context;
 use baml_rt_core::correlation::current_correlation_id;
-use baml_rt_core::effects::{EffectEmitter, ToolEffectMetadata};
 use baml_rt_core::types::FunctionSignature;
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_interceptor::{InterceptorRegistry, ToolCallContext};
@@ -1263,11 +1263,6 @@ impl BamlRuntimeManager {
                         .open_tool_session(&plan_scope, &tool_name, open_input)
                         .await?;
                     session_id = Some(session.clone());
-                    // If Open step has initial_input, automatically Send it
-                    if let Some(initial_input) = initial_input {
-                        let normalized = normalize_plan_input(initial_input)?;
-                        self.tool_session_send(&session, normalized).await?;
-                    }
                 }
                 ToolSessionOp::Send { input, reason } => {
                     tracing::debug!(
@@ -1369,6 +1364,8 @@ impl BamlRuntimeManager {
             if let Some(done) = last_output {
                 streaming_outputs.push(done);
             }
+            // Emit each chunk into the __baml_stream channel when set (argument-sketch / A2A tool sessions).
+            crate::quickjs_bridge::stream_yield::send_tool_stream_chunks(&streaming_outputs);
             return Ok(Value::Array(streaming_outputs));
         }
 

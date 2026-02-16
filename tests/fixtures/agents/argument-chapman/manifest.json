@@ -1,0 +1,9 @@
+{
+  "version": "1.0.0",
+  "name": "argument-chapman",
+  "description": "Fixture: Monty Python argument sketch agent (responder)",
+  "entry_point": "src/index.ts",
+  "signature": "argument-chapman@1.0.0",
+  "runtime_version": "0.1.0",
+  "tools": ["system/internal_a2a"]
+}

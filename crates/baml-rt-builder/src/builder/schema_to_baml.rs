@@ -133,6 +133,82 @@ fn generate_baml_type(
             generate_baml_enum_from_one_of(output, type_name, one_of)?;
             return Ok(());
         }
+
+        // General oneOf union (non-enum): generate variant classes for object members
+        // and emit a type alias union.
+        let mut variants = Vec::new();
+        for (idx, variant) in one_of.iter().enumerate() {
+            let is_object_like = variant.as_object().is_some_and(|obj| {
+                obj.contains_key("properties")
+                    || obj
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|t| t == "object")
+            });
+            if is_object_like {
+                let variant_name = format!("{type_name}Variant{}", idx + 1);
+                generate_baml_type(
+                    output,
+                    &variant_name,
+                    variant,
+                    generated,
+                    all_schemas,
+                    type_names,
+                )?;
+                variants.push(variant_name);
+            } else {
+                variants.push(json_schema_to_baml_type(
+                    variant,
+                    generated,
+                    all_schemas,
+                    type_names,
+                )?);
+            }
+        }
+        write_line(
+            output,
+            &format!("type {type_name} = {}", variants.join(" | ")),
+        )?;
+        write_line(output, "")?;
+        return Ok(());
+    }
+
+    if let Some(any_of) = schema_obj.get("anyOf").and_then(|v| v.as_array()) {
+        let mut variants = Vec::new();
+        for (idx, variant) in any_of.iter().enumerate() {
+            let is_object_like = variant.as_object().is_some_and(|obj| {
+                obj.contains_key("properties")
+                    || obj
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|t| t == "object")
+            });
+            if is_object_like {
+                let variant_name = format!("{type_name}Variant{}", idx + 1);
+                generate_baml_type(
+                    output,
+                    &variant_name,
+                    variant,
+                    generated,
+                    all_schemas,
+                    type_names,
+                )?;
+                variants.push(variant_name);
+            } else {
+                variants.push(json_schema_to_baml_type(
+                    variant,
+                    generated,
+                    all_schemas,
+                    type_names,
+                )?);
+            }
+        }
+        write_line(
+            output,
+            &format!("type {type_name} = {}", variants.join(" | ")),
+        )?;
+        write_line(output, "")?;
+        return Ok(());
     }
 
     // Check if it's an object/class

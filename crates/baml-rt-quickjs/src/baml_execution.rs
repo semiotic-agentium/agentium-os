@@ -6,8 +6,8 @@
 use crate::baml_collector::BamlLLMCollector;
 use crate::baml_pre_execution::intercept_llm_call_pre_execution;
 use async_trait::async_trait;
+use baml_rt_core::bus::EffectEmitter;
 use baml_rt_core::context;
-use baml_rt_core::effects::EffectEmitter;
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry};
 use baml_rt_tools::ToolRegistry;

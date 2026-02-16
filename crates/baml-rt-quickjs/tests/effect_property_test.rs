@@ -25,8 +25,8 @@
 //! **I4 (Provenance Admissibility)**
 //!   Provenance events require message_id in metadata (runtime validation).
 
-use baml_rt_core::effects::{
-    EffectBus, EffectEmitter, EffectEvent, EffectLiveness, InFlightCounts, ToolEffectMetadata,
+use baml_rt_core::bus::{
+    BusWithEffects, EffectEmitter, EffectEvent, EffectLiveness, InFlightCounts, ToolEffectMetadata,
 };
 use baml_rt_core::ids::ContextId;
 use proptest::prelude::*;
@@ -103,7 +103,7 @@ async fn test_liveness_gating_timeout_inner() {
     use baml_rt_quickjs::quickjs_bridge::EffectGatedPoller;
 
     let context_id = ContextId::new(1000, 2);
-    let bus = Arc::new(EffectBus::new());
+    let bus = Arc::new(BusWithEffects::new());
 
     // Test 1: No effects in-flight -> short timeout
     let poller = EffectGatedPoller::new(
@@ -155,7 +155,7 @@ async fn test_liveness_gating_timeout_inner() {
 /// which should be detected by liveness gating.
 #[tokio::test]
 async fn test_simulated_hang_started_without_completed() {
-    let bus = Arc::new(EffectBus::new());
+    let bus = Arc::new(BusWithEffects::new());
     let context_id = ContextId::new(1000, 4);
 
     // Start effect but never complete (simulated leak)
@@ -262,7 +262,7 @@ async fn test_set_counts_directly_sets_in_flight() {
 async fn test_timeout_monotonicity_effect_completion() {
     use baml_rt_quickjs::quickjs_bridge::EffectGatedPoller;
 
-    let bus = Arc::new(EffectBus::new());
+    let bus = Arc::new(BusWithEffects::new());
     let context_id = ContextId::new(1000, 98);
     let idle = 5000u32;
     let max_attempts = TEST_MAX_ATTEMPTS_MS as u32;
@@ -310,18 +310,6 @@ async fn test_timeout_monotonicity_effect_completion() {
     // monotonicity is enforced in quickjs_bridge evaluate().
 }
 
-/// CG4 (stream promise non-resolution): Stream invocation path is type-restricted.
-///
-/// A2aYieldSession<_, _, NonResolvingPromise> and JsStreamInvoker (in baml-rt-a2a) ensure
-/// stream requests use invoke_stream() only; the promise for that invocation never resolves
-/// until agent exit. Integration: task_streaming_test (message.sendStream yields chunks
-/// without waiting on __eval_result).
-#[tokio::test]
-async fn test_stream_invocation_non_resolving_documented() {
-    // No runtime check: type system and JsStreamInvoker trait enforce stream-only path.
-    // This test documents the invariant and ensures the effect_property_test module compiles.
-}
-
 /// E1 / CG3 (release only): Dropping EffectStartToken without complete leaves in-flight count at 1.
 ///
 /// In debug builds, Drop panics; in release we only log. This test runs in release to assert
@@ -329,7 +317,7 @@ async fn test_stream_invocation_non_resolving_documented() {
 #[tokio::test]
 #[cfg(not(debug_assertions))]
 async fn test_effect_token_drop_leaves_in_flight() {
-    let bus = Arc::new(EffectBus::new());
+    let bus = Arc::new(BusWithEffects::new());
     let context_id = ContextId::new(1000, 96);
     let metadata = ToolEffectMetadata {
         tool_name: "leak_tool".to_string(),
@@ -354,14 +342,14 @@ async fn test_effect_token_drop_leaves_in_flight() {
 
 // Property test: Effect start/complete pairing and underflow (I1, I3, E2).
 // ops: 0 = Start, 1 = Complete (if any started), 2 = Orphan Complete (bus applies saturating_sub; order-dependent).
-// Expected in_flight is computed by the same semantics as EffectBus: running count, +1 on Start, saturating_sub(1) on Completed.
+// Expected in_flight is computed by the same semantics as BusWithEffects: running count, +1 on Start, saturating_sub(1) on Completed.
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(16))]
     #[test]
     fn prop_effect_pairing_and_underflow(ops in proptest::collection::vec(0u8..3, 0..12)) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let bus = Arc::new(EffectBus::new());
+            let bus = Arc::new(BusWithEffects::new());
             let context_id = ContextId::new(1000, 100);
             let mut started_count = 0u32;
             let mut completed_count = 0u32;

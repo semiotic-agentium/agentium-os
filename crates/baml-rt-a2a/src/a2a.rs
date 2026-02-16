@@ -9,6 +9,7 @@ use crate::a2a_types::{
 use baml_rt_core::context;
 use baml_rt_core::context::InvocationScope;
 use baml_rt_core::ids::{ContextId, DerivedId, ExternalId, MessageId, TaskId};
+use baml_rt_core::stream_completion::StreamResult;
 use baml_rt_core::{BamlRtError, Result, to_json_value};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -144,7 +145,7 @@ impl A2aRequest {
 #[derive(Debug)]
 pub enum A2aOutcome {
     Response(Value),
-    Stream(Vec<Value>),
+    Stream(StreamResult),
 }
 
 pub fn success_response(id: Option<JSONRPCId>, result: Value) -> Value {
@@ -476,7 +477,7 @@ mod tests {
         JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER, SendMessageRequest,
     };
     use crate::{A2aAgent, A2aRequestHandler};
-    use baml_rt_core::BamlRtError;
+    use baml_rt_core::{BamlRtError, Result};
     use opentelemetry::global;
     use opentelemetry::trace::TracerProvider as _;
     use opentelemetry_sdk::testing::trace::InMemorySpanExporterBuilder;
@@ -615,7 +616,7 @@ mod tests {
         tracing::info!("setup_agent_with_js_inner: Creating builder");
         let builder = A2aAgent::builder()
             .with_init_js(js_code)
-            .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()));
+            .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
         tracing::info!("setup_agent_with_js_inner: Calling build()");
         let agent = builder.build().await.expect("agent build");
         tracing::info!("setup_agent_with_js_inner: Agent built successfully");
@@ -630,6 +631,10 @@ mod tests {
         let result = response.get("result").cloned().expect("missing result");
         // Stream responses wrap each chunk as result: { chunk, final? }; unwrap to chunk content
         result.get("chunk").cloned().unwrap_or(result)
+    }
+
+    async fn collect_responses(agent: &A2aAgent, request: Value) -> Result<Vec<Value>> {
+        Ok(baml_rt_core::collect_a2a_stream(agent.handle_a2a_stream(request).await?).await)
     }
 
     fn user_message(message_id: &str, text: &str) -> Message {
@@ -679,7 +684,9 @@ mod tests {
         };
         let request_value = serde_json::to_value(request).expect("serialize request");
 
-        let responses = agent.handle_a2a(request_value).await.expect("a2a handle");
+        let responses = collect_responses(&agent, request_value)
+            .await
+            .expect("a2a handle");
         let result = expect_success_result(responses);
         let message = result
             .get("message")
@@ -725,8 +732,7 @@ mod tests {
         };
         let request_value = serde_json::to_value(request).expect("serialize request");
 
-        agent
-            .handle_a2a(request_value)
+        collect_responses(&agent, request_value)
             .await
             .expect("handle_a2a should succeed for span structure test");
 
@@ -783,8 +789,7 @@ mod tests {
         };
         let request_value = serde_json::to_value(request).expect("serialize request");
 
-        agent
-            .handle_a2a(request_value)
+        collect_responses(&agent, request_value)
             .await
             .expect("handle_a2a should succeed for stream span structure test");
 
@@ -840,7 +845,9 @@ mod tests {
         };
         let request_value = serde_json::to_value(request).expect("serialize request");
 
-        let responses = agent.handle_a2a(request_value).await.expect("a2a handle");
+        let responses = collect_responses(&agent, request_value)
+            .await
+            .expect("a2a handle");
         assert!(!responses.is_empty(), "stream should return chunks");
         let any_final = responses.iter().any(|value| {
             value
@@ -884,7 +891,9 @@ mod tests {
         };
         let request_value = serde_json::to_value(request).expect("serialize request");
 
-        let responses = agent.handle_a2a(request_value).await.expect("a2a handle");
+        let responses = collect_responses(&agent, request_value)
+            .await
+            .expect("a2a handle");
         assert!(!responses.is_empty(), "stream should return chunks");
         let any_final = responses.iter().any(|value| {
             value
@@ -923,7 +932,9 @@ mod tests {
             id: Some(JSONRPCId::String("corr-1-13".to_string())),
         };
         let create_value = serde_json::to_value(create_request).expect("serialize request");
-        let create_responses = agent.handle_a2a(create_value).await.expect("create task");
+        let create_responses = collect_responses(&agent, create_value)
+            .await
+            .expect("create task");
         let task_id = create_responses
             .iter()
             .find_map(|response| {
@@ -942,10 +953,12 @@ mod tests {
             params: Some(json!({ "id": task_id })),
             id: Some(JSONRPCId::String("corr-1-14".to_string())),
         };
-        let responses = agent
-            .handle_a2a(serde_json::to_value(get_request).expect("serialize request"))
-            .await
-            .expect("get task");
+        let responses = collect_responses(
+            &agent,
+            serde_json::to_value(get_request).expect("serialize request"),
+        )
+        .await
+        .expect("get task");
         let result = expect_success_result(responses);
         assert_eq!(result.get("id").and_then(Value::as_str), Some(task_id));
 
@@ -955,10 +968,12 @@ mod tests {
             params: Some(json!({})),
             id: Some(JSONRPCId::String("corr-1-15".to_string())),
         };
-        let responses = agent
-            .handle_a2a(serde_json::to_value(list_request).expect("serialize request"))
-            .await
-            .expect("list tasks");
+        let responses = collect_responses(
+            &agent,
+            serde_json::to_value(list_request).expect("serialize request"),
+        )
+        .await
+        .expect("list tasks");
         let result = expect_success_result(responses);
         let tasks = result
             .get("tasks")
@@ -1000,7 +1015,9 @@ mod tests {
             id: Some(JSONRPCId::String("corr-1-17".to_string())),
         };
         let create_value = serde_json::to_value(create_request).expect("serialize request");
-        let create_responses = agent.handle_a2a(create_value).await.expect("create task");
+        let create_responses = collect_responses(&agent, create_value)
+            .await
+            .expect("create task");
         let task_id = create_responses
             .iter()
             .find_map(|response| {
@@ -1019,10 +1036,12 @@ mod tests {
             params: Some(json!({ "id": task_id, "stream": true })),
             id: Some(JSONRPCId::String("corr-1-18".to_string())),
         };
-        let responses = agent
-            .handle_a2a(serde_json::to_value(subscribe_request).expect("serialize request"))
-            .await
-            .expect("subscribe task");
+        let responses = collect_responses(
+            &agent,
+            serde_json::to_value(subscribe_request).expect("serialize request"),
+        )
+        .await
+        .expect("subscribe task");
         assert!(
             !responses.is_empty(),
             "subscribe should return a stream response"

@@ -8,12 +8,12 @@ the `baml-rt` facade crate, which re-exports feature-gated subcrates.
 
 ### Crate Map (Bottom-Up)
 
-- `baml-rt-core`: Core errors/results, correlation helpers, and shared types.
+- `baml-rt-core`: Core errors/results, correlation helpers, stream boundary types, and effect-bus primitives.
 - `baml-rt-tools`: Tool traits, registry/executor, and session FSM primitives.
 - `baml-rt-interceptor`: Interceptor traits, pipelines, and tracing interceptors.
 - `baml-rt-observability`: Tracing setup, spans, and metrics helpers.
-- `baml-rt-quickjs`: QuickJS runtime host, schema loading, JS bridge, and context.
-- `baml-rt-a2a`: Agent-to-agent protocol types, transport, and request handling.
+- `baml-rt-quickjs`: QuickJS runtime host, schema loading, JS bridge, and async stream execution.
+- `baml-rt-a2a`: Agent-to-agent protocol types, stream-first transport, and cross-turn request handling.
 - `baml-rt-builder`: Agent build pipeline and `baml-agent-builder` CLI.
 - `baml-agent-runner`: Binary that loads packaged agents and serves A2A requests.
 - `baml-rt`: Facade crate that re-exports the above via feature flags.
@@ -104,6 +104,9 @@ Host tools are **session-based**. BAML returns a declarative `ToolSessionPlan`
 that describes FSM steps (`Open`, `Send`, `Next`, `Finish`, `Abort`), and the
 runtime executes those steps **in Rust**. JavaScript never mediates host tool
 execution; JS only handles JS tools via `invokeTool`.
+
+`Open.initial_input` is open-time session configuration (for tools that define
+it). `Send.input` carries per-turn payloads.
 
 ## Conversation Handling (A2A DSL)
 

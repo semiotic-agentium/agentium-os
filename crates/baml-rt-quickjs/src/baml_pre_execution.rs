@@ -3,8 +3,8 @@
 //! This module implements pre-execution interception by using BAML's build_request
 //! to intercept LLM calls before the HTTP request is sent.
 
+use baml_rt_core::bus::{EffectEmitter, LlmEffectMetadata};
 use baml_rt_core::context;
-use baml_rt_core::effects::{EffectEmitter, LlmEffectMetadata};
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry, LLMCallContext};
 use baml_runtime::RuntimeContextManager;

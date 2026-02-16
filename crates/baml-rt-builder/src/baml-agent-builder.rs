@@ -18,6 +18,7 @@ use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge};
 use baml_rt_tools::tool_catalog::all_tool_metadata;
 use baml_rt_tools::{enforce_tool_access, parse_access_allowlist};
+use baml_rt_tools_system as _;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 use std::collections::HashSet;

@@ -13,6 +13,13 @@ use test_support::common::shared_falkordb;
 use test_support::support::a2a::A2aInMemoryClient;
 use tokio::time::Duration;
 
+async fn collect_responses(
+    agent: &A2aAgent,
+    request: serde_json::Value,
+) -> baml_rt::Result<Vec<serde_json::Value>> {
+    Ok(baml_rt_core::collect_a2a_stream(agent.handle_a2a_stream(request).await?).await)
+}
+
 async fn setup_agent(writer: Arc<FalkorDbProvenanceWriter>) -> A2aAgent {
     let js_code = r#"
         globalThis.onChatMessage = async function(message) {
@@ -57,7 +64,9 @@ async fn test_context_id_propagates_across_agents() {
     let agent2 = setup_agent(writer2.clone()).await;
 
     let request = send_stream_request("msg-1", "hello", "corr-2-1", None);
-    let responses = agent1.handle_a2a(request).await.expect("a2a handle");
+    let responses = collect_responses(&agent1, request)
+        .await
+        .expect("a2a handle");
     let context_id = expect_context_id(responses);
 
     let client = A2aInMemoryClient::new(Arc::new(agent2));
@@ -92,10 +101,11 @@ async fn test_context_id_is_task_local_under_concurrency() {
             &format!("corr-2-{}", idx + 3),
             Some(context_id.clone()),
         );
-        let responses = tokio::time::timeout(Duration::from_secs(15), agent.handle_a2a(request))
-            .await
-            .expect("request timeout")
-            .expect("a2a handle");
+        let responses =
+            tokio::time::timeout(Duration::from_secs(15), collect_responses(&agent, request))
+                .await
+                .expect("request timeout")
+                .expect("a2a handle");
         let got = expect_context_id(responses);
         assert_eq!(
             got,

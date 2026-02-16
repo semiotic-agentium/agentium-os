@@ -3,7 +3,7 @@ use crate::a2a_types::{
     A2aMessageId, Message, MessageRole, Part, ROLE_AGENT, TaskState, TaskStatus,
 };
 use async_trait::async_trait;
-use baml_rt_core::effects::{EffectEvent, EffectSubscriber};
+use baml_rt_core::bus::{EffectEvent, EffectSubscriber};
 use baml_rt_core::ids::{ContextId, DerivedId, ExternalId, TaskId};
 use serde_json::Value;
 use std::collections::HashMap;

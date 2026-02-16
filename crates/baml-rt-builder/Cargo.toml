@@ -14,6 +14,7 @@ baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-quickjs = { path = "../baml-rt-quickjs" }
 baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
+baml-rt-tools-system = { path = "../tools/system" }
 baml-runtime = { workspace = true }
 baml-types = { workspace = true }
 internal-baml-core = { workspace = true }

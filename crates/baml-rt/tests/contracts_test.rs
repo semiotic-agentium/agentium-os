@@ -44,7 +44,7 @@ async fn test_baml_function_returns_actual_result() {
     baml_manager.register_tool(CalculatorTool).await.unwrap();
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(test_quickjs_config())
         .build()
         .await
@@ -118,7 +118,7 @@ async fn test_js_function_invocation_returns_actual_result() {
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_init_js(agent_code)
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(test_quickjs_config())
         .build()
         .await
@@ -185,7 +185,7 @@ async fn test_invoke_function_api_contract() {
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_init_js(agent_code)
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(test_quickjs_config())
         .build()
         .await
@@ -266,7 +266,7 @@ async fn test_loaded_agent_invoke_function_contract() {
     let agent = A2aAgent::builder()
         .with_runtime_manager(runtime_manager)
         .with_init_js(agent_code)
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(test_quickjs_config())
         .build()
         .await

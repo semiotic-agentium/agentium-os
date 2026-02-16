@@ -7,6 +7,7 @@
 
 use baml_rt::BamlRuntimeManager;
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
+use futures_util::StreamExt;
 use proptest::prelude::*;
 use serde_json::Value;
 use test_support::common::send_stream_request;
@@ -18,7 +19,15 @@ fn js_yield_n_chunks() -> String {
         const match = /^count:(\d+)$/.exec(text.trim());
         const n = match ? Math.min(parseInt(match[1], 10), 50) : 1;
         for (let i = 0; i < n; i++) {
-            __chat_yield({ index: i, total: n });
+            __chat_yield({
+                index: i,
+                total: n,
+                task: {
+                    status: {
+                        state: i + 1 === n ? "TASK_STATE_COMPLETED" : "TASK_STATE_WORKING"
+                    }
+                }
+            });
         }
     };
     "#
@@ -30,7 +39,7 @@ async fn run_stream_test(k: u32) -> Vec<Value> {
     let agent = A2aAgent::builder()
         .with_runtime_manager(BamlRuntimeManager::new().unwrap())
         .with_init_js(js)
-        .with_effect_emitter(std::sync::Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_effect_emitter(std::sync::Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(baml_rt::QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()
         .await
@@ -42,7 +51,15 @@ async fn run_stream_test(k: u32) -> Vec<Value> {
         "corr-1700000000100-1",
         None,
     );
-    agent.handle_a2a(request).await.expect("handle_a2a")
+    let mut stream = agent
+        .handle_a2a_stream(request)
+        .await
+        .expect("handle_a2a_stream");
+    let mut out = Vec::new();
+    while let Some(item) = stream.next().await {
+        out.push(item);
+    }
+    out
 }
 
 // **Purpose:** For K in 1..=20, an agent that yields K chunks must produce K responses

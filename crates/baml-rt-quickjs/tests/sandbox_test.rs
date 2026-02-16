@@ -11,7 +11,7 @@ use std::sync::Arc;
 #[tokio::test]
 async fn test_sandbox_environment() {
     let agent = A2aAgent::builder()
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .build()
         .await
         .unwrap();

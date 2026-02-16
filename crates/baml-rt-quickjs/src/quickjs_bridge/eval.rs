@@ -1,4 +1,4 @@
-use baml_rt_core::effects::EffectLiveness;
+use baml_rt_core::bus::EffectLiveness;
 use baml_rt_core::ids::ContextId;
 use std::sync::Arc;
 

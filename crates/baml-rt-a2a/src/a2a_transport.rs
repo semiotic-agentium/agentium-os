@@ -15,13 +15,12 @@ use crate::result_deduplicator::{
     DeduplicatingPipeline, HashResultDeduplicator, ResultDeduplicator,
 };
 use crate::result_pipeline::{A2aResultPipeline, ResultStoragePipeline};
-use crate::tools::A2aSessionBundle;
 use async_trait::async_trait;
+use baml_rt_core::bus::{BusStream, EffectEmitter};
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::correlation;
-use baml_rt_core::effects::EffectEmitter;
 use baml_rt_core::ids::{ExternalId, MessageId};
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{A2aRequestHandler, BamlRtError, Result};
 use baml_rt_observability::{metrics, spans};
 use baml_rt_provenance::{ProvenanceInterceptor, ProvenanceWriter};
 use baml_rt_quickjs::baml_execution::ConversationContextProvider;
@@ -30,7 +29,9 @@ use baml_rt_tools::tools::ToolFunctionMetadata;
 use baml_rt_tools::tools::ToolSessionContext;
 use baml_rt_tools::{ToolFailure, ToolSessionError};
 use baml_rt_tools::{ToolHandler, ToolName, ToolSession, ToolTypeSpec};
+use baml_rt_tools_system::A2aSessionBundle;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::broadcast;
@@ -105,6 +106,13 @@ pub struct A2aAgent {
     request_router: Arc<dyn RequestRouter>,
     error_classifier: Arc<dyn ErrorClassifier>,
     update_tx: broadcast::Sender<TaskUpdateEvent>,
+    stream_sessions: Arc<Mutex<HashMap<String, LiveStreamSession>>>,
+}
+
+#[derive(Clone)]
+struct LiveStreamSession {
+    input_tx: async_channel::Sender<Value>,
+    output_tx: broadcast::Sender<Value>,
 }
 
 impl A2aAgent {
@@ -624,20 +632,33 @@ impl A2aAgentBuilderWithEffectEmitter {
         ));
         let error_classifier: Arc<dyn ErrorClassifier> = Arc::new(A2aErrorClassifier);
 
+        tracing::debug!("A2aAgentBuilder::build: wiring runtime context/interceptors");
         {
-            let mut runtime_guard = runtime.lock().await;
+            use tokio::time::{Duration, timeout as tokio_timeout};
+            let mut runtime_guard = tokio_timeout(Duration::from_secs(10), runtime.lock())
+                .await
+                .map_err(|_| {
+                    BamlRtError::InvalidArgument(
+                        "A2aAgentBuilder::build: timed out acquiring runtime lock".to_string(),
+                    )
+                })?;
             runtime_guard.set_conversation_context_provider(Arc::new(
                 TaskStoreConversationContextProvider::new(task_store.clone()),
             ));
             if let Some(writer) = provenance_writer.clone() {
+                tracing::debug!("A2aAgentBuilder::build: register_llm_interceptor start");
                 runtime_guard
                     .register_llm_interceptor(ProvenanceInterceptor::new(writer.clone()))
                     .await;
+                tracing::debug!("A2aAgentBuilder::build: register_llm_interceptor done");
+                tracing::debug!("A2aAgentBuilder::build: register_tool_interceptor start");
                 runtime_guard
                     .register_tool_interceptor(ProvenanceInterceptor::new(writer))
                     .await;
+                tracing::debug!("A2aAgentBuilder::build: register_tool_interceptor done");
             }
         }
+        tracing::debug!("A2aAgentBuilder::build: runtime context/interceptors wired");
         let agent = A2aAgent {
             agent_id,
             runtime,
@@ -648,16 +669,38 @@ impl A2aAgentBuilderWithEffectEmitter {
             request_router,
             error_classifier,
             update_tx,
+            stream_sessions: Arc::new(Mutex::new(HashMap::new())),
         };
 
         if self.register_a2a_session_tool {
+            tracing::debug!("A2aAgentBuilder::build: register_a2a_session_tool start");
             agent.register_a2a_session_tool().await?;
+            tracing::debug!("A2aAgentBuilder::build: register_a2a_session_tool done");
         }
 
+        tracing::debug!("A2aAgentBuilder::build: validate_tool_allowlist_registered start");
         {
-            let runtime_guard = agent.runtime.lock().await;
-            runtime_guard.validate_tool_allowlist_registered().await?;
+            use tokio::time::{Duration, timeout as tokio_timeout};
+            let runtime_guard = tokio_timeout(Duration::from_secs(10), agent.runtime.lock())
+                .await
+                .map_err(|_| {
+                    BamlRtError::InvalidArgument(
+                        "A2aAgentBuilder::build: timed out acquiring runtime lock for allowlist validation".to_string(),
+                    )
+                })?;
+            tokio_timeout(
+                Duration::from_secs(30),
+                runtime_guard.validate_tool_allowlist_registered(),
+            )
+            .await
+            .map_err(|_| {
+                BamlRtError::InvalidArgument(
+                    "A2aAgentBuilder::build: validate_tool_allowlist_registered timed out"
+                        .to_string(),
+                )
+            })??;
         }
+        tracing::debug!("A2aAgentBuilder::build: validate_tool_allowlist_registered done");
 
         Ok(agent)
     }
@@ -665,17 +708,186 @@ impl A2aAgentBuilderWithEffectEmitter {
 
 // Default removed - agent_id is generated, use A2aAgent::builder() instead
 
-/// Trait for alternative, non-standard A2A transports.
-///
-/// The transport receives raw JSON and returns JSON-RPC responses.
-#[async_trait(?Send)]
-pub trait A2aRequestHandler: Send + Sync {
-    async fn handle_a2a(&self, request: Value) -> Result<Vec<Value>>;
+#[async_trait]
+impl A2aRequestHandler for A2aAgent {
+    async fn handle_a2a_stream(&self, request: Value) -> Result<BusStream<Value>> {
+        if let Ok(parsed) = a2a::A2aRequest::from_value(request.clone())
+            && parsed.method == a2a::A2aMethod::MessageSendStream
+            && parsed.is_stream
+        {
+            return self.handle_live_message_stream(request, parsed).await;
+        }
+
+        let (tx, rx) = async_channel::unbounded();
+        let agent = self.clone();
+        tokio::spawn(async move {
+            let outcome = agent.handle_a2a_inner(request).await;
+            match outcome {
+                Ok(responses) => {
+                    for response in responses {
+                        if tx.send(response).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(err) => {
+                    let _ = tx
+                        .send(serde_json::json!({ "error": err.to_string() }))
+                        .await;
+                }
+            }
+            tx.close();
+        });
+        Ok(Box::pin(async_stream::stream! {
+            while let Ok(item) = rx.recv().await {
+                yield item;
+            }
+        }))
+    }
 }
 
-#[async_trait(?Send)]
-impl A2aRequestHandler for A2aAgent {
-    async fn handle_a2a(&self, request: Value) -> Result<Vec<Value>> {
+impl A2aAgent {
+    async fn handle_live_message_stream(
+        &self,
+        request: Value,
+        parsed: a2a::A2aRequest,
+    ) -> Result<BusStream<Value>> {
+        let context_id = parsed
+            .context_id
+            .clone()
+            .unwrap_or_else(context::generate_context_id);
+        let session_key = context_id.as_str().to_string();
+
+        let mut attach_input: Option<async_channel::Sender<Value>> = None;
+        let mut spawn_payload: Option<(
+            String,
+            Value,
+            async_channel::Receiver<Value>,
+            broadcast::Sender<Value>,
+        )> = None;
+
+        let mut rx = {
+            let mut sessions = self.stream_sessions.lock().await;
+            if let Some(session) = sessions.get(&session_key) {
+                attach_input = Some(session.input_tx.clone());
+                session.output_tx.subscribe()
+            } else {
+                let (input_tx, input_rx) = async_channel::unbounded::<Value>();
+                let (output_tx, _) = broadcast::channel::<Value>(1024);
+                let subscriber = output_tx.subscribe();
+                sessions.insert(
+                    session_key.clone(),
+                    LiveStreamSession {
+                        input_tx,
+                        output_tx: output_tx.clone(),
+                    },
+                );
+                spawn_payload = Some((session_key.clone(), request.clone(), input_rx, output_tx));
+                subscriber
+            }
+        };
+
+        if let Some(input_tx) = attach_input {
+            input_tx.send(request).await.map_err(|_| {
+                BamlRtError::InvalidArgument(
+                    "Active stream session closed before input injection".to_string(),
+                )
+            })?;
+        } else if let Some((key, initial_request, input_rx, output_tx)) = spawn_payload {
+            let agent = self.clone();
+            tokio::spawn(async move {
+                agent
+                    .run_live_stream_session(key, initial_request, input_rx, output_tx)
+                    .await;
+            });
+        }
+
+        Ok(Box::pin(async_stream::stream! {
+            loop {
+                match rx.recv().await {
+                    Ok(item) => yield item,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                }
+            }
+        }))
+    }
+
+    async fn run_live_stream_session(
+        &self,
+        session_key: String,
+        initial_request: Value,
+        input_rx: async_channel::Receiver<Value>,
+        output_tx: broadcast::Sender<Value>,
+    ) {
+        let mut current = Some(initial_request);
+        while let Some(request_value) = current.take() {
+            match self.handle_a2a_inner(request_value.clone()).await {
+                Ok(responses) => {
+                    let mut terminal = false;
+                    let mut input_required = false;
+                    for response in responses {
+                        if response
+                            .get("result")
+                            .and_then(|r| r.get("final"))
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                        {
+                            terminal = true;
+                        }
+                        let state = response
+                            .get("result")
+                            .and_then(|r| r.get("chunk"))
+                            .and_then(|c| c.get("task"))
+                            .and_then(|t| t.get("status"))
+                            .and_then(|s| s.get("state"))
+                            .and_then(Value::as_str)
+                            .or_else(|| {
+                                response
+                                    .get("result")
+                                    .and_then(|r| r.get("chunk"))
+                                    .and_then(|c| c.get("statusUpdate"))
+                                    .and_then(|s| s.get("status"))
+                                    .and_then(|s| s.get("state"))
+                                    .and_then(Value::as_str)
+                            });
+                        if matches!(state, Some("TASK_STATE_INPUT_REQUIRED")) {
+                            input_required = true;
+                        }
+                        let _ = output_tx.send(response);
+                    }
+
+                    if terminal {
+                        break;
+                    }
+
+                    if input_required {
+                        match input_rx.recv().await {
+                            Ok(next_request) => current = Some(next_request),
+                            Err(_) => break,
+                        }
+                    } else {
+                        // Keep session alive and wait for next user input injection.
+                        match input_rx.recv().await {
+                            Ok(next_request) => current = Some(next_request),
+                            Err(_) => break,
+                        }
+                    }
+                }
+                Err(err) => {
+                    let formatter = JsonRpcResponseFormatter;
+                    let request_id = a2a::extract_jsonrpc_id(&request_value);
+                    let _ = output_tx.send(formatter.format_error(request_id, &err));
+                    break;
+                }
+            }
+        }
+
+        let mut sessions = self.stream_sessions.lock().await;
+        sessions.remove(&session_key);
+    }
+
+    async fn handle_a2a_inner(&self, request: Value) -> Result<Vec<Value>> {
         let request_id = a2a::extract_jsonrpc_id(&request);
         let parsed_request = match a2a::A2aRequest::from_value(request) {
             Ok(parsed) => parsed,
@@ -696,9 +908,6 @@ impl A2aRequestHandler for A2aAgent {
             correlation::generate_correlation_id()
         };
 
-        // One scope per request (per conversation). Multiple concurrent A2A requests each get
-        // their own scope; the handler runs inside with_scope(scope, ...) so routing is to the
-        // correct conversation and yielded chunks are attributed to that context.
         let request_context_id = parsed_request
             .context_id
             .clone()
@@ -769,9 +978,9 @@ impl A2aRequestHandler for A2aAgent {
 
         let duration = start.elapsed();
         match &outcome {
-            Ok(a2a::A2aOutcome::Stream(chunks)) => {
+            Ok(a2a::A2aOutcome::Stream(stream_result)) => {
                 metrics::record_a2a_request(method.as_str(), "success", is_stream, duration);
-                metrics::record_a2a_stream_chunks(method.as_str(), chunks.len());
+                metrics::record_a2a_stream_chunks(method.as_str(), stream_result.chunks.len());
             }
             Ok(_) => metrics::record_a2a_request(method.as_str(), "success", is_stream, duration),
             Err(err) => {
@@ -788,18 +997,13 @@ impl A2aRequestHandler for A2aAgent {
             Ok(a2a::A2aOutcome::Response(result)) => {
                 vec![self.response_formatter.format_success(request_id, result)]
             }
-            Ok(a2a::A2aOutcome::Stream(chunks)) => {
-                self.response_formatter.format_stream(request_id, chunks)
-            }
+            Ok(a2a::A2aOutcome::Stream(stream_result)) => self
+                .response_formatter
+                .format_stream(request_id, &stream_result),
             Err(err) => vec![self.response_formatter.format_error(request_id, &err)],
         };
-
         Ok(responses)
     }
-}
-
-impl A2aAgent {
-    // Result storage is handled by ResultStoragePipeline.
 }
 
 struct JsToolHandler {
@@ -922,7 +1126,7 @@ mod tests {
     #[tokio::test]
     async fn js_tool_can_be_called_via_baml_tool_registry() {
         let agent = A2aAgent::builder()
-            .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+            .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
             .build()
             .await
             .expect("agent build");

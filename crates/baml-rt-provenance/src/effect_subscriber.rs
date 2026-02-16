@@ -3,7 +3,7 @@
 use crate::events::{LlmUsage, ProvEvent};
 use crate::store::ProvenanceWriter;
 use async_trait::async_trait;
-use baml_rt_core::effects::{EffectEvent, EffectSubscriber};
+use baml_rt_core::bus::{EffectEvent, EffectSubscriber};
 use baml_rt_core::ids::{ContextId, ExternalId, MessageId, TaskId};
 use serde_json::Value;
 use std::sync::Arc;
@@ -213,7 +213,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 success,
             } => {
                 let prov_usage = match usage {
-                    Some(baml_rt_core::effects::LlmUsage::Known {
+                    Some(baml_rt_core::bus::LlmUsage::Known {
                         prompt_tokens,
                         completion_tokens,
                         total_tokens,
@@ -222,7 +222,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                         completion_tokens: *completion_tokens,
                         total_tokens: *total_tokens,
                     },
-                    Some(baml_rt_core::effects::LlmUsage::Unknown) | None => LlmUsage::Unknown,
+                    Some(baml_rt_core::bus::LlmUsage::Unknown) | None => LlmUsage::Unknown,
                 };
                 let prov_usage_clone = prov_usage.clone();
                 let prompt = normalized_prompt(&metadata.prompt);

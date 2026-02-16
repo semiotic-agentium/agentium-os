@@ -2,7 +2,7 @@
 //! Consumed by the HTTP API surface (baml-rt-api); implemented by the runner.
 
 use async_trait::async_trait;
-use baml_rt_core::{AgentDiscoveryEntry, AgentRouteKey, Result};
+use baml_rt_core::{AgentDiscoveryEntry, AgentRouteKey, BusStream, Result};
 use serde_json::Value;
 
 /// Registry of running agents: list and dispatch A2A by strict route key.
@@ -14,5 +14,9 @@ pub trait AgentRegistry: Send + Sync {
 
     /// Resolve an agent by route key and handle an A2A JSON-RPC request.
     /// Returns 404-equivalent when the key is unknown (caller maps to HTTP 404).
-    async fn handle_a2a(&self, key: &AgentRouteKey, request: Value) -> Result<Vec<Value>>;
+    async fn handle_a2a_stream(
+        &self,
+        key: &AgentRouteKey,
+        request: Value,
+    ) -> Result<BusStream<Value>>;
 }
