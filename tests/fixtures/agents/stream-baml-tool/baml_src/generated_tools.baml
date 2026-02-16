@@ -79,3 +79,4 @@ type SupportCalculateSessionStep = SupportCalculateOpenStep | SupportCalculateSe
 class SupportCalculateSessionPlan {
   steps SupportCalculateSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{op: 'Open'}, {op: 'Send', input: {...}}, {op: 'Next'}, {op: 'Finish'}].")
 }
+
