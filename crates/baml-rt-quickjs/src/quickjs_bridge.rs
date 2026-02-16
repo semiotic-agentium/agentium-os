@@ -33,7 +33,7 @@ mod wrappers;
 pub use eval::EffectGatedPoller;
 use scope::{
     InvocationContextId, InvocationContextRegistry, InvocationToken, next_invocation_token,
-    resolve_scope_from_active_context, token_from_args,
+    resolve_scope_from_active_context,
 };
 
 type InvocationScopeMap = Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>>;
@@ -319,26 +319,24 @@ impl QuickJSBridge {
     async fn register_baml_invoke_helper(&mut self) -> Result<()> {
         let manager_clone = self.baml_manager.clone();
         let registry = self.invocation_context_registry.clone();
-        let scope_map = self.invocation_scope_by_token.clone();
-        let correlation_map = self.correlation_id_by_token.clone();
 
         self.runtime.set_function(
             &[],
             "__baml_invoke",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                let (scope, skip) = resolve_scope_from_active_context(&registry, &args, &scope_map)?;
-                if args.len() < skip + 2 {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (function_name, args) or (token, function_name, args)"));
+                let scope = resolve_scope_from_active_context(&registry)?;
+                if args.len() < 2 {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (function_name, args)"));
                 }
 
-                let func_name_js = &args[skip];
+                let func_name_js = &args[0];
                 let func_name = if func_name_js.is_string() {
                     func_name_js.get_str().to_string()
                 } else {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Function name must be a string"));
                 };
 
-                let args_js = &args[skip + 1];
+                let args_js = &args[1];
                 let args_json_str = if args_js.is_string() {
                     args_js.get_str().to_string()
                 } else {
@@ -350,15 +348,11 @@ impl QuickJSBridge {
 
                 let func_name_clone = func_name.clone();
                 let manager_for_promise = manager_clone.clone();
-                let correlation_id = if skip == 0 {
-                    registry
-                        .lock()
-                        .ok()
-                        .and_then(|g| g.current_frame().ok())
-                        .and_then(|f| f.correlation_id)
-                } else {
-                    token_from_args(&args).and_then(|t| correlation_map.lock().ok().and_then(|m| m.get(&t).cloned()))
-                };
+                let correlation_id = registry
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.current_frame().ok())
+                    .and_then(|f| f.correlation_id);
                 let scope_for_tools = scope.clone();
 
                 Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
@@ -465,26 +459,24 @@ impl QuickJSBridge {
     async fn register_baml_stream_helper(&mut self) -> Result<()> {
         let manager_clone = self.baml_manager.clone();
         let registry = self.invocation_context_registry.clone();
-        let scope_map = self.invocation_scope_by_token.clone();
-        let correlation_map = self.correlation_id_by_token.clone();
 
         self.runtime.set_function(
             &[],
             "__baml_stream",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                let (scope, skip) = resolve_scope_from_active_context(&registry, &args, &scope_map)?;
-                if args.len() < skip + 2 {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (function_name, args) or (token, function_name, args)"));
+                let scope = resolve_scope_from_active_context(&registry)?;
+                if args.len() < 2 {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (function_name, args)"));
                 }
 
-                let func_name_js = &args[skip];
+                let func_name_js = &args[0];
                 let func_name = if func_name_js.is_string() {
                     func_name_js.get_str().to_string()
                 } else {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Function name must be a string"));
                 };
 
-                let args_js = &args[skip + 1];
+                let args_js = &args[1];
                 let args_json_str = if args_js.is_string() {
                     args_js.get_str().to_string()
                 } else {
@@ -497,15 +489,11 @@ impl QuickJSBridge {
                 };
 
                 let func_name_clone = func_name.clone();
-                let correlation_id = if skip == 0 {
-                    registry
-                        .lock()
-                        .ok()
-                        .and_then(|g| g.current_frame().ok())
-                        .and_then(|f| f.correlation_id)
-                } else {
-                    token_from_args(&args).and_then(|t| correlation_map.lock().ok().and_then(|m| m.get(&t).cloned()))
-                };
+                let correlation_id = registry
+                    .lock()
+                    .ok()
+                    .and_then(|g| g.current_frame().ok())
+                    .and_then(|f| f.correlation_id);
                 let manager_for_stream = manager_clone.clone();
                 let correlation_id_for_spawn = correlation_id.clone();
 
