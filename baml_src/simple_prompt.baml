@@ -3,6 +3,7 @@ function SimpleGreeting(name: string) -> string {
   client DeepSeekOpenRouter
   prompt #"
     Say hello to {{ name }} in a friendly way.
+    Reply with exactly one short greeting sentence. Do not leave the response empty or blank.
   "#
 }
 
