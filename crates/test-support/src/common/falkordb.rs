@@ -1,11 +1,12 @@
 //! Shared FalkorDB test container helpers.
 
-use testcontainers::GenericImage;
 use testcontainers::core::ContainerPort;
 use testcontainers::runners::AsyncRunner;
+use testcontainers::{GenericImage, ImageExt};
 use text_to_cypher::core::execute_cypher_query;
 use tokio::sync::OnceCell;
 use tokio::time::{Duration, sleep};
+use tracing::warn;
 
 struct SharedFalkorDb {
     _container: testcontainers::ContainerAsync<GenericImage>,
@@ -35,9 +36,28 @@ pub async fn shared_falkordb() -> &'static str {
 }
 
 async fn start_falkordb() -> (testcontainers::ContainerAsync<GenericImage>, String) {
-    let image = GenericImage::new("falkordb/falkordb", "latest")
+    let base_image = GenericImage::new("falkordb/falkordb", "latest")
         .with_exposed_port(ContainerPort::Tcp(6379));
-    let container = image.start().await.expect("start falkordb container");
+    let mut attempt = 0;
+    let container: testcontainers::ContainerAsync<GenericImage> = loop {
+        attempt += 1;
+        let image = base_image
+            .clone()
+            .with_startup_timeout(Duration::from_secs(180));
+        match image.start().await {
+            Ok(container) => break container,
+            Err(err) => {
+                if attempt >= 4 {
+                    panic!("start falkordb container: {err}");
+                }
+                warn!(
+                    attempt,
+                    "start falkordb container failed; retrying after delay: {err}"
+                );
+                sleep(Duration::from_secs(3 * attempt as u64)).await;
+            }
+        }
+    };
     let mut attempts = 0;
     let host_port = loop {
         match container.get_host_port_ipv4(6379).await {
