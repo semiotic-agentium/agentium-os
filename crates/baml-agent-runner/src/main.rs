@@ -110,6 +110,51 @@ impl AgentPackage {
                         ));
                     }
                 }
+                "support/clickupNavigate" => {
+                    #[cfg(feature = "clickup")]
+                    {
+                        runtime_manager
+                            .register_tool(baml_rt_tools::clickup::ClickUpNavigateTool::new())
+                            .await?;
+                    }
+                    #[cfg(not(feature = "clickup"))]
+                    {
+                        return Err(BamlRtError::InvalidArgument(
+                            "ClickUp tool not compiled: enable baml-agent-runner feature 'clickup'"
+                                .to_string(),
+                        ));
+                    }
+                }
+                "support/clickupTasks" => {
+                    #[cfg(feature = "clickup")]
+                    {
+                        runtime_manager
+                            .register_tool(baml_rt_tools::clickup::ClickUpTasksTool::new())
+                            .await?;
+                    }
+                    #[cfg(not(feature = "clickup"))]
+                    {
+                        return Err(BamlRtError::InvalidArgument(
+                            "ClickUp tool not compiled: enable baml-agent-runner feature 'clickup'"
+                                .to_string(),
+                        ));
+                    }
+                }
+                "support/clickupMutate" => {
+                    #[cfg(feature = "clickup")]
+                    {
+                        runtime_manager
+                            .register_tool(baml_rt_tools::clickup::ClickUpMutateTool::new())
+                            .await?;
+                    }
+                    #[cfg(not(feature = "clickup"))]
+                    {
+                        return Err(BamlRtError::InvalidArgument(
+                            "ClickUp tool not compiled: enable baml-agent-runner feature 'clickup'"
+                                .to_string(),
+                        ));
+                    }
+                }
                 "support/notion" => {
                     #[cfg(feature = "notion")]
                     {

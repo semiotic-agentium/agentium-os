@@ -1,6 +1,6 @@
 ---
 source: crates/baml-rt-builder/tests/codegen_test.rs
-assertion_line: 30
+assertion_line: 44
 expression: baml_output
 ---
 // Auto-generated tool interfaces
@@ -30,33 +30,18 @@ enum ToolSessionOp {
 }
 
 // Domain types generated from #[derive(BamlType)]
-/// Which ClickUp action to perform.
-enum ClickUpAction {
+/// Navigation-only ClickUp actions.
+enum ClickUpNavigateAction {
   ListTeams
   ListSpaces
   ListLists
-  ListTasks
-  GetTask
-  CreateTask
-  UpdateTask
 }
 
-/// Input for the ClickUp tool.
-///
-/// Uses a flat struct with an `action` discriminator instead of a Rust enum
-/// so that BAML (which lacks sum types) can represent it as a single class
-/// with an enum field. Per-action field requirements are validated at runtime
-/// in [`ClickUpTool::execute`].
-class ClickUpInput {
-  action ClickUpAction
+/// Input for grouped navigation tool `support/clickupNavigate`.
+class ClickUpNavigateInput {
+  navigate_action ClickUpNavigateAction
   team_id string? @description("Required for ListSpaces.")
   space_id string? @description("Required for ListLists.")
-  list_id string? @description("Required for ListTasks and CreateTask.")
-  task_id string? @description("Required for GetTask and UpdateTask.")
-  name string? @description("Required for CreateTask.")
-  description string?
-  priority int? @description("ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")
-  status string? @description("Task status string. Used by UpdateTask.")
 }
 
 /// Summary of a single ClickUp task, projected from the API response.
@@ -87,6 +72,38 @@ class ClickUpOutput {
   message string
 }
 
+/// Task-read ClickUp actions.
+enum ClickUpTasksAction {
+  ListTasks
+  GetTask
+}
+
+/// Input for grouped task-read tool `support/clickupTasks`.
+class ClickUpTasksInput {
+  tasks_action ClickUpTasksAction
+  list_id string? @description("Required for ListTasks.")
+  task_id string? @description("Required for GetTask.")
+}
+
+/// Task-mutation ClickUp actions.
+enum ClickUpMutateAction {
+  CreateTask
+  UpdateTask
+}
+
+/// Input for grouped task-mutation tool `support/clickupMutate`.
+class ClickUpMutateInput {
+  mutate_action ClickUpMutateAction
+  list_id string? @description("Required for CreateTask.")
+  task_id string? @description("Required for UpdateTask.")
+  name string? @description("Required for CreateTask.")
+  description string?
+  priority int? @description("ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")
+  status string? @description("Task status string. Used by UpdateTask.")
+}
+
+type SupportClickupSessionSendInput = ClickUpNavigateInput | ClickUpTasksInput | ClickUpMutateInput
+
 class SupportClickupOpenStep {
   op "Open"
   reason string? @description("Optional explanation for this step.")
@@ -94,7 +111,7 @@ class SupportClickupOpenStep {
 
 class SupportClickupSendStep {
   op "Send"
-  input ClickUpInput @description("Input to send to the already-open session.")
+  input SupportClickupSessionSendInput @description("Input to send to the already-open session.")
   reason string? @description("Optional explanation for this step.")
 }
 

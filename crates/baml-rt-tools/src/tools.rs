@@ -463,6 +463,11 @@ pub struct ToolFunctionMetadata {
     pub extra_ts_decls: Vec<String>,
     /// Access level required to invoke this tool.
     pub access: Option<ToolAccess>,
+    /// Optional grouping key for shared session-plan generation.
+    ///
+    /// Tools with the same value can share one generated FSM session-plan
+    /// scaffold while keeping specialized input schemas.
+    pub session_plan_group: Option<String>,
     /// Tool tags for indexing/search
     pub tags: Vec<String>,
     /// Secrets required to execute this tool
@@ -537,6 +542,7 @@ impl ToolFunctionMetadata {
             baml_decl: None,
             extra_ts_decls,
             access,
+            session_plan_group: None,
             tags,
             secret_requirements,
             origin,
@@ -555,6 +561,7 @@ pub struct TypeBasedMetadataBuilder<OpenInput, Input, Output> {
     origin: ToolOrigin,
     extra_ts_decls: Vec<String>,
     access: Option<ToolAccess>,
+    session_plan_group: Option<String>,
     _phantom: std::marker::PhantomData<(OpenInput, Input, Output)>,
 }
 
@@ -573,6 +580,7 @@ where
             baml_decl: None,
             extra_ts_decls: Vec::new(),
             access: None,
+            session_plan_group: None,
             tags: Vec::new(),
             secret_requirements: Vec::new(),
             origin: ToolOrigin::Host,
@@ -618,6 +626,15 @@ where
         self.access = Some(access);
         self
     }
+
+    /// Set a session-plan grouping key.
+    ///
+    /// Tools that share the same key can be emitted as one shared session-plan
+    /// scaffold in generated BAML, while preserving specialized input types.
+    pub fn with_session_plan_group(mut self, session_plan_group: impl Into<String>) -> Self {
+        self.session_plan_group = Some(session_plan_group.into());
+        self
+    }
 }
 
 impl<OpenInput, Input, Output> ToolMetadataBuilder
@@ -639,6 +656,7 @@ where
             self.access,
         );
         metadata.baml_decl = self.baml_decl;
+        metadata.session_plan_group = self.session_plan_group;
         metadata
     }
 }
@@ -657,6 +675,7 @@ pub struct ToolFunctionMetadataExport {
     pub baml_decl: Option<String>,
     pub extra_ts_decls: Vec<String>,
     pub access: Option<ToolAccess>,
+    pub session_plan_group: Option<String>,
     pub tags: Vec<String>,
     pub secret_requirements: Vec<ToolSecretRequirement>,
     pub origin: ToolOrigin,
@@ -677,6 +696,7 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
             baml_decl: metadata.baml_decl.clone(),
             extra_ts_decls: metadata.extra_ts_decls.clone(),
             access: metadata.access,
+            session_plan_group: metadata.session_plan_group.clone(),
             tags: metadata.tags.clone(),
             secret_requirements: metadata.secret_requirements.clone(),
             origin: metadata.origin,

@@ -175,6 +175,7 @@ impl A2aAgent {
             baml_decl: None,
             extra_ts_decls: Vec::new(),
             access: None,
+            session_plan_group: None,
             tags: Vec::new(),
             secret_requirements: Vec::new(),
             origin: baml_rt_tools::ToolOrigin::Guest,

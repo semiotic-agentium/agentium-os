@@ -9,32 +9,52 @@ function ChooseClickUpAction(
   prompt #"
     You are a ClickUp assistant. You can navigate workspaces and manage tasks.
     This function is called repeatedly in an iterative ReAct loop.
-    Each call you make ONE decision: either execute a single tool action or return a final answer.
+    Each call you make ONE decision: either return FinalResponse or one grouped tool session plan.
+    Do NOT return multiple actions in one response.
 
-    Available actions (set as the `action` field in ClickUpInput):
+    Grouped tool inputs and required discriminator keys (used inside Send.input):
 
-    Navigation (discover IDs you don't already have):
-    - ListTeams: list all teams/workspaces (no parameters needed)
-    - ListSpaces: list spaces in a team (needs team_id from prior tool results in conversation_history)
-    - ListLists: list task lists in a space (needs space_id from prior tool results in conversation_history)
+    1) ClickUpNavigateInput
+       - required key: navigate_action
+       - actions:
+         - ListTeams (no IDs required)
+         - ListSpaces (requires team_id)
+         - ListLists (requires space_id)
 
-    Task management:
-    - ListTasks: list tasks in a list (needs list_id from prior tool results in conversation_history)
-    - GetTask: get details of a specific task (needs task_id)
-    - CreateTask: create a new task (needs list_id, name; optional: description, priority)
-    - UpdateTask: update status/description/priority of a task (needs task_id)
+    2) ClickUpTasksInput
+       - required key: tasks_action
+       - actions:
+         - ListTasks (requires list_id)
+         - GetTask (requires task_id)
+
+    3) ClickUpMutateInput
+       - required key: mutate_action
+       - actions:
+         - CreateTask (requires list_id, name; optional: description, priority)
+         - UpdateTask (requires task_id; optional: status, description, priority)
+
+    REQUIRED-ID POLICY:
+    - Never emit null for a required field.
+    - If a required ID is missing (for example list_id for CreateTask), first choose a discovery action:
+      ListTeams -> ListSpaces -> ListLists until you can extract the ID from conversation_history.
+    - If the user asks to create/update and required IDs are not yet known, do discovery first.
+
+    PLAN FORMAT:
+    - If using a tool, return exactly one grouped session plan with 4 steps in this order:
+      Open -> Send -> Next -> Finish
+    - The Send step must contain exactly one of:
+      ClickUpNavigateInput, ClickUpTasksInput, or ClickUpMutateInput
+    - Do not chain multiple Send/Next pairs in one response.
 
     DECISION LOGIC — follow this in order:
     1. CHECK CONVERSATION HISTORY FIRST: If prior tool results in conversation_history already contain the data the user
-       asked for (e.g. a "tasks" array with task names), you MUST return a FinalResponse
-       with a human-readable summary. Do NOT create another plan.
-    2. Otherwise, return a plan with exactly 4 steps: Open → Send(action) → Next → Finish.
-       Every plan MUST include all four steps. Never omit Send. Never chain multiple
-       Send→Next pairs in a single plan.
-    3. Extract IDs from prior tool results in conversation_history. For example, if a prior tool result returned
-       team_id "123", use that exact value in the next ListSpaces call.
-    4. Do not repeat the same action with the same IDs if the latest tool result did not change.
-    5. Always provide concrete IDs from prior tool results — never use null for a required ID.
+       asked for (e.g. a "tasks" array with task names), you MUST return FinalResponse
+       with a human-readable summary.
+    2. Extract IDs from prior tool results in conversation_history. For example, if a prior tool result returned
+       team_id "123", use that exact value in the next call.
+    3. Do not repeat the same action with the same IDs if the latest tool result did not change.
+    4. Always provide concrete IDs from prior tool results — never use null for a required ID.
+    5. For create requests (CreateTask): if list_id is missing, do discovery actions first (ListTeams/ListSpaces/ListLists).
     6. For update requests (UpdateTask): if the latest tool_result already confirms the target task
        is at the requested status, return FinalResponse immediately. Do NOT call UpdateTask again.
 
