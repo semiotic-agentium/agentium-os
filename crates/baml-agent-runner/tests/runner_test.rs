@@ -1243,8 +1243,10 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
             .as_millis()
     );
     eprintln!("conversational-context-auto: setup start");
+    // Setup includes build_fixture_to_temp_async (baml-agent-builder package: OXC + BAML + tar).
+    // Cold cache or CI contention can exceed 90s; use 180s so this E2E does not flake.
     let (agent, provenance_reader) = timeout(
-        Duration::from_secs(90),
+        Duration::from_secs(180),
         setup_conversational_context_auto_agent(connection.to_owned(), graph),
     )
     .await
