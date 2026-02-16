@@ -482,6 +482,7 @@ impl TaskChunkApplier for ProvenanceTaskStore {
             Some((tid, cid))
         });
         let (task, message) = Self::inject_agent_id_into_chunk(task, message, &self.agent_id);
+        let provenance_message = message.clone();
         let start = Instant::now();
         let events = {
             let mut store = self.inner.lock().await;
@@ -527,6 +528,9 @@ impl TaskChunkApplier for ProvenanceTaskStore {
                     }
                 }
             }
+        }
+        if let Some(message) = provenance_message {
+            self.insert_message(&message).await?;
         }
         Ok(events)
     }

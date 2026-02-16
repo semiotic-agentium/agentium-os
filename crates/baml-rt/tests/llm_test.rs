@@ -4,6 +4,7 @@
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::ids::{AgentId, UuidId};
 use serde_json::json;
+use std::sync::Arc;
 use test_support::common::{
     require_api_key, run_live_llm_with_retry_validate, setup_baml_runtime_default, setup_bridge,
 };
@@ -15,7 +16,7 @@ async fn test_e2e_simple_greeting_with_llm() {
     tracing::info!("Using OpenRouter API key (length: {})", api_key.len());
 
     let baml_manager = setup_baml_runtime_default();
-    let mut bridge = setup_bridge(baml_manager).await;
+    let bridge = Arc::new(tokio::sync::Mutex::new(setup_bridge(baml_manager).await));
 
     // Call BAML function via invoke_function (uses task-local scope; evaluate()+scope has worker-thread subtleties).
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
@@ -25,13 +26,22 @@ async fn test_e2e_simple_greeting_with_llm() {
         "SimpleGreeting",
         3,
         std::time::Duration::from_secs(120),
-        |_| async {
-            context::with_scope(scope.as_scope().clone(), async {
-                bridge
-                    .invoke_function(&scope, "SimpleGreeting", json!({ "name": "E2E Test User" }))
-                    .await
-            })
-            .await
+        |_| {
+            let bridge = bridge.clone();
+            let scope = scope.clone();
+            async move {
+                let mut bridge = bridge.lock().await;
+                context::with_scope(scope.as_scope().clone(), async {
+                    bridge
+                        .invoke_function(
+                            &scope,
+                            "SimpleGreeting",
+                            json!({ "name": "E2E Test User" }),
+                        )
+                        .await
+                })
+                .await
+            }
         },
         |value| {
             let response_str = value.as_str().unwrap_or("");

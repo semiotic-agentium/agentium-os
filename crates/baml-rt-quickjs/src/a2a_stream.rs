@@ -149,7 +149,8 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
     /// async handlers to yield before the buffer is read.
     pub async fn collect(self) -> Result<Vec<Value>> {
         let start = Instant::now();
-        let timeout = Duration::from_secs(30);
+        // Allow slow LLM responses (e.g. OpenRouter) to arrive before settling.
+        let timeout = Duration::from_secs(120);
         let interval = Duration::from_millis(50);
         let read_timeout = Duration::from_secs(2);
         let settle_duration = Duration::from_millis(1000);
