@@ -36,6 +36,9 @@ jobs:
           echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
           echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
@@ -57,9 +60,6 @@ jobs:
           free -h
           echo "=== uname -a ==="
           uname -a
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
