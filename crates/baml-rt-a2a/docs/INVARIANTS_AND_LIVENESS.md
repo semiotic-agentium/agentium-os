@@ -219,3 +219,4 @@ hang or be prematurely closed depending on heuristics.
 | `prop_dispatcher_forwards_registered_scope_and_payload` | Dispatcher | Forwarding preserves registered scope + payload order |
 | `prop_dispatcher_finish_removes_session_and_blocks_further_sends` | Dispatcher | Finish removes route and blocks future sends |
 | `prop_interleaved_a2a_tool_llm_multi_context_isolation` | A2A + runtime | Concurrent multi-context isolation under jittered A2A/tool/LLM interleavings |
+| `prop_input_required_resume_positive_and_no_auto_final` | A2A + runtime | InputRequired two-turn invariant: no auto-final on ask, deterministic final on same-context resume |

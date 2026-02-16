@@ -19,6 +19,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use ts_rs::TS;
 
+fn proptest_cfg(cases: u32) -> ProptestConfig {
+    let mut cfg = ProptestConfig::with_cases(cases);
+    cfg.failure_persistence = None;
+    cfg
+}
+
 struct Test;
 impl BundleType for Test {
     const NAME: &'static str = "test";
@@ -60,7 +66,7 @@ impl BamlTool for EchoTool {
 // Purpose: For N in 1..=4, run N sequential sessions (open, send, next, finish)
 // and assert each completes without error; no session leak or cross-session state.
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(4))]
+    #![proptest_config(proptest_cfg(4))]
     #[test]
     fn prop_valid_session_plans_complete(n_sessions in 1u32..=4u32) {
         let rt = tokio::runtime::Builder::new_current_thread()

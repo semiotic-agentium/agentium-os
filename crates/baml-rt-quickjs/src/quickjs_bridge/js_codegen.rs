@@ -43,13 +43,19 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    fn proptest_cfg(cases: u32) -> ProptestConfig {
+        let mut cfg = ProptestConfig::with_cases(cases);
+        cfg.failure_persistence = None;
+        cfg
+    }
+
     #[test]
     fn build_scope_prelude_empty_returns_empty() {
         assert_eq!(build_scope_prelude_empty().unwrap(), "");
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(32))]
+        #![proptest_config(proptest_cfg(32))]
 
         /// Invariant: Wrapped promise code contains token and __set_eval_result.
         #[test]

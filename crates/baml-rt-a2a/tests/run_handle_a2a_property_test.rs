@@ -23,11 +23,31 @@ use test_support::common::{
 use tokio::task::JoinSet;
 use tokio::time::{Duration, sleep, timeout};
 
+fn proptest_cfg(cases: u32) -> ProptestConfig {
+    let mut cfg = ProptestConfig::with_cases(cases);
+    // Integration tests do not have a crate root (lib.rs/main.rs) for source-based persistence.
+    // Disable persistence to avoid noisy "failed to find lib.rs or main.rs" warnings.
+    cfg.failure_persistence = None;
+    cfg
+}
+
 async fn collect_responses(
     agent: &A2aAgent,
     request: serde_json::Value,
 ) -> baml_rt::Result<Vec<serde_json::Value>> {
     Ok(baml_rt_core::collect_a2a_stream(agent.handle_a2a_stream(request).await?).await)
+}
+
+fn response_has_input_required(response: &serde_json::Value) -> bool {
+    response
+        .get("result")
+        .and_then(|r| r.get("chunk"))
+        .and_then(|c| c.get("task"))
+        .and_then(|t| t.get("status"))
+        .and_then(|s| s.get("state"))
+        .and_then(serde_json::Value::as_str)
+        .map(|s| s == "TASK_STATE_INPUT_REQUIRED")
+        .unwrap_or(false)
 }
 
 struct StubChooseCalcToolInterceptor;
@@ -86,6 +106,20 @@ fn interleaving_js_handler() -> String {
             __chat_yield({ final: true });
             return;
         }
+        if (kind === "input-ask") {
+            __chat_yield({
+                task: {
+                    status: { state: "TASK_STATE_INPUT_REQUIRED" },
+                    metadata: { prompt: "Need additional input" }
+                }
+            });
+            return;
+        }
+        if (kind === "input-answer") {
+            __chat_yield({ message: { parts: [{ text: `INPUT:${contextId}` }] } });
+            __chat_yield({ final: true });
+            return;
+        }
         if (kind === "tool") {
             const session = await openToolSession("support/calculate");
             await session.send({ expression: { left: 2, operation: "Add", right: 3 } });
@@ -134,7 +168,7 @@ async fn setup_interleaving_agent() -> A2aAgent {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(6))]
+    #![proptest_config(proptest_cfg(6))]
 
     /// PROPERTY:
     /// ∀ N malformed requests submitted through handle_a2a:
@@ -247,6 +281,110 @@ proptest! {
                 );
             }
             assert_eq!(completed, ops.len(), "all spawned requests must complete");
+        });
+    }
+
+    /// PROPERTY (INPUT_REQUIRED):
+    /// ∀ contexts c:
+    ///   - first turn `input-ask` yields INPUT_REQUIRED and does NOT auto-finalize
+    ///   - second turn `input-answer` in same context resumes and reaches exactly one final chunk
+    #[test]
+    fn prop_input_required_resume_positive_and_no_auto_final(
+        jitters in prop::collection::vec(0u8..=7u8, 1..=8)
+    ) {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        rt.block_on(async move {
+            let agent = setup_interleaving_agent().await;
+            let mut join_set = JoinSet::new();
+            for (idx, jitter_raw) in jitters.iter().copied().enumerate() {
+                let agent = agent.clone();
+                let context_id = ContextId::new(901, (idx as u64) + 1);
+                let jitter_ms = (jitter_raw as u64) + ((idx as u64) % 3);
+                join_set.spawn(async move {
+                    // Turn 1: ask for input, stop collection once INPUT_REQUIRED appears.
+                    let ask_req = send_stream_request(
+                        &format!("msg-ir-ask-{idx}"),
+                        &format!("input-ask:{jitter_ms}:{}", context_id.as_str()),
+                        &format!("corr-1700000000300-{}", idx + 1),
+                        Some(context_id.clone()),
+                    );
+                    let ask_stream = agent
+                        .handle_a2a_stream(ask_req)
+                        .await
+                        .expect("open input-required stream");
+                    let ask_responses = timeout(
+                        Duration::from_secs(6),
+                        baml_rt_core::collect_a2a_stream_until(ask_stream, response_has_input_required),
+                    )
+                    .await
+                    .expect("input-required stream timed out");
+                    assert!(
+                        ask_responses.iter().any(response_has_input_required),
+                        "first turn must emit TASK_STATE_INPUT_REQUIRED"
+                    );
+                    let ask_final_count = ask_responses
+                        .iter()
+                        .filter(|value| {
+                            value
+                                .get("result")
+                                .and_then(|result| result.get("final"))
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false)
+                        })
+                        .count();
+                    assert_eq!(ask_final_count, 0, "input-required turn must not auto-finalize");
+
+                    sleep(Duration::from_millis(jitter_ms)).await;
+
+                    // Turn 2: resume same context and expect terminal completion.
+                    let answer_req = send_stream_request(
+                        &format!("msg-ir-answer-{idx}"),
+                        &format!("input-answer:{jitter_ms}:{}", context_id.as_str()),
+                        &format!("corr-1700000000400-{}", idx + 1),
+                        Some(context_id.clone()),
+                    );
+                    let answer_responses = timeout(Duration::from_secs(6), collect_responses(&agent, answer_req))
+                        .await
+                        .expect("resumed stream timed out")
+                        .expect("resumed stream failed");
+                    let answer_final_count = answer_responses
+                        .iter()
+                        .filter(|value| {
+                            value
+                                .get("result")
+                                .and_then(|result| result.get("final"))
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false)
+                        })
+                        .count();
+                    assert_eq!(
+                        answer_final_count, 1,
+                        "resumed turn must include exactly one final chunk"
+                    );
+                    let text = first_message_text_from_stream(&answer_responses);
+                    assert!(
+                        text.starts_with("INPUT:"),
+                        "resumed turn should emit INPUT:* message, got: {text}"
+                    );
+                    assert!(
+                        text.contains(context_id.as_str()),
+                        "resumed turn must keep context attribution: expected {ctx}, got {text}",
+                        ctx = context_id.as_str()
+                    );
+                });
+            }
+
+            let mut completed = 0usize;
+            while let Some(res) = join_set.join_next().await {
+                res.expect("join");
+                completed += 1;
+            }
+            assert_eq!(completed, jitters.len(), "all input-required scenarios must complete");
         });
     }
 }

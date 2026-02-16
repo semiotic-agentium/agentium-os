@@ -37,6 +37,12 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, timeout};
 
+fn proptest_cfg(cases: u32) -> ProptestConfig {
+    let mut cfg = ProptestConfig::with_cases(cases);
+    cfg.failure_persistence = None;
+    cfg
+}
+
 /// Test timeout for max_attempts_ms - much shorter than production default (30 minutes)
 /// to enable fast test feedback while still validating timeout behavior.
 const TEST_MAX_ATTEMPTS_MS: u64 = 1000; // 1 second for tests
@@ -408,7 +414,7 @@ async fn test_effect_token_drop_leaves_in_flight() {
 // ops: 0 = Start, 1 = Complete (if any started), 2 = Orphan Complete (bus applies saturating_sub; order-dependent).
 // Expected in_flight is computed by the same semantics as BusWithEffects: running count, +1 on Start, saturating_sub(1) on Completed.
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(16))]
+    #![proptest_config(proptest_cfg(16))]
     #[test]
     fn prop_effect_pairing_and_underflow(ops in proptest::collection::vec(0u8..3, 0..12)) {
         let rt = tokio::runtime::Runtime::new().unwrap();

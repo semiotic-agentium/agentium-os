@@ -146,8 +146,14 @@ mod tests {
     use proptest::prelude::*;
     use std::collections::HashSet;
 
+    fn proptest_cfg(cases: u32) -> ProptestConfig {
+        let mut cfg = ProptestConfig::with_cases(cases);
+        cfg.failure_persistence = None;
+        cfg
+    }
+
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(8))]
+        #![proptest_config(proptest_cfg(8))]
 
         #[test]
         fn prop_invocation_tokens_unique(n in 1u32..64u32) {
