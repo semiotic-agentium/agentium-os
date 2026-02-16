@@ -12,6 +12,7 @@
 use baml_rt::A2aAgent;
 use baml_rt::QuickJSConfig;
 use baml_rt::baml::BamlRuntimeManager;
+use baml_rt_core::bus::{BusWithEffects, EffectEmitter, EffectLiveness};
 use baml_rt_core::context::{self, InvocationScope};
 use serde_json::json;
 use std::fs;
@@ -22,11 +23,19 @@ use test_support::common::{CalculatorTool, agent_fixture, ensure_fixture_runtime
 /// QuickJS config for LLM-dependent contract tests. Timeout must accommodate combined retries
 /// (parse retry + BAML client retry) which can exceed 15s; 45s provides margin.
 fn test_quickjs_config() -> QuickJSConfig {
-    QuickJSConfig::new().with_max_attempts_ms(Some(45_000))
+    QuickJSConfig::new()
+        .with_idle_timeout_ms(Some(45_000))
+        .with_max_attempts_ms(Some(45_000))
 }
 
 fn load_env() {
     let _ = dotenvy::dotenv();
+}
+
+async fn wire_bridge_effect_liveness(agent: &A2aAgent, bus: Arc<BusWithEffects>) {
+    let bridge_handle = agent.bridge();
+    let mut bridge = bridge_handle.lock().await;
+    bridge.set_effect_liveness(bus as Arc<dyn EffectLiveness>);
 }
 
 #[tokio::test]
@@ -42,13 +51,16 @@ async fn test_baml_function_returns_actual_result() {
         .load_schema(agent_dir.to_str().unwrap())
         .unwrap();
     baml_manager.register_tool(CalculatorTool).await.unwrap();
+    let effect_bus = Arc::new(BusWithEffects::new());
+    baml_manager.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
-        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(test_quickjs_config())
         .build()
         .await
         .unwrap();
+    wire_bridge_effect_liveness(&agent, effect_bus).await;
     let bridge_handle = agent.bridge();
     let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
     let result = context::with_scope(scope.as_scope().clone(), async {
@@ -114,21 +126,27 @@ async fn test_js_function_invocation_returns_actual_result() {
         }
         globalThis.getCalcPlan = getCalcPlan;
     "#;
+    let effect_bus = Arc::new(BusWithEffects::new());
+    baml_manager.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_init_js(agent_code)
-        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(test_quickjs_config())
         .build()
         .await
         .unwrap();
+    wire_bridge_effect_liveness(&agent, effect_bus).await;
     let bridge_handle = agent.bridge();
     let mut bridge = bridge_handle.lock().await;
     let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
 
-    let result = bridge
-        .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
-        .await;
+    let result = context::with_scope(scope.as_scope().clone(), async {
+        bridge
+            .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
+            .await
+    })
+    .await;
 
     match result {
         Ok(val) => {
@@ -180,21 +198,27 @@ async fn test_invoke_function_api_contract() {
         }
         globalThis.getCalcPlan = getCalcPlan;
     "#;
+    let effect_bus = Arc::new(BusWithEffects::new());
+    baml_manager.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_init_js(agent_code)
-        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(test_quickjs_config())
         .build()
         .await
         .unwrap();
+    wire_bridge_effect_liveness(&agent, effect_bus).await;
     let bridge_handle = agent.bridge();
     let mut bridge = bridge_handle.lock().await;
     let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
 
-    let result = bridge
-        .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
-        .await;
+    let result = context::with_scope(scope.as_scope().clone(), async {
+        bridge
+            .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
+            .await
+    })
+    .await;
 
     match result {
         Ok(val) => {
@@ -260,21 +284,27 @@ async fn test_loaded_agent_invoke_function_contract() {
         "#,
         );
     }
+    let effect_bus = Arc::new(BusWithEffects::new());
+    runtime_manager.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
     let agent = A2aAgent::builder()
         .with_runtime_manager(runtime_manager)
         .with_init_js(agent_code)
-        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(test_quickjs_config())
         .build()
         .await
         .unwrap();
+    wire_bridge_effect_liveness(&agent, effect_bus).await;
     let bridge_handle = agent.bridge();
     let mut bridge = bridge_handle.lock().await;
     let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
 
-    let result = bridge
-        .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
-        .await;
+    let result = context::with_scope(scope.as_scope().clone(), async {
+        bridge
+            .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
+            .await
+    })
+    .await;
 
     match result {
         Ok(val) => {
