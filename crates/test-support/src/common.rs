@@ -310,33 +310,54 @@ pub async fn assert_tool_registered_in_js(
     tool_name: &str,
     scope: Option<&baml_rt_core::context::InvocationScope>,
 ) {
-    let js_code = format!(
-        r#"
-        (async () => {{
-            const jsTools = globalThis.__js_tools || {{}};
-            if (typeof jsTools["{}"] === 'function') {{
-                return JSON.stringify({{
-                    toolExists: true,
-                    source: "js"
-                }});
-            }}
-            try {{
-                const session = await openToolSession("{}");
-                return JSON.stringify({{
-                    toolExists: true,
-                    source: "rust",
-                    sessionId: session.sessionId
-                }});
-            }} catch (error) {{
+    let js_code = if scope.is_some() {
+        format!(
+            r#"
+            (async () => {{
+                const jsTools = globalThis.__js_tools || {{}};
+                if (typeof jsTools["{}"] === 'function') {{
+                    return JSON.stringify({{
+                        toolExists: true,
+                        source: "js"
+                    }});
+                }}
+                try {{
+                    const session = await openToolSession("{}");
+                    return JSON.stringify({{
+                        toolExists: true,
+                        source: "rust",
+                        sessionId: session.sessionId
+                    }});
+                }} catch (error) {{
+                    return JSON.stringify({{
+                        toolExists: false,
+                        error: error.toString()
+                    }});
+                }}
+            }})()
+            "#,
+            tool_name, tool_name
+        )
+    } else {
+        format!(
+            r#"
+            (() => {{
+                const jsTools = globalThis.__js_tools || {{}};
+                if (typeof jsTools["{}"] === 'function') {{
+                    return JSON.stringify({{
+                        toolExists: true,
+                        source: "js"
+                    }});
+                }}
                 return JSON.stringify({{
                     toolExists: false,
-                    error: error.toString()
+                    error: "scope required to check rust tool registration"
                 }});
-            }}
-        }})()
-        "#,
-        tool_name, tool_name
-    );
+            }})()
+            "#,
+            tool_name
+        )
+    };
     let result = bridge.evaluate(scope, &js_code).await.unwrap_or_else(|e| {
         panic!(
             "Tool '{}' registration check failed: evaluate returned error (includes raw response if parse failed): {}",

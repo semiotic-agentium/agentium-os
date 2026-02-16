@@ -1424,36 +1424,75 @@ mod tests {
         let mut bridge = QuickJSBridge::new(Arc::new(Mutex::new(manager)), agent_id)
             .await
             .unwrap();
+        bridge.set_effect_liveness(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
         bridge.register_baml_functions().await.unwrap();
 
         let scope_a = InvocationScope::synthetic_message(AgentId::from_uuid(
             UuidId::parse_str("00000000-0000-0000-0000-0000000000a1").unwrap(),
         ));
-        let scope_b = InvocationScope::synthetic_message(AgentId::from_uuid(
+        let _scope_b = InvocationScope::synthetic_message(AgentId::from_uuid(
             UuidId::parse_str("00000000-0000-0000-0000-0000000000a2").unwrap(),
         ));
 
-        let (token_a, _prelude_a) = bridge.create_invocation_token(&scope_a);
-        let (token_b, _prelude_b) = bridge.create_invocation_token(&scope_b);
-
-        let js_code = format!(
-            r#"
+        let js_code = r#"
             (async function() {{
-                const p1 = __tool_invoke("{}", "test/delay", JSON.stringify({{ label: "a", delay_ms: 50 }}));
-                const p2 = __tool_invoke("{}", "test/delay", JSON.stringify({{ label: "b", delay_ms: 50 }}));
+                const p1 = __tool_invoke("test/delay", JSON.stringify({ label: "a", delay_ms: 50 }));
+                const p2 = __tool_invoke("test/delay", JSON.stringify({ label: "b", delay_ms: 50 }));
                 const results = await Promise.all([p1, p2]);
-                return JSON.stringify({{ r1: results[0], r2: results[1] }});
+                return JSON.stringify({ r1: results[0], r2: results[1] });
             }})()
-            "#,
-            token_a.0, token_b.0
-        );
+            "#;
 
-        let result = bridge.evaluate(None, &js_code).await.unwrap();
-        let obj = result.as_object().expect("Expected object");
-        let r1 = obj.get("r1").and_then(|v| v.as_object()).unwrap();
-        let r2 = obj.get("r2").and_then(|v| v.as_object()).unwrap();
-        assert_eq!(r1.get("label").and_then(|v| v.as_str()), Some("a"));
-        assert_eq!(r2.get("label").and_then(|v| v.as_str()), Some("b"));
+        let result = bridge.evaluate(Some(&scope_a), js_code).await.unwrap();
+        let parsed = if let Some(s) = result.as_str() {
+            serde_json::from_str::<serde_json::Value>(s)
+                .unwrap_or_else(|_| panic!("Expected JSON string, got: {s}"))
+        } else {
+            result
+        };
+        let (r1_val, r2_val) = if let Some(obj) = parsed.as_object() {
+            let r1_val = obj.get("r1");
+            let r2_val = obj.get("r2");
+            if let (Some(r1), Some(r2)) = (r1_val, r2_val) {
+                (r1, r2)
+            } else {
+                panic!("Expected object with r1/r2, got: {parsed:?}");
+            }
+        } else if let Some(arr) = parsed.as_array() {
+            if arr.len() == 2 {
+                (&arr[0], &arr[1])
+            } else {
+                panic!("Expected 2-element array, got: {parsed:?}");
+            }
+        } else {
+            panic!("Expected object or array, got: {parsed:?}");
+        };
+        let r1_obj = if r1_val.is_string() {
+            serde_json::from_str::<serde_json::Value>(r1_val.as_str().unwrap())
+                .ok()
+                .and_then(|v| v.as_object().cloned())
+        } else {
+            r1_val.as_object().cloned()
+        }
+        .expect("r1 object missing");
+        let r2_obj = if r2_val.is_string() {
+            serde_json::from_str::<serde_json::Value>(r2_val.as_str().unwrap())
+                .ok()
+                .and_then(|v| v.as_object().cloned())
+        } else {
+            r2_val.as_object().cloned()
+        }
+        .expect("r2 object missing");
+        let r1 = r1_obj
+            .get("label")
+            .and_then(|v| v.as_str())
+            .expect("r1 label missing");
+        let r2 = r2_obj
+            .get("label")
+            .and_then(|v| v.as_str())
+            .expect("r2 label missing");
+        assert_eq!(r1, "a");
+        assert_eq!(r2, "b");
 
         let max_active = max_active.load(Ordering::SeqCst);
         assert!(
