@@ -21,11 +21,11 @@ use std::sync::Arc;
 use test_support::common::{CalculatorTool, agent_fixture, ensure_fixture_runtime_types};
 
 /// QuickJS config for LLM-dependent contract tests. Timeout must accommodate combined retries
-/// (parse retry + BAML client retry) which can exceed 15s; 45s provides margin.
+/// (parse retry + BAML client retry) and CI load; 90s allows margin when many tests run in parallel.
 fn test_quickjs_config() -> QuickJSConfig {
     QuickJSConfig::new()
-        .with_idle_timeout_ms(Some(45_000))
-        .with_max_attempts_ms(Some(45_000))
+        .with_idle_timeout_ms(Some(90_000))
+        .with_max_attempts_ms(Some(90_000))
 }
 
 fn load_env() {

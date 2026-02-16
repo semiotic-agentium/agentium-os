@@ -1,6 +1,7 @@
 //! Shared FalkorDB test container helpers.
 
 use testcontainers::GenericImage;
+use testcontainers::ImageExt;
 use testcontainers::core::ContainerPort;
 use testcontainers::runners::AsyncRunner;
 use text_to_cypher::core::execute_cypher_query;
@@ -34,22 +35,49 @@ pub async fn shared_falkordb() -> &'static str {
     &shared.connection
 }
 
+const START_RETRIES: u32 = 3;
+const START_RETRY_DELAY: Duration = Duration::from_secs(5);
+
 async fn start_falkordb() -> (testcontainers::ContainerAsync<GenericImage>, String) {
-    let image = GenericImage::new("falkordb/falkordb", "latest")
-        .with_exposed_port(ContainerPort::Tcp(6379));
-    let container = image.start().await.expect("start falkordb container");
-    let mut attempts = 0;
-    let host_port = loop {
-        match container.get_host_port_ipv4(6379).await {
-            Ok(port) => break port,
-            Err(err) => {
-                attempts += 1;
-                assert!(attempts <= 25, "get falkordb port: {err}");
-                sleep(Duration::from_millis(200)).await;
+    let mut last_err: Option<String> = None;
+    for attempt in 1..=START_RETRIES {
+        let image = GenericImage::new("falkordb/falkordb", "latest")
+            .with_exposed_port(ContainerPort::Tcp(6379))
+            .with_startup_timeout(Duration::from_secs(120));
+        match image.start().await {
+            Ok(container) => {
+                let mut port_attempts = 0;
+                let host_port = loop {
+                    match container.get_host_port_ipv4(6379).await {
+                        Ok(port) => break port,
+                        Err(err) => {
+                            port_attempts += 1;
+                            assert!(port_attempts <= 25, "get falkordb port after start: {err}");
+                            sleep(Duration::from_millis(200)).await;
+                        }
+                    }
+                };
+                return (container, format!("falkor://127.0.0.1:{host_port}"));
+            }
+            Err(e) => {
+                last_err = Some(format!("{e:?}"));
+                if attempt < START_RETRIES {
+                    tracing::warn!(
+                        attempt,
+                        "FalkorDB container start failed (e.g. RequestTimeoutError), retrying in {:?}",
+                        START_RETRY_DELAY
+                    );
+                    sleep(START_RETRY_DELAY).await;
+                }
             }
         }
-    };
-    (container, format!("falkor://127.0.0.1:{host_port}"))
+    }
+    panic!(
+        "start falkordb container (after {} attempts): {:?}. \
+         Transient Docker/network slowness can cause CreateContainer RequestTimeoutError; \
+         ensure Docker is running and consider increasing CI timeout or reducing parallelism for falkordb-tests.",
+        START_RETRIES, last_err
+    );
 }
 
 /// Polls FalkorDB until a simple query succeeds, up to 120 attempts at 1-second intervals.
