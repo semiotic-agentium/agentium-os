@@ -108,6 +108,18 @@ execution; JS only handles JS tools via `invokeTool`.
 `Open.initial_input` is open-time session configuration (for tools that define
 it). `Send.input` carries per-turn payloads.
 
+## Promise polling and effect-gated timeout
+
+When `evaluate()` runs non-stream code that returns a promise, the host polls until
+the promise resolves or a timeout. The timeout is **effect-gated** and **deterministic**:
+the first timeout sample is taken only after one run of pending jobs (so the promise
+executor has had a chance to emit effects); then the effect state is re-checked on a
+fixed schedule (every 10 attempts for the first 500ms, then every 100). If
+in-flight effects (e.g. LLM or tool calls) are present for the invocation context,
+a long timeout is used; otherwise a short idle timeout applies. See
+`crates/baml-rt-quickjs/docs/HOST_QUICKJS_STREAM_INVARIANTS.md` and
+`crates/baml-rt-quickjs/src/quickjs_bridge/promise_polling.rs`.
+
 ## Conversation Handling (A2A DSL)
 
 The **best reference** for multi-turn conversation and task lifecycle is the

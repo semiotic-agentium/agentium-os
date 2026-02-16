@@ -252,8 +252,9 @@ The effects-first system distinguishes "waiting on effect" (tool/LLM execution i
    - `BamlLLMCollector::process_trace_events()`: emit `LlmCompleted` after LLM call
 
 5. **Liveness gating** (`QuickJSBridge::evaluate()` poll loop):
-   - Query `effect_liveness.in_flight(context_id)` each iteration
-   - Apply `idle_timeout_ms` if no effects, `max_attempts_ms` if effects active
+   - Query `effect_liveness.in_flight(context_id)` each iteration.
+   - **Deterministic sampling:** The first timeout sample is taken only after one run of pending jobs (so the promise executor has had a chance to run and emit effects). Effect state is then re-checked every 10 attempts for the first 500 attempts, then every 100; re-check only ever increases the timeout, never decreases it.
+   - Apply `idle_timeout_ms` if no effects, `max_attempts_ms` if effects active.
 
 ### Configuration
 

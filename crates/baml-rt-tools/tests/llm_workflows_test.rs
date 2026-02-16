@@ -4,7 +4,7 @@
 //! tool list. Full LLM→tool E2E lives in `baml-rt` (voidship) and `baml-agent-runner`
 //! (streaming); tool lifecycle and scope attribution are covered by property tests.
 
-use test_support::common::{setup_baml_runtime_default, CalculatorTool, WeatherTool};
+use test_support::common::{CalculatorTool, WeatherTool, setup_baml_runtime_default};
 
 /// **Purpose:** After registering WeatherTool and CalculatorTool, list_tools() must
 /// contain `support/get_weather` and `support/calculate`. No LLM or bridge.

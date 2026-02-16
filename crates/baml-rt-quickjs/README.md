@@ -70,4 +70,9 @@ not require invocation token arguments in JS.
   invocation is active at a time, so token/scope state is not overwritten by
   concurrent streams.
 
-See `docs/HOST_QUICKJS_STREAM_INVARIANTS.md` for liveness and sequencing rules.
+**Promise polling:** For non-stream evals that return a promise, the host uses
+effect-gated timeout with deterministic sampling: the first timeout sample is taken
+after one run of pending jobs; effect state is re-checked every 10 attempts for the
+first 500ms, then every 100. Long timeout when effects are in-flight, short idle
+timeout otherwise. See `docs/HOST_QUICKJS_STREAM_INVARIANTS.md` and
+`src/quickjs_bridge/promise_polling.rs`.

@@ -18,7 +18,11 @@ use super::scope::InvocationToken;
 type EvalResultMap = Arc<StdMutex<HashMap<InvocationToken, Option<String>>>>;
 type InvocationScopeMap = Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>>;
 
+/// Re-check effect-gated timeout every N attempts after the initial phase.
 const EFFECT_CHECK_INTERVAL: u32 = 100;
+/// For the first EFFECT_EARLY_CHECK_WINDOW attempts, re-check every N so we see effects soon.
+const EFFECT_EARLY_CHECK_INTERVAL: u32 = 10;
+const EFFECT_EARLY_CHECK_WINDOW: u32 = 500;
 
 /// Parameters for promise resolution polling (keeps `poll_promise_until_result` under clippy's arg limit).
 pub(crate) struct PollPromiseParams<'a> {
@@ -61,7 +65,10 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
         idle_timeout_ms,
         max_attempts_ms,
     );
-    let mut timeout_attempts = poller.timeout_attempts().await;
+    // Sample timeout only after the first run of pending jobs so the promise executor has had
+    // one chance to run and emit effects; then re-check frequently early so we see effects
+    // as soon as they appear (deterministic policy, no magic iteration count).
+    let mut timeout_attempts: Option<u32> = None;
     let mut attempts = 0u32;
 
     let _poll_guard = tracing::trace_span!("baml_rt.poll_promise_resolution").entered();
@@ -102,16 +109,24 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
             return Ok(result_str);
         }
 
-        // Re-check effect-gated timeout periodically (every EFFECT_CHECK_INTERVAL attempts).
-        #[allow(clippy::manual_is_multiple_of)] // std has no is_multiple_of for u32
-        if attempts > 0 && attempts % EFFECT_CHECK_INTERVAL == 0 {
+        // First iteration or periodic re-check: sample effect-gated timeout. Early window
+        // uses a shorter interval so we see effects soon after they start.
+        let should_recheck = if timeout_attempts.is_none() {
+            true
+        } else if attempts < EFFECT_EARLY_CHECK_WINDOW {
+            attempts > 0 && attempts.is_multiple_of(EFFECT_EARLY_CHECK_INTERVAL)
+        } else {
+            attempts.is_multiple_of(EFFECT_CHECK_INTERVAL)
+        };
+        if should_recheck {
             let new_timeout = poller.timeout_attempts().await;
-            timeout_attempts = timeout_attempts.max(new_timeout);
+            timeout_attempts = Some(timeout_attempts.map_or(new_timeout, |t| t.max(new_timeout)));
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
         attempts += 1;
-        if attempts >= timeout_attempts {
+        let limit = timeout_attempts.unwrap_or(u32::MAX);
+        if attempts >= limit {
             if let Some(t) = token_to_remove
                 && let Ok(mut map) = invocation_scope_by_token.lock()
             {
@@ -125,7 +140,7 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
             }
             return Err(BamlRtError::QuickJs(format!(
                 "Promise did not resolve after {} attempts ({}ms)",
-                timeout_attempts, timeout_attempts
+                limit, limit
             )));
         }
     }
