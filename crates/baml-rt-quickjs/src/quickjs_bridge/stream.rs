@@ -7,6 +7,14 @@ use quickjs_runtime::values::JsValueFacade;
 use serde_json::Value;
 use tokio::sync::mpsc::error::TryRecvError;
 
+/// What a single drain of the yield channel observed. Bridge exposes; collector interprets.
+#[derive(Debug)]
+pub struct BufferDrain {
+    pub chunks: Vec<Value>,
+    /// True if the sender was dropped (channel closed).
+    pub channel_closed: bool,
+}
+
 impl QuickJSBridge {
     /// Set up the chat stream yield buffer and __chat_yield so JS can yield chunks asynchronously
     /// instead of collecting and returning an array. Call before invoking onChatMessage for stream requests.
@@ -86,41 +94,52 @@ impl QuickJSBridge {
         Ok(())
     }
 
-    /// Retrieve and clear the A2A yield buffer contents
+    /// Retrieve and clear the A2A yield buffer contents.
     ///
-    /// This should be called after invoking a stream function.
+    /// Returns drained chunks and whether the channel was closed (sender dropped).
+    /// Call after invoking a stream function.
     ///
     /// **Liveness:** Requires that `setup_a2a_yield_buffer` was called.
-    pub async fn get_a2a_yield_buffer(&mut self) -> Result<Vec<Value>> {
+    pub async fn get_a2a_yield_buffer(&mut self) -> Result<BufferDrain> {
         // INVARIANT (stream progress): before every buffer read, drive pending JS jobs once.
         // Without this, async stream continuations may never run, yielding empty polls forever.
         self.runtime.exe_rt_task_in_event_loop(|rt| {
             rt.run_pending_jobs_if_any();
         });
 
-        let mut responses = Vec::new();
+        let mut chunks = Vec::new();
+        let mut channel_closed = false;
         if let Some(rx) = self.a2a_yield_rx.as_mut() {
             loop {
                 match rx.try_recv() {
-                    Ok(value) => responses.push(value),
+                    Ok(value) => chunks.push(value),
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => {
                         self.a2a_yield_rx = None;
+                        channel_closed = true;
                         break;
                     }
                 }
             }
         }
 
-        Ok(responses)
+        Ok(BufferDrain {
+            chunks,
+            channel_closed,
+        })
     }
 
     /// Finalize a stream invocation after chunk collection completes.
     ///
-    /// **Close semantics:** Drops yield channel sender (slot) and receiver (a2a_yield_rx) so no
-    /// stale stream state survives; next stream gets a fresh channel from setup_a2a_yield_buffer.
-    /// Also releases stream permit so the next stream may start.
+    /// **Close semantics:** Exits the stream's invocation context, drops yield channel sender (slot)
+    /// and receiver (a2a_yield_rx), and releases stream permit so the next stream may start.
     pub(crate) fn finalize_a2a_stream_invocation(&mut self) {
+        if let Some(id) = self.current_stream_context_id.take()
+            && let Ok(mut guard) = self.invocation_context_registry.lock()
+        {
+            guard.exit(&id);
+        }
+        self.current_stream_token = None;
         self.stream_permit = None;
         self.a2a_yield_rx = None;
         if let Ok(mut slot) = self.a2a_yield_tx_slot.lock() {
@@ -162,40 +181,42 @@ impl QuickJSBridge {
             .map_err(|_| BamlRtError::QuickJs("stream semaphore closed".to_string()))?;
         self.stream_permit = Some(permit);
 
-        // Remove previous stream's token so it cannot be reused; leave current token for late continuations until next stream.
+        // Exit previous stream's context so the next stream has a clean stack.
+        if let Some(prev_id) = self.current_stream_context_id.take() {
+            if let Ok(mut guard) = self.invocation_context_registry.lock() {
+                guard.exit(&prev_id);
+            }
+            tracing::debug!("invoke_js_function_stream: exited previous stream context");
+        }
         if let Some(prev) = self.current_stream_token.take() {
             self.remove_invocation_token(&prev);
-            tracing::debug!(token = %prev.0, "invoke_js_function_stream: removed previous stream token");
         }
 
         let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
-        let (token, token_prelude) = self.create_invocation_token(scope);
-        self.current_stream_token = Some(token.clone());
+        let correlation_id = baml_rt_core::correlation::current_correlation_id();
+        let context_id = {
+            let mut guard = self.invocation_context_registry.lock().map_err(|_| {
+                BamlRtError::QuickJs("invocation context registry lock poisoned".to_string())
+            })?;
+            guard.enter(scope.as_scope().clone(), correlation_id)
+        };
+        self.current_stream_context_id = Some(context_id);
         tracing::debug!(
-            token = %token.0,
             context_id = %scope.context_id(),
             function_name = function_name,
-            "invoke_js_function_stream: created token and prelude"
+            "invoke_js_function_stream: entered invocation context (no JS prelude)"
         );
-        let scope_prelude = super::build_scope_prelude(scope, &token_prelude)?;
 
-        // For stream requests, we start the async function but DON'T wait for promise resolution.
-        // The function yields chunks via __chat_yield() and the promise never resolves (by design).
-        // We just need to ensure the function starts executing and can yield chunks.
+        // No token/context prelude in JS; host resolves scope from active context stack.
         let js_code = format!(
             r#"
             (function() {{
                 try {{
-                    {}
                     const args = {};
                     const func = globalThis["{}"];
                     if (func === undefined || typeof func !== 'function') {{
                         throw new Error("JS function not found: {}");
                     }}
-                    // Preserve token in args so async handlers can pass it explicitly.
-                    args.__baml_invocation_token = __baml_invocation_token;
-                    // Start the async function but don't await it - it's designed to never resolve
-                    // for stream requests. Chunks are collected via the yield channel.
                     func(args);
                     return JSON.stringify({{ success: true }});
                 }} catch (error) {{
@@ -203,10 +224,10 @@ impl QuickJSBridge {
                 }}
             }})()
             "#,
-            scope_prelude, args_json, function_name, function_name
+            args_json, function_name, function_name
         );
 
-        // Execute with explicit invocation scope and token prelude; native callbacks resolve scope by token.
+        // Execute; native callbacks resolve scope from active context.
         let script = Script::new("invoke_stream.js", &js_code);
         let js_result = self
             .run_eval_with_scope(scope, script, false)

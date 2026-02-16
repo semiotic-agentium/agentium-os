@@ -4,8 +4,8 @@ use async_trait::async_trait;
 use baml_rt::A2aRequestHandler;
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::tools::BamlTool;
+use baml_rt_core::bus::BusWithEffects;
 use baml_rt_core::context::{self, InvocationScope};
-use baml_rt_core::effects::EffectBus;
 use baml_rt_core::ids::{AgentId, ContextId, UuidId};
 #[cfg(feature = "falkordb-tests")]
 use baml_rt_provenance::{
@@ -18,7 +18,7 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
@@ -41,6 +41,8 @@ impl BundleType for Test {
     }
 }
 use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, SendMessageRequest};
+#[cfg(feature = "llm-tests")]
+use baml_rt_a2a::A2aSessionBundle;
 
 use test_support::common::{
     CalculatorTool, agent_fixture, chunks_from_responses, ensure_baml_src_exists,
@@ -48,7 +50,15 @@ use test_support::common::{
 };
 use test_support::support::cli::CliHarness;
 
+fn init_test_tracing() {
+    static TRACING: OnceLock<()> = OnceLock::new();
+    TRACING.get_or_init(|| {
+        baml_rt_observability::init_tracing();
+    });
+}
+
 fn e2e_serial_gate() -> &'static Semaphore {
+    init_test_tracing();
     static GATE: OnceLock<Semaphore> = OnceLock::new();
     GATE.get_or_init(|| Semaphore::new(1))
 }
@@ -154,11 +164,8 @@ async fn build_fixture_to_temp_async(fixture_name: &str) -> std::path::PathBuf {
 
 /// Create a test agent package from a fixture agent
 fn create_test_agent_package(output_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let agent_dir = agent_fixture("stream-baml-tool");
-
-    if !agent_dir.exists() {
-        return Err(format!("Fixture agent directory not found: {}", agent_dir.display()).into());
-    }
+    // Build fixture first so dist/index.js is guaranteed to exist.
+    let agent_dir = build_fixture_to_temp("stream-baml-tool");
 
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -168,7 +175,7 @@ fn create_test_agent_package(output_path: &Path) -> Result<(), Box<dyn std::erro
         std::env::temp_dir().join(format!("e2e-agent-{}-{}", std::process::id(), unique));
     fs::create_dir_all(&temp_dir)?;
 
-    // Copy baml_src from fixture (runtime loads directly from baml_src)
+    // Copy baml_src from built fixture (runtime loads directly from baml_src)
     let baml_src = temp_dir.join("baml_src");
     let fixture_baml_src = agent_dir.join("baml_src");
     if fixture_baml_src.exists() {
@@ -183,7 +190,11 @@ fn create_test_agent_package(output_path: &Path) -> Result<(), Box<dyn std::erro
     if fixture_dist.exists() {
         copy_dir_all(&fixture_dist, &dist)?;
     } else {
-        return Err("Fixture agent dist not found".into());
+        return Err(format!(
+            "Built fixture missing dist directory: {}",
+            fixture_dist.display()
+        )
+        .into());
     }
 
     // Create manifest.json (stream-baml-tool fixture has support/calculate only)
@@ -292,6 +303,39 @@ fn send_message_request(params: SendMessageRequest, id: &str) -> JSONRPCRequest 
     )
 }
 
+async fn collect_stream_responses(
+    agent: &baml_rt::A2aAgent,
+    request: JSONRPCRequest,
+) -> baml_rt::Result<Vec<Value>> {
+    let stream = agent
+        .handle_a2a_stream(serde_json::to_value(request).expect("request json"))
+        .await?;
+    Ok(baml_rt::collect_a2a_stream_until(stream, |item| {
+        let state = item
+            .get("result")
+            .and_then(|r| r.get("chunk"))
+            .and_then(|c| c.get("task"))
+            .and_then(|t| t.get("status"))
+            .and_then(|s| s.get("state"))
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                item.get("result")
+                    .and_then(|r| r.get("chunk"))
+                    .and_then(|c| c.get("statusUpdate"))
+                    .and_then(|s| s.get("status"))
+                    .and_then(|s| s.get("state"))
+                    .and_then(|v| v.as_str())
+            });
+        let is_final = item
+            .get("result")
+            .and_then(|r| r.get("final"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        is_final || matches!(state, Some("TASK_STATE_INPUT_REQUIRED"))
+    })
+    .await)
+}
+
 #[cfg(feature = "llm-tests")]
 async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
     require_fixture_runtime_types();
@@ -304,7 +348,7 @@ async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
     baml_rt::A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
-        .with_effect_emitter(Arc::new(EffectBus::new()))
+        .with_effect_emitter(Arc::new(BusWithEffects::new()))
         .build()
         .await
         .unwrap()
@@ -320,7 +364,7 @@ async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
     baml_rt::A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
-        .with_effect_emitter(Arc::new(EffectBus::new()))
+        .with_effect_emitter(Arc::new(BusWithEffects::new()))
         .build()
         .await
         .unwrap()
@@ -336,10 +380,56 @@ async fn setup_task_lifecycle_demo_agent() -> baml_rt::A2aAgent {
     baml_rt::A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
-        .with_effect_emitter(Arc::new(EffectBus::new()))
+        .with_effect_emitter(Arc::new(BusWithEffects::new()))
         .build()
         .await
         .unwrap()
+}
+
+#[cfg(feature = "llm-tests")]
+async fn setup_argument_fixture_agent(fixture: &str) -> baml_rt::A2aAgent {
+    ensure_fixture_runtime_types();
+    let built = build_fixture_to_temp_async(fixture).await;
+    let mut manager = BamlRuntimeManager::new().unwrap();
+    manager.load_schema(built.to_str().unwrap()).unwrap();
+    let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
+        .expect("argument fixture dist/index.js");
+    baml_rt::A2aAgent::builder()
+        .with_runtime_manager(manager)
+        .with_init_js(agent_code)
+        .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .build()
+        .await
+        .unwrap()
+}
+
+#[cfg(feature = "llm-tests")]
+#[derive(Clone)]
+struct TwoAgentSessionRouter {
+    cleese: baml_rt::A2aAgent,
+    chapman: baml_rt::A2aAgent,
+}
+
+#[cfg(feature = "llm-tests")]
+#[async_trait]
+impl A2aRequestHandler for TwoAgentSessionRouter {
+    async fn handle_a2a_stream(
+        &self,
+        request: Value,
+    ) -> baml_rt::Result<baml_rt_core::bus::BusStream<Value>> {
+        let target = request
+            .get("params")
+            .and_then(|p| p.get("metadata"))
+            .and_then(|m| m.get("target"))
+            .and_then(|t| t.get("agent_package"))
+            .and_then(Value::as_str);
+
+        match target {
+            Some("argument-chapman") => self.chapman.handle_a2a_stream(request).await,
+            Some("argument-cleese") => self.cleese.handle_a2a_stream(request).await,
+            _ => self.cleese.handle_a2a_stream(request).await,
+        }
+    }
 }
 
 /// Build fixture package with the builder, load runtime from extracted package,
@@ -362,7 +452,7 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
     let agent = baml_rt::A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(entry_js)
-        .with_effect_emitter(Arc::new(EffectBus::new()))
+        .with_effect_emitter(Arc::new(BusWithEffects::new()))
         .build()
         .await
         .expect("build packaged A2A agent");
@@ -404,7 +494,7 @@ async fn setup_conversational_context_auto_agent(
         .with_provenance_writer(strict_writer)
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
-        .with_effect_emitter(Arc::new(EffectBus::new()))
+        .with_effect_emitter(Arc::new(BusWithEffects::new()))
         .build()
         .await
         .unwrap();
@@ -459,8 +549,7 @@ async fn test_agent_package_loading() {
             println!("Created test agent package: {}", package_path.display());
         }
         Err(e) => {
-            eprintln!("Failed to create test package: {}", e);
-            return;
+            panic!("Failed to create test package: {}", e);
         }
     }
 
@@ -562,9 +651,7 @@ async fn test_e2e_agent_runner_invoke_function() {
         },
         "corr-1-1",
     );
-    let outcome = agent
-        .handle_a2a(serde_json::to_value(request).expect("request json"))
-        .await;
+    let outcome = collect_stream_responses(&agent, request).await;
 
     match outcome {
         Ok(responses) => {
@@ -654,10 +741,7 @@ async fn test_e2e_stream_baml_tool() {
         extra: std::collections::HashMap::new(),
     };
     let request = send_message_request(params, "corr-1-1");
-    let responses = agent
-        .handle_a2a(serde_json::to_value(request).unwrap())
-        .await
-        .unwrap();
+    let responses = collect_stream_responses(&agent, request).await.unwrap();
     let chunks = chunks_from_responses(&responses);
     let texts = message_texts_from_chunks(&chunks);
     let text = texts
@@ -670,6 +754,76 @@ async fn test_e2e_stream_baml_tool() {
         "Expected BAML tool result (sum=5) in stream. Source .env for OPENROUTER_API_KEY. Message texts: {:?}. Raw: {}",
         texts,
         serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+    );
+}
+
+/// Fixture: argument-cleese + argument-chapman.
+/// Tests cross-agent conversation through system/internal_a2a (compat alias of system/a2a).
+#[cfg(feature = "llm-tests")]
+#[tokio::test]
+async fn test_e2e_argument_sketch_two_agents() {
+    if std::env::var("BAML_SKIP_LLM_TESTS").is_ok() {
+        eprintln!("Skipping LLM test: BAML_SKIP_LLM_TESTS set");
+        return;
+    }
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+    let _ = dotenvy::dotenv();
+    if std::env::var("OPENROUTER_API_KEY").is_err() {
+        eprintln!("Skipping test_e2e_argument_sketch_two_agents: OPENROUTER_API_KEY not set");
+        return;
+    }
+
+    let cleese_agent = setup_argument_fixture_agent("argument-cleese").await;
+    let chapman_agent = setup_argument_fixture_agent("argument-chapman").await;
+    let router: Arc<dyn A2aRequestHandler> = Arc::new(TwoAgentSessionRouter {
+        cleese: cleese_agent.clone(),
+        chapman: chapman_agent.clone(),
+    });
+
+    for agent in [&cleese_agent, &chapman_agent] {
+        let runtime = agent.runtime();
+        let manager = runtime.lock().await;
+        manager
+            .tool_registry()
+            .register_bundle(A2aSessionBundle::new(router.clone()))
+            .expect("register system/a2a bundle");
+    }
+
+    let request = send_message_request(
+        SendMessageRequest {
+            message: user_message("arg-1", "Start the argument.", Some(ContextId::new(1, 1))),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+            extra: std::collections::HashMap::new(),
+        },
+        "corr-1-1",
+    );
+    let responses = collect_stream_responses(&cleese_agent, request)
+        .await
+        .expect("argument sketch request");
+    let chunks = chunks_from_responses(&responses);
+    let texts = message_texts_from_chunks(&chunks);
+    let argument_like = |t: &String| {
+        let lower = t.to_lowercase();
+        lower.contains("yes it is")
+            || lower.contains("no it isn't")
+            || lower.contains("no it isnt")
+            || lower.contains("i didn't")
+            || lower.contains("you did")
+            || lower.contains("i'm not")
+            || lower.contains("you are")
+    };
+    assert!(
+        texts.len() >= 2,
+        "Expected at least two message chunks (Cleese and Chapman). Texts: {:?}. Raw: {}",
+        texts,
+        serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+    );
+    assert!(
+        texts.iter().any(argument_like),
+        "Expected at least one argument-sketch style line. Texts: {:?}",
+        texts
     );
 }
 
@@ -687,10 +841,7 @@ async fn test_e2e_stream_js_tool() {
         extra: std::collections::HashMap::new(),
     };
     let request = send_message_request(params, "corr-1-1");
-    let responses = agent
-        .handle_a2a(serde_json::to_value(request).unwrap())
-        .await
-        .unwrap();
+    let responses = collect_stream_responses(&agent, request).await.unwrap();
     let chunks = chunks_from_responses(&responses);
     let task_id = chunks
         .iter()
@@ -715,10 +866,13 @@ async fn test_e2e_stream_js_tool() {
         json!({ "id": task_id, "stream": true }),
         "corr-1-2",
     );
-    let responses = agent
-        .handle_a2a(serde_json::to_value(subscribe_request).unwrap())
-        .await
-        .unwrap();
+    let responses = baml_rt::collect_a2a_stream(
+        agent
+            .handle_a2a_stream(serde_json::to_value(subscribe_request).unwrap())
+            .await
+            .unwrap(),
+    )
+    .await;
     assert!(
         responses.iter().any(|response| {
             response
@@ -749,8 +903,7 @@ async fn test_e2e_task_lifecycle_demo() {
         extra: std::collections::HashMap::new(),
     };
     let first_request = send_message_request(params, "corr-1-3");
-    let first_responses = agent
-        .handle_a2a(serde_json::to_value(first_request).unwrap())
+    let first_responses = collect_stream_responses(&agent, first_request)
         .await
         .unwrap();
     let first_chunks = chunks_from_responses(&first_responses);
@@ -814,8 +967,7 @@ async fn test_e2e_task_lifecycle_demo() {
         extra: std::collections::HashMap::new(),
     };
     let second_request = send_message_request(second_params, "corr-1-4");
-    let second_responses = agent
-        .handle_a2a(serde_json::to_value(second_request).unwrap())
+    let second_responses = collect_stream_responses(&agent, second_request)
         .await
         .unwrap();
     let second_chunks = chunks_from_responses(&second_responses);
@@ -849,8 +1001,7 @@ async fn test_e2e_task_lifecycle_demo() {
         extra: std::collections::HashMap::new(),
     };
     let third_request = send_message_request(third_params, "corr-1-5");
-    let third_responses = agent
-        .handle_a2a(serde_json::to_value(third_request).unwrap())
+    let third_responses = collect_stream_responses(&agent, third_request)
         .await
         .unwrap();
     let third_chunks = chunks_from_responses(&third_responses);
@@ -886,8 +1037,7 @@ async fn test_e2e_task_lifecycle_demo() {
         extra: std::collections::HashMap::new(),
     };
     let fourth_request = send_message_request(fourth_params, "corr-1-6");
-    let fourth_responses = agent
-        .handle_a2a(serde_json::to_value(fourth_request).unwrap())
+    let fourth_responses = collect_stream_responses(&agent, fourth_request)
         .await
         .unwrap();
     let fourth_chunks = chunks_from_responses(&fourth_responses);
@@ -915,8 +1065,7 @@ async fn test_e2e_task_lifecycle_demo() {
         extra: std::collections::HashMap::new(),
     };
     let fifth_request = send_message_request(fifth_params, "corr-1-10");
-    let fifth_responses = agent
-        .handle_a2a(serde_json::to_value(fifth_request).unwrap())
+    let fifth_responses = collect_stream_responses(&agent, fifth_request)
         .await
         .unwrap();
     let fifth_chunks = chunks_from_responses(&fifth_responses);
@@ -944,8 +1093,7 @@ async fn test_e2e_task_lifecycle_demo() {
         extra: std::collections::HashMap::new(),
     };
     let sixth_request = send_message_request(sixth_params, "corr-1-11");
-    let sixth_responses = agent
-        .handle_a2a(serde_json::to_value(sixth_request).unwrap())
+    let sixth_responses = collect_stream_responses(&agent, sixth_request)
         .await
         .unwrap();
     let sixth_chunks = chunks_from_responses(&sixth_responses);
@@ -999,8 +1147,7 @@ async fn test_e2e_task_lifecycle_demo_reject_path() {
         },
         "corr-1-7",
     );
-    let first_responses = agent
-        .handle_a2a(serde_json::to_value(first_request).unwrap())
+    let first_responses = collect_stream_responses(&agent, first_request)
         .await
         .unwrap();
     let first_chunks = chunks_from_responses(&first_responses);
@@ -1022,8 +1169,7 @@ async fn test_e2e_task_lifecycle_demo_reject_path() {
         },
         "corr-1-8",
     );
-    let second_responses = agent
-        .handle_a2a(serde_json::to_value(second_request).unwrap())
+    let second_responses = collect_stream_responses(&agent, second_request)
         .await
         .unwrap();
     let second_chunks = chunks_from_responses(&second_responses);
@@ -1045,8 +1191,7 @@ async fn test_e2e_task_lifecycle_demo_reject_path() {
         },
         "corr-1-9",
     );
-    let third_responses = agent
-        .handle_a2a(serde_json::to_value(third_request).unwrap())
+    let third_responses = collect_stream_responses(&agent, third_request)
         .await
         .unwrap();
     let third_chunks = chunks_from_responses(&third_responses);
@@ -1121,9 +1266,7 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
     eprintln!("conversational-context-auto: first turn start");
     let first_response = timeout(
         per_turn_timeout,
-        agent.handle_a2a(
-            serde_json::to_value(send_message_request(first_turn, "corr-201-1")).unwrap(),
-        ),
+        collect_stream_responses(&agent, send_message_request(first_turn, "corr-201-1")),
     )
     .await
     .expect("first turn timed out")
@@ -1211,9 +1354,7 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
     eprintln!("conversational-context-auto: second turn start");
     let second_response = timeout(
         per_turn_timeout,
-        agent.handle_a2a(
-            serde_json::to_value(send_message_request(second_turn, "corr-201-2")).unwrap(),
-        ),
+        collect_stream_responses(&agent, send_message_request(second_turn, "corr-201-2")),
     )
     .await
     .expect("second turn timed out")

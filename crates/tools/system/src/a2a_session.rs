@@ -1,0 +1,341 @@
+//! system/internal_a2a tool: session-based A2A conversation call.
+
+use crate::metadata::system_internal_a2a_metadata;
+use crate::tools::{
+    ConversationChunk, ConversationMessage, ConversationPart, InternalA2aNextOutput,
+    InternalA2aOpenInput, InternalA2aSendInput, InternalA2aTarget,
+};
+use async_trait::async_trait;
+use baml_rt_core::{A2aRequestHandler, Result};
+use baml_rt_tools::tools::validate_open_input;
+use baml_rt_tools::tools::{ToolFunctionMetadata, ToolSessionContext};
+use baml_rt_tools::{
+    BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
+    ToolSession, ToolSessionError, ToolStep,
+};
+use futures_util::StreamExt;
+use serde_json::Value;
+use std::collections::VecDeque;
+use std::sync::Arc;
+
+/// System bundle exposing the system/internal_a2a tool.
+pub struct A2aSessionBundle {
+    handler: Arc<dyn A2aRequestHandler>,
+}
+
+impl A2aSessionBundle {
+    pub fn new(handler: Arc<dyn A2aRequestHandler>) -> Self {
+        Self { handler }
+    }
+}
+
+impl ToolBundle for A2aSessionBundle {
+    fn metadata(&self) -> ToolBundleMetadata {
+        let name = BundleName::new("system".to_string()).expect("system bundle name must be valid");
+        ToolBundleMetadata {
+            name,
+            description: "System tools (e.g. agent-to-agent session)".to_string(),
+            config_schema: None,
+            secret_requirements: Vec::new(),
+        }
+    }
+
+    fn functions(&self) -> Vec<Arc<dyn ToolHandler>> {
+        vec![Arc::new(A2aSessionToolHandler {
+            handler: self.handler.clone(),
+            metadata: system_internal_a2a_metadata(),
+        })]
+    }
+}
+
+struct A2aSessionToolHandler {
+    handler: Arc<dyn A2aRequestHandler>,
+    metadata: ToolFunctionMetadata,
+}
+
+#[async_trait]
+impl ToolHandler for A2aSessionToolHandler {
+    fn metadata(&self) -> &ToolFunctionMetadata {
+        &self.metadata
+    }
+
+    fn capability(&self) -> ToolCapability {
+        ToolCapability::Streaming
+    }
+
+    async fn open_session(
+        &self,
+        ctx: ToolSessionContext,
+        open_input: Value,
+    ) -> Result<Box<dyn ToolSession>> {
+        validate_open_input::<InternalA2aOpenInput>(open_input.clone())?;
+        let open: InternalA2aOpenInput =
+            serde_json::from_value(open_input).map_err(baml_rt_core::BamlRtError::Json)?;
+        Ok(Box::new(A2aSession {
+            ctx,
+            handler: self.handler.clone(),
+            target: open.target,
+            queue: VecDeque::new(),
+            output_rx: None,
+            closed: false,
+        }))
+    }
+}
+
+struct A2aSession {
+    ctx: ToolSessionContext,
+    handler: Arc<dyn A2aRequestHandler>,
+    target: InternalA2aTarget,
+    queue: VecDeque<InternalA2aNextOutput>,
+    output_rx: Option<async_channel::Receiver<InternalA2aNextOutput>>,
+    closed: bool,
+}
+
+fn parse_send_input(input: Value) -> std::result::Result<Vec<ConversationPart>, String> {
+    match serde_json::from_value::<InternalA2aSendInput>(input) {
+        Ok(InternalA2aSendInput {
+            parts: Some(parts),
+            text: None,
+        }) if !parts.is_empty() => Ok(parts),
+        Ok(InternalA2aSendInput {
+            parts: None,
+            text: Some(text),
+        }) => Ok(vec![ConversationPart {
+            text: Some(text),
+            ..Default::default()
+        }]),
+        Ok(InternalA2aSendInput {
+            parts: Some(_),
+            text: Some(_),
+        }) => Err("system/internal_a2a input must set exactly one of parts or text".to_string()),
+        Ok(InternalA2aSendInput {
+            parts: Some(_),
+            text: None,
+        }) => Err("system/internal_a2a input.parts must not be empty".to_string()),
+        Ok(_) => Err("system/internal_a2a input must set exactly one of parts or text".to_string()),
+        Err(err) => Err(format!(
+            "Invalid system/internal_a2a input: expected {{ parts: [...] }} or {{ text: string }} ({err})"
+        )),
+    }
+}
+
+fn build_send_stream_request(parts: Vec<ConversationPart>, target: &InternalA2aTarget) -> Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "message.sendStream",
+        "id": serde_json::Value::Null,
+        "params": {
+            "message": {
+                "messageId": format!("system-a2a-{}", uuid::Uuid::new_v4()),
+                "role": "ROLE_USER",
+                "parts": parts
+            },
+            "metadata": {
+                "target": {
+                    "agent_package": target.agent_package,
+                    "agent_instance_id": target.agent_instance_id
+                }
+            }
+        }
+    })
+}
+
+fn extract_chunk_value(value: Value) -> Value {
+    let Some(obj) = value.as_object() else {
+        return value;
+    };
+
+    if let Some(result) = obj.get("result").and_then(|v| v.as_object()) {
+        if let Some(chunk) = result.get("chunk") {
+            return chunk.clone();
+        }
+        if result
+            .get("stream")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            && let Some(chunk) = result.get("chunk")
+        {
+            return chunk.clone();
+        }
+    }
+
+    if let Some(chunk) = obj.get("chunk") {
+        return chunk.clone();
+    }
+
+    value
+}
+
+fn to_conversation_chunk(value: Value) -> ConversationChunk {
+    let candidate = extract_chunk_value(value);
+    if let Some(obj) = candidate.as_object() {
+        let message = obj.get("message").and_then(|msg| {
+            let role = msg
+                .as_object()
+                .and_then(|m| m.get("role"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            let parts = msg
+                .as_object()
+                .and_then(|m| m.get("parts"))
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|p| serde_json::from_value::<ConversationPart>(p.clone()).ok())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if parts.is_empty() {
+                None
+            } else {
+                Some(ConversationMessage { role, parts })
+            }
+        });
+
+        let task = obj.get("task").map(|v| v.to_string());
+        let status_update = obj.get("statusUpdate").map(|v| v.to_string());
+        let artifact_update = obj.get("artifactUpdate").map(|v| v.to_string());
+        if message.is_some()
+            || task.is_some()
+            || status_update.is_some()
+            || artifact_update.is_some()
+        {
+            return ConversationChunk {
+                message,
+                task,
+                status_update,
+                artifact_update,
+            };
+        }
+    }
+
+    ConversationChunk {
+        message: Some(ConversationMessage {
+            role: None,
+            parts: vec![ConversationPart {
+                text: Some(candidate.to_string()),
+                ..Default::default()
+            }],
+        }),
+        task: None,
+        status_update: None,
+        artifact_update: None,
+    }
+}
+
+fn merge_outputs(outputs: Vec<InternalA2aNextOutput>) -> InternalA2aNextOutput {
+    let mut chunks = Vec::new();
+    for out in outputs {
+        chunks.extend(out.chunks);
+    }
+    InternalA2aNextOutput { chunks }
+}
+
+#[async_trait]
+impl ToolSession for A2aSession {
+    async fn send(&mut self, input: Value) -> std::result::Result<(), ToolSessionError> {
+        if self.closed {
+            return Err(ToolSessionError::Tool(ToolFailure::invalid_input(format!(
+                "A2A session {session_id} is closed",
+                session_id = self.ctx.session_id
+            ))));
+        }
+        let parts = parse_send_input(input)
+            .map_err(|msg| ToolSessionError::Tool(ToolFailure::invalid_input(msg)))?;
+        if self.output_rx.is_some() {
+            return Err(ToolSessionError::Tool(ToolFailure::invalid_input(
+                "system/internal_a2a session: send only valid once after open".to_string(),
+            )));
+        }
+        let request = build_send_stream_request(parts, &self.target);
+        let handler = self.handler.clone();
+        let (tx, rx) = async_channel::unbounded::<InternalA2aNextOutput>();
+        self.output_rx = Some(rx);
+        tokio::spawn(async move {
+            match handler.handle_a2a_stream(request).await {
+                Ok(stream) => {
+                    futures_util::pin_mut!(stream);
+                    while let Some(response) = stream.next().await {
+                        let out = InternalA2aNextOutput {
+                            chunks: vec![to_conversation_chunk(response)],
+                        };
+                        if tx.send(out).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(err) => {
+                    let fallback = InternalA2aNextOutput {
+                        chunks: vec![ConversationChunk {
+                            message: Some(ConversationMessage {
+                                role: None,
+                                parts: vec![ConversationPart {
+                                    text: Some(format!(
+                                        "system/internal_a2a execution failed: {err}"
+                                    )),
+                                    ..Default::default()
+                                }],
+                            }),
+                            task: None,
+                            status_update: None,
+                            artifact_update: None,
+                        }],
+                    };
+                    let _ = tx.send(fallback).await;
+                }
+            }
+            tx.close();
+        });
+        Ok(())
+    }
+
+    async fn next(&mut self) -> std::result::Result<ToolStep, ToolSessionError> {
+        if let Some(output) = self.queue.pop_front() {
+            let mut batch = vec![output];
+            while let Some(next) = self.queue.pop_front() {
+                batch.push(next);
+            }
+            let value = serde_json::to_value(merge_outputs(batch)).map_err(|e| {
+                ToolSessionError::Tool(ToolFailure::execution_failed(format!(
+                    "Invalid A2A output: {error}",
+                    error = e
+                )))
+            })?;
+            return Ok(ToolStep::Streaming { output: value });
+        }
+        if let Some(rx) = &self.output_rx {
+            match rx.recv().await {
+                Ok(output) => {
+                    let mut batch = vec![output];
+                    while let Ok(next) = rx.try_recv() {
+                        batch.push(next);
+                    }
+                    let value = serde_json::to_value(merge_outputs(batch)).map_err(|e| {
+                        ToolSessionError::Tool(ToolFailure::execution_failed(format!(
+                            "Invalid A2A output: {error}",
+                            error = e
+                        )))
+                    })?;
+                    return Ok(ToolStep::Streaming { output: value });
+                }
+                Err(_) => {
+                    self.output_rx = None;
+                }
+            }
+        }
+        Ok(ToolStep::Done { output: None })
+    }
+
+    async fn finish(&mut self) -> std::result::Result<(), ToolSessionError> {
+        self.closed = true;
+        Ok(())
+    }
+
+    async fn abort(
+        &mut self,
+        _reason: Option<String>,
+    ) -> std::result::Result<(), ToolSessionError> {
+        self.closed = true;
+        Ok(())
+    }
+}

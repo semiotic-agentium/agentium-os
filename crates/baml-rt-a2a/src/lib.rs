@@ -18,10 +18,11 @@ pub mod result_deduplicator;
 pub mod result_extractor;
 pub mod result_pipeline;
 pub mod result_processor;
-pub mod session_channel;
-pub mod tools;
 
 pub use a2a::{A2aMethod, A2aOutcome, A2aRequest};
-pub use a2a_transport::{A2aAgent, A2aAgentBuilder, A2aRequestHandler};
+pub use a2a_transport::{A2aAgent, A2aAgentBuilder};
 pub use agent_registry::AgentRegistry;
-pub use tools::A2aSessionBundle;
+pub use baml_rt_core::A2aRequestHandler;
+
+// Re-export system bundle for agents that register system/a2a (manifest-declared).
+pub use baml_rt_tools_system::A2aSessionBundle;

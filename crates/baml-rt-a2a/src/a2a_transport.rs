@@ -5,7 +5,7 @@ use crate::a2a_store::{
     ConversationContextSource, ProvenanceTaskStore, TaskEventRecorder, TaskRepository,
     TaskStoreBackend, TaskUpdateEvent, TaskUpdateQueue,
 };
-use crate::a2a_types::{JSONRPCId, SendMessageRequest};
+use crate::a2a_types::SendMessageRequest;
 use crate::error_classifier::{A2aErrorClassifier, ErrorClassifier};
 use crate::events::{BroadcastEventEmitter, EventEmitter};
 use crate::handlers::{DefaultTaskHandler, TaskHandler};
@@ -20,7 +20,6 @@ use baml_rt_core::bus::{BusStream, EffectEmitter};
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::correlation;
 use baml_rt_core::ids::{ExternalId, MessageId};
-use baml_rt_core::stream_completion::StreamCompletion;
 use baml_rt_core::{A2aRequestHandler, BamlRtError, Result};
 use baml_rt_observability::{metrics, spans};
 use baml_rt_provenance::{ProvenanceInterceptor, ProvenanceWriter};
@@ -529,12 +528,6 @@ impl A2aAgentBuilderWithEffectEmitter {
             }
         };
 
-        // Bridge promise polling requires effect liveness wiring.
-        {
-            let mut bridge_guard = bridge.lock().await;
-            bridge_guard.set_effect_liveness(self.effect_emitter.clone());
-        }
-
         if self.register_baml_functions || !self.init_js.is_empty() {
             tracing::debug!(
                 "A2aAgentBuilder::build: Registering BAML functions and/or evaluating init_js"
@@ -829,33 +822,58 @@ impl A2aAgent {
     ) {
         let mut current = Some(initial_request);
         while let Some(request_value) = current.take() {
-            match self.handle_a2a_outcome_inner(request_value.clone()).await {
-                Ok((request_id, outcome)) => match outcome {
-                    a2a::A2aOutcome::Response(result) => {
-                        let _ = output_tx
-                            .send(self.response_formatter.format_success(request_id, result));
+            match self.handle_a2a_inner(request_value.clone()).await {
+                Ok(responses) => {
+                    let mut terminal = false;
+                    let mut input_required = false;
+                    for response in responses {
+                        if response
+                            .get("result")
+                            .and_then(|r| r.get("final"))
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                        {
+                            terminal = true;
+                        }
+                        let state = response
+                            .get("result")
+                            .and_then(|r| r.get("chunk"))
+                            .and_then(|c| c.get("task"))
+                            .and_then(|t| t.get("status"))
+                            .and_then(|s| s.get("state"))
+                            .and_then(Value::as_str)
+                            .or_else(|| {
+                                response
+                                    .get("result")
+                                    .and_then(|r| r.get("chunk"))
+                                    .and_then(|c| c.get("statusUpdate"))
+                                    .and_then(|s| s.get("status"))
+                                    .and_then(|s| s.get("state"))
+                                    .and_then(Value::as_str)
+                            });
+                        if matches!(state, Some("TASK_STATE_INPUT_REQUIRED")) {
+                            input_required = true;
+                        }
+                        let _ = output_tx.send(response);
+                    }
+
+                    if terminal {
                         break;
                     }
-                    a2a::A2aOutcome::Stream(stream_result) => {
-                        let responses = self
-                            .response_formatter
-                            .format_stream(request_id, &stream_result);
-                        for response in responses {
-                            let _ = output_tx.send(response);
+
+                    if input_required {
+                        match input_rx.recv().await {
+                            Ok(next_request) => current = Some(next_request),
+                            Err(_) => break,
                         }
-                        // Invariant: continuation is driven only by explicit StreamCompletion,
-                        // never inferred from chunk shape.
-                        match stream_result.completion {
-                            StreamCompletion::InputRequired => match input_rx.recv().await {
-                                Ok(next_request) => current = Some(next_request),
-                                Err(_) => break,
-                            },
-                            StreamCompletion::SemanticFinal
-                            | StreamCompletion::ChannelClosed
-                            | StreamCompletion::Timeout => break,
+                    } else {
+                        // Keep session alive and wait for next user input injection.
+                        match input_rx.recv().await {
+                            Ok(next_request) => current = Some(next_request),
+                            Err(_) => break,
                         }
                     }
-                },
+                }
                 Err(err) => {
                     let formatter = JsonRpcResponseFormatter;
                     let request_id = a2a::extract_jsonrpc_id(&request_value);
@@ -870,34 +888,12 @@ impl A2aAgent {
     }
 
     async fn handle_a2a_inner(&self, request: Value) -> Result<Vec<Value>> {
-        let fallback_request_id = a2a::extract_jsonrpc_id(&request);
-        let (request_id, outcome) = match self.handle_a2a_outcome_inner(request).await {
-            Ok(res) => res,
-            Err(err) => {
-                let formatter = JsonRpcResponseFormatter;
-                return Ok(vec![formatter.format_error(fallback_request_id, &err)]);
-            }
-        };
-        let responses = match outcome {
-            a2a::A2aOutcome::Response(result) => {
-                vec![self.response_formatter.format_success(request_id, result)]
-            }
-            a2a::A2aOutcome::Stream(stream_result) => self
-                .response_formatter
-                .format_stream(request_id, &stream_result),
-        };
-        Ok(responses)
-    }
-
-    async fn handle_a2a_outcome_inner(
-        &self,
-        request: Value,
-    ) -> Result<(Option<JSONRPCId>, a2a::A2aOutcome)> {
         let request_id = a2a::extract_jsonrpc_id(&request);
         let parsed_request = match a2a::A2aRequest::from_value(request) {
             Ok(parsed) => parsed,
             Err(err) => {
-                return Err(err);
+                let formatter = JsonRpcResponseFormatter;
+                return Ok(vec![formatter.format_error(request_id, &err)]);
             }
         };
         use baml_rt_core::ids::CorrelationId;
@@ -997,7 +993,16 @@ impl A2aAgent {
             }
         }
 
-        outcome.map(|result| (request_id, result))
+        let responses = match outcome {
+            Ok(a2a::A2aOutcome::Response(result)) => {
+                vec![self.response_formatter.format_success(request_id, result)]
+            }
+            Ok(a2a::A2aOutcome::Stream(stream_result)) => self
+                .response_formatter
+                .format_stream(request_id, &stream_result),
+            Err(err) => vec![self.response_formatter.format_error(request_id, &err)],
+        };
+        Ok(responses)
     }
 }
 

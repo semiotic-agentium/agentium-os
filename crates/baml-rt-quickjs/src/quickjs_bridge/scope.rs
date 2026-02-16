@@ -1,12 +1,111 @@
+//! Host-only invocation context: no token material in JS.
+//!
+//! The host maintains an active-context stack per bridge. When we enter an invocation
+//! (e.g. evaluate(Some(scope), ...) or invoke_js_function_stream), we push the scope;
+//! when we exit we pop. Native callbacks resolve scope from the current top of stack
+//! **at the moment the native is invoked** (synchronously), then capture that scope
+//! and use it for the entire async operation (e.g. tool run, BAML invoke). Completions
+//! can happen in arbitrary order—we never re-read "current" at completion time, so
+//! invocation order does not need to be serialised. Re-entrant safe (nested invocations
+//! push; resolution is LIFO). No globals; no JS token args.
+
 use baml_rt_core::context::RuntimeScope;
 use quickjs_runtime::values::JsValueFacade;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
-/// Opaque token issued by the host for the duration of an invocation. JS receives only this
-/// string; natives look up scope by token so JS cannot forge attribution. See
-/// docs/QUICKJS_THREADING_AND_SCOPE.md.
+/// Opaque host-only context id for the duration of an invocation. Never exposed to JS.
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+pub(crate) struct InvocationContextId(pub(crate) String);
+
+static INVOCATION_CONTEXT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn next_invocation_context_id() -> InvocationContextId {
+    let n = INVOCATION_CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    InvocationContextId(format!("inv-ctx-{}", n))
+}
+
+/// Frame stored per active invocation: scope and optional correlation id.
+#[derive(Debug, Clone)]
+pub(crate) struct InvocationContextFrame {
+    pub(crate) scope: RuntimeScope,
+    pub(crate) correlation_id: Option<baml_rt_core::ids::CorrelationId>,
+}
+
+/// Per-bridge registry: stack of active context ids and map id -> frame.
+/// Native callbacks resolve current scope from the top of the stack (LIFO).
+pub(crate) struct InvocationContextRegistry {
+    stack: Vec<InvocationContextId>,
+    by_id: HashMap<InvocationContextId, InvocationContextFrame>,
+}
+
+impl InvocationContextRegistry {
+    pub(crate) fn new() -> Self {
+        Self {
+            stack: Vec::new(),
+            by_id: HashMap::new(),
+        }
+    }
+
+    /// Enter an invocation: push scope (and optional correlation_id), return the context id.
+    /// Call [`exit`](Self::exit) with this id when the invocation ends.
+    pub(crate) fn enter(
+        &mut self,
+        scope: RuntimeScope,
+        correlation_id: Option<baml_rt_core::ids::CorrelationId>,
+    ) -> InvocationContextId {
+        let id = next_invocation_context_id();
+        self.by_id.insert(
+            id.clone(),
+            InvocationContextFrame {
+                scope,
+                correlation_id,
+            },
+        );
+        self.stack.push(id.clone());
+        id
+    }
+
+    /// Exit the invocation for this id. Must match the id returned from [`enter`](Self::enter).
+    pub(crate) fn exit(&mut self, id: &InvocationContextId) {
+        if self.stack.last() == Some(id) {
+            self.stack.pop();
+        }
+        self.by_id.remove(id);
+    }
+
+    /// Resolve the current (top of stack) scope. Errors if no active invocation.
+    pub(crate) fn current_scope(
+        &self,
+    ) -> std::result::Result<RuntimeScope, quickjs_runtime::jsutils::JsError> {
+        let id = self.stack.last().ok_or_else(|| {
+            quickjs_runtime::jsutils::JsError::new_str(
+                "No invocation context (native called without active host invocation)",
+            )
+        })?;
+        self.by_id.get(id).map(|f| f.scope.clone()).ok_or_else(|| {
+            quickjs_runtime::jsutils::JsError::new_str("Invalid or expired invocation context")
+        })
+    }
+
+    /// Current frame (scope + correlation_id) for the active invocation.
+    pub(crate) fn current_frame(
+        &self,
+    ) -> std::result::Result<InvocationContextFrame, quickjs_runtime::jsutils::JsError> {
+        let id = self.stack.last().ok_or_else(|| {
+            quickjs_runtime::jsutils::JsError::new_str(
+                "No invocation context (native called without active host invocation)",
+            )
+        })?;
+        self.by_id.get(id).cloned().ok_or_else(|| {
+            quickjs_runtime::jsutils::JsError::new_str("Invalid or expired invocation context")
+        })
+    }
+}
+
+/// Legacy: opaque token issued by the host (used only for eval result tracking and backward compat).
+/// Natives resolve scope from active context stack, not from this token.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub(crate) struct InvocationToken(pub(crate) String);
 
@@ -31,8 +130,53 @@ pub(crate) fn token_from_args(args: &[JsValueFacade]) -> Option<InvocationToken>
     })
 }
 
-/// Resolve invocation scope from native args: first arg must be a non-empty token string;
-/// look up scope in map. Returns (scope, skip_count) where skip_count is 1 (token consumed).
+/// Resolve invocation scope from the host's active context stack (tokenless).
+/// Optional: if args start with a valid token and registry has no current context, resolve from token map (legacy).
+pub(crate) fn resolve_scope_from_active_context(
+    registry: &Arc<StdMutex<InvocationContextRegistry>>,
+    args: &[JsValueFacade],
+    token_scope_map: &Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>>,
+) -> std::result::Result<(RuntimeScope, usize), quickjs_runtime::jsutils::JsError> {
+    if let Ok(guard) = registry.lock()
+        && let Ok(scope) = guard.current_scope()
+    {
+        return Ok((scope, 0));
+    }
+    // Legacy: first arg can be token string for backward compat
+    if !args.is_empty()
+        && let Some(token_js) = args.first()
+        && token_js.is_string()
+    {
+        let s = token_js.get_str().to_string();
+        if !s.is_empty() {
+            if let Ok(guard) = token_scope_map.lock()
+                && let Some(scope) = guard.get(&InvocationToken(s))
+            {
+                return Ok((scope.clone(), 1));
+            }
+            return Err(quickjs_runtime::jsutils::JsError::new_str(
+                "Invalid or expired invocation token",
+            ));
+        }
+    }
+    Err(quickjs_runtime::jsutils::JsError::new_str(
+        "No invocation context (run inside a host invocation or pass a valid token)",
+    ))
+}
+
+/// Resolve scope from active context only (strict tokenless). No legacy token fallback.
+#[allow(dead_code)]
+pub(crate) fn resolve_scope_from_active_context_only(
+    registry: &Arc<StdMutex<InvocationContextRegistry>>,
+) -> std::result::Result<RuntimeScope, quickjs_runtime::jsutils::JsError> {
+    let guard = registry.lock().map_err(|_| {
+        quickjs_runtime::jsutils::JsError::new_str("context registry lock poisoned")
+    })?;
+    guard.current_scope()
+}
+
+/// Legacy: resolve from token arg (used in tests and as fallback in resolve_scope_from_active_context).
+#[allow(dead_code)]
 pub(crate) fn resolve_scope_from_token_arg(
     map: &Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>>,
     args: &[JsValueFacade],

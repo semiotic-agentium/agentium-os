@@ -13,6 +13,13 @@ use test_support::common::send_stream_request;
 use test_support::common::shared_falkordb;
 use tokio::time::Duration;
 
+async fn collect_responses(
+    agent: &A2aAgent,
+    request: serde_json::Value,
+) -> baml_rt::Result<Vec<serde_json::Value>> {
+    Ok(baml_rt_core::collect_a2a_stream(agent.handle_a2a_stream(request).await?).await)
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn test_scope_attribution_without_cross_contamination() {
     let connection = shared_falkordb().await;
@@ -38,10 +45,11 @@ async fn test_scope_attribution_without_cross_contamination() {
             &correlation_id.to_string(),
             Some(context_id.clone()),
         );
-        let responses = tokio::time::timeout(Duration::from_secs(15), agent.handle_a2a(request))
-            .await
-            .expect("request timeout")
-            .expect("handle");
+        let responses =
+            tokio::time::timeout(Duration::from_secs(15), collect_responses(&agent, request))
+                .await
+                .expect("request timeout")
+                .expect("handle");
         assert!(
             !responses.is_empty(),
             "expected at least one stream response"

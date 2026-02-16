@@ -9,7 +9,7 @@ use test_support::support;
 #[tokio::test]
 async fn test_direct_tool_execution_rust_and_js() {
     let agent = A2aAgent::builder()
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .build()
         .await
         .expect("agent build");

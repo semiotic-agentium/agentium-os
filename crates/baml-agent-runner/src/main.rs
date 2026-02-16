@@ -16,10 +16,12 @@ use baml_rt_a2a::a2a_types::{
     SendMessageRequest,
 };
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler, AgentRegistry, a2a};
+use baml_rt_core::bus::BusStream;
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::ids::{AgentId, DerivedId, ExternalId, TaskId};
 use baml_rt_core::{
     AgentDiscoveryEntry, AgentManifest, AgentRouteKey, BamlRtError, ContextId, Result,
+    collect_a2a_stream,
 };
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_provenance::{AgentType, ProvEvent, ToolIndexConfig, index_tools};
@@ -170,6 +172,9 @@ impl AgentPackage {
                         ));
                     }
                 }
+                "system/internal_a2a" => {
+                    // Registered by A2aAgent at build time when with_a2a_session_tool(true)
+                }
                 other => {
                     warn!(
                         tool = other,
@@ -181,10 +186,16 @@ impl AgentPackage {
 
         // Build A2aAgent - it will generate agent_id internally and create QuickJS bridge
         let runtime_manager_arc = Arc::new(Mutex::new(runtime_manager));
+        let wants_a2a_session = self
+            .manifest
+            .tools
+            .iter()
+            .any(|t| t == "system/internal_a2a");
         let mut agent_builder = A2aAgent::builder()
             .with_runtime_handle(runtime_manager_arc.clone())
             .with_baml_helpers(true) // Register BAML functions
-            .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()));
+            .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+            .with_a2a_session_tool(wants_a2a_session);
 
         if let Some(writer) = provenance_writer.clone() {
             agent_builder = agent_builder.with_provenance_writer(writer);
@@ -292,8 +303,8 @@ impl BootedAgent {
             .await
     }
 
-    async fn handle_a2a(&self, request: Value) -> Result<Vec<Value>> {
-        self.agent.handle_a2a(request).await
+    async fn handle_a2a_stream(&self, request: Value) -> Result<BusStream<Value>> {
+        self.agent.handle_a2a_stream(request).await
     }
 }
 
@@ -375,7 +386,11 @@ impl AgentRunner {
     }
 
     /// Handle A2A request by route key (for HTTP POST /agents/.../a2a).
-    async fn handle_a2a_by_key(&self, key: &AgentRouteKey, request: Value) -> Result<Vec<Value>> {
+    async fn handle_a2a_by_key(
+        &self,
+        key: &AgentRouteKey,
+        request: Value,
+    ) -> Result<BusStream<Value>> {
         let booted = self.agents.get(&key.agent_package).ok_or_else(|| {
             BamlRtError::InvalidArgument(format!(
                 "Agent {}/{} not found",
@@ -392,7 +407,7 @@ impl AgentRunner {
             let local = tokio::task::LocalSet::new();
             rt.block_on(local.run_until(async move {
                 context::with_scope(scope.as_scope().clone(), async move {
-                    agent.handle_a2a(request).await
+                    agent.handle_a2a_stream(request).await
                 })
                 .await
             }))
@@ -465,10 +480,10 @@ impl AgentRunner {
             let span = spans::a2a_stdio_request(&agent_name, method, &correlation_id);
             let _guard = span.enter();
 
-            let responses = agent
-                .handle_a2a(prepared_request)
-                .await
-                .unwrap_or_else(|err| vec![map_a2a_error(request_id, err)]);
+            let responses = match agent.handle_a2a_stream(prepared_request).await {
+                Ok(stream) => collect_a2a_stream(stream).await,
+                Err(err) => vec![map_a2a_error(request_id, err)],
+            };
             for response in responses {
                 let serialized = serde_json::to_string(&response)
                     .unwrap_or_else(|_| "{\"error\":\"serialization failed\"}".to_string());
@@ -587,7 +602,11 @@ impl AgentRegistry for RunnerRegistry {
         self.0.discovery_entries()
     }
 
-    async fn handle_a2a(&self, key: &AgentRouteKey, request: Value) -> Result<Vec<Value>> {
+    async fn handle_a2a_stream(
+        &self,
+        key: &AgentRouteKey,
+        request: Value,
+    ) -> Result<BusStream<Value>> {
         self.0.handle_a2a_by_key(key, request).await
     }
 }

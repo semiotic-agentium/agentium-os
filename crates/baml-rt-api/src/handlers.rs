@@ -6,7 +6,9 @@ use axum::http::StatusCode as AxumStatus;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use baml_rt_core::AgentRouteKey;
 use baml_rt_core::BamlRtError;
-use futures_util::stream::{self, Stream};
+use baml_rt_core::collect_a2a_stream;
+use futures_util::StreamExt;
+use futures_util::stream::Stream;
 use http_api_problem::HttpApiProblem;
 use serde_json::Value;
 use std::convert::Infallible;
@@ -88,8 +90,9 @@ pub async fn post_a2a(
         ));
     }
 
-    match state.registry.handle_a2a(&key, body).await {
-        Ok(responses) => {
+    match state.registry.handle_a2a_stream(&key, body).await {
+        Ok(stream) => {
+            let responses = collect_a2a_stream(stream).await;
             metrics::record_request("post_a2a", "success", start.elapsed());
             Ok(Json(responses))
         }
@@ -138,33 +141,20 @@ pub async fn post_a2a_sse(
         ));
     }
 
-    let responses = match state.registry.handle_a2a(&key, body).await {
+    let stream = match state.registry.handle_a2a_stream(&key, body).await {
         Ok(r) => r,
         Err(e) => {
             metrics::record_request("post_a2a_sse", "error", start.elapsed());
             return Err(domain_to_problem(&e, &agent_package, &agent_instance_id));
         }
     };
-
-    let data_strings: Result<Vec<String>, HttpApiProblem> = responses
-        .into_iter()
-        .map(|v| {
-            serde_json::to_string(&v)
-                .map_err(|e| problem(500, "Internal Server Error", format!("Serialization: {e}")))
-        })
-        .collect();
-    let data_strings = match data_strings {
-        Ok(d) => d,
-        Err(e) => {
-            metrics::record_request("post_a2a_sse", "error", start.elapsed());
-            return Err(e);
-        }
-    };
-    let stream = stream::iter(
-        data_strings
-            .into_iter()
-            .map(|data| Ok(Event::default().data(data))),
-    );
+    let stream = stream.map(|value| {
+        let data = serde_json::to_string(&value).unwrap_or_else(|_| {
+            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"serialization failed\"}}"
+                .to_string()
+        });
+        Ok(Event::default().data(data))
+    });
 
     let sse =
         Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text(""));

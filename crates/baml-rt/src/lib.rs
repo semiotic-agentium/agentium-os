@@ -5,6 +5,7 @@
 pub use baml_rt_core::context::generate_context_id;
 pub use baml_rt_core::correlation::{current_correlation_id, generate_correlation_id};
 pub use baml_rt_core::{BamlRtError, Result};
+pub use baml_rt_core::{collect_a2a_stream, collect_a2a_stream_until};
 pub mod error {
     pub use baml_rt_core::error::*;
 }

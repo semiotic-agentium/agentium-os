@@ -52,6 +52,7 @@ pub fn render_ts_declarations(ir_signature: &IRSignature, tool_names: &[String])
         all_type_deps.extend(collect_type_decl_deps(&return_frag));
         func_decls.push((name.clone(), args_frag.expr, return_frag.expr));
     }
+    func_decls.sort_by(|a, b| a.0.cmp(&b.0));
 
     let type_decls_comment =
         "/** Types for BAML function arguments and return values (classes, enums, aliases). */";

@@ -1,0 +1,21 @@
+[package]
+name = "baml-rt-tools-system"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "System tool bundle (e.g. system/a2a for agent-to-agent calls)"
+
+[dependencies]
+baml-rt-core = { path = "../../baml-rt-core" }
+baml-rt-tools = { path = "../../baml-rt-tools" }
+async-trait = { workspace = true }
+inventory = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+ts-rs = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+uuid = { workspace = true }
+async-channel = { workspace = true }

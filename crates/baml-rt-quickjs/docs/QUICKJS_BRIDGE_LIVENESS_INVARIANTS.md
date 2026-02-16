@@ -129,7 +129,7 @@ For stream requests, the promise from `onChatMessage()` is DESIGNED to never res
 | **Type system** | `A2aYieldSession<'a, S, NonResolvingPromise>` typestate; only `invoke_js_function_stream()` is used in stream path |
 | **Application** | `invoke_js_function_stream()` starts function but does NOT wait for promise resolution |
 | **Stream Protocol** | `A2aYieldSession` (with `NonResolvingPromise` marker) uses `invoke_js_function_stream()` only |
-| **Trait** | `JsStreamInvoker` trait encodes stream-only invocation contract |
+| **Invoker boundary** | `JsInvoker::invoke_stream` encodes stream-only invocation contract |
 | **Yield Buffer** | Chunks are collected via `get_a2a_yield_buffer()` after invocation completes |
 | **Testing** | Stream tests verify chunks are collected without waiting for promise resolution |
 
@@ -251,7 +251,7 @@ Re-checking effects periodically must only increase the timeout, never decrease 
   Count is still saturating_sub to avoid negative; error is observable in logs
 ```
 
-**Enforcement:** In `EffectBus::process_event`, before `saturating_sub`, check `entry.tool == 0` (and llm, a2a) and log error.
+**Enforcement:** In `BusWithEffects::process_effect`, before `saturating_sub`, check `entry.tool == 0` (and llm, a2a) and log error.
 
 ## Concurrency Guarantees (Summary)
 

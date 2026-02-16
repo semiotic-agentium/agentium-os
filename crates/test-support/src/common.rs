@@ -347,11 +347,11 @@ pub async fn assert_tool_registered_in_js(
 }
 
 /// Builds a minimal A2aAgent for malformed/error-path A2A tests: no BAML schema or tools.
-/// Uses EffectBus and QuickJSConfig with max_attempts_ms(15_000).
+/// Uses BusWithEffects and QuickJSConfig with max_attempts_ms(15_000).
 pub async fn build_minimal_a2a_agent(init_js: &str) -> A2aAgent {
     A2aAgent::builder()
         .with_init_js(init_js)
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()
         .await
@@ -374,7 +374,7 @@ pub async fn setup_stream_baml_tool_agent_for_contract(init_js: Option<&str>) ->
     let config = QuickJSConfig::new().with_max_attempts_ms(Some(45_000));
     let mut builder = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(config);
     if let Some(js) = init_js {
         builder = builder.with_init_js(js);
