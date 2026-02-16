@@ -38,8 +38,7 @@ fn fixture_js_code() -> String {
         }
         if (text.startsWith("tool-call:")) {
             try {
-                const token = (typeof __baml_invocation_token !== "undefined") ? __baml_invocation_token : undefined;
-                const session = await openToolSession("test/add_numbers", token);
+                const session = await openToolSession("test/add_numbers");
                 await session.send({ a: 2, b: 3 });
                 await session.continue();
                 __chat_yield({ message: { parts: [{ text: "sum=5" }] } });
@@ -50,8 +49,7 @@ fn fixture_js_code() -> String {
         }
         if (text.startsWith("baml-tool:")) {
             try {
-                const token = (typeof __baml_invocation_token !== "undefined") ? __baml_invocation_token : undefined;
-                const session = await openToolSession("support/calculate", token);
+                const session = await openToolSession("support/calculate");
                 await session.send({ expression: { left: 2, operation: "Add", right: 3 } });
                 await session.continue();
                 __chat_yield({ message: { parts: [{ text: "sum=5" }] } });
@@ -242,8 +240,8 @@ async fn test_message_send_tool_calling() {
     let responses = collect_responses(&agent, request).await.unwrap();
     let text = first_message_text_from_stream(&responses);
     assert!(
-        text.contains("sum=5") || text.contains("Missing invocation token"),
-        "expected tool result or token-guard error in message text, got: {}",
+        text.contains("sum=5"),
+        "expected tool result in message text, got: {}",
         text
     );
 }
@@ -268,8 +266,8 @@ async fn test_message_send_baml_tool_calling() {
     let responses = collect_responses(&agent, request).await.unwrap();
     let text = first_message_text_from_stream(&responses);
     assert!(
-        text.contains("sum=5") || text.contains("Missing invocation token"),
-        "expected BAML tool result or token-guard error in message text, got: {}",
+        text.contains("sum=5"),
+        "expected BAML tool result in message text, got: {}",
         text
     );
 }

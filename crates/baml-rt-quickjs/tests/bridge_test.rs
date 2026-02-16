@@ -80,8 +80,7 @@ async fn test_quickjs_concurrent_scope_propagation() {
         .register_js_tool(
             "js/scope_tool",
             r#"async function(args) {
-                const token = args && args.__baml_invocation_token;
-                const session = await openToolSession("test/scope_echo", token);
+                const session = await openToolSession("test/scope_echo");
                 await session.send(args);
                 const step = await session.continue();
                 return step && step.output ? step.output : {};
@@ -186,7 +185,6 @@ async fn test_quickjs_concurrent_stream_scope_propagation() {
             r#"
             globalThis.js_scope_stream = async function(args) {
                 const results = await __baml_stream(
-                    args.__baml_invocation_token,
                     "scope_probe",
                     JSON.stringify({ __scope_probe: true })
                 );

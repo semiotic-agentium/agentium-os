@@ -1,6 +1,6 @@
 /// <reference path="./baml-runtime.d.ts" />
 
-type ChatMessageWithToken = ChatMessage & { __baml_invocation_token?: string };
+type ChatMessageWithToken = ChatMessage;
 
 function wantsSummary(text: string): boolean {
   const lowered = text.toLowerCase();
@@ -68,7 +68,6 @@ async function summarizeBlocks(args: {
   page_title: string | null;
   page_url: string | null;
   blocks_text: string;
-  __baml_invocation_token?: string;
 }): Promise<string | null> {
   try {
     const result = await SummarizeNotionContent(args);
@@ -92,11 +91,9 @@ async function onChatMessage(message: ChatMessageWithToken): Promise<void> {
   const s = session(message);
   await s.run(async () => {
     const text = s.text() || "unknown";
-    const token = message.__baml_invocation_token;
 
     const toolResult = await ChooseNotionAction({
       user_message: text,
-      __baml_invocation_token: token,
     });
 
     if (isReadOnlyResponse(toolResult)) {
@@ -139,7 +136,6 @@ async function onChatMessage(message: ChatMessageWithToken): Promise<void> {
           page_title: pageTitle,
           page_url: pageUrl,
           blocks_text: truncated,
-          __baml_invocation_token: token,
         });
         if (summary) {
           let formattedSummary = summary;

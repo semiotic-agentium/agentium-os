@@ -109,8 +109,7 @@ async fn test_js_function_invocation_returns_actual_result() {
     let agent_code = r#"
         async function getCalcPlan(args) {
             return await ChooseCalcTool({
-                user_message: args.message || "compute 2+3",
-                __baml_invocation_token: args.__baml_invocation_token
+                user_message: args.message || "compute 2+3"
             });
         }
         globalThis.getCalcPlan = getCalcPlan;
@@ -176,8 +175,7 @@ async fn test_invoke_function_api_contract() {
     let agent_code = r#"
         async function getCalcPlan(args) {
             return await ChooseCalcTool({
-                user_message: args.message || "compute 2+3",
-                __baml_invocation_token: args.__baml_invocation_token
+                user_message: args.message || "compute 2+3"
             });
         }
         globalThis.getCalcPlan = getCalcPlan;
@@ -255,8 +253,7 @@ async fn test_loaded_agent_invoke_function_contract() {
             r#"
             async function getCalcPlan(args) {
                 return await ChooseCalcTool({
-                    user_message: args.message || "compute 2+3",
-                    __baml_invocation_token: args.__baml_invocation_token
+                    user_message: args.message || "compute 2+3"
                 });
             }
             globalThis.getCalcPlan = getCalcPlan;
