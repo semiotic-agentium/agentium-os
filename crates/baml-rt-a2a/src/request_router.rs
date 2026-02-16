@@ -3,7 +3,7 @@ use crate::a2a_types;
 use crate::handlers::TaskHandler;
 use crate::result_pipeline::ResultStoragePipeline;
 use async_trait::async_trait;
-use baml_rt_core::bus::{A2aEffectMetadata, EffectEmitter, EffectEvent};
+use baml_rt_core::bus::{A2aEffectMetadata, A2aLivenessRole, EffectEmitter, EffectEvent};
 use baml_rt_core::context::InvocationScope;
 use baml_rt_core::ids::AgentId;
 use baml_rt_core::{BamlRtError, Result};
@@ -192,6 +192,7 @@ impl RequestRouter for MethodBasedRouter {
                         a2a_types::JSONRPCId::Integer(n) => Some(n.to_string()),
                         a2a_types::JSONRPCId::Null => None,
                     }),
+                    liveness_role: A2aLivenessRole::Command,
                     metadata: metadata.clone(),
                 };
 
