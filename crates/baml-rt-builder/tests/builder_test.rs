@@ -4,7 +4,7 @@
 //! that all CLI subcommands work correctly end-to-end.
 
 use tempfile::TempDir;
-use test_support::common::{agent_fixture, ensure_fixture_runtime_types, workspace_root};
+use test_support::common::{agent_fixture, require_fixture_runtime_types, workspace_root};
 use test_support::support::cli::CliHarness;
 
 #[test]
@@ -100,7 +100,7 @@ async fn test_full_integration_package_load_execute() {
     use tokio::sync::Mutex;
 
     // Use stream-baml-tool fixture
-    ensure_fixture_runtime_types();
+    require_fixture_runtime_types();
     let agent_dir = agent_fixture("stream-baml-tool");
 
     if !agent_dir.exists() || !agent_dir.join("baml_src").exists() {

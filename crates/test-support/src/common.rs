@@ -21,7 +21,6 @@ pub use test_tools::{
 use std::future::Future;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Once;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::sync::Mutex;
@@ -44,23 +43,23 @@ pub fn agent_fixture(name: &str) -> PathBuf {
     fixture_path(&format!("agents/{}", name))
 }
 
-/// Ensure fixture TypeScript runtime declarations are up to date.
-/// Runs the builder's regen_fixtures binary once per test process.
-pub fn ensure_fixture_runtime_types() {
-    static REGEN_FIXTURES: Once = Once::new();
-    REGEN_FIXTURES.call_once(|| {
-        let output = crate::support::cli::CliHarness::new()
-            .regen_fixtures_command()
-            .output()
-            .expect("run regen_fixtures");
-        if !output.status.success() {
-            panic!(
-                "regen_fixtures failed: stdout={}, stderr={}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-    });
+/// Require fixture TypeScript runtime declarations to exist.
+/// Tests must not regenerate fixtures; run `just regen` (or the builder) to update them.
+pub fn require_fixture_runtime_types() {
+    let root = workspace_root();
+    let required = [
+        root.join("tests/fixtures/agents/stream-baml-tool/src/baml-runtime.d.ts"),
+        root.join("tests/fixtures/agents/conversational-context-auto/src/baml-runtime.d.ts"),
+    ];
+    let missing: Vec<_> = required.iter().filter(|path| !path.exists()).collect();
+    if !missing.is_empty() {
+        let list = missing
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        panic!("Fixture runtime types missing: {list}. Run `just regen` to generate fixtures.");
+    }
 }
 
 pub fn setup_baml_runtime(schema_path: &str) -> Arc<Mutex<BamlRuntimeManager>> {
@@ -360,7 +359,7 @@ pub async fn build_minimal_a2a_agent(init_js: &str) -> A2aAgent {
 }
 
 /// Builds an A2aAgent for contract tests: stream-baml-tool fixture, CalculatorTool,
-/// test QuickJS config. Call `ensure_fixture_runtime_types()` before this if not already done.
+/// test QuickJS config. Call `require_fixture_runtime_types()` before this if not already done.
 /// Returns the agent; tests create scope via `InvocationScope::synthetic_message(agent.agent_id().clone())`.
 pub async fn setup_stream_baml_tool_agent_for_contract(init_js: Option<&str>) -> A2aAgent {
     let mut baml_manager = BamlRuntimeManager::new().expect("create manager");

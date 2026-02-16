@@ -17,7 +17,7 @@ use serde_json::json;
 use std::fs;
 use std::sync::Arc;
 
-use test_support::common::{CalculatorTool, agent_fixture, ensure_fixture_runtime_types};
+use test_support::common::{CalculatorTool, agent_fixture, require_fixture_runtime_types};
 
 /// QuickJS config for LLM-dependent contract tests. Timeout must accommodate combined retries
 /// (parse retry + BAML client retry) which can exceed 15s; 45s provides margin.
@@ -34,7 +34,7 @@ async fn test_baml_function_returns_actual_result() {
     // Contract: invoke_function must return the actual BAML result (not wrapped in success object).
     // Uses stream-baml-tool and ChooseCalcTool which returns a session plan object with "steps".
     load_env();
-    ensure_fixture_runtime_types();
+    require_fixture_runtime_types();
 
     let mut baml_manager = BamlRuntimeManager::new().unwrap();
     let agent_dir = agent_fixture("stream-baml-tool");
@@ -98,7 +98,7 @@ async fn test_baml_function_returns_actual_result() {
 async fn test_js_function_invocation_returns_actual_result() {
     // Contract: When invoking a JS function that calls BAML, the result must be the actual BAML result, not a success wrapper.
     load_env();
-    ensure_fixture_runtime_types();
+    require_fixture_runtime_types();
 
     let mut baml_manager = BamlRuntimeManager::new().unwrap();
     let agent_dir = agent_fixture("stream-baml-tool");
@@ -165,7 +165,7 @@ async fn test_js_function_invocation_returns_actual_result() {
 async fn test_invoke_function_api_contract() {
     // Contract: invoke_function API must return the actual function result, not wrapped in any success object.
     load_env();
-    ensure_fixture_runtime_types();
+    require_fixture_runtime_types();
 
     let agent_dir = agent_fixture("stream-baml-tool");
     let mut baml_manager = BamlRuntimeManager::new().unwrap();
@@ -233,7 +233,7 @@ async fn test_invoke_function_api_contract() {
 async fn test_loaded_agent_invoke_function_contract() {
     // Contract: LoadedAgent::invoke_function must return the actual result, not wrapped (same pattern as load_agent_package).
     load_env();
-    ensure_fixture_runtime_types();
+    require_fixture_runtime_types();
 
     let agent_dir = test_support::common::agent_fixture("stream-baml-tool");
 

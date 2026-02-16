@@ -32,9 +32,9 @@ use ts_rs::TS;
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::ids::{AgentId, UuidId};
 use test_support::common::{
-    CalculatorTool, WeatherTool, agent_fixture, assert_tool_registered_in_js,
-    ensure_fixture_runtime_types, require_api_key, run_live_llm_with_retry,
-    setup_baml_runtime_default, setup_baml_runtime_from_fixture, setup_bridge,
+    CalculatorTool, WeatherTool, agent_fixture, assert_tool_registered_in_js, require_api_key,
+    require_fixture_runtime_types, run_live_llm_with_retry, setup_baml_runtime_default,
+    setup_baml_runtime_from_fixture, setup_bridge,
 };
 
 /// **Purpose:** Verify tool registration and direct execution from Rust (execute_tool_with_scope,
@@ -184,7 +184,7 @@ async fn test_llm_tool_calling_js() {
 async fn test_e2e_voidship_baml_tool_calling() {
     let _ = require_api_key();
 
-    ensure_fixture_runtime_types();
+    require_fixture_runtime_types();
     let baml_manager = setup_baml_runtime_from_fixture("stream-baml-tool");
     {
         let mut manager = baml_manager.lock().await;
@@ -235,7 +235,7 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
     }
     let _ = require_api_key();
 
-    ensure_fixture_runtime_types();
+    require_fixture_runtime_types();
     let agent_dir = agent_fixture("stream-baml-tool");
     let mut manager = baml_rt::baml::BamlRuntimeManager::new().unwrap();
     manager.load_schema(agent_dir.to_str().unwrap()).unwrap();

@@ -44,7 +44,7 @@ use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, SendMessageRequest};
 
 use test_support::common::{
     CalculatorTool, agent_fixture, chunks_from_responses, ensure_baml_src_exists,
-    ensure_fixture_runtime_types, message_texts_from_chunks, user_message, workspace_root,
+    message_texts_from_chunks, require_fixture_runtime_types, user_message, workspace_root,
 };
 use test_support::support::cli::CliHarness;
 
@@ -294,7 +294,7 @@ fn send_message_request(params: SendMessageRequest, id: &str) -> JSONRPCRequest 
 
 #[cfg(feature = "llm-tests")]
 async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
-    ensure_fixture_runtime_types();
+    require_fixture_runtime_types();
     let built = build_fixture_to_temp_async("stream-baml-tool").await;
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.load_schema(built.to_str().unwrap()).unwrap();
@@ -311,7 +311,7 @@ async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
 }
 
 async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
-    ensure_fixture_runtime_types();
+    require_fixture_runtime_types();
     let built = build_fixture_to_temp_async("stream-js-tool").await;
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.load_schema(built.to_str().unwrap()).unwrap();
@@ -327,7 +327,7 @@ async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
 }
 
 async fn setup_task_lifecycle_demo_agent() -> baml_rt::A2aAgent {
-    ensure_fixture_runtime_types();
+    require_fixture_runtime_types();
     let built = build_fixture_to_temp_async("task-lifecycle-demo").await;
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.load_schema(built.to_str().unwrap()).unwrap();
@@ -375,7 +375,7 @@ async fn setup_conversational_context_auto_agent(
     connection: String,
     graph: String,
 ) -> (baml_rt::A2aAgent, Arc<FalkorDbProvenanceWriter>) {
-    ensure_fixture_runtime_types();
+    require_fixture_runtime_types();
     let built = build_fixture_to_temp_async("conversational-context-auto").await;
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.load_schema(built.to_str().unwrap()).unwrap();
