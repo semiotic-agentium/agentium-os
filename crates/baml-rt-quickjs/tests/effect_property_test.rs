@@ -100,15 +100,15 @@ async fn test_liveness_gating_timeout() {
 }
 
 async fn test_liveness_gating_timeout_inner() {
-    use baml_rt_quickjs::quickjs_bridge::EffectGatedPoller;
+    use baml_rt_quickjs::quickjs_bridge::EffectGatedTimeoutPolicy;
 
     let context_id = ContextId::new(1000, 2);
     let bus = Arc::new(BusWithEffects::new());
 
     // Test 1: No effects in-flight -> short timeout
-    let poller = EffectGatedPoller::new(
-        Some(bus.clone() as Arc<dyn EffectLiveness>),
-        Some(context_id.clone()),
+    let poller = EffectGatedTimeoutPolicy::new(
+        bus.clone() as Arc<dyn EffectLiveness>,
+        context_id.clone(),
         5000,                 // 5s idle timeout
         TEST_MAX_ATTEMPTS_MS, // Short timeout for tests
     );
@@ -178,10 +178,10 @@ async fn test_simulated_hang_started_without_completed() {
     assert!(counts.any(), "Hang test: Should detect in-flight effect");
 
     // Liveness gating should use long timeout
-    use baml_rt_quickjs::quickjs_bridge::EffectGatedPoller;
-    let poller = EffectGatedPoller::new(
-        Some(bus.clone() as Arc<dyn EffectLiveness>),
-        Some(context_id),
+    use baml_rt_quickjs::quickjs_bridge::EffectGatedTimeoutPolicy;
+    let poller = EffectGatedTimeoutPolicy::new(
+        bus.clone() as Arc<dyn EffectLiveness>,
+        context_id,
         5000,
         TEST_MAX_ATTEMPTS_MS, // Short timeout for tests
     );
@@ -210,10 +210,10 @@ async fn test_simulated_hang_always_in_flight_inner() {
     let mock_liveness = Arc::new(MockEffectLiveness::new(true));
     let context_id = ContextId::new(1000, 5);
 
-    use baml_rt_quickjs::quickjs_bridge::EffectGatedPoller;
-    let poller = EffectGatedPoller::new(
-        Some(mock_liveness.clone() as Arc<dyn EffectLiveness>),
-        Some(context_id),
+    use baml_rt_quickjs::quickjs_bridge::EffectGatedTimeoutPolicy;
+    let poller = EffectGatedTimeoutPolicy::new(
+        mock_liveness.clone() as Arc<dyn EffectLiveness>,
+        context_id,
         5000,
         TEST_MAX_ATTEMPTS_MS, // Short timeout for tests
     );
@@ -229,7 +229,7 @@ async fn test_simulated_hang_always_in_flight_inner() {
 /// set_counts sets in-flight state without bus events; poller should use long timeout.
 #[tokio::test]
 async fn test_set_counts_directly_sets_in_flight() {
-    use baml_rt_quickjs::quickjs_bridge::EffectGatedPoller;
+    use baml_rt_quickjs::quickjs_bridge::EffectGatedTimeoutPolicy;
 
     let mock = Arc::new(MockEffectLiveness::new(false));
     let context_id = ContextId::new(1000, 10);
@@ -243,9 +243,9 @@ async fn test_set_counts_directly_sets_in_flight() {
     )
     .await;
 
-    let poller = EffectGatedPoller::new(
-        Some(mock as Arc<dyn EffectLiveness>),
-        Some(context_id),
+    let poller = EffectGatedTimeoutPolicy::new(
+        mock as Arc<dyn EffectLiveness>,
+        context_id,
         5000,
         TEST_MAX_ATTEMPTS_MS,
     );
@@ -260,16 +260,16 @@ async fn test_set_counts_directly_sets_in_flight() {
 /// the evaluate() loop uses max(initial, new) so timeout never decreases mid-loop.
 #[tokio::test]
 async fn test_timeout_monotonicity_effect_completion() {
-    use baml_rt_quickjs::quickjs_bridge::EffectGatedPoller;
+    use baml_rt_quickjs::quickjs_bridge::EffectGatedTimeoutPolicy;
 
     let bus = Arc::new(BusWithEffects::new());
     let context_id = ContextId::new(1000, 98);
     let idle = 5000u32;
     let max_attempts = TEST_MAX_ATTEMPTS_MS as u32;
 
-    let poller = EffectGatedPoller::new(
-        Some(bus.clone() as Arc<dyn EffectLiveness>),
-        Some(context_id.clone()),
+    let poller = EffectGatedTimeoutPolicy::new(
+        bus.clone() as Arc<dyn EffectLiveness>,
+        context_id.clone(),
         idle as u64,
         max_attempts as u64,
     );

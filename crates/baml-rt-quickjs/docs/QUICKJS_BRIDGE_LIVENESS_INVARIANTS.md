@@ -101,7 +101,7 @@ Promises created during `evaluate()` for non-stream requests must resolve within
 
 | Layer | Mechanism |
 |-------|-----------|
-| **Application** | `EffectGatedPoller` determines timeout based on in-flight effects |
+| **Application** | `EffectGatedTimeoutPolicy` determines timeout based on in-flight effects |
 | **Liveness Tracking** | `effect_liveness` tracks tool/LLM/A2A effects |
 | **Testing** | Property tests with mocked liveness verify timeout behavior |
 
