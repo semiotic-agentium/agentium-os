@@ -186,7 +186,7 @@ async fn test_streaming_tool_failure_mid_stream() {
             globalThis.onChatMessage = async function(message) {
                 __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
                 try {
-                    const session = await openToolSession("test/failing_tool", __baml_invocation_token);
+                    const session = await openToolSession("test/failing_tool");
                     await session.send({ msg: "fail" });
                     const step = await session.continue();
                     __chat_yield({ message: { parts: [{ text: step && step.error ? step.error.message : "no error" }] } });
@@ -239,11 +239,12 @@ async fn test_allowlist_violation_during_stream() {
 
     let agent = A2aAgent::builder()
         .with_runtime_manager(runtime)
-        .with_init_js(r#"
+        .with_init_js(
+            r#"
             globalThis.onChatMessage = async function(message) {
                 __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
                 try {
-                    const session = await openToolSession("support/calculate", __baml_invocation_token);
+                    const session = await openToolSession("support/calculate");
                     await session.send({ expression: { left: 1, operation: "Add", right: 2 } });
                     const step = await session.continue();
                     __chat_yield({ message: { parts: [{ text: "unexpected success" }] } });
@@ -251,7 +252,8 @@ async fn test_allowlist_violation_during_stream() {
                     __chat_yield({ message: { parts: [{ text: "allowlist: " + String(e) }] } });
                 }
             };
-        "#)
+        "#,
+        )
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()

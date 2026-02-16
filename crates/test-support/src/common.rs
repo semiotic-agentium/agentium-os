@@ -108,14 +108,22 @@ fn quickjs_config_for_tests() -> QuickJSConfig {
 }
 
 pub async fn setup_bridge(baml_manager: Arc<Mutex<BamlRuntimeManager>>) -> QuickJSBridge {
+    use baml_rt_core::bus::{BusWithEffects, EffectEmitter, EffectLiveness};
     use baml_rt_core::ids::AgentId;
     use uuid::Uuid;
     // Generate a temporary agent_id for test context
     let temp_agent_id = AgentId::from_uuid(baml_rt_core::ids::UuidId::new(Uuid::new_v4()));
     let config = quickjs_config_for_tests();
+    // Keep effect emission/liveness wiring aligned with runtime builder semantics.
+    let effect_bus = Arc::new(BusWithEffects::new());
+    {
+        let mut manager = baml_manager.lock().await;
+        manager.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
+    }
     let mut bridge = QuickJSBridge::new_with_config(baml_manager, temp_agent_id, config)
         .await
         .expect("Create QuickJS bridge");
+    bridge.set_effect_liveness(effect_bus as Arc<dyn EffectLiveness>);
     bridge
         .register_baml_functions()
         .await
@@ -166,7 +174,7 @@ pub async fn assert_tool_registered_in_js(
                 }});
             }}
             try {{
-                const session = await openToolSession("{}", __baml_invocation_token);
+                const session = await openToolSession("{}");
                 return JSON.stringify({{
                     toolExists: true,
                     source: "rust",

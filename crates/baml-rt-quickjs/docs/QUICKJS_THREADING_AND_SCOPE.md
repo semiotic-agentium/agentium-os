@@ -94,18 +94,17 @@ Yes. In practice “passing context via JS” means the host injects a value (e.
 
 ### Summary
 
-| Approach              | Who provides context at callback time | Can JS corrupt attribution? | Host design |
-|-----------------------|--------------------------------------|-----------------------------|-------------|
-| Worker-thread thunk   | Host (thread-local set before eval)  | No                          | No trust of JS. |
-| JS-passed raw context_id | JS (closure/args)                | Yes                         | Do **not** use for authoritative attribution. |
-| JS-passed opaque token | JS passes token; host looks up scope | No (host looks up)          | Token → scope map; validate or reject invalid token. |
+- Worker-thread thunk: host supplies callback context; JS cannot corrupt attribution.
+- JS-passed raw context_id: unsafe for authoritative attribution; do not use.
+- JS-passed opaque token: safer than raw IDs because host validates token-to-scope mapping.
+- Host active invocation frame: preferred model; callbacks resolve scope from host-managed invocation stack.
 
-So: **passing context via JS is acceptable for concurrency (e.g. each continuation carries a token), but the host must resolve that token (or validate the value) and never attribute solely on the basis of an unvalidated JS-supplied context_id.**
+So: **the preferred model is host-managed active invocation context; passing context via JS should not be required for normal helper calls.**
 
 ## Stream concurrency design note (current)
 
-- **Token required:** `openToolSession` **requires an explicit token** (`openToolSession(toolName, token)`); there is **no global fallback** and **no fallback to worker-thread scope** for attribution—natives resolve scope only via the token → scope map.
-- For **concurrent stream requests**, JS must pass the per‑invocation token explicitly (e.g. via `args.__baml_invocation_token`); global token state is not used.
+- **Host-resolved context:** `openToolSession` is called as `openToolSession(toolName)`; natives resolve scope from active host invocation context (no JS token argument required).
+- For **concurrent stream requests**, attribution still remains host-authoritative because each invocation has its own host context frame; global JS token state is not used.
 - **Stream semaphore:** Only one stream invocation may be active per bridge at a time (a semaphore is acquired in `invoke_js_function_stream` and released in `get_a2a_yield_buffer`), so token/scope state is not overwritten by concurrent streams.
 
 ## References

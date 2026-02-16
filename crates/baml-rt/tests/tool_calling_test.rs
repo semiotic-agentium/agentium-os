@@ -292,7 +292,9 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
         });
     }
 
-    let deadline = Duration::from_secs(30);
+    // Live LLM calls under concurrent load can occasionally exceed 30s.
+    // Keep a bounded test while reducing false CI failures from provider latency spikes.
+    let deadline = Duration::from_secs(90);
     let start = std::time::Instant::now();
     let mut remaining = 4usize;
     while remaining > 0 {

@@ -1,22 +1,21 @@
 # baml-rt-quickjs
 
-QuickJS-backed runtime host for BAML execution, with explicit token-based
+QuickJS-backed runtime host for BAML execution, with host-managed
 context propagation for concurrent tool and A2A flows.
 
 ## Responsibilities
 
 - `BamlRuntimeManager` orchestration for schema loading and function execution.
 - `QuickJSBridge` integration to expose BAML functions and tools to JavaScript.
-- Token-based context propagation and JS value conversion utilities.
+- Host-side scope/context propagation and JS value conversion utilities.
 
 ## Architecture at a Glance
 
 - **QuickJSBridge** owns the runtime and registers JS helpers (`__baml_invoke`,
   `__tool_invoke`, `__baml_stream`, tool-session helpers).
-- **Invocation tokens** are issued per eval and stored in a host-held
-  `token -> RuntimeScope` map. JS only sees the opaque token and passes it back
-  to native helpers.
-- **Native callbacks** resolve scope via the token map; JS never supplies raw
+- **Invocation context frames** are entered per eval/invoke and stored in a
+  host-managed active stack.
+- **Native callbacks** resolve scope from the active host context; JS never supplies raw
   context for authoritative attribution.
 
 ## Context Propagation (Critical Design)
@@ -29,21 +28,18 @@ request-scoped context explicitly.
 
 - **No shared global state for attribution.** JS globals are shared and unsafe
   under concurrency.
-- **Token is the single source of truth.** All native callbacks resolve
-  `RuntimeScope` from the token map.
+- **Host context is the source of truth.** All native callbacks resolve
+  `RuntimeScope` from the active invocation context.
 - **Tool sessions keep scope until close.** Session scope stays in the host map
   until finish/abort (or send error).
 
-### Token Flow
+### Host-Managed Context Flow
 
-1. Host creates `InvocationToken` for each eval and stores `token -> scope`.
-2. Prelude binds `const __baml_invocation_token` for the eval scope.
-3. JS passes the token explicitly to native helpers (e.g.
-   `openToolSession(toolName, args.__baml_invocation_token)` or
-   `args.__baml_invocation_token`); the prelude binds it only for the eval
-   scope, so registered JS tools must use the token from `args` for nested
-   calls.
-4. Native callbacks resolve scope from the map and run inside
+1. Host enters an invocation context frame for each eval/invoke.
+2. Native helpers resolve scope from the current active host context frame.
+3. JS calls helpers directly (e.g. `openToolSession(toolName)`), without
+   passing invocation tokens.
+4. Native callbacks run with resolved scope attribution in
    `context::with_scope(scope, ...)`.
 
 See `docs/QUICKJS_THREADING_AND_SCOPE.md` and
@@ -57,9 +53,8 @@ remain callable via `invokeTool`.
 
 ### openToolSession
 
-`openToolSession(toolName, token)` **requires the invocation token** and does
-not fall back to globals. JS wrappers pass `__baml_invocation_token` or attach
-`args.__baml_invocation_token` so nested calls keep attribution intact.
+`openToolSession(toolName)` resolves scope from active host context and does
+not require invocation token arguments in JS.
 
 ## Streaming (A2A)
 
