@@ -1,14 +1,14 @@
-//! Property tests for stream chunk ordering and finality.
+//! Stream ordering/finality smoke checks.
 //!
-//! **Purpose:** Assert that when the agent yields K chunks, we get K responses in order
-//! and exactly one response is marked final (the last). Validates order preservation and finality.
+//! High-entropy interleaving properties live in `run_handle_a2a_property_test`.
+//! This file keeps a narrow deterministic smoke check for chunk ordering/finality
+//! in the synthetic `count:N` stream fixture path.
 
 #![recursion_limit = "256"]
 
 use baml_rt::BamlRuntimeManager;
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use futures_util::StreamExt;
-use proptest::prelude::*;
 use serde_json::Value;
 use test_support::common::send_stream_request;
 
@@ -62,42 +62,53 @@ async fn run_stream_test(k: u32) -> Vec<Value> {
     out
 }
 
-// **Purpose:** For K in 1..=20, an agent that yields K chunks must produce K responses
-// in index order and exactly one response with `final: true` (the last).
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(8))]
-    #[test]
-    fn prop_stream_chunk_order_and_finality(k in 1u32..=20u32) {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        let responses = rt.block_on(run_stream_test(k));
-        let k_usize = k as usize;
+fn assert_stream_chunk_order_and_finality(responses: &[Value], k: u32) {
+    let k_usize = k as usize;
+    assert_eq!(
+        responses.len(),
+        k_usize,
+        "expected {} stream responses, got {}",
+        k_usize,
+        responses.len()
+    );
+    let mut final_count = 0u32;
+    for (i, response) in responses.iter().enumerate() {
+        let result = response
+            .get("result")
+            .and_then(|r| r.as_object())
+            .expect("result");
+        let index = result
+            .get("index")
+            .and_then(Value::as_u64)
+            .unwrap_or(i as u64);
         assert_eq!(
-            responses.len(),
-            k_usize,
-            "expected {} stream responses, got {}",
-            k_usize,
-            responses.len()
+            index, i as u64,
+            "chunk order: index {} should be {}",
+            i, index
         );
-        let mut final_count = 0u32;
-        for (i, response) in responses.iter().enumerate() {
-            let result = response.get("result").and_then(|r| r.as_object()).expect("result");
-            let index = result.get("index").and_then(Value::as_u64).unwrap_or(i as u64);
-            assert_eq!(index, i as u64, "chunk order: index {} should be {}", i, index);
-            let chunk = result.get("chunk").cloned().unwrap_or(Value::Null);
-            if let Some(chunk_index) = chunk.get("index").and_then(Value::as_u64) {
-                assert_eq!(chunk_index, i as u64, "chunk content index");
-            }
-            if result.get("final").and_then(Value::as_bool).unwrap_or(false) {
-                final_count += 1;
-            }
+        let chunk = result.get("chunk").cloned().unwrap_or(Value::Null);
+        if let Some(chunk_index) = chunk.get("index").and_then(Value::as_u64) {
+            assert_eq!(chunk_index, i as u64, "chunk content index");
         }
-        assert_eq!(
-            final_count, 1,
-            "exactly one chunk must be final, got {}",
-            final_count
-        );
+        if result
+            .get("final")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            final_count += 1;
+        }
+    }
+    assert_eq!(
+        final_count, 1,
+        "exactly one chunk must be final, got {}",
+        final_count
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn test_stream_chunk_order_and_finality_smoke() {
+    for k in [1u32, 3u32, 20u32] {
+        let responses = run_stream_test(k).await;
+        assert_stream_chunk_order_and_finality(&responses, k);
     }
 }

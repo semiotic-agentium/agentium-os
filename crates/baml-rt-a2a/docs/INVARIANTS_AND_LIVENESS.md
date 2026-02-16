@@ -218,3 +218,4 @@ hang or be prematurely closed depending on heuristics.
 | `prop_worker_eventual_response_with_message_scope` | Worker | Scope from message + eventual response |
 | `prop_dispatcher_forwards_registered_scope_and_payload` | Dispatcher | Forwarding preserves registered scope + payload order |
 | `prop_dispatcher_finish_removes_session_and_blocks_further_sends` | Dispatcher | Finish removes route and blocks future sends |
+| `prop_interleaved_a2a_tool_llm_multi_context_isolation` | A2A + runtime | Concurrent multi-context isolation under jittered A2A/tool/LLM interleavings |
