@@ -76,3 +76,16 @@ after one run of pending jobs; effect state is re-checked every 10 attempts for 
 first 500ms, then every 100. Long timeout when effects are in-flight, short idle
 timeout otherwise. See `docs/HOST_QUICKJS_STREAM_INVARIANTS.md` and
 `src/quickjs_bridge/promise_polling.rs`.
+
+## QuickJS optimization settings
+
+`QuickJSConfig` (and `quickjs_runtime::builder::QuickJsRuntimeBuilder`) expose the following; all are optional and default to the upstream runtime behaviour when unset.
+
+| Option | Effect | Tuning |
+|--------|--------|--------|
+| **memory_limit** (bytes) | Hard cap on runtime heap. | Set in production to avoid OOM; leave `None` in tests if acceptable. |
+| **max_stack_size** (bytes) | Max JS stack size. | Increase only if you hit stack overflow on deep recursion; larger values use more memory per runtime. |
+| **gc_threshold** (allocations) | Run GC after this many allocations. | **Higher** = fewer GC runs, better throughput, more memory. **Lower** = more frequent GC, lower peak memory, possible extra latency. For CPU-heavy or long evals, raising the threshold can reduce pause frequency. |
+| **gc_interval** (duration) | Timer thread triggers a full GC every interval. | `None` (default) = GC only by threshold. Setting an interval can smooth pause distribution but adds a background thread. Disable (or use a long interval) when optimizing for throughput. |
+
+QuickJS is interpreted (no JIT in the standard build). The main runtime levers are GC policy and memory/stack limits. For faster test runs, use `cargo test --release`; the host and bridge code benefit from release optimizations.

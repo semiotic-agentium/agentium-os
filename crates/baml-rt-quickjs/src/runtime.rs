@@ -13,9 +13,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-/// Configuration for QuickJS runtime options
+/// Configuration for QuickJS runtime options.
 ///
-/// These options map directly to the available options in `quickjs_runtime::builder::QuickJsRuntimeBuilder`.
+/// These options map to `quickjs_runtime::builder::QuickJsRuntimeBuilder`. See the
+/// crate README section "QuickJS optimization settings" for tuning guidance (GC,
+/// memory, stack).
 #[derive(Debug, Clone, Default)]
 pub struct QuickJSConfig {
     /// Maximum memory limit in bytes (None = no limit)

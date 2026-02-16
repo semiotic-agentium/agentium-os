@@ -45,7 +45,18 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold libclang-dev
+          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold libclang-dev util-linux
+
+      - name: System info
+        run: |
+          echo "=== lscpu ==="
+          lscpu
+          echo "=== nproc ==="
+          nproc
+          echo "=== memory (free -h) ==="
+          free -h
+          echo "=== uname -a ==="
+          uname -a
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
