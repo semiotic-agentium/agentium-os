@@ -28,7 +28,7 @@ pub(crate) struct PollPromiseParams<'a> {
     pub token_to_remove: Option<&'a InvocationToken>,
     pub invocation_scope_by_token: &'a InvocationScopeMap,
     pub scope: &'a InvocationScope,
-    pub effect_liveness: Arc<dyn EffectLiveness>,
+    pub effect_liveness: Option<Arc<dyn EffectLiveness>>,
     pub idle_timeout_ms: u64,
     pub max_attempts_ms: u64,
 }
@@ -36,9 +36,8 @@ pub(crate) struct PollPromiseParams<'a> {
 /// Poll until `__eval_result` is set for the given token or timeout.
 ///
 /// Runs `runtime.run_pending_jobs_if_any()` each iteration so promise
-/// continuations can run. Uses effect-gated timeout: long timeout when
-/// effects are in-flight, short idle timeout otherwise. Requires both
-/// invocation scope and effect-liveness wiring.
+/// continuations can run. Uses effect-gated timeout when effect-liveness
+/// wiring is available; otherwise falls back to the configured max timeout.
 /// When the loop
 /// exits (success or timeout), removes the invocation token from
 /// `invocation_scope_by_token` if `token_to_remove` is `Some`.
@@ -55,13 +54,21 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
         max_attempts_ms,
     } = params;
 
-    let poller = EffectGatedTimeoutPolicy::new(
-        effect_liveness,
-        scope.context_id().clone(),
-        idle_timeout_ms,
-        max_attempts_ms,
-    );
-    let mut timeout_attempts = poller.timeout_attempts().await;
+    let poller = effect_liveness.map(|liveness| {
+        EffectGatedTimeoutPolicy::new(
+            liveness,
+            scope.context_id().clone(),
+            idle_timeout_ms,
+            max_attempts_ms,
+        )
+    });
+    let mut timeout_attempts = if let Some(poller) = poller.as_ref() {
+        poller.timeout_attempts().await
+    } else {
+        // Fallback for call sites/tests that don't wire effect liveness.
+        // In this mode use the long timeout budget directly.
+        max_attempts_ms as u32
+    };
     let mut attempts = 0u32;
 
     let _poll_guard = tracing::trace_span!("baml_rt.poll_promise_resolution").entered();
@@ -104,7 +111,9 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
 
         // Re-check effect-gated timeout periodically (every EFFECT_CHECK_INTERVAL attempts).
         #[allow(clippy::manual_is_multiple_of)] // std has no is_multiple_of for u32
-        if attempts > 0 && attempts % EFFECT_CHECK_INTERVAL == 0 {
+        if attempts > 0 && attempts % EFFECT_CHECK_INTERVAL == 0
+            && let Some(poller) = poller.as_ref()
+        {
             let new_timeout = poller.timeout_attempts().await;
             timeout_attempts = timeout_attempts.max(new_timeout);
         }

@@ -17,6 +17,11 @@ pub struct BufferDrain {
 }
 
 impl QuickJSBridge {
+    /// Current number of in-flight `__baml_invoke` / `__baml_stream` async bodies.
+    pub(crate) fn in_flight_invoke_count(&self) -> u32 {
+        self.in_flight_invoke_count.load(Ordering::Acquire)
+    }
+
     /// Set up the chat stream yield buffer and __chat_yield so JS can yield chunks asynchronously
     /// instead of collecting and returning an array. Call before invoking onChatMessage for stream requests.
     ///
