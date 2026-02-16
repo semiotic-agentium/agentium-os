@@ -60,7 +60,7 @@ jobs:
 
       - name: Run nextest
         run: |
-          cargo nextest run --workspace --locked --profile ci \
+          cargo nextest run --workspace --locked --release --profile ci \
             --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests,baml-agent-runner/http-tools,baml-rt/llm-tests,baml-agent-runner/llm-tests
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

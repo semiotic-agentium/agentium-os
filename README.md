@@ -175,6 +175,8 @@ cargo test
 cargo test -- --nocapture
 ```
 
+**Slow tests / pre-effect timeout:** Contract and LLM-dependent tests (e.g. `contracts_test::test_js_function_invocation_returns_actual_result`) can be slow or fail because they hit the **short (idle) timeout before any LLM effect is observed**: the promise executor may not run soon enough, so the poll loop never sees `LlmStarted` and uses the idle timeout (e.g. 5s default or 45s if configured). That can cause 60s+ wall time (e.g. multiple timeouts or one long idle limit) or failure with "Promise did not resolve after N attempts". The warm-up window (first 2s never use the short timeout) and effect wiring (see "Promise polling and effect-gated timeout" above) mitigate this; ensure tests that call BAML/LLM use a QuickJS config with long enough timeouts and wire `set_effect_liveness`. Running with `cargo test --release` reduces CPU-bound time but does not fix the pre-effect timeout issue. CI uses nextest with the `llm` test group limited to 2 threads.
+
 ## License
 
 [License information]
