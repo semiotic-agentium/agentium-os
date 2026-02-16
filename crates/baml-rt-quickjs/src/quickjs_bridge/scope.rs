@@ -69,8 +69,18 @@ impl InvocationContextRegistry {
 
     /// Exit the invocation for this id. Must match the id returned from [`enter`](Self::enter).
     pub(crate) fn exit(&mut self, id: &InvocationContextId) {
-        if self.stack.last() == Some(id) {
-            self.stack.pop();
+        // Remove from stack even if exits arrive out-of-order. This prevents
+        // dangling ids in `stack` that point to missing frames in `by_id`.
+        if let Some(pos) = self.stack.iter().rposition(|current| current == id) {
+            if pos + 1 != self.stack.len() {
+                tracing::warn!(
+                    exited_id = %id.0,
+                    depth = self.stack.len(),
+                    pos = pos,
+                    "Invocation context exited out of order; removing non-top frame"
+                );
+            }
+            self.stack.remove(pos);
         }
         self.by_id.remove(id);
     }
@@ -119,14 +129,15 @@ pub(crate) fn next_invocation_token() -> InvocationToken {
 pub(crate) fn resolve_scope_from_active_context(
     registry: &Arc<StdMutex<InvocationContextRegistry>>,
 ) -> std::result::Result<RuntimeScope, quickjs_runtime::jsutils::JsError> {
-    if let Ok(guard) = registry.lock()
-        && let Ok(scope) = guard.current_scope()
-    {
-        return Ok(scope);
-    }
-    Err(quickjs_runtime::jsutils::JsError::new_str(
-        "No invocation context (run inside an active host invocation)",
-    ))
+    let guard = registry.lock().map_err(|_| {
+        quickjs_runtime::jsutils::JsError::new_str("No invocation context (registry lock poisoned)")
+    })?;
+    guard.current_scope().map_err(|e| {
+        quickjs_runtime::jsutils::JsError::new_str(&format!(
+            "No invocation context (run inside an active host invocation): {}",
+            e
+        ))
+    })
 }
 
 pub(crate) async fn run_eval_with_scope(
@@ -143,6 +154,8 @@ pub(crate) async fn run_eval_with_scope(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use baml_rt_core::context::InvocationScope;
+    use baml_rt_core::ids::{AgentId, UuidId};
     use proptest::prelude::*;
     use std::collections::HashSet;
 
@@ -164,5 +177,42 @@ mod tests {
                 "next_invocation_token must yield distinct tokens"
             );
         }
+    }
+
+    #[test]
+    fn exit_out_of_order_does_not_leave_dangling_stack_ids() {
+        let agent_a = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
+        let agent_b = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
+        let scope_a = InvocationScope::synthetic_message(agent_a)
+            .as_scope()
+            .clone();
+        let scope_b = InvocationScope::synthetic_message(agent_b)
+            .as_scope()
+            .clone();
+
+        let mut registry = InvocationContextRegistry::new();
+        let id_a = registry.enter(scope_a, None);
+        let id_b = registry.enter(scope_b.clone(), None);
+
+        // Simulate out-of-order exit (parent exits before child).
+        registry.exit(&id_a);
+        assert_eq!(
+            registry
+                .current_scope()
+                .expect("top scope should remain valid"),
+            scope_b
+        );
+
+        // After child exits, stack must be empty (no dangling removed ids).
+        registry.exit(&id_b);
+        let err = registry
+            .current_scope()
+            .expect_err("stack should be empty after both exits")
+            .to_string();
+        assert!(
+            err.contains("No invocation context"),
+            "expected empty-stack error, got: {}",
+            err
+        );
     }
 }
