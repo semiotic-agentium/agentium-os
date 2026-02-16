@@ -34,10 +34,11 @@ impl EffectGatedTimeoutPolicy {
 
     /// Get the timeout attempts based on current effect state.
     ///
-    /// Returns max_attempts if effects are in-flight, otherwise idle_timeout_attempts.
+    /// Returns max_attempts if downstream progress-capable effects are in-flight,
+    /// otherwise idle_timeout_attempts.
     pub async fn timeout_attempts(&self) -> u32 {
         let counts = self.liveness.in_flight(&self.context_id).await;
-        if counts.any() {
+        if counts.has_progress_effects() {
             // Effects active: use long timeout
             self.max_attempts
         } else {

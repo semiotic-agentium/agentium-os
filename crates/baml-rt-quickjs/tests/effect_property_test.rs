@@ -26,9 +26,10 @@
 //!   Provenance events require message_id in metadata (runtime validation).
 
 use baml_rt_core::bus::{
-    BusWithEffects, EffectEmitter, EffectEvent, EffectLiveness, InFlightCounts, ToolEffectMetadata,
+    A2aEffectMetadata, A2aLivenessRole, BusWithEffects, EffectEmitter, EffectEvent, EffectLiveness,
+    InFlightCounts, ToolEffectMetadata,
 };
-use baml_rt_core::ids::ContextId;
+use baml_rt_core::ids::{AgentId, ContextId, UuidId};
 use proptest::prelude::*;
 use serde_json::json;
 use std::collections::HashMap;
@@ -77,6 +78,7 @@ impl EffectLiveness for MockEffectLiveness {
                 tool: 1,
                 llm: 0,
                 a2a: 0,
+                a2a_command: 0,
             }
         } else {
             let map = self.counts.read().await;
@@ -239,6 +241,7 @@ async fn test_set_counts_directly_sets_in_flight() {
             tool: 1,
             llm: 0,
             a2a: 0,
+            a2a_command: 0,
         },
     )
     .await;
@@ -308,6 +311,67 @@ async fn test_timeout_monotonicity_effect_completion() {
     // CG6: evaluate() loop uses max(initial_timeout, new_timeout) so the effective
     // timeout never decreases mid-loop. Here we only assert state-dependent values;
     // monotonicity is enforced in quickjs_bridge evaluate().
+}
+
+/// A2A envelope effect alone should not force long timeout.
+/// Long timeout is reserved for downstream progress-capable work.
+#[tokio::test]
+async fn test_a2a_envelope_is_discounted_for_polling() {
+    use baml_rt_quickjs::quickjs_bridge::EffectGatedTimeoutPolicy;
+
+    let bus = Arc::new(BusWithEffects::new());
+    let context_id = ContextId::new(1000, 97);
+    let idle = 5000u32;
+    let max_attempts = TEST_MAX_ATTEMPTS_MS as u32;
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000097").unwrap());
+    let metadata = A2aEffectMetadata {
+        agent_id,
+        method: "message.sendStream".to_string(),
+        request_id: Some("req-97".to_string()),
+        liveness_role: A2aLivenessRole::Command,
+        metadata: json!({ "phase": "envelope" }),
+    };
+    let effect_metadata = A2aEffectMetadata {
+        agent_id: metadata.agent_id.clone(),
+        method: metadata.method.clone(),
+        request_id: metadata.request_id.clone(),
+        liveness_role: A2aLivenessRole::Effect,
+        metadata: json!({ "phase": "nested" }),
+    };
+
+    let policy = EffectGatedTimeoutPolicy::new(
+        bus.clone() as Arc<dyn EffectLiveness>,
+        context_id.clone(),
+        idle as u64,
+        max_attempts as u64,
+    );
+
+    // Envelope in flight => still idle timeout.
+    bus.emit(EffectEvent::A2aStarted {
+        context_id: context_id.clone(),
+        metadata: metadata.clone(),
+    })
+    .await
+    .unwrap();
+    let one_a2a = policy.timeout_attempts().await;
+    assert_eq!(
+        one_a2a, idle,
+        "Single A2A envelope should not force long timeout"
+    );
+
+    // Nested/child A2A effect => long timeout.
+    bus.emit(EffectEvent::A2aStarted {
+        context_id: context_id.clone(),
+        metadata: effect_metadata,
+    })
+    .await
+    .unwrap();
+    let nested_a2a = policy.timeout_attempts().await;
+    assert_eq!(
+        nested_a2a, max_attempts,
+        "Nested A2A work should force long timeout"
+    );
 }
 
 /// E1 / CG3 (release only): Dropping EffectStartToken without complete leaves in-flight count at 1.

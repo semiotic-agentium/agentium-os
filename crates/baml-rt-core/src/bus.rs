@@ -87,10 +87,19 @@ impl LlmEffectMetadata {
 }
 
 #[derive(Debug, Clone)]
+pub enum A2aLivenessRole {
+    /// Command envelope lifecycle (ingress/egress orchestration).
+    Command,
+    /// Progress-capable A2A effect work (e.g. nested or child transport work).
+    Effect,
+}
+
+#[derive(Debug, Clone)]
 pub struct A2aEffectMetadata {
     pub agent_id: AgentId,
     pub method: String,
     pub request_id: Option<String>,
+    pub liveness_role: A2aLivenessRole,
     pub metadata: serde_json::Value,
 }
 
@@ -349,16 +358,24 @@ pub trait EffectLiveness: Send + Sync {
 pub struct InFlightCounts {
     pub tool: u32,
     pub llm: u32,
+    /// Progress-capable A2A effects.
     pub a2a: u32,
+    /// Command envelope lifecycle counters (non-progress for timeout gating).
+    pub a2a_command: u32,
 }
 
 impl InFlightCounts {
     pub fn any(&self) -> bool {
+        self.tool > 0 || self.llm > 0 || self.a2a > 0 || self.a2a_command > 0
+    }
+
+    /// True iff there is downstream work that can advance the current poll loop.
+    pub fn has_progress_effects(&self) -> bool {
         self.tool > 0 || self.llm > 0 || self.a2a > 0
     }
 
     pub fn total(&self) -> u32 {
-        self.tool + self.llm + self.a2a
+        self.tool + self.llm + self.a2a + self.a2a_command
     }
 
     pub fn get_mut(&mut self, kind: EffectKind) -> &mut u32 {
@@ -515,31 +532,64 @@ impl BusWithEffects {
 
     async fn process_effect(&self, event: EffectEvent) -> crate::Result<()> {
         let context_id = event.context_id().clone();
-        let kind = event.kind();
         {
             let mut counts = self.counts.write().await;
             let entry = counts
                 .entry(context_id.clone())
                 .or_insert_with(InFlightCounts::default);
             match event {
-                EffectEvent::ToolStarted { .. }
-                | EffectEvent::LlmStarted { .. }
-                | EffectEvent::A2aStarted { .. } => {
-                    let count = entry.get_mut(kind);
-                    *count = count.saturating_add(1);
-                }
-                EffectEvent::ToolCompleted { .. }
-                | EffectEvent::LlmCompleted { .. }
-                | EffectEvent::A2aCompleted { .. } => {
-                    let count = entry.get_mut(kind);
-                    if *count == 0 {
-                        tracing::error!(context_id = ?context_id, "{}", kind.underflow_message());
+                EffectEvent::ToolStarted { .. } => entry.tool = entry.tool.saturating_add(1),
+                EffectEvent::LlmStarted { .. } => entry.llm = entry.llm.saturating_add(1),
+                EffectEvent::A2aStarted { ref metadata, .. } => match metadata.liveness_role {
+                    A2aLivenessRole::Command => {
+                        entry.a2a_command = entry.a2a_command.saturating_add(1)
                     }
-                    *count = count.saturating_sub(1);
-                    if !entry.any() {
-                        counts.remove(&context_id);
+                    A2aLivenessRole::Effect => entry.a2a = entry.a2a.saturating_add(1),
+                },
+                EffectEvent::ToolCompleted { .. } => {
+                    if entry.tool == 0 {
+                        tracing::error!(
+                            context_id = ?context_id,
+                            "{}",
+                            EffectKind::Tool.underflow_message()
+                        );
                     }
+                    entry.tool = entry.tool.saturating_sub(1);
                 }
+                EffectEvent::LlmCompleted { .. } => {
+                    if entry.llm == 0 {
+                        tracing::error!(
+                            context_id = ?context_id,
+                            "{}",
+                            EffectKind::Llm.underflow_message()
+                        );
+                    }
+                    entry.llm = entry.llm.saturating_sub(1);
+                }
+                EffectEvent::A2aCompleted { ref metadata, .. } => match metadata.liveness_role {
+                    A2aLivenessRole::Command => {
+                        if entry.a2a_command == 0 {
+                            tracing::error!(
+                                context_id = ?context_id,
+                                "Effect count underflow: A2aCommandCompleted without matching A2aCommandStarted"
+                            );
+                        }
+                        entry.a2a_command = entry.a2a_command.saturating_sub(1);
+                    }
+                    A2aLivenessRole::Effect => {
+                        if entry.a2a == 0 {
+                            tracing::error!(
+                                context_id = ?context_id,
+                                "{}",
+                                EffectKind::A2a.underflow_message()
+                            );
+                        }
+                        entry.a2a = entry.a2a.saturating_sub(1);
+                    }
+                },
+            }
+            if !entry.any() {
+                counts.remove(&context_id);
             }
         }
 
