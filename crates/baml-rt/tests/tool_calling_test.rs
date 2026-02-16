@@ -158,7 +158,7 @@ async fn test_llm_tool_calling_js() {
     let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
         UuidId::parse_str("00000000-0000-0000-0000-000000000002").unwrap(),
     ));
-    assert_tool_registered_in_js(&mut bridge, "test/reverse_string", Some(&scope)).await;
+    assert_tool_registered_in_js(&mut bridge, "test/reverse_string", &scope).await;
 
     // Test executing the tool from Rust (scope required)
     {

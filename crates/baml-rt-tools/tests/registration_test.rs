@@ -202,7 +202,7 @@ async fn test_register_and_execute_tool_js() {
         UuidId::parse_str("00000000-0000-0000-0000-00000000000b").unwrap(),
     ));
     // Test that tool is registered in QuickJS (scope required for Rust tools via openToolSession)
-    assert_tool_registered_in_js(&mut bridge, "test/greet", Some(&scope)).await;
+    assert_tool_registered_in_js(&mut bridge, "test/greet", &scope).await;
 
     // Test executing the tool directly from Rust to verify it works end-to-end
     {
@@ -306,8 +306,11 @@ async fn test_register_js_tool() {
         })()
     "#;
 
-    // Note: We can't easily await this in eval(), but we can check it exists (JS tool: no scope needed)
-    assert_tool_registered_in_js(&mut bridge, "js/greet", None).await;
+    // assert_tool_registered_in_js runs async IIFE that returns a promise; evaluate() requires scope to poll.
+    let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-000000000050").unwrap(),
+    ));
+    assert_tool_registered_in_js(&mut bridge, "js/greet", &scope).await;
 
     let check_code = r#"
         (() => JSON.stringify({
@@ -362,8 +365,11 @@ async fn test_register_js_tool_with_complex_logic() {
         "Should list js/calculate tool"
     );
 
-    // Check function exists (JS tool: no scope needed)
-    assert_tool_registered_in_js(&mut bridge, "js/calculate", None).await;
+    // assert_tool_registered_in_js runs async IIFE that returns a promise; evaluate() requires scope to poll.
+    let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-000000000051").unwrap(),
+    ));
+    assert_tool_registered_in_js(&mut bridge, "js/calculate", &scope).await;
 
     tracing::info!("✅ Complex JavaScript tool registered successfully");
 }

@@ -157,11 +157,11 @@ pub fn workspace_root() -> PathBuf {
 }
 
 /// Asserts that a tool is visible in QuickJS (either as a JS tool in `__js_tools` or as a Rust tool via `openToolSession`).
-/// When checking Rust tools, pass `scope` so `openToolSession` has a valid invocation token.
+/// Requires `scope` because the check runs an async IIFE that returns a promise; evaluate() must receive a scope to poll it.
 pub async fn assert_tool_registered_in_js(
     bridge: &mut QuickJSBridge,
     tool_name: &str,
-    scope: Option<&baml_rt_core::context::InvocationScope>,
+    scope: &baml_rt_core::context::InvocationScope,
 ) {
     let js_code = format!(
         r#"
@@ -190,7 +190,7 @@ pub async fn assert_tool_registered_in_js(
         "#,
         tool_name, tool_name
     );
-    let result = bridge.evaluate(scope, &js_code).await.unwrap_or_else(|e| {
+    let result = bridge.evaluate(Some(scope), &js_code).await.unwrap_or_else(|e| {
         panic!(
             "Tool '{}' registration check failed: evaluate returned error (includes raw response if parse failed): {}",
             tool_name, e
