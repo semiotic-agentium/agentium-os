@@ -36,12 +36,10 @@ impl BundleType for Test {
 struct EchoTool;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
 struct EchoInput {
     text: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
 struct EchoOutput {
     echo: String,
 }
