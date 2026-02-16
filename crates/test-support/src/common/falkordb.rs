@@ -2,7 +2,7 @@
 
 use testcontainers::core::ContainerPort;
 use testcontainers::runners::AsyncRunner;
-use testcontainers::{GenericImage, ImageExt};
+use testcontainers::{GenericImage, ImageExt, ReuseDirective};
 use text_to_cypher::core::execute_cypher_query;
 use tokio::sync::OnceCell;
 use tokio::time::{Duration, sleep};
@@ -43,6 +43,8 @@ async fn start_falkordb() -> (testcontainers::ContainerAsync<GenericImage>, Stri
         attempt += 1;
         let image = base_image
             .clone()
+            .with_container_name("baml-falkordb-tests")
+            .with_reuse(ReuseDirective::Always)
             .with_startup_timeout(Duration::from_secs(180));
         match image.start().await {
             Ok(container) => break container,

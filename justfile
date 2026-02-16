@@ -19,6 +19,10 @@ test-heavy:
 test-falkordb:
     cargo test --locked -p baml-rt-provenance -p baml-rt-a2a -p baml-agent-runner --features baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests,baml-agent-runner/http-tools -j 1
 
+# Cleanup the reusable FalkorDB container created by testcontainers.
+falkordb-clean:
+    docker rm -f baml-falkordb-tests || true
+
 # Run the full CI suite locally (requires OPENROUTER_API_KEY and FalkorDB).
 test-all: test-light test-derive test-heavy test-falkordb
 

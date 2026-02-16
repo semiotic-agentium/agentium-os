@@ -51,7 +51,7 @@ tracing-opentelemetry = "0.27"
 tokio-tungstenite = "0.28.0"
 futures-util = "0.3.31"
 text-to-cypher = { version = "0.1", default-features = false }
-testcontainers = "0.23"
+testcontainers = { version = "0.23", features = ["reusable-containers"] }
 insta = "1.46.3"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 schemars = "1.1.0"
