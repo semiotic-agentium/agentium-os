@@ -528,6 +528,12 @@ impl A2aAgentBuilderWithEffectEmitter {
             }
         };
 
+        // Bridge promise polling requires effect liveness wiring.
+        {
+            let mut bridge_guard = bridge.lock().await;
+            bridge_guard.set_effect_liveness(self.effect_emitter.clone());
+        }
+
         if self.register_baml_functions || !self.init_js.is_empty() {
             tracing::debug!(
                 "A2aAgentBuilder::build: Registering BAML functions and/or evaluating init_js"
@@ -867,11 +873,9 @@ impl A2aAgent {
                             Err(_) => break,
                         }
                     } else {
-                        // Keep session alive and wait for next user input injection.
-                        match input_rx.recv().await {
-                            Ok(next_request) => current = Some(next_request),
-                            Err(_) => break,
-                        }
+                        // No explicit terminal marker and not awaiting user input:
+                        // close this live session to avoid hanging callers.
+                        break;
                     }
                 }
                 Err(err) => {

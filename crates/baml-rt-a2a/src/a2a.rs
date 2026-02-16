@@ -605,7 +605,8 @@ mod tests {
                         task: {
                             metadata: { agent: "test-agent" },
                             status: { state: "TASK_STATE_WORKING" }
-                        }
+                        },
+                        final: true
                     });
                     return;
                 }

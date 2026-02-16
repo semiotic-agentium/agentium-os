@@ -291,7 +291,7 @@ impl EffectStartToken<A2aKind> {
 }
 
 #[async_trait]
-pub trait EffectEmitter: Send + Sync {
+pub trait EffectEmitter: EffectLiveness + Send + Sync {
     async fn emit(&self, event: EffectEvent) -> crate::Result<()>;
 
     async fn start_tool(
