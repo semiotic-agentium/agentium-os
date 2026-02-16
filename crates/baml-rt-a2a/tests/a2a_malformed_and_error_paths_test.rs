@@ -104,7 +104,12 @@ async fn test_malformed_a2a_table_driven() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_concurrency_mixed_success_failure() {
     let agent = build_minimal_a2a_agent(
-        r#"globalThis.onChatMessage = async function() { __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } }); };"#,
+        r#"
+        globalThis.onChatMessage = async function() {
+            __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
+            __chat_yield({ message: { parts: [{ text: "ok" }] }, final: true });
+        };
+        "#,
     )
     .await;
 
@@ -180,6 +185,7 @@ impl BamlTool for FailingTool {
 async fn test_streaming_tool_failure_mid_stream() {
     let mut runtime = BamlRuntimeManager::new().unwrap();
     runtime.register_tool(FailingTool).await.unwrap();
+    let effect_bus = Arc::new(baml_rt_core::bus::BusWithEffects::new());
     let agent = A2aAgent::builder()
         .with_runtime_manager(runtime)
         .with_init_js(r#"
@@ -193,13 +199,19 @@ async fn test_streaming_tool_failure_mid_stream() {
                 } catch (e) {
                     __chat_yield({ message: { parts: [{ text: "err: " + String(e) }] } });
                 }
+                __chat_yield({ message: { parts: [{ text: "done" }] }, final: true });
             };
         "#)
-        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_effect_emitter(effect_bus.clone() as Arc<dyn baml_rt_core::bus::EffectEmitter>)
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()
         .await
         .unwrap();
+    {
+        let bridge = agent.bridge();
+        let mut bridge = bridge.lock().await;
+        bridge.set_effect_liveness(effect_bus as Arc<dyn baml_rt_core::bus::EffectLiveness>);
+    }
 
     let request = send_stream_request("fail-1", "trigger", "corr-1700000000020-1", None);
     let responses = collect_responses(&agent, request).await.unwrap();
@@ -237,6 +249,7 @@ async fn test_allowlist_violation_during_stream() {
     allowlist.insert("test/add_numbers".to_string());
     runtime.set_tool_allowlist(allowlist).await.unwrap();
 
+    let effect_bus = Arc::new(baml_rt_core::bus::BusWithEffects::new());
     let agent = A2aAgent::builder()
         .with_runtime_manager(runtime)
         .with_init_js(
@@ -251,14 +264,20 @@ async fn test_allowlist_violation_during_stream() {
                 } catch (e) {
                     __chat_yield({ message: { parts: [{ text: "allowlist: " + String(e) }] } });
                 }
+                __chat_yield({ message: { parts: [{ text: "done" }] }, final: true });
             };
         "#,
         )
-        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_effect_emitter(effect_bus.clone() as Arc<dyn baml_rt_core::bus::EffectEmitter>)
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()
         .await
         .unwrap();
+    {
+        let bridge = agent.bridge();
+        let mut bridge = bridge.lock().await;
+        bridge.set_effect_liveness(effect_bus as Arc<dyn baml_rt_core::bus::EffectLiveness>);
+    }
 
     let request = send_stream_request("allow-1", "trigger", "corr-1700000000030-1", None);
     let responses = collect_responses(&agent, request).await.unwrap();

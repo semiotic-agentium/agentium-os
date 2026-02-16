@@ -34,6 +34,7 @@ fn fixture_js_code() -> String {
             __chat_yield({
                 statusUpdate: { status: { state: "TASK_STATE_WORKING" } }
             });
+            __chat_yield({ message: { parts: [{ text: "done" }] }, final: true });
             return;
         }
         if (text.startsWith("tool-call:")) {
@@ -45,6 +46,7 @@ fn fixture_js_code() -> String {
             } catch (e) {
                 __chat_yield({ message: { parts: [{ text: `tool_error=${String(e)}` }] } });
             }
+            __chat_yield({ message: { parts: [{ text: "done" }] }, final: true });
             return;
         }
         if (text.startsWith("baml-tool:")) {
@@ -56,10 +58,12 @@ fn fixture_js_code() -> String {
             } catch (e) {
                 __chat_yield({ message: { parts: [{ text: `tool_error=${String(e)}` }] } });
             }
+            __chat_yield({ message: { parts: [{ text: "done" }] }, final: true });
             return;
         }
         __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
         __chat_yield({ artifactUpdate: { artifact: { name: "rite-log", parts: [{ text: "sealed" }] } } });
+        __chat_yield({ message: { parts: [{ text: "done" }] }, final: true });
     };
     "#
     .to_string()
@@ -77,14 +81,21 @@ async fn acquire_test_permit() -> tokio::sync::OwnedSemaphorePermit {
 
 async fn setup_agent() -> A2aAgent {
     let manager = BamlRuntimeManager::new().unwrap();
-    A2aAgent::builder()
+    let effect_bus = Arc::new(baml_rt_core::bus::BusWithEffects::new());
+    let agent = A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(fixture_js_code())
-        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_effect_emitter(effect_bus.clone() as Arc<dyn baml_rt_core::bus::EffectEmitter>)
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()
         .await
-        .unwrap()
+        .unwrap();
+    {
+        let bridge = agent.bridge();
+        let mut bridge = bridge.lock().await;
+        bridge.set_effect_liveness(effect_bus as Arc<dyn baml_rt_core::bus::EffectLiveness>);
+    }
+    agent
 }
 
 /// Agent with system/a2a tool registered on the given LocalSet (for session FSM tests).
@@ -92,15 +103,21 @@ async fn setup_agent() -> A2aAgent {
 async fn setup_agent_with_a2a_session_tool() -> (A2aAgent, tokio::task::LocalSet) {
     let local_set = tokio::task::LocalSet::new();
     let manager = BamlRuntimeManager::new().unwrap();
+    let effect_bus = Arc::new(baml_rt_core::bus::BusWithEffects::new());
     let agent = A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(fixture_js_code())
-        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_effect_emitter(effect_bus.clone() as Arc<dyn baml_rt_core::bus::EffectEmitter>)
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .with_a2a_session_tool(true)
         .build()
         .await
         .unwrap();
+    {
+        let bridge = agent.bridge();
+        let mut bridge = bridge.lock().await;
+        bridge.set_effect_liveness(effect_bus as Arc<dyn baml_rt_core::bus::EffectLiveness>);
+    }
     (agent, local_set)
 }
 

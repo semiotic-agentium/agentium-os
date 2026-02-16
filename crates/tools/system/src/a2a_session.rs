@@ -1,6 +1,6 @@
 //! system/internal_a2a tool: session-based A2A conversation call.
 
-use crate::metadata::system_internal_a2a_metadata;
+use crate::metadata::{system_a2a_metadata, system_internal_a2a_metadata};
 use crate::tools::{
     ConversationChunk, ConversationMessage, ConversationPart, InternalA2aNextOutput,
     InternalA2aOpenInput, InternalA2aSendInput, InternalA2aTarget,
@@ -41,10 +41,16 @@ impl ToolBundle for A2aSessionBundle {
     }
 
     fn functions(&self) -> Vec<Arc<dyn ToolHandler>> {
-        vec![Arc::new(A2aSessionToolHandler {
-            handler: self.handler.clone(),
-            metadata: system_internal_a2a_metadata(),
-        })]
+        vec![
+            Arc::new(A2aSessionToolHandler {
+                handler: self.handler.clone(),
+                metadata: system_internal_a2a_metadata(),
+            }),
+            Arc::new(A2aSessionToolHandler {
+                handler: self.handler.clone(),
+                metadata: system_a2a_metadata(),
+            }),
+        ]
     }
 }
 

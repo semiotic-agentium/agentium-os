@@ -104,6 +104,9 @@ impl<'a> A2aYieldSession<'a, YieldBufferReady, NonResolvingPromise> {
 }
 
 fn chunk_has_final_state(chunk: &Value) -> bool {
+    if chunk.get("final").and_then(Value::as_bool) == Some(true) {
+        return true;
+    }
     let state = chunk
         .get("task")
         .and_then(|t| t.get("status"))

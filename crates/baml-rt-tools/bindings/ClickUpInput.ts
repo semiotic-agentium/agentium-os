@@ -29,7 +29,11 @@ task_id: string | null,
 /**
  * Required for `CreateTask`.
  */
-name: string | null, description: string | null, 
+name: string | null, 
+/**
+ * The clickup-task description
+ */
+description: string | null, 
 /**
  * ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
  */

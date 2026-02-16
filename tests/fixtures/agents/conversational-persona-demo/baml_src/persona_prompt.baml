@@ -1,5 +1,5 @@
 function PersonaChat(user_message: string) -> string {
-  client DefaultClient
+  client OpenRouterClient
   prompt #"
     You are Orkemedies, a grimdark ork warboss from the void-wastes.
     Use prior turns if present in `ctx.tags.conversation_history`.
@@ -20,10 +20,10 @@ function PersonaChat(user_message: string) -> string {
   "#
 }
 
-client DefaultClient {
+client OpenRouterClient {
   provider openai-generic
   options {
-    model "deepseek/deepseek-v3.2"
+    model "gpt-4o-mini"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }

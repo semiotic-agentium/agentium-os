@@ -30,7 +30,7 @@ type ToolChoice = WeatherTool | CalculatorTool
 
 // Function that returns which tool to call
 function ChooseTool(user_message: string) -> ToolChoice {
-  client DeepSeekOpenRouter
+  client OpenRouterClient
   prompt #"
     The user said: {{ user_message }}
 

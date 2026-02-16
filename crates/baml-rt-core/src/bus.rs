@@ -516,6 +516,9 @@ pub struct BusWithEffects {
     effect_subscribers: Arc<RwLock<Vec<Arc<dyn EffectSubscriber>>>>,
 }
 
+/// Backwards-compatible alias for the effect-capable bus.
+pub type EffectBus = BusWithEffects;
+
 impl BusWithEffects {
     pub fn new() -> Self {
         Self {

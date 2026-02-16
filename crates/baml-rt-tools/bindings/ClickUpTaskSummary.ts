@@ -3,4 +3,4 @@
 /**
  * Summary of a single ClickUp task, projected from the API response.
  */
-export type ClickUpTaskSummary = { id: string, name: string, status: string, url: string, assignees: Array<string>, priority: string | null, due_date: string | null, };
+export type ClickUpTaskSummary = { id: string, name: string, status: string, description: string | null, url: string, assignees: Array<string>, priority: string | null, due_date: string | null, };

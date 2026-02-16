@@ -44,6 +44,7 @@ use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, SendMessageRequest};
 #[cfg(feature = "llm-tests")]
 use baml_rt_a2a::A2aSessionBundle;
 
+#[cfg(feature = "llm-tests")]
 use test_support::common::{
     CalculatorTool, agent_fixture, chunks_from_responses, ensure_baml_src_exists,
     message_texts_from_chunks, require_fixture_runtime_types, user_message, workspace_root,

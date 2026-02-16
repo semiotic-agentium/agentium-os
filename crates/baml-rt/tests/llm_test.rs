@@ -24,7 +24,7 @@ async fn test_e2e_simple_greeting_with_llm() {
     tracing::info!("Invoking SimpleGreeting BAML function...");
     let response_value = run_live_llm_with_retry_validate(
         "SimpleGreeting",
-        3,
+        6,
         std::time::Duration::from_secs(120),
         |_| {
             let bridge = bridge.clone();
@@ -75,48 +75,45 @@ async fn test_e2e_streaming_greeting() {
     tracing::info!("Testing streaming BAML function call");
 
     let baml_manager = setup_baml_runtime_default();
-    let mut bridge = setup_bridge(baml_manager).await;
-
-    // Call streaming BAML function from JavaScript with scope (streaming path uses worker-thread scope).
-    let js_code = r#"
-        (() => __awaitAndStringify(
-            (async () => {
-                const chunks = [];
-                const stream = SimpleGreetingStream({ name: "Streaming Test" });
-                for await (const chunk of stream) {
-                    chunks.push(chunk);
-                }
-                return { chunks: chunks, totalChunks: chunks.length };
-            })()
-        ))()
-    "#;
+    let bridge = Arc::new(tokio::sync::Mutex::new(setup_bridge(baml_manager).await));
 
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
     let scope = InvocationScope::synthetic_message(agent_id);
-    tracing::info!("Executing streaming JavaScript call...");
-    let result = context::with_scope(scope.as_scope().clone(), async {
-        bridge.evaluate(Some(&scope), js_code).await
-    })
-    .await;
-
-    match result {
-        Ok(response_value) => {
-            let response_str = response_value.as_str().unwrap_or("");
-            tracing::info!("✅ Streaming function executed successfully!");
-            tracing::info!("Response: {}", response_str);
-
-            // Parse the response to verify chunks were received
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(response_str)
-                && let Some(obj) = parsed.as_object()
-                && let Some(chunks) = obj.get("chunks")
-            {
-                assert!(chunks.as_array().is_some(), "Should have chunks array");
-                tracing::info!("Received {} chunks", chunks.as_array().unwrap().len());
+    tracing::info!("Executing streaming invocation...");
+    let attempts = 4;
+    let chunks = run_live_llm_with_retry_validate(
+        "SimpleGreetingStream",
+        attempts,
+        std::time::Duration::from_secs(180),
+        |_| {
+            let scope = scope.clone();
+            let bridge = bridge.clone();
+            async move {
+                let mut bridge = bridge.lock().await;
+                context::with_scope(scope.as_scope().clone(), async {
+                    bridge
+                        .invoke_function_stream(
+                            &scope,
+                            "SimpleGreeting",
+                            json!({ "name": "Streaming Test" }),
+                        )
+                        .await
+                })
+                .await
             }
-        }
-        Err(e) => {
-            tracing::warn!("Streaming test failed (may not be supported yet): {}", e);
-            // Don't fail the test if streaming isn't fully implemented yet
-        }
-    }
+        },
+        |value| {
+            if value.is_empty() {
+                return Err("Stream should yield at least one chunk".to_string());
+            }
+            Ok(())
+        },
+    )
+    .await
+    .unwrap_or_else(|e| panic!("Streaming function should execute successfully: {e}"));
+
+    tracing::info!(
+        "✅ Streaming function executed successfully! ({} chunks)",
+        chunks.len()
+    );
 }

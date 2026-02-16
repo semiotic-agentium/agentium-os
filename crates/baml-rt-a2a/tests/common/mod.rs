@@ -45,13 +45,20 @@ pub mod provenance {
         writer: Arc<FalkorDbProvenanceWriter>,
         init_js: &str,
     ) -> A2aAgent {
-        A2aAgent::builder()
+        let effect_bus = Arc::new(baml_rt_core::bus::BusWithEffects::new());
+        let agent = A2aAgent::builder()
             .with_provenance_writer(writer)
             .with_init_js(init_js)
-            .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+            .with_effect_emitter(effect_bus.clone() as Arc<dyn baml_rt_core::bus::EffectEmitter>)
             .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
             .build()
             .await
-            .expect("build provenance agent")
+            .expect("build provenance agent");
+        {
+            let bridge = agent.bridge();
+            let mut bridge = bridge.lock().await;
+            bridge.set_effect_liveness(effect_bus as Arc<dyn baml_rt_core::bus::EffectLiveness>);
+        }
+        agent
     }
 }

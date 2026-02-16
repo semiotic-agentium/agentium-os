@@ -12,21 +12,32 @@
 use baml_rt::A2aAgent;
 use baml_rt::QuickJSConfig;
 use baml_rt::baml::BamlRuntimeManager;
+use baml_rt_core::bus::{BusWithEffects, EffectEmitter, EffectLiveness};
 use baml_rt_core::context::{self, InvocationScope};
 use serde_json::json;
 use std::fs;
 use std::sync::Arc;
 
-use test_support::common::{CalculatorTool, agent_fixture, require_fixture_runtime_types};
+use test_support::common::{
+    CalculatorTool, agent_fixture, require_fixture_runtime_types, run_live_llm_with_retry_validate,
+};
 
 /// QuickJS config for LLM-dependent contract tests. Timeout must accommodate combined retries
 /// (parse retry + BAML client retry) which can exceed 15s; 45s provides margin.
 fn test_quickjs_config() -> QuickJSConfig {
-    QuickJSConfig::new().with_max_attempts_ms(Some(120_000))
+    QuickJSConfig::new()
+        .with_idle_timeout_ms(Some(45_000))
+        .with_max_attempts_ms(Some(45_000))
 }
 
 fn load_env() {
     let _ = dotenvy::dotenv();
+}
+
+async fn wire_bridge_effect_liveness(agent: &A2aAgent, bus: Arc<BusWithEffects>) {
+    let bridge_handle = agent.bridge();
+    let mut bridge = bridge_handle.lock().await;
+    bridge.set_effect_liveness(bus as Arc<dyn EffectLiveness>);
 }
 
 #[tokio::test]
@@ -42,25 +53,55 @@ async fn test_baml_function_returns_actual_result() {
         .load_schema(agent_dir.to_str().unwrap())
         .unwrap();
     baml_manager.register_tool(CalculatorTool).await.unwrap();
+    let effect_bus = Arc::new(BusWithEffects::new());
+    baml_manager.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
-        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(test_quickjs_config())
         .build()
         .await
         .unwrap();
+    wire_bridge_effect_liveness(&agent, effect_bus).await;
     let bridge_handle = agent.bridge();
     let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
-    let result = context::with_scope(scope.as_scope().clone(), async {
-        let mut bridge = bridge_handle.lock().await;
-        bridge
-            .invoke_function(
-                &scope,
-                "ChooseCalcTool",
-                json!({"user_message": "compute 2+3"}),
-            )
-            .await
-    })
+    let result = run_live_llm_with_retry_validate(
+        "ChooseCalcTool contract invoke",
+        3,
+        std::time::Duration::from_secs(120),
+        |_| {
+            let scope = scope.clone();
+            let bridge_handle = bridge_handle.clone();
+            async move {
+                context::with_scope(scope.as_scope().clone(), async {
+                    let mut bridge = bridge_handle.lock().await;
+                    bridge
+                        .invoke_function(
+                            &scope,
+                            "ChooseCalcTool",
+                            json!({"user_message": "compute 2+3"}),
+                        )
+                        .await
+                })
+                .await
+            }
+        },
+        |val| {
+            if !val.is_object() {
+                return Err(format!("Expected object result, got: {val:?}"));
+            }
+            let obj = val.as_object().unwrap();
+            if obj.contains_key("success") {
+                return Err("Result must not be wrapped in success object".to_string());
+            }
+            let has_steps = val.get("steps").and_then(|v| v.as_array()).is_some();
+            let has_tool_output = obj.contains_key("result") || obj.contains_key("formatted");
+            if !(has_steps || has_tool_output) {
+                return Err("Expected 'steps' or 'result'/'formatted' in result".to_string());
+            }
+            Ok(())
+        },
+    )
     .await;
 
     // Contract assertion: Result must be the actual value (plan with "steps" or tool output with "result"/"formatted"), not a wrapper
@@ -114,21 +155,51 @@ async fn test_js_function_invocation_returns_actual_result() {
         }
         globalThis.getCalcPlan = getCalcPlan;
     "#;
+    let effect_bus = Arc::new(BusWithEffects::new());
+    baml_manager.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_init_js(agent_code)
-        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(test_quickjs_config())
         .build()
         .await
         .unwrap();
+    wire_bridge_effect_liveness(&agent, effect_bus).await;
     let bridge_handle = agent.bridge();
-    let mut bridge = bridge_handle.lock().await;
     let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
 
-    let result = bridge
-        .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
-        .await;
+    let result = run_live_llm_with_retry_validate(
+        "ChooseCalcTool contract js",
+        3,
+        std::time::Duration::from_secs(120),
+        |_| {
+            let scope = scope.clone();
+            let bridge_handle = bridge_handle.clone();
+            async move {
+                let mut bridge = bridge_handle.lock().await;
+                bridge
+                    .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
+                    .await
+            }
+        },
+        |val| {
+            if !val.is_object() {
+                return Err(format!("Expected object result, got: {val:?}"));
+            }
+            let obj = val.as_object().unwrap();
+            if obj.contains_key("success") {
+                return Err("Result must not contain 'success' wrapper".to_string());
+            }
+            let has_steps = val.get("steps").and_then(|v| v.as_array()).is_some();
+            let has_tool_output = obj.contains_key("result") || obj.contains_key("formatted");
+            if !(has_steps || has_tool_output) {
+                return Err("Expected 'steps' or 'result'/'formatted' in result".to_string());
+            }
+            Ok(())
+        },
+    )
+    .await;
 
     match result {
         Ok(val) => {
@@ -180,21 +251,51 @@ async fn test_invoke_function_api_contract() {
         }
         globalThis.getCalcPlan = getCalcPlan;
     "#;
+    let effect_bus = Arc::new(BusWithEffects::new());
+    baml_manager.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_init_js(agent_code)
-        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(test_quickjs_config())
         .build()
         .await
         .unwrap();
+    wire_bridge_effect_liveness(&agent, effect_bus).await;
     let bridge_handle = agent.bridge();
-    let mut bridge = bridge_handle.lock().await;
     let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
 
-    let result = bridge
-        .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
-        .await;
+    let result = run_live_llm_with_retry_validate(
+        "ChooseCalcTool contract api",
+        3,
+        std::time::Duration::from_secs(120),
+        |_| {
+            let scope = scope.clone();
+            let bridge_handle = bridge_handle.clone();
+            async move {
+                let mut bridge = bridge_handle.lock().await;
+                bridge
+                    .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
+                    .await
+            }
+        },
+        |val| {
+            if !val.is_object() {
+                return Err(format!("Expected object result, got: {val:?}"));
+            }
+            let obj = val.as_object().unwrap();
+            if obj.contains_key("success") {
+                return Err("Result must not contain 'success' wrapper".to_string());
+            }
+            let has_steps = val.get("steps").and_then(|v| v.as_array()).is_some();
+            let has_tool_output = obj.contains_key("result") || obj.contains_key("formatted");
+            if !(has_steps || has_tool_output) {
+                return Err("Expected 'steps' or 'result'/'formatted' in result".to_string());
+            }
+            Ok(())
+        },
+    )
+    .await;
 
     match result {
         Ok(val) => {
@@ -260,21 +361,51 @@ async fn test_loaded_agent_invoke_function_contract() {
         "#,
         );
     }
+    let effect_bus = Arc::new(BusWithEffects::new());
+    runtime_manager.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
     let agent = A2aAgent::builder()
         .with_runtime_manager(runtime_manager)
         .with_init_js(agent_code)
-        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(test_quickjs_config())
         .build()
         .await
         .unwrap();
+    wire_bridge_effect_liveness(&agent, effect_bus).await;
     let bridge_handle = agent.bridge();
-    let mut bridge = bridge_handle.lock().await;
     let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
 
-    let result = bridge
-        .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
-        .await;
+    let result = run_live_llm_with_retry_validate(
+        "ChooseCalcTool contract js",
+        3,
+        std::time::Duration::from_secs(120),
+        |_| {
+            let scope = scope.clone();
+            let bridge_handle = bridge_handle.clone();
+            async move {
+                let mut bridge = bridge_handle.lock().await;
+                bridge
+                    .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
+                    .await
+            }
+        },
+        |val| {
+            if !val.is_object() {
+                return Err(format!("Expected object result, got: {val:?}"));
+            }
+            let obj = val.as_object().unwrap();
+            if obj.contains_key("success") {
+                return Err("Result must not contain 'success' wrapper".to_string());
+            }
+            let has_steps = val.get("steps").and_then(|v| v.as_array()).is_some();
+            let has_tool_output = obj.contains_key("result") || obj.contains_key("formatted");
+            if !(has_steps || has_tool_output) {
+                return Err("Expected 'steps' or 'result'/'formatted' in result".to_string());
+            }
+            Ok(())
+        },
+    )
+    .await;
 
     match result {
         Ok(val) => {

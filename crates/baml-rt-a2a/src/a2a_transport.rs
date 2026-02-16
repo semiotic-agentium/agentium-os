@@ -1125,11 +1125,17 @@ mod tests {
 
     #[tokio::test]
     async fn js_tool_can_be_called_via_baml_tool_registry() {
+        let effect_bus = Arc::new(baml_rt_core::bus::BusWithEffects::new());
         let agent = A2aAgent::builder()
-            .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+            .with_effect_emitter(effect_bus.clone() as Arc<dyn baml_rt_core::bus::EffectEmitter>)
             .build()
             .await
             .expect("agent build");
+        {
+            let bridge = agent.bridge();
+            let mut bridge = bridge.lock().await;
+            bridge.set_effect_liveness(effect_bus as Arc<dyn baml_rt_core::bus::EffectLiveness>);
+        }
 
         agent
             .register_js_tool(

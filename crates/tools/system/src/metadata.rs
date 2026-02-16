@@ -22,4 +22,10 @@ pub fn system_internal_a2a_metadata() -> ToolFunctionMetadata {
     build_a2a_metadata("system/internal_a2a")
 }
 
+/// Compat alias for legacy tool name.
+pub fn system_a2a_metadata() -> ToolFunctionMetadata {
+    build_a2a_metadata("system/a2a")
+}
+
 register_tool_metadata!(system_internal_a2a_metadata);
+register_tool_metadata!(system_a2a_metadata);

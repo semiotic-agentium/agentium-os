@@ -41,11 +41,17 @@ Use `crates/test-support` for setup and fixtures rather than duplicating logic:
 - `setup_baml_runtime_default()` and `setup_baml_runtime_from_fixture()` for runtime setup
 - `setup_bridge()` for QuickJS bridge setup
 - `agent_fixture()` and `fixture_path()` for fixture files
-- **`ensure_fixture_runtime_types()`** — call at the start of any E2E test that loads from
+- **`require_fixture_runtime_types()`** — call at the start of any E2E test that loads from
   `tests/fixtures/agents/` (e.g. `agent_fixture("stream-baml-tool")` or `setup_baml_runtime_from_fixture(...)`).
-  Ensures fixture runtime types are regenerated once per test process before use.
+  Tests **do not regenerate** fixtures; this helper asserts fixture types exist and instructs
+  you to run `just regen` when missing.
 - `require_api_key()` to gate tests that require `OPENROUTER_API_KEY`
 - `ensure_baml_src_exists()` to skip tests when `baml_src` is missing
+
+### LLM Tests
+
+LLM tests run live against the configured provider and require `OPENROUTER_API_KEY`.
+To skip locally, set `BAML_SKIP_LLM_TESTS=1`.
 
 ---
 

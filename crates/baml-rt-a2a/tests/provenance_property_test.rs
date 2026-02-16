@@ -5,7 +5,7 @@
 
 mod common;
 
-use baml_rt_a2a::A2aRequestHandler;
+use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt_core::ids::{ContextId, CorrelationId};
 use baml_rt_provenance::{FalkorDbProvenanceConfig, FalkorDbProvenanceWriter};
 use std::sync::Arc;
@@ -32,6 +32,7 @@ async fn test_scope_attribution_without_cross_contamination() {
         globalThis.onChatMessage = async function(message) {
             const text = message?.parts?.[0]?.text || "";
             __chat_yield({ message: { parts: [{ text: `echo:${text}` }] } });
+            __chat_yield({ message: { parts: [{ text: "done" }] }, final: true });
         };
     "#;
     let agent = common::provenance::build_provenance_agent(writer.clone(), js).await;

@@ -4,7 +4,7 @@ class ChatMessage {
 }
 
 function ChooseCalcTool(user_message: string) -> SupportCalculateSessionPlan {
-  client DefaultClient
+  client OpenRouterClient
   prompt #"
     The user says: {{ user_message }}
     Extract the mathematical calculation. If they mention numbers, use those; otherwise use 2 + 3.
@@ -16,7 +16,7 @@ function ChooseCalcTool(user_message: string) -> SupportCalculateSessionPlan {
 }
 
 function ChatWithContext(user_message: string) -> string {
-  client DefaultClient
+  client OpenRouterClient
   prompt #"
     You are in a multi-turn conversation.
     Use prior turns if present in `ctx.tags.conversation_history`.
@@ -36,10 +36,10 @@ function ChatWithContext(user_message: string) -> string {
   "#
 }
 
-client DefaultClient {
+client OpenRouterClient {
   provider openai-generic
   options {
-    model "deepseek/deepseek-v3.2"
+    model "gpt-4o-mini"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }

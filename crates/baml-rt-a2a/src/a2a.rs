@@ -615,11 +615,17 @@ mod tests {
             };
         "#;
         tracing::info!("setup_agent_with_js_inner: Creating builder");
+        let effect_bus = Arc::new(baml_rt_core::bus::BusWithEffects::new());
         let builder = A2aAgent::builder()
             .with_init_js(js_code)
-            .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
+            .with_effect_emitter(effect_bus.clone() as Arc<dyn baml_rt_core::bus::EffectEmitter>);
         tracing::info!("setup_agent_with_js_inner: Calling build()");
         let agent = builder.build().await.expect("agent build");
+        {
+            let bridge = agent.bridge();
+            let mut bridge = bridge.lock().await;
+            bridge.set_effect_liveness(effect_bus as Arc<dyn baml_rt_core::bus::EffectLiveness>);
+        }
         tracing::info!("setup_agent_with_js_inner: Agent built successfully");
         agent
     }

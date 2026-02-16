@@ -31,6 +31,7 @@ use baml_rt::A2aAgent;
 use baml_rt::QuickJSConfig;
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt::quickjs_bridge::QuickJSBridge;
+use baml_rt_core::bus::{EffectEmitter, EffectLiveness};
 
 pub fn fixture_path(relative_path: &str) -> PathBuf {
     workspace_root()
@@ -162,6 +163,7 @@ pub async fn run_live_llm_with_retry<T, Fut, F>(
 where
     F: FnMut(usize) -> Fut,
     Fut: Future<Output = baml_rt_core::Result<T>>,
+    T: serde::de::DeserializeOwned + serde::Serialize,
 {
     let _permit = llm_test_gate()
         .acquire()
@@ -181,6 +183,7 @@ where
     F: FnMut(usize) -> Fut,
     Fut: Future<Output = baml_rt_core::Result<T>>,
     V: Fn(&T) -> std::result::Result<(), String>,
+    T: serde::de::DeserializeOwned + serde::Serialize,
 {
     let _permit = llm_test_gate()
         .acquire()
@@ -199,6 +202,7 @@ pub async fn run_live_llm_with_retry_no_gate<T, Fut, F>(
 where
     F: FnMut(usize) -> Fut,
     Fut: Future<Output = baml_rt_core::Result<T>>,
+    T: serde::de::DeserializeOwned + serde::Serialize,
 {
     let mut last_err: Option<String> = None;
     for attempt in 1..=max_attempts {
@@ -242,6 +246,7 @@ where
     F: FnMut(usize) -> Fut,
     Fut: Future<Output = baml_rt_core::Result<T>>,
     V: Fn(&T) -> std::result::Result<(), String>,
+    T: serde::de::DeserializeOwned + serde::Serialize,
 {
     let mut last_err: Option<String> = None;
     for attempt in 1..=max_attempts {
@@ -357,13 +362,20 @@ pub async fn assert_tool_registered_in_js(
 /// Builds a minimal A2aAgent for malformed/error-path A2A tests: no BAML schema or tools.
 /// Uses BusWithEffects and QuickJSConfig with max_attempts_ms(15_000).
 pub async fn build_minimal_a2a_agent(init_js: &str) -> A2aAgent {
-    A2aAgent::builder()
+    let effect_bus = Arc::new(baml_rt_core::bus::BusWithEffects::new());
+    let agent = A2aAgent::builder()
         .with_init_js(init_js)
-        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()
         .await
-        .expect("build minimal a2a agent")
+        .expect("build minimal a2a agent");
+    {
+        let bridge = agent.bridge();
+        let mut bridge = bridge.lock().await;
+        bridge.set_effect_liveness(effect_bus as Arc<dyn EffectLiveness>);
+    }
+    agent
 }
 
 /// Builds an A2aAgent for contract tests: stream-baml-tool fixture, CalculatorTool,
@@ -380,14 +392,21 @@ pub async fn setup_stream_baml_tool_agent_for_contract(init_js: Option<&str>) ->
         .await
         .expect("register CalculatorTool");
     let config = QuickJSConfig::new().with_max_attempts_ms(Some(45_000));
+    let effect_bus = Arc::new(baml_rt_core::bus::BusWithEffects::new());
     let mut builder = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
-        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(config);
     if let Some(js) = init_js {
         builder = builder.with_init_js(js);
     }
-    builder.build().await.expect("build A2aAgent")
+    let agent = builder.build().await.expect("build A2aAgent");
+    {
+        let bridge = agent.bridge();
+        let mut bridge = bridge.lock().await;
+        bridge.set_effect_liveness(effect_bus as Arc<dyn EffectLiveness>);
+    }
+    agent
 }
 
 /// Asserts the invocation result contract: value is an object, has no "success" wrapper,

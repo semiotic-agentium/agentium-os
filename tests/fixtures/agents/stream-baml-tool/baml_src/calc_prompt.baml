@@ -1,6 +1,6 @@
 // Fixture: BAML tool streaming. Prompt returns a calculation session plan (2+3 default).
 function ChooseCalcTool(user_message: string) -> SupportCalculateSessionPlan {
-  client DefaultClient
+  client OpenRouterClient
   prompt #"
     The user says: {{ user_message }}
     Extract the mathematical calculation. If they mention numbers, use those; otherwise use 2 + 3.
@@ -13,7 +13,7 @@ function ChooseCalcTool(user_message: string) -> SupportCalculateSessionPlan {
 
 // Streaming variant for JS invoke/stream tests (replaces voidship-rites SimpleGreetingStream).
 function ChooseCalcToolStream(user_message: string) -> string {
-  client DefaultClient
+  client OpenRouterClient
   prompt #"
     The user says: {{ user_message }}
     Reply briefly with one word: OK
@@ -30,11 +30,11 @@ retry_policy ParseRetry {
   }
 }
 
-client DefaultClient {
+client OpenRouterClient {
   provider openai-generic
   retry_policy ParseRetry
   options {
-    model "deepseek/deepseek-v3.2"
+    model "gpt-4o-mini"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }
