@@ -568,6 +568,35 @@ impl TaskChunkApplier for ProvenanceTaskStore {
     }
 }
 
+#[async_trait]
+impl ConversationContextSource for ProvenanceTaskStore {
+    async fn conversation_context(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+    ) -> Result<Vec<ProvenanceConversationContextItem>> {
+        if let Some(writer) = &self.writer {
+            let provenance_items = writer
+                .conversation_context(context_id, limit)
+                .await
+                .map_err(|source| BamlRtError::ProvenanceContextRead {
+                    source: Box::new(source),
+                })?;
+            if !provenance_items.is_empty() {
+                return Ok(provenance_items);
+            }
+        }
+
+        let store = self.inner.lock().await;
+        let messages = store.list_messages_in_context(context_id, limit);
+        let items = messages
+            .iter()
+            .enumerate()
+            .map(|(i, msg)| message_to_context_item(msg, i as u64 * 1000))
+            .collect();
+        Ok(items)
+    }
+}
 fn status_to_string(status: &TaskStatus) -> Option<String> {
     status.state.as_ref().map(|state| match state {
         TaskState::String(value) => value.clone(),

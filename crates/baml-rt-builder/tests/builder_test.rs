@@ -217,13 +217,17 @@ async fn test_full_integration_package_load_execute() {
         .expect("collect yielded chunks");
 
     assert!(
-        !responses.is_empty(),
-        "Expected onChatMessage to yield at least one chunk. Raw: {}",
-        serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+        !responses.chunks.is_empty(),
+        "Expected onChatMessage to yield at least one chunk. Raw: {responses:?}"
+    );
+    assert!(
+        responses.is_semantically_final(),
+        "Expected semantic-final completion for onChatMessage, got {:?}",
+        responses.completion
     );
     println!(
-        "✓ Function '{}' yielded {} chunk(s)",
-        function_name,
-        responses.len()
+        "Function '{function_name}' yielded {} chunk(s) with completion {:?}",
+        responses.chunks.len(),
+        responses.completion
     );
 }

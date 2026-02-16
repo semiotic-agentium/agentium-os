@@ -1144,6 +1144,7 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
     let context_id = ContextId::new(1, 1);
     sleep(Duration::from_millis(1500)).await; // let async writes settle before first poll
     let mut history_ready = false;
+    let mut codeword_ready = false;
     let mut last_messages: Vec<ProvenanceContextMessage> = Vec::new();
     let poll_attempts = 150; // 150 * 500ms = 75s max
     let poll_interval_ms = 500;
@@ -1155,6 +1156,13 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
         last_messages = messages.clone();
         if messages.len() >= 2 {
             history_ready = true;
+        }
+        codeword_ready = messages.iter().any(|m| {
+            m.content
+                .iter()
+                .any(|part| part.to_ascii_uppercase().contains("ORBIT"))
+        });
+        if history_ready && codeword_ready {
             break;
         }
         if attempt < poll_attempts - 1 {
@@ -1174,6 +1182,18 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
         last_messages
             .iter()
             .map(|m| m.role.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        codeword_ready,
+        "Expected provenance context to include codeword ORBIT before turn-2 recall. \
+         After ~{}s poll ({} attempts x {}ms): messages={:?}",
+        (poll_attempts * poll_interval_ms) / 1000,
+        poll_attempts,
+        poll_interval_ms,
+        last_messages
+            .iter()
+            .map(|m| (m.role.clone(), m.content.clone()))
             .collect::<Vec<_>>()
     );
 
