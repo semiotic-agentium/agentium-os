@@ -5,7 +5,7 @@
 //! Effect-gated timeout (L5–L6) distinguishes "waiting on effect" from
 //! "will never yield". See docs/HOST_QUICKJS_STREAM_INVARIANTS.md.
 
-use crate::quickjs_bridge::eval::EffectGatedPoller;
+use crate::quickjs_bridge::eval::EffectGatedTimeoutPolicy;
 use baml_rt_core::bus::EffectLiveness;
 use baml_rt_core::context::{InvocationScope, RuntimeScope};
 use baml_rt_core::{BamlRtError, Result};
@@ -27,8 +27,8 @@ pub(crate) struct PollPromiseParams<'a> {
     pub eval_token: &'a InvocationToken,
     pub token_to_remove: Option<&'a InvocationToken>,
     pub invocation_scope_by_token: &'a InvocationScopeMap,
-    pub scope: Option<&'a InvocationScope>,
-    pub effect_liveness: Option<Arc<dyn EffectLiveness>>,
+    pub scope: &'a InvocationScope,
+    pub effect_liveness: Arc<dyn EffectLiveness>,
     pub idle_timeout_ms: u64,
     pub max_attempts_ms: u64,
 }
@@ -37,7 +37,9 @@ pub(crate) struct PollPromiseParams<'a> {
 ///
 /// Runs `runtime.run_pending_jobs_if_any()` each iteration so promise
 /// continuations can run. Uses effect-gated timeout: long timeout when
-/// effects are in-flight, short idle timeout otherwise. When the loop
+/// effects are in-flight, short idle timeout otherwise. Requires both
+/// invocation scope and effect-liveness wiring.
+/// When the loop
 /// exits (success or timeout), removes the invocation token from
 /// `invocation_scope_by_token` if `token_to_remove` is `Some`.
 pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> Result<String> {
@@ -53,10 +55,9 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
         max_attempts_ms,
     } = params;
 
-    let context_id = scope.map(|s| s.context_id().clone());
-    let poller = EffectGatedPoller::new(
+    let poller = EffectGatedTimeoutPolicy::new(
         effect_liveness,
-        context_id,
+        scope.context_id().clone(),
         idle_timeout_ms,
         max_attempts_ms,
     );

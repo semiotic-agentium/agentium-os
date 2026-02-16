@@ -30,7 +30,7 @@ pub(crate) mod stream_yield;
 mod tools;
 mod wrappers;
 
-pub use eval::EffectGatedPoller;
+pub use eval::EffectGatedTimeoutPolicy;
 use scope::{
     InvocationContextId, InvocationContextRegistry, InvocationToken, next_invocation_token,
     resolve_scope_from_active_context,
@@ -171,7 +171,7 @@ impl QuickJSBridge {
             idle_timeout_ms: config.idle_timeout_ms.unwrap_or(5000), // Default 5s
             max_attempts_ms: config
                 .max_attempts_ms
-                .unwrap_or(EffectGatedPoller::DEFAULT_MAX_ATTEMPTS as u64), // Default 30 minutes
+                .unwrap_or(EffectGatedTimeoutPolicy::DEFAULT_MAX_ATTEMPTS as u64), // Default 30 minutes
             invocation_context_registry: Arc::new(StdMutex::new(InvocationContextRegistry::new())),
             invocation_scope_by_token: Arc::new(StdMutex::new(HashMap::new())),
             correlation_id_by_token: Arc::new(StdMutex::new(HashMap::new())),
@@ -1007,6 +1007,18 @@ impl QuickJSBridge {
 
             // Check if it's a promise
             if debug_str.contains("Promise") || debug_str.contains("JsPromise") {
+                let invocation_scope = scope.ok_or_else(|| {
+                    BamlRtError::QuickJs(
+                        "Promise polling requires invocation scope; evaluate(scope=None) must not await promises"
+                            .to_string(),
+                    )
+                })?;
+                let effect_liveness = self.effect_liveness.clone().ok_or_else(|| {
+                    BamlRtError::QuickJs(
+                        "Promise polling requires effect liveness wiring; call set_effect_liveness() on bridge initialization"
+                            .to_string(),
+                    )
+                })?;
                 let result_str = promise_polling::poll_promise_until_result(
                     promise_polling::PollPromiseParams {
                         runtime: &self.runtime,
@@ -1014,8 +1026,8 @@ impl QuickJSBridge {
                         eval_token: &eval_token,
                         token_to_remove: token_to_remove.as_ref(),
                         invocation_scope_by_token: &self.invocation_scope_by_token,
-                        scope,
-                        effect_liveness: self.effect_liveness.clone(),
+                        scope: invocation_scope,
+                        effect_liveness,
                         idle_timeout_ms: self.idle_timeout_ms,
                         max_attempts_ms: self.max_attempts_ms,
                     },
