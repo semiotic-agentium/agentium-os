@@ -894,19 +894,22 @@ impl QuickJSBridge {
             format!("(function() {{ {} }})()", code)
         };
 
-        // Execute the code exactly once and capture the result to a globalThis variable.
-        // If the result is a string (sync), return immediately. If it is a promise, the
-        // captured global is awaited by the promise-polling wrapper — this avoids
-        // re-evaluating side-effectful code (e.g. __baml_invoke) a second time.
+        // Execute the code exactly once. If the result is a promise/thenable, capture it to
+        // globalThis and return a sentinel so the promise path can await it without re-running
+        // side-effectful code (e.g. __baml_invoke). For sync values, return a JSON string.
         let prelude = prelude_opt.as_deref().unwrap_or("");
         let pending_key = format!("__eval_pending_{}", eval_token.0.replace('-', "_"));
         let direct_code = format!(
             r#"(function() {{
 {prelude}
 var __r = {code};
-globalThis["{key}"] = __r;
-if (typeof __r === 'string') {{ delete globalThis["{key}"]; return __r; }}
-return "__EVAL_PROMISE_PENDING__";
+if (__r && typeof __r.then === 'function') {{
+  globalThis["{key}"] = __r;
+  return "__EVAL_PROMISE_PENDING__";
+}}
+if (typeof __r === 'string') {{ return __r; }}
+if (typeof __r === 'undefined') {{ return "{{}}"; }}
+return JSON.stringify(__r);
 }})()"#,
             prelude = prelude,
             code = code_expr_body,
@@ -944,13 +947,13 @@ return "__EVAL_PROMISE_PENDING__";
         }
 
         // If direct execution succeeds and returns a non-promise, we're done.
-        // The JS code returns the string directly for sync results (globalThis key
-        // already deleted in JS), or "__EVAL_PROMISE_PENDING__" for promises.
+        // The JS code returns the string directly for sync results, or
+        // "__EVAL_PROMISE_PENDING__" for promises captured in globalThis[pending_key].
         let js_result = direct_result.expect("direct_result validated as Ok");
         if js_result.is_string() {
             let json_str = js_result.get_str();
 
-            // Sync fast-path: code returned a JSON string (globalThis key cleaned up in JS).
+            // Sync fast-path: code returned a JSON string.
             if json_str != "__EVAL_PROMISE_PENDING__" {
                 {
                     let mut guard = self
@@ -1058,12 +1061,6 @@ return "__EVAL_PROMISE_PENDING__";
                             .to_string(),
                     )
                 })?;
-                let effect_liveness = self.effect_liveness.clone().ok_or_else(|| {
-                    BamlRtError::QuickJs(
-                        "Promise polling requires effect liveness wiring; call set_effect_liveness() on bridge initialization"
-                            .to_string(),
-                    )
-                })?;
                 let poll_result = promise_polling::poll_promise_until_result(
                     promise_polling::PollPromiseParams {
                         runtime: &self.runtime,
@@ -1072,7 +1069,7 @@ return "__EVAL_PROMISE_PENDING__";
                         token_to_remove: token_to_remove.as_ref(),
                         invocation_scope_by_token: &self.invocation_scope_by_token,
                         scope: invocation_scope,
-                        effect_liveness,
+                        effect_liveness: self.effect_liveness.clone(),
                         idle_timeout_ms: self.idle_timeout_ms,
                         max_attempts_ms: self.max_attempts_ms,
                     },

@@ -35,7 +35,7 @@ pub(crate) struct PollPromiseParams<'a> {
     pub token_to_remove: Option<&'a InvocationToken>,
     pub invocation_scope_by_token: &'a InvocationScopeMap,
     pub scope: &'a InvocationScope,
-    pub effect_liveness: Arc<dyn EffectLiveness>,
+    pub effect_liveness: Option<Arc<dyn EffectLiveness>>,
     pub idle_timeout_ms: u64,
     pub max_attempts_ms: u64,
 }
@@ -43,9 +43,8 @@ pub(crate) struct PollPromiseParams<'a> {
 /// Poll until `__eval_result` is set for the given token or timeout.
 ///
 /// Runs `runtime.run_pending_jobs_if_any()` each iteration so promise
-/// continuations can run. Uses effect-gated timeout: long timeout when
-/// effects are in-flight, short idle timeout otherwise. Requires both
-/// invocation scope and effect-liveness wiring.
+/// continuations can run. Uses effect-gated timeout when effect-liveness
+/// wiring is available; otherwise falls back to the configured max timeout.
 /// When the loop
 /// exits (success or timeout), removes the invocation token from
 /// `invocation_scope_by_token` if `token_to_remove` is `Some`.
@@ -62,12 +61,14 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
         max_attempts_ms,
     } = params;
 
-    let poller = EffectGatedTimeoutPolicy::new(
-        effect_liveness.clone(),
-        scope.context_id().clone(),
-        idle_timeout_ms,
-        max_attempts_ms,
-    );
+    let poller = effect_liveness.map(|liveness| {
+        EffectGatedTimeoutPolicy::new(
+            liveness,
+            scope.context_id().clone(),
+            idle_timeout_ms,
+            max_attempts_ms,
+        )
+    });
     // Sample timeout only after the first run of pending jobs so the promise executor has had
     // one chance to run and emit effects; then re-check frequently early so we see effects
     // as soon as they appear (deterministic policy, no magic iteration count).
@@ -121,14 +122,13 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
         } else {
             attempts.is_multiple_of(EFFECT_CHECK_INTERVAL)
         };
-        if should_recheck {
-            let counts = effect_liveness.in_flight(scope.context_id()).await;
+        if should_recheck
+            && let Some(poller) = poller.as_ref()
+        {
             let new_timeout = poller.timeout_attempts().await;
             tracing::trace!(
                 attempts,
                 context_id = %scope.context_id(),
-                in_flight_llm = counts.llm,
-                in_flight_tool = counts.tool,
                 timeout_attempts = new_timeout,
                 "poll_promise: effect-gated timeout sample"
             );
