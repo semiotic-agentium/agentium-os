@@ -163,6 +163,26 @@ where
     run_live_llm_with_retry_no_gate(label, max_attempts, per_attempt_timeout, f).await
 }
 
+pub async fn run_live_llm_with_retry_validate<T, Fut, F, V>(
+    label: &str,
+    max_attempts: usize,
+    per_attempt_timeout: Duration,
+    f: F,
+    validate: V,
+) -> baml_rt_core::Result<T>
+where
+    F: FnMut(usize) -> Fut,
+    Fut: Future<Output = baml_rt_core::Result<T>>,
+    V: Fn(&T) -> std::result::Result<(), String>,
+{
+    let _permit = llm_test_gate()
+        .acquire()
+        .await
+        .expect("acquire LLM test gate");
+    run_live_llm_with_retry_no_gate_validate(label, max_attempts, per_attempt_timeout, f, validate)
+        .await
+}
+
 pub async fn run_live_llm_with_retry_no_gate<T, Fut, F>(
     label: &str,
     max_attempts: usize,
@@ -178,6 +198,56 @@ where
         let fut = f(attempt);
         match timeout(per_attempt_timeout, fut).await {
             Ok(Ok(value)) => return Ok(value),
+            Ok(Err(err)) => {
+                let msg = format!("attempt {attempt}: {err}");
+                tracing::warn!(label, "{msg}");
+                last_err = Some(msg);
+            }
+            Err(_) => {
+                let msg = format!(
+                    "attempt {attempt}: timed out after {}s",
+                    per_attempt_timeout.as_secs()
+                );
+                tracing::warn!(label, "{msg}");
+                last_err = Some(msg);
+            }
+        }
+
+        if attempt < max_attempts {
+            sleep(Duration::from_secs((attempt as u64) * 2)).await;
+        }
+    }
+
+    Err(baml_rt_core::BamlRtError::BamlRuntime(format!(
+        "{label} failed after {max_attempts} attempts: {}",
+        last_err.unwrap_or_else(|| "unknown error".to_string())
+    )))
+}
+
+pub async fn run_live_llm_with_retry_no_gate_validate<T, Fut, F, V>(
+    label: &str,
+    max_attempts: usize,
+    per_attempt_timeout: Duration,
+    mut f: F,
+    validate: V,
+) -> baml_rt_core::Result<T>
+where
+    F: FnMut(usize) -> Fut,
+    Fut: Future<Output = baml_rt_core::Result<T>>,
+    V: Fn(&T) -> std::result::Result<(), String>,
+{
+    let mut last_err: Option<String> = None;
+    for attempt in 1..=max_attempts {
+        let fut = f(attempt);
+        match timeout(per_attempt_timeout, fut).await {
+            Ok(Ok(value)) => match validate(&value) {
+                Ok(()) => return Ok(value),
+                Err(err) => {
+                    let msg = format!("attempt {attempt}: {err}");
+                    tracing::warn!(label, "{msg}");
+                    last_err = Some(msg);
+                }
+            },
             Ok(Err(err)) => {
                 let msg = format!("attempt {attempt}: {err}");
                 tracing::warn!(label, "{msg}");

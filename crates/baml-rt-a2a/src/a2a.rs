@@ -603,7 +603,7 @@ mod tests {
                     __chat_yield({
                         task: {
                             metadata: { agent: "test-agent" },
-                            status: { state: "TASK_STATE_WORKING" }
+                            status: { state: "TASK_STATE_COMPLETED" }
                         }
                     });
                     return;

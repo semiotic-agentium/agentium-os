@@ -4,7 +4,9 @@
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::ids::{AgentId, UuidId};
 use serde_json::json;
-use test_support::common::{require_api_key, setup_baml_runtime_default, setup_bridge};
+use test_support::common::{
+    require_api_key, run_live_llm_with_retry_validate, setup_baml_runtime_default, setup_bridge,
+};
 use uuid::Uuid;
 
 #[tokio::test]
@@ -19,42 +21,41 @@ async fn test_e2e_simple_greeting_with_llm() {
     let agent_id = AgentId::from_uuid(UuidId::new(Uuid::new_v4()));
     let scope = InvocationScope::synthetic_message(agent_id);
     tracing::info!("Invoking SimpleGreeting BAML function...");
-    let result = context::with_scope(scope.as_scope().clone(), async {
-        bridge
-            .invoke_function(&scope, "SimpleGreeting", json!({ "name": "E2E Test User" }))
+    let response_value = run_live_llm_with_retry_validate(
+        "SimpleGreeting",
+        3,
+        std::time::Duration::from_secs(120),
+        |_| async {
+            context::with_scope(scope.as_scope().clone(), async {
+                bridge
+                    .invoke_function(&scope, "SimpleGreeting", json!({ "name": "E2E Test User" }))
+                    .await
+            })
             .await
-    })
-    .await;
+        },
+        |value| {
+            let response_str = value.as_str().unwrap_or("");
+            if response_str.trim().is_empty() {
+                return Err("SimpleGreeting returned empty response".to_string());
+            }
+            Ok(())
+        },
+    )
+    .await
+    .unwrap_or_else(|e| panic!("BAML function should execute successfully: {e}"));
 
-    match result {
-        Ok(response_value) => {
-            let response_str = response_value.as_str().unwrap_or("");
-            tracing::info!("✅ BAML function executed successfully!");
-            tracing::info!("Response: {}", response_str);
+    let response_str = response_value.as_str().unwrap_or("");
+    tracing::info!("✅ BAML function executed successfully!");
+    tracing::info!("Response: {}", response_str);
 
-            assert!(
-                !response_str.is_empty(),
-                "Response should not be empty (got value: {})",
-                response_value
-            );
-
-            let response_lower = response_str.to_lowercase();
-            assert!(
-                response_lower.contains("e2e")
-                    || response_lower.contains("test")
-                    || response_lower.contains("user")
-                    || response_str.len() > 5,
-                "Response should be meaningful or mention the name"
-            );
-        }
-        Err(e) => {
-            tracing::error!("❌ BAML function execution failed: {}", e);
-            panic!(
-                "BAML function should execute successfully, but got error: {}",
-                e
-            );
-        }
-    }
+    let response_lower = response_str.to_lowercase();
+    assert!(
+        response_lower.contains("e2e")
+            || response_lower.contains("test")
+            || response_lower.contains("user")
+            || response_str.len() > 5,
+        "Response should be meaningful or mention the name"
+    );
 }
 
 #[tokio::test]
