@@ -1269,12 +1269,14 @@ dependencies = [
 name = "baml-rt-provenance"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "baml-rt-core",
  "baml-rt-id",
  "baml-rt-interceptor",
  "baml-rt-observability",
  "baml-rt-tools",
+ "clap",
  "insta",
  "serde",
  "serde_json",
