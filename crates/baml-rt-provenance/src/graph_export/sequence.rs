@@ -396,10 +396,7 @@ mod tests {
             a2a::MODEL.to_string(),
             serde_json::Value::String(model.to_string()),
         );
-        props.insert(
-            a2a::DURATION_MS.to_string(),
-            serde_json::json!(duration_ms),
-        );
+        props.insert(a2a::DURATION_MS.to_string(), serde_json::json!(duration_ms));
         props.insert(a2a::SUCCESS.to_string(), serde_json::json!(true));
         ExportedNode {
             id: id.to_string(),
@@ -416,10 +413,7 @@ mod tests {
             a2a::TOOL_NAME.to_string(),
             serde_json::Value::String(tool_name.to_string()),
         );
-        props.insert(
-            a2a::DURATION_MS.to_string(),
-            serde_json::json!(duration_ms),
-        );
+        props.insert(a2a::DURATION_MS.to_string(), serde_json::json!(duration_ms));
         props.insert(a2a::SUCCESS.to_string(), serde_json::json!(true));
         ExportedNode {
             id: id.to_string(),
@@ -592,10 +586,7 @@ mod tests {
         let output = render_sequence_diagram(&g);
         // Should only declare participant once.
         let count = output.matches("participant clickupNavigate").count();
-        assert_eq!(
-            count, 1,
-            "same tool should be declared only once: {output}"
-        );
+        assert_eq!(count, 1, "same tool should be declared only once: {output}");
     }
 
     #[test]
@@ -812,10 +803,7 @@ mod tests {
             properties: props,
             event_order: Some(2),
         };
-        let g = graph(
-            vec![agent_node("a1", "clickup_agent"), node],
-            vec![],
-        );
+        let g = graph(vec![agent_node("a1", "clickup_agent"), node], vec![]);
         let output = render_sequence_diagram(&g);
         assert!(
             output.contains("569ms ✗ list_id is required"),
@@ -841,10 +829,7 @@ mod tests {
             properties: props,
             event_order: Some(2),
         };
-        let g = graph(
-            vec![agent_node("a1", "clickup_agent"), node],
-            vec![],
-        );
+        let g = graph(vec![agent_node("a1", "clickup_agent"), node], vec![]);
         let output = render_sequence_diagram(&g);
         assert!(
             output.contains("273ms ✗"),

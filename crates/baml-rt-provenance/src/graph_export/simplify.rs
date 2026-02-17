@@ -71,7 +71,9 @@ pub fn simplify_graph(graph: &ExportedGraph) -> ExportedGraph {
     let kept_tool_ids: HashSet<&str> = graph
         .nodes
         .iter()
-        .filter(|n| n.label == GraphNodeLabel::ToolCall.as_str() && !remove_ids.contains(n.id.as_str()))
+        .filter(|n| {
+            n.label == GraphNodeLabel::ToolCall.as_str() && !remove_ids.contains(n.id.as_str())
+        })
         .map(|n| n.id.as_str())
         .collect();
 
@@ -110,9 +112,7 @@ pub fn simplify_graph(graph: &ExportedGraph) -> ExportedGraph {
     let edges: Vec<ExportedEdge> = graph
         .edges
         .iter()
-        .filter(|e| {
-            !remove_ids.contains(e.from.as_str()) && !remove_ids.contains(e.to.as_str())
-        })
+        .filter(|e| !remove_ids.contains(e.from.as_str()) && !remove_ids.contains(e.to.as_str()))
         .map(|e| {
             let mut e = e.clone();
             if let Some(new_id) = agent_redirect.get(e.from.as_str()) {
@@ -202,10 +202,7 @@ mod tests {
             id: id.to_string(),
             label: label.to_string(),
             display_name: display.to_string(),
-            properties: props
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v))
-                .collect(),
+            properties: props.into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
             event_order: None,
         }
     }
@@ -245,7 +242,10 @@ mod tests {
             simplified.nodes.iter().all(|n| n.label != "LlmPrompt"),
             "LlmPrompt should be removed"
         );
-        assert!(simplified.edges.is_empty(), "edge to prompt should be removed");
+        assert!(
+            simplified.edges.is_empty(),
+            "edge to prompt should be removed"
+        );
     }
 
     #[test]
@@ -383,7 +383,11 @@ mod tests {
             .iter()
             .filter(|n| n.label == "ToolCall")
             .collect();
-        assert_eq!(tc_nodes.len(), 1, "only send-complete ToolCall should remain");
+        assert_eq!(
+            tc_nodes.len(),
+            1,
+            "only send-complete ToolCall should remain"
+        );
         assert_eq!(tc_nodes[0].id, "tc-send-complete");
 
         let args_nodes: Vec<&ExportedNode> = simplified
@@ -489,10 +493,7 @@ mod tests {
                     "ToolCall",
                     "🔧 open complete",
                     vec![
-                        (
-                            a2a::METADATA,
-                            serde_json::json!({"phase": "open"}),
-                        ),
+                        (a2a::METADATA, serde_json::json!({"phase": "open"})),
                         (a2a::DURATION_MS, serde_json::json!(10)),
                     ],
                 ),
@@ -500,20 +501,14 @@ mod tests {
                     "tc-ss",
                     "ToolCall",
                     "🔧 send start",
-                    vec![(
-                        a2a::METADATA,
-                        serde_json::json!({"phase": "send"}),
-                    )],
+                    vec![(a2a::METADATA, serde_json::json!({"phase": "send"}))],
                 ),
                 node_with_props(
                     "tc-sc",
                     "ToolCall",
                     "🔧 send complete",
                     vec![
-                        (
-                            a2a::METADATA,
-                            serde_json::json!({"phase": "send"}),
-                        ),
+                        (a2a::METADATA, serde_json::json!({"phase": "send"})),
                         (a2a::DURATION_MS, serde_json::json!(150)),
                         (a2a::SUCCESS, serde_json::json!(true)),
                     ],
