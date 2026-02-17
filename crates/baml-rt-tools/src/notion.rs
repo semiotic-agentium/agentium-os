@@ -16,6 +16,8 @@ use baml_rt_core::{BamlRtError, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use std::fmt;
+use std::time::Duration;
 use ts_rs::TS;
 
 /// Notion REST API base URL.
@@ -23,6 +25,17 @@ pub const BASE_URL: &str = "https://api.notion.com/v1";
 /// Notion API version header value.
 pub const NOTION_VERSION: &str = "2025-09-03";
 const MAX_BLOCK_DEPTH: u32 = 10;
+const MAX_RATE_LIMIT_RETRIES: usize = 3;
+const RATE_LIMIT_BASE_DELAY_MS: u64 = 500;
+const RATE_LIMIT_MAX_DELAY_MS: u64 = 5_000;
+const MAX_BLOCK_PAGES: usize = 10;
+
+fn backoff_delay(retries: usize) -> Duration {
+    let shift = u32::try_from(retries).unwrap_or(u32::MAX);
+    let multiplier = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
+    let backoff = RATE_LIMIT_BASE_DELAY_MS.saturating_mul(multiplier);
+    Duration::from_millis(backoff.min(RATE_LIMIT_MAX_DELAY_MS))
+}
 
 // ---------------------------------------------------------------------------
 // Input types
@@ -130,16 +143,25 @@ pub enum NotionError {
     Http(#[source] reqwest::Error),
 
     #[error("Notion API authentication failed ({status}): {body}")]
-    Unauthorized { status: u16, body: String },
+    Unauthorized {
+        status: reqwest::StatusCode,
+        body: String,
+    },
 
     #[error("Notion resource not found (404): {body}")]
     NotFound { body: String },
 
     #[error("Notion rate limit exceeded (429), retry after {retry_after}: {body}")]
-    RateLimited { body: String, retry_after: String },
+    RateLimited {
+        body: String,
+        retry_after: RetryAfter,
+    },
 
     #[error("Notion API returned {status}: {body}")]
-    Api { status: u16, body: String },
+    Api {
+        status: reqwest::StatusCode,
+        body: String,
+    },
 
     #[error("Failed to deserialize Notion response")]
     Deserialize(#[source] reqwest::Error),
@@ -155,6 +177,9 @@ pub enum NotionError {
 
     #[error("Invalid Notion header value: {message}")]
     InvalidHeader { message: String },
+
+    #[error("Failed to clone Notion request")]
+    RequestClone,
 }
 
 impl From<NotionError> for BamlRtError {
@@ -170,7 +195,8 @@ impl From<NotionError> for BamlRtError {
             | NotionError::RateLimited { .. }
             | NotionError::Api { .. }
             | NotionError::Deserialize(_)
-            | NotionError::UnexpectedShape { .. } => BamlRtError::ToolExecution(err.to_string()),
+            | NotionError::UnexpectedShape { .. }
+            | NotionError::RequestClone => BamlRtError::ToolExecution(err.to_string()),
         }
     }
 }
@@ -183,6 +209,32 @@ impl From<NotionError> for BamlRtError {
 struct NotionClient {
     client: reqwest::Client,
     api_key: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub enum RetryAfter {
+    Seconds(u64),
+    Unknown(String),
+    Missing,
+}
+
+impl RetryAfter {
+    fn as_duration(&self) -> Option<Duration> {
+        match self {
+            RetryAfter::Seconds(seconds) => Some(Duration::from_secs(*seconds)),
+            RetryAfter::Unknown(_) | RetryAfter::Missing => None,
+        }
+    }
+}
+
+impl fmt::Display for RetryAfter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RetryAfter::Seconds(seconds) => write!(f, "{seconds}s"),
+            RetryAfter::Unknown(raw) => write!(f, "unknown({raw})"),
+            RetryAfter::Missing => write!(f, "missing"),
+        }
+    }
 }
 
 impl NotionClient {
@@ -241,34 +293,63 @@ impl NotionClient {
         &self,
         request: reqwest::RequestBuilder,
     ) -> std::result::Result<serde_json::Value, NotionError> {
-        let url = request
-            .try_clone()
-            .and_then(|req| req.build().ok())
-            .map(|req| req.url().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+        let request = request.build().map_err(NotionError::Http)?;
+        let url = request.url().to_string();
         let span = spans::notion_request(&url);
         let _guard = span.enter();
-        let resp = request.send().await.map_err(NotionError::Http)?;
+        let mut retries = 0usize;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            let retry_after = resp
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown")
-                .to_string();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(match code {
-                401 | 403 => NotionError::Unauthorized { status: code, body },
-                404 => NotionError::NotFound { body },
-                429 => NotionError::RateLimited { body, retry_after },
-                _ => NotionError::Api { status: code, body },
-            });
+        loop {
+            let req = request.try_clone().ok_or(NotionError::RequestClone)?;
+            let resp = self.client.execute(req).await.map_err(NotionError::Http)?;
+
+            let status = resp.status();
+            if !status.is_success() {
+                let retry_after = Self::parse_retry_after(resp.headers().get("retry-after"));
+                let body = resp.text().await.unwrap_or_default();
+                if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    && retries < MAX_RATE_LIMIT_RETRIES
+                {
+                    let delay = retry_after
+                        .as_duration()
+                        .unwrap_or_else(|| backoff_delay(retries));
+                    tracing::warn!(
+                        retries = retries + 1,
+                        retry_after = %retry_after,
+                        "Notion rate limit hit; backing off"
+                    );
+                    retries += 1;
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                return Err(match status {
+                    reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+                        NotionError::Unauthorized { status, body }
+                    }
+                    reqwest::StatusCode::NOT_FOUND => NotionError::NotFound { body },
+                    reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                        NotionError::RateLimited { body, retry_after }
+                    }
+                    _ => NotionError::Api { status, body },
+                });
+            }
+
+            return resp.json().await.map_err(NotionError::Deserialize);
         }
+    }
 
-        resp.json().await.map_err(NotionError::Deserialize)
+    fn parse_retry_after(value: Option<&reqwest::header::HeaderValue>) -> RetryAfter {
+        let Some(value) = value else {
+            return RetryAfter::Missing;
+        };
+        let raw = match value.to_str() {
+            Ok(raw) => raw,
+            Err(_) => return RetryAfter::Unknown("invalid-utf8".to_string()),
+        };
+        match raw.trim().parse::<u64>() {
+            Ok(seconds) => RetryAfter::Seconds(seconds),
+            Err(_) => RetryAfter::Unknown(raw.to_string()),
+        }
     }
 
     async fn search_pages(
@@ -499,7 +580,6 @@ impl NotionClient {
         Option<String>,
         bool,
     )> {
-        const MAX_BLOCK_PAGES: usize = 10;
         let mut pages_out = Vec::new();
         let mut sources_out = Vec::new();
         let mut blocks_out = Vec::new();
@@ -530,6 +610,13 @@ impl NotionClient {
             has_more = more;
             pages_fetched += 1;
             if pages_fetched >= MAX_BLOCK_PAGES {
+                if has_more {
+                    tracing::warn!(
+                        block_id = block_id,
+                        max_pages = MAX_BLOCK_PAGES,
+                        "Notion blocks pagination truncated"
+                    );
+                }
                 break;
             }
             cursor = next;
@@ -573,6 +660,11 @@ impl NotionClient {
             }
             all_children.extend(child_blocks);
             if all_children.len() >= MAX_CHILD_BLOCKS_TOTAL {
+                tracing::warn!(
+                    block_id = block_id,
+                    max_blocks = MAX_CHILD_BLOCKS_TOTAL,
+                    "Notion child block expansion truncated"
+                );
                 break;
             }
         }
@@ -591,7 +683,9 @@ fn next_depth_for_children(depth: u32, max_depth: u32) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::next_depth_for_children;
+    use super::{NotionClient, RetryAfter, backoff_delay, next_depth_for_children};
+    use reqwest::header::HeaderValue;
+    use std::time::Duration;
 
     #[test]
     fn next_depth_for_children_respects_max_depth() {
@@ -599,6 +693,35 @@ mod tests {
         assert_eq!(next_depth_for_children(0, 1), Some(1));
         assert_eq!(next_depth_for_children(1, 1), None);
         assert_eq!(next_depth_for_children(1, 2), Some(2));
+    }
+
+    #[test]
+    fn backoff_delay_is_capped() {
+        assert_eq!(backoff_delay(0), Duration::from_millis(500));
+        assert_eq!(backoff_delay(1), Duration::from_millis(1000));
+        assert_eq!(backoff_delay(2), Duration::from_millis(2000));
+        assert_eq!(backoff_delay(3), Duration::from_millis(4000));
+        assert_eq!(backoff_delay(4), Duration::from_millis(5000));
+    }
+
+    #[test]
+    fn parse_retry_after_header() {
+        let header = HeaderValue::from_static("120");
+        assert!(matches!(
+            NotionClient::parse_retry_after(Some(&header)),
+            RetryAfter::Seconds(120)
+        ));
+
+        let header = HeaderValue::from_static("n/a");
+        assert!(matches!(
+            NotionClient::parse_retry_after(Some(&header)),
+            RetryAfter::Unknown(value) if value == "n/a"
+        ));
+
+        assert!(matches!(
+            NotionClient::parse_retry_after(None),
+            RetryAfter::Missing
+        ));
     }
 }
 

@@ -77,7 +77,13 @@ if ! lsof -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   exit 1
 fi
 
-TEXT="${NOTION_DEMO_TEXT:-Summarize this Notion page 303cff78-8181-809b-9e8c-de431eb8c30e. Focus on commitments, conflicts, missing info, and be a little funny.}"
+DEFAULT_PAGE_ID="303cff78-8181-809b-9e8c-de431eb8c30e"
+PAGE_ID="${NOTION_DEMO_PAGE_ID:-$DEFAULT_PAGE_ID}"
+if [ -n "${NOTION_DEMO_TEXT:-}" ]; then
+  TEXT="$NOTION_DEMO_TEXT"
+else
+  TEXT="Summarize this Notion page ${PAGE_ID}. Focus on commitments, conflicts, missing info, and be a little funny."
+fi
 
 jq -n --arg text "$TEXT" \
   '{jsonrpc:"2.0", method:"message.sendStream", params:{message:{messageId:"msg-2",role:"ROLE_USER",parts:[{text:$text}]}}, id:"corr-1700000000000-2"}' | \
