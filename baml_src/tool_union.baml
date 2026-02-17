@@ -1,5 +1,4 @@
 // Tool calling using BAML's union type pattern
-// Based on: https://boundaryml.com/blog/deepseek-r1-function-calling
 
 enum MathOperation {
   Add @alias("+")
@@ -30,7 +29,7 @@ type ToolChoice = WeatherTool | CalculatorTool
 
 // Function that returns which tool to call
 function ChooseTool(user_message: string) -> ToolChoice {
-  client DeepSeekOpenRouter
+  client OpenRouterGPT
   prompt #"
     The user said: {{ user_message }}
 

@@ -4,7 +4,7 @@ class ReadOnlyResponse {
 }
 
 function ChooseNotionAction(user_message: string) -> ReadOnlyResponse | SupportNotionSessionPlan {
-  client DeepSeekOpenRouter
+  client OpenRouterGPT
   prompt #"
     You are a Notion assistant. This tool is read-only and must be auditable.
     Use prior turns if present in ctx.tags.conversation_history.
@@ -57,7 +57,7 @@ function SummarizeNotionContent(
   page_url: string?,
   blocks_text: string
 ) -> NotionSummary {
-  client DeepSeekOpenRouter
+  client OpenRouterGPT
   prompt #"
     You summarize Notion content for busy engineers and BizDev.
     Use prior turns if present in ctx.tags.conversation_history.
@@ -98,10 +98,10 @@ function SummarizeNotionContent(
   "#
 }
 
-client DeepSeekOpenRouter {
+client OpenRouterGPT {
   provider openai-generic
   options {
-    model "deepseek/deepseek-v3.2"
+    model "openai/gpt-4o-mini"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }

@@ -1,6 +1,6 @@
 // BAML function that can use weather tool
 function GetWeatherInfo(location: string) -> string {
-  client DeepSeekOpenRouter
+  client OpenRouterGPT
   prompt #"
     Get the weather information for {{ location }}.
     Provide a friendly response about the current weather conditions.
