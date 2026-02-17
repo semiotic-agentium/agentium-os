@@ -11,13 +11,13 @@
 //
 // CRITICAL FSM RULES:
 // - Open MUST come before any Send step
-// - Open uses 'initial_input' field (for first input when opening)
+// - Open uses 'initial_input' for open-time session configuration when supported
 // - Send uses 'input' for message payloads
 // - After Send, call Next to retrieve results
 // - Always Finish or Abort to close the session
 
 enum ToolSessionOp {
-  Open @description("Open a new tool session. MUST be the first step in any plan. Use 'initial_input' field to provide the first input when opening the session.")
+  Open @description("Open a new tool session. MUST be the first step in any plan. Use 'initial_input' for open-time configuration when this step schema includes it.")
   Send @description("Send input to an already-open session. Can ONLY be used after an Open step. Provide payload in the 'input' field.")
   Next @description("Retrieve the next output from the session. Call this after Send to get results. For streaming tools, call Next multiple times until Done.")
   Finish @description("Close the session gracefully after completing all operations. Always call Finish when done with a tool session.")
@@ -101,5 +101,6 @@ class SupportNotionAbortStep {
 type SupportNotionSessionStep = SupportNotionOpenStep | SupportNotionSendStep | SupportNotionNextStep | SupportNotionFinishStep | SupportNotionAbortStep
 
 class SupportNotionSessionPlan {
-  steps SupportNotionSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{op: 'Open'}, {op: 'Send', input: {...}}, {op: 'Next'}, {op: 'Finish'}]. Access: read.")
+  steps SupportNotionSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (with open-time initial_input when supported), 2) Send (with input payload), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{op: 'Open'}, {op: 'Send', input: {...}}, {op: 'Next'}, {op: 'Finish'}]. Access: read.")
 }
+

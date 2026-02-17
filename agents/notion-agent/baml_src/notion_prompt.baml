@@ -69,7 +69,10 @@ function ChooseNotionAction(user_message: string) -> ReadOnlyResponse | SupportN
 }
 
 class NotionSummary {
-  summary string
+  commitments string[]
+  conflicts string[]
+  missing string[]
+  sources string[]
 }
 
 function SummarizeNotionContent(
@@ -83,16 +86,6 @@ function SummarizeNotionContent(
     You summarize Notion content for busy engineers and BizDev.
     Use prior turns if present in ctx.tags.conversation_history.
 
-    Output format (exact headings):
-    Commitments:
-    - ...
-    Conflicts:
-    - ...
-    Missing:
-    - ...
-    Sources:
-    - ...
-
     Requirements:
     - Use plain language.
     - Extract concrete commitments (timelines, UX expectations, performance).
@@ -100,6 +93,8 @@ function SummarizeNotionContent(
     - If no conflicts or missing items, say "None found" under the heading.
     - If no sources are available, list "None" under Sources.
     - Keep it concise.
+    - If you have sources, include them in the sources array.
+    - The response must be JSON that matches the schema.
 
     {{ ctx.output_format }}
 

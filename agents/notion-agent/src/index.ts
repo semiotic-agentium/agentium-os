@@ -20,6 +20,12 @@ function wantsSummary(text: string): boolean {
 type NotionPageSummary = { id: string; title: string; url: string };
 type NotionBlockSummary = { text?: string | null };
 type NotionSource = { page_id: string; url: string };
+type NotionSummary = {
+  commitments?: string[];
+  conflicts?: string[];
+  missing?: string[];
+  sources?: string[];
+};
 
 type NotionOutput = {
   message?: string;
@@ -35,6 +41,8 @@ type ReadOnlyResponse = {
 
 type NotionActionResult = NotionOutput | ReadOnlyResponse | null;
 
+// Agent pattern: tools return structured data, agent renders UX.
+// See docs/agent-patterns.md for the rationale and checklist.
 function isReadOnlyResponse(action: NotionActionResult): action is ReadOnlyResponse {
   if (!action || typeof action !== "object") return false;
   const candidate = action as Record<string, unknown>;
@@ -63,22 +71,41 @@ function formatPages(pages?: NotionPageSummary[]): string {
   return "\n\nPages:\n" + lines.join("\n");
 }
 
+function formatSummaryLines(label: string, items?: string[]): string {
+  if (!items || items.length === 0) return `${label}:\n- None found`;
+  const lines = items.map((item) => `- ${item}`);
+  return `${label}:\n${lines.join("\n")}`;
+}
+
+function renderSummary(summary: NotionSummary): string {
+  const commitments = formatSummaryLines("Commitments", summary.commitments);
+  const conflicts = formatSummaryLines("Conflicts", summary.conflicts);
+  const missing = formatSummaryLines("Missing", summary.missing);
+  const sources = formatSummaryLines("Sources", summary.sources);
+  return [commitments, conflicts, missing, sources].join("\n");
+}
+
 async function summarizeBlocks(args: {
   user_message: string;
   page_title: string | null;
   page_url: string | null;
   blocks_text: string;
-}): Promise<string | null> {
+}): Promise<NotionSummary | null> {
   try {
     const result = await SummarizeNotionContent(args);
     if (result && typeof result === "string") return result;
     if (result && typeof result === "object") {
-      const output = result as { summary?: string; message?: string; text?: string };
-      if (output.summary) return output.summary;
-      if (output.message) return output.message;
-      if (output.text) return output.text;
+      const output = result as NotionSummary;
+      if (
+        output.commitments ||
+        output.conflicts ||
+        output.missing ||
+        output.sources
+      ) {
+        return output;
+      }
       console.warn("SummarizeNotionContent returned unexpected shape", result);
-      return JSON.stringify(result);
+      return null;
     }
   } catch (err) {
     console.warn("SummarizeNotionContent failed", err);
@@ -125,6 +152,7 @@ async function onChatMessage(message: ChatMessageWithToken): Promise<void> {
           ? `Notable lines:\n- ${Array.from(new Set(notableLines)).join("\n- ")}\n\n`
           : "";
 
+      let renderedSummary = false;
       if (blocksText.length > 0) {
         const pageTitle = output.pages && output.pages[0] ? output.pages[0].title : null;
         const pageUrl = output.pages && output.pages[0] ? output.pages[0].url : null;
@@ -138,14 +166,11 @@ async function onChatMessage(message: ChatMessageWithToken): Promise<void> {
           blocks_text: truncated,
         });
         if (summary) {
-          let formattedSummary = summary;
-          if (output.sources && output.sources.length > 0) {
-            formattedSummary = formattedSummary.replace(
-              /Sources:\s*(?:-?\s*None.*)?/gi,
-              ""
-            );
+          if (output.sources && output.sources.length > 0 && !summary.sources) {
+            summary.sources = output.sources.map((source) => source.url);
           }
-          response += `\n\nSummary:\n${formattedSummary.trim()}`;
+          response += `\n\nSummary:\n${renderSummary(summary)}`;
+          renderedSummary = true;
         }
       } else if (wantsSummary(text)) {
         response +=
@@ -157,7 +182,9 @@ async function onChatMessage(message: ChatMessageWithToken): Promise<void> {
           "\n\nMissing:\n- No Notion pages found for this request. Provide a page link or adjust the query, or ensure the integration has access.";
       }
 
-      response += formatSources(output.sources, output.pages);
+      if (!renderedSummary) {
+        response += formatSources(output.sources, output.pages);
+      }
 
       return { message: response };
     }
