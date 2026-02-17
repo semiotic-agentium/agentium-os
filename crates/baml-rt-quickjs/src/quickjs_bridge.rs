@@ -59,6 +59,52 @@ impl Drop for InFlightGuard {
     }
 }
 
+/// Ensures evaluate() bookkeeping is cleaned up on all exits, including cancellation/drop.
+struct EvalLifecycleGuard {
+    eval_results_by_token: EvalResultMap,
+    invocation_context_registry: InvocationContextRegistrySlot,
+    eval_token: InvocationToken,
+    context_id_to_exit: Option<InvocationContextId>,
+    eval_slot_registered: bool,
+}
+
+impl EvalLifecycleGuard {
+    fn new(
+        eval_results_by_token: EvalResultMap,
+        invocation_context_registry: InvocationContextRegistrySlot,
+        eval_token: InvocationToken,
+        context_id_to_exit: Option<InvocationContextId>,
+    ) -> Self {
+        Self {
+            eval_results_by_token,
+            invocation_context_registry,
+            eval_token,
+            context_id_to_exit,
+            eval_slot_registered: false,
+        }
+    }
+
+    fn mark_eval_slot_registered(&mut self) {
+        self.eval_slot_registered = true;
+    }
+}
+
+impl Drop for EvalLifecycleGuard {
+    fn drop(&mut self) {
+        if self.eval_slot_registered
+            && let Ok(mut guard) = self.eval_results_by_token.lock()
+        {
+            guard.remove(&self.eval_token);
+        }
+
+        if let Some(id) = self.context_id_to_exit.as_ref()
+            && let Ok(mut guard) = self.invocation_context_registry.lock()
+        {
+            guard.exit(id);
+        }
+    }
+}
+
 /// Helper function for creating an empty open_input value.
 ///
 /// This centralizes the pattern of using an empty JSON object as the default
@@ -481,7 +527,9 @@ impl QuickJSBridge {
                     .map_err(|_| quickjs_runtime::jsutils::JsError::new_str("eval_results lock poisoned"))?;
                 let key = InvocationToken(token);
                 if !guard.contains_key(&key) {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Missing eval result slot for token"));
+                    // Late completion after timeout/cancel: token slot may already be gone.
+                    // Ignore to keep completion idempotent.
+                    return Ok(JsValueFacade::Undefined);
                 }
                 guard.insert(key, Some(json_str));
                 Ok(JsValueFacade::Undefined)
@@ -842,7 +890,7 @@ impl QuickJSBridge {
     ///
     /// **Scope:** When `scope` is `Some`, we push it on the host invocation-context stack so
     /// native callbacks resolve scope tokenlessly. We also create an eval token for result
-    /// tracking and (for now) inject a prelude. On completion we pop the context and remove the token.
+    /// tracking. Cleanup is guarded so it always runs on success, error, or cancellation.
     pub async fn evaluate(&mut self, scope: Option<&InvocationScope>, code: &str) -> Result<Value> {
         tracing::trace!(code = code, "Executing JavaScript code");
 
@@ -857,9 +905,14 @@ impl QuickJSBridge {
             None
         };
 
-        // Eval result tracking only; no token/context prelude in JS (host resolves from registry).
         let eval_token = next_invocation_token();
-        let prelude_opt: Option<String> = None;
+        let mut lifecycle_guard = EvalLifecycleGuard::new(
+            self.eval_results_by_token.clone(),
+            self.invocation_context_registry.clone(),
+            eval_token.clone(),
+            context_id_to_exit,
+        );
+
         {
             let mut guard = self
                 .eval_results_by_token
@@ -870,18 +923,8 @@ impl QuickJSBridge {
             }
             guard.insert(eval_token.clone(), None);
         }
-        let token_to_remove: Option<InvocationToken> = None;
+        lifecycle_guard.mark_eval_slot_registered();
 
-        fn exit_invocation_context(
-            registry: &InvocationContextRegistrySlot,
-            id_opt: Option<&InvocationContextId>,
-        ) {
-            if let Some(id) = id_opt
-                && let Ok(mut guard) = registry.lock()
-            {
-                guard.exit(id);
-            }
-        }
         let code_trimmed = code.trim_start();
         let is_arrow_iife =
             code_trimmed.starts_with("(()") || code_trimmed.starts_with("(async ()");
@@ -894,121 +937,48 @@ impl QuickJSBridge {
             format!("(function() {{ {} }})()", code)
         };
 
-        // Execute the code exactly once. If the result is a promise/thenable, capture it to
-        // globalThis and return a sentinel so the promise path can await it without re-running
-        // side-effectful code (e.g. __baml_invoke). For sync values, return a JSON string.
-        let prelude = prelude_opt.as_deref().unwrap_or("");
-        let pending_key = format!("__eval_pending_{}", eval_token.0.replace('-', "_"));
+        // Execute user code exactly once. Promise results are handed off by installing inline
+        // then/catch handlers that call __set_eval_result(token, ...), avoiding any second eval
+        // or globalThis pending-promise storage.
+        let token_literal = eval_token.0.replace('\\', "\\\\").replace('"', "\\\"");
         let direct_code = format!(
             r#"(function() {{
-{prelude}
 var __r = {code};
 if (__r && typeof __r.then === 'function') {{
-  globalThis["{key}"] = __r;
+  Promise.resolve(__r).then(function(__v) {{
+    var __json;
+    if (typeof __v === 'string') {{
+      __json = __v;
+    }} else if (typeof __v === 'undefined') {{
+      __json = "{{}}";
+    }} else {{
+      __json = JSON.stringify(__v);
+      if (typeof __json === 'undefined') {{
+        __json = "{{}}";
+      }}
+    }}
+    __set_eval_result("{token}", __json);
+  }}).catch(function(__e) {{
+    __set_eval_result("{token}", JSON.stringify({{ error: (__e && __e.toString ? __e.toString() : String(__e)) }}));
+  }});
   return "__EVAL_PROMISE_PENDING__";
 }}
 if (typeof __r === 'string') {{ return __r; }}
 if (typeof __r === 'undefined') {{ return "{{}}"; }}
-return JSON.stringify(__r);
+var __sync_json = JSON.stringify(__r);
+if (typeof __sync_json === 'undefined') {{ return "{{}}"; }}
+return __sync_json;
 }})()"#,
-            prelude = prelude,
             code = code_expr_body,
-            key = pending_key,
+            token = token_literal,
         );
         let direct_script = Script::new("eval_direct.js", &direct_code);
-        let direct_result = match scope {
+        let js_result = match scope {
             Some(s) => {
                 self.run_eval_with_scope(s, direct_script.clone(), false)
                     .await
             }
             None => self.runtime.eval(None, direct_script).await,
-        };
-        if let Err(e) = direct_result {
-            // Best-effort cleanup of the captured global.
-            let cleanup = format!(r#"delete globalThis["{}"]"#, pending_key);
-            let _ = self.runtime.eval(None, Script::new("eval_cleanup.js", &cleanup)).await;
-            {
-                let mut guard = self
-                    .eval_results_by_token
-                    .lock()
-                    .map_err(|_| BamlRtError::QuickJs("eval_results lock poisoned".to_string()))?;
-                guard.remove(&eval_token);
-            }
-            let _ = token_to_remove.map(|t| self.remove_invocation_token(&t));
-            exit_invocation_context(
-                &self.invocation_context_registry,
-                context_id_to_exit.as_ref(),
-            );
-            let message = e.to_string();
-            return Err(BamlRtError::QuickJsWithSource {
-                context: format!("Failed to execute JavaScript: {}", message),
-                source: Box::new(e),
-            });
-        }
-
-        // If direct execution succeeds and returns a non-promise, we're done.
-        // The JS code returns the string directly for sync results, or
-        // "__EVAL_PROMISE_PENDING__" for promises captured in globalThis[pending_key].
-        let js_result = direct_result.expect("direct_result validated as Ok");
-        if js_result.is_string() {
-            let json_str = js_result.get_str();
-
-            // Sync fast-path: code returned a JSON string.
-            if json_str != "__EVAL_PROMISE_PENDING__" {
-                {
-                    let mut guard = self
-                        .eval_results_by_token
-                        .lock()
-                        .map_err(|_| BamlRtError::QuickJs("eval_results lock poisoned".to_string()))?;
-                    guard.remove(&eval_token);
-                }
-                let _ = token_to_remove.map(|t| self.remove_invocation_token(&t));
-                exit_invocation_context(
-                    &self.invocation_context_registry,
-                    context_id_to_exit.as_ref(),
-                );
-                if let Ok(parsed) = serde_json::from_str::<Value>(json_str) {
-                    return Ok(parsed);
-                }
-                return Ok(serde_json::json!({ "result": json_str }));
-            }
-            // Fall through: "__EVAL_PROMISE_PENDING__" means the result is a promise
-            // captured in globalThis[pending_key]. The promise path below will await it.
-        } else {
-            // Non-string, non-promise result (e.g. undefined from assignment code).
-            // Clean up the captured global and return empty success.
-            let cleanup = format!(r#"delete globalThis["{}"]"#, pending_key);
-            let _ = self.runtime.eval(None, Script::new("eval_cleanup.js", &cleanup)).await;
-            {
-                let mut guard = self
-                    .eval_results_by_token
-                    .lock()
-                    .map_err(|_| BamlRtError::QuickJs("eval_results lock poisoned".to_string()))?;
-                guard.remove(&eval_token);
-            }
-            let _ = token_to_remove.map(|t| self.remove_invocation_token(&t));
-            exit_invocation_context(
-                &self.invocation_context_registry,
-                context_id_to_exit.as_ref(),
-            );
-            return Ok(serde_json::json!({}));
-        }
-
-        // Promise path: the first eval captured the promise in globalThis[pending_key].
-        // Reference the captured global instead of re-evaluating the code expression.
-        let token_literal = eval_token.0.replace('\\', "\\\\").replace('"', "\\\"");
-        let code_promise_expr = format!("globalThis[\"{}\"]", pending_key);
-        let wrapped_code = js_codegen::build_wrapped_promise_code(
-            &code_promise_expr,
-            &token_literal,
-            Some(&pending_key),
-        );
-        let script = Script::new("eval.js", &wrapped_code);
-
-        // Execute the code - this will set __eval_result when the promise resolves.
-        let js_result = match scope {
-            Some(s) => self.run_eval_with_scope(s, script, false).await,
-            None => self.runtime.eval(None, script).await,
         }
         .map_err(|e| {
             let message = e.to_string();
@@ -1016,107 +986,56 @@ return JSON.stringify(__r);
                 context: format!("Failed to execute JavaScript: {}", message),
                 source: Box::new(e),
             }
-        });
-        let js_result = match js_result {
-            Ok(r) => r,
-            Err(e) => {
-                {
-                    let mut guard = self.eval_results_by_token.lock().map_err(|_| {
-                        BamlRtError::QuickJs("eval_results lock poisoned".to_string())
-                    })?;
-                    guard.remove(&eval_token);
-                }
-                if let Some(ref t) = token_to_remove {
-                    self.remove_invocation_token(t);
-                }
-                exit_invocation_context(
-                    &self.invocation_context_registry,
-                    context_id_to_exit.as_ref(),
-                );
-                return Err(e);
-            }
-        };
+        })?;
 
-        // Check if result is a string (synchronous code returned immediately)
-        if js_result.is_string() {
-            if let Some(ref t) = token_to_remove {
-                self.remove_invocation_token(t);
-            }
-            exit_invocation_context(
-                &self.invocation_context_registry,
-                context_id_to_exit.as_ref(),
-            );
-            let json_str = js_result.get_str();
-            serde_json::from_str(json_str).map_err(BamlRtError::Json)
-        } else {
-            // Result is a promise - we need to wait for it to resolve
-            // The async IIFE will set globalThis.__eval_result when done
-            let debug_str = format!("{:?}", js_result);
-
-            // Check if it's a promise
-            if debug_str.contains("Promise") || debug_str.contains("JsPromise") {
-                let invocation_scope = scope.ok_or_else(|| {
-                    BamlRtError::QuickJs(
-                        "Promise polling requires invocation scope; evaluate(scope=None) must not await promises"
-                            .to_string(),
-                    )
-                })?;
-                let poll_result = promise_polling::poll_promise_until_result(
-                    promise_polling::PollPromiseParams {
-                        runtime: &self.runtime,
-                        eval_results_by_token: &self.eval_results_by_token,
-                        eval_token: &eval_token,
-                        token_to_remove: token_to_remove.as_ref(),
-                        invocation_scope_by_token: &self.invocation_scope_by_token,
-                        scope: invocation_scope,
-                        effect_liveness: self.effect_liveness.clone(),
-                        idle_timeout_ms: self.idle_timeout_ms,
-                        max_attempts_ms: self.max_attempts_ms,
-                    },
-                )
-                .await;
-                // Always exit the invocation context after promise polling,
-                // whether it resolved or timed out.
-                exit_invocation_context(
-                    &self.invocation_context_registry,
-                    context_id_to_exit.as_ref(),
-                );
-                let result_str = poll_result?;
-                let parsed = serde_json::from_str(result_str.as_str()).map_err(|e| {
-                    let len = result_str.len();
-                    let prefix = result_str
-                        .get(..50.min(len))
-                        .unwrap_or("")
-                        .replace('\n', "\\n")
-                        .replace('\r', "\\r");
-                    BamlRtError::JsonWithRaw {
-                        source: e,
-                        raw_length: len,
-                        raw_prefix: prefix,
-                    }
-                })?;
-                if let Some(ref t) = token_to_remove {
-                    self.remove_invocation_token(t);
-                }
-                Ok(parsed)
-            } else {
-                // Not a promise, wrap in success object
-                {
-                    let mut guard = self.eval_results_by_token.lock().map_err(|_| {
-                        BamlRtError::QuickJs("eval_results lock poisoned".to_string())
-                    })?;
-                    guard.remove(&eval_token);
-                }
-                if let Some(ref t) = token_to_remove {
-                    self.remove_invocation_token(t);
-                }
-                exit_invocation_context(
-                    &self.invocation_context_registry,
-                    context_id_to_exit.as_ref(),
-                );
-                Ok(serde_json::json!({ "success": true, "result": debug_str }))
-            }
+        if !js_result.is_string() {
+            // Non-string result (rare edge cases such as unserializable values).
+            return Ok(serde_json::json!({}));
         }
+
+        let json_str = js_result.get_str();
+        if json_str != "__EVAL_PROMISE_PENDING__" {
+            // Sync fast-path: parse JSON; if it's a plain string, keep compatibility.
+            if let Ok(parsed) = serde_json::from_str::<Value>(json_str) {
+                return Ok(parsed);
+            }
+            return Ok(serde_json::json!({ "result": json_str }));
+        }
+
+        // Promise path: wait for __set_eval_result(token, json) from inline handlers above.
+        let invocation_scope = scope.ok_or_else(|| {
+            BamlRtError::QuickJs(
+                "Promise polling requires invocation scope; evaluate(scope=None) must not await promises"
+                    .to_string(),
+            )
+        })?;
+        let result_str =
+            promise_polling::poll_promise_until_result(promise_polling::PollPromiseParams {
+                runtime: &self.runtime,
+                eval_results_by_token: &self.eval_results_by_token,
+                eval_token: &eval_token,
+                token_to_remove: None,
+                invocation_scope_by_token: &self.invocation_scope_by_token,
+                scope: invocation_scope,
+                effect_liveness: self.effect_liveness.clone(),
+                idle_timeout_ms: self.idle_timeout_ms,
+                max_attempts_ms: self.max_attempts_ms,
+            })
+            .await?;
+
+        serde_json::from_str(result_str.as_str()).map_err(|e| {
+            let len = result_str.len();
+            let prefix = result_str
+                .get(..50.min(len))
+                .unwrap_or("")
+                .replace('\n', "\\n")
+                .replace('\r', "\\r");
+            BamlRtError::JsonWithRaw {
+                source: e,
+                raw_length: len,
+                raw_prefix: prefix,
+            }
+        })
     }
 
     /// Invoke a BAML function by name.
