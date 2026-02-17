@@ -87,12 +87,10 @@ async fn setup_agent() -> A2aAgent {
         .unwrap()
 }
 
-/// Agent with system/a2a tool registered on the given LocalSet (for session FSM tests).
-/// Caller must run agent work inside `local_set.run_until(...)` so the session worker is driven.
-async fn setup_agent_with_a2a_session_tool() -> (A2aAgent, tokio::task::LocalSet) {
-    let local_set = tokio::task::LocalSet::new();
+/// Agent with system/internal_a2a tool registered (for session FSM tests).
+async fn setup_agent_with_a2a_session_tool() -> A2aAgent {
     let manager = BamlRuntimeManager::new().unwrap();
-    let agent = A2aAgent::builder()
+    A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(fixture_js_code())
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
@@ -100,8 +98,7 @@ async fn setup_agent_with_a2a_session_tool() -> (A2aAgent, tokio::task::LocalSet
         .with_a2a_session_tool(true)
         .build()
         .await
-        .unwrap();
-    (agent, local_set)
+        .unwrap()
 }
 
 #[tokio::test]
@@ -273,147 +270,131 @@ async fn test_message_send_baml_tool_calling() {
 }
 
 /// Session send() only enqueues; must return in under 50ms. next() drains until Done.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_a2a_session_send_returns_fast_and_next_drains() {
     let _permit = acquire_test_permit().await;
-    let (agent, local_set) = setup_agent_with_a2a_session_tool().await;
+    let agent = setup_agent_with_a2a_session_tool().await;
     let handle = {
         let runtime = agent.runtime();
         let mgr = runtime.lock().await;
         mgr.tool_session_handle()
     };
-    local_set
-        .run_until(async move {
-            let context_id = context::generate_context_id();
-            let message_id = baml_rt_core::ids::MessageId::from_external(
-                baml_rt_core::ids::ExternalId::new(format!("msg-{}", context_id.as_str())),
-            );
-            let scope = context::RuntimeScope::message_scope(
-                context_id,
-                agent.agent_id().clone(),
-                message_id,
-            );
-            let scope_for_open = scope.clone();
-            context::with_scope(scope, async move {
-                let session_id = handle
-                    .open_tool_session(
-                        &scope_for_open,
-                        "system/a2a",
-                        json!({ "target": { "agent_package": "self", "agent_instance_id": "default" } }),
-                    )
-                    .await
-                    .expect("open system/a2a");
-                let send_input = json!({ "text": "ping" });
-                let start = std::time::Instant::now();
-                handle
-                    .tool_session_send(&session_id, send_input.clone())
-                    .await
-                    .expect("session_send");
-                let elapsed = start.elapsed();
-                assert!(
-                    elapsed < std::time::Duration::from_millis(50),
-                    "session send() must return in under 50ms (enqueue only), took {:?}",
-                    elapsed
-                );
-                for _ in 0..8 {
-                    let next = tokio::time::timeout(
-                        std::time::Duration::from_millis(500),
-                        handle.tool_session_next(&session_id),
-                    )
-                    .await;
-                    let Ok(Ok(step)) = next else {
-                        break;
-                    };
-                    if matches!(
-                        step,
-                        baml_rt_tools::ToolStep::Done { .. }
-                            | baml_rt_tools::ToolStep::Error { .. }
-                    ) {
-                        break;
-                    }
-                }
-                handle
-                    .tool_session_finish(&session_id)
-                    .await
-                    .expect("session_finish");
-            })
+    let context_id = context::generate_context_id();
+    let message_id = baml_rt_core::ids::MessageId::from_external(
+        baml_rt_core::ids::ExternalId::new(format!("msg-{}", context_id.as_str())),
+    );
+    let scope =
+        context::RuntimeScope::message_scope(context_id, agent.agent_id().clone(), message_id);
+    let scope_for_open = scope.clone();
+    context::with_scope(scope, async move {
+        let session_id = handle
+            .open_tool_session(
+                &scope_for_open,
+                "system/internal_a2a",
+                json!({ "target": { "agent_package": "self", "agent_instance_id": "default" } }),
+            )
             .await
-        })
-        .await;
+            .expect("open system/internal_a2a");
+        let send_input = json!({ "text": "ping" });
+        let start = std::time::Instant::now();
+        handle
+            .tool_session_send(&session_id, send_input.clone())
+            .await
+            .expect("session_send");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "session send() must return in under 50ms (enqueue only), took {:?}",
+            elapsed
+        );
+        for _ in 0..8 {
+            let next = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                handle.tool_session_next(&session_id),
+            )
+            .await;
+            let Ok(Ok(step)) = next else {
+                break;
+            };
+            if matches!(
+                step,
+                baml_rt_tools::ToolStep::Done { .. } | baml_rt_tools::ToolStep::Error { .. }
+            ) {
+                break;
+            }
+        }
+        handle
+            .tool_session_finish(&session_id)
+            .await
+            .expect("session_finish");
+    })
+    .await;
 }
 
 /// send() after finish() must fail fast (terminal phase).
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_a2a_session_send_after_finish_fails() {
     let _permit = acquire_test_permit().await;
-    let (agent, local_set) = setup_agent_with_a2a_session_tool().await;
+    let agent = setup_agent_with_a2a_session_tool().await;
     let handle = {
         let runtime = agent.runtime();
         let mgr = runtime.lock().await;
         mgr.tool_session_handle()
     };
-    local_set
-        .run_until(async move {
-            let context_id = context::generate_context_id();
-            let message_id = baml_rt_core::ids::MessageId::from_external(
-                baml_rt_core::ids::ExternalId::new(format!("msg-{}", context_id.as_str())),
-            );
-            let scope = context::RuntimeScope::message_scope(
-                context_id,
-                agent.agent_id().clone(),
-                message_id,
-            );
-            let scope_for_open = scope.clone();
-            context::with_scope(scope, async move {
-                let session_id = handle
-                    .open_tool_session(
-                        &scope_for_open,
-                        "system/a2a",
-                        json!({ "target": { "agent_package": "self", "agent_instance_id": "default" } }),
-                    )
-                    .await
-                    .expect("open system/a2a");
-                let send_input = json!({ "text": "hi" });
-                handle
-                    .tool_session_send(&session_id, send_input.clone())
-                    .await
-                    .expect("first send");
-                for _ in 0..8 {
-                    let next = tokio::time::timeout(
-                        std::time::Duration::from_millis(500),
-                        handle.tool_session_next(&session_id),
-                    )
-                    .await;
-                    let Ok(Ok(step)) = next else {
-                        break;
-                    };
-                    if matches!(
-                        step,
-                        baml_rt_tools::ToolStep::Done { .. }
-                            | baml_rt_tools::ToolStep::Error { .. }
-                    ) {
-                        break;
-                    }
-                }
-                handle
-                    .tool_session_finish(&session_id)
-                    .await
-                    .expect("finish");
-                let err = handle
-                    .tool_session_send(&session_id, send_input)
-                    .await
-                    .expect_err("send after finish must fail");
-                let err_msg = err.to_string();
-                assert!(
-                    err_msg.contains("terminal")
-                        || err_msg.contains("closed")
-                        || err_msg.contains("Unknown tool session")
-                        || err_msg.contains("Unknown session"),
-                    "error should mention terminal/closed/unknown-session: {}",
-                    err_msg
-                );
-            })
+    let context_id = context::generate_context_id();
+    let message_id = baml_rt_core::ids::MessageId::from_external(
+        baml_rt_core::ids::ExternalId::new(format!("msg-{}", context_id.as_str())),
+    );
+    let scope =
+        context::RuntimeScope::message_scope(context_id, agent.agent_id().clone(), message_id);
+    let scope_for_open = scope.clone();
+    context::with_scope(scope, async move {
+        let session_id = handle
+            .open_tool_session(
+                &scope_for_open,
+                "system/internal_a2a",
+                json!({ "target": { "agent_package": "self", "agent_instance_id": "default" } }),
+            )
             .await
-        })
-        .await;
+            .expect("open system/internal_a2a");
+        let send_input = json!({ "text": "hi" });
+        handle
+            .tool_session_send(&session_id, send_input.clone())
+            .await
+            .expect("first send");
+        for _ in 0..8 {
+            let next = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                handle.tool_session_next(&session_id),
+            )
+            .await;
+            let Ok(Ok(step)) = next else {
+                break;
+            };
+            if matches!(
+                step,
+                baml_rt_tools::ToolStep::Done { .. } | baml_rt_tools::ToolStep::Error { .. }
+            ) {
+                break;
+            }
+        }
+        handle
+            .tool_session_finish(&session_id)
+            .await
+            .expect("finish");
+        let err = handle
+            .tool_session_send(&session_id, send_input)
+            .await
+            .expect_err("send after finish must fail");
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("terminal")
+                || err_msg.contains("closed")
+                || err_msg.contains("Unknown tool session")
+                || err_msg.contains("Unknown session"),
+            "error should mention terminal/closed/unknown-session: {}",
+            err_msg
+        );
+    })
+    .await;
 }

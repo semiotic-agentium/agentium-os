@@ -17,6 +17,7 @@ use futures_util::StreamExt;
 use serde_json::Value;
 use std::collections::VecDeque;
 use std::sync::Arc;
+use tokio::task::JoinHandle;
 
 /// System bundle exposing the system/internal_a2a tool.
 pub struct A2aSessionBundle {
@@ -77,6 +78,7 @@ impl ToolHandler for A2aSessionToolHandler {
             target: open.target,
             queue: VecDeque::new(),
             output_rx: None,
+            stream_handle: None,
             closed: false,
         }))
     }
@@ -88,6 +90,9 @@ struct A2aSession {
     target: InternalA2aTarget,
     queue: VecDeque<InternalA2aNextOutput>,
     output_rx: Option<async_channel::Receiver<InternalA2aNextOutput>>,
+    /// JoinHandle for the task that consumes the A2A stream. Aborted in Drop so the task
+    /// does not outlive the session and trigger "context is being shutdown" panics.
+    stream_handle: Option<JoinHandle<()>>,
     closed: bool,
 }
 
@@ -251,7 +256,7 @@ impl ToolSession for A2aSession {
         let handler = self.handler.clone();
         let (tx, rx) = async_channel::unbounded::<InternalA2aNextOutput>();
         self.output_rx = Some(rx);
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             match handler.handle_a2a_stream(request).await {
                 Ok(stream) => {
                     futures_util::pin_mut!(stream);
@@ -286,6 +291,7 @@ impl ToolSession for A2aSession {
             }
             tx.close();
         });
+        self.stream_handle = Some(handle);
         Ok(())
     }
 
@@ -337,5 +343,13 @@ impl ToolSession for A2aSession {
     ) -> std::result::Result<(), ToolSessionError> {
         self.closed = true;
         Ok(())
+    }
+}
+
+impl Drop for A2aSession {
+    fn drop(&mut self) {
+        if let Some(h) = self.stream_handle.take() {
+            h.abort();
+        }
     }
 }
