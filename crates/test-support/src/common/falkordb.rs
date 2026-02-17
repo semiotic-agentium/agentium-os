@@ -1,4 +1,10 @@
 //! Shared FalkorDB test container helpers.
+//!
+//! Timeout behaviour:
+//! - **Container start:** up to 120s per attempt, 3 attempts (with 5s delay between).
+//! - **Port discovery:** up to 25 × 200ms after start.
+//! - **Ready poll:** up to `WAIT_READY_ATTEMPTS` × (query timeout + 1s sleep). Each query is
+//!   bounded by `WAIT_READY_QUERY_TIMEOUT` so a single TCP/connect hang cannot block indefinitely.
 
 use testcontainers::GenericImage;
 use testcontainers::ImageExt;
@@ -6,7 +12,7 @@ use testcontainers::core::ContainerPort;
 use testcontainers::runners::AsyncRunner;
 use text_to_cypher::core::execute_cypher_query;
 use tokio::sync::OnceCell;
-use tokio::time::{Duration, sleep};
+use tokio::time::{Duration, sleep, timeout};
 
 struct SharedFalkorDb {
     _container: testcontainers::ContainerAsync<GenericImage>,
@@ -37,6 +43,11 @@ pub async fn shared_falkordb() -> &'static str {
 
 const START_RETRIES: u32 = 3;
 const START_RETRY_DELAY: Duration = Duration::from_secs(5);
+
+/// Max attempts to poll FalkorDB with "RETURN 1" before giving up.
+const WAIT_READY_ATTEMPTS: u32 = 120;
+/// Per-query timeout so a single connect/query cannot hang indefinitely.
+const WAIT_READY_QUERY_TIMEOUT: Duration = Duration::from_secs(5);
 
 async fn start_falkordb() -> (testcontainers::ContainerAsync<GenericImage>, String) {
     let mut last_err: Option<String> = None;
@@ -80,16 +91,33 @@ async fn start_falkordb() -> (testcontainers::ContainerAsync<GenericImage>, Stri
     );
 }
 
-/// Polls FalkorDB until a simple query succeeds, up to 120 attempts at 1-second intervals.
+/// Polls FalkorDB until a simple query succeeds. Each attempt is bounded by
+/// `WAIT_READY_QUERY_TIMEOUT` so a single hung connect/query does not block indefinitely.
 async fn wait_for_falkordb(connection: &str, graph: &str) {
-    for _ in 0..120 {
-        if execute_cypher_query("RETURN 1", graph, connection, false)
-            .await
-            .is_ok()
-        {
+    for attempt in 1..=WAIT_READY_ATTEMPTS {
+        let ok = timeout(
+            WAIT_READY_QUERY_TIMEOUT,
+            execute_cypher_query("RETURN 1", graph, connection, false),
+        )
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .is_some();
+        if ok {
             return;
+        }
+        if attempt % 15 == 0 {
+            tracing::debug!(
+                attempt,
+                max = WAIT_READY_ATTEMPTS,
+                "FalkorDB not ready yet (query timeout {:?} per attempt)",
+                WAIT_READY_QUERY_TIMEOUT
+            );
         }
         sleep(Duration::from_secs(1)).await;
     }
-    panic!("falkordb did not become ready after 120 attempts");
+    panic!(
+        "falkordb did not become ready after {} attempts (each query bounded by {:?})",
+        WAIT_READY_ATTEMPTS, WAIT_READY_QUERY_TIMEOUT
+    );
 }

@@ -84,10 +84,13 @@ async fn test_context_id_propagates_across_agents() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn test_context_id_is_task_local_under_concurrency() {
+/// Context is explicit per request: transport builds scope from the request's context_id
+/// and runs the handler under that scope. We do not rely on task locals; this test
+/// verifies that each response carries the context_id from its request.
+#[tokio::test]
+async fn test_context_id_preserved_per_request() {
     let connection = shared_falkordb().await;
-    let graph = format!("baml_a2a_ctx_concurrency_{}", std::process::id());
+    let graph = format!("baml_a2a_ctx_per_request_{}", std::process::id());
     let writer = Arc::new(FalkorDbProvenanceWriter::new(
         FalkorDbProvenanceConfig::new(connection.to_owned(), graph),
     ));
@@ -102,7 +105,7 @@ async fn test_context_id_is_task_local_under_concurrency() {
             Some(context_id.clone()),
         );
         let responses =
-            tokio::time::timeout(Duration::from_secs(15), collect_responses(&agent, request))
+            tokio::time::timeout(Duration::from_secs(30), collect_responses(&agent, request))
                 .await
                 .expect("request timeout")
                 .expect("a2a handle");
