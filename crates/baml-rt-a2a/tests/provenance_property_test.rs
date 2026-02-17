@@ -32,7 +32,11 @@ async fn test_scope_attribution_without_cross_contamination() {
         globalThis.onChatMessage = async function(message) {
             const text = message?.parts?.[0]?.text || "";
             __chat_yield({ message: { parts: [{ text: `echo:${text}` }] } });
-            __chat_yield({ final: true });
+            __chat_yield({
+                task: {
+                    status: { state: "TASK_STATE_COMPLETED" }
+                }
+            });
         };
     "#;
     let agent = common::provenance::build_provenance_agent(writer.clone(), js).await;

@@ -31,6 +31,12 @@ async fn setup_agent(writer: Arc<FalkorDbProvenanceWriter>) -> A2aAgent {
                     status: { state: "TASK_STATE_COMPLETED" }
                 }
             });
+            __chat_yield({
+                task: {
+                    metadata: { agent: "test-agent" },
+                    status: { state: "TASK_STATE_COMPLETED" }
+                }
+            });
         };
     "#;
     common::provenance::build_provenance_agent(writer, js_code).await
