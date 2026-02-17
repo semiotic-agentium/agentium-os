@@ -80,7 +80,7 @@ So:
 ## Data flow (A2A session, high level)
 
 1. **Open session (caller → registry → dispatcher)**
-   Caller has `scope`. It calls something like `open_tool_session(scope, "a2a/session", ())`.
+   Caller has `scope`. It calls something like `open_tool_session(scope, "system/a2a", { target })`.
    - Registry creates `session_id`, creates `(response_tx, response_rx)`, sends **Register { session_id, scope, response_tx }** to the A2A session dispatcher, returns `session_id` to caller.
    - No task-local; scope is in the open call and in the Register message.
 

@@ -1,0 +1,28 @@
+# Nextest config for BAML runtime workspace.
+# See https://nexte.st/docs/configuration/
+
+[profile.ci]
+# JUnit output for GitHub Actions junit-report-action.
+[profile.ci.junit]
+path = "junit.xml"
+store-failure-output = true
+
+# Rate-limit FalkorDB/testcontainers tests only (max 1 at a time) to avoid Docker
+# contention and CreateContainer RequestTimeoutError. Other tests run with default parallelism.
+[test-groups]
+falkordb = { max-threads = 1 }
+
+# Only binaries that call shared_falkordb() / use FalkorDB, not entire packages.
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-provenance) and (binary(falkordb_store_test) or binary(tool_index_test))'
+test-group = "falkordb"
+
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-a2a) and (binary(provenance_context_test) or binary(provenance_property_test))'
+test-group = "falkordb"
+
+# E2E: build fixture (OXC + BAML + tar) + agent setup; allow long run so ambient FalkorDB is used.
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and test(~conversational_context_auto_via_provenance)'
+test-group = "falkordb"
+slow-timeout = { period = "120s", terminate-after = 10 }

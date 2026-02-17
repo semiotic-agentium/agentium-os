@@ -18,9 +18,15 @@
 mod common;
 
 use baml_rt_a2a::a2a_store::TaskStore;
-use baml_rt_a2a::a2a_types::{TaskState, TaskStatus};
+use baml_rt_a2a::a2a_types::TaskState;
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
 use proptest::prelude::*;
+
+fn proptest_cfg(cases: u32) -> ProptestConfig {
+    let mut cfg = ProptestConfig::with_cases(cases);
+    cfg.failure_persistence = None;
+    cfg
+}
 
 const S_SUBMITTED: &str = "TASK_STATE_SUBMITTED";
 const S_WORKING: &str = "TASK_STATE_WORKING";
@@ -93,7 +99,7 @@ fn seed_task_and_submitted(store: &mut TaskStore, task_id: &TaskId, context_id: 
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(32))]
+    #![proptest_config(proptest_cfg(32))]
 
     /// PROPERTY I2 + I3: Valid transition sequences succeed; invalid ones fail.
     /// Generate a sequence of target states. First must be SUBMITTED (HostInferred).

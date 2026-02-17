@@ -5,9 +5,9 @@
 //! Effect-gated timeout (L5–L6) distinguishes "waiting on effect" from
 //! "will never yield". See docs/HOST_QUICKJS_STREAM_INVARIANTS.md.
 
-use crate::quickjs_bridge::eval::EffectGatedPoller;
+use crate::quickjs_bridge::eval::EffectGatedTimeoutPolicy;
+use baml_rt_core::bus::EffectLiveness;
 use baml_rt_core::context::{InvocationScope, RuntimeScope};
-use baml_rt_core::effects::EffectLiveness;
 use baml_rt_core::{BamlRtError, Result};
 use quickjs_runtime::facades::QuickJsRuntimeFacade;
 use std::collections::HashMap;
@@ -18,7 +18,14 @@ use super::scope::InvocationToken;
 type EvalResultMap = Arc<StdMutex<HashMap<InvocationToken, Option<String>>>>;
 type InvocationScopeMap = Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>>;
 
+/// Re-check effect-gated timeout every N attempts after the initial phase.
 const EFFECT_CHECK_INTERVAL: u32 = 100;
+/// For the first EFFECT_EARLY_CHECK_WINDOW attempts, re-check every N so we see effects soon.
+const EFFECT_EARLY_CHECK_INTERVAL: u32 = 10;
+const EFFECT_EARLY_CHECK_WINDOW: u32 = 500;
+/// For the first N attempts, never use the short idle timeout so the promise executor has time
+/// to run and emit effects on slow CI (where run_pending_jobs may be scheduled late).
+const EFFECT_WARMUP_ATTEMPTS: u32 = 2000;
 
 /// Parameters for promise resolution polling (keeps `poll_promise_until_result` under clippy's arg limit).
 pub(crate) struct PollPromiseParams<'a> {
@@ -27,8 +34,8 @@ pub(crate) struct PollPromiseParams<'a> {
     pub eval_token: &'a InvocationToken,
     pub token_to_remove: Option<&'a InvocationToken>,
     pub invocation_scope_by_token: &'a InvocationScopeMap,
-    pub scope: Option<&'a InvocationScope>,
-    pub effect_liveness: Option<Arc<dyn EffectLiveness>>,
+    pub scope: &'a InvocationScope,
+    pub effect_liveness: Arc<dyn EffectLiveness>,
     pub idle_timeout_ms: u64,
     pub max_attempts_ms: u64,
 }
@@ -37,7 +44,9 @@ pub(crate) struct PollPromiseParams<'a> {
 ///
 /// Runs `runtime.run_pending_jobs_if_any()` each iteration so promise
 /// continuations can run. Uses effect-gated timeout: long timeout when
-/// effects are in-flight, short idle timeout otherwise. When the loop
+/// effects are in-flight, short idle timeout otherwise. Requires both
+/// invocation scope and effect-liveness wiring.
+/// When the loop
 /// exits (success or timeout), removes the invocation token from
 /// `invocation_scope_by_token` if `token_to_remove` is `Some`.
 pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> Result<String> {
@@ -53,14 +62,16 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
         max_attempts_ms,
     } = params;
 
-    let context_id = scope.map(|s| s.context_id().clone());
-    let poller = EffectGatedPoller::new(
-        effect_liveness,
-        context_id,
+    let poller = EffectGatedTimeoutPolicy::new(
+        effect_liveness.clone(),
+        scope.context_id().clone(),
         idle_timeout_ms,
         max_attempts_ms,
     );
-    let mut timeout_attempts = poller.timeout_attempts().await;
+    // Sample timeout only after the first run of pending jobs so the promise executor has had
+    // one chance to run and emit effects; then re-check frequently early so we see effects
+    // as soon as they appear (deterministic policy, no magic iteration count).
+    let mut timeout_attempts: Option<u32> = None;
     let mut attempts = 0u32;
 
     let _poll_guard = tracing::trace_span!("baml_rt.poll_promise_resolution").entered();
@@ -101,16 +112,36 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
             return Ok(result_str);
         }
 
-        // Re-check effect-gated timeout periodically (every EFFECT_CHECK_INTERVAL attempts).
-        #[allow(clippy::manual_is_multiple_of)] // std has no is_multiple_of for u32
-        if attempts > 0 && attempts % EFFECT_CHECK_INTERVAL == 0 {
+        // First iteration or periodic re-check: sample effect-gated timeout. Early window
+        // uses a shorter interval so we see effects soon after they start.
+        let should_recheck = if timeout_attempts.is_none() {
+            true
+        } else if attempts < EFFECT_EARLY_CHECK_WINDOW {
+            attempts > 0 && attempts.is_multiple_of(EFFECT_EARLY_CHECK_INTERVAL)
+        } else {
+            attempts.is_multiple_of(EFFECT_CHECK_INTERVAL)
+        };
+        if should_recheck {
+            let counts = effect_liveness.in_flight(scope.context_id()).await;
             let new_timeout = poller.timeout_attempts().await;
-            timeout_attempts = timeout_attempts.max(new_timeout);
+            tracing::trace!(
+                attempts,
+                context_id = %scope.context_id(),
+                in_flight_llm = counts.llm,
+                in_flight_tool = counts.tool,
+                timeout_attempts = new_timeout,
+                "poll_promise: effect-gated timeout sample"
+            );
+            timeout_attempts = Some(timeout_attempts.map_or(new_timeout, |t| t.max(new_timeout)));
         }
 
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
         attempts += 1;
-        if attempts >= timeout_attempts {
+        let mut limit = timeout_attempts.unwrap_or(u32::MAX);
+        if attempts < EFFECT_WARMUP_ATTEMPTS {
+            limit = limit.max(max_attempts_ms as u32);
+        }
+        if attempts >= limit {
             if let Some(t) = token_to_remove
                 && let Ok(mut map) = invocation_scope_by_token.lock()
             {
@@ -124,7 +155,7 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
             }
             return Err(BamlRtError::QuickJs(format!(
                 "Promise did not resolve after {} attempts ({}ms)",
-                timeout_attempts, timeout_attempts
+                limit, limit
             )));
         }
     }

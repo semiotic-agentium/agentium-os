@@ -77,6 +77,7 @@ if let Err(e) = cleanup_operation().await {
 - Operations that are intentionally fire-and-forget with proper logging
 - Operations where failure is explicitly handled via logging/tracing
 - With detailed comment explaining why discarding is safe
+- **Linker retention** (see below): holding a reference so a module is not dropped by the linker (not error discarding)
 
 **Critical Rule:**
 
@@ -92,6 +93,22 @@ Never use `let _ = fallible_operation().await;` without explicit error handling.
 - Makes debugging nearly impossible
 - Breaks error propagation chains
 - Can lead to inconsistent state (partial operations succeed/fail silently)
+
+#### Linker retention for inventory registration
+
+**The problem:** Tool metadata (e.g. `support/calculate`) is registered via `inventory::submit!` in `baml_rt_tools::support`. When the builder or `regen_fixtures` runs, `resolve_manifest_tools` reads from that inventory. If no code in the binary references the `support` module, the linker may drop it (dead code elimination), so the inventory stays empty and regen fails with "Tool metadata missing for: support/calculate".
+
+**The pattern:** In the code path that uses the inventory (e.g. at the start of `render_baml_tool_interfaces`), hold a reference to the provider function so the module is linked and its `register_tool_metadata!(...)` runs:
+
+```rust
+// Force link of support module so support/calculate is in inventory (regen_fixtures + builder).
+let _ = support::support_calculate_metadata;
+let tool_metadata = resolve_manifest_tools(tool_names)?;
+```
+
+**Why `let _ =` is acceptable here:** This is not discarding an error. We are retaining a reference to the function so the linker includes the `support` module; the inventory is populated at static init when that module is linked. Document with a comment so readers know it is intentional linker retention, not silent error discarding.
+
+**Rule:** Use this only when (1) registration is via `inventory` (or similar link-time collection), and (2) the binary would otherwise omit the registering module. Do not use `let _ =` for fallible operations; use this pattern only for function/module references that force linking.
 
 ### ❌ Anti-Pattern: Fallbacks for Backwards Compatibility
 

@@ -1,16 +1,5 @@
+/// Tool wrapper: takes only args (no token). Host resolves invocation context from active context stack.
 pub(crate) fn build_token_args_wrapper(function_name: &str, invoke_expr: &str) -> String {
-    const TOKEN_BLOCK: &str = r#"
-                let token = tokenOrArgs;
-                let args = rest;
-                if (typeof tokenOrArgs !== 'string' || tokenOrArgs.length === 0) {
-                    if (tokenOrArgs && typeof tokenOrArgs === 'object' && typeof tokenOrArgs.__baml_invocation_token === 'string') {
-                        token = tokenOrArgs.__baml_invocation_token;
-                        args = [tokenOrArgs, ...rest];
-                    } else {
-                        throw new Error("Missing invocation token");
-                    }
-                }
-"#;
     const ARG_BLOCK: &str = r#"
                 const argObj = {};
                 if (args.length === 1 && typeof args[0] === 'object') {
@@ -22,17 +11,15 @@ pub(crate) fn build_token_args_wrapper(function_name: &str, invoke_expr: &str) -
                 }
 "#;
 
-    // Bracket notation so qualified names like "Support/calculate" are valid (dot notation would parse as division).
     let key_escaped = function_name.replace('\\', "\\\\").replace('"', "\\\"");
 
     format!(
         r#"
-            globalThis["{key_escaped}"] = async function(tokenOrArgs, ...rest) {{
-{token_block}{arg_block}                return await {invoke_expr};
+            globalThis["{key_escaped}"] = async function(...args) {{
+{arg_block}                return await {invoke_expr};
             }};
             "#,
         key_escaped = key_escaped,
-        token_block = TOKEN_BLOCK,
         arg_block = ARG_BLOCK,
         invoke_expr = invoke_expr
     )

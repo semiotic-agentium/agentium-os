@@ -177,6 +177,33 @@ For a single session, responses are delivered in the order of the Send commands 
 | **Application** | Single channel to worker; worker processes one message at a time. So responses for the same session are sent in request order. |
 | **Testing**     | Property test: multiple Send for one session; collect responses; assert order matches request order (with mock handler). |
 
+### 3.3 Explicit completion drives continuation (invariant)
+
+**Property:**
+
+```
+∀ streamed turn t:
+  continuation(t) = f(completion(t))
+  where completion(t) ∈ {SemanticFinal, InputRequired, ChannelClosed, Timeout}
+```
+
+The live stream session does not infer continuation from chunk JSON shape. It forwards
+all formatted chunks and then transitions strictly from `StreamResult.completion`:
+
+- `InputRequired` → wait for exactly one next input turn
+- `SemanticFinal | ChannelClosed | Timeout` → close session
+
+This removes the prior ambiguous branch (`¬final ∧ ¬input_required`) that could either
+hang or be prematurely closed depending on heuristics.
+
+**Enforcement:**
+
+| Layer | Mechanism |
+|-------|-----------|
+| **Collection** | `A2aYieldSession::collect()` returns explicit `StreamCompletion` (`SemanticFinal`, `InputRequired`, `ChannelClosed`, `Timeout`). |
+| **Transport** | `run_live_stream_session` matches on `stream_result.completion`; no chunk-shape booleans for control flow. |
+| **Testing** | `a2a` unit tests cover stream and task paths; hangs regress to watchdog timeout failures. |
+
 ---
 
 ## 4. Property test index
@@ -191,3 +218,5 @@ For a single session, responses are delivered in the order of the Send commands 
 | `prop_worker_eventual_response_with_message_scope` | Worker | Scope from message + eventual response |
 | `prop_dispatcher_forwards_registered_scope_and_payload` | Dispatcher | Forwarding preserves registered scope + payload order |
 | `prop_dispatcher_finish_removes_session_and_blocks_further_sends` | Dispatcher | Finish removes route and blocks future sends |
+| `prop_interleaved_a2a_tool_llm_multi_context_isolation` | A2A + runtime | Concurrent multi-context isolation under jittered A2A/tool/LLM interleavings |
+| `prop_input_required_resume_positive_and_no_auto_final` | A2A + runtime | InputRequired two-turn invariant: no auto-final on ask, deterministic final on same-context resume |

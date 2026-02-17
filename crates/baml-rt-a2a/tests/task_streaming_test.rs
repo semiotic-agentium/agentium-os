@@ -11,6 +11,13 @@ use test_support::common::{
     send_stream_request,
 };
 
+async fn collect_responses(
+    agent: &A2aAgent,
+    request: serde_json::Value,
+) -> baml_rt::Result<Vec<Value>> {
+    Ok(baml_rt_core::collect_a2a_stream(agent.handle_a2a_stream(request).await?).await)
+}
+
 fn fixture_js_code() -> String {
     r#"
     globalThis.onChatMessage = async function(message) {
@@ -27,34 +34,36 @@ fn fixture_js_code() -> String {
             __chat_yield({
                 statusUpdate: { status: { state: "TASK_STATE_WORKING" } }
             });
+            __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_COMPLETED" } } });
             return;
         }
         if (text.startsWith("tool-call:")) {
             try {
-                const token = (typeof __baml_invocation_token !== "undefined") ? __baml_invocation_token : undefined;
-                const session = await openToolSession("test/add_numbers", token);
+                const session = await openToolSession("test/add_numbers");
                 await session.send({ a: 2, b: 3 });
                 await session.continue();
                 __chat_yield({ message: { parts: [{ text: "sum=5" }] } });
             } catch (e) {
                 __chat_yield({ message: { parts: [{ text: `tool_error=${String(e)}` }] } });
             }
+            __chat_yield({ final: true });
             return;
         }
         if (text.startsWith("baml-tool:")) {
             try {
-                const token = (typeof __baml_invocation_token !== "undefined") ? __baml_invocation_token : undefined;
-                const session = await openToolSession("support/calculate", token);
+                const session = await openToolSession("support/calculate");
                 await session.send({ expression: { left: 2, operation: "Add", right: 3 } });
                 await session.continue();
                 __chat_yield({ message: { parts: [{ text: "sum=5" }] } });
             } catch (e) {
                 __chat_yield({ message: { parts: [{ text: `tool_error=${String(e)}` }] } });
             }
+            __chat_yield({ final: true });
             return;
         }
         __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
         __chat_yield({ artifactUpdate: { artifact: { name: "rite-log", parts: [{ text: "sealed" }] } } });
+        __chat_yield({ final: true });
     };
     "#
     .to_string()
@@ -75,28 +84,25 @@ async fn setup_agent() -> A2aAgent {
     A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(fixture_js_code())
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()
         .await
         .unwrap()
 }
 
-/// Agent with a2a/session tool registered on the given LocalSet (for session FSM tests).
-/// Caller must run agent work inside `local_set.run_until(...)` so the session worker is driven.
-async fn setup_agent_with_a2a_session_tool() -> (A2aAgent, tokio::task::LocalSet) {
-    let local_set = tokio::task::LocalSet::new();
+/// Agent with system/internal_a2a tool registered (for session FSM tests).
+async fn setup_agent_with_a2a_session_tool() -> A2aAgent {
     let manager = BamlRuntimeManager::new().unwrap();
-    let agent = A2aAgent::builder()
+    A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(fixture_js_code())
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .with_a2a_session_tool(true)
         .build()
         .await
-        .unwrap();
-    (agent, local_set)
+        .unwrap()
 }
 
 #[tokio::test]
@@ -110,7 +116,7 @@ async fn test_message_send_deterministic_task() {
         Some(baml_rt_core::ids::ContextId::new(1, 1)),
     );
 
-    let responses = agent.handle_a2a(request).await.unwrap();
+    let responses = collect_responses(&agent, request).await.unwrap();
     let result = responses[0].get("result").cloned().unwrap_or(Value::Null);
     let content = result.get("chunk").cloned().unwrap_or(result);
     let task_id = content
@@ -135,7 +141,7 @@ async fn test_message_send_stream_emits_updates() {
         Some(baml_rt_core::ids::ContextId::new(1, 1)),
     );
 
-    let responses = agent.handle_a2a(request).await.unwrap();
+    let responses = collect_responses(&agent, request).await.unwrap();
 
     let mut saw_status = false;
     let mut saw_artifact = false;
@@ -167,8 +173,7 @@ async fn test_tasks_subscribe_streams_incremental_updates() {
         "corr-3-3",
         Some(baml_rt_core::ids::ContextId::new(1, 1)),
     );
-    let created = agent
-        .handle_a2a(serde_json::to_value(create_request).unwrap())
+    let created = collect_responses(&agent, serde_json::to_value(create_request).unwrap())
         .await
         .unwrap();
     let task_id = first_task_id_from_stream(&created).expect("task id from create stream");
@@ -179,8 +184,7 @@ async fn test_tasks_subscribe_streams_incremental_updates() {
         "corr-3-4",
         Some(baml_rt_core::ids::ContextId::new(1, 1)),
     );
-    let _ = agent
-        .handle_a2a(serde_json::to_value(stream_request).unwrap())
+    let _ = collect_responses(&agent, serde_json::to_value(stream_request).unwrap())
         .await
         .unwrap();
 
@@ -190,8 +194,7 @@ async fn test_tasks_subscribe_streams_incremental_updates() {
         params: Some(json!({ "id": task_id, "stream": true })),
         id: Some(JSONRPCId::String("corr-3-5".to_string())),
     };
-    let responses = agent
-        .handle_a2a(serde_json::to_value(subscribe_request).unwrap())
+    let responses = collect_responses(&agent, serde_json::to_value(subscribe_request).unwrap())
         .await
         .unwrap();
 
@@ -235,11 +238,11 @@ async fn test_message_send_tool_calling() {
         Some(baml_rt_core::ids::ContextId::new(1, 1)),
     );
 
-    let responses = agent.handle_a2a(request).await.unwrap();
+    let responses = collect_responses(&agent, request).await.unwrap();
     let text = first_message_text_from_stream(&responses);
     assert!(
-        text.contains("sum=5") || text.contains("Missing invocation token"),
-        "expected tool result or token-guard error in message text, got: {}",
+        text.contains("sum=5"),
+        "expected tool result in message text, got: {}",
         text
     );
 }
@@ -261,163 +264,141 @@ async fn test_message_send_baml_tool_calling() {
         Some(baml_rt_core::ids::ContextId::new(1, 1)),
     );
 
-    let responses = agent.handle_a2a(request).await.unwrap();
+    let responses = collect_responses(&agent, request).await.unwrap();
     let text = first_message_text_from_stream(&responses);
     assert!(
-        text.contains("sum=5") || text.contains("Missing invocation token"),
-        "expected BAML tool result or token-guard error in message text, got: {}",
+        text.contains("sum=5"),
+        "expected BAML tool result in message text, got: {}",
         text
     );
 }
 
 /// Session send() only enqueues; must return in under 50ms. next() drains until Done.
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_a2a_session_send_returns_fast_and_next_drains() {
     let _permit = acquire_test_permit().await;
-    let (agent, local_set) = setup_agent_with_a2a_session_tool().await;
+    let agent = setup_agent_with_a2a_session_tool().await;
     let handle = {
         let runtime = agent.runtime();
         let mgr = runtime.lock().await;
         mgr.tool_session_handle()
     };
-    local_set
-        .run_until(async move {
-            let context_id = context::generate_context_id();
-            let message_id = baml_rt_core::ids::MessageId::from_external(
-                baml_rt_core::ids::ExternalId::new(format!("msg-{}", context_id.as_str())),
-            );
-            let scope = context::RuntimeScope::message_scope(
-                context_id,
-                agent.agent_id().clone(),
-                message_id,
-            );
-            let scope_for_open = scope.clone();
-            context::with_scope(scope, async move {
-                let session_id = handle
-                    .open_tool_session(&scope_for_open, "a2a/session", json!({}))
-                    .await
-                    .expect("open a2a/session");
-                let request = serde_json::from_value::<JSONRPCRequest>(send_stream_request(
-                    "latency-1",
-                    "ping",
-                    "corr-1700000000200-1",
-                    Some(baml_rt_core::ids::ContextId::new(1, 1)),
-                ))
-                .expect("send_stream_request shape");
-                let send_input = json!({ "request": request });
-                let start = std::time::Instant::now();
-                handle
-                    .tool_session_send(&session_id, send_input.clone())
-                    .await
-                    .expect("session_send");
-                let elapsed = start.elapsed();
-                assert!(
-                    elapsed < std::time::Duration::from_millis(50),
-                    "session send() must return in under 50ms (enqueue only), took {:?}",
-                    elapsed
-                );
-                for _ in 0..8 {
-                    let next = tokio::time::timeout(
-                        std::time::Duration::from_millis(500),
-                        handle.tool_session_next(&session_id),
-                    )
-                    .await;
-                    let Ok(Ok(step)) = next else {
-                        break;
-                    };
-                    if matches!(
-                        step,
-                        baml_rt_tools::ToolStep::Done { .. }
-                            | baml_rt_tools::ToolStep::Error { .. }
-                    ) {
-                        break;
-                    }
-                }
-                handle
-                    .tool_session_finish(&session_id)
-                    .await
-                    .expect("session_finish");
-            })
+    let context_id = context::generate_context_id();
+    let message_id = baml_rt_core::ids::MessageId::from_external(
+        baml_rt_core::ids::ExternalId::new(format!("msg-{}", context_id.as_str())),
+    );
+    let scope =
+        context::RuntimeScope::message_scope(context_id, agent.agent_id().clone(), message_id);
+    let scope_for_open = scope.clone();
+    context::with_scope(scope, async move {
+        let session_id = handle
+            .open_tool_session(
+                &scope_for_open,
+                "system/internal_a2a",
+                json!({ "target": { "agent_package": "self", "agent_instance_id": "default" } }),
+            )
             .await
-        })
-        .await;
+            .expect("open system/internal_a2a");
+        let send_input = json!({ "text": "ping" });
+        let start = std::time::Instant::now();
+        handle
+            .tool_session_send(&session_id, send_input.clone())
+            .await
+            .expect("session_send");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "session send() must return in under 50ms (enqueue only), took {:?}",
+            elapsed
+        );
+        for _ in 0..8 {
+            let next = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                handle.tool_session_next(&session_id),
+            )
+            .await;
+            let Ok(Ok(step)) = next else {
+                break;
+            };
+            if matches!(
+                step,
+                baml_rt_tools::ToolStep::Done { .. } | baml_rt_tools::ToolStep::Error { .. }
+            ) {
+                break;
+            }
+        }
+        handle
+            .tool_session_finish(&session_id)
+            .await
+            .expect("session_finish");
+    })
+    .await;
 }
 
 /// send() after finish() must fail fast (terminal phase).
-#[tokio::test(flavor = "current_thread")]
+#[tokio::test]
 async fn test_a2a_session_send_after_finish_fails() {
     let _permit = acquire_test_permit().await;
-    let (agent, local_set) = setup_agent_with_a2a_session_tool().await;
+    let agent = setup_agent_with_a2a_session_tool().await;
     let handle = {
         let runtime = agent.runtime();
         let mgr = runtime.lock().await;
         mgr.tool_session_handle()
     };
-    local_set
-        .run_until(async move {
-            let context_id = context::generate_context_id();
-            let message_id = baml_rt_core::ids::MessageId::from_external(
-                baml_rt_core::ids::ExternalId::new(format!("msg-{}", context_id.as_str())),
-            );
-            let scope = context::RuntimeScope::message_scope(
-                context_id,
-                agent.agent_id().clone(),
-                message_id,
-            );
-            let scope_for_open = scope.clone();
-            context::with_scope(scope, async move {
-                let session_id = handle
-                    .open_tool_session(&scope_for_open, "a2a/session", json!({}))
-                    .await
-                    .expect("open a2a/session");
-                let request = serde_json::from_value::<JSONRPCRequest>(send_stream_request(
-                    "term-1",
-                    "hi",
-                    "corr-1700000000201-1",
-                    Some(baml_rt_core::ids::ContextId::new(1, 1)),
-                ))
-                .expect("send_stream_request shape");
-                let send_input = json!({ "request": request });
-                handle
-                    .tool_session_send(&session_id, send_input.clone())
-                    .await
-                    .expect("first send");
-                for _ in 0..8 {
-                    let next = tokio::time::timeout(
-                        std::time::Duration::from_millis(500),
-                        handle.tool_session_next(&session_id),
-                    )
-                    .await;
-                    let Ok(Ok(step)) = next else {
-                        break;
-                    };
-                    if matches!(
-                        step,
-                        baml_rt_tools::ToolStep::Done { .. }
-                            | baml_rt_tools::ToolStep::Error { .. }
-                    ) {
-                        break;
-                    }
-                }
-                handle
-                    .tool_session_finish(&session_id)
-                    .await
-                    .expect("finish");
-                let err = handle
-                    .tool_session_send(&session_id, send_input)
-                    .await
-                    .expect_err("send after finish must fail");
-                let err_msg = err.to_string();
-                assert!(
-                    err_msg.contains("terminal")
-                        || err_msg.contains("closed")
-                        || err_msg.contains("Unknown tool session")
-                        || err_msg.contains("Unknown session"),
-                    "error should mention terminal/closed/unknown-session: {}",
-                    err_msg
-                );
-            })
+    let context_id = context::generate_context_id();
+    let message_id = baml_rt_core::ids::MessageId::from_external(
+        baml_rt_core::ids::ExternalId::new(format!("msg-{}", context_id.as_str())),
+    );
+    let scope =
+        context::RuntimeScope::message_scope(context_id, agent.agent_id().clone(), message_id);
+    let scope_for_open = scope.clone();
+    context::with_scope(scope, async move {
+        let session_id = handle
+            .open_tool_session(
+                &scope_for_open,
+                "system/internal_a2a",
+                json!({ "target": { "agent_package": "self", "agent_instance_id": "default" } }),
+            )
             .await
-        })
-        .await;
+            .expect("open system/internal_a2a");
+        let send_input = json!({ "text": "hi" });
+        handle
+            .tool_session_send(&session_id, send_input.clone())
+            .await
+            .expect("first send");
+        for _ in 0..8 {
+            let next = tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                handle.tool_session_next(&session_id),
+            )
+            .await;
+            let Ok(Ok(step)) = next else {
+                break;
+            };
+            if matches!(
+                step,
+                baml_rt_tools::ToolStep::Done { .. } | baml_rt_tools::ToolStep::Error { .. }
+            ) {
+                break;
+            }
+        }
+        handle
+            .tool_session_finish(&session_id)
+            .await
+            .expect("finish");
+        let err = handle
+            .tool_session_send(&session_id, send_input)
+            .await
+            .expect_err("send after finish must fail");
+        let err_msg = err.to_string();
+        assert!(
+            err_msg.contains("terminal")
+                || err_msg.contains("closed")
+                || err_msg.contains("Unknown tool session")
+                || err_msg.contains("Unknown session"),
+            "error should mention terminal/closed/unknown-session: {}",
+            err_msg
+        );
+    })
+    .await;
 }

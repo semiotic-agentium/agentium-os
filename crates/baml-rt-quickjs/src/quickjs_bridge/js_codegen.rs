@@ -1,43 +1,16 @@
 //! JS wrapper and prelude code generation.
 //!
-//! Shared helpers for building JavaScript prelude strings (scope, token) and
-//! wrapped promise expressions used by the bridge and stream paths. Ensures
-//! token and scope are bound consistently for eval.
+//! Invocation context is host-only (no token/context prelude in JS). Natives resolve
+//! scope from the active context stack. This module still provides wrapped promise
+//! helpers for eval result tracking.
 
-use baml_rt_core::context::InvocationScope;
-use baml_rt_core::{BamlRtError, Result};
-use serde::Serialize;
+use baml_rt_core::Result;
 
-/// Serialize an ID to a JSON string for JavaScript prelude code.
-pub(crate) fn serialize_id(id: &impl Serialize) -> Result<String> {
-    serde_json::to_string(id).map_err(BamlRtError::Json)
-}
-
-/// Build the scope + token prelude string for eval.
-///
-/// Binds `__baml_invocation_token`, `__baml_context_id`, `__baml_message_id`,
-/// and `__baml_task_id` so JS and native callbacks can use them. Token prelude
-/// must be the single line that defines `const __baml_invocation_token = "..."`.
-pub(crate) fn build_scope_prelude(scope: &InvocationScope, token_prelude: &str) -> Result<String> {
-    let context_prelude = format!(
-        "const __baml_context_id = {};",
-        serialize_id(scope.context_id())?
-    );
-    let message_prelude = format!(
-        "const __baml_message_id = {};",
-        serialize_id(scope.message_id())?
-    );
-    let task_prelude = match scope.task_id_opt() {
-        Some(id) => format!("const __baml_task_id = {};", serialize_id(id)?),
-        None => "const __baml_task_id = undefined;".to_string(),
-    };
-    Ok(format!(
-        "{token_prelude}\n{context_prelude}\n{message_prelude}\n{task_prelude}",
-        token_prelude = token_prelude,
-        context_prelude = context_prelude,
-        message_prelude = message_prelude,
-        task_prelude = task_prelude
-    ))
+/// No prelude: invocation context is resolved on the host from the active context stack.
+/// JS never receives tokens or context ids.
+#[allow(dead_code)]
+pub(crate) fn build_scope_prelude_empty() -> Result<String> {
+    Ok(String::new())
 }
 
 /// Build the async IIFE that awaits `code_promise_expr` and sets `__set_eval_result(token, json)`.
@@ -68,37 +41,21 @@ pub(crate) fn build_wrapped_promise_code(code_promise_expr: &str, token_literal:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use baml_rt_core::context::InvocationScope;
-    use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
     use proptest::prelude::*;
 
-    fn test_scope() -> InvocationScope {
-        let runtime = baml_rt_core::context::RuntimeScope::task_scope(
-            ContextId::new(1000, 1),
-            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000001").unwrap()),
-            MessageId::from_external(ExternalId::new("msg-1")),
-            TaskId::from_external(ExternalId::new("task-1")),
-        );
-        InvocationScope::new(runtime)
+    fn proptest_cfg(cases: u32) -> ProptestConfig {
+        let mut cfg = ProptestConfig::with_cases(cases);
+        cfg.failure_persistence = None;
+        cfg
+    }
+
+    #[test]
+    fn build_scope_prelude_empty_returns_empty() {
+        assert_eq!(build_scope_prelude_empty().unwrap(), "");
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(32))]
-
-        /// Invariant: Prelude contains token prelude and context_id serialization.
-        #[test]
-        fn prop_build_scope_prelude_contains_token_and_context(token in "[a-zA-Z0-9_-]{1,80}") {
-            let scope = test_scope();
-            let token_prelude = format!("const __baml_invocation_token = \"{}\";", token);
-            let out = build_scope_prelude(&scope, &token_prelude).unwrap();
-            assert!(out.contains("__baml_invocation_token"), "prelude must bind token");
-            assert!(out.contains(&token), "prelude must contain token literal");
-            assert!(out.contains("__baml_context_id"), "prelude must bind context_id");
-        }
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig::with_cases(32))]
+        #![proptest_config(proptest_cfg(32))]
 
         /// Invariant: Wrapped promise code contains token and __set_eval_result.
         #[test]

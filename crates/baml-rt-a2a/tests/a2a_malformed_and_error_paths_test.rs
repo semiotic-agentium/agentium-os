@@ -30,6 +30,11 @@ use test_support::common::{
 use ts_rs::TS;
 
 struct Test;
+
+async fn collect_responses(agent: &A2aAgent, request: Value) -> baml_rt::Result<Vec<Value>> {
+    Ok(baml_rt_core::collect_a2a_stream(agent.handle_a2a_stream(request).await?).await)
+}
+
 impl BundleType for Test {
     const NAME: &'static str = "test";
     fn description() -> &'static str {
@@ -82,7 +87,7 @@ async fn test_malformed_a2a_table_driven() {
     ];
 
     for (request, desc) in cases {
-        let responses = agent.handle_a2a(request).await.unwrap();
+        let responses = collect_responses(&agent, request).await.unwrap();
         assert_eq!(
             responses.len(),
             1,
@@ -99,7 +104,7 @@ async fn test_malformed_a2a_table_driven() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_concurrency_mixed_success_failure() {
     let agent = build_minimal_a2a_agent(
-        r#"globalThis.onChatMessage = async function() { __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } }); };"#,
+        r#"globalThis.onChatMessage = async function() { __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } }); __chat_yield({ final: true }); };"#,
     )
     .await;
 
@@ -113,10 +118,10 @@ async fn test_concurrency_mixed_success_failure() {
     let agent3 = agent.clone();
     let agent4 = agent.clone();
     let (r1, r2, r3, r4) = tokio::join!(
-        agent1.handle_a2a(valid1),
-        agent2.handle_a2a(valid2),
-        agent3.handle_a2a(malformed),
-        agent4.handle_a2a(malformed2),
+        collect_responses(&agent1, valid1),
+        collect_responses(&agent2, valid2),
+        collect_responses(&agent3, malformed),
+        collect_responses(&agent4, malformed2),
     );
     let r1 = r1.unwrap();
     let r2 = r2.unwrap();
@@ -181,23 +186,24 @@ async fn test_streaming_tool_failure_mid_stream() {
             globalThis.onChatMessage = async function(message) {
                 __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
                 try {
-                    const session = await openToolSession("test/failing_tool", __baml_invocation_token);
+                    const session = await openToolSession("test/failing_tool");
                     await session.send({ msg: "fail" });
                     const step = await session.continue();
                     __chat_yield({ message: { parts: [{ text: step && step.error ? step.error.message : "no error" }] } });
                 } catch (e) {
                     __chat_yield({ message: { parts: [{ text: "err: " + String(e) }] } });
                 }
+                __chat_yield({ final: true });
             };
         "#)
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()
         .await
         .unwrap();
 
     let request = send_stream_request("fail-1", "trigger", "corr-1700000000020-1", None);
-    let responses = agent.handle_a2a(request).await.unwrap();
+    let responses = collect_responses(&agent, request).await.unwrap();
     assert!(
         !responses.is_empty(),
         "stream should return at least one chunk"
@@ -234,27 +240,30 @@ async fn test_allowlist_violation_during_stream() {
 
     let agent = A2aAgent::builder()
         .with_runtime_manager(runtime)
-        .with_init_js(r#"
+        .with_init_js(
+            r#"
             globalThis.onChatMessage = async function(message) {
                 __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
                 try {
-                    const session = await openToolSession("support/calculate", __baml_invocation_token);
+                    const session = await openToolSession("support/calculate");
                     await session.send({ expression: { left: 1, operation: "Add", right: 2 } });
                     const step = await session.continue();
                     __chat_yield({ message: { parts: [{ text: "unexpected success" }] } });
                 } catch (e) {
                     __chat_yield({ message: { parts: [{ text: "allowlist: " + String(e) }] } });
                 }
+                __chat_yield({ final: true });
             };
-        "#)
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        "#,
+        )
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()
         .await
         .unwrap();
 
     let request = send_stream_request("allow-1", "trigger", "corr-1700000000030-1", None);
-    let responses = agent.handle_a2a(request).await.unwrap();
+    let responses = collect_responses(&agent, request).await.unwrap();
     assert!(!responses.is_empty());
     let has_allowlist_msg = responses.iter().any(|r| {
         let Some(chunk) = chunk_content(r) else {

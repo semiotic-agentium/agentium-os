@@ -95,10 +95,9 @@ function formatOutput(output: ClickUpOutput): string {
 }
 
 async function onChatMessage(
-  message: ChatMessage & { __baml_invocation_token?: string }
+  message: ChatMessage
 ): Promise<void> {
   const text = extractText(message);
-  const token = message.__baml_invocation_token;
   let prevFingerprint: string | null = null;
   let consecutiveRepeats = 0;
   let lastToolOutput: ClickUpOutput | null = null;
@@ -107,7 +106,6 @@ async function onChatMessage(
     for (let step = 1; step <= MAX_REACT_STEPS; step++) {
       const result: unknown = await ChooseClickUpAction({
         user_message: text,
-        __baml_invocation_token: token,
       });
 
       if (isFinalResponse(result)) {

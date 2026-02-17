@@ -3,8 +3,8 @@
 //! This module implements pre-execution interception by using BAML's build_request
 //! to intercept LLM calls before the HTTP request is sent.
 
+use baml_rt_core::bus::{EffectEmitter, LlmEffectMetadata};
 use baml_rt_core::context;
-use baml_rt_core::effects::{EffectEmitter, LlmEffectMetadata};
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry, LLMCallContext};
 use baml_runtime::RuntimeContextManager;
@@ -132,6 +132,7 @@ pub async fn intercept_llm_call_pre_execution(
     let context_id = context.runtime_scope.context_id().clone();
 
     if let Some(emitter) = effect_emitter {
+        tracing::trace!(context_id = %context_id, "LlmStarted emitting (effect_emitter set)");
         match emitter.start_llm(context_id.clone(), effect_metadata).await {
             Ok(token) => {
                 // Store token in collector for later completion
@@ -143,6 +144,8 @@ pub async fn intercept_llm_call_pre_execution(
                 tracing::warn!(error = ?e, "Failed to start LLM effect");
             }
         }
+    } else {
+        tracing::trace!(context_id = %context_id, "effect_emitter is None, skipping LlmStarted");
     }
 
     tracing::debug!(

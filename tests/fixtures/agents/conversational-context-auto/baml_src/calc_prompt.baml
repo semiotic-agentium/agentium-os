@@ -20,7 +20,11 @@ function ChatWithContext(user_message: string) -> string {
   prompt #"
     You are in a multi-turn conversation.
     Use prior turns if present in `ctx.tags.conversation_history`.
-    If the user asks what to remember, answer from the conversation history.
+    If the user asks what to remember or asks for the codeword:
+    - Locate the most recent USER message in conversation history that contains the word "codeword".
+    - Extract the token immediately following "codeword".
+    - Reply with ONLY that token, uppercase, no punctuation or extra words.
+    - If no such token exists, reply exactly: UNKNOWN
 
     {% for message in ctx.tags.conversation_history %}
     {{ _.role(message.role) }}
@@ -35,7 +39,7 @@ function ChatWithContext(user_message: string) -> string {
 client DefaultClient {
   provider openai-generic
   options {
-    model "deepseek/deepseek-v3.2"
+    model "openai/gpt-4o-mini"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }

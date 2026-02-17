@@ -154,7 +154,7 @@ impl TypeGenerator for RuntimeTypeGenerator {
         use baml_runtime::BamlRuntime;
         use std::collections::HashMap;
 
-        // Generate BAML tool interfaces FIRST (before loading runtime, since prompts may reference them)
+        // Generate BAML tool interfaces (committed in repo; regen_fixtures runs periodically to match manifest).
         let tool_names = load_manifest_tools(baml_src)?;
         if !tool_names.is_empty() {
             let baml_interfaces = render_baml_tool_interfaces(&tool_names)?;

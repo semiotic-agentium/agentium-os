@@ -108,14 +108,22 @@ fn quickjs_config_for_tests() -> QuickJSConfig {
 }
 
 pub async fn setup_bridge(baml_manager: Arc<Mutex<BamlRuntimeManager>>) -> QuickJSBridge {
+    use baml_rt_core::bus::{BusWithEffects, EffectEmitter, EffectLiveness};
     use baml_rt_core::ids::AgentId;
     use uuid::Uuid;
     // Generate a temporary agent_id for test context
     let temp_agent_id = AgentId::from_uuid(baml_rt_core::ids::UuidId::new(Uuid::new_v4()));
     let config = quickjs_config_for_tests();
+    // Keep effect emission/liveness wiring aligned with runtime builder semantics.
+    let effect_bus = Arc::new(BusWithEffects::new());
+    {
+        let mut manager = baml_manager.lock().await;
+        manager.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
+    }
     let mut bridge = QuickJSBridge::new_with_config(baml_manager, temp_agent_id, config)
         .await
         .expect("Create QuickJS bridge");
+    bridge.set_effect_liveness(effect_bus as Arc<dyn EffectLiveness>);
     bridge
         .register_baml_functions()
         .await
@@ -149,11 +157,11 @@ pub fn workspace_root() -> PathBuf {
 }
 
 /// Asserts that a tool is visible in QuickJS (either as a JS tool in `__js_tools` or as a Rust tool via `openToolSession`).
-/// When checking Rust tools, pass `scope` so `openToolSession` has a valid invocation token.
+/// Requires `scope` because the check runs an async IIFE that returns a promise; evaluate() must receive a scope to poll it.
 pub async fn assert_tool_registered_in_js(
     bridge: &mut QuickJSBridge,
     tool_name: &str,
-    scope: Option<&baml_rt_core::context::InvocationScope>,
+    scope: &baml_rt_core::context::InvocationScope,
 ) {
     let js_code = format!(
         r#"
@@ -166,7 +174,7 @@ pub async fn assert_tool_registered_in_js(
                 }});
             }}
             try {{
-                const session = await openToolSession("{}", __baml_invocation_token);
+                const session = await openToolSession("{}");
                 return JSON.stringify({{
                     toolExists: true,
                     source: "rust",
@@ -182,7 +190,7 @@ pub async fn assert_tool_registered_in_js(
         "#,
         tool_name, tool_name
     );
-    let result = bridge.evaluate(scope, &js_code).await.unwrap_or_else(|e| {
+    let result = bridge.evaluate(Some(scope), &js_code).await.unwrap_or_else(|e| {
         panic!(
             "Tool '{}' registration check failed: evaluate returned error (includes raw response if parse failed): {}",
             tool_name, e
@@ -205,11 +213,11 @@ pub async fn assert_tool_registered_in_js(
 }
 
 /// Builds a minimal A2aAgent for malformed/error-path A2A tests: no BAML schema or tools.
-/// Uses EffectBus and QuickJSConfig with max_attempts_ms(15_000).
+/// Uses BusWithEffects and QuickJSConfig with max_attempts_ms(15_000).
 pub async fn build_minimal_a2a_agent(init_js: &str) -> A2aAgent {
     A2aAgent::builder()
         .with_init_js(init_js)
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()
         .await
@@ -232,7 +240,7 @@ pub async fn setup_stream_baml_tool_agent_for_contract(init_js: Option<&str>) ->
     let config = QuickJSConfig::new().with_max_attempts_ms(Some(45_000));
     let mut builder = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
-        .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(config);
     if let Some(js) = init_js {
         builder = builder.with_init_js(js);

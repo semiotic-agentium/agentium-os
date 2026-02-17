@@ -18,6 +18,10 @@ pub enum InterceptorDecision {
     /// Block the call with this error message
     /// The error will be wrapped in a ToolExecution or BamlRuntime error
     Block(String),
+
+    /// Substitute the call: skip the real LLM call and return this value.
+    /// Used by tests to stub LLM responses without hitting the provider.
+    Substitute(Value),
 }
 
 /// Context information about an LLM call
@@ -285,7 +289,8 @@ impl InterceptorRegistry {
 
     /// Execute LLM interceptors and return the final decision
     ///
-    /// Returns Ok(Allow) if all interceptors allow, or Err if any block
+    /// Returns Ok(Allow) if all interceptors allow, Ok(Substitute(value)) if any returns
+    /// Substitute (first wins), or Err if any block.
     pub async fn intercept_llm_call(
         &self,
         context: &LLMCallContext,
@@ -300,6 +305,9 @@ impl InterceptorRegistry {
                         "LLM call blocked by interceptor: {}",
                         msg
                     )));
+                }
+                Ok(InterceptorDecision::Substitute(value)) => {
+                    return Ok(InterceptorDecision::Substitute(value));
                 }
                 Err(e) => {
                     // Interceptor itself failed - log but continue?
@@ -320,8 +328,8 @@ impl InterceptorRegistry {
     ) -> Result<InterceptorDecision> {
         for interceptor in self.tool_pipeline.interceptors() {
             match interceptor.intercept_tool_call(context).await {
-                Ok(InterceptorDecision::Allow) => {
-                    // Continue to next interceptor
+                Ok(InterceptorDecision::Allow) | Ok(InterceptorDecision::Substitute(_)) => {
+                    // Continue; Substitute is LLM-only, treat as Allow for tools
                 }
                 Ok(InterceptorDecision::Block(msg)) => {
                     return Err(BamlRtError::ToolExecution(format!(

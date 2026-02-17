@@ -1,19 +1,76 @@
-//! Tests for JavaScript invocation of BAML functions
+//! Tests for JavaScript invocation of BAML functions.
+//! LLM calls are stubbed so no API key is required.
 
 #![recursion_limit = "256"]
 
-use test_support::common::{agent_fixture, setup_baml_runtime_from_fixture, setup_bridge};
+use baml_rt::interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor};
+use baml_rt_core::context;
+use baml_rt_core::ids::{AgentId, UuidId};
+use serde_json::json;
+use test_support::common::{
+    CalculatorTool, agent_fixture, ensure_fixture_runtime_types, setup_baml_runtime_from_fixture,
+    setup_bridge,
+};
+
+/// Stub interceptor: returns a canned session plan for ChooseCalcTool so no real LLM call is made.
+struct StubChooseCalcToolInterceptor;
+
+#[async_trait::async_trait]
+impl LLMInterceptor for StubChooseCalcToolInterceptor {
+    async fn intercept_llm_call(
+        &self,
+        context: &LLMCallContext,
+    ) -> baml_rt_core::Result<InterceptorDecision> {
+        if context.function_name == "ChooseCalcTool" {
+            Ok(InterceptorDecision::Substitute(json!({
+                "steps": [
+                    { "op": "Open", "reason": "stub open" },
+                    {
+                        "op": "Send",
+                        "input": {
+                            "expression": {
+                                "left": 2,
+                                "operation": "Add",
+                                "right": 3
+                            }
+                        },
+                        "reason": "stub send"
+                    },
+                    { "op": "Next", "reason": "stub next" },
+                    { "op": "Finish", "reason": "stub finish" }
+                ]
+            })))
+        } else {
+            Ok(InterceptorDecision::Allow)
+        }
+    }
+
+    async fn on_llm_call_complete(
+        &self,
+        _context: &LLMCallContext,
+        _result: &baml_rt_core::Result<serde_json::Value>,
+        _duration_ms: u64,
+    ) {
+    }
+}
 
 #[tokio::test]
 async fn test_js_invoke_baml_function() {
+    ensure_fixture_runtime_types();
     let agent_dir = agent_fixture("stream-baml-tool");
     if !agent_dir.join("baml_src").exists() {
         eprintln!("Skipping test: stream-baml-tool fixture not found");
         return;
     }
 
-    // Set up BAML runtime
     let baml_manager = setup_baml_runtime_from_fixture("stream-baml-tool");
+    {
+        let mut manager = baml_manager.lock().await;
+        manager.register_tool(CalculatorTool).await.unwrap();
+        manager
+            .register_llm_interceptor(StubChooseCalcToolInterceptor)
+            .await;
+    }
     let mut bridge = setup_bridge(baml_manager.clone()).await;
 
     // Test invoking ChooseCalcTool from JavaScript (stream-baml-tool has this function)
@@ -29,40 +86,32 @@ async fn test_js_invoke_baml_function() {
         })()
     "#;
 
-    let result = bridge.evaluate(None, js_code).await;
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-0000000000b1").unwrap());
+    let scope = context::InvocationScope::synthetic_message(agent_id);
 
-    // The result should contain either success with result, or error info
-    // Note: This may fail due to missing API keys, which is acceptable
-    // We just want to verify the function can be invoked from JS
-    let json_result = match result {
-        Ok(val) => val,
-        Err(e) => {
-            println!(
-                "JavaScript execution error (may be due to missing API keys): {:?}",
-                e
-            );
-            // The function exists and was called, but execution failed (likely API key issue)
-            // This is acceptable for integration tests
-            return;
-        }
-    };
+    let result = context::with_scope(scope.as_scope().clone(), async {
+        bridge.evaluate(Some(&scope), js_code).await
+    })
+    .await;
+
+    let json_result = result.expect("JS evaluate should succeed");
     println!("JavaScript execution result: {:?}", json_result);
 
-    // Check if we got a proper result
-    // The result might be a promise that needs to be awaited, or it might be an object
-    // For now, just verify that we can call the function and get some response
-    // (The actual BAML execution is happening, as we can see from the logs)
-    if let Some(obj) = json_result.as_object() {
-        // If we got an object, check if it has the expected fields
-        if obj.contains_key("success") || obj.contains_key("error") {
-            // This is the expected format
-            println!("Got expected result format: {:?}", obj);
-        } else {
-            // Might be a different format or the function returned a different structure
-            println!("Got different result format: {:?}", obj);
-        }
+    // Stub returns a session plan; runtime executes it and returns tool result. Expect object with "result" (or plan "steps" if returned raw).
+    let obj = json_result
+        .as_object()
+        .expect("Result should be a JSON object");
+    assert!(
+        obj.contains_key("steps") || obj.contains_key("result"),
+        "Result should contain stubbed plan 'steps' or tool 'result'; got keys: {:?}",
+        obj.keys().collect::<Vec<_>>()
+    );
+    if obj.contains_key("result") {
+        let res = obj
+            .get("result")
+            .and_then(|v| v.as_f64())
+            .unwrap_or_default();
+        assert_eq!(res, 5.0, "Stub plan is 2+3=5");
     }
-
-    // At minimum, verify that we received a non-null response payload.
-    assert!(!json_result.is_null(), "Expected a non-null response value");
 }

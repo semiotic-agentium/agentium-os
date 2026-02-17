@@ -6,8 +6,8 @@
 use crate::baml_collector::BamlLLMCollector;
 use crate::baml_pre_execution::intercept_llm_call_pre_execution;
 use async_trait::async_trait;
+use baml_rt_core::bus::EffectEmitter;
 use baml_rt_core::context;
-use baml_rt_core::effects::EffectEmitter;
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry};
 use baml_rt_tools::ToolRegistry;
@@ -192,6 +192,12 @@ impl BamlExecutor {
                         "LLM call blocked by interceptor: {}",
                         msg
                     )));
+                }
+                Ok(InterceptorDecision::Substitute(value)) => {
+                    if let Some(ref collector) = collector {
+                        collector.complete_pending_effects(true, 0).await;
+                    }
+                    return Ok(value);
                 }
                 Err(e) => {
                     if let Some(ref collector) = collector {
@@ -389,15 +395,14 @@ impl BamlExecutor {
     }
 
     /// Create a context manager tied to an explicit runtime scope.
+    /// We pass BamlValue::Null for the "language"
     pub fn create_ctx_manager_for_scope(
         &self,
         scope: &context::RuntimeScope,
         extra_tags: Option<HashMap<String, BamlValue>>,
     ) -> Result<RuntimeContextManager> {
-        let ctx_manager = self.runtime.create_ctx_manager(
-            BamlValue::String(scope.context_id().as_str().to_string()),
-            None,
-        );
+        let _ = scope; // scope used only for extra_tags from conversation context
+        let ctx_manager = self.runtime.create_ctx_manager(BamlValue::Null, None);
 
         if let Some(tags) = extra_tags
             && !tags.is_empty()

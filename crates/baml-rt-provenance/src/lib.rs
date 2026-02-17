@@ -4,6 +4,7 @@
 //! along with a pluggable storage interface and FalkorDB-backed implementation.
 
 pub mod builders;
+pub mod bus_subscriber;
 pub mod document;
 pub mod effect_subscriber;
 pub mod error;
@@ -18,6 +19,7 @@ pub mod tool_index;
 pub mod types;
 pub mod vocabulary;
 
+pub use bus_subscriber::ProvenanceBusSubscriber;
 pub use effect_subscriber::ProvenanceEffectSubscriber;
 pub use error::ProvenanceError;
 pub use events::{

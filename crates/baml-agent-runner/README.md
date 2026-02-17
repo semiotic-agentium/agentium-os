@@ -9,6 +9,8 @@ CLI for loading and executing packaged agents.
 - Handle A2A requests (stdio or HTTP when built with `baml-rt-api`); invoke
   `onChatMessage(message)` so agent logic runs via the DSL (`run(ctx)` or
   `session(message).run(...)`).
+- Uses stream-first A2A handling internally; stdio/HTTP adapters choose whether
+  to collect stream responses or forward them as live events.
 
 Agents are written against the A2A DSL (see **task-lifecycle-demo** in
 `tests/fixtures/agents/task-lifecycle-demo/` for the reference conversation

@@ -6,7 +6,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use baml_rt_a2a::AgentRegistry;
 use baml_rt_api::api_router;
-use baml_rt_core::{AgentDiscoveryEntry, AgentRouteKey, BamlRtError, Result};
+use baml_rt_core::{AgentDiscoveryEntry, AgentRouteKey, BamlRtError, BusStream, Result};
+use futures_util::stream;
 use serde_json::Value;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -103,9 +104,13 @@ impl AgentRegistry for MockRegistry {
         self.entries.clone()
     }
 
-    async fn handle_a2a(&self, _key: &AgentRouteKey, _request: Value) -> Result<Vec<Value>> {
+    async fn handle_a2a_stream(
+        &self,
+        _key: &AgentRouteKey,
+        _request: Value,
+    ) -> Result<BusStream<Value>> {
         if let Some(ref ok) = self.handle_ok {
-            return Ok(ok.clone());
+            return Ok(Box::pin(stream::iter(ok.clone())));
         }
         if let Some(ref msg) = self.handle_err_message {
             return Err(BamlRtError::InvalidArgument(msg.clone()));

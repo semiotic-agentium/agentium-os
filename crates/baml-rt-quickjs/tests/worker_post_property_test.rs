@@ -15,8 +15,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::{Mutex, oneshot};
 use tokio::time::{Duration, timeout};
 
+fn proptest_cfg(cases: u32) -> ProptestConfig {
+    let mut cfg = ProptestConfig::with_cases(cases);
+    cfg.failure_persistence = None;
+    cfg
+}
+
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(6))]
+    #![proptest_config(proptest_cfg(6))]
 
     #[test]
     fn prop_post_to_worker_void_eventually_runs_all_posts(n in 1usize..=20usize) {

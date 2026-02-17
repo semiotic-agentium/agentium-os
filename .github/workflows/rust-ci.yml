@@ -11,6 +11,7 @@ permissions:
   contents: read
   actions: read
   packages: read
+  checks: write   # required for JUnit report action to create check runs
 
 env:
   CARGO_TERM_COLOR: always
@@ -21,8 +22,8 @@ env:
   RUSTFLAGS: "-C debuginfo=0 -C link-arg=-fuse-ld=gold"
 
 jobs:
-  cargo-test:
-    name: Cargo test (light)
+  nextest:
+    name: Nextest (workspace)
     runs-on: arc-runner-set
     steps:
       - uses: actions/checkout@v4
@@ -35,116 +36,67 @@ jobs:
           echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
           echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
 
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: 'ci-light'
-          cache-on-failure: true
-          cache-targets: 'true'
-
-      - name: Install build dependencies
-        run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold libclang-dev
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Run cargo test (light crates only)
-        run: cargo test --locked -p baml-rt-core -p baml-rt-id -p baml-rt-observability
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci-nextest"
+          cache-on-failure: true
+          cache-targets: "true"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold libclang-dev util-linux
+
+      - name: System info
+        run: |
+          echo "=== lscpu ==="
+          lscpu
+          echo "=== nproc ==="
+          nproc
+          echo "=== memory (free -h) ==="
+          free -h
+          echo "=== uname -a ==="
+          uname -a
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      # Single FalkorDB container for all FalkorDB tests (shared_falkordb uses
+      # FALKORDB_CONNECTION when set and skips testcontainers). One init for the job.
+      - name: Start FalkorDB container
+        run: |
+          docker pull falkordb/falkordb:latest
+          docker run -d --name falkordb-ci -p 6379:6379 falkordb/falkordb:latest
+          for i in $(seq 1 30); do
+            if docker exec falkordb-ci redis-cli PING 2>/dev/null | grep -q PONG; then
+              echo "FALKORDB_CONNECTION=falkor://127.0.0.1:6379" >> $GITHUB_ENV
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "FalkorDB did not become ready within 30s"
+          exit 1
+
+      - name: Run nextest
+        run: |
+          cargo nextest run --workspace --locked --profile ci \
+            --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests,baml-agent-runner/http-tools,baml-rt/llm-tests,baml-agent-runner/llm-tests
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          FALKORDB_CONNECTION: ${{ env.FALKORDB_CONNECTION }}
 
-      - name: Run baml-derive-tests
-        run: cargo test --locked -p baml-derive-tests
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-
-      - name: Show sccache stats
+      - name: Publish JUnit report
         if: always()
-        run: sccache --show-stats
-
-  cargo-test-heavy:
-    name: Cargo test (heavy, serial)
-    runs-on: arc-runner-set
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Configure sccache
-        run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
+        uses: mikepenz/action-junit-report@v4
         with:
-          shared-key: 'ci-heavy'
-          cache-on-failure: true
-          cache-targets: 'true'
-
-      - name: Install build dependencies
-        run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold libclang-dev
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build heavy crate test binaries and builder tools (parallel)
-        run: |
-          cargo test --locked --workspace --exclude baml-rt-core --exclude baml-rt-id --exclude baml-rt-observability --exclude baml-derive-core --exclude baml-derive --exclude baml-derive-tests --exclude baml-rt-provenance --exclude baml-rt-a2a --exclude baml-agent-runner --features baml-rt-tools/http-tools,baml-rt-builder/http-tools --no-run
-          cargo build --locked -p baml-rt-builder
-
-      - name: Run heavy crate tests (serial)
-        run: cargo test --locked --workspace --exclude baml-rt-core --exclude baml-rt-id --exclude baml-rt-observability --exclude baml-derive-core --exclude baml-derive --exclude baml-derive-tests --exclude baml-rt-provenance --exclude baml-rt-a2a --exclude baml-agent-runner --features baml-rt-tools/http-tools,baml-rt-builder/http-tools -j 1
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-
-      - name: Show sccache stats
-        if: always()
-        run: sccache --show-stats
-
-  cargo-test-falkordb:
-    name: Cargo test (falkordb)
-    runs-on: arc-runner-set
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Configure sccache
-        run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: 'ci-falkordb'
-          cache-on-failure: true
-          cache-targets: 'true'
-
-      - name: Install build dependencies
-        run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold libclang-dev
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Pre-pull FalkorDB image
-        run: docker pull falkordb/falkordb:latest
-
-      - name: Build FalkorDB test binaries and builder tools (parallel)
-        run: |
-          cargo test --locked -p baml-rt-provenance -p baml-rt-a2a -p baml-agent-runner --features baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests,baml-agent-runner/http-tools --no-run
-          cargo build --locked -p baml-rt-builder
-
-      - name: Run FalkorDB-gated tests (serial)
-        run: cargo test --locked -p baml-rt-provenance -p baml-rt-a2a -p baml-agent-runner --features baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests,baml-agent-runner/http-tools -j 1
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          report_paths: "target/nextest/ci/junit.xml"
+          require_tests: false
+          check_name: Nextest results
 
       - name: Show sccache stats
         if: always()

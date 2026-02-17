@@ -226,7 +226,7 @@ async fn test_e2e_trait_tool_js_registration() {
         UuidId::parse_str("00000000-0000-0000-0000-00000000000a").unwrap(),
     ));
     // Verify tool is registered in JS (scope required for Rust tools via openToolSession)
-    assert_tool_registered_in_js(&mut bridge, "test/arithmetic", Some(&scope)).await;
+    assert_tool_registered_in_js(&mut bridge, "test/arithmetic", &scope).await;
 }
 
 /// **Purpose:** After registering two tools, list_tools() contains their names

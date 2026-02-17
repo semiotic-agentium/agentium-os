@@ -181,7 +181,7 @@ async fn falkordb_writer_persists_large_document() {
                 task_id: task_id.clone(),
             },
             client: "TonyOpenRouter".to_string(),
-            model: "deepseek/deepseek-v3.2".to_string(),
+            model: "openai/gpt-4o-mini".to_string(),
             function_name: "TonyShrinkChat".to_string(),
             prompt: json!({
                 "messages": [
@@ -203,7 +203,7 @@ async fn falkordb_writer_persists_large_document() {
                 task_id: task_id.clone(),
             },
             client: "TonyOpenRouter".to_string(),
-            model: "deepseek/deepseek-v3.2".to_string(),
+            model: "openai/gpt-4o-mini".to_string(),
             function_name: "TonyShrinkChat".to_string(),
             prompt: json!({
                 "messages": [
@@ -405,7 +405,7 @@ async fn falkordb_writer_persists_send_message_calls_without_task() {
                 message_id: MessageId::from_external(ExternalId::new("msg-10")),
             },
             client: "TonyOpenRouter".to_string(),
-            model: "deepseek/deepseek-v3.2".to_string(),
+            model: "openai/gpt-4o-mini".to_string(),
             function_name: "TonyShrinkChat".to_string(),
             prompt: json!({
                 "messages": [
@@ -424,7 +424,7 @@ async fn falkordb_writer_persists_send_message_calls_without_task() {
                 message_id: MessageId::from_external(ExternalId::new("msg-10")),
             },
             client: "TonyOpenRouter".to_string(),
-            model: "deepseek/deepseek-v3.2".to_string(),
+            model: "openai/gpt-4o-mini".to_string(),
             function_name: "TonyShrinkChat".to_string(),
             prompt: json!({
                 "messages": [

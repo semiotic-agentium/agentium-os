@@ -22,7 +22,7 @@ impl A2aInMemoryClient {
     }
 
     pub async fn send(&self, request: Value) -> Result<Vec<Value>> {
-        self.target.handle_a2a(request).await
+        Ok(baml_rt_core::collect_a2a_stream(self.target.handle_a2a_stream(request).await?).await)
     }
 }
 

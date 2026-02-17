@@ -23,7 +23,7 @@ function PersonaChat(user_message: string) -> string {
 client DefaultClient {
   provider openai-generic
   options {
-    model "deepseek/deepseek-v3.2"
+    model "openai/gpt-4o-mini"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }

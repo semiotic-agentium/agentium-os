@@ -25,16 +25,23 @@
 //! **I4 (Provenance Admissibility)**
 //!   Provenance events require message_id in metadata (runtime validation).
 
-use baml_rt_core::effects::{
-    EffectBus, EffectEmitter, EffectEvent, EffectLiveness, InFlightCounts, ToolEffectMetadata,
+use baml_rt_core::bus::{
+    A2aEffectMetadata, A2aLivenessRole, BusWithEffects, EffectEmitter, EffectEvent, EffectLiveness,
+    InFlightCounts, ToolEffectMetadata,
 };
-use baml_rt_core::ids::ContextId;
+use baml_rt_core::ids::{AgentId, ContextId, UuidId};
 use proptest::prelude::*;
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, timeout};
+
+fn proptest_cfg(cases: u32) -> ProptestConfig {
+    let mut cfg = ProptestConfig::with_cases(cases);
+    cfg.failure_persistence = None;
+    cfg
+}
 
 /// Test timeout for max_attempts_ms - much shorter than production default (30 minutes)
 /// to enable fast test feedback while still validating timeout behavior.
@@ -77,6 +84,7 @@ impl EffectLiveness for MockEffectLiveness {
                 tool: 1,
                 llm: 0,
                 a2a: 0,
+                a2a_command: 0,
             }
         } else {
             let map = self.counts.read().await;
@@ -100,15 +108,15 @@ async fn test_liveness_gating_timeout() {
 }
 
 async fn test_liveness_gating_timeout_inner() {
-    use baml_rt_quickjs::quickjs_bridge::EffectGatedPoller;
+    use baml_rt_quickjs::quickjs_bridge::EffectGatedTimeoutPolicy;
 
     let context_id = ContextId::new(1000, 2);
-    let bus = Arc::new(EffectBus::new());
+    let bus = Arc::new(BusWithEffects::new());
 
     // Test 1: No effects in-flight -> short timeout
-    let poller = EffectGatedPoller::new(
-        Some(bus.clone() as Arc<dyn EffectLiveness>),
-        Some(context_id.clone()),
+    let poller = EffectGatedTimeoutPolicy::new(
+        bus.clone() as Arc<dyn EffectLiveness>,
+        context_id.clone(),
         5000,                 // 5s idle timeout
         TEST_MAX_ATTEMPTS_MS, // Short timeout for tests
     );
@@ -155,7 +163,7 @@ async fn test_liveness_gating_timeout_inner() {
 /// which should be detected by liveness gating.
 #[tokio::test]
 async fn test_simulated_hang_started_without_completed() {
-    let bus = Arc::new(EffectBus::new());
+    let bus = Arc::new(BusWithEffects::new());
     let context_id = ContextId::new(1000, 4);
 
     // Start effect but never complete (simulated leak)
@@ -178,10 +186,10 @@ async fn test_simulated_hang_started_without_completed() {
     assert!(counts.any(), "Hang test: Should detect in-flight effect");
 
     // Liveness gating should use long timeout
-    use baml_rt_quickjs::quickjs_bridge::EffectGatedPoller;
-    let poller = EffectGatedPoller::new(
-        Some(bus.clone() as Arc<dyn EffectLiveness>),
-        Some(context_id),
+    use baml_rt_quickjs::quickjs_bridge::EffectGatedTimeoutPolicy;
+    let poller = EffectGatedTimeoutPolicy::new(
+        bus.clone() as Arc<dyn EffectLiveness>,
+        context_id,
         5000,
         TEST_MAX_ATTEMPTS_MS, // Short timeout for tests
     );
@@ -210,10 +218,10 @@ async fn test_simulated_hang_always_in_flight_inner() {
     let mock_liveness = Arc::new(MockEffectLiveness::new(true));
     let context_id = ContextId::new(1000, 5);
 
-    use baml_rt_quickjs::quickjs_bridge::EffectGatedPoller;
-    let poller = EffectGatedPoller::new(
-        Some(mock_liveness.clone() as Arc<dyn EffectLiveness>),
-        Some(context_id),
+    use baml_rt_quickjs::quickjs_bridge::EffectGatedTimeoutPolicy;
+    let poller = EffectGatedTimeoutPolicy::new(
+        mock_liveness.clone() as Arc<dyn EffectLiveness>,
+        context_id,
         5000,
         TEST_MAX_ATTEMPTS_MS, // Short timeout for tests
     );
@@ -229,7 +237,7 @@ async fn test_simulated_hang_always_in_flight_inner() {
 /// set_counts sets in-flight state without bus events; poller should use long timeout.
 #[tokio::test]
 async fn test_set_counts_directly_sets_in_flight() {
-    use baml_rt_quickjs::quickjs_bridge::EffectGatedPoller;
+    use baml_rt_quickjs::quickjs_bridge::EffectGatedTimeoutPolicy;
 
     let mock = Arc::new(MockEffectLiveness::new(false));
     let context_id = ContextId::new(1000, 10);
@@ -239,13 +247,14 @@ async fn test_set_counts_directly_sets_in_flight() {
             tool: 1,
             llm: 0,
             a2a: 0,
+            a2a_command: 0,
         },
     )
     .await;
 
-    let poller = EffectGatedPoller::new(
-        Some(mock as Arc<dyn EffectLiveness>),
-        Some(context_id),
+    let poller = EffectGatedTimeoutPolicy::new(
+        mock as Arc<dyn EffectLiveness>,
+        context_id,
         5000,
         TEST_MAX_ATTEMPTS_MS,
     );
@@ -260,16 +269,16 @@ async fn test_set_counts_directly_sets_in_flight() {
 /// the evaluate() loop uses max(initial, new) so timeout never decreases mid-loop.
 #[tokio::test]
 async fn test_timeout_monotonicity_effect_completion() {
-    use baml_rt_quickjs::quickjs_bridge::EffectGatedPoller;
+    use baml_rt_quickjs::quickjs_bridge::EffectGatedTimeoutPolicy;
 
-    let bus = Arc::new(EffectBus::new());
+    let bus = Arc::new(BusWithEffects::new());
     let context_id = ContextId::new(1000, 98);
     let idle = 5000u32;
     let max_attempts = TEST_MAX_ATTEMPTS_MS as u32;
 
-    let poller = EffectGatedPoller::new(
-        Some(bus.clone() as Arc<dyn EffectLiveness>),
-        Some(context_id.clone()),
+    let poller = EffectGatedTimeoutPolicy::new(
+        bus.clone() as Arc<dyn EffectLiveness>,
+        context_id.clone(),
         idle as u64,
         max_attempts as u64,
     );
@@ -310,16 +319,65 @@ async fn test_timeout_monotonicity_effect_completion() {
     // monotonicity is enforced in quickjs_bridge evaluate().
 }
 
-/// CG4 (stream promise non-resolution): Stream invocation path is type-restricted.
-///
-/// A2aYieldSession<_, _, NonResolvingPromise> and JsStreamInvoker (in baml-rt-a2a) ensure
-/// stream requests use invoke_stream() only; the promise for that invocation never resolves
-/// until agent exit. Integration: task_streaming_test (message.sendStream yields chunks
-/// without waiting on __eval_result).
+/// A2A envelope effect alone should not force long timeout.
+/// Long timeout is reserved for downstream progress-capable work.
 #[tokio::test]
-async fn test_stream_invocation_non_resolving_documented() {
-    // No runtime check: type system and JsStreamInvoker trait enforce stream-only path.
-    // This test documents the invariant and ensures the effect_property_test module compiles.
+async fn test_a2a_envelope_is_discounted_for_polling() {
+    use baml_rt_quickjs::quickjs_bridge::EffectGatedTimeoutPolicy;
+
+    let bus = Arc::new(BusWithEffects::new());
+    let context_id = ContextId::new(1000, 97);
+    let idle = 5000u32;
+    let max_attempts = TEST_MAX_ATTEMPTS_MS as u32;
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000097").unwrap());
+    let metadata = A2aEffectMetadata {
+        agent_id,
+        method: "message.sendStream".to_string(),
+        request_id: Some("req-97".to_string()),
+        liveness_role: A2aLivenessRole::Command,
+        metadata: json!({ "phase": "envelope" }),
+    };
+    let effect_metadata = A2aEffectMetadata {
+        agent_id: metadata.agent_id.clone(),
+        method: metadata.method.clone(),
+        request_id: metadata.request_id.clone(),
+        liveness_role: A2aLivenessRole::Effect,
+        metadata: json!({ "phase": "nested" }),
+    };
+
+    let policy = EffectGatedTimeoutPolicy::new(
+        bus.clone() as Arc<dyn EffectLiveness>,
+        context_id.clone(),
+        idle as u64,
+        max_attempts as u64,
+    );
+
+    // Envelope in flight => still idle timeout.
+    bus.emit(EffectEvent::A2aStarted {
+        context_id: context_id.clone(),
+        metadata: metadata.clone(),
+    })
+    .await
+    .unwrap();
+    let one_a2a = policy.timeout_attempts().await;
+    assert_eq!(
+        one_a2a, idle,
+        "Single A2A envelope should not force long timeout"
+    );
+
+    // Nested/child A2A effect => long timeout.
+    bus.emit(EffectEvent::A2aStarted {
+        context_id: context_id.clone(),
+        metadata: effect_metadata,
+    })
+    .await
+    .unwrap();
+    let nested_a2a = policy.timeout_attempts().await;
+    assert_eq!(
+        nested_a2a, max_attempts,
+        "Nested A2A work should force long timeout"
+    );
 }
 
 /// E1 / CG3 (release only): Dropping EffectStartToken without complete leaves in-flight count at 1.
@@ -329,7 +387,7 @@ async fn test_stream_invocation_non_resolving_documented() {
 #[tokio::test]
 #[cfg(not(debug_assertions))]
 async fn test_effect_token_drop_leaves_in_flight() {
-    let bus = Arc::new(EffectBus::new());
+    let bus = Arc::new(BusWithEffects::new());
     let context_id = ContextId::new(1000, 96);
     let metadata = ToolEffectMetadata {
         tool_name: "leak_tool".to_string(),
@@ -354,14 +412,14 @@ async fn test_effect_token_drop_leaves_in_flight() {
 
 // Property test: Effect start/complete pairing and underflow (I1, I3, E2).
 // ops: 0 = Start, 1 = Complete (if any started), 2 = Orphan Complete (bus applies saturating_sub; order-dependent).
-// Expected in_flight is computed by the same semantics as EffectBus: running count, +1 on Start, saturating_sub(1) on Completed.
+// Expected in_flight is computed by the same semantics as BusWithEffects: running count, +1 on Start, saturating_sub(1) on Completed.
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(16))]
+    #![proptest_config(proptest_cfg(16))]
     #[test]
     fn prop_effect_pairing_and_underflow(ops in proptest::collection::vec(0u8..3, 0..12)) {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let bus = Arc::new(EffectBus::new());
+            let bus = Arc::new(BusWithEffects::new());
             let context_id = ContextId::new(1000, 100);
             let mut started_count = 0u32;
             let mut completed_count = 0u32;

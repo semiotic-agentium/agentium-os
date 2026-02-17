@@ -8,12 +8,12 @@ the `baml-rt` facade crate, which re-exports feature-gated subcrates.
 
 ### Crate Map (Bottom-Up)
 
-- `baml-rt-core`: Core errors/results, correlation helpers, and shared types.
+- `baml-rt-core`: Core errors/results, correlation helpers, stream boundary types, and effect-bus primitives.
 - `baml-rt-tools`: Tool traits, registry/executor, and session FSM primitives.
 - `baml-rt-interceptor`: Interceptor traits, pipelines, and tracing interceptors.
 - `baml-rt-observability`: Tracing setup, spans, and metrics helpers.
-- `baml-rt-quickjs`: QuickJS runtime host, schema loading, JS bridge, and context.
-- `baml-rt-a2a`: Agent-to-agent protocol types, transport, and request handling.
+- `baml-rt-quickjs`: QuickJS runtime host, schema loading, JS bridge, and async stream execution.
+- `baml-rt-a2a`: Agent-to-agent protocol types, stream-first transport, and cross-turn request handling.
 - `baml-rt-builder`: Agent build pipeline and `baml-agent-builder` CLI.
 - `baml-agent-runner`: Binary that loads packaged agents and serves A2A requests.
 - `baml-rt`: Facade crate that re-exports the above via feature flags.
@@ -105,6 +105,30 @@ that describes FSM steps (`Open`, `Send`, `Next`, `Finish`, `Abort`), and the
 runtime executes those steps **in Rust**. JavaScript never mediates host tool
 execution; JS only handles JS tools via `invokeTool`.
 
+`Open.initial_input` is open-time session configuration (for tools that define
+it). `Send.input` carries per-turn payloads.
+
+## Promise polling and effect-gated timeout
+
+When `evaluate()` runs non-stream code that returns a promise, the host polls until
+the promise resolves or a timeout. The timeout is **effect-gated** and **deterministic**:
+the first timeout sample is taken only after one run of pending jobs (so the promise
+executor has had a chance to emit effects); then the effect state is re-checked on a
+fixed schedule (every 10 attempts for the first 500ms, then every 100). If
+in-flight effects (e.g. LLM or tool calls) are present for the invocation context,
+a long timeout is used; otherwise a short idle timeout applies. See
+`crates/baml-rt-quickjs/docs/HOST_QUICKJS_STREAM_INVARIANTS.md` and
+`crates/baml-rt-quickjs/src/quickjs_bridge/promise_polling.rs`.
+
+**Potential problem:** The Rust future that backs the JS promise (e.g. the BAML/LLM
+call) only runs when the QuickJS event loop runs pending jobs. On slow or busy CI,
+that can happen well after the first timeout sample, so the poll loop may see no
+effects and use the short idle timeout (e.g. 5s), causing “Promise did not resolve
+after 5000 attempts”. To mitigate this, the first 2 seconds of polling never use
+the short timeout (warm-up window). To isolate locally, run with
+`RUST_LOG=baml_rt_quickjs=trace` and check for “LlmStarted emitting” vs
+“poll_promise: effect-gated timeout sample” timing (see `crates/baml-rt/tests/llm_test.rs`).
+
 ## Conversation Handling (A2A DSL)
 
 The **best reference** for multi-turn conversation and task lifecycle is the
@@ -150,6 +174,8 @@ cargo test
 # With output
 cargo test -- --nocapture
 ```
+
+**Slow tests / pre-effect timeout:** Contract and LLM-dependent tests (e.g. `contracts_test::test_js_function_invocation_returns_actual_result`) can be slow or fail because they hit the **short (idle) timeout before any LLM effect is observed**: the promise executor may not run soon enough, so the poll loop never sees `LlmStarted` and uses the idle timeout (e.g. 5s default or 45s if configured). That can cause 60s+ wall time (e.g. multiple timeouts or one long idle limit) or failure with "Promise did not resolve after N attempts". The warm-up window (first 2s never use the short timeout) and effect wiring (see "Promise polling and effect-gated timeout" above) mitigate this; ensure tests that call BAML/LLM use a QuickJS config with long enough timeouts and wire `set_effect_liveness`. Running with `cargo test --release` reduces CPU-bound time but does not fix the pre-effect timeout issue. CI uses nextest with the `llm` test group limited to 2 threads.
 
 ## License
 

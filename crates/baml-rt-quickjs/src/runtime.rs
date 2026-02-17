@@ -4,7 +4,8 @@
 
 use crate::baml::BamlRuntimeManager;
 use crate::quickjs_bridge::QuickJSBridge;
-use baml_rt_core::effects::{EffectBus, EffectEmitter, EffectLiveness};
+use baml_rt_core::bus::{BusApi, BusWithEffects};
+use baml_rt_core::bus::{EffectEmitter, EffectLiveness};
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_interceptor::{InterceptorPipeline, LLMInterceptor, ToolInterceptor};
 use std::path::PathBuf;
@@ -12,9 +13,11 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 
-/// Configuration for QuickJS runtime options
+/// Configuration for QuickJS runtime options.
 ///
-/// These options map directly to the available options in `quickjs_runtime::builder::QuickJsRuntimeBuilder`.
+/// These options map to `quickjs_runtime::builder::QuickJsRuntimeBuilder`. See the
+/// crate README section "QuickJS optimization settings" for tuning guidance (GC,
+/// memory, stack).
 #[derive(Debug, Clone, Default)]
 pub struct QuickJSConfig {
     /// Maximum memory limit in bytes (None = no limit)
@@ -310,7 +313,7 @@ impl RuntimeBuilder {
 
     /// Set the provenance writer (enables effects-first system)
     ///
-    /// When provided, creates an EffectBus and wires it to provenance and liveness gating.
+    /// When provided, creates a BusWithEffects and wires it to provenance and liveness gating.
     pub fn with_provenance_writer(
         mut self,
         writer: Arc<dyn baml_rt_provenance::ProvenanceWriter>,
@@ -342,20 +345,20 @@ impl RuntimeBuilder {
         let tool_pipeline = self.config.tool_interceptor_pipeline.take();
         let provenance_writer = self.config.provenance_writer.take();
 
-        // Create EffectBus if provenance writer is provided (effects-first system)
-        let effect_bus: Option<Arc<EffectBus>> = if let Some(ref prov_writer) = provenance_writer {
-            let bus = Arc::new(EffectBus::new());
-            // Subscribe provenance adapter
-            let subscriber = Arc::new(baml_rt_provenance::ProvenanceEffectSubscriber::new(
-                prov_writer.clone(),
-            ));
-            bus.subscribe(subscriber).await;
-            Some(bus)
-        } else {
-            None
-        };
+        // Create BusWithEffects if provenance writer is provided (bus-first system).
+        let effect_bus: Option<Arc<BusWithEffects>> =
+            if let Some(ref prov_writer) = provenance_writer {
+                let bus = Arc::new(BusWithEffects::new());
+                let subscriber = Arc::new(baml_rt_provenance::ProvenanceBusSubscriber::new(
+                    prov_writer.clone(),
+                ));
+                bus.subscribe(subscriber).await;
+                Some(bus)
+            } else {
+                None
+            };
 
-        // Set effect emitter on BamlRuntimeManager if EffectBus exists
+        // Set effect emitter on BamlRuntimeManager if bus exists
         if let Some(ref bus) = effect_bus {
             baml_manager.set_effect_emitter(bus.clone() as Arc<dyn EffectEmitter>);
         }
@@ -396,7 +399,7 @@ impl RuntimeBuilder {
             QuickJSBridge::new_with_config(baml_manager.clone(), agent_id, quickjs_config.clone())
                 .await?;
 
-        // Set effect liveness on QuickJSBridge if EffectBus exists
+        // Set effect liveness on QuickJSBridge if bus exists
         if let Some(ref bus) = effect_bus {
             bridge.set_effect_liveness(bus.clone() as Arc<dyn EffectLiveness>);
         }

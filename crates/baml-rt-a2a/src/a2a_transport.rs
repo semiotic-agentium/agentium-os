@@ -2,10 +2,10 @@
 
 use crate::a2a;
 use crate::a2a_store::{
-    ProvenanceTaskStore, TaskEventRecorder, TaskRepository, TaskStoreBackend, TaskUpdateEvent,
-    TaskUpdateQueue,
+    ConversationContextSource, ProvenanceTaskStore, TaskEventRecorder, TaskRepository,
+    TaskStoreBackend, TaskUpdateEvent, TaskUpdateQueue,
 };
-use crate::a2a_types::SendMessageRequest;
+use crate::a2a_types::{JSONRPCId, SendMessageRequest};
 use crate::error_classifier::{A2aErrorClassifier, ErrorClassifier};
 use crate::events::{BroadcastEventEmitter, EventEmitter};
 use crate::handlers::{DefaultTaskHandler, TaskHandler};
@@ -15,50 +15,62 @@ use crate::result_deduplicator::{
     DeduplicatingPipeline, HashResultDeduplicator, ResultDeduplicator,
 };
 use crate::result_pipeline::{A2aResultPipeline, ResultStoragePipeline};
-use crate::tools::A2aSessionBundle;
 use async_trait::async_trait;
+use baml_rt_core::bus::{BusStream, EffectEmitter};
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::correlation;
-use baml_rt_core::effects::EffectEmitter;
 use baml_rt_core::ids::{ExternalId, MessageId};
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::stream_completion::StreamCompletion;
+use baml_rt_core::{A2aRequestHandler, BamlRtError, Result};
 use baml_rt_observability::{metrics, spans};
-use baml_rt_provenance::{ProvenanceContextReader, ProvenanceInterceptor, ProvenanceWriter};
+use baml_rt_provenance::{ProvenanceInterceptor, ProvenanceWriter};
 use baml_rt_quickjs::baml_execution::ConversationContextProvider;
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, QuickJSConfig};
 use baml_rt_tools::tools::ToolFunctionMetadata;
 use baml_rt_tools::tools::ToolSessionContext;
 use baml_rt_tools::{ToolFailure, ToolSessionError};
 use baml_rt_tools::{ToolHandler, ToolName, ToolSession, ToolTypeSpec};
+use baml_rt_tools_system::A2aSessionBundle;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::sync::broadcast;
 
-struct ProvenanceConversationContextProvider {
-    reader: Arc<dyn ProvenanceContextReader>,
+/// Conversation context from the unified task store (single source of truth).
+/// No separate provenance read path; store view and provenance write are one concept.
+struct TaskStoreConversationContextProvider {
+    store: Arc<dyn ConversationContextSource>,
 }
 
-impl ProvenanceConversationContextProvider {
-    fn new(reader: Arc<dyn ProvenanceContextReader>) -> Self {
-        Self { reader }
+impl TaskStoreConversationContextProvider {
+    fn new(store: Arc<dyn ConversationContextSource>) -> Self {
+        Self { store }
     }
 }
 
+fn conversation_content_to_string(v: &Value) -> String {
+    serde_json::to_string(v)
+        .inspect_err(|e| {
+            tracing::warn!(
+                error = %e,
+                "conversation context content serialization failed, using Debug"
+            );
+        })
+        .unwrap_or_else(|_| v.to_string())
+}
+
 #[async_trait]
-impl ConversationContextProvider for ProvenanceConversationContextProvider {
+impl ConversationContextProvider for TaskStoreConversationContextProvider {
     async fn conversation_history_json(
         &self,
         scope: &context::RuntimeScope,
     ) -> Result<Option<Value>> {
         let context_id = scope.context_id();
         let items = self
-            .reader
+            .store
             .conversation_context(context_id, Some(40))
-            .await
-            .map_err(|err| BamlRtError::ProvenanceContextRead {
-                source: Box::new(err),
-            })?;
+            .await?;
         if items.is_empty() {
             return Ok(None);
         }
@@ -68,10 +80,14 @@ impl ConversationContextProvider for ProvenanceConversationContextProvider {
         let entries: Vec<Value> = items
             .into_iter()
             .map(|item| {
+                let content = match &item.content {
+                    Value::String(s) => s.clone(),
+                    other => conversation_content_to_string(other),
+                };
                 serde_json::json!({
                     "role": item.role,
                     "source": item.source,
-                    "content": item.content,
+                    "content": content,
                 })
             })
             .collect();
@@ -91,6 +107,13 @@ pub struct A2aAgent {
     request_router: Arc<dyn RequestRouter>,
     error_classifier: Arc<dyn ErrorClassifier>,
     update_tx: broadcast::Sender<TaskUpdateEvent>,
+    stream_sessions: Arc<Mutex<HashMap<String, LiveStreamSession>>>,
+}
+
+#[derive(Clone)]
+struct LiveStreamSession {
+    input_tx: async_channel::Sender<Value>,
+    output_tx: broadcast::Sender<Value>,
 }
 
 impl A2aAgent {
@@ -506,6 +529,12 @@ impl A2aAgentBuilderWithEffectEmitter {
             }
         };
 
+        // Bridge promise polling requires effect liveness wiring.
+        {
+            let mut bridge_guard = bridge.lock().await;
+            bridge_guard.set_effect_liveness(self.effect_emitter.clone());
+        }
+
         if self.register_baml_functions || !self.init_js.is_empty() {
             tracing::debug!(
                 "A2aAgentBuilder::build: Registering BAML functions and/or evaluating init_js"
@@ -610,20 +639,33 @@ impl A2aAgentBuilderWithEffectEmitter {
         ));
         let error_classifier: Arc<dyn ErrorClassifier> = Arc::new(A2aErrorClassifier);
 
-        if let Some(writer) = provenance_writer.clone() {
-            {
-                let mut runtime_guard = runtime.lock().await;
-                runtime_guard.set_conversation_context_provider(Arc::new(
-                    ProvenanceConversationContextProvider::new(writer.clone()),
-                ));
+        tracing::debug!("A2aAgentBuilder::build: wiring runtime context/interceptors");
+        {
+            use tokio::time::{Duration, timeout as tokio_timeout};
+            let mut runtime_guard = tokio_timeout(Duration::from_secs(10), runtime.lock())
+                .await
+                .map_err(|_| {
+                    BamlRtError::InvalidArgument(
+                        "A2aAgentBuilder::build: timed out acquiring runtime lock".to_string(),
+                    )
+                })?;
+            runtime_guard.set_conversation_context_provider(Arc::new(
+                TaskStoreConversationContextProvider::new(task_store.clone()),
+            ));
+            if let Some(writer) = provenance_writer.clone() {
+                tracing::debug!("A2aAgentBuilder::build: register_llm_interceptor start");
                 runtime_guard
                     .register_llm_interceptor(ProvenanceInterceptor::new(writer.clone()))
                     .await;
+                tracing::debug!("A2aAgentBuilder::build: register_llm_interceptor done");
+                tracing::debug!("A2aAgentBuilder::build: register_tool_interceptor start");
                 runtime_guard
                     .register_tool_interceptor(ProvenanceInterceptor::new(writer))
                     .await;
+                tracing::debug!("A2aAgentBuilder::build: register_tool_interceptor done");
             }
         }
+        tracing::debug!("A2aAgentBuilder::build: runtime context/interceptors wired");
         let agent = A2aAgent {
             agent_id,
             runtime,
@@ -634,16 +676,38 @@ impl A2aAgentBuilderWithEffectEmitter {
             request_router,
             error_classifier,
             update_tx,
+            stream_sessions: Arc::new(Mutex::new(HashMap::new())),
         };
 
         if self.register_a2a_session_tool {
+            tracing::debug!("A2aAgentBuilder::build: register_a2a_session_tool start");
             agent.register_a2a_session_tool().await?;
+            tracing::debug!("A2aAgentBuilder::build: register_a2a_session_tool done");
         }
 
+        tracing::debug!("A2aAgentBuilder::build: validate_tool_allowlist_registered start");
         {
-            let runtime_guard = agent.runtime.lock().await;
-            runtime_guard.validate_tool_allowlist_registered().await?;
+            use tokio::time::{Duration, timeout as tokio_timeout};
+            let runtime_guard = tokio_timeout(Duration::from_secs(10), agent.runtime.lock())
+                .await
+                .map_err(|_| {
+                    BamlRtError::InvalidArgument(
+                        "A2aAgentBuilder::build: timed out acquiring runtime lock for allowlist validation".to_string(),
+                    )
+                })?;
+            tokio_timeout(
+                Duration::from_secs(30),
+                runtime_guard.validate_tool_allowlist_registered(),
+            )
+            .await
+            .map_err(|_| {
+                BamlRtError::InvalidArgument(
+                    "A2aAgentBuilder::build: validate_tool_allowlist_registered timed out"
+                        .to_string(),
+                )
+            })??;
         }
+        tracing::debug!("A2aAgentBuilder::build: validate_tool_allowlist_registered done");
 
         Ok(agent)
     }
@@ -651,23 +715,189 @@ impl A2aAgentBuilderWithEffectEmitter {
 
 // Default removed - agent_id is generated, use A2aAgent::builder() instead
 
-/// Trait for alternative, non-standard A2A transports.
-///
-/// The transport receives raw JSON and returns JSON-RPC responses.
-#[async_trait(?Send)]
-pub trait A2aRequestHandler: Send + Sync {
-    async fn handle_a2a(&self, request: Value) -> Result<Vec<Value>>;
+#[async_trait]
+impl A2aRequestHandler for A2aAgent {
+    async fn handle_a2a_stream(&self, request: Value) -> Result<BusStream<Value>> {
+        if let Ok(parsed) = a2a::A2aRequest::from_value(request.clone())
+            && parsed.method == a2a::A2aMethod::MessageSendStream
+            && parsed.is_stream
+        {
+            return self.handle_live_message_stream(request, parsed).await;
+        }
+
+        let (tx, rx) = async_channel::unbounded();
+        let agent = self.clone();
+        tokio::spawn(async move {
+            let outcome = agent.handle_a2a_inner(request).await;
+            match outcome {
+                Ok(responses) => {
+                    for response in responses {
+                        if tx.send(response).await.is_err() {
+                            break;
+                        }
+                    }
+                }
+                Err(err) => {
+                    let _ = tx
+                        .send(serde_json::json!({ "error": err.to_string() }))
+                        .await;
+                }
+            }
+            tx.close();
+        });
+        Ok(Box::pin(async_stream::stream! {
+            while let Ok(item) = rx.recv().await {
+                yield item;
+            }
+        }))
+    }
 }
 
-#[async_trait(?Send)]
-impl A2aRequestHandler for A2aAgent {
-    async fn handle_a2a(&self, request: Value) -> Result<Vec<Value>> {
+impl A2aAgent {
+    async fn handle_live_message_stream(
+        &self,
+        request: Value,
+        parsed: a2a::A2aRequest,
+    ) -> Result<BusStream<Value>> {
+        let context_id = parsed
+            .context_id
+            .clone()
+            .unwrap_or_else(context::generate_context_id);
+        let session_key = context_id.as_str().to_string();
+
+        let mut attach_input: Option<async_channel::Sender<Value>> = None;
+        let mut spawn_payload: Option<(
+            String,
+            Value,
+            async_channel::Receiver<Value>,
+            broadcast::Sender<Value>,
+        )> = None;
+
+        let mut rx = {
+            let mut sessions = self.stream_sessions.lock().await;
+            if let Some(session) = sessions.get(&session_key) {
+                attach_input = Some(session.input_tx.clone());
+                session.output_tx.subscribe()
+            } else {
+                let (input_tx, input_rx) = async_channel::unbounded::<Value>();
+                let (output_tx, _) = broadcast::channel::<Value>(1024);
+                let subscriber = output_tx.subscribe();
+                sessions.insert(
+                    session_key.clone(),
+                    LiveStreamSession {
+                        input_tx,
+                        output_tx: output_tx.clone(),
+                    },
+                );
+                spawn_payload = Some((session_key.clone(), request.clone(), input_rx, output_tx));
+                subscriber
+            }
+        };
+
+        if let Some(input_tx) = attach_input {
+            input_tx.send(request).await.map_err(|_| {
+                BamlRtError::InvalidArgument(
+                    "Active stream session closed before input injection".to_string(),
+                )
+            })?;
+        } else if let Some((key, initial_request, input_rx, output_tx)) = spawn_payload {
+            let agent = self.clone();
+            tokio::spawn(async move {
+                agent
+                    .run_live_stream_session(key, initial_request, input_rx, output_tx)
+                    .await;
+            });
+        }
+
+        Ok(Box::pin(async_stream::stream! {
+            loop {
+                match rx.recv().await {
+                    Ok(item) => yield item,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                }
+            }
+        }))
+    }
+
+    async fn run_live_stream_session(
+        &self,
+        session_key: String,
+        initial_request: Value,
+        input_rx: async_channel::Receiver<Value>,
+        output_tx: broadcast::Sender<Value>,
+    ) {
+        let mut current = Some(initial_request);
+        while let Some(request_value) = current.take() {
+            match self.handle_a2a_outcome_inner(request_value.clone()).await {
+                Ok((request_id, outcome)) => match outcome {
+                    a2a::A2aOutcome::Response(result) => {
+                        let _ = output_tx
+                            .send(self.response_formatter.format_success(request_id, result));
+                        break;
+                    }
+                    a2a::A2aOutcome::Stream(stream_result) => {
+                        let responses = self
+                            .response_formatter
+                            .format_stream(request_id, &stream_result);
+                        for response in responses {
+                            let _ = output_tx.send(response);
+                        }
+                        // Invariant: continuation is driven only by explicit StreamCompletion,
+                        // never inferred from chunk shape.
+                        match stream_result.completion {
+                            StreamCompletion::InputRequired => match input_rx.recv().await {
+                                Ok(next_request) => current = Some(next_request),
+                                Err(_) => break,
+                            },
+                            StreamCompletion::SemanticFinal
+                            | StreamCompletion::ChannelClosed
+                            | StreamCompletion::Timeout => break,
+                        }
+                    }
+                },
+                Err(err) => {
+                    let formatter = JsonRpcResponseFormatter;
+                    let request_id = a2a::extract_jsonrpc_id(&request_value);
+                    let _ = output_tx.send(formatter.format_error(request_id, &err));
+                    break;
+                }
+            }
+        }
+
+        let mut sessions = self.stream_sessions.lock().await;
+        sessions.remove(&session_key);
+    }
+
+    async fn handle_a2a_inner(&self, request: Value) -> Result<Vec<Value>> {
+        let fallback_request_id = a2a::extract_jsonrpc_id(&request);
+        let (request_id, outcome) = match self.handle_a2a_outcome_inner(request).await {
+            Ok(res) => res,
+            Err(err) => {
+                let formatter = JsonRpcResponseFormatter;
+                return Ok(vec![formatter.format_error(fallback_request_id, &err)]);
+            }
+        };
+        let responses = match outcome {
+            a2a::A2aOutcome::Response(result) => {
+                vec![self.response_formatter.format_success(request_id, result)]
+            }
+            a2a::A2aOutcome::Stream(stream_result) => self
+                .response_formatter
+                .format_stream(request_id, &stream_result),
+        };
+        Ok(responses)
+    }
+
+    async fn handle_a2a_outcome_inner(
+        &self,
+        request: Value,
+    ) -> Result<(Option<JSONRPCId>, a2a::A2aOutcome)> {
         let request_id = a2a::extract_jsonrpc_id(&request);
         let parsed_request = match a2a::A2aRequest::from_value(request) {
             Ok(parsed) => parsed,
             Err(err) => {
-                let formatter = JsonRpcResponseFormatter;
-                return Ok(vec![formatter.format_error(request_id, &err)]);
+                return Err(err);
             }
         };
         use baml_rt_core::ids::CorrelationId;
@@ -682,9 +912,6 @@ impl A2aRequestHandler for A2aAgent {
             correlation::generate_correlation_id()
         };
 
-        // One scope per request (per conversation). Multiple concurrent A2A requests each get
-        // their own scope; the handler runs inside with_scope(scope, ...) so routing is to the
-        // correct conversation and yielded chunks are attributed to that context.
         let request_context_id = parsed_request
             .context_id
             .clone()
@@ -755,9 +982,9 @@ impl A2aRequestHandler for A2aAgent {
 
         let duration = start.elapsed();
         match &outcome {
-            Ok(a2a::A2aOutcome::Stream(chunks)) => {
+            Ok(a2a::A2aOutcome::Stream(stream_result)) => {
                 metrics::record_a2a_request(method.as_str(), "success", is_stream, duration);
-                metrics::record_a2a_stream_chunks(method.as_str(), chunks.len());
+                metrics::record_a2a_stream_chunks(method.as_str(), stream_result.chunks.len());
             }
             Ok(_) => metrics::record_a2a_request(method.as_str(), "success", is_stream, duration),
             Err(err) => {
@@ -770,22 +997,8 @@ impl A2aRequestHandler for A2aAgent {
             }
         }
 
-        let responses = match outcome {
-            Ok(a2a::A2aOutcome::Response(result)) => {
-                vec![self.response_formatter.format_success(request_id, result)]
-            }
-            Ok(a2a::A2aOutcome::Stream(chunks)) => {
-                self.response_formatter.format_stream(request_id, chunks)
-            }
-            Err(err) => vec![self.response_formatter.format_error(request_id, &err)],
-        };
-
-        Ok(responses)
+        outcome.map(|result| (request_id, result))
     }
-}
-
-impl A2aAgent {
-    // Result storage is handled by ResultStoragePipeline.
 }
 
 struct JsToolHandler {
@@ -908,7 +1121,7 @@ mod tests {
     #[tokio::test]
     async fn js_tool_can_be_called_via_baml_tool_registry() {
         let agent = A2aAgent::builder()
-            .with_effect_emitter(Arc::new(baml_rt_core::effects::EffectBus::new()))
+            .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
             .build()
             .await
             .expect("agent build");

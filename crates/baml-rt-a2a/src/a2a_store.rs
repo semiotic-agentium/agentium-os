@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use baml_rt_core::ids::{AgentId, ContextId, TaskId};
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_observability::metrics;
-use baml_rt_provenance::{ProvEvent, ProvenanceWriter};
+use baml_rt_provenance::{ProvEvent, ProvenanceConversationContextItem, ProvenanceWriter};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -94,14 +94,30 @@ pub trait TaskChunkApplier: Send + Sync {
     ) -> Result<Vec<TaskUpdateEvent>>;
 }
 
+/// Single source of truth for conversation context: read from the same store that
+/// receives task/message updates. Unifies A2A task state and conversation; provenance
+/// is the write-through audit log.
+#[async_trait]
+pub trait ConversationContextSource: Send + Sync {
+    async fn conversation_context(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+    ) -> Result<Vec<ProvenanceConversationContextItem>>;
+}
+
 #[async_trait]
 pub trait TaskStoreBackend:
-    TaskRepository + TaskEventRecorder + TaskUpdateQueue + TaskChunkApplier
+    TaskRepository + TaskEventRecorder + TaskUpdateQueue + TaskChunkApplier + ConversationContextSource
 {
 }
 
 impl<T> TaskStoreBackend for T where
-    T: TaskRepository + TaskEventRecorder + TaskUpdateQueue + TaskChunkApplier
+    T: TaskRepository
+        + TaskEventRecorder
+        + TaskUpdateQueue
+        + TaskChunkApplier
+        + ConversationContextSource
 {
 }
 
@@ -186,6 +202,24 @@ impl TaskChunkApplier for Mutex<TaskStore> {
     }
 }
 
+#[async_trait]
+impl ConversationContextSource for Mutex<TaskStore> {
+    async fn conversation_context(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+    ) -> Result<Vec<ProvenanceConversationContextItem>> {
+        let store = self.lock().await;
+        let messages = store.list_messages_in_context(context_id, limit);
+        let items = messages
+            .iter()
+            .enumerate()
+            .map(|(i, msg)| message_to_context_item(msg, i as u64 * 1000))
+            .collect();
+        Ok(items)
+    }
+}
+
 pub struct ProvenanceTaskStore {
     inner: Mutex<TaskStore>,
     writer: Option<Arc<dyn ProvenanceWriter>>,
@@ -230,7 +264,13 @@ fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+        .unwrap_or_else(|e| {
+            tracing::warn!(
+                error = %e,
+                "system time before UNIX_EPOCH, using 0 for provenance timestamp"
+            );
+            0
+        })
 }
 
 fn require_context_id(context_id: Option<ContextId>, operation: &str) -> Result<ContextId> {
@@ -295,8 +335,23 @@ impl TaskRepository for ProvenanceTaskStore {
     }
 
     async fn cancel(&self, id: &str) -> Option<Task> {
-        let mut store = self.inner.lock().await;
-        store.cancel(id)
+        let out = {
+            let mut store = self.inner.lock().await;
+            store.cancel(id)
+        };
+        if let Some(ref task) = out
+            && let (Some(cid), Some(tid)) = (task.context_id.clone(), task.id.clone())
+            && let Ok(context_id) = require_context_id(Some(cid), "provenance cancel")
+        {
+            let event = ProvEvent::task_status_changed(
+                context_id,
+                tid,
+                None,
+                Some(TASK_STATE_CANCELED.to_string()),
+            );
+            self.record_event(event).await;
+        }
+        out
     }
 
     async fn insert_message(&self, message: &Message) -> Result<()> {
@@ -384,6 +439,27 @@ fn message_content(message: &Message) -> Vec<String> {
         .iter()
         .filter_map(|part| part.text.clone())
         .collect()
+}
+
+fn message_to_context_item(
+    message: &Message,
+    timestamp_ms: u64,
+) -> ProvenanceConversationContextItem {
+    let role = message_role_string(&message.role);
+    let content_parts = message_content(message);
+    let content = Value::Array(
+        content_parts
+            .into_iter()
+            .map(Value::String)
+            .collect::<Vec<_>>(),
+    );
+    ProvenanceConversationContextItem {
+        timestamp_ms,
+        event_id: message.message_id.as_message_id().as_str().to_string(),
+        role,
+        content,
+        source: "message".to_string(),
+    }
 }
 
 fn metadata_string_map(metadata: &HashMap<String, Value>) -> HashMap<String, String> {
@@ -482,6 +558,7 @@ impl TaskChunkApplier for ProvenanceTaskStore {
             Some((tid, cid))
         });
         let (task, message) = Self::inject_agent_id_into_chunk(task, message, &self.agent_id);
+        let message_for_prov = message.clone();
         let start = Instant::now();
         let events = {
             let mut store = self.inner.lock().await;
@@ -528,7 +605,72 @@ impl TaskChunkApplier for ProvenanceTaskStore {
                 }
             }
         }
+        // I3: emit MessageSent for agent reply when apply_task_delta receives a message chunk.
+        // (User messages go through insert_message; agent messages from stream go through here.)
+        if let Some(ref msg) = message_for_prov
+            && let Ok(context_id) = require_context_id(
+                msg.context_id.clone(),
+                "provenance message in apply_task_delta",
+            )
+        {
+            let role = message_role_string(&msg.role);
+            let content = message_content(msg);
+            let metadata = msg.metadata.as_ref().map(metadata_string_map);
+            let event = match (role.as_str(), msg.task_id.clone()) {
+                (ROLE_USER, _) => None,
+                (_, Some(task_id)) => Some(ProvEvent::message_sent_task(
+                    context_id,
+                    task_id,
+                    msg.message_id.as_message_id().clone(),
+                    role,
+                    content,
+                    metadata,
+                    now_millis(),
+                )),
+                (_, None) => Some(ProvEvent::message_sent_global(
+                    context_id,
+                    msg.message_id.as_message_id().clone(),
+                    role,
+                    content,
+                    metadata,
+                    now_millis(),
+                )),
+            };
+            if let Some(prov) = event {
+                self.record_event(prov).await;
+            }
+        }
         Ok(events)
+    }
+}
+
+#[async_trait]
+impl ConversationContextSource for ProvenanceTaskStore {
+    async fn conversation_context(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+    ) -> Result<Vec<ProvenanceConversationContextItem>> {
+        if let Some(writer) = &self.writer {
+            let provenance_items = writer
+                .conversation_context(context_id, limit)
+                .await
+                .map_err(|source| BamlRtError::ProvenanceContextRead {
+                    source: Box::new(source),
+                })?;
+            if !provenance_items.is_empty() {
+                return Ok(provenance_items);
+            }
+        }
+
+        let store = self.inner.lock().await;
+        let messages = store.list_messages_in_context(context_id, limit);
+        let items = messages
+            .iter()
+            .enumerate()
+            .map(|(i, msg)| message_to_context_item(msg, i as u64 * 1000))
+            .collect();
+        Ok(items)
     }
 }
 
@@ -617,6 +759,37 @@ impl TaskStore {
             truncate_history(&mut task, limit);
         }
         Some(task)
+    }
+
+    /// Collects all messages in the given context from task histories (task order, then
+    /// history order). Single source of truth for conversation; no separate provenance read.
+    pub fn list_messages_in_context(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+    ) -> Vec<Message> {
+        let context_str = context_id.as_str();
+        let mut out: Vec<Message> = self
+            .order
+            .iter()
+            .filter_map(|id| self.tasks.get(id))
+            .filter(|task| {
+                task.context_id
+                    .as_ref()
+                    .is_some_and(|c| c.as_str() == context_str)
+            })
+            .flat_map(|task| task.history.iter().cloned())
+            .collect();
+        if let Some(n) = limit {
+            if n == 0 {
+                return Vec::new();
+            }
+            if out.len() > n {
+                let start = out.len() - n;
+                out = out.into_iter().skip(start).collect();
+            }
+        }
+        out
     }
 
     pub fn list(&self, request: &ListTasksRequest) -> ListTasksResponse {

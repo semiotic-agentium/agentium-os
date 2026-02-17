@@ -196,23 +196,24 @@ The effects-first system distinguishes "waiting on effect" (tool/LLM execution i
 
 ### Architecture
 
-**Effects drive provenance**: Tool/LLM executors emit `EffectEvent` (Started/Completed) via `EffectEmitter`. The `EffectBus` maintains in-flight counts per `ContextId` and fans out to subscribers (e.g. `ProvenanceEffectSubscriber` that converts effects to provenance events).
+**Effects drive provenance**: Tool/LLM executors emit `EffectEvent` (Started/Completed) via `EffectEmitter`. `BusWithEffects` maintains in-flight counts per `ContextId` and fans out to subscribers (e.g. `ProvenanceEffectSubscriber` that converts effects to provenance events).
 
 **Liveness gating**: `QuickJSBridge::evaluate()` checks `EffectLiveness::in_flight(context_id)` in the poll loop:
-- If `in_flight(context_id).any() > 0`: use `max_attempts_ms` (configurable, default 30 minutes) — effects are active, progress is possible.
-- If `in_flight(context_id).any() == 0`: use `idle_timeout_ms` (default 5s, configurable) — no effects, likely stuck.
+- If `in_flight(context_id).has_progress_effects()`: use `max_attempts_ms` (configurable, default 30 minutes) — downstream effects are active, progress is possible.
+- Otherwise use `idle_timeout_ms` (default 5s, configurable) — no downstream progress effects, likely stuck.
+- A2A command envelopes are tracked separately and do not count as progress effects. Only progress-capable effects extend polling.
 
 ### Semi-formal properties
 
 | ID | Property | Meaning |
 |----|----------|---------|
-| **L5** | Effect-gated timeout: if `in_flight(ctx_id) > 0`, use long timeout; else use short timeout | Distinguishes "waiting on effect" from "will never yield". |
+| **L5** | Effect-gated timeout: if downstream progress effects are in-flight, use long timeout; else use short timeout | Distinguishes "waiting on effect" from "will never yield". |
 | **L6** | Completion events always fire: `Started` → `Completed` (success or error) | Prevents "forever in-flight" states. |
 
 **Formal (L5):**
 
 - ∀ poll iteration i in `evaluate()`:
-  `timeout_attempts(i) = if in_flight(context_id).any() then MAX_ATTEMPTS else idle_timeout_ms`
+  `timeout_attempts(i) = if in_flight(context_id).has_progress_effects() then MAX_ATTEMPTS else idle_timeout_ms`
 - So: when effects are active, we allow longer waits; when idle, we fail fast.
 
 **Formal (L6):**
@@ -225,22 +226,22 @@ The effects-first system distinguishes "waiting on effect" (tool/LLM execution i
 |------|-----------|
 | Execution | Tool/LLM paths emit `Started` before effect, `Completed` in all completion/error paths. |
 | Liveness | `QuickJSBridge` queries `EffectLiveness` in poll loop; applies timeout based on `in_flight()`. |
-| Scope | Context-only scope: `in_flight(context_id)` counts all effects for that context (concurrent requests in same context suppress timeouts). |
+| Scope | Context-only scope: timeout gating uses progress-capable effects for that context; command envelopes are excluded. |
 
 ### Implementation
 
-1. **Effect types** (`baml_rt_core::effects`):
+1. **Effect types** (`baml_rt_core::bus`):
    - `EffectKind::{Tool, Llm}`
    - `EffectEvent::{ToolStarted, ToolCompleted, LlmStarted, LlmCompleted}` with metadata
    - `EffectEmitter` trait (async `emit(EffectEvent)`)
    - `EffectLiveness` trait (async `in_flight(context_id) -> InFlightCounts`)
 
-2. **EffectBus** (`baml_rt_core::effects::EffectBus`):
+2. **BusWithEffects** (`baml_rt_core::bus::BusWithEffects`):
    - Maintains `HashMap<ContextId, InFlightCounts>` (increments on Started, decrements on Completed)
    - Subscribers receive events (e.g. `ProvenanceEffectSubscriber` converts to `ProvEvent`)
 
 3. **Wiring** (`RuntimeBuilder`):
-   - If `provenance_writer` is provided, create `EffectBus`
+   - If `provenance_writer` is provided, create `BusWithEffects`
    - Subscribe `ProvenanceEffectSubscriber` to bus
    - Set bus as `EffectEmitter` on `BamlRuntimeManager` and `BamlExecutor`
    - Set bus as `EffectLiveness` on `QuickJSBridge`
@@ -251,8 +252,9 @@ The effects-first system distinguishes "waiting on effect" (tool/LLM execution i
    - `BamlLLMCollector::process_trace_events()`: emit `LlmCompleted` after LLM call
 
 5. **Liveness gating** (`QuickJSBridge::evaluate()` poll loop):
-   - Query `effect_liveness.in_flight(context_id)` each iteration
-   - Apply `idle_timeout_ms` if no effects, `max_attempts_ms` if effects active
+   - Query `effect_liveness.in_flight(context_id)` each iteration.
+   - **Deterministic sampling:** The first timeout sample is taken only after one run of pending jobs (so the promise executor has had a chance to run and emit effects). Effect state is then re-checked every 10 attempts for the first 500 attempts, then every 100; re-check only ever increases the timeout, never decreases it.
+   - Apply `idle_timeout_ms` if no effects, `max_attempts_ms` if effects active.
 
 ### Configuration
 

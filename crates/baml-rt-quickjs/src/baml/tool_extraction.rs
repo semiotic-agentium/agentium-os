@@ -246,6 +246,12 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
+    fn proptest_cfg(cases: u32) -> ProptestConfig {
+        let mut cfg = ProptestConfig::with_cases(cases);
+        cfg.failure_persistence = None;
+        cfg
+    }
+
     /// Valid tool-call object: has __type, no tool_name. Optional extra keys (reserved excluded).
     fn valid_tool_call_object() -> impl Strategy<Value = Value> {
         let extra_keys = ["a", "b", "x", "reason", "input"];
@@ -276,7 +282,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(64))]
+        #![proptest_config(proptest_cfg(64))]
 
         /// Invariant: When extraction returns Some(ToolCall), args never contain "tool_name".
         #[test]
@@ -293,7 +299,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(32))]
+        #![proptest_config(proptest_cfg(32))]
 
         /// Invariant: normalize_plan_input(Value::String(json)) == parse(json) for valid JSON.
         #[test]
@@ -329,7 +335,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(ProptestConfig::with_cases(32))]
+        #![proptest_config(proptest_cfg(32))]
 
         /// Invariant: Extracted plan steps have valid op and no tool_name in payload.
         #[test]

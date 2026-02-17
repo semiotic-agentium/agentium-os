@@ -6,6 +6,7 @@ use crate::a2a_types::{
 };
 use crate::events::EventEmitter;
 use async_trait::async_trait;
+use baml_rt_core::stream_completion::{StreamCompletion, StreamResult};
 use baml_rt_core::{BamlRtError, Result, to_json_value};
 use baml_rt_quickjs::QuickJSBridge;
 use std::sync::Arc;
@@ -13,7 +14,7 @@ use tokio::sync::Mutex;
 
 const TASK_NOT_FOUND_MSG: &str = "Task not found";
 
-#[async_trait(?Send)]
+#[async_trait]
 pub trait TaskHandler: Send + Sync {
     async fn handle_get(&self, request: GetTaskRequest) -> Result<a2a::A2aOutcome>;
     async fn handle_list(&self, request: ListTasksRequest) -> Result<a2a::A2aOutcome>;
@@ -65,7 +66,7 @@ impl DefaultTaskHandler {
     }
 }
 
-#[async_trait(?Send)]
+#[async_trait]
 impl TaskHandler for DefaultTaskHandler {
     async fn handle_get(&self, request: GetTaskRequest) -> Result<a2a::A2aOutcome> {
         let history_length = request.history_length.and_then(|value| value.as_usize());
@@ -111,7 +112,10 @@ impl TaskHandler for DefaultTaskHandler {
                 responses.push(to_json_value(&chunk)?);
             }
 
-            Ok(a2a::A2aOutcome::Stream(responses))
+            Ok(a2a::A2aOutcome::Stream(StreamResult {
+                chunks: responses,
+                completion: StreamCompletion::SemanticFinal,
+            }))
         } else {
             Ok(a2a::A2aOutcome::Response(value))
         }
