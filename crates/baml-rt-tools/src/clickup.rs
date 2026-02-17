@@ -1,4 +1,4 @@
-//! ClickUp tool — `support/clickup`.
+//! ClickUp tools — grouped and legacy.
 //!
 //! Provides a [`BamlTool`] implementation that calls the ClickUp v2 REST API.
 //! Supports listing, getting, creating, and updating tasks.
@@ -56,6 +56,81 @@ pub struct ClickUpInput {
     #[baml(description = "Required for CreateTask.")]
     pub name: Option<String>,
     /// The clickup-task description
+    pub description: Option<String>,
+    /// ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+    #[baml(description = "ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")]
+    pub priority: Option<u8>,
+    /// Task status string (e.g. \"in progress\"). Used by `UpdateTask`.
+    #[baml(description = "Task status string. Used by UpdateTask.")]
+    pub status: Option<String>,
+}
+
+/// Navigation-only ClickUp actions.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[ts(export)]
+pub enum ClickUpNavigateAction {
+    ListTeams,
+    ListSpaces,
+    ListLists,
+}
+
+/// Input for grouped navigation tool `support/clickupNavigate`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[ts(export)]
+pub struct ClickUpNavigateInput {
+    pub navigate_action: ClickUpNavigateAction,
+    /// Required for `ListSpaces`.
+    #[baml(description = "Required for ListSpaces.")]
+    pub team_id: Option<String>,
+    /// Required for `ListLists`.
+    #[baml(description = "Required for ListLists.")]
+    pub space_id: Option<String>,
+}
+
+/// Task-read ClickUp actions.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[ts(export)]
+pub enum ClickUpTasksAction {
+    ListTasks,
+    GetTask,
+}
+
+/// Input for grouped task-read tool `support/clickupTasks`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[ts(export)]
+pub struct ClickUpTasksInput {
+    pub tasks_action: ClickUpTasksAction,
+    /// Required for `ListTasks`.
+    #[baml(description = "Required for ListTasks.")]
+    pub list_id: Option<String>,
+    /// Required for `GetTask`.
+    #[baml(description = "Required for GetTask.")]
+    pub task_id: Option<String>,
+}
+
+/// Task-mutation ClickUp actions.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[ts(export)]
+pub enum ClickUpMutateAction {
+    CreateTask,
+    UpdateTask,
+}
+
+/// Input for grouped task-mutation tool `support/clickupMutate`.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[ts(export)]
+pub struct ClickUpMutateInput {
+    pub mutate_action: ClickUpMutateAction,
+    /// Required for `CreateTask`.
+    #[baml(description = "Required for CreateTask.")]
+    pub list_id: Option<String>,
+    /// Required for `UpdateTask`.
+    #[baml(description = "Required for UpdateTask.")]
+    pub task_id: Option<String>,
+    /// Required for `CreateTask`.
+    #[baml(description = "Required for CreateTask.")]
+    pub name: Option<String>,
+    /// The clickup-task description.
     pub description: Option<String>,
     /// ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
     #[baml(description = "ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")]
@@ -611,6 +686,162 @@ impl BamlTool for ClickUpTool {
     }
 }
 
+pub struct ClickUpNavigateTool {
+    inner: ClickUpTool,
+}
+
+impl Default for ClickUpNavigateTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ClickUpNavigateTool {
+    pub fn new() -> Self {
+        Self {
+            inner: ClickUpTool::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl BamlTool for ClickUpNavigateTool {
+    type Bundle = Support;
+    const LOCAL_NAME: &'static str = "clickupNavigate";
+    type OpenInput = ();
+    type Input = ClickUpNavigateInput;
+    type Output = ClickUpOutput;
+
+    fn description(&self) -> &'static str {
+        "ClickUp navigation: list teams, spaces, and lists."
+    }
+
+    #[tracing::instrument(skip(self), fields(action = ?args.navigate_action))]
+    async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
+        let api_key = ClickUpTool::api_key()?;
+        match args.navigate_action {
+            ClickUpNavigateAction::ListTeams => self.inner.list_teams(&api_key).await,
+            ClickUpNavigateAction::ListSpaces => {
+                let team_id = ClickUpTool::require(&args.team_id, "team_id", "ListSpaces")?;
+                self.inner.list_spaces(&api_key, team_id).await
+            }
+            ClickUpNavigateAction::ListLists => {
+                let space_id = ClickUpTool::require(&args.space_id, "space_id", "ListLists")?;
+                self.inner.list_lists(&api_key, space_id).await
+            }
+        }
+    }
+}
+
+pub struct ClickUpTasksTool {
+    inner: ClickUpTool,
+}
+
+impl Default for ClickUpTasksTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ClickUpTasksTool {
+    pub fn new() -> Self {
+        Self {
+            inner: ClickUpTool::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl BamlTool for ClickUpTasksTool {
+    type Bundle = Support;
+    const LOCAL_NAME: &'static str = "clickupTasks";
+    type OpenInput = ();
+    type Input = ClickUpTasksInput;
+    type Output = ClickUpOutput;
+
+    fn description(&self) -> &'static str {
+        "ClickUp task reads: list tasks and get task details."
+    }
+
+    #[tracing::instrument(skip(self), fields(action = ?args.tasks_action))]
+    async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
+        let api_key = ClickUpTool::api_key()?;
+        match args.tasks_action {
+            ClickUpTasksAction::ListTasks => {
+                let list_id = ClickUpTool::require(&args.list_id, "list_id", "ListTasks")?;
+                self.inner.list_tasks(&api_key, list_id).await
+            }
+            ClickUpTasksAction::GetTask => {
+                let task_id = ClickUpTool::require(&args.task_id, "task_id", "GetTask")?;
+                self.inner.get_task(&api_key, task_id).await
+            }
+        }
+    }
+}
+
+pub struct ClickUpMutateTool {
+    inner: ClickUpTool,
+}
+
+impl Default for ClickUpMutateTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ClickUpMutateTool {
+    pub fn new() -> Self {
+        Self {
+            inner: ClickUpTool::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl BamlTool for ClickUpMutateTool {
+    type Bundle = Support;
+    const LOCAL_NAME: &'static str = "clickupMutate";
+    type OpenInput = ();
+    type Input = ClickUpMutateInput;
+    type Output = ClickUpOutput;
+
+    fn description(&self) -> &'static str {
+        "ClickUp task mutations: create and update tasks."
+    }
+
+    #[tracing::instrument(skip(self), fields(action = ?args.mutate_action))]
+    async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
+        let api_key = ClickUpTool::api_key()?;
+        match args.mutate_action {
+            ClickUpMutateAction::CreateTask => {
+                let list_id = ClickUpTool::require(&args.list_id, "list_id", "CreateTask")?;
+                let name = ClickUpTool::require(&args.name, "name", "CreateTask")?;
+                self.inner
+                    .create_task(
+                        &api_key,
+                        list_id,
+                        name,
+                        args.description.as_deref(),
+                        args.priority,
+                    )
+                    .await
+            }
+            ClickUpMutateAction::UpdateTask => {
+                let task_id = ClickUpTool::require(&args.task_id, "task_id", "UpdateTask")?;
+                self.inner
+                    .update_task(
+                        &api_key,
+                        task_id,
+                        args.status.as_deref(),
+                        args.description.as_deref(),
+                        args.priority,
+                    )
+                    .await
+            }
+        }
+    }
+}
+
 pub fn clickup_metadata() -> ToolFunctionMetadata {
     use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
     let (name, class_name) = parse_tool_name_and_class("support/clickup")
@@ -641,4 +872,104 @@ pub fn clickup_metadata() -> ToolFunctionMetadata {
     .build_metadata()
 }
 
+pub fn clickup_navigate_metadata() -> ToolFunctionMetadata {
+    use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
+    let (name, class_name) = parse_tool_name_and_class("support/clickupNavigate")
+        .expect("support/clickupNavigate is a compile-time constant");
+
+    let baml_decl = [
+        ClickUpNavigateAction::baml_decl(),
+        ClickUpNavigateInput::baml_decl(),
+        ClickUpTaskSummary::baml_decl(),
+        ClickUpItem::baml_decl(),
+        ClickUpOutput::baml_decl(),
+    ]
+    .join("\n\n");
+
+    TypeBasedMetadataBuilder::<(), ClickUpNavigateInput, ClickUpOutput>::new(
+        name,
+        class_name,
+        "ClickUp navigation: list teams, spaces, and lists.".to_string(),
+    )
+    .with_session_plan_group("SupportClickup")
+    .with_baml_decl(baml_decl)
+    .with_tags(vec![
+        "support".to_string(),
+        "clickup".to_string(),
+        "navigate".to_string(),
+    ])
+    .with_secrets(vec![ToolSecretRequirement {
+        name: "CLICKUP_API_KEY".to_string(),
+        description: "ClickUp personal API token (pk_...)".to_string(),
+        reason: "Required to authenticate with the ClickUp v2 API".to_string(),
+    }])
+    .build_metadata()
+}
+
+pub fn clickup_tasks_metadata() -> ToolFunctionMetadata {
+    use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
+    let (name, class_name) = parse_tool_name_and_class("support/clickupTasks")
+        .expect("support/clickupTasks is a compile-time constant");
+
+    let baml_decl = [
+        ClickUpTasksAction::baml_decl(),
+        ClickUpTasksInput::baml_decl(),
+    ]
+    .join("\n\n");
+
+    TypeBasedMetadataBuilder::<(), ClickUpTasksInput, ClickUpOutput>::new(
+        name,
+        class_name,
+        "ClickUp task reads: list tasks and get task details.".to_string(),
+    )
+    .with_session_plan_group("SupportClickup")
+    .with_baml_decl(baml_decl)
+    .with_tags(vec![
+        "support".to_string(),
+        "clickup".to_string(),
+        "tasks".to_string(),
+        "read".to_string(),
+    ])
+    .with_secrets(vec![ToolSecretRequirement {
+        name: "CLICKUP_API_KEY".to_string(),
+        description: "ClickUp personal API token (pk_...)".to_string(),
+        reason: "Required to authenticate with the ClickUp v2 API".to_string(),
+    }])
+    .build_metadata()
+}
+
+pub fn clickup_mutate_metadata() -> ToolFunctionMetadata {
+    use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
+    let (name, class_name) = parse_tool_name_and_class("support/clickupMutate")
+        .expect("support/clickupMutate is a compile-time constant");
+
+    let baml_decl = [
+        ClickUpMutateAction::baml_decl(),
+        ClickUpMutateInput::baml_decl(),
+    ]
+    .join("\n\n");
+
+    TypeBasedMetadataBuilder::<(), ClickUpMutateInput, ClickUpOutput>::new(
+        name,
+        class_name,
+        "ClickUp task mutations: create and update tasks.".to_string(),
+    )
+    .with_session_plan_group("SupportClickup")
+    .with_baml_decl(baml_decl)
+    .with_tags(vec![
+        "support".to_string(),
+        "clickup".to_string(),
+        "mutate".to_string(),
+    ])
+    .with_secrets(vec![ToolSecretRequirement {
+        name: "CLICKUP_API_KEY".to_string(),
+        description: "ClickUp personal API token (pk_...)".to_string(),
+        reason: "Required to authenticate with the ClickUp v2 API".to_string(),
+    }])
+    .build_metadata()
+}
+
 register_tool_metadata!(clickup_metadata);
+register_tool_metadata!(clickup_navigate_metadata);
+register_tool_metadata!(clickup_tasks_metadata);
+register_tool_metadata!(clickup_mutate_metadata);

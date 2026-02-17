@@ -11,13 +11,13 @@
 //
 // CRITICAL FSM RULES:
 // - Open MUST come before any Send step
-// - Open uses 'initial_input' field (for first input when opening)
+// - Open uses 'initial_input' for open-time session configuration when supported
 // - Send uses 'input' for message payloads
 // - After Send, call Next to retrieve results
 // - Always Finish or Abort to close the session
 
 enum ToolSessionOp {
-  Open @description("Open a new tool session. MUST be the first step in any plan. Use 'initial_input' field to provide the first input when opening the session.")
+  Open @description("Open a new tool session. MUST be the first step in any plan. Use 'initial_input' for open-time configuration when this step schema includes it.")
   Send @description("Send input to an already-open session. Can ONLY be used after an Open step. Provide payload in the 'input' field.")
   Next @description("Retrieve the next output from the session. Call this after Send to get results. For streaming tools, call Next multiple times until Done.")
   Finish @description("Close the session gracefully after completing all operations. Always call Finish when done with a tool session.")
@@ -25,33 +25,18 @@ enum ToolSessionOp {
 }
 
 // Domain types generated from #[derive(BamlType)]
-/// Which ClickUp action to perform.
-enum ClickUpAction {
+/// Navigation-only ClickUp actions.
+enum ClickUpNavigateAction {
   ListTeams
   ListSpaces
   ListLists
-  ListTasks
-  GetTask
-  CreateTask
-  UpdateTask
 }
 
-/// Input for the ClickUp tool.
-///
-/// Uses a flat struct with an `action` discriminator instead of a Rust enum
-/// so that BAML (which lacks sum types) can represent it as a single class
-/// with an enum field. Per-action field requirements are validated at runtime
-/// in [`ClickUpTool::execute`].
-class ClickUpInput {
-  action ClickUpAction
+/// Input for grouped navigation tool `support/clickupNavigate`.
+class ClickUpNavigateInput {
+  navigate_action ClickUpNavigateAction
   team_id string? @description("Required for ListSpaces.")
   space_id string? @description("Required for ListLists.")
-  list_id string? @description("Required for ListTasks and CreateTask.")
-  task_id string? @description("Required for GetTask and UpdateTask.")
-  name string? @description("Required for CreateTask.")
-  description string?
-  priority int? @description("ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")
-  status string? @description("Task status string. Used by UpdateTask.")
 }
 
 /// Summary of a single ClickUp task, projected from the API response.
@@ -82,6 +67,38 @@ class ClickUpOutput {
   message string
 }
 
+/// Task-read ClickUp actions.
+enum ClickUpTasksAction {
+  ListTasks
+  GetTask
+}
+
+/// Input for grouped task-read tool `support/clickupTasks`.
+class ClickUpTasksInput {
+  tasks_action ClickUpTasksAction
+  list_id string? @description("Required for ListTasks.")
+  task_id string? @description("Required for GetTask.")
+}
+
+/// Task-mutation ClickUp actions.
+enum ClickUpMutateAction {
+  CreateTask
+  UpdateTask
+}
+
+/// Input for grouped task-mutation tool `support/clickupMutate`.
+class ClickUpMutateInput {
+  mutate_action ClickUpMutateAction
+  list_id string? @description("Required for CreateTask.")
+  task_id string? @description("Required for UpdateTask.")
+  name string? @description("Required for CreateTask.")
+  description string?
+  priority int? @description("ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")
+  status string? @description("Task status string. Used by UpdateTask.")
+}
+
+type SupportClickupSessionSendInput = ClickUpNavigateInput | ClickUpTasksInput | ClickUpMutateInput
+
 class SupportClickupOpenStep {
   op "Open"
   reason string? @description("Optional explanation for this step.")
@@ -89,7 +106,7 @@ class SupportClickupOpenStep {
 
 class SupportClickupSendStep {
   op "Send"
-  input ClickUpInput @description("Input to send to the already-open session.")
+  input SupportClickupSessionSendInput @description("Input to send to the already-open session.")
   reason string? @description("Optional explanation for this step.")
 }
 
@@ -111,5 +128,6 @@ class SupportClickupAbortStep {
 type SupportClickupSessionStep = SupportClickupOpenStep | SupportClickupSendStep | SupportClickupNextStep | SupportClickupFinishStep | SupportClickupAbortStep
 
 class SupportClickupSessionPlan {
-  steps SupportClickupSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (with optional initial_input), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example valid plan: [{op: 'Open', initial_input: {...}}, {op: 'Next'}, {op: 'Finish'}]. Tool identity is inferred from the input schema (no tool_name field).")
+  steps SupportClickupSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{op: 'Open'}, {op: 'Send', input: {...}}, {op: 'Next'}, {op: 'Finish'}].")
 }
+

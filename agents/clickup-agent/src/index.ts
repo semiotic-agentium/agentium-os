@@ -1,12 +1,10 @@
 /// <reference path="./baml-runtime.d.ts" />
 
-import type { ChatMessage, ChatStreamChunk, Task } from "./a2a";
-
 declare function ChooseClickUpAction(
   args?: Record<string, unknown>
 ): Promise<unknown>;
 
-const MAX_REACT_STEPS = 8;
+const MAX_REACT_STEPS = 10;
 const MAX_FINGERPRINT_CHARS = 6000;
 const MAX_CONSECUTIVE_REPEATS = 2;
 
@@ -35,16 +33,6 @@ function extractText(message: ChatMessage | null | undefined): string {
     return (first as { text: string }).text;
   }
   return "unknown";
-}
-
-function newMessage(text: string): { parts: { text: string }[] } {
-  return { parts: [{ text }] };
-}
-
-function newTask(message?: { parts: { text: string }[] }): Task {
-  return {
-    status: { state: "TASK_STATE_WORKING", message },
-  };
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -97,70 +85,61 @@ function formatOutput(output: ClickUpOutput): string {
 async function onChatMessage(
   message: ChatMessage
 ): Promise<void> {
-  const text = extractText(message);
-  let prevFingerprint: string | null = null;
-  let consecutiveRepeats = 0;
-  let lastToolOutput: ClickUpOutput | null = null;
+  const s = session(message);
+  await s.run(async () => {
+    const text = extractText(message);
+    let prevFingerprint: string | null = null;
+    let consecutiveRepeats = 0;
+    let lastToolOutput: ClickUpOutput | null = null;
 
-  try {
-    for (let step = 1; step <= MAX_REACT_STEPS; step++) {
-      const result: unknown = await ChooseClickUpAction({
-        user_message: text,
-      });
+    try {
+      for (let step = 1; step <= MAX_REACT_STEPS; step++) {
+        const result: unknown = await ChooseClickUpAction({
+          user_message: text,
+        });
 
-      if (isFinalResponse(result)) {
-        const msg = result.message;
-        __baml_chat_yield({ message: newMessage(msg), task: newTask(newMessage(msg)) });
-        return;
-      }
-
-      if (isToolOutput(result)) {
-        lastToolOutput = result;
-        const fp = fingerprint(result);
-        if (fp === prevFingerprint) {
-          consecutiveRepeats += 1;
-        } else {
-          consecutiveRepeats = 0;
-          prevFingerprint = fp;
+        if (isFinalResponse(result)) {
+          return { message: result.message };
         }
 
-        if (consecutiveRepeats >= MAX_CONSECUTIVE_REPEATS) {
-          const msg = formatOutput(result);
-          __baml_chat_yield({ message: newMessage(msg), task: newTask(newMessage(msg)) });
-          return;
+        if (isToolOutput(result)) {
+          lastToolOutput = result;
+          const fp = fingerprint(result);
+          if (fp === prevFingerprint) {
+            consecutiveRepeats += 1;
+          } else {
+            consecutiveRepeats = 0;
+            prevFingerprint = fp;
+          }
+
+          if (consecutiveRepeats >= MAX_CONSECUTIVE_REPEATS) {
+            return { message: formatOutput(result) };
+          }
+          continue;
         }
-        continue;
+
+        if (isObject(result) && typeof result.message === "string") {
+          return { message: result.message };
+        }
+
+        return { message: "ClickUp planner returned an unexpected response shape." };
       }
 
-      if (isObject(result) && typeof result.message === "string") {
-        const msg = result.message;
-        __baml_chat_yield({ message: newMessage(msg), task: newTask(newMessage(msg)) });
-        return;
+      if (lastToolOutput) {
+        return { message: formatOutput(lastToolOutput) };
       }
 
-      __baml_chat_yield({
-        message: newMessage("ClickUp planner returned an unexpected response shape."),
-        task: newTask(),
-      });
-      return;
+      return {
+        message: `Unable to complete the request within ${MAX_REACT_STEPS} planning steps.`,
+      };
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      if (lastToolOutput) {
+        return { message: formatOutput(lastToolOutput) };
+      }
+      return { error: `Error: ${errMsg}` };
     }
-
-    if (lastToolOutput) {
-      const msg = `${formatOutput(lastToolOutput)}\n\nStopped after ${MAX_REACT_STEPS} planning steps.`;
-      __baml_chat_yield({ message: newMessage(msg), task: newTask(newMessage(msg)) });
-      return;
-    }
-
-    __baml_chat_yield({
-      message: newMessage(
-        `Unable to complete the request within ${MAX_REACT_STEPS} planning steps.`
-      ),
-      task: newTask(),
-    });
-  } catch (e) {
-    const errMsg = e instanceof Error ? e.message : String(e);
-    __baml_chat_yield({ message: newMessage(`Error: ${errMsg}`), task: newTask() });
-  }
+  });
 }
 
 __chat_register({ onChatMessage });

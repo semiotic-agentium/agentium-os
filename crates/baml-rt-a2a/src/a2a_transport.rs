@@ -198,6 +198,7 @@ impl A2aAgent {
             baml_decl: None,
             extra_ts_decls: Vec::new(),
             access: None,
+            session_plan_group: None,
             tags: Vec::new(),
             secret_requirements: Vec::new(),
             origin: baml_rt_tools::ToolOrigin::Guest,
@@ -837,6 +838,12 @@ impl A2aAgent {
                         break;
                     }
                     a2a::A2aOutcome::Stream(stream_result) => {
+                        tracing::info!(
+                            session_key = %session_key,
+                            completion = ?stream_result.completion,
+                            chunk_count = stream_result.chunks.len(),
+                            "live stream turn completed"
+                        );
                         let responses = self
                             .response_formatter
                             .format_stream(request_id, &stream_result);
