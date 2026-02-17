@@ -399,21 +399,13 @@ impl AgentRunner {
         })?;
         let scope = InvocationScope::synthetic_message(booted.agent.agent_id().clone());
         let agent = booted.agent.clone();
-        tokio::task::spawn_blocking(move || {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| BamlRtError::InvalidArgument(e.to_string()))?;
-            let local = tokio::task::LocalSet::new();
-            rt.block_on(local.run_until(async move {
-                context::with_scope(scope.as_scope().clone(), async move {
-                    agent.handle_a2a_stream(request).await
-                })
-                .await
-            }))
+        // NOTE: SSE streams must stay on the host runtime. A short-lived runtime
+        // would drop spawned tasks inside the stream handler, resulting in only
+        // keep-alives on the client.
+        context::with_scope(scope.as_scope().clone(), async move {
+            agent.handle_a2a_stream(request).await
         })
         .await
-        .map_err(|e| BamlRtError::InvalidArgument(e.to_string()))?
     }
 
     /// Run the A2A JSON-RPC loop over the given reader/writer (one JSON-RPC request per line).
