@@ -18,7 +18,7 @@ use baml_rt_core::bus::{EffectEmitter, ToolEffectMetadata};
 use baml_rt_core::context;
 use baml_rt_core::correlation::current_correlation_id;
 use baml_rt_core::types::FunctionSignature;
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, Outcome, Result};
 use baml_rt_interceptor::{InterceptorRegistry, ToolCallContext};
 use baml_rt_observability::metrics;
 use baml_rt_tools::{
@@ -198,8 +198,9 @@ impl ToolExecutionHandle {
                 && let Some(emitter) = self.effect_emitter.as_ref()
             {
                 let duration_ms = start.elapsed().as_millis() as u64;
-                if let Err(complete_err) =
-                    token.complete(emitter.as_ref(), duration_ms, false).await
+                if let Err(complete_err) = token
+                    .complete(emitter.as_ref(), duration_ms, Outcome::Failure)
+                    .await
                 {
                     tracing::warn!(
                         error = ?complete_err,
@@ -224,12 +225,12 @@ impl ToolExecutionHandle {
         // Calculate duration
         let duration = start.elapsed();
         let duration_ms = duration.as_millis() as u64;
-        let success = result.is_ok();
+        let outcome = Outcome::from(result.is_ok());
 
         // Complete effect using token (type-safe: token consumed, cannot double-complete)
         if let Some(token) = effect_token
             && let Some(emitter) = self.effect_emitter.as_ref()
-            && let Err(e) = token.complete(emitter.as_ref(), duration_ms, success).await
+            && let Err(e) = token.complete(emitter.as_ref(), duration_ms, outcome).await
         {
             tracing::warn!(error = ?e, "Failed to complete tool effect");
         }

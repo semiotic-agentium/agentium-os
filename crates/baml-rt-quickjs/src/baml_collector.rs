@@ -8,10 +8,10 @@
 //! This module implements a collector that hooks into BAML's execution lifecycle
 //! to intercept LLM calls and route them through our interceptor system.
 
-use baml_rt_core::Result;
 use baml_rt_core::bus::{EffectEmitter, EffectStartToken, LlmKind};
 use baml_rt_core::context;
 use baml_rt_core::ids::ContextId;
+use baml_rt_core::{Outcome, Result};
 use baml_rt_interceptor::{InterceptorRegistry, LLMCallContext};
 use baml_runtime::tracingv2::storage::storage::Collector;
 use serde_json::json;
@@ -72,7 +72,7 @@ impl BamlLLMCollector {
     /// Complete all pending LLM effects using our token(s), clock, and outcome.
     /// Does not read BAML trace. Call this after call_function returns (success or failure).
     /// Trace is still used separately for provenance and interceptor notification.
-    pub async fn complete_pending_effects(&self, success: bool, duration_ms: u64) {
+    pub async fn complete_pending_effects(&self, outcome: Outcome, duration_ms: u64) {
         let emitter = match self.effect_emitter.as_ref() {
             Some(e) => e.clone(),
             None => return,
@@ -83,7 +83,7 @@ impl BamlLLMCollector {
         };
         for token in tokens {
             if let Err(e) = token
-                .complete(emitter.as_ref(), None, duration_ms, success)
+                .complete(emitter.as_ref(), None, duration_ms, outcome)
                 .await
             {
                 tracing::warn!(error = ?e, "Failed to complete LLM effect");

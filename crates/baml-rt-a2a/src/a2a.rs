@@ -6,6 +6,7 @@ use crate::a2a_types::{
     A2aMessageId, JSONRPCError, JSONRPCErrorResponse, JSONRPCId, JSONRPCRequest,
     JSONRPCSuccessResponse, ListTasksRequest, Message, ROLE_AGENT, SendMessageRequest, Task,
 };
+use baml_rt_core::InvocationKind;
 use baml_rt_core::context;
 use baml_rt_core::context::InvocationScope;
 use baml_rt_core::ids::{ContextId, DerivedId, ExternalId, MessageId, TaskId};
@@ -59,7 +60,7 @@ pub struct A2aRequest {
     pub id: Option<JSONRPCId>,
     pub method: A2aMethod,
     pub params: Value,
-    pub is_stream: bool,
+    pub invocation: InvocationKind,
     pub context_id: Option<ContextId>,
     pub message_id: Option<MessageId>,
     pub task_id: Option<TaskId>,
@@ -81,7 +82,7 @@ impl A2aRequest {
         let mut context_id = None;
         let mut message_id = None;
         let mut task_id = None;
-        let is_stream = match method {
+        let invocation = match method {
             A2aMethod::MessageSendStream => {
                 let mut params: SendMessageRequest =
                     serde_json::from_value(params_value.clone()).map_err(BamlRtError::Json)?;
@@ -93,7 +94,7 @@ impl A2aRequest {
                 task_id = params.message.task_id.clone();
                 params_value = to_json_value(&params)?;
                 params_value = augment_message_params(params_value, &params.message);
-                true
+                InvocationKind::Stream
             }
             A2aMethod::TasksGet | A2aMethod::TasksList | A2aMethod::TasksSubscribe => {
                 if method == A2aMethod::TasksGet
@@ -112,11 +113,12 @@ impl A2aRequest {
                 {
                     context_id = params.context_id;
                 }
-                params_value
+                let stream_flag = params_value
                     .get("stream")
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
-                    && method == A2aMethod::TasksSubscribe
+                    && method == A2aMethod::TasksSubscribe;
+                InvocationKind::from(stream_flag)
             }
         };
 
@@ -130,7 +132,7 @@ impl A2aRequest {
             id,
             method,
             params: params_value,
-            is_stream,
+            invocation,
             context_id,
             message_id,
             task_id,
@@ -139,6 +141,10 @@ impl A2aRequest {
 
     pub fn correlation_id(&self) -> Option<String> {
         self.id.as_ref().map(id_to_string)
+    }
+
+    pub fn is_stream(&self) -> bool {
+        self.invocation.is_stream()
     }
 }
 

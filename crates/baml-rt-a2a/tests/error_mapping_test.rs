@@ -1,12 +1,12 @@
 //! Tests for A2A error mapping. I4: every mapped error includes retryable and classifier.
 
 use baml_rt_a2a::error_mapping;
-use baml_rt_core::BamlRtError;
+use baml_rt_core::{BamlRtError, Retryability};
 
 fn assert_retryable_classifier(
     error: &BamlRtError,
     expected_classifier: &str,
-    expected_retryable: bool,
+    expected_retryable: Retryability,
 ) {
     let m = error_mapping::map_error(error);
     assert_eq!(m.classifier, expected_classifier, "classifier");
@@ -19,28 +19,28 @@ fn assert_retryable_classifier(
     );
     assert_eq!(
         data.get("retryable").and_then(|v| v.as_bool()),
-        Some(expected_retryable),
+        Some(expected_retryable.is_retryable()),
         "data.retryable"
     );
 }
 
 #[test]
 fn error_mapping_table_driven() {
-    let cases: &[(BamlRtError, &str, bool)] = &[
+    let cases: &[(BamlRtError, &str, Retryability)] = &[
         (
             BamlRtError::InvalidArgument("bad param".into()),
             "invalid_argument",
-            false,
+            Retryability::Permanent,
         ),
         (
             BamlRtError::FunctionNotFound("foo".into()),
             "function_not_found",
-            false,
+            Retryability::Permanent,
         ),
         (
             BamlRtError::ToolExecution("timeout".into()),
             "tool_execution",
-            true,
+            Retryability::Retryable,
         ),
         (
             BamlRtError::ProvenanceContextRead {
@@ -50,18 +50,22 @@ fn error_mapping_table_driven() {
                 )),
             },
             "provenance",
-            true,
+            Retryability::Retryable,
         ),
-        (BamlRtError::QuickJs("script error".into()), "quickjs", true),
+        (
+            BamlRtError::QuickJs("script error".into()),
+            "quickjs",
+            Retryability::Retryable,
+        ),
         (
             BamlRtError::Configuration("missing key".into()),
             "configuration",
-            false,
+            Retryability::Permanent,
         ),
         (
             BamlRtError::ToolRegistration("duplicate".into()),
             "tool_registration",
-            false,
+            Retryability::Permanent,
         ),
     ];
 

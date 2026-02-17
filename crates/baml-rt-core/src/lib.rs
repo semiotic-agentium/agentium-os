@@ -9,6 +9,7 @@ pub mod error;
 pub mod ids;
 pub mod json;
 pub mod package;
+pub mod semantics;
 pub mod stream_completion;
 pub mod types;
 
@@ -28,4 +29,5 @@ pub use error::{BamlRtError, Result};
 pub use ids::{AgentId, ArtifactId, ContextId, CorrelationId, EventId, MessageId, TaskId};
 pub use json::to_json_value;
 pub use package::AgentManifest;
+pub use semantics::{InvocationKind, Outcome, Retryability};
 pub use stream_completion::{StreamCompletion, StreamResult};

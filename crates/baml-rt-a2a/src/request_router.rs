@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use baml_rt_core::bus::{A2aEffectMetadata, A2aLivenessRole, EffectEmitter, EffectEvent};
 use baml_rt_core::context::InvocationScope;
 use baml_rt_core::ids::AgentId;
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, Outcome, Result};
 use baml_rt_observability::{metrics, spans};
 use baml_rt_quickjs::QuickJSBridge;
 use baml_rt_quickjs::begin_a2a_yield_session;
@@ -151,7 +151,7 @@ impl RequestRouter for MethodBasedRouter {
                 let req =
                     serde_json::from_value(request.params.clone()).map_err(BamlRtError::Json)?;
                 self.task_handler
-                    .handle_subscribe(req, request.is_stream)
+                    .handle_subscribe(req, request.invocation)
                     .await
             }
             _ => {
@@ -210,10 +210,10 @@ impl RequestRouter for MethodBasedRouter {
 
                 // Compute result so we always emit A2aCompleted on every exit (success or failure)
                 let result = async {
-                    let js_span = spans::a2a_js_invoke(request.method.as_str(), request.is_stream);
+                    let js_span = spans::a2a_js_invoke(request.method.as_str(), request.invocation);
                     let _js_guard = js_span.enter();
                     let mut normalizer = a2a::JsChunkNormalizer::new(scope);
-                    if request.is_stream {
+                    if request.is_stream() {
                         let stream_result = self.js_invoker.invoke_stream(request, scope).await?;
                         let mut normalized_chunks = Vec::with_capacity(stream_result.chunks.len());
                         for chunk in stream_result.chunks {
@@ -236,13 +236,17 @@ impl RequestRouter for MethodBasedRouter {
 
                 let duration = start.elapsed();
                 let duration_ms = duration.as_millis() as u64;
-                let success = result.is_ok();
-                let mode = if request.is_stream {
+                let outcome = Outcome::from(result.is_ok());
+                let mode = if request.is_stream() {
                     "stream"
                 } else {
                     "non_stream"
                 };
-                let result_str = if success { "success" } else { "error" };
+                let result_str = if outcome.is_success() {
+                    "success"
+                } else {
+                    "error"
+                };
                 metrics::record_quickjs_invoke(mode, result_str, duration);
                 if let Err(e) = self
                     .effect_emitter
@@ -250,7 +254,7 @@ impl RequestRouter for MethodBasedRouter {
                         context_id: context_id.clone(),
                         metadata: effect_metadata,
                         duration_ms,
-                        success,
+                        outcome,
                     })
                     .await
                 {
@@ -268,6 +272,7 @@ mod tests {
     use super::*;
     use crate::a2a_types::{GetTaskRequest, ListTasksRequest, SubscribeToTaskRequest};
     use async_trait::async_trait;
+    use baml_rt_core::InvocationKind;
     use baml_rt_core::bus::BusWithEffects;
     use baml_rt_core::stream_completion::{StreamCompletion, StreamResult};
     use serde_json::json;
@@ -310,7 +315,7 @@ mod tests {
         async fn handle_subscribe(
             &self,
             _req: SubscribeToTaskRequest,
-            _is_stream: bool,
+            _invocation: InvocationKind,
         ) -> Result<a2a::A2aOutcome> {
             Err(BamlRtError::InvalidArgument("mock".to_string()))
         }
@@ -354,7 +359,7 @@ mod tests {
             "id": "req-1"
         });
         let request = a2a::A2aRequest::from_value(request_value).unwrap();
-        assert!(request.is_stream);
+        assert!(request.is_stream());
 
         let scope = InvocationScope::synthetic_message(agent_id.clone());
         let outcome = router.route(&request, &scope).await.unwrap();

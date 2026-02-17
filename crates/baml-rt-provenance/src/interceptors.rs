@@ -3,7 +3,7 @@ use crate::store::ProvenanceWriter;
 use async_trait::async_trait;
 use baml_rt_core::context::RuntimeScope;
 use baml_rt_core::ids::MessageId;
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, Outcome, Result};
 use baml_rt_interceptor::{
     InterceptorDecision, LLMCallContext, LLMInterceptor, ToolCallContext, ToolInterceptor,
 };
@@ -73,7 +73,7 @@ impl LLMInterceptor for ProvenanceInterceptor {
         result: &Result<Value>,
         duration_ms: u64,
     ) {
-        let success = result.is_ok();
+        let outcome = Outcome::from(result.is_ok());
         let task_id = context.runtime_scope.task_id_opt().cloned();
         let metadata = metadata_with_runtime_scope(&context.metadata, &context.runtime_scope);
         let prompt = normalized_prompt(&context.prompt);
@@ -93,7 +93,7 @@ impl LLMInterceptor for ProvenanceInterceptor {
                 metadata.clone(),
                 crate::events::LlmUsage::Unknown,
                 duration_ms,
-                success,
+                outcome,
             )
         } else {
             let message_id = match message_id {
@@ -113,7 +113,7 @@ impl LLMInterceptor for ProvenanceInterceptor {
                 metadata.clone(),
                 crate::events::LlmUsage::Unknown,
                 duration_ms,
-                success,
+                outcome,
             )
         };
         self.writer
@@ -173,7 +173,7 @@ impl ToolInterceptor for ProvenanceInterceptor {
         result: &Result<Value>,
         duration_ms: u64,
     ) {
-        let success = result.is_ok();
+        let outcome = Outcome::from(result.is_ok());
         let task_id = context.runtime_scope.task_id_opt().cloned();
         let metadata = metadata_with_tool_result(&context.metadata, &context.runtime_scope, result);
         let message_id = message_id_from_scope(&context.runtime_scope);
@@ -190,7 +190,7 @@ impl ToolInterceptor for ProvenanceInterceptor {
                 context.args.clone(),
                 metadata.clone(),
                 duration_ms,
-                success,
+                outcome,
             )
         } else {
             let message_id = match message_id {
@@ -208,7 +208,7 @@ impl ToolInterceptor for ProvenanceInterceptor {
                 context.args.clone(),
                 metadata.clone(),
                 duration_ms,
-                success,
+                outcome,
             )
         };
 

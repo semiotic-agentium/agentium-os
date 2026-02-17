@@ -766,7 +766,7 @@ impl A2aRequestHandler for A2aAgent {
     async fn handle_a2a_stream(&self, request: Value) -> Result<BusStream<Value>> {
         if let Ok(parsed) = a2a::A2aRequest::from_value(request.clone())
             && parsed.method == a2a::A2aMethod::MessageSendStream
-            && parsed.is_stream
+            && parsed.is_stream()
         {
             return self.handle_live_message_stream(request, parsed).await;
         }
@@ -986,7 +986,7 @@ impl A2aAgent {
             )
         };
 
-        let span = if parsed_request.is_stream {
+        let span = if parsed_request.is_stream() {
             spans::a2a_stream(
                 Some(&scope),
                 parsed_request.method.as_str(),
@@ -1002,7 +1002,7 @@ impl A2aAgent {
         let _guard = span.enter();
         let start = std::time::Instant::now();
         let method = parsed_request.method;
-        let is_stream = parsed_request.is_stream;
+        let invocation = parsed_request.invocation;
 
         let outcome = correlation::with_correlation_id(correlation_id, async move {
             let invocation_scope = InvocationScope::new(scope.clone());
@@ -1029,17 +1029,17 @@ impl A2aAgent {
         let duration = start.elapsed();
         match &outcome {
             Ok(a2a::A2aOutcome::Stream(stream_result)) => {
-                metrics::record_a2a_request(method.as_str(), "success", is_stream, duration);
+                metrics::record_a2a_request(method.as_str(), "success", invocation, duration);
                 metrics::record_a2a_stream_chunks(method.as_str(), stream_result.chunks.len());
             }
-            Ok(_) => metrics::record_a2a_request(method.as_str(), "success", is_stream, duration),
+            Ok(_) => metrics::record_a2a_request(method.as_str(), "success", invocation, duration),
             Err(err) => {
                 tracing::warn!(error = %err, "handle_a2a: routing error");
-                metrics::record_a2a_request(method.as_str(), "error", is_stream, duration);
+                metrics::record_a2a_request(method.as_str(), "error", invocation, duration);
                 metrics::record_a2a_error(
                     method.as_str(),
                     self.error_classifier.classify(err),
-                    is_stream,
+                    invocation,
                 );
             }
         }

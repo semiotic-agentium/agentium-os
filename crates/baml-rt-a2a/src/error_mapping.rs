@@ -2,7 +2,7 @@
 //! Single source of truth for both response formatting and error classification.
 //! I4: every mapped error includes retryable (transient vs permanent) and classifier.
 
-use baml_rt_core::BamlRtError;
+use baml_rt_core::{BamlRtError, Retryability};
 use serde_json::Value;
 
 /// Result of mapping a BamlRtError to A2A error representation.
@@ -12,14 +12,14 @@ pub struct A2aErrorMapping {
     pub data: Option<Value>,
     pub classifier: &'static str,
     /// I4: machine-readable retryability for clients (transient vs permanent).
-    pub retryable: bool,
+    pub retryable: Retryability,
 }
 
 fn data_with_retryability(
     error: &BamlRtError,
     base_data: Option<Value>,
     classifier: &'static str,
-    retryable: bool,
+    retryable: Retryability,
 ) -> Option<Value> {
     let mut map = match base_data {
         Some(Value::Object(m)) => m,
@@ -31,7 +31,10 @@ fn data_with_retryability(
         "classifier".to_string(),
         Value::String(classifier.to_string()),
     );
-    map.insert("retryable".to_string(), Value::Bool(retryable));
+    map.insert(
+        "retryable".to_string(),
+        Value::Bool(retryable.is_retryable()),
+    );
     Some(Value::Object(map))
 }
 
@@ -41,7 +44,7 @@ fn mapping(
     message: &'static str,
     data: Option<Value>,
     classifier: &'static str,
-    retryable: bool,
+    retryable: Retryability,
 ) -> A2aErrorMapping {
     A2aErrorMapping {
         code,
@@ -61,7 +64,7 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "Invalid request",
             Some(serde_json::json!({ "details": message })),
             "invalid_argument",
-            false,
+            Retryability::Permanent,
         ),
         BamlRtError::InvalidArgumentWithSource { .. } => mapping(
             error,
@@ -69,7 +72,7 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "Invalid request",
             None,
             "invalid_argument",
-            false,
+            Retryability::Permanent,
         ),
         BamlRtError::FunctionNotFound(name) => mapping(
             error,
@@ -77,7 +80,7 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "Method not found",
             Some(serde_json::json!({ "function": name })),
             "function_not_found",
-            false,
+            Retryability::Permanent,
         ),
         BamlRtError::Json(json_err) => mapping(
             error,
@@ -85,39 +88,63 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "Parse error",
             Some(serde_json::json!({ "details": json_err.to_string() })),
             "json",
-            false,
+            Retryability::Permanent,
         ),
-        BamlRtError::JsonWithRaw { .. } => {
-            mapping(error, -32700, "Parse error", None, "json", false)
-        }
+        BamlRtError::JsonWithRaw { .. } => mapping(
+            error,
+            -32700,
+            "Parse error",
+            None,
+            "json",
+            Retryability::Permanent,
+        ),
         BamlRtError::QuickJsWithSource { context, .. } => mapping(
             error,
             -32603,
             "Internal error",
             Some(serde_json::json!({ "context": context })),
             "quickjs",
-            true,
+            Retryability::Retryable,
         ),
-        BamlRtError::QuickJs(_) => mapping(error, -32603, "Internal error", None, "quickjs", true),
+        BamlRtError::QuickJs(_) => mapping(
+            error,
+            -32603,
+            "Internal error",
+            None,
+            "quickjs",
+            Retryability::Retryable,
+        ),
         BamlRtError::ToolExecution(_) => mapping(
             error,
             -32603,
             "Internal error",
             None,
             "tool_execution",
-            true,
+            Retryability::Retryable,
         ),
-        BamlRtError::ProvenanceContextRead { .. } => {
-            mapping(error, -32603, "Internal error", None, "provenance", true)
-        }
-        BamlRtError::Io(_) => mapping(error, -32603, "Internal error", None, "io", true),
+        BamlRtError::ProvenanceContextRead { .. } => mapping(
+            error,
+            -32603,
+            "Internal error",
+            None,
+            "provenance",
+            Retryability::Retryable,
+        ),
+        BamlRtError::Io(_) => mapping(
+            error,
+            -32603,
+            "Internal error",
+            None,
+            "io",
+            Retryability::Retryable,
+        ),
         BamlRtError::ExecutionFailed { .. } => mapping(
             error,
             -32603,
             "Internal error",
             None,
             "execution_failed",
-            true,
+            Retryability::Retryable,
         ),
         BamlRtError::RequestBuildFailed(_) => mapping(
             error,
@@ -125,7 +152,7 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "Internal error",
             None,
             "request_build_failed",
-            true,
+            Retryability::Retryable,
         ),
         BamlRtError::InvalidOpenInput { .. } => mapping(
             error,
@@ -133,7 +160,7 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "Invalid request",
             None,
             "invalid_open_input",
-            false,
+            Retryability::Permanent,
         ),
         BamlRtError::ToolRegistration(_) => mapping(
             error,
@@ -141,7 +168,7 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "Internal error",
             None,
             "tool_registration",
-            false,
+            Retryability::Permanent,
         ),
         BamlRtError::SchemaLoading(_) => mapping(
             error,
@@ -149,7 +176,7 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "Internal error",
             None,
             "schema_loading",
-            false,
+            Retryability::Permanent,
         ),
         BamlRtError::Configuration(_) => mapping(
             error,
@@ -157,7 +184,7 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "Internal error",
             None,
             "configuration",
-            false,
+            Retryability::Permanent,
         ),
         BamlRtError::Initialization(_) => mapping(
             error,
@@ -165,7 +192,7 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "Internal error",
             None,
             "initialization",
-            false,
+            Retryability::Permanent,
         ),
         BamlRtError::RuntimeLoadFailed { .. } => mapping(
             error,
@@ -173,15 +200,25 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "Internal error",
             None,
             "runtime_load_failed",
-            true,
+            Retryability::Retryable,
         ),
-        BamlRtError::BamlRuntime(_) | BamlRtError::TypeConversion(_) => {
-            mapping(error, -32603, "Internal error", None, "internal", false)
-        }
+        BamlRtError::BamlRuntime(_) | BamlRtError::TypeConversion(_) => mapping(
+            error,
+            -32603,
+            "Internal error",
+            None,
+            "internal",
+            Retryability::Permanent,
+        ),
         BamlRtError::ParsedResultFailed { .. }
         | BamlRtError::SystemTime(_)
-        | BamlRtError::TarHeaderPath(_) => {
-            mapping(error, -32603, "Internal error", None, "internal", true)
-        }
+        | BamlRtError::TarHeaderPath(_) => mapping(
+            error,
+            -32603,
+            "Internal error",
+            None,
+            "internal",
+            Retryability::Retryable,
+        ),
     }
 }

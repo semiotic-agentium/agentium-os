@@ -137,7 +137,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 context_id,
                 metadata,
                 duration_ms,
-                success,
+                outcome,
             } => {
                 match build_prov_event_completion(
                     context_id,
@@ -152,7 +152,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             metadata.args.clone(),
                             metadata.metadata.clone(),
                             *duration_ms,
-                            *success,
+                            *outcome,
                         )
                     },
                     |ctx_id, msg_id| {
@@ -164,7 +164,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             metadata.args.clone(),
                             metadata.metadata.clone(),
                             *duration_ms,
-                            *success,
+                            *outcome,
                         )
                     },
                 ) {
@@ -210,7 +210,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 metadata,
                 usage,
                 duration_ms,
-                success,
+                outcome,
             } => {
                 let prov_usage = match usage {
                     Some(baml_rt_core::bus::LlmUsage::Known {
@@ -241,7 +241,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             metadata.metadata.clone(),
                             prov_usage.clone(),
                             *duration_ms,
-                            *success,
+                            *outcome,
                         )
                     },
                     |ctx_id, msg_id| {
@@ -255,7 +255,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             metadata.metadata.clone(),
                             prov_usage_clone,
                             *duration_ms,
-                            *success,
+                            *outcome,
                         )
                     },
                 ) {
