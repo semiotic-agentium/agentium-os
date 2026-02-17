@@ -127,6 +127,20 @@ pub async fn intercept_llm_call_pre_execution(
     // Extract LLM call context from the HTTP request
     let context = extract_context_from_http_request(scope, &http_request, function_name)?;
 
+    // Investigation: log full prompt body for functions that use ctx.output_format (e.g. CleeseSendToChapman)
+    // when schema corruption (context_id/task_id in schema) is suspected. Enable with RUST_LOG=baml_rt_quickjs=debug
+    if function_name == "CleeseSendToChapman" {
+        let prompt_str = serde_json::to_string_pretty(&context.prompt)
+            .unwrap_or_else(|_| format!("{:?}", context.prompt));
+        tracing::debug!(
+            function_name = %function_name,
+            context_id = %scope.context_id(),
+            task_id_opt = ?scope.task_id_opt(),
+            "LLM prompt body (full request body sent to provider)\n{}",
+            prompt_str
+        );
+    }
+
     // Start effect and get token (type-safe start/complete pairing)
     let effect_metadata = llm_effect_metadata_from_context(&context);
     let context_id = context.runtime_scope.context_id().clone();

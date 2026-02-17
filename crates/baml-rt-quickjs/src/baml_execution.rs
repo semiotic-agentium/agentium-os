@@ -395,15 +395,14 @@ impl BamlExecutor {
     }
 
     /// Create a context manager tied to an explicit runtime scope.
+    /// We pass BamlValue::Null for the "language"
     pub fn create_ctx_manager_for_scope(
         &self,
         scope: &context::RuntimeScope,
         extra_tags: Option<HashMap<String, BamlValue>>,
     ) -> Result<RuntimeContextManager> {
-        let ctx_manager = self.runtime.create_ctx_manager(
-            BamlValue::String(scope.context_id().as_str().to_string()),
-            None,
-        );
+        let _ = scope; // scope used only for extra_tags from conversation context
+        let ctx_manager = self.runtime.create_ctx_manager(BamlValue::Null, None);
 
         if let Some(tags) = extra_tags
             && !tags.is_empty()
