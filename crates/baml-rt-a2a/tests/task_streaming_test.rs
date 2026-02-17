@@ -34,6 +34,7 @@ fn fixture_js_code() -> String {
             __chat_yield({
                 statusUpdate: { status: { state: "TASK_STATE_WORKING" } }
             });
+            __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_COMPLETED" } } });
             return;
         }
         if (text.startsWith("tool-call:")) {
@@ -45,6 +46,7 @@ fn fixture_js_code() -> String {
             } catch (e) {
                 __chat_yield({ message: { parts: [{ text: `tool_error=${String(e)}` }] } });
             }
+            __chat_yield({ final: true });
             return;
         }
         if (text.startsWith("baml-tool:")) {
@@ -56,10 +58,12 @@ fn fixture_js_code() -> String {
             } catch (e) {
                 __chat_yield({ message: { parts: [{ text: `tool_error=${String(e)}` }] } });
             }
+            __chat_yield({ final: true });
             return;
         }
         __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
         __chat_yield({ artifactUpdate: { artifact: { name: "rite-log", parts: [{ text: "sealed" }] } } });
+        __chat_yield({ final: true });
     };
     "#
     .to_string()

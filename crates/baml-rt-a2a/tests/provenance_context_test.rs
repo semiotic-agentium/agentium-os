@@ -20,13 +20,15 @@ async fn collect_responses(
     Ok(baml_rt_core::collect_a2a_stream(agent.handle_a2a_stream(request).await?).await)
 }
 
+/// Minimal agent that yields one chunk and signals completion so the host's collect()
+/// returns immediately (no 60s safety timeout). Uses TASK_STATE_COMPLETED so chunk_has_final_state is true.
 async fn setup_agent(writer: Arc<FalkorDbProvenanceWriter>) -> A2aAgent {
     let js_code = r#"
         globalThis.onChatMessage = async function(message) {
             __chat_yield({
                 task: {
                     metadata: { agent: "test-agent" },
-                    status: { state: "TASK_STATE_WORKING" }
+                    status: { state: "TASK_STATE_COMPLETED" }
                 }
             });
         };
@@ -105,9 +107,11 @@ async fn test_context_id_preserved_per_request() {
             Some(context_id.clone()),
         );
         let responses =
-            tokio::time::timeout(Duration::from_secs(30), collect_responses(&agent, request))
+            tokio::time::timeout(Duration::from_secs(10), collect_responses(&agent, request))
                 .await
-                .expect("request timeout")
+                .expect(
+                    "request timeout (agent must yield TASK_STATE_COMPLETED so collect returns)",
+                )
                 .expect("a2a handle");
         let got = expect_context_id(responses);
         assert_eq!(

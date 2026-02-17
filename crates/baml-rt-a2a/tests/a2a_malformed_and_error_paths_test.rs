@@ -104,7 +104,7 @@ async fn test_malformed_a2a_table_driven() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_concurrency_mixed_success_failure() {
     let agent = build_minimal_a2a_agent(
-        r#"globalThis.onChatMessage = async function() { __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } }); };"#,
+        r#"globalThis.onChatMessage = async function() { __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } }); __chat_yield({ final: true }); };"#,
     )
     .await;
 
@@ -193,6 +193,7 @@ async fn test_streaming_tool_failure_mid_stream() {
                 } catch (e) {
                     __chat_yield({ message: { parts: [{ text: "err: " + String(e) }] } });
                 }
+                __chat_yield({ final: true });
             };
         "#)
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
@@ -251,6 +252,7 @@ async fn test_allowlist_violation_during_stream() {
                 } catch (e) {
                     __chat_yield({ message: { parts: [{ text: "allowlist: " + String(e) }] } });
                 }
+                __chat_yield({ final: true });
             };
         "#,
         )
