@@ -87,7 +87,9 @@ async fn setup_agent() -> A2aAgent {
         .unwrap()
 }
 
-/// Agent with system/a2a tool registered on the given LocalSet (for session FSM tests).
+const SYSTEM_A2A_TOOL: &str = "system/internal_a2a";
+
+/// Agent with system/internal_a2a tool registered on the given LocalSet (for session FSM tests).
 /// Caller must run agent work inside `local_set.run_until(...)` so the session worker is driven.
 async fn setup_agent_with_a2a_session_tool() -> (A2aAgent, tokio::task::LocalSet) {
     let local_set = tokio::task::LocalSet::new();
@@ -298,11 +300,11 @@ async fn test_a2a_session_send_returns_fast_and_next_drains() {
                 let session_id = handle
                     .open_tool_session(
                         &scope_for_open,
-                        "system/a2a",
+                        SYSTEM_A2A_TOOL,
                         json!({ "target": { "agent_package": "self", "agent_instance_id": "default" } }),
                     )
                     .await
-                    .expect("open system/a2a");
+                    .expect("open system/internal_a2a");
                 let send_input = json!({ "text": "ping" });
                 let start = std::time::Instant::now();
                 handle
@@ -368,11 +370,11 @@ async fn test_a2a_session_send_after_finish_fails() {
                 let session_id = handle
                     .open_tool_session(
                         &scope_for_open,
-                        "system/a2a",
+                        SYSTEM_A2A_TOOL,
                         json!({ "target": { "agent_package": "self", "agent_instance_id": "default" } }),
                     )
                     .await
-                    .expect("open system/a2a");
+                    .expect("open system/internal_a2a");
                 let send_input = json!({ "text": "hi" });
                 handle
                     .tool_session_send(&session_id, send_input.clone())
