@@ -54,14 +54,17 @@ function ChooseClickUpAction(
        with a human-readable summary.
        If the user asks to filter the already available tasks (e.g. "which are in progress"),
        return FinalResponse directly from history; do NOT emit any plan.
-    2. Extract IDs from prior tool results in conversation_history. For example, if a prior tool result returned
+    2. OTHERWISE, if the data is NOT yet available in conversation_history, you MUST return a
+       SupportClickupSessionPlan to fetch it. Never return FinalResponse when the required data
+       has not been retrieved yet. Start with ListTeams if no IDs are known.
+    3. Extract IDs from prior tool results in conversation_history. For example, if a prior tool result returned
        team_id "123", use that exact value in the next call.
-    3. Do not repeat the same action with the same IDs if the latest tool result did not change.
-    4. Always provide concrete IDs from prior tool results — never use null for a required ID.
-    5. For create requests (CreateTask): if list_id is missing, do discovery actions first (ListTeams/ListSpaces/ListLists).
-    6. For update requests (UpdateTask): if the latest tool_result already confirms the target task
+    4. Do not repeat the same action with the same IDs if the latest tool result did not change.
+    5. Always provide concrete IDs from prior tool results — never use null for a required ID.
+    6. For create requests (CreateTask): if list_id is missing, do discovery actions first (ListTeams/ListSpaces/ListLists).
+    7. For update requests (UpdateTask): if the latest tool_result already confirms the target task
        is at the requested status, return FinalResponse immediately. Do NOT call UpdateTask again.
-    7. After a successful CreateTask or UpdateTask tool_result appears in conversation_history,
+    8. After a successful CreateTask or UpdateTask tool_result appears in conversation_history,
        your very next decision MUST be FinalResponse summarizing the result.
        Do NOT emit another tool plan unless the user asked for an additional action.
 
