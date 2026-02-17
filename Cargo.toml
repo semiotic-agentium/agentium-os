@@ -1,30 +1,30 @@
 [workspace]
 members = [
-    "crates/baml-agent-runner",
-    "crates/baml-derive-tests",
-    "crates/baml-rt",
-    "crates/baml-rt-a2a",
-    "crates/baml-rt-builder",
-    "crates/baml-rt-core",
-    "crates/baml-rt-id",
-    "crates/baml-rt-interceptor",
-    "crates/baml-rt-observability",
-    "crates/baml-rt-provenance",
-    "crates/baml-rt-quickjs",
-    "crates/baml-rt-tools",
-    "crates/test-support",
-    "crates/tools/internal-dev",
-    "crates/tools/system",
+  "crates/baml-agent-runner",
+  "crates/baml-derive-tests",
+  "crates/baml-rt",
+  "crates/baml-rt-a2a",
+  "crates/baml-rt-builder",
+  "crates/baml-rt-core",
+  "crates/baml-rt-id",
+  "crates/baml-rt-interceptor",
+  "crates/baml-rt-observability",
+  "crates/baml-rt-provenance",
+  "crates/baml-rt-quickjs",
+  "crates/baml-rt-tools",
+  "crates/test-support",
+  "crates/tools/internal-dev",
+  "crates/tools/system",
 ]
 default-members = [
-    "crates/baml-rt-core",
-    "crates/baml-rt-id",
-    "crates/baml-rt-observability",
-    "crates/baml-rt-interceptor",
-    "crates/baml-rt-quickjs",
-    "crates/baml-rt-tools",
-    "crates/baml-rt-a2a",
-    "crates/baml-rt-provenance",
+  "crates/baml-rt-core",
+  "crates/baml-rt-id",
+  "crates/baml-rt-observability",
+  "crates/baml-rt-interceptor",
+  "crates/baml-rt-quickjs",
+  "crates/baml-rt-tools",
+  "crates/baml-rt-a2a",
+  "crates/baml-rt-provenance",
 ]
 resolver = "2"
 
@@ -41,7 +41,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros", "io-std", "io-util", "net"] }
+tokio = { version = "1", features = [
+  "rt",
+  "rt-multi-thread",
+  "sync",
+  "time",
+  "macros",
+  "io-std",
+  "io-util",
+  "net",
+] }
 async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -64,7 +73,10 @@ proc-macro2 = "1"
 # Pinned: h2 0.4.13 / hyper-util 0.1.20 introduce TLS regression with rustls
 # ("decryption failed or bad record mac" connecting to OpenRouter).
 # Bump deliberately after testing; do not use `cargo generate-lockfile`.
-reqwest = { version = "=0.12.26", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "=0.12.26", default-features = false, features = [
+  "json",
+  "rustls-tls",
+] }
 regex = "1"
 async-channel = "2"
 async-stream = "0.3"
@@ -93,7 +105,9 @@ utoipa-axum = "0.2"
 http-api-problem = { version = "0.60", features = ["axum"] }
 tower = { version = "0.5", features = ["util"] }
 # BAML (fork with minimal-runtime; branch for softer semver)
-baml-runtime = { git = "https://github.com/ryan-s-roberts/baml", branch = "canary", default-features = false, features = ["minimal-runtime"] }
+baml-runtime = { git = "https://github.com/ryan-s-roberts/baml", branch = "canary", default-features = false, features = [
+  "minimal-runtime",
+] }
 baml-types = { git = "https://github.com/ryan-s-roberts/baml", branch = "canary" }
 internal-baml-core = { git = "https://github.com/ryan-s-roberts/baml", branch = "canary" }
 
@@ -108,4 +122,4 @@ debug = "line-tables-only"
 
 [profile.test]
 opt-level = 0
-debug = true
+debug = "line-tables-only"
