@@ -3,9 +3,7 @@
 use baml_rt_core::ids::{
     AgentId, ArtifactId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId,
 };
-use baml_rt_provenance::cypher_parse::{
-    decode_embedded_json, parse_graph_snapshot, split_top_level,
-};
+use baml_rt_provenance::cypher_parse::parse_graph_snapshot;
 use baml_rt_provenance::{
     AgentType, CallScope, FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, GlobalEvent,
     LlmUsage, ProvEvent, ProvEventData, ProvenanceContextReader, ProvenanceWriter, TaskScopedEvent,

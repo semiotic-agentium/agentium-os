@@ -40,6 +40,8 @@ class NotionInput {
   page_size int?
   page_id string?
   block_id string?
+  raw_blocks bool?
+  max_depth int?
 }
 
 class NotionPageSummary {
@@ -99,5 +101,5 @@ class SupportNotionAbortStep {
 type SupportNotionSessionStep = SupportNotionOpenStep | SupportNotionSendStep | SupportNotionNextStep | SupportNotionFinishStep | SupportNotionAbortStep
 
 class SupportNotionSessionPlan {
-  steps SupportNotionSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (with optional initial_input), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example valid plan: [{op: 'Open', initial_input: {...}}, {op: 'Next'}, {op: 'Finish'}]. Tool identity is inferred from the input schema (no tool_name field). Access: read.")
+  steps SupportNotionSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{op: 'Open'}, {op: 'Send', input: {...}}, {op: 'Next'}, {op: 'Finish'}]. Access: read.")
 }
