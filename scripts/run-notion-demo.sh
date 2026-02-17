@@ -78,11 +78,10 @@ if ! lsof -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
 fi
 
 DEFAULT_PAGE_ID="303cff78-8181-809b-9e8c-de431eb8c30e"
-PAGE_ID="${NOTION_DEMO_PAGE_ID:-$DEFAULT_PAGE_ID}"
 if [ -n "${NOTION_DEMO_TEXT:-}" ]; then
   TEXT="$NOTION_DEMO_TEXT"
 else
-  TEXT="Summarize this Notion page ${PAGE_ID}. Focus on commitments, conflicts, missing info, and be a little funny."
+  TEXT="Summarize this Notion page ${DEFAULT_PAGE_ID}. Focus on commitments, conflicts, missing info, and be a little funny."
 fi
 
 jq -n --arg text "$TEXT" \
