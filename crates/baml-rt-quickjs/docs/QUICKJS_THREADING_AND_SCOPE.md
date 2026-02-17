@@ -71,7 +71,7 @@ For non-eval host work that must execute on the QuickJS worker thread without bl
 - **Invariant:** caller path returns immediately (no blocking on worker completion).
 - **Liveness:** posted closure eventually executes on the worker thread and must report completion via channel/oneshot if a result is needed.
 
-**Stream + concurrency:** For stream requests we leave the worker-thread scope set (`clear_after: false`) so async promise continuations (e.g. `openToolSession` → `__tool_session_open`) see it; we clear in `get_a2a_yield_buffer`. When **multiple** stream requests run concurrently, each `run_eval_with_scope(..., false)` overwrites the single thread-local. So the last request’s scope wins, and earlier requests’ async continuations can see the wrong scope.
+**Stream + concurrency:** For stream requests we leave the worker-thread scope set (`ClearPolicy::Keep`) so async promise continuations (e.g. `openToolSession` → `__tool_session_open`) see it; we clear in `get_a2a_yield_buffer`. When **multiple** stream requests run concurrently, each `run_eval_with_scope(..., ClearPolicy::Keep)` overwrites the single thread-local. So the last request’s scope wins, and earlier requests’ async continuations can see the wrong scope.
 To support **concurrent streams without per-request runtimes**, **do not rely on the global token**. Use explicit token passing in JS (e.g. `openToolSession(toolName, invocationToken)`), and keep authoritative scope resolution on the host via the token → scope map. This avoids global token collisions and removes reliance on the worker-thread scope for attribution.
 
 ---

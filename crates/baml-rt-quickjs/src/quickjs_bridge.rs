@@ -1213,13 +1213,13 @@ impl QuickJSBridge {
     ///
     /// Scope lookup for native callbacks is token-authoritative; this helper keeps API shape
     /// stable while delegating to runtime eval.
-    pub async fn run_eval_with_scope(
+    pub(crate) async fn run_eval_with_scope(
         &self,
         scope: &InvocationScope,
         script: Script,
-        clear_after: bool,
+        clear_policy: scope::ClearPolicy,
     ) -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-        scope::run_eval_with_scope(&self.runtime, scope, script, clear_after).await
+        scope::run_eval_with_scope(&self.runtime, scope, script, clear_policy).await
     }
 
     /// Post a closure to the QuickJS event-loop worker thread and return immediately.
@@ -1338,7 +1338,7 @@ return __sync_json;
         let direct_script = Script::new("eval_direct.js", &direct_code);
         let js_result = match scope {
             Some(s) => {
-                self.run_eval_with_scope(s, direct_script.clone(), false)
+                self.run_eval_with_scope(s, direct_script.clone(), scope::ClearPolicy::Clear)
                     .await
             }
             None => self.runtime.eval(None, direct_script).await,

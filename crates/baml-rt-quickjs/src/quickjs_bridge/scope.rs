@@ -125,6 +125,12 @@ pub(crate) fn next_invocation_token() -> InvocationToken {
     InvocationToken(format!("inv-{}", n))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClearPolicy {
+    Clear,
+    Keep,
+}
+
 /// Resolve invocation scope from the host's active context stack.
 pub(crate) fn resolve_scope_from_active_context(
     registry: &Arc<StdMutex<InvocationContextRegistry>>,
@@ -175,10 +181,10 @@ pub(crate) async fn run_eval_with_scope(
     runtime: &quickjs_runtime::facades::QuickJsRuntimeFacade,
     scope: &baml_rt_core::context::InvocationScope,
     script: quickjs_runtime::jsutils::Script,
-    clear_after: bool,
+    clear_policy: ClearPolicy,
 ) -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
     let _ = scope;
-    let _ = clear_after;
+    let _ = clear_policy;
     runtime.eval(None, script).await
 }
 
