@@ -1242,15 +1242,18 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
             .expect("system clock")
             .as_millis()
     );
-    eprintln!("conversational-context-auto: setup start");
+    eprintln!(
+        "conversational-context-auto: setup start (connection from shared_falkordb, use FALKORDB_CONNECTION when set)"
+    );
     // Setup includes build_fixture_to_temp_async (baml-agent-builder package: OXC + BAML + tar).
-    // Cold cache or CI contention can exceed 180s; use 300s so this E2E does not flake.
+    // When FALKORDB_CONNECTION is set (CI ambient container), shared_falkordb() returns immediately.
+    // Cold cache or CI contention can exceed 300s; use 600s so this E2E does not flake.
     let (agent, provenance_reader) = timeout(
-        Duration::from_secs(300),
+        Duration::from_secs(600),
         setup_conversational_context_auto_agent(connection.to_owned(), graph),
     )
     .await
-    .expect("agent setup timed out");
+    .expect("agent setup timed out (ensure FALKORDB_CONNECTION is set in CI so shared_falkordb skips testcontainers)");
     eprintln!("conversational-context-auto: setup complete");
     let per_turn_timeout = Duration::from_secs(45);
 

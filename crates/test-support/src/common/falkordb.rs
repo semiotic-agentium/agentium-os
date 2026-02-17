@@ -55,6 +55,9 @@ pub async fn shared_falkordb() -> &'static str {
         })
     });
     if let Some(url) = env_url {
+        eprintln!(
+            "shared_falkordb: using FALKORDB_CONNECTION from environment (no testcontainers)"
+        );
         return url;
     }
     let shared = SHARED

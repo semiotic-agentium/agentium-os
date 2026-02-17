@@ -21,6 +21,8 @@ test-group = "falkordb"
 filter = 'package(baml-rt-a2a) and (binary(provenance_context_test) or binary(provenance_property_test))'
 test-group = "falkordb"
 
+# E2E: build fixture (OXC + BAML + tar) + agent setup; allow long run so ambient FalkorDB is used.
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and test(~conversational_context_auto_via_provenance)'
 test-group = "falkordb"
+slow-timeout = { period = "120s", terminate-after = 10 }
