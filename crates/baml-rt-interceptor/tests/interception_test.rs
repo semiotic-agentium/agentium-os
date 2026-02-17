@@ -12,6 +12,31 @@ use tokio::sync::Mutex;
 use baml_rt_core::context;
 use baml_rt_core::ids::{AgentId, UuidId};
 use test_support::common::{require_api_key, setup_baml_runtime_manager_default};
+
+/// Stub interceptor: substitutes "Hello, Test!" for SimpleGreeting so integration tests avoid real LLM calls.
+struct StubSimpleGreetingInterceptor;
+
+#[async_trait::async_trait]
+impl LLMInterceptor for StubSimpleGreetingInterceptor {
+    async fn intercept_llm_call(&self, context: &LLMCallContext) -> Result<InterceptorDecision> {
+        if context.function_name == "SimpleGreeting" {
+            Ok(InterceptorDecision::Substitute(Value::String(
+                "Hello, Test!".into(),
+            )))
+        } else {
+            Ok(InterceptorDecision::Allow)
+        }
+    }
+
+    async fn on_llm_call_complete(
+        &self,
+        _context: &LLMCallContext,
+        _result: &Result<Value>,
+        _duration_ms: u64,
+    ) {
+    }
+}
+
 /// Test interceptor that tracks pre-execution calls
 struct PreExecutionTracker {
     pre_execution_calls: Arc<Mutex<Vec<LLMCallContext>>>,
@@ -197,9 +222,12 @@ async fn test_pre_execution_interception_integration() {
     // Set up BAML runtime
     let baml_manager = setup_baml_runtime_manager_default();
 
-    // Register pre-execution tracker
+    // Register trackers first so they see the call; then stub so no real LLM is invoked.
     let (pre_tracker, pre_calls) = PreExecutionTracker::new();
     baml_manager.register_llm_interceptor(pre_tracker).await;
+    baml_manager
+        .register_llm_interceptor(StubSimpleGreetingInterceptor)
+        .await;
 
     // Execute a BAML function that would trigger build_request
     // Note: Even if the actual LLM call fails (no API key), build_request should still be called
@@ -262,9 +290,11 @@ async fn test_post_execution_interception_integration() {
     // Set up BAML runtime
     let baml_manager = setup_baml_runtime_manager_default();
 
-    // Register post-execution tracker
     let (post_tracker, post_calls) = PostExecutionTracker::new();
     baml_manager.register_llm_interceptor(post_tracker).await;
+    baml_manager
+        .register_llm_interceptor(StubSimpleGreetingInterceptor)
+        .await;
 
     // Execute a BAML function
     let result = with_test_agent_scope(|scope| async move {
@@ -329,13 +359,16 @@ async fn test_blocking_interception_integration() {
     // Set up BAML runtime
     let baml_manager = setup_baml_runtime_manager_default();
 
-    // Register blocking interceptor that blocks a common model name
+    // Register blocking interceptor first so it can block; stub runs after (substitutes if not blocked).
     // We'll block models containing "deepseek" or clients containing "openrouter"
     baml_manager
         .register_llm_interceptor(BlockingInterceptor::new(vec![
             "deepseek".to_string(),
             "openrouter".to_string(),
         ]))
+        .await;
+    baml_manager
+        .register_llm_interceptor(StubSimpleGreetingInterceptor)
         .await;
 
     // Try to execute a BAML function
@@ -400,10 +433,12 @@ async fn test_pre_and_post_execution_together_integration() {
     // Set up BAML runtime
     let baml_manager = setup_baml_runtime_manager_default();
 
-    // Register combined tracker
     let (combined_tracker, pre_calls, post_calls) = CombinedTracker::new();
     baml_manager
         .register_llm_interceptor(combined_tracker)
+        .await;
+    baml_manager
+        .register_llm_interceptor(StubSimpleGreetingInterceptor)
         .await;
 
     // Execute a BAML function
@@ -481,12 +516,14 @@ async fn test_multiple_interceptors_integration() {
     // Set up BAML runtime
     let baml_manager = setup_baml_runtime_manager_default();
 
-    // Register multiple interceptors
     let (pre_tracker1, pre_calls1) = PreExecutionTracker::new();
     let (pre_tracker2, pre_calls2) = PreExecutionTracker::new();
 
     baml_manager.register_llm_interceptor(pre_tracker1).await;
     baml_manager.register_llm_interceptor(pre_tracker2).await;
+    baml_manager
+        .register_llm_interceptor(StubSimpleGreetingInterceptor)
+        .await;
 
     // Execute a BAML function
     let _result = with_test_agent_scope(|scope| async move {

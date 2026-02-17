@@ -8,27 +8,13 @@ path = "junit.xml"
 store-failure-output = true
 
 # Rate-limit FalkorDB/testcontainers tests to avoid CI overload and flakes.
-# Rate-limit LLM-dependent tests so they don't all hit the same backend concurrently
-# (avoids queueing, rate limits, and 180–300s wall clock when many run in parallel).
+# baml-rt and baml-rt-interceptor LLM-dependent tests are stubbed or gated by llm-tests feature.
 [test-groups]
 falkordb = { max-threads = 1 }
-llm = { max-threads = 8 }
 
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-provenance)'
 test-group = "falkordb"
-
-[[profile.ci.overrides]]
-filter = 'package(baml-rt-interceptor)'
-test-group = "llm"
-
-[[profile.ci.overrides]]
-filter = 'package(baml-rt)'
-test-group = "llm"
-
-[[profile.ci.overrides]]
-filter = 'package(baml-rt-builder)'
-test-group = "llm"
 
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-a2a)'
