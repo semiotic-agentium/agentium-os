@@ -21,6 +21,9 @@ const SEQUENCE_CONTENT_PREVIEW_LEN: usize = 50;
 /// Maximum character length for tool-args summaries on sequence diagram arrows.
 const SEQUENCE_ARGS_SUMMARY_LEN: usize = 40;
 
+/// Maximum character length for error message previews on failure arrows.
+const SEQUENCE_ERROR_PREVIEW_LEN: usize = 80;
+
 /// Render an [`ExportedGraph`] as a Mermaid `sequenceDiagram` string.
 ///
 /// The graph should be simplified (via [`super::simplify::simplify_graph`]) and
@@ -111,6 +114,9 @@ fn emit_llm_call(out: &mut String, node: &ExportedNode, agent: &str) {
             note.push_str(" ✓");
         } else if is_failure(node.properties.get(a2a::SUCCESS)) {
             note.push_str(" ✗");
+            if let Some(err) = extract_error_preview(node) {
+                note.push_str(&format!(" {err}"));
+            }
         }
         note.push(')');
     }
@@ -155,11 +161,18 @@ fn emit_tool_call(out: &mut String, node: &ExportedNode, graph: &ExportedGraph, 
             response.push(' ');
         }
         response.push('✗');
+        if let Some(err) = extract_error_preview(node) {
+            response.push_str(&format!(" {err}"));
+        }
     }
     if response.is_empty() {
         response.push_str("done");
     }
-    let _ = writeln!(out, "    {tool_participant}-->>{agent}: {response}");
+    let _ = writeln!(
+        out,
+        "    {tool_participant}-->>{agent}: {}",
+        escape_sequence_text(&response)
+    );
 }
 
 // ── Participant extraction ──────────────────────────────────────────────────
@@ -314,6 +327,19 @@ fn sanitize_participant(name: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Extract a truncated error message preview from a node's metadata.
+///
+/// The `interceptors.rs` layer stores the error string under `metadata.error`
+/// when a tool call or LLM call fails. This helper reads it back out and
+/// truncates it for use in diagram labels.
+fn extract_error_preview(node: &ExportedNode) -> Option<String> {
+    let raw = super::extract_metadata_field(node.properties.get(a2a::METADATA), "error")?;
+    if raw.is_empty() {
+        return None;
+    }
+    Some(super::truncate_str(&raw, SEQUENCE_ERROR_PREVIEW_LEN))
 }
 
 /// Escape text for use in Mermaid sequence diagram arrow labels.
@@ -761,6 +787,104 @@ mod tests {
         assert!(
             output.contains("tony->>User: Here is the answer."),
             "agent response arrow: {output}"
+        );
+    }
+
+    /// A failed tool call with an error message in metadata should render
+    /// the error preview on the response arrow alongside the ✗ marker.
+    #[test]
+    fn tool_call_failure_shows_error_detail() {
+        let mut props = HashMap::new();
+        props.insert(
+            a2a::TOOL_NAME.to_string(),
+            serde_json::Value::String("support/clickupTasks".to_string()),
+        );
+        props.insert(a2a::DURATION_MS.to_string(), serde_json::json!(569));
+        props.insert(a2a::SUCCESS.to_string(), serde_json::json!(false));
+        props.insert(
+            a2a::METADATA.to_string(),
+            serde_json::json!({"error": "list_id is required", "phase": "send"}),
+        );
+        let node = ExportedNode {
+            id: "tc1".to_string(),
+            label: "ToolCall".to_string(),
+            display_name: "🔧 clickupTasks".to_string(),
+            properties: props,
+            event_order: Some(2),
+        };
+        let g = graph(
+            vec![agent_node("a1", "clickup_agent"), node],
+            vec![],
+        );
+        let output = render_sequence_diagram(&g);
+        assert!(
+            output.contains("569ms ✗ list_id is required"),
+            "failed tool call should show error detail: {output}"
+        );
+    }
+
+    /// A failed tool call without an error message in metadata should
+    /// still show ✗ but no error text.
+    #[test]
+    fn tool_call_failure_without_error_detail() {
+        let mut props = HashMap::new();
+        props.insert(
+            a2a::TOOL_NAME.to_string(),
+            serde_json::Value::String("support/clickupTasks".to_string()),
+        );
+        props.insert(a2a::DURATION_MS.to_string(), serde_json::json!(273));
+        props.insert(a2a::SUCCESS.to_string(), serde_json::json!(false));
+        let node = ExportedNode {
+            id: "tc1".to_string(),
+            label: "ToolCall".to_string(),
+            display_name: "🔧 clickupTasks".to_string(),
+            properties: props,
+            event_order: Some(2),
+        };
+        let g = graph(
+            vec![agent_node("a1", "clickup_agent"), node],
+            vec![],
+        );
+        let output = render_sequence_diagram(&g);
+        assert!(
+            output.contains("273ms ✗"),
+            "failed tool call without error should still show cross: {output}"
+        );
+        // Should not contain any dangling text after ✗ other than the newline.
+        let line = output.lines().find(|l| l.contains("273ms ✗")).unwrap();
+        assert!(
+            line.trim().ends_with("273ms ✗"),
+            "no extra text after ✗ when no error: {line}"
+        );
+    }
+
+    /// A failed LLM call with an error in metadata should show the error
+    /// preview in the Note.
+    #[test]
+    fn llm_failure_shows_error_detail() {
+        let mut props = HashMap::new();
+        props.insert(
+            a2a::MODEL.to_string(),
+            serde_json::Value::String("gpt-4".to_string()),
+        );
+        props.insert(a2a::DURATION_MS.to_string(), serde_json::json!(3000));
+        props.insert(a2a::SUCCESS.to_string(), serde_json::json!(false));
+        props.insert(
+            a2a::METADATA.to_string(),
+            serde_json::json!({"error": "rate limit exceeded"}),
+        );
+        let node = ExportedNode {
+            id: "llm1".to_string(),
+            label: "LlmCall".to_string(),
+            display_name: "🤖 LLM gpt-4 3000ms ❌".to_string(),
+            properties: props,
+            event_order: Some(2),
+        };
+        let g = graph(vec![agent_node("a1", "bot"), node], vec![]);
+        let output = render_sequence_diagram(&g);
+        assert!(
+            output.contains("LLM gpt-4 (3000ms ✗ rate limit exceeded)"),
+            "failed LLM should show error detail: {output}"
         );
     }
 }
