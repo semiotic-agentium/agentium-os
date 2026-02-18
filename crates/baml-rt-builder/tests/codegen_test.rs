@@ -15,11 +15,6 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-// ---------------------------------------------------------------------------
-// ClickUp tool codegen — validates that schemars 1.x nullable types
-// (Option<T> → "type": ["T", "null"]) and u8 integers are mapped correctly.
-// ---------------------------------------------------------------------------
-
 #[cfg(feature = "clickup")]
 #[test]
 fn test_clickup_tool_baml_interfaces() {
@@ -29,6 +24,11 @@ fn test_clickup_tool_baml_interfaces() {
 
     insta::assert_snapshot!("clickup_baml_tool_interfaces", baml_output);
 }
+
+// ---------------------------------------------------------------------------
+// ClickUp tool codegen — validates that schemars 1.x nullable types
+// (Option<T> → "type": ["T", "null"]) and u8 integers are mapped correctly.
+// ---------------------------------------------------------------------------
 
 #[test]
 fn test_schema_to_baml_nullable_types() {

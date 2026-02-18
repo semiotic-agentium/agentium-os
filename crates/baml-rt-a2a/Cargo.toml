@@ -27,8 +27,6 @@ tracing = { workspace = true }
 uuid = { workspace = true }
 schemars = { workspace = true }
 ts-rs = { workspace = true }
-testcontainers = { workspace = true, optional = true }
-text-to-cypher = { workspace = true, default-features = false, optional = true }
 
 [dev-dependencies]
 opentelemetry = { workspace = true }
@@ -42,4 +40,3 @@ proptest = { workspace = true }
 
 [features]
 default = []
-falkordb-tests = ["dep:testcontainers", "dep:text-to-cypher", "test-support/falkordb-tests"]

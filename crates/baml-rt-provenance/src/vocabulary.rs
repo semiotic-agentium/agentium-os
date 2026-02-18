@@ -171,6 +171,60 @@ pub mod a2a_relations {
     pub const MESSAGE_CALL: &str = "A2A_MESSAGE_CALL";
 }
 
+// GraphQLite graph convention: node identity property.
+// The GraphQLite Rust crate (graph/nodes.rs) uses this property for MERGE/MATCH in upsert_node, has_node, get_node.
+pub mod graph {
+    pub const NODE_ID: &str = "id";
+}
+
+/// Storage-safe property key names for GraphQLite (underscore form; no colons).
+/// Use these constants in Cypher read/write so keys are not altered programmatically.
+pub mod storage_safe {
+    // prov
+    pub const PROV_TYPE: &str = "prov_type";
+    pub const PROV_ROLE: &str = "prov_role";
+    pub const PROV_BASE_TYPE: &str = "prov_base_type";
+    pub const PROV_TIME: &str = "prov_time";
+    pub const PROV_ACTIVITY: &str = "prov_activity";
+    pub const PROV_START_TIME: &str = "prov_startTime";
+    pub const PROV_END_TIME: &str = "prov_endTime";
+
+    // a2a
+    pub const A2A_AGENT_ID: &str = "a2a_agent_id";
+    pub const A2A_AGENT_TYPE: &str = "a2a_agent_type";
+    pub const A2A_AGENT_VERSION: &str = "a2a_agent_version";
+    pub const A2A_TASK_ID: &str = "a2a_task_id";
+    pub const A2A_TASK_STATE: &str = "a2a_task_state";
+    pub const A2A_TASK_STATE_TIME: &str = "a2a_task_state_time";
+    pub const A2A_OLD_STATUS: &str = "a2a_old_status";
+    pub const A2A_IS_PREVIOUS: &str = "a2a_is_previous";
+    pub const A2A_MESSAGE_ID: &str = "a2a_message_id";
+    pub const A2A_ROLE: &str = "a2a_role";
+    pub const A2A_CONTENT: &str = "a2a_content";
+    pub const A2A_DIRECTION: &str = "a2a_direction";
+    pub const A2A_METADATA: &str = "a2a_metadata";
+    pub const A2A_EVENT_ID: &str = "a2a_event_id";
+    pub const A2A_RELATION: &str = "a2a_relation";
+    pub const A2A_FROM: &str = "a2a_from";
+    pub const A2A_TO: &str = "a2a_to";
+    pub const A2A_CLIENT: &str = "a2a_client";
+    pub const A2A_MODEL: &str = "a2a_model";
+    pub const A2A_FUNCTION_NAME: &str = "a2a_function_name";
+    pub const A2A_PROMPT: &str = "a2a_prompt";
+    pub const A2A_USAGE_PROMPT_TOKENS: &str = "a2a_usage_prompt_tokens";
+    pub const A2A_USAGE_COMPLETION_TOKENS: &str = "a2a_usage_completion_tokens";
+    pub const A2A_USAGE_TOTAL_TOKENS: &str = "a2a_usage_total_tokens";
+    pub const A2A_DURATION_MS: &str = "a2a_duration_ms";
+    pub const A2A_SUCCESS: &str = "a2a_success";
+    pub const A2A_TOOL_NAME: &str = "a2a_tool_name";
+    pub const A2A_ARGS: &str = "a2a_args";
+    pub const A2A_ARCHIVE_PATH: &str = "a2a_archive_path";
+    pub const A2A_ARTIFACT_ID: &str = "a2a_artifact_id";
+    pub const A2A_ARTIFACT_TYPE: &str = "a2a_artifact_type";
+    pub const A2A_CONTEXT_ID: &str = "a2a_context_id";
+    pub const A2A_TIMESTAMP_MS: &str = "a2a_timestamp_ms";
+}
+
 // Derived node labels (sanitized `prov:type` suffixes)
 pub mod node_labels {
     pub const LLM_CALL: &str = "LlmCall";

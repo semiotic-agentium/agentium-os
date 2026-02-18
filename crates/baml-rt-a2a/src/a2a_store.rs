@@ -221,15 +221,30 @@ impl ConversationContextSource for Mutex<TaskStore> {
 }
 
 pub struct ProvenanceTaskStore {
-    inner: Mutex<TaskStore>,
+    inner: Arc<dyn TaskStoreBackend>,
     writer: Option<Arc<dyn ProvenanceWriter>>,
     agent_id: AgentId,
 }
 
 impl ProvenanceTaskStore {
+    /// In-memory task store with optional provenance writer.
     pub fn new(writer: Option<Arc<dyn ProvenanceWriter>>, agent_id: AgentId) -> Self {
         Self {
-            inner: Mutex::new(TaskStore::new()),
+            inner: Arc::new(Mutex::new(TaskStore::new())),
+            writer,
+            agent_id,
+        }
+    }
+
+    /// Task store backed by a persistent backend (e.g. [crate::graphqlite_unified_store::GraphqliteUnifiedStore])
+    /// with optional provenance writer. Use the same store as both backend and writer for unified persistence.
+    pub fn with_backend(
+        inner: Arc<dyn TaskStoreBackend>,
+        writer: Option<Arc<dyn ProvenanceWriter>>,
+        agent_id: AgentId,
+    ) -> Self {
+        Self {
+            inner,
             writer,
             agent_id,
         }
@@ -312,33 +327,27 @@ impl TaskRepository for ProvenanceTaskStore {
             let event = ProvEvent::task_created(context_id, task_id, self.agent_id.clone());
             self.record_event(event).await;
         }
-        let mut store = self.inner.lock().await;
-        let out = store.upsert(task);
+        let out = self.inner.upsert(task).await?;
         record_task_store_metrics("upsert", "success", start);
         Ok(out)
     }
 
     async fn get(&self, id: &str, history_length: Option<usize>) -> Option<Task> {
         let start = Instant::now();
-        let store = self.inner.lock().await;
-        let out = store.get(id, history_length);
+        let out = self.inner.get(id, history_length).await;
         record_task_store_metrics("get", "success", start);
         out
     }
 
     async fn list(&self, request: &ListTasksRequest) -> ListTasksResponse {
         let start = Instant::now();
-        let store = self.inner.lock().await;
-        let out = store.list(request);
+        let out = self.inner.list(request).await;
         record_task_store_metrics("list", "success", start);
         out
     }
 
     async fn cancel(&self, id: &str) -> Option<Task> {
-        let out = {
-            let mut store = self.inner.lock().await;
-            store.cancel(id)
-        };
+        let out = self.inner.cancel(id).await;
         if let Some(ref task) = out
             && let (Some(cid), Some(tid)) = (task.context_id.clone(), task.id.clone())
             && let Ok(context_id) = require_context_id(Some(cid), "provenance cancel")
@@ -419,8 +428,7 @@ impl TaskRepository for ProvenanceTaskStore {
         self.record_event(event).await;
 
         let start = Instant::now();
-        let mut store = self.inner.lock().await;
-        store.insert_message(message);
+        self.inner.insert_message(message).await?;
         record_task_store_metrics("insert_message", "success", start);
         Ok(())
     }
@@ -479,11 +487,12 @@ impl TaskEventRecorder for ProvenanceTaskStore {
         status: TaskStatus,
     ) -> Result<Option<TaskUpdateEvent>> {
         let start = Instant::now();
-        let mut store = self.inner.lock().await;
-        let out = store.record_status_update(task_id, context_id, status);
+        let out = self
+            .inner
+            .record_status_update(task_id, context_id, status)
+            .await?;
         let outcome = if out.is_some() { "success" } else { "rejected" };
         record_task_store_metrics("record_status_update", outcome, start);
-        drop(store);
         if let Some(TaskUpdateEvent::Status(ref ev)) = out
             && let (Some(tid), Some(cid)) = (ev.task_id.as_ref(), ev.context_id.as_ref())
             && let Ok(context_id) = require_context_id(Some(cid.clone()), "provenance status")
@@ -509,11 +518,12 @@ impl TaskEventRecorder for ProvenanceTaskStore {
         last_chunk: Option<bool>,
     ) -> Result<Option<TaskUpdateEvent>> {
         let start = Instant::now();
-        let mut store = self.inner.lock().await;
-        let out = store.record_artifact_update(task_id, context_id, artifact, append, last_chunk);
+        let out = self
+            .inner
+            .record_artifact_update(task_id, context_id, artifact, append, last_chunk)
+            .await?;
         let outcome = if out.is_some() { "success" } else { "rejected" };
         record_task_store_metrics("record_artifact_update", outcome, start);
-        drop(store);
         if let Some(TaskUpdateEvent::Artifact(ref ev)) = out
             && let (Some(tid), Some(cid)) = (ev.task_id.as_ref(), ev.context_id.as_ref())
             && let Ok(context_id) = require_context_id(Some(cid.clone()), "provenance artifact")
@@ -533,8 +543,7 @@ impl TaskEventRecorder for ProvenanceTaskStore {
 #[async_trait]
 impl TaskUpdateQueue for ProvenanceTaskStore {
     async fn drain_updates(&self, task_id: &str) -> Vec<TaskUpdateEvent> {
-        let mut store = self.inner.lock().await;
-        store.drain_updates(task_id)
+        self.inner.drain_updates(task_id).await
     }
 }
 
@@ -560,10 +569,10 @@ impl TaskChunkApplier for ProvenanceTaskStore {
         let (task, message) = Self::inject_agent_id_into_chunk(task, message, &self.agent_id);
         let message_for_prov = message.clone();
         let start = Instant::now();
-        let events = {
-            let mut store = self.inner.lock().await;
-            store.apply_task_delta(task, message, status_update, artifact_update)
-        };
+        let events = self
+            .inner
+            .apply_task_delta(task, message, status_update, artifact_update)
+            .await?;
         record_task_store_metrics("apply_task_delta", "success", start);
         // I3: emit provenance only after store accepted the updates
         if let Some((tid, cid)) = task_created_prov
@@ -663,14 +672,7 @@ impl ConversationContextSource for ProvenanceTaskStore {
             }
         }
 
-        let store = self.inner.lock().await;
-        let messages = store.list_messages_in_context(context_id, limit);
-        let items = messages
-            .iter()
-            .enumerate()
-            .map(|(i, msg)| message_to_context_item(msg, i as u64 * 1000))
-            .collect();
-        Ok(items)
+        self.inner.conversation_context(context_id, limit).await
     }
 }
 

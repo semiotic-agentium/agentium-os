@@ -3,7 +3,7 @@
 # then verify with curl: GET /agents, GET /openapi.json, POST /agents/.../a2a.
 # Usage: ./scripts/verify-runner-http.sh [--build]
 #   --build: rebuild fixture packages even if .tar.gz exist (default: use existing)
-# Requires: FalkorDB running (e.g. ./scripts/falkordb.sh) for full A2A; GET /agents works without.
+# GET /agents works without provenance; full A2A uses GraphQLite (default provenance.db in cwd).
 
 set -e
 cd "$(dirname "$0")/.."
@@ -11,7 +11,6 @@ cd "$(dirname "$0")/.."
 BIND="${BIND:-127.0.0.1:8080}"
 PKG1="/tmp/runner-verify-stream-baml-tool.tar.gz"
 PKG2="/tmp/runner-verify-stream-js-tool.tar.gz"
-FALKORDB_URL="${FALKORDB_URL:-falkor://127.0.0.1:6379}"
 
 do_build=false
 for arg in "$@"; do
@@ -29,9 +28,9 @@ fi
 
 RUNNER_PID=""
 if ! curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 "http://$BIND/agents" 2>/dev/null | grep -q 200; then
-  echo "Starting runner on $BIND (FalkorDB $FALKORDB_URL)..."
+  echo "Starting runner on $BIND..."
   cargo run -p baml-agent-runner -- "$PKG1" "$PKG2" \
-    --serve-http "$BIND" --falkordb-url "$FALKORDB_URL" &
+    --serve-http "$BIND" &
   RUNNER_PID=$!
   trap 'kill $RUNNER_PID 2>/dev/null || true' EXIT
   echo "Waiting for server..."

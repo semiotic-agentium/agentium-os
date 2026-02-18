@@ -91,6 +91,8 @@ async fn setup_agent() -> A2aAgent {
         .unwrap()
 }
 
+const SYSTEM_A2A_TOOL: &str = "system/internal_a2a";
+
 /// Agent with system/internal_a2a tool registered (for session FSM tests).
 async fn setup_agent_with_a2a_session_tool() -> A2aAgent {
     let manager = BamlRuntimeManager::new().unwrap();
@@ -283,6 +285,7 @@ async fn test_a2a_session_send_returns_fast_and_next_drains() {
         let mgr = runtime.lock().await;
         mgr.tool_session_handle()
     };
+
     let context_id = context::generate_context_id();
     let message_id = baml_rt_core::ids::MessageId::from_external(
         baml_rt_core::ids::ExternalId::new(format!("msg-{}", context_id.as_str())),
@@ -294,7 +297,7 @@ async fn test_a2a_session_send_returns_fast_and_next_drains() {
         let session_id = handle
             .open_tool_session(
                 &scope_for_open,
-                "system/internal_a2a",
+                SYSTEM_A2A_TOOL,
                 json!({ "target": { "agent_package": "self", "agent_instance_id": "default" } }),
             )
             .await
@@ -345,6 +348,7 @@ async fn test_a2a_session_send_after_finish_fails() {
         let mgr = runtime.lock().await;
         mgr.tool_session_handle()
     };
+
     let context_id = context::generate_context_id();
     let message_id = baml_rt_core::ids::MessageId::from_external(
         baml_rt_core::ids::ExternalId::new(format!("msg-{}", context_id.as_str())),
@@ -356,7 +360,7 @@ async fn test_a2a_session_send_after_finish_fails() {
         let session_id = handle
             .open_tool_session(
                 &scope_for_open,
-                "system/internal_a2a",
+                SYSTEM_A2A_TOOL,
                 json!({ "target": { "agent_package": "self", "agent_instance_id": "default" } }),
             )
             .await

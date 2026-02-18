@@ -59,9 +59,12 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     write_line(&mut output, "// - Open MUST come before any Send step")?;
     write_line(
         &mut output,
-        "// - Open uses 'initial_input' for open-time session configuration when supported",
+        "// - Open may include 'initial_input' only when the step schema defines that field",
     )?;
-    write_line(&mut output, "// - Send uses 'input' for message payloads")?;
+    write_line(
+        &mut output,
+        "// - Send uses 'input' field (for subsequent inputs)",
+    )?;
     write_line(
         &mut output,
         "// - After Send, call Next to retrieve results",
@@ -76,11 +79,11 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     write_line(&mut output, "enum ToolSessionOp {")?;
     write_line(
         &mut output,
-        "  Open @description(\"Open a new tool session. MUST be the first step in any plan. Use 'initial_input' for open-time configuration when this step schema includes it.\")",
+        "  Open @description(\"Open a new tool session. MUST be the first step in any plan. Include 'initial_input' only when the step schema defines that field.\")",
     )?;
     write_line(
         &mut output,
-        "  Send @description(\"Send input to an already-open session. Can ONLY be used after an Open step. Provide payload in the 'input' field.\")",
+        "  Send @description(\"Send input to an already-open session. Can ONLY be used after an Open step. Use 'input' field (NOT 'initial_input').\")",
     )?;
     write_line(
         &mut output,
@@ -180,7 +183,6 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
         }
     }
 
-    // Generate tool-specific interfaces
     for tool in &tool_metadata {
         generate_tool_baml_interface(&mut output, tool)?;
         write_line(&mut output, "")?;
@@ -295,7 +297,7 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
     write_line(
         output,
         &format!(
-            "  steps {}[] @description(\"Array of FSM steps. MUST follow this strict order: 1) Open (with open-time initial_input when supported), 2) Send (with input payload), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{{op: 'Open'}}, {{op: 'Send', input: {{...}}}}, {{op: 'Next'}}, {{op: 'Finish'}}].{}\")",
+            "  steps {}[] @description(\"Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{{op: 'Open'}}, {{op: 'Send', input: {{...}}}}, {{op: 'Next'}}, {{op: 'Finish'}}].{}\")",
             step_union_name, access_note
         ),
     )?;

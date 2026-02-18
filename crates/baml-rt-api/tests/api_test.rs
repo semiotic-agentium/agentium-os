@@ -137,7 +137,7 @@ async fn get_agents_returns_discovery_list() {
         discovery_entry("pkg-b", "default", "Agent B", "0.2.0"),
     ];
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(entries));
-    let app = api_router(registry, None);
+    let app = api_router(registry, None, None);
 
     let response = app
         .oneshot(
@@ -160,7 +160,7 @@ async fn get_agents_returns_discovery_list() {
 #[tokio::test]
 async fn get_agents_empty_list_returns_200() {
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
-    let app = api_router(registry, None);
+    let app = api_router(registry, None, None);
 
     let response = app
         .oneshot(
@@ -186,7 +186,7 @@ async fn post_a2a_unknown_agent_returns_404() {
         MockRegistry::with_entries(vec![discovery_entry("pkg", "default", "P", "0.1.0")])
             .with_handle_err_not_found("Agent other/default not found".to_string()),
     );
-    let app = api_router(registry, None);
+    let app = api_router(registry, None, None);
 
     let body = serde_json::json!({"jsonrpc":"2.0","method":"tasks.list","params":{},"id":1});
     let response = app
@@ -212,7 +212,7 @@ async fn post_a2a_unknown_agent_returns_404() {
 #[tokio::test]
 async fn post_a2a_malformed_body_returns_400() {
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
-    let app = api_router(registry, None);
+    let app = api_router(registry, None, None);
 
     let response = app
         .oneshot(
@@ -241,7 +241,7 @@ async fn post_a2a_success_returns_200() {
         MockRegistry::with_entries(vec![discovery_entry("pkg", "default", "P", "0.1.0")])
             .with_handle_ok(responses.clone()),
     );
-    let app = api_router(registry, None);
+    let app = api_router(registry, None, None);
 
     let body = serde_json::json!({"jsonrpc":"2.0","method":"tasks.list","params":{},"id":1});
     let response = app
@@ -267,7 +267,7 @@ async fn post_a2a_success_returns_200() {
 #[tokio::test]
 async fn get_openapi_json_returns_spec() {
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
-    let app = api_router(registry, None);
+    let app = api_router(registry, None, None);
 
     let response = app
         .oneshot(
@@ -297,7 +297,7 @@ async fn post_a2a_sse_returns_event_stream() {
                 "id": null
             })]),
     );
-    let app = api_router(registry, None);
+    let app = api_router(registry, None, None);
 
     let response = app
         .oneshot(

@@ -21,24 +21,20 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-text-to-cypher = { workspace = true }
-testcontainers = { workspace = true, optional = true }
+graphqlite = { workspace = true }
+rusqlite = { workspace = true }
 uuid = { workspace = true }
 clap = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
 
 [dev-dependencies]
 insta = { workspace = true, features = ["json"] }
+tempfile = { workspace = true }
 test-support = { path = "../test-support" }
 
 [features]
 default = []
-falkordb-tests = ["dep:testcontainers", "test-support/falkordb-tests"]
 cli = ["dep:clap", "dep:anyhow"]
-
-[[bin]]
-name = "validate_prov"
-path = "../../validate_prov.rs"
 
 [[bin]]
 name = "graph_exporter"

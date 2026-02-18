@@ -7,22 +7,20 @@
 path = "junit.xml"
 store-failure-output = true
 
-# Rate-limit FalkorDB/testcontainers tests only (max 1 at a time) to avoid Docker
-# contention and CreateContainer RequestTimeoutError. Other tests run with default parallelism.
+# Rate-limit provenance/heavy tests (max 1 at a time) to avoid resource contention.
 [test-groups]
-falkordb = { max-threads = 1 }
+provenance = { max-threads = 1 }
 
-# Only binaries that call shared_falkordb() / use FalkorDB, not entire packages.
 [[profile.ci.overrides]]
-filter = 'package(baml-rt-provenance) and (binary(falkordb_store_test) or binary(tool_index_test))'
-test-group = "falkordb"
+filter = 'package(baml-rt-provenance) and (binary(graphqlite_store_test) or binary(tool_index_test))'
+test-group = "provenance"
 
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-a2a) and (binary(provenance_context_test) or binary(provenance_property_test))'
-test-group = "falkordb"
+test-group = "provenance"
 
-# E2E: build fixture (OXC + BAML + tar) + agent setup; allow long run so ambient FalkorDB is used.
+# E2E: build fixture (OXC + BAML + tar) + agent setup; allow long run.
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and test(~conversational_context_auto_via_provenance)'
-test-group = "falkordb"
+test-group = "provenance"
 slow-timeout = { period = "120s", terminate-after = 10 }

@@ -5,6 +5,7 @@ use quickjs_runtime::jsutils::Script;
 use quickjs_runtime::quickjsrealmadapter::QuickJsRealmAdapter;
 use quickjs_runtime::values::JsValueFacade;
 use serde_json::Value;
+use std::sync::atomic::Ordering;
 use tokio::sync::mpsc::error::TryRecvError;
 
 /// What a single drain of the yield channel observed. Bridge exposes; collector interprets.
@@ -16,6 +17,11 @@ pub struct BufferDrain {
 }
 
 impl QuickJSBridge {
+    /// Current number of in-flight `__baml_invoke` / `__baml_stream` async bodies.
+    pub(crate) fn in_flight_invoke_count(&self) -> u32 {
+        self.in_flight_invoke_count.load(Ordering::Acquire)
+    }
+
     /// Set up the chat stream yield buffer and __chat_yield so JS can yield chunks asynchronously
     /// instead of collecting and returning an array. Call before invoking onChatMessage for stream requests.
     ///
@@ -131,9 +137,51 @@ impl QuickJSBridge {
 
     /// Finalize a stream invocation after chunk collection completes.
     ///
-    /// **Close semantics:** Exits the stream's invocation context, drops yield channel sender (slot)
-    /// and receiver (a2a_yield_rx), and releases stream permit so the next stream may start.
-    pub(crate) fn finalize_a2a_stream_invocation(&mut self) {
+    /// **Close semantics:** Waits for all in-flight `__baml_invoke` / `__baml_stream` async
+    /// bodies to complete (quiescence barrier), then exits the stream's invocation context,
+    /// drops yield channel sender (slot) and receiver (`a2a_yield_rx`), and releases the stream
+    /// permit so the next stream may start.
+    ///
+    /// The quiescence barrier prevents "No invocation context" errors from orphaned promise
+    /// continuations that would otherwise fire after the context is torn down.
+    pub(crate) async fn finalize_a2a_stream_invocation(&mut self) {
+        // --- quiescence barrier ---
+        // Drive the event loop until all in-flight async bodies have completed and
+        // their resolution tasks have been processed. We require the counter to be 0
+        // for two consecutive drain cycles to account for the timing gap between the
+        // InFlightGuard drop and the add_task_to_event_loop_void posting.
+        const MAX_DRAIN_MS: u64 = 2_000;
+        const DRAIN_SLEEP_MS: u64 = 2;
+        let start = std::time::Instant::now();
+        let mut consecutive_zero = 0u32;
+
+        while start.elapsed().as_millis() < MAX_DRAIN_MS as u128 {
+            self.runtime.exe_rt_task_in_event_loop(|rt| {
+                rt.run_pending_jobs_if_any();
+            });
+            tokio::task::yield_now().await;
+
+            if self.in_flight_invoke_count.load(Ordering::Acquire) == 0 {
+                consecutive_zero += 1;
+                if consecutive_zero >= 2 {
+                    break;
+                }
+            } else {
+                consecutive_zero = 0;
+            }
+
+            tokio::time::sleep(tokio::time::Duration::from_millis(DRAIN_SLEEP_MS)).await;
+        }
+
+        if consecutive_zero < 2 {
+            tracing::warn!(
+                remaining = self.in_flight_invoke_count.load(Ordering::Acquire),
+                elapsed_ms = start.elapsed().as_millis() as u64,
+                "finalize_a2a_stream_invocation: quiescence timeout — tearing down context with in-flight promises"
+            );
+        }
+
+        // --- teardown ---
         if let Some(id) = self.current_stream_context_id.take()
             && let Ok(mut guard) = self.invocation_context_registry.lock()
         {
@@ -217,7 +265,13 @@ impl QuickJSBridge {
                     if (func === undefined || typeof func !== 'function') {{
                         throw new Error("JS function not found: {}");
                     }}
-                    func(args);
+                    func(args).catch(function(e) {{
+                        if (String(e).indexOf('invocation context') >= 0) {{
+                            /* expected after stream teardown — orphaned continuation */
+                        }} else {{
+                            throw e;
+                        }}
+                    }});
                     return JSON.stringify({{ success: true }});
                 }} catch (error) {{
                     return JSON.stringify({{ error: error.message || String(error) }});

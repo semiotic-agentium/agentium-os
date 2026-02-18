@@ -72,22 +72,6 @@ jobs:
         with:
           tool: cargo-nextest
 
-      # Single FalkorDB container for all FalkorDB tests (shared_falkordb uses
-      # FALKORDB_CONNECTION when set and skips testcontainers). One init for the job.
-      - name: Start FalkorDB container
-        run: |
-          docker pull falkordb/falkordb:latest
-          docker run -d --name falkordb-ci -p 6379:6379 falkordb/falkordb:latest
-          for i in $(seq 1 30); do
-            if docker exec falkordb-ci redis-cli PING 2>/dev/null | grep -q PONG; then
-              echo "FALKORDB_CONNECTION=falkor://127.0.0.1:6379" >> $GITHUB_ENV
-              exit 0
-            fi
-            sleep 1
-          done
-          echo "FalkorDB did not become ready within 30s"
-          exit 1
-
       # Regenerate fixture type declarations once before tests start.
       # nextest runs each test in its own process; without this pre-step,
       # multiple processes invoke regen_fixtures concurrently, risking
@@ -98,10 +82,9 @@ jobs:
       - name: Run nextest
         run: |
           cargo nextest run --workspace --locked --profile ci \
-            --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests,baml-agent-runner/http-tools,baml-rt/llm-tests,baml-agent-runner/llm-tests
+            --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-rt/llm-tests,baml-agent-runner/llm-tests
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          FALKORDB_CONNECTION: ${{ env.FALKORDB_CONNECTION }}
 
       - name: Publish JUnit report
         if: always()

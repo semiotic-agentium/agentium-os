@@ -277,4 +277,51 @@ impl ConversationReadModel {
              ORDER BY t.`a2a:event_id`"
         )
     }
+
+    /// Message query using storage-safe property names (a2a_context_id etc.; colons replaced by underscores).
+    /// Use for GraphQLite literal MERGE path ([KeyStyle::StorageSafeUnderscore]).
+    pub fn message_query_storage_safe(context: &str) -> String {
+        let message_label = GraphNodeLabel::Message.as_str();
+        format!(
+            "MATCH (m:{message_label}) \
+             WHERE m.a2a_context_id = \"{context}\" \
+             RETURN m.a2a_event_id, m.a2a_message_id, m.a2a_direction, m.a2a_role, m.a2a_content \
+             ORDER BY m.a2a_event_id"
+        )
+    }
+
+    /// Typed parameterised message query for cypher_builder().params().run().
+    /// Property names use underscore form to match [crate::cypher_build::KeyStyle::StorageSafeUnderscore] (literal MERGE).
+    pub fn message_query_storage_safe_params(context: &str) -> (&'static str, serde_json::Value) {
+        const QUERY: &str = "MATCH (m:Message) WHERE m.a2a_context_id = $context \
+             RETURN m.a2a_event_id, m.a2a_message_id, m.a2a_direction, m.a2a_role, m.a2a_content \
+             ORDER BY m.a2a_event_id";
+        let params = serde_json::json!({ "context": context });
+        (QUERY, params)
+    }
+
+    /// Tool query using storage-safe property names (underscore form). Use for GraphQLite.
+    pub fn tool_query_storage_safe(context: &str) -> String {
+        let tool_call_label = GraphNodeLabel::ToolCall.as_str();
+        let tool_args_label = GraphNodeLabel::ToolArgs.as_str();
+        let tool_args_edge = TOOL_CALL_ARGS_EDGE.edge_label;
+        format!(
+            "MATCH (t:{tool_call_label}) \
+             WHERE t.a2a_context_id = \"{context}\" \
+             MATCH (t)-[used:{tool_args_edge}]->(args:{tool_args_label}) \
+             RETURN t.a2a_event_id, t.a2a_tool_name, toString(t.a2a_metadata), toString(args.a2a_args), used.prov_role, args.prov_type, t.a2a_success \
+             ORDER BY t.a2a_event_id"
+        )
+    }
+
+    /// Typed parameterised tool query for cypher_builder().params().run().
+    /// Property names use underscore form to match [crate::cypher_build::KeyStyle::StorageSafeUnderscore].
+    pub fn tool_query_storage_safe_params(context: &str) -> (&'static str, serde_json::Value) {
+        const QUERY: &str = "MATCH (t:ToolCall) WHERE t.a2a_context_id = $context \
+             MATCH (t)-[used:WAS_USED_BY]->(args:ToolArgs) \
+             RETURN t.a2a_event_id, t.a2a_tool_name, toString(t.a2a_metadata), toString(args.a2a_args), used.prov_role, args.prov_type, t.a2a_success \
+             ORDER BY t.a2a_event_id";
+        let params = serde_json::json!({ "context": context });
+        (QUERY, params)
+    }
 }

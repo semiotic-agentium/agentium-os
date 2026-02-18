@@ -150,7 +150,8 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
     /// **Liveness (L3):** This method returns in finite time.
     pub async fn collect(self) -> Result<StreamResult> {
         let start = Instant::now();
-        let timeout = Duration::from_secs(60);
+        let idle_timeout = Duration::from_secs(60);
+        let active_timeout = Duration::from_secs(300);
         let interval = Duration::from_millis(50);
         let read_timeout = Duration::from_secs(2);
         let mut all = Vec::new();
@@ -163,7 +164,21 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
             .await
             {
                 Ok(Ok(d)) => d,
-                Ok(Err(e)) => return Err(e),
+                Ok(Err(e)) => {
+                    // Rare today: get_a2a_yield_buffer() is effectively infallible on normal
+                    // paths. Keep this cleanup anyway so future hardening/error paths cannot
+                    // leak stream-local state.
+                    //
+                    // finalize_a2a_stream_invocation() tears down only this stream invocation
+                    // (context/permit/yield channel). It does NOT stop the QuickJS runtime,
+                    // agent process, or transport sockets.
+                    tracing::error!(
+                        error = ?e,
+                        "a2a stream buffer read failed; finalizing stream invocation state"
+                    );
+                    self.bridge.finalize_a2a_stream_invocation().await;
+                    return Err(e);
+                }
                 Err(_) => BufferDrain {
                     chunks: vec![],
                     channel_closed: false,
@@ -172,14 +187,14 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
             if !drain.chunks.is_empty() {
                 all.extend(drain.chunks);
                 if all.iter().any(chunk_has_final_state) {
-                    self.bridge.finalize_a2a_stream_invocation();
+                    self.bridge.finalize_a2a_stream_invocation().await;
                     return Ok(StreamResult {
                         chunks: all,
                         completion: StreamCompletion::SemanticFinal,
                     });
                 }
                 if all.iter().any(chunk_has_input_required_state) {
-                    self.bridge.finalize_a2a_stream_invocation();
+                    self.bridge.finalize_a2a_stream_invocation().await;
                     return Ok(StreamResult {
                         chunks: all,
                         completion: StreamCompletion::InputRequired,
@@ -187,14 +202,28 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
                 }
             }
             if drain.channel_closed {
-                self.bridge.finalize_a2a_stream_invocation();
+                self.bridge.finalize_a2a_stream_invocation().await;
                 return Ok(StreamResult {
                     chunks: all,
                     completion: StreamCompletion::ChannelClosed,
                 });
             }
-            if start.elapsed() >= timeout {
-                self.bridge.finalize_a2a_stream_invocation();
+            let elapsed = start.elapsed();
+            let in_flight = self.bridge.in_flight_invoke_count();
+            let timeout_budget = if in_flight > 0 {
+                active_timeout
+            } else {
+                idle_timeout
+            };
+            if elapsed >= timeout_budget {
+                tracing::warn!(
+                    elapsed_ms = elapsed.as_millis() as u64,
+                    timeout_ms = timeout_budget.as_millis() as u64,
+                    in_flight,
+                    chunk_count = all.len(),
+                    "a2a stream collector timeout reached"
+                );
+                self.bridge.finalize_a2a_stream_invocation().await;
                 return Ok(StreamResult {
                     chunks: all,
                     completion: StreamCompletion::Timeout,

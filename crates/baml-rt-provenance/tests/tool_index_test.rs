@@ -1,16 +1,15 @@
-#![cfg(feature = "falkordb-tests")]
+//! Tool index tests using GraphQLite (temp path per test).
 
-use baml_rt_provenance::{ToolIndexConfig, index_tools};
+use baml_rt_provenance::{ToolIndexConfig, index_tools_into_connection};
 use baml_rt_tools::{ToolFunctionMetadataExport, ToolName, ToolSecretRequirement, ToolTypeSpec};
 use serde_json::json;
-use test_support::common::shared_falkordb;
-use text_to_cypher::core::execute_cypher_query;
-use tokio::time::{Duration, sleep};
+use tempfile::tempdir;
 
 #[tokio::test]
-async fn tool_index_creates_nodes_and_fulltext() {
-    let connection = shared_falkordb().await;
-    let graph = "baml_tool_index_test";
+async fn tool_index_creates_tool_nodes() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.keep().join("provenance.db");
+    let config = ToolIndexConfig::new(&path);
 
     let name = ToolName::parse("support/get_weather").expect("valid tool name");
     let tools = vec![ToolFunctionMetadataExport {
@@ -44,38 +43,26 @@ async fn tool_index_creates_nodes_and_fulltext() {
         origin: baml_rt_tools::ToolOrigin::Host,
     }];
 
-    let config = ToolIndexConfig::new(connection, graph);
-    index_tools(&config, &tools).await.expect("index tools");
-
-    let node_count = execute_cypher_query(
-        "MATCH (t:ToolFunction {name: \"support/get_weather\"}) RETURN COUNT(t)",
-        graph,
-        connection,
-        true,
-    )
-    .await
-    .expect("query tool count");
-    assert_eq!(node_count.trim(), "1");
-
-    let mut attempts = 0;
-    let search_count = loop {
-        let search_count = execute_cypher_query(
-            "CALL db.idx.fulltext.queryNodes('ToolFunction', 'weather') YIELD node RETURN COUNT(node)",
-            graph,
-            connection,
-            true,
-        )
+    let conn = index_tools_into_connection(&config, &tools)
         .await
-        .expect("query tool index");
-        if search_count.trim() != "0" || attempts >= 10 {
-            break search_count;
-        }
-        attempts += 1;
-        sleep(Duration::from_millis(200)).await;
-    };
-    assert_ne!(
-        search_count.trim(),
-        "0",
-        "expected fulltext search to find tool node, got: {search_count}"
+        .expect("index tools");
+    let all: graphqlite::CypherResult = conn
+        .cypher("MATCH (t:ToolFunction) RETURN t.id AS tool_id LIMIT 5")
+        .expect("query all");
+    let rows: Vec<_> = all.iter().collect();
+    assert!(
+        !rows.is_empty(),
+        "expected at least one ToolFunction node after index_tools"
+    );
+    let result = conn
+        .cypher_builder("MATCH (t:ToolFunction) WHERE t.id = $id RETURN t LIMIT 1")
+        .params(&serde_json::json!({ "id": "support/get_weather" }))
+        .run()
+        .expect("query by id");
+    assert_eq!(
+        result.iter().count(),
+        1,
+        "expected one ToolFunction node for support/get_weather; first node id: {:?}",
+        rows[0].get::<String>("tool_id")
     );
 }

@@ -1,14 +1,27 @@
 /// <reference path="./baml-runtime.d.ts" />
 
-import type { ChatMessage, ChatStreamChunk, Task } from "./a2a";
+import type { ChatMessage } from "./a2a";
 
 declare function ChooseClickUpAction(
   args?: Record<string, unknown>
 ): Promise<unknown>;
 
+type ToolSessionHandle = {
+  send(args: Record<string, unknown>): Promise<unknown>;
+  continue(): Promise<unknown>;
+  finish(): Promise<unknown>;
+  abort(reason?: string): Promise<unknown>;
+};
+
+declare function openToolSession(
+  toolName: string,
+  openInput?: Record<string, unknown>
+): Promise<ToolSessionHandle>;
+
 const MAX_REACT_STEPS = 8;
 const MAX_FINGERPRINT_CHARS = 6000;
 const MAX_CONSECUTIVE_REPEATS = 2;
+const CLICKUP_TOOL_NAME = "support/clickup";
 
 type FinalResponse = { message: string };
 type ClickUpTask = {
@@ -27,6 +40,14 @@ type ClickUpOutput = {
   items?: ClickUpItem[];
   message?: string;
 };
+type SupportClickupSessionStep = {
+  op?: string;
+  input?: Record<string, unknown>;
+  reason?: string;
+};
+type SupportClickupSessionPlan = {
+  steps: SupportClickupSessionStep[];
+};
 
 function extractText(message: ChatMessage | null | undefined): string {
   if (!message?.parts?.length) return "unknown";
@@ -35,16 +56,6 @@ function extractText(message: ChatMessage | null | undefined): string {
     return (first as { text: string }).text;
   }
   return "unknown";
-}
-
-function newMessage(text: string): { parts: { text: string }[] } {
-  return { parts: [{ text }] };
-}
-
-function newTask(message?: { parts: { text: string }[] }): Task {
-  return {
-    status: { state: "TASK_STATE_WORKING", message },
-  };
 }
 
 function isObject(v: unknown): v is Record<string, unknown> {
@@ -60,6 +71,66 @@ function isFinalResponse(v: unknown): v is FinalResponse {
 function isToolOutput(v: unknown): v is ClickUpOutput {
   if (!isObject(v)) return false;
   return Array.isArray(v.tasks) || Array.isArray(v.items);
+}
+
+function isSessionPlan(v: unknown): v is SupportClickupSessionPlan {
+  if (!isObject(v) || !Array.isArray(v.steps)) return false;
+  return v.steps.every(
+    (step) =>
+      isObject(step) &&
+      typeof step.op === "string" &&
+      (step.op !== "Send" || isObject(step.input))
+  );
+}
+
+function extractToolOutput(v: unknown): ClickUpOutput | null {
+  if (isToolOutput(v)) return v;
+  if (isObject(v) && isToolOutput(v.output)) return v.output;
+  return null;
+}
+
+async function executeClickUpPlan(
+  plan: SupportClickupSessionPlan
+): Promise<ClickUpOutput | null> {
+  let session: ToolSessionHandle | null = null;
+  let lastStepOutput: unknown = null;
+
+  for (const step of plan.steps) {
+    switch (step.op) {
+      case "Open":
+        if (!session) session = await openToolSession(CLICKUP_TOOL_NAME);
+        break;
+      case "Send":
+        if (!session) session = await openToolSession(CLICKUP_TOOL_NAME);
+        await session.send(step.input || {});
+        break;
+      case "Next":
+        if (!session) session = await openToolSession(CLICKUP_TOOL_NAME);
+        lastStepOutput = await session.continue();
+        break;
+      case "Finish":
+        if (session) {
+          await session.finish();
+          session = null;
+        }
+        break;
+      case "Abort":
+        if (session) {
+          await session.abort(step.reason);
+          session = null;
+        }
+        return null;
+      default:
+        return null;
+    }
+  }
+
+  if (session) {
+    lastStepOutput = await session.continue();
+    await session.finish();
+  }
+
+  return extractToolOutput(lastStepOutput);
 }
 
 function truncate(text: string, max: number): string {
@@ -95,72 +166,75 @@ function formatOutput(output: ClickUpOutput): string {
 }
 
 async function onChatMessage(
-  message: ChatMessage
+  message: ChatMessage & { __baml_invocation_token?: string }
 ): Promise<void> {
-  const text = extractText(message);
-  let prevFingerprint: string | null = null;
-  let consecutiveRepeats = 0;
-  let lastToolOutput: ClickUpOutput | null = null;
+  const s = session(message);
+  await s.run(async () => {
+    const text = extractText(message);
+    const token = message.__baml_invocation_token;
+    let prevFingerprint: string | null = null;
+    let consecutiveRepeats = 0;
+    let lastToolOutput: ClickUpOutput | null = null;
 
-  try {
-    for (let step = 1; step <= MAX_REACT_STEPS; step++) {
-      const result: unknown = await ChooseClickUpAction({
-        user_message: text,
-      });
+    try {
+      for (let step = 1; step <= MAX_REACT_STEPS; step++) {
+        let result: unknown = await ChooseClickUpAction({
+          user_message: text,
+          __baml_invocation_token: token,
+        });
 
-      if (isFinalResponse(result)) {
-        const msg = result.message;
-        __baml_chat_yield({ message: newMessage(msg), task: newTask(newMessage(msg)) });
-        return;
-      }
-
-      if (isToolOutput(result)) {
-        lastToolOutput = result;
-        const fp = fingerprint(result);
-        if (fp === prevFingerprint) {
-          consecutiveRepeats += 1;
-        } else {
-          consecutiveRepeats = 0;
-          prevFingerprint = fp;
+        if (isSessionPlan(result)) {
+          const executedOutput = await executeClickUpPlan(result);
+          if (executedOutput) {
+            result = executedOutput;
+          } else {
+            return {
+              message:
+                "ClickUp planner returned a raw session plan but no tool output was produced.",
+            };
+          }
         }
 
-        if (consecutiveRepeats >= MAX_CONSECUTIVE_REPEATS) {
-          const msg = formatOutput(result);
-          __baml_chat_yield({ message: newMessage(msg), task: newTask(newMessage(msg)) });
-          return;
+        if (isFinalResponse(result)) {
+          return { message: result.message };
         }
-        continue;
+
+        if (isToolOutput(result)) {
+          lastToolOutput = result;
+          const fp = fingerprint(result);
+          if (fp === prevFingerprint) {
+            consecutiveRepeats += 1;
+          } else {
+            consecutiveRepeats = 0;
+            prevFingerprint = fp;
+          }
+
+          if (consecutiveRepeats >= MAX_CONSECUTIVE_REPEATS) {
+            return { message: formatOutput(result) };
+          }
+          continue;
+        }
+
+        if (isObject(result) && typeof result.message === "string") {
+          return { message: result.message };
+        }
+
+        return { message: "ClickUp planner returned an unexpected response shape." };
       }
 
-      if (isObject(result) && typeof result.message === "string") {
-        const msg = result.message;
-        __baml_chat_yield({ message: newMessage(msg), task: newTask(newMessage(msg)) });
-        return;
+      if (lastToolOutput) {
+        const msg = `${formatOutput(lastToolOutput)}\n\nStopped after ${MAX_REACT_STEPS} planning steps.`;
+        return { message: msg };
       }
 
-      __baml_chat_yield({
-        message: newMessage("ClickUp planner returned an unexpected response shape."),
-        task: newTask(),
-      });
-      return;
+      return {
+        message: `Unable to complete the request within ${MAX_REACT_STEPS} planning steps.`,
+      };
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      return { error: `Error: ${errMsg}` };
     }
-
-    if (lastToolOutput) {
-      const msg = `${formatOutput(lastToolOutput)}\n\nStopped after ${MAX_REACT_STEPS} planning steps.`;
-      __baml_chat_yield({ message: newMessage(msg), task: newTask(newMessage(msg)) });
-      return;
-    }
-
-    __baml_chat_yield({
-      message: newMessage(
-        `Unable to complete the request within ${MAX_REACT_STEPS} planning steps.`
-      ),
-      task: newTask(),
-    });
-  } catch (e) {
-    const errMsg = e instanceof Error ? e.message : String(e);
-    __baml_chat_yield({ message: newMessage(`Error: ${errMsg}`), task: newTask() });
-  }
+  });
 }
 
 __chat_register({ onChatMessage });

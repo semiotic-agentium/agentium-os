@@ -1,9 +1,48 @@
-//! Tests for BAML function execution
+//! Tests for BAML function execution.
+//!
+//! `test_load_and_execute_simple_greeting` uses an LLM interceptor stub so it does not call the real LLM.
+//!
+//! Other tests that could be made non-LLM-dependent (stub via LLM interceptor):
+//! - **contracts_test**: `test_baml_function_returns_actual_result`, `test_js_function_invocation_returns_actual_result`,
+//!   `test_invoke_function_api_contract`, `test_loaded_agent_invoke_function_contract` — all call ChooseCalcTool/getCalcPlan;
+//!   stub could return a valid session plan (steps with Open/Send/Next/Finish).
+//! - **tool_calling_test**: `test_e2e_voidship_baml_tool_calling`, `test_e2e_voidship_baml_tool_calling_concurrent` —
+//!   same pattern (ChooseCalcTool); stub would allow testing tool execution and concurrency without API key.
+//! - **llm_test**: `test_e2e_simple_greeting_with_llm`, `test_e2e_streaming_greeting` — explicitly LLM e2e; keep behind
+//!   `llm-tests` feature or leave as live LLM.
 
+use baml_rt::interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor};
 use baml_rt_core::context::InvocationScope;
 use baml_rt_core::ids::{AgentId, UuidId};
 use serde_json::json;
 use test_support::common::{ensure_baml_src_exists, setup_baml_runtime_manager_default};
+
+/// Stub interceptor: returns a canned string for SimpleGreeting so this test avoids real LLM calls.
+struct StubSimpleGreetingInterceptor;
+
+#[async_trait::async_trait]
+impl LLMInterceptor for StubSimpleGreetingInterceptor {
+    async fn intercept_llm_call(
+        &self,
+        context: &LLMCallContext,
+    ) -> baml_rt_core::Result<InterceptorDecision> {
+        if context.function_name == "SimpleGreeting" {
+            Ok(InterceptorDecision::Substitute(serde_json::Value::String(
+                "Hello, Test!".to_string(),
+            )))
+        } else {
+            Ok(InterceptorDecision::Allow)
+        }
+    }
+
+    async fn on_llm_call_complete(
+        &self,
+        _context: &LLMCallContext,
+        _result: &baml_rt_core::Result<serde_json::Value>,
+        _duration_ms: u64,
+    ) {
+    }
+}
 
 #[tokio::test]
 async fn test_load_and_execute_simple_greeting() {
@@ -13,6 +52,9 @@ async fn test_load_and_execute_simple_greeting() {
         return;
     }
     let manager = setup_baml_runtime_manager_default();
+    manager
+        .register_llm_interceptor(StubSimpleGreetingInterceptor)
+        .await;
 
     // Verify function was discovered
     let functions = manager.list_functions();
@@ -22,9 +64,6 @@ async fn test_load_and_execute_simple_greeting() {
         functions
     );
 
-    // Execute the function
-    // Note: This will make an actual LLM call unless we stub it
-    // For now, we expect it to at least attempt execution
     let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
         UuidId::parse_str("00000000-0000-0000-0000-0000000000e1").unwrap(),
     ));
@@ -32,18 +71,17 @@ async fn test_load_and_execute_simple_greeting() {
         .invoke_function(scope.as_scope(), "SimpleGreeting", json!({"name": "Alice"}))
         .await;
 
-    // Execution should either succeed or fail with a specific error (like missing API key)
-    // but should NOT fail with "function not found" or "not implemented"
     match result {
         Ok(value) => {
-            // If it succeeds, should return a string
             assert!(value.is_string(), "Result should be a string");
             let response = value.as_str().unwrap();
             assert!(!response.is_empty(), "Response should not be empty");
-            println!("Function executed successfully: {}", response);
+            assert_eq!(
+                response, "Hello, Test!",
+                "Stub should return canned greeting"
+            );
         }
         Err(e) => {
-            // Check error is not "not implemented" or "not found"
             let err_msg = format!("{}", e);
             assert!(
                 !err_msg.contains("not yet implemented")
@@ -52,11 +90,7 @@ async fn test_load_and_execute_simple_greeting() {
                 "Should not fail with implementation errors. Error: {}",
                 err_msg
             );
-            // Other errors (like missing API keys) are acceptable for now
-            println!(
-                "Function execution failed (likely API/config issue): {}",
-                err_msg
-            );
+            panic!("Invoke should succeed with stub interceptor: {}", err_msg);
         }
     }
 }

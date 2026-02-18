@@ -7,7 +7,6 @@ cd "$ROOT_DIR"
 PORT="${NOTION_DEMO_PORT:-8081}"
 LOG_FILE="${NOTION_DEMO_LOG:-/tmp/notion-runner.log}"
 PID_FILE="${NOTION_DEMO_PID:-/tmp/notion-runner.pid}"
-FALKORDB_FLAG="${NOTION_DEMO_FALKORDB_FLAG:-/tmp/notion-falkordb.started}"
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required but not found in PATH" >&2
@@ -20,16 +19,6 @@ if [ -f .env ]; then
   # shellcheck disable=SC1091
   source .env
   set +a
-fi
-
-# Optionally manage FalkorDB
-if [ "${NOTION_DEMO_FALKORDB:-1}" != "0" ]; then
-  if command -v docker >/dev/null 2>&1; then
-    ./scripts/falkordb.sh up >/dev/null 2>&1 || true
-    touch "$FALKORDB_FLAG"
-  else
-    echo "docker not found; skipping FalkorDB startup" >&2
-  fi
 fi
 
 # Build agent package
@@ -58,7 +47,6 @@ fi
 RUST_LOG=${RUST_LOG:-baml_rt_a2a=debug,baml_rt_quickjs=debug,baml_rt_tools=debug} \
   nohup "$RUNNER_BIN" \
     --serve-http 127.0.0.1:"$PORT" \
-    --falkordb-url redis://127.0.0.1:6379 \
     /tmp/notion-agent.tar.gz \
     >"$LOG_FILE" 2>&1 &
 
