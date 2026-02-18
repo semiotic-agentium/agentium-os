@@ -1,12 +1,14 @@
-use super::QuickJSBridge;
+use super::{QuickJSBridge, StreamInvocationSession, StreamSessionId};
 use baml_rt_core::context::InvocationScope;
 use baml_rt_core::{BamlRtError, Result};
 use quickjs_runtime::jsutils::Script;
 use quickjs_runtime::quickjsrealmadapter::QuickJsRealmAdapter;
 use quickjs_runtime::values::JsValueFacade;
 use serde_json::Value;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::sync::mpsc::error::TryRecvError;
+use tokio_util::sync::CancellationToken;
 
 /// What a single drain of the yield channel observed. Bridge exposes; collector interprets.
 #[derive(Debug)]
@@ -137,56 +139,104 @@ impl QuickJSBridge {
 
     /// Finalize a stream invocation after chunk collection completes.
     ///
-    /// **Close semantics:** Waits for all in-flight `__baml_invoke` / `__baml_stream` async
-    /// bodies to complete (quiescence barrier), then exits the stream's invocation context,
-    /// drops yield channel sender (slot) and receiver (`a2a_yield_rx`), and releases the stream
-    /// permit so the next stream may start.
+    /// **Deterministic lifecycle, No quiescence barrier. Instead:
+    /// 1. Mark the active session closed and fire its cancellation token.
+    /// 2. Remove the session from the map — new callbacks reject immediately.
+    /// 3. Restore global JS helpers to non-session natives.
+    /// 4. Exit the LIFO invocation context (backward compat).
+    /// 5. Drop yield channel + release stream permit.
     ///
-    /// The quiescence barrier prevents "No invocation context" errors from orphaned promise
-    /// continuations that would otherwise fire after the context is torn down.
+    /// In-flight callbacks that already captured an `Arc<StreamInvocationSession>`
+    /// can still complete; their `cancel.is_cancelled()` check lets them abort early.
     pub(crate) async fn finalize_a2a_stream_invocation(&mut self) {
-        // --- quiescence barrier ---
-        // Drive the event loop until all in-flight async bodies have completed and
-        // their resolution tasks have been processed. We require the counter to be 0
-        // for two consecutive drain cycles to account for the timing gap between the
-        // InFlightGuard drop and the add_task_to_event_loop_void posting.
-        const MAX_DRAIN_MS: u64 = 2_000;
-        const DRAIN_SLEEP_MS: u64 = 2;
-        let start = std::time::Instant::now();
-        let mut consecutive_zero = 0u32;
-
-        while start.elapsed().as_millis() < MAX_DRAIN_MS as u128 {
-            self.runtime.exe_rt_task_in_event_loop(|rt| {
-                rt.run_pending_jobs_if_any();
-            });
-            tokio::task::yield_now().await;
-
-            if self.in_flight_invoke_count.load(Ordering::Acquire) == 0 {
-                consecutive_zero += 1;
-                if consecutive_zero >= 2 {
-                    break;
-                }
-            } else {
-                consecutive_zero = 0;
+        // --- 1. Close + cancel active session ---
+        if let Some(session_id) = self.current_stream_session_id.take() {
+            if let Ok(guard) = self.stream_sessions.lock()
+                && let Some(session) = guard.get(&session_id)
+            {
+                session.closed.store(true, Ordering::Release);
+                session.cancel.cancel();
             }
-
-            tokio::time::sleep(tokio::time::Duration::from_millis(DRAIN_SLEEP_MS)).await;
+            // --- 2. Remove from session map ---
+            if let Ok(mut guard) = self.stream_sessions.lock() {
+                guard.remove(&session_id);
+            }
+            tracing::debug!(%session_id, "finalize_a2a_stream_invocation: session closed and removed");
         }
 
-        if consecutive_zero < 2 {
-            tracing::warn!(
-                remaining = self.in_flight_invoke_count.load(Ordering::Acquire),
-                elapsed_ms = start.elapsed().as_millis() as u64,
-                "finalize_a2a_stream_invocation: quiescence timeout — tearing down context with in-flight promises"
+        // --- 3. Restore global JS helpers to non-session natives ---
+        // This ensures non-stream evaluate() calls after this stream use the LIFO registry.
+        let restore_code = r#"
+            (function() {
+                if (typeof __orig_baml_invoke !== 'undefined') {
+                    globalThis.__baml_invoke = __orig_baml_invoke;
+                    globalThis.__baml_stream = __orig_baml_stream;
+                    globalThis.__tool_invoke = __orig_tool_invoke;
+                    globalThis.__tool_from_baml_result = __orig_tool_from_baml_result;
+                    globalThis.__tool_session_open = __orig_tool_session_open;
+                    globalThis.__tool_session_send = __orig_tool_session_send;
+                    globalThis.__tool_session_next = __orig_tool_session_next;
+                    globalThis.__tool_session_finish = __orig_tool_session_finish;
+                    globalThis.__tool_session_abort = __orig_tool_session_abort;
+                    delete globalThis.__orig_baml_invoke;
+                    delete globalThis.__orig_baml_stream;
+                    delete globalThis.__orig_tool_invoke;
+                    delete globalThis.__orig_tool_from_baml_result;
+                    delete globalThis.__orig_tool_session_open;
+                    delete globalThis.__orig_tool_session_send;
+                    delete globalThis.__orig_tool_session_next;
+                    delete globalThis.__orig_tool_session_finish;
+                    delete globalThis.__orig_tool_session_abort;
+                }
+            })()
+        "#;
+        let script = Script::new("restore_globals.js", restore_code);
+        if let Err(e) = self.runtime.eval(None, script).await {
+            tracing::error!(
+                error = ?e,
+                "finalize_a2a_stream_invocation: primary JS global restore failed, \
+                 attempting minimal fallback"
             );
+            // Fallback: delete stale __orig_* markers so the next stream IIFE does not
+            // save already-overridden wrappers as "originals". The globals remain pointing
+            // at session-aware wrappers whose session was already removed — subsequent
+            // calls through them will fail with "session not found" rather than silently
+            // routing to a stale scope. This is the best we can do when the JS runtime
+            // is in a degraded state.
+            let fallback = r#"
+                (function() {
+                    try {
+                        delete globalThis.__orig_baml_invoke;
+                        delete globalThis.__orig_baml_stream;
+                        delete globalThis.__orig_tool_invoke;
+                        delete globalThis.__orig_tool_from_baml_result;
+                        delete globalThis.__orig_tool_session_open;
+                        delete globalThis.__orig_tool_session_send;
+                        delete globalThis.__orig_tool_session_next;
+                        delete globalThis.__orig_tool_session_finish;
+                        delete globalThis.__orig_tool_session_abort;
+                    } catch(e) { /* best effort */ }
+                })()
+            "#;
+            let fallback_script = Script::new("restore_globals_fallback.js", fallback);
+            if let Err(e2) = self.runtime.eval(None, fallback_script).await {
+                tracing::error!(
+                    error = ?e2,
+                    "finalize_a2a_stream_invocation: fallback JS cleanup also failed — \
+                     bridge JS globals are in an unrecoverable state; subsequent \
+                     stream invocations may fail with 'session not found'"
+                );
+            }
         }
 
-        // --- teardown ---
+        // --- 4. Exit LIFO context (backward compat) ---
         if let Some(id) = self.current_stream_context_id.take()
             && let Ok(mut guard) = self.invocation_context_registry.lock()
         {
             guard.exit(&id);
         }
+
+        // --- 5. Teardown channels + permit ---
         self.current_stream_token = None;
         self.stream_permit = None;
         self.a2a_yield_rx = None;
@@ -207,6 +257,21 @@ impl QuickJSBridge {
     /// It yields chunks via `__chat_yield()` and only completes on agent exit or crash.
     /// This method starts the async function but does NOT wait for promise resolution.
     ///
+    /// **Error safety:** If any step after permit acquisition fails, all partially-installed
+    /// state (session map entry, LIFO context, JS global overrides, permit) is cleaned up
+    /// via `finalize_a2a_stream_invocation` before the error is returned.
+    ///
+    /// **Cancellation recovery (lazy):** If a previous invocation future was dropped or
+    /// cancelled mid-await, `stream_permit` remains `Some` and the semaphore has zero
+    /// available permits. Without recovery, the next `acquire_owned().await` would deadlock.
+    /// We detect this at entry and finalize the stale state before re-acquiring.
+    ///
+    /// In practice this is extremely unlikely: the only production call site
+    /// (`QuickJsInvoker::invoke_stream` in `request_router.rs`) wraps the entire
+    /// begin→invoke→collect chain inside `spawn_blocking` + `block_on`, which is not
+    /// cancellable via `tokio::select!`. The guard exists as defense-in-depth in case
+    /// future call sites do not provide the same guarantee.
+    ///
     /// **Property:**
     /// ```text
     /// ∀ stream request s:
@@ -220,6 +285,18 @@ impl QuickJSBridge {
         function_name: &str,
         args: Value,
     ) -> Result<()> {
+        // Lazy recovery: if a previous invocation future was dropped/cancelled after
+        // acquiring the permit but before finalization ran, the permit and partial
+        // session state are still held. Finalize first so the semaphore is freed and
+        // the next acquire does not deadlock.
+        if self.stream_permit.is_some() {
+            tracing::warn!(
+                "invoke_js_function_stream: recovering stale stream state \
+                 from a previously dropped/cancelled future"
+            );
+            self.finalize_a2a_stream_invocation().await;
+        }
+
         // Only one stream active at a time so invocation token state is not overwritten by a concurrent stream.
         let permit = self
             .stream_semaphore
@@ -240,8 +317,51 @@ impl QuickJSBridge {
             self.remove_invocation_token(&prev);
         }
 
-        let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
+        // All remaining work is fallible. On error, finalize cleans up any
+        // partially-installed state (session, LIFO context, globals, permit).
+        let result = self
+            .start_stream_session(scope, function_name, args)
+            .await;
+        if result.is_err() {
+            self.finalize_a2a_stream_invocation().await;
+        }
+        result
+    }
+
+    /// Fallible body of [`invoke_js_function_stream`]: allocates the session, enters
+    /// the LIFO context, overrides JS globals, and kicks off the stream function.
+    ///
+    /// On success the stream is running and the caller collects chunks via
+    /// `get_a2a_yield_buffer`. On error the caller must call
+    /// `finalize_a2a_stream_invocation` to roll back partial state.
+    async fn start_stream_session(
+        &mut self,
+        scope: &InvocationScope,
+        function_name: &str,
+        args: Value,
+    ) -> Result<()> {
+        // --- Allocate session ---
+        let session_id = StreamSessionId(
+            self.next_stream_session_id
+                .fetch_add(1, Ordering::Relaxed),
+        );
         let correlation_id = baml_rt_core::correlation::current_correlation_id();
+        let session = Arc::new(StreamInvocationSession {
+            id: session_id,
+            scope: scope.as_scope().clone(),
+            correlation_id: correlation_id.clone(),
+            cancel: CancellationToken::new(),
+            closed: AtomicBool::new(false),
+        });
+        {
+            let mut guard = self.stream_sessions.lock().map_err(|_| {
+                BamlRtError::QuickJs("stream session map lock poisoned".to_string())
+            })?;
+            guard.insert(session_id, session);
+        }
+        self.current_stream_session_id = Some(session_id);
+
+        // Push to LIFO registry for backward compat (non-session natives still use it).
         let context_id = {
             let mut guard = self.invocation_context_registry.lock().map_err(|_| {
                 BamlRtError::QuickJs("invocation context registry lock poisoned".to_string())
@@ -251,23 +371,56 @@ impl QuickJSBridge {
         self.current_stream_context_id = Some(context_id);
         tracing::debug!(
             context_id = %scope.context_id(),
+            %session_id,
             function_name = function_name,
-            "invoke_js_function_stream: entered invocation context (no JS prelude)"
+            "start_stream_session: entered invocation context with session"
         );
 
-        // No token/context prelude in JS; host resolves scope from active context stack.
+        let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
+        let sid = session_id.0;
+
+        // Generate JS IIFE that:
+        // 1. Saves original global helpers
+        // 2. Overrides them with session-aware versions (session_id baked in)
+        // 3. Calls the stream function
         let js_code = format!(
             r#"
             (function() {{
                 try {{
-                    const args = {};
-                    const func = globalThis["{}"];
+                    // Save originals so finalization can restore them
+                    globalThis.__orig_baml_invoke = globalThis.__baml_invoke;
+                    globalThis.__orig_baml_stream = globalThis.__baml_stream;
+                    globalThis.__orig_tool_invoke = globalThis.__tool_invoke;
+                    globalThis.__orig_tool_from_baml_result = globalThis.__tool_from_baml_result;
+                    globalThis.__orig_tool_session_open = globalThis.__tool_session_open;
+                    globalThis.__orig_tool_session_send = globalThis.__tool_session_send;
+                    globalThis.__orig_tool_session_next = globalThis.__tool_session_next;
+                    globalThis.__orig_tool_session_finish = globalThis.__tool_session_finish;
+                    globalThis.__orig_tool_session_abort = globalThis.__tool_session_abort;
+
+                    // Override with session-aware versions
+                    var __sid = {sid};
+                    globalThis.__baml_invoke = function(a, b) {{ return __baml_invoke_session(__sid, a, b); }};
+                    globalThis.__baml_stream = function(a, b) {{ return __baml_stream_session(__sid, a, b); }};
+                    globalThis.__tool_invoke = function(a, b) {{ return __tool_invoke_session(__sid, a, b); }};
+                    globalThis.__tool_from_baml_result = function(a) {{ return __tool_from_baml_result_session(__sid, a); }};
+                    globalThis.__tool_session_open = function(a, b) {{ return __tool_session_open_session(__sid, a, b); }};
+                    globalThis.__tool_session_send = function(a, b) {{ return __tool_session_send_session(__sid, a, b); }};
+                    globalThis.__tool_session_next = function(a) {{ return __tool_session_next_session(__sid, a); }};
+                    globalThis.__tool_session_finish = function(a) {{ return __tool_session_finish_session(__sid, a); }};
+                    globalThis.__tool_session_abort = function(a, b) {{ return __tool_session_abort_session(__sid, a, b); }};
+
+                    const args = {args_json};
+                    const func = globalThis["{function_name}"];
                     if (func === undefined || typeof func !== 'function') {{
-                        throw new Error("JS function not found: {}");
+                        throw new Error("JS function not found: {function_name}");
                     }}
                     func(args).catch(function(e) {{
-                        if (String(e).indexOf('invocation context') >= 0) {{
-                            /* expected after stream teardown — orphaned continuation */
+                        var msg = String(e);
+                        if (msg.indexOf('invocation context') >= 0 ||
+                            msg.indexOf('cancelled') >= 0 ||
+                            msg.indexOf('not found') >= 0) {{
+                            /* expected after stream teardown or cancellation */
                         }} else {{
                             throw e;
                         }}
@@ -278,10 +431,12 @@ impl QuickJSBridge {
                 }}
             }})()
             "#,
-            args_json, function_name, function_name
+            sid = sid,
+            args_json = args_json,
+            function_name = function_name,
         );
 
-        // Execute; native callbacks resolve scope from active context.
+        // Execute; session-aware natives resolve scope from session map.
         let script = Script::new("invoke_stream.js", &js_code);
         let js_result = self
             .run_eval_with_scope(scope, script, false)
@@ -305,7 +460,6 @@ impl QuickJSBridge {
         }
 
         // Run pending jobs to allow the async function to start executing
-        // This ensures the function begins running and can yield chunks
         self.runtime.exe_rt_task_in_event_loop(|rt| {
             rt.run_pending_jobs_if_any();
         });

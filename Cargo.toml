@@ -94,6 +94,7 @@ quickjs_runtime = "0.15"
 axum = "0.8"
 # Testing / dev
 tokio-test = "0.4"
+tokio-util = { version = "0.7", features = ["rt"] }
 tracing-test = "0.2"
 tempfile = "3"
 dotenvy = "0.15"

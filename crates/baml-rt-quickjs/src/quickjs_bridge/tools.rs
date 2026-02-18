@@ -1,5 +1,8 @@
 use super::wrappers;
-use super::{QuickJSBridge, empty_open_input, tool_step_to_value};
+use super::{
+    QuickJSBridge, StreamSessionId, empty_open_input, resolve_scope_from_session,
+    tool_step_to_value,
+};
 use crate::js_value_converter::value_to_js_value_facade;
 use baml_rt_core::context;
 use baml_rt_core::correlation;
@@ -9,7 +12,46 @@ use quickjs_runtime::jsutils::Script;
 use quickjs_runtime::quickjsrealmadapter::QuickJsRealmAdapter;
 use quickjs_runtime::values::JsValueFacade;
 use serde_json::Value;
+use std::sync::atomic::Ordering;
 use tokio::time::{Duration, timeout};
+
+/// Parse a `StreamSessionId` from the first element of a JS args array.
+///
+/// # Why `i32` only
+///
+/// Session IDs are generated exclusively by Rust (`AtomicU64` monotonic counter
+/// starting at 1, see `QuickJSBridge::next_stream_session_id`) and baked into JS
+/// as integer literals (`var __sid = N`). JS never fabricates or mutates them.
+/// QuickJS internally represents integers that fit in 31 bits as `i32`, so every
+/// Rust-generated ID arrives here as a non-negative `i32` — the `i32 as u64` cast
+/// is lossless and the round-trip is exact.
+///
+/// Accepting `f64` would be dangerous: `f64 as u64` truncates the fractional part
+/// and wraps negative values, which could silently map two distinct IDs to the same
+/// `StreamSessionId` (e.g. `1.9` and `1` would both become `1`). Since we control
+/// ID generation and guarantee small positive integers, restricting to `i32` makes
+/// the invariant explicit and avoids any lossy-cast collision risk.
+pub(super) fn parse_session_id_arg(
+    args: &[JsValueFacade],
+) -> std::result::Result<StreamSessionId, quickjs_runtime::jsutils::JsError> {
+    if args.is_empty() {
+        return Err(quickjs_runtime::jsutils::JsError::new_str(
+            "session_id is required as the first argument",
+        ));
+    }
+    if !args[0].is_i32() {
+        return Err(quickjs_runtime::jsutils::JsError::new_str(
+            "session_id must be an integer (expected i32 from QuickJS)",
+        ));
+    }
+    let v = args[0].get_i32();
+    if v < 0 {
+        return Err(quickjs_runtime::jsutils::JsError::new_str(
+            "session_id must be non-negative",
+        ));
+    }
+    Ok(StreamSessionId(v as u64))
+}
 
 impl QuickJSBridge {
     /// Register all tool functions with QuickJS
@@ -24,6 +66,11 @@ impl QuickJSBridge {
         tracing::debug!("register_tool_functions: register_tool_session_helpers start");
         self.register_tool_session_helpers().await?;
         tracing::debug!("register_tool_functions: register_tool_session_helpers done");
+
+        // Session-aware tool natives (resolve scope from session map, not LIFO registry).
+        tracing::debug!("register_tool_functions: register_tool_session_aware_helpers start");
+        self.register_tool_session_aware_helpers().await?;
+        tracing::debug!("register_tool_functions: register_tool_session_aware_helpers done");
 
         tracing::debug!("register_tool_functions: register_tool_session_wrapper start");
         self.register_tool_session_wrapper().await?;
@@ -472,6 +519,440 @@ impl QuickJSBridge {
         })?;
 
         tracing::debug!("Registered tool session helper functions");
+        Ok(())
+    }
+
+    /// Register session-aware tool natives for stream paths.
+    ///
+    /// These mirror the non-session tool natives but resolve scope from the
+    /// stream session map via `session_id` (first argument) instead of the LIFO
+    /// invocation context registry. Cancellation checkpoints are inserted before
+    /// starting async work.
+    pub(crate) async fn register_tool_session_aware_helpers(&mut self) -> Result<()> {
+        // __tool_invoke_session(session_id, tool_name, args_json)
+        let manager_clone = self.baml_manager.clone();
+        let sessions = self.stream_sessions.clone();
+        let in_flight = self.in_flight_invoke_count.clone();
+        self.runtime.set_function(
+            &[],
+            "__tool_invoke_session",
+            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
+                let session_id = parse_session_id_arg(&args)?;
+                let (scope, session) = match resolve_scope_from_session(&sessions, session_id) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        let msg = e.to_string();
+                        return Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                            Err(quickjs_runtime::jsutils::JsError::new_str(&msg))
+                        }));
+                    }
+                };
+                if args.len() < 3 {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id, tool_name, args)"));
+                }
+                let tool_name = if args[1].is_string() { args[1].get_str().to_string() } else {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Tool name must be a string"));
+                };
+                let args_json: Value = if args[2].is_string() {
+                    serde_json::from_str(args[2].get_str())
+                        .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&format!("Failed to parse JSON args: {}", e)))?
+                } else {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Args must be a JSON string"));
+                };
+                let correlation_id = session.correlation_id.clone();
+                let cancel = session.cancel.clone();
+                let manager_for_promise = manager_clone.clone();
+                in_flight.fetch_add(1, Ordering::Release);
+                let guard_counter = in_flight.clone();
+                Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                    let _in_flight_guard = super::InFlightGuard(guard_counter);
+                    if cancel.is_cancelled() {
+                        return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                    }
+                    let cancel_inner = cancel.clone();
+                    let run = async move {
+                        let tool_scope = scope.clone();
+                        context::with_scope(scope, async move {
+                            let execution_handle = {
+                                let manager = manager_for_promise.lock().await;
+                                manager.tool_execution_handle()
+                            };
+                            // Cancellation checkpoint: after acquiring handle, before tool execution
+                            if cancel_inner.is_cancelled() {
+                                return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                            }
+                            let result = execution_handle.execute_tool(&tool_scope, &tool_name, args_json).await;
+                            match result {
+                                Ok(json_value) => Ok(value_to_js_value_facade(json_value)),
+                                Err(e) => Err(quickjs_runtime::jsutils::JsError::new_str(&format!("Tool execution error: {}", e))),
+                            }
+                        }).await
+                    };
+                    if let Some(cid) = correlation_id {
+                        correlation::with_correlation_id(cid, run).await
+                    } else { run.await }
+                }))
+            },
+        ).map_err(|e| BamlRtError::QuickJsWithSource {
+            context: "Failed to register __tool_invoke_session".to_string(),
+            source: Box::new(e),
+        })?;
+
+        // __tool_from_baml_result_session(session_id, baml_result_json)
+        let manager_clone = self.baml_manager.clone();
+        let sessions = self.stream_sessions.clone();
+        let in_flight = self.in_flight_invoke_count.clone();
+        self.runtime.set_function(
+            &[],
+            "__tool_from_baml_result_session",
+            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
+                let session_id = parse_session_id_arg(&args)?;
+                let (scope, session) = match resolve_scope_from_session(&sessions, session_id) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        let msg = e.to_string();
+                        return Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                            Err(quickjs_runtime::jsutils::JsError::new_str(&msg))
+                        }));
+                    }
+                };
+                if args.len() < 2 {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id, baml_result_json)"));
+                }
+                let baml_result: Value = if args[1].is_string() {
+                    serde_json::from_str(args[1].get_str())
+                        .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&format!("Failed to parse BAML result JSON: {}", e)))?
+                } else {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("BAML result must be a JSON string"));
+                };
+                let correlation_id = session.correlation_id.clone();
+                let cancel = session.cancel.clone();
+                let manager_for_promise = manager_clone.clone();
+                in_flight.fetch_add(1, Ordering::Release);
+                let guard_counter = in_flight.clone();
+                Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                    let _in_flight_guard = super::InFlightGuard(guard_counter);
+                    if cancel.is_cancelled() {
+                        return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                    }
+                    let cancel_inner = cancel.clone();
+                    let run = async move {
+                        let tool_scope = scope.clone();
+                        context::with_scope(scope, async move {
+                            let execution_handle = {
+                                let manager = manager_for_promise.lock().await;
+                                manager.tool_execution_handle()
+                            };
+                            // Cancellation checkpoint: after acquiring handle, before tool execution
+                            if cancel_inner.is_cancelled() {
+                                return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                            }
+                            let result = execution_handle.execute_tool_from_baml_result(&tool_scope, baml_result).await;
+                            match result {
+                                Ok(json_value) => Ok(value_to_js_value_facade(json_value)),
+                                Err(e) => Err(quickjs_runtime::jsutils::JsError::new_str(&format!("Tool execution error: {}", e))),
+                            }
+                        }).await
+                    };
+                    if let Some(cid) = correlation_id {
+                        correlation::with_correlation_id(cid, run).await
+                    } else { run.await }
+                }))
+            },
+        ).map_err(|e| BamlRtError::QuickJsWithSource {
+            context: "Failed to register __tool_from_baml_result_session".to_string(),
+            source: Box::new(e),
+        })?;
+
+        // __tool_session_open_session(session_id, tool_name, open_input?)
+        let manager_clone = self.baml_manager.clone();
+        let sessions = self.stream_sessions.clone();
+        self.runtime.set_function(
+            &[],
+            "__tool_session_open_session",
+            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
+                let sid = parse_session_id_arg(&args)?;
+                let (scope, session) = match resolve_scope_from_session(&sessions, sid) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        let msg = e.to_string();
+                        return Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                            Err(quickjs_runtime::jsutils::JsError::new_str(&msg))
+                        }));
+                    }
+                };
+                if args.len() < 2 {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id, tool_name, openInputJson?)"));
+                }
+                let tool_name = if args[1].is_string() { args[1].get_str().to_string() } else {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Tool name must be a string"));
+                };
+                let open_input = if args.len() > 2 && args[2].is_string() {
+                    serde_json::from_str(args[2].get_str()).unwrap_or_else(|_| empty_open_input())
+                } else { empty_open_input() };
+                let correlation_id = session.correlation_id.clone();
+                let cancel = session.cancel.clone();
+                let manager_for_promise = manager_clone.clone();
+                Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                    if cancel.is_cancelled() {
+                        return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                    }
+                    let cancel_inner = cancel.clone();
+                    let run = async move {
+                        let session_handle = {
+                            let manager = manager_for_promise.lock().await;
+                            manager.tool_session_handle()
+                        };
+                        // Cancellation checkpoint: after acquiring handle, before tool session open
+                        if cancel_inner.is_cancelled() {
+                            return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                        }
+                        let tool_session_id = session_handle.open_tool_session(&scope, &tool_name, open_input).await;
+                        match tool_session_id {
+                            Ok(id) => Ok(JsValueFacade::new_string(id.as_str().into_owned())),
+                            Err(e) => Err(quickjs_runtime::jsutils::JsError::new_str(&format!("Tool session open error: {}", e))),
+                        }
+                    };
+                    if let Some(cid) = correlation_id {
+                        correlation::with_correlation_id(cid, run).await
+                    } else { run.await }
+                }))
+            },
+        ).map_err(|e| BamlRtError::QuickJsWithSource {
+            context: "Failed to register __tool_session_open_session".to_string(),
+            source: Box::new(e),
+        })?;
+
+        // __tool_session_send_session(session_id, tool_session_id, args_json)
+        let manager_clone = self.baml_manager.clone();
+        let sessions = self.stream_sessions.clone();
+        self.runtime.set_function(
+            &[],
+            "__tool_session_send_session",
+            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
+                let sid = parse_session_id_arg(&args)?;
+                let (scope, session) = match resolve_scope_from_session(&sessions, sid) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        let msg = e.to_string();
+                        return Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                            Err(quickjs_runtime::jsutils::JsError::new_str(&msg))
+                        }));
+                    }
+                };
+                if args.len() < 3 {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id, tool_session_id, args)"));
+                }
+                let tool_session_id = if args[1].is_string() {
+                    ToolSessionId::parse(args[1].get_str())
+                        .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?
+                } else {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Tool session id must be a string"));
+                };
+                let args_json: Value = if args[2].is_string() {
+                    serde_json::from_str(args[2].get_str())
+                        .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&format!("Failed to parse JSON args: {}", e)))?
+                } else {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Args must be a JSON string"));
+                };
+                let cancel = session.cancel.clone();
+                let manager_for_promise = manager_clone.clone();
+                Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                    if cancel.is_cancelled() {
+                        return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                    }
+                    let cancel_inner = cancel.clone();
+                    context::with_scope(scope, async move {
+                        let session_handle = {
+                            let manager = manager_for_promise.lock().await;
+                            manager.tool_session_handle()
+                        };
+                        // Cancellation checkpoint: after acquiring handle, before tool session send
+                        if cancel_inner.is_cancelled() {
+                            return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                        }
+                        let result = session_handle.tool_session_send(&tool_session_id, args_json).await;
+                        match result {
+                            Ok(_) => Ok(value_to_js_value_facade(Value::Null)),
+                            Err(e) => Err(quickjs_runtime::jsutils::JsError::new_str(&format!("Tool session send error: {}", e))),
+                        }
+                    }).await
+                }))
+            },
+        ).map_err(|e| BamlRtError::QuickJsWithSource {
+            context: "Failed to register __tool_session_send_session".to_string(),
+            source: Box::new(e),
+        })?;
+
+        // __tool_session_next_session(session_id, tool_session_id)
+        let manager_clone = self.baml_manager.clone();
+        let sessions = self.stream_sessions.clone();
+        self.runtime.set_function(
+            &[],
+            "__tool_session_next_session",
+            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
+                let sid = parse_session_id_arg(&args)?;
+                let (scope, session) = match resolve_scope_from_session(&sessions, sid) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        let msg = e.to_string();
+                        return Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                            Err(quickjs_runtime::jsutils::JsError::new_str(&msg))
+                        }));
+                    }
+                };
+                if args.len() < 2 {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id, tool_session_id)"));
+                }
+                let tool_session_id = if args[1].is_string() {
+                    ToolSessionId::parse(args[1].get_str())
+                        .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?
+                } else {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Tool session id must be a string"));
+                };
+                let cancel = session.cancel.clone();
+                let manager_for_promise = manager_clone.clone();
+                Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                    if cancel.is_cancelled() {
+                        return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                    }
+                    let cancel_inner = cancel.clone();
+                    context::with_scope(scope, async move {
+                        let session_handle = {
+                            let manager = manager_for_promise.lock().await;
+                            manager.tool_session_handle()
+                        };
+                        // Cancellation checkpoint: after acquiring handle, before tool session next
+                        if cancel_inner.is_cancelled() {
+                            return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                        }
+                        let result = session_handle.tool_session_next(&tool_session_id).await;
+                        match result {
+                            Ok(step) => Ok(value_to_js_value_facade(tool_step_to_value(step))),
+                            Err(e) => Err(quickjs_runtime::jsutils::JsError::new_str(&format!("Tool session next error: {}", e))),
+                        }
+                    }).await
+                }))
+            },
+        ).map_err(|e| BamlRtError::QuickJsWithSource {
+            context: "Failed to register __tool_session_next_session".to_string(),
+            source: Box::new(e),
+        })?;
+
+        // __tool_session_finish_session(session_id, tool_session_id)
+        let manager_clone = self.baml_manager.clone();
+        let sessions = self.stream_sessions.clone();
+        self.runtime.set_function(
+            &[],
+            "__tool_session_finish_session",
+            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
+                let sid = parse_session_id_arg(&args)?;
+                let (scope, session) = match resolve_scope_from_session(&sessions, sid) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        let msg = e.to_string();
+                        return Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                            Err(quickjs_runtime::jsutils::JsError::new_str(&msg))
+                        }));
+                    }
+                };
+                if args.len() < 2 {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id, tool_session_id)"));
+                }
+                let tool_session_id = if args[1].is_string() {
+                    ToolSessionId::parse(args[1].get_str())
+                        .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?
+                } else {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Tool session id must be a string"));
+                };
+                let cancel = session.cancel.clone();
+                let manager_for_promise = manager_clone.clone();
+                Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                    if cancel.is_cancelled() {
+                        return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                    }
+                    let cancel_inner = cancel.clone();
+                    context::with_scope(scope, async move {
+                        let session_handle = {
+                            let manager = manager_for_promise.lock().await;
+                            manager.tool_session_handle()
+                        };
+                        // Cancellation checkpoint: after acquiring handle, before tool session finish
+                        if cancel_inner.is_cancelled() {
+                            return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                        }
+                        let result = session_handle.tool_session_finish(&tool_session_id).await;
+                        match result {
+                            Ok(_) => Ok(value_to_js_value_facade(Value::Null)),
+                            Err(e) => Err(quickjs_runtime::jsutils::JsError::new_str(&format!("Tool session finish error: {}", e))),
+                        }
+                    }).await
+                }))
+            },
+        ).map_err(|e| BamlRtError::QuickJsWithSource {
+            context: "Failed to register __tool_session_finish_session".to_string(),
+            source: Box::new(e),
+        })?;
+
+        // __tool_session_abort_session(session_id, tool_session_id, reason?)
+        let manager_clone = self.baml_manager.clone();
+        let sessions = self.stream_sessions.clone();
+        self.runtime.set_function(
+            &[],
+            "__tool_session_abort_session",
+            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
+                let sid = parse_session_id_arg(&args)?;
+                let (scope, session) = match resolve_scope_from_session(&sessions, sid) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        let msg = e.to_string();
+                        return Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                            Err(quickjs_runtime::jsutils::JsError::new_str(&msg))
+                        }));
+                    }
+                };
+                if args.len() < 2 {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id, tool_session_id, reason?)"));
+                }
+                let tool_session_id = if args[1].is_string() {
+                    ToolSessionId::parse(args[1].get_str())
+                        .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?
+                } else {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Tool session id must be a string"));
+                };
+                let reason = args.get(2).and_then(|v| {
+                    if v.is_string() { Some(v.get_str().to_string()) } else { None }
+                });
+                let cancel = session.cancel.clone();
+                let manager_for_promise = manager_clone.clone();
+                Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                    if cancel.is_cancelled() {
+                        return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                    }
+                    let cancel_inner = cancel.clone();
+                    context::with_scope(scope, async move {
+                        let session_handle = {
+                            let manager = manager_for_promise.lock().await;
+                            manager.tool_session_handle()
+                        };
+                        // Cancellation checkpoint: after acquiring handle, before tool session abort
+                        if cancel_inner.is_cancelled() {
+                            return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                        }
+                        let result = session_handle.tool_session_abort(&tool_session_id, reason).await;
+                        match result {
+                            Ok(_) => Ok(value_to_js_value_facade(Value::Null)),
+                            Err(e) => Err(quickjs_runtime::jsutils::JsError::new_str(&format!("Tool session abort error: {}", e))),
+                        }
+                    }).await
+                }))
+            },
+        ).map_err(|e| BamlRtError::QuickJsWithSource {
+            context: "Failed to register __tool_session_abort_session".to_string(),
+            source: Box::new(e),
+        })?;
+
+        tracing::debug!("Registered session-aware tool helper functions");
         Ok(())
     }
 
