@@ -9,7 +9,6 @@
 //!   with `WITH 1 AS _`) to reduce round-trips.
 //! - `WITH 1 AS _` resets the variable scope between clauses so we can reuse
 //!   short variable names like `n`, `a`, `b`, and `r`.
-use crate::cypher_parse::{decode_embedded_json, parse_rows};
 use crate::error::{ProvenanceError, Result};
 use crate::graph_model::{
     ConversationReadModel, EDGE_WAS_EMITTED_BY, EDGE_WAS_EXECUTED_BY, EDGE_WAS_INVOKED_BY,
