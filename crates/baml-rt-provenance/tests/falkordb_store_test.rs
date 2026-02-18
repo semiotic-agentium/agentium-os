@@ -774,6 +774,181 @@ async fn falkordb_conversation_history_and_attribution_snapshot() {
     );
 }
 
+#[tokio::test]
+async fn falkordb_conversation_context_reconstructs_bracket_message_and_tool_result() {
+    let connection = shared_falkordb().await;
+    let graph = "baml_prov_context_reconstruct_bracket_test";
+    let writer = FalkorDbProvenanceWriter::new(FalkorDbProvenanceConfig::new(connection, graph));
+    let context_id = ContextId::new(5, 1);
+    let task_id = TaskId::from_external(ExternalId::new("task-ctx-5"));
+    let agent_id_raw = "00000000-0000-0000-0000-000000000010";
+    let agent_id = AgentId::from_uuid(UuidId::parse_str(agent_id_raw).expect("agent uuid"));
+
+    let events = vec![
+        ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(50),
+            context_id: context_id.clone(),
+            timestamp_ms: 1_700_000_200_000,
+            data: ProvEventData::AgentBooted {
+                agent_id: agent_id.clone(),
+                agent_type: AgentType::new("clickup").expect("agent_type"),
+                agent_version: "1.0.0".to_string(),
+                archive_path: "clickup-agent@1.0.0".to_string(),
+            },
+        }),
+        ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(51),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_200_005,
+            data: ProvEventData::TaskCreated {
+                task_id: task_id.clone(),
+                agent_id: agent_id.clone(),
+            },
+        }),
+        ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(52),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_200_010,
+            data: ProvEventData::MessageReceived {
+                id: MessageId::from_external(ExternalId::new("msg-ctx-5-user-1")),
+                role: "user".to_string(),
+                content: vec!["set task Test1 to in progress please".to_string()],
+                metadata: Some(std::collections::HashMap::from([
+                    ("agent_id".to_string(), agent_id_raw.to_string()),
+                    ("channel".to_string(), "a2a".to_string()),
+                    ("message_id".to_string(), "msg-ctx-5-user-1".to_string()),
+                ])),
+            },
+        }),
+        ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(53),
+            context_id: context_id.clone(),
+            timestamp_ms: 1_700_000_200_020,
+            data: ProvEventData::ToolCallStarted {
+                scope: CallScope::Message {
+                    message_id: MessageId::from_external(ExternalId::new("msg-ctx-5-user-1")),
+                },
+                tool_name: "support/clickupMutate".to_string(),
+                function_name: Some("ChooseClickUpAction".to_string()),
+                args: json!({
+                    "mutate_action": "UpdateTask",
+                    "task_id": "86afcwxrj",
+                    "status": "in progress"
+                }),
+                metadata: json!({
+                    "message_id": "msg-ctx-5-user-1",
+                    "phase": "send",
+                    "agent_id": agent_id_raw,
+                    "args": {
+                        "mutate_action": "UpdateTask",
+                        "task_id": "86afcwxrj",
+                        "status": "in progress"
+                    }
+                }),
+            },
+        }),
+        ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(54),
+            context_id: context_id.clone(),
+            timestamp_ms: 1_700_000_200_030,
+            data: ProvEventData::ToolCallCompleted {
+                scope: CallScope::Message {
+                    message_id: MessageId::from_external(ExternalId::new("msg-ctx-5-user-1")),
+                },
+                tool_name: "support/clickupMutate".to_string(),
+                function_name: Some("ChooseClickUpAction".to_string()),
+                args: json!({
+                    "mutate_action": "UpdateTask",
+                    "task_id": "86afcwxrj",
+                    "status": "in progress"
+                }),
+                metadata: json!({
+                    "message_id": "msg-ctx-5-user-1",
+                    "phase": "send",
+                    "agent_id": agent_id_raw,
+                    "args": {
+                        "mutate_action": "UpdateTask",
+                        "task_id": "86afcwxrj",
+                        "status": "in progress"
+                    },
+                    "result": {
+                        "tasks": [
+                            {
+                                "id": "86afcwxrj",
+                                "name": "Test1",
+                                "status": "in progress",
+                                "url": "https://app.clickup.com/t/86afcwxrj"
+                            }
+                        ],
+                        "items": [],
+                        "message": "Updated task 86afcwxrj"
+                    }
+                }),
+                duration_ms: 32,
+                success: true,
+            },
+        }),
+        ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(55),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_200_040,
+            data: ProvEventData::MessageSent {
+                id: MessageId::from_external(ExternalId::new("msg-ctx-5-assistant-1")),
+                role: "assistant".to_string(),
+                content: vec![
+                    "Updated task 86afcwxrj\n\n• Test1 [in progress] — https://app.clickup.com/t/86afcwxrj"
+                        .to_string(),
+                ],
+                metadata: Some(std::collections::HashMap::from([
+                    ("agent_id".to_string(), agent_id_raw.to_string()),
+                    ("message_id".to_string(), "msg-ctx-5-assistant-1".to_string()),
+                ])),
+            },
+        }),
+    ];
+
+    writer.add_events(events).await.expect("write events");
+
+    let context_items = writer
+        .conversation_context(&context_id, Some(40))
+        .await
+        .expect("read conversation context");
+
+    let assistant_message = context_items
+        .iter()
+        .find(|item| {
+            item.source == "message"
+                && item.role == "assistant"
+                && item
+                    .content
+                    .as_str()
+                    .is_some_and(|s| s.contains("Test1 [in progress]"))
+        })
+        .expect("assistant message with bracketed status should be present");
+    assert_eq!(assistant_message.event_id, "prov-55");
+
+    let tool_result_item = context_items
+        .iter()
+        .find(|item| {
+            item.source == "tool_result"
+                && item.content.get("tool_name").and_then(Value::as_str)
+                    == Some("support/clickupMutate")
+        })
+        .expect("tool_result item should be present");
+
+    assert_eq!(
+        tool_result_item.content["result"]["message"],
+        Value::String("Updated task 86afcwxrj".to_string())
+    );
+    assert_eq!(
+        tool_result_item.content["result"]["tasks"][0]["status"],
+        Value::String("in progress".to_string())
+    );
+}
+
 fn graph_snapshot_json(raw: &str) -> Value {
     parse_graph_snapshot(raw)
         .map(normalize_value)
