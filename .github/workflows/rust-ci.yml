@@ -9,7 +9,7 @@ on:
 
 permissions:
   contents: read
-  actions: read
+  actions: write  # rust-cache and sccache need write to save cache entries
   packages: read
   checks: write   # required for JUnit report action to create check runs
 
@@ -28,6 +28,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Ensure zstd available
+        run: |
+          if ! command -v zstd &>/dev/null; then
+            sudo apt-get update && sudo apt-get install -y zstd
+          fi
+
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@v0.0.9
 
@@ -44,7 +50,7 @@ jobs:
         with:
           shared-key: "ci-nextest"
           cache-on-failure: true
-          cache-targets: "true"
+          cache-targets: "false"
 
       - name: Install build dependencies
         run: |
