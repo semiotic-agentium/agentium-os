@@ -6,9 +6,22 @@ declare function ChooseClickUpAction(
   args?: Record<string, unknown>
 ): Promise<unknown>;
 
+type ToolSessionHandle = {
+  send(args: Record<string, unknown>): Promise<unknown>;
+  continue(): Promise<unknown>;
+  finish(): Promise<unknown>;
+  abort(reason?: string): Promise<unknown>;
+};
+
+declare function openToolSession(
+  toolName: string,
+  openInput?: Record<string, unknown>
+): Promise<ToolSessionHandle>;
+
 const MAX_REACT_STEPS = 8;
 const MAX_FINGERPRINT_CHARS = 6000;
 const MAX_CONSECUTIVE_REPEATS = 2;
+const CLICKUP_TOOL_NAME = "support/clickup";
 
 type FinalResponse = { message: string };
 type ClickUpTask = {
@@ -26,6 +39,14 @@ type ClickUpOutput = {
   tasks?: ClickUpTask[];
   items?: ClickUpItem[];
   message?: string;
+};
+type SupportClickupSessionStep = {
+  op?: string;
+  input?: Record<string, unknown>;
+  reason?: string;
+};
+type SupportClickupSessionPlan = {
+  steps: SupportClickupSessionStep[];
 };
 
 function extractText(message: ChatMessage | null | undefined): string {
@@ -50,6 +71,66 @@ function isFinalResponse(v: unknown): v is FinalResponse {
 function isToolOutput(v: unknown): v is ClickUpOutput {
   if (!isObject(v)) return false;
   return Array.isArray(v.tasks) || Array.isArray(v.items);
+}
+
+function isSessionPlan(v: unknown): v is SupportClickupSessionPlan {
+  if (!isObject(v) || !Array.isArray(v.steps)) return false;
+  return v.steps.every(
+    (step) =>
+      isObject(step) &&
+      typeof step.op === "string" &&
+      (step.op !== "Send" || isObject(step.input))
+  );
+}
+
+function extractToolOutput(v: unknown): ClickUpOutput | null {
+  if (isToolOutput(v)) return v;
+  if (isObject(v) && isToolOutput(v.output)) return v.output;
+  return null;
+}
+
+async function executeClickUpPlan(
+  plan: SupportClickupSessionPlan
+): Promise<ClickUpOutput | null> {
+  let session: ToolSessionHandle | null = null;
+  let lastStepOutput: unknown = null;
+
+  for (const step of plan.steps) {
+    switch (step.op) {
+      case "Open":
+        if (!session) session = await openToolSession(CLICKUP_TOOL_NAME);
+        break;
+      case "Send":
+        if (!session) session = await openToolSession(CLICKUP_TOOL_NAME);
+        await session.send(step.input || {});
+        break;
+      case "Next":
+        if (!session) session = await openToolSession(CLICKUP_TOOL_NAME);
+        lastStepOutput = await session.continue();
+        break;
+      case "Finish":
+        if (session) {
+          await session.finish();
+          session = null;
+        }
+        break;
+      case "Abort":
+        if (session) {
+          await session.abort(step.reason);
+          session = null;
+        }
+        return null;
+      default:
+        return null;
+    }
+  }
+
+  if (session) {
+    lastStepOutput = await session.continue();
+    await session.finish();
+  }
+
+  return extractToolOutput(lastStepOutput);
 }
 
 function truncate(text: string, max: number): string {
@@ -97,10 +178,22 @@ async function onChatMessage(
 
     try {
       for (let step = 1; step <= MAX_REACT_STEPS; step++) {
-        const result: unknown = await ChooseClickUpAction({
+        let result: unknown = await ChooseClickUpAction({
           user_message: text,
           __baml_invocation_token: token,
         });
+
+        if (isSessionPlan(result)) {
+          const executedOutput = await executeClickUpPlan(result);
+          if (executedOutput) {
+            result = executedOutput;
+          } else {
+            return {
+              message:
+                "ClickUp planner returned a raw session plan but no tool output was produced.",
+            };
+          }
+        }
 
         if (isFinalResponse(result)) {
           return { message: result.message };
