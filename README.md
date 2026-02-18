@@ -161,6 +161,30 @@ baml-rt/
 └── tests/                       # Workspace-level tests and fixtures
 ```
 
+## Development Commands (justfile)
+
+The project uses [just](https://github.com/casey/just) as a command runner. A `.env` file is loaded automatically (`set dotenv-load`). Run `just --list` to see all available recipes.
+
+| Recipe | Usage | Description |
+|---|---|---|
+| `just fmt` | `just fmt` | Run `cargo fmt --all` to format the entire workspace. |
+| `just test` | `just test` | Full nextest suite with CI-parity feature flags. Requires `cargo-nextest`, a running FalkorDB on `localhost:6379`, and `OPENROUTER_API_KEY` for LLM tests. |
+| `just test-build` | `just test-build` | Compile-only (no execution) — useful as a quick pre-push sanity check. |
+| `just test-crate <crate>` | `just test-crate baml-rt-provenance` | Run tests for a single crate with the same CI feature flags. |
+| `just test-unit` | `just test-unit` | Run only unit tests that need neither FalkorDB nor API keys. |
+| `just clickup-agent` | `just clickup-agent` | Build and run the ClickUp agent: packages it via `baml-agent-builder` then launches the runner in A2A stdio mode. Connects to FalkorDB at `$FALKORDB_URL` (default `redis://localhost:6379`). |
+| `just provenance-mermaid <context_id>` | `just provenance-mermaid ctx-1771426017780-2` | Export a simplified Mermaid sequence diagram for a given provenance context ID. |
+
+### CI feature flags
+
+The `test`, `test-build`, and `test-crate` recipes enable the following features to match CI:
+
+```text
+baml-rt-tools/http-tools, baml-rt-builder/http-tools, baml-rt-provenance/falkordb-tests,
+baml-rt-a2a/falkordb-tests, baml-agent-runner/falkordb-tests, baml-agent-runner/http-tools,
+baml-rt/llm-tests, baml-agent-runner/llm-tests
+```
+
 ## Testing
 
 Source `.env` before running tests so API-key–dependent e2e and contract tests pass (e.g. `OPENROUTER_API_KEY`):
