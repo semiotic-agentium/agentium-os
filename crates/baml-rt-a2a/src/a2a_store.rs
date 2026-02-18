@@ -50,6 +50,11 @@ pub struct TaskStore {
 #[async_trait]
 pub trait TaskRepository: Send + Sync {
     async fn upsert(&self, task: Task) -> Result<Option<Task>>;
+    async fn ensure_task_exists(
+        &self,
+        task_id: &TaskId,
+        context_id: Option<&ContextId>,
+    ) -> Result<()>;
     async fn get(&self, id: &str, history_length: Option<usize>) -> Option<Task>;
     async fn list(&self, request: &ListTasksRequest) -> ListTasksResponse;
     async fn cancel(&self, id: &str) -> Option<Task>;
@@ -126,6 +131,16 @@ impl TaskRepository for Mutex<TaskStore> {
     async fn upsert(&self, task: Task) -> Result<Option<Task>> {
         let mut store = self.lock().await;
         Ok(store.upsert(task))
+    }
+
+    async fn ensure_task_exists(
+        &self,
+        task_id: &TaskId,
+        context_id: Option<&ContextId>,
+    ) -> Result<()> {
+        let mut store = self.lock().await;
+        store.ensure_task_exists(task_id.clone(), context_id.cloned());
+        Ok(())
     }
 
     async fn get(&self, id: &str, history_length: Option<usize>) -> Option<Task> {
@@ -330,6 +345,17 @@ impl TaskRepository for ProvenanceTaskStore {
         let out = self.inner.upsert(task).await?;
         record_task_store_metrics("upsert", "success", start);
         Ok(out)
+    }
+
+    async fn ensure_task_exists(
+        &self,
+        task_id: &TaskId,
+        context_id: Option<&ContextId>,
+    ) -> Result<()> {
+        let start = Instant::now();
+        self.inner.ensure_task_exists(task_id, context_id).await?;
+        record_task_store_metrics("ensure_task_exists", "success", start);
+        Ok(())
     }
 
     async fn get(&self, id: &str, history_length: Option<usize>) -> Option<Task> {
@@ -753,6 +779,27 @@ impl TaskStore {
             .and_then(|existing| existing.status.clone());
         self.tasks.insert(id_str.to_string(), task.clone());
         Some(task)
+    }
+
+    /// Insert a minimal task shell only when absent; never overwrites existing fields.
+    pub fn ensure_task_exists(&mut self, task_id: TaskId, context_id: Option<ContextId>) {
+        let id = task_id.as_str().to_string();
+        if self.tasks.contains_key(&id) {
+            return;
+        }
+        self.order.push(id.clone());
+        self.tasks.insert(
+            id,
+            Task {
+                id: Some(task_id),
+                context_id,
+                artifacts: Vec::new(),
+                history: Vec::new(),
+                status: None,
+                metadata: None,
+                extra: HashMap::new(),
+            },
+        );
     }
 
     pub fn get(&self, id: &str, history_length: Option<usize>) -> Option<Task> {

@@ -1011,6 +1011,16 @@ impl A2aAgent {
                     && let Ok(params) =
                         serde_json::from_value::<SendMessageRequest>(parsed_request.params.clone())
                 {
+                    // When the inbound message carries a task_id (e.g.
+                    // client-assigned on first turn), ensure the parent
+                    // task row exists before persisting the message.
+                    // This must be insert-if-missing semantics so existing
+                    // task metadata/artifacts are never overwritten.
+                    if let Some(task_id) = params.message.task_id.clone() {
+                        self.task_store
+                            .ensure_task_exists(&task_id, params.message.context_id.as_ref())
+                            .await?;
+                    }
                     self.task_store.insert_message(&params.message).await?;
                 }
                 let route_span = spans::a2a_route(
@@ -1034,7 +1044,7 @@ impl A2aAgent {
             }
             Ok(_) => metrics::record_a2a_request(method.as_str(), "success", invocation, duration),
             Err(err) => {
-                tracing::warn!(error = %err, "handle_a2a: routing error");
+                tracing::warn!(error = ?err, "handle_a2a: routing error");
                 metrics::record_a2a_request(method.as_str(), "error", invocation, duration);
                 metrics::record_a2a_error(
                     method.as_str(),

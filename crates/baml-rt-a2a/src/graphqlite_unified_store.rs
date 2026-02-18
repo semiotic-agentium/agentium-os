@@ -290,6 +290,33 @@ impl TaskRepository for GraphqliteUnifiedStore {
         Ok(Some(out))
     }
 
+    async fn ensure_task_exists(
+        &self,
+        task_id: &TaskId,
+        context_id: Option<&ContextId>,
+    ) -> Result<()> {
+        self.ensure_schema().await?;
+        let context_id = context_id
+            .map(|c| c.as_str().to_string())
+            .unwrap_or_default();
+        self.store
+            .run_sql_execute(
+                "INSERT OR IGNORE INTO a2a_tasks \
+                 (id, context_id, status_json, metadata_json, extra_json, artifacts_json, ord) \
+                 VALUES (?1, ?2, '', '{}', '{}', '[]', \
+                         (SELECT COALESCE(MAX(ord),0)+1 FROM a2a_tasks))",
+                &[
+                    Value::String(task_id.as_str().to_string()),
+                    Value::String(context_id),
+                ],
+            )
+            .await
+            .map_err(|e| BamlRtError::ProvenanceContextRead {
+                source: Box::new(e),
+            })?;
+        Ok(())
+    }
+
     async fn get(&self, id: &str, history_length: Option<usize>) -> Option<Task> {
         let _ = self.ensure_schema().await.ok()?;
         let rows = self
