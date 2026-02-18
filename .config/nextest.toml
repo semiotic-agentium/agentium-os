@@ -1,7 +1,6 @@
 # Nextest config for BAML runtime workspace.
 # See https://nexte.st/docs/configuration/
 
-[nextest]
 experimental = ["setup-scripts"]
 
 # Regenerate fixture TypeScript type declarations once before tests start.
