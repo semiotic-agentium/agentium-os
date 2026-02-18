@@ -37,11 +37,11 @@ async-trait = { workspace = true }
 uuid = { workspace = true }
 genco = "0.19.0"
 dotenvy = { workspace = true }
+tempfile = { workspace = true }
 
 [dev-dependencies]
 test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
-tempfile = { workspace = true }
 insta = { workspace = true }
 
 [features]

@@ -155,11 +155,13 @@ impl TypeGenerator for RuntimeTypeGenerator {
         use std::collections::HashMap;
 
         // Generate BAML tool interfaces (committed in repo; regen_fixtures runs periodically to match manifest).
+        // Uses atomic write (write tmp + rename) so concurrent nextest processes never
+        // read a half-written file.
         let tool_names = load_manifest_tools(baml_src)?;
         if !tool_names.is_empty() {
             let baml_interfaces = render_baml_tool_interfaces(&tool_names)?;
             let baml_output_path = baml_src.join("generated_tools.baml");
-            fs::write(&baml_output_path, baml_interfaces).map_err(BamlRtError::Io)?;
+            atomic_write(&baml_output_path, baml_interfaces.as_bytes())?;
         }
 
         // Load BAML runtime to discover functions (after generating BAML interfaces)
@@ -177,8 +179,21 @@ impl TypeGenerator for RuntimeTypeGenerator {
         if let Some(parent) = ts_output_path.parent() {
             fs::create_dir_all(parent).map_err(BamlRtError::Io)?;
         }
-        fs::write(&ts_output_path, declarations).map_err(BamlRtError::Io)?;
+        atomic_write(&ts_output_path, declarations.as_bytes())?;
 
         Ok(())
     }
+}
+
+/// Write `data` to a temporary file in the same directory, then atomically rename
+/// over `dest`.  On Unix `rename(2)` is atomic, so concurrent readers never see
+/// a half-written file — they get either the old content or the new content.
+fn atomic_write(dest: &Path, data: &[u8]) -> Result<()> {
+    use std::io::Write;
+
+    let parent = dest.parent().unwrap_or(Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(BamlRtError::Io)?;
+    tmp.write_all(data).map_err(BamlRtError::Io)?;
+    tmp.persist(dest).map_err(|e| BamlRtError::Io(e.error))?;
+    Ok(())
 }
