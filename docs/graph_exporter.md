@@ -1,26 +1,26 @@
 # Graph Exporter
 
-The graph exporter is a CLI tool that reads provenance data from FalkorDB and
-renders agent conversation graphs in multiple output formats. It lives in
-`crates/baml-rt-provenance/src/bin/graph_exporter.rs`.
+The graph exporter is a CLI tool that reads provenance data from a GraphQLite
+database and renders agent conversation graphs in multiple output formats. It
+lives in `crates/baml-rt-provenance/src/bin/graph_exporter.rs`.
 
 ## Quick Start
 
-Requires a running FalkorDB instance with provenance data (the agent platform
-writes to it automatically when configured with a provenance writer).
-
+Requires a GraphQLite database file with provenance data (the agent runner
+writes to it when started with `--provenance-db <path>`; default is in-memory).
 
 ```sh
 cargo run -p baml-rt-provenance --features cli --bin graph_exporter -- \
+  --db provenance.db \
   --context-id ctx-1771210416700-2 \
   --simplify \
   --format mermaid > conversation.mmd
 ```
 
-This connects to a local FalkorDB instance(started with ./scripts/falkordb.sh), exports the provenance graph for
-the given context, simplifies it (dedup edges, collapse start/complete pairs,
-filter infrastructure nodes, temporal sort), and renders a Mermaid sequence
-diagram to `conversation.mmd`.
+This reads the given database, exports the provenance graph for the context,
+simplifies it (dedup edges, collapse start/complete pairs, filter
+infrastructure nodes, temporal sort), and renders a Mermaid sequence diagram
+to `conversation.mmd`.
 
 ## Example Output
 
@@ -144,8 +144,7 @@ debugging provenance issues but produces noisy diagrams.
 
 ## Connection Options
 
-- `--connection <URL>` — FalkorDB connection string (default: `falkor://127.0.0.1:6379`)
-- `--graph <NAME>` — FalkorDB graph name (default: `baml_prov`)
+- `--db <PATH>` — Path to GraphQLite database file (default: `provenance.db`). Use `:memory:` for an empty in-memory DB (no data).
 - `--output <PATH>` — write to file instead of stdout
 
 ## Examples

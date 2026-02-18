@@ -311,7 +311,7 @@ const DEFAULT_ARGS_SUMMARY_LEN: usize = 80;
 
 /// Derive a human-readable display name from a node's label and properties.
 ///
-/// Handles real FalkorDB data shapes: JSON arrays for content, raw enum
+/// Handles graph backend data shapes: JSON arrays for content, raw enum
 /// role variants, metadata objects with `phase`, etc.
 fn derive_display_name(label: &str, props: &HashMap<String, serde_json::Value>) -> String {
     // Extract a string property. Handles `Value::String` directly, and also
@@ -864,7 +864,7 @@ mod tests {
             a2a::ROLE.to_string(),
             serde_json::Value::String("ROLE_USER".to_string()),
         );
-        // Content stored as a JSON array (as FalkorDB returns it).
+        // Content stored as a JSON array (as GraphQLite returns it).
         props.insert(
             a2a::CONTENT.to_string(),
             serde_json::Value::Array(vec![serde_json::Value::String(
@@ -947,7 +947,7 @@ mod tests {
             a2a::TOOL_NAME.to_string(),
             serde_json::Value::String("support/clickupMutate".to_string()),
         );
-        // Metadata stored as a JSON-encoded string (common in FalkorDB).
+        // Metadata stored as a JSON-encoded string (common in graph backends).
         props.insert(
             a2a::METADATA.to_string(),
             serde_json::Value::String(
