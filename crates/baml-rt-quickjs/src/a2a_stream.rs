@@ -164,7 +164,21 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
             .await
             {
                 Ok(Ok(d)) => d,
-                Ok(Err(e)) => return Err(e),
+                Ok(Err(e)) => {
+                    // Rare today: get_a2a_yield_buffer() is effectively infallible on normal
+                    // paths. Keep this cleanup anyway so future hardening/error paths cannot
+                    // leak stream-local state.
+                    //
+                    // finalize_a2a_stream_invocation() tears down only this stream invocation
+                    // (context/permit/yield channel). It does NOT stop the QuickJS runtime,
+                    // agent process, or transport sockets.
+                    tracing::error!(
+                        error = ?e,
+                        "a2a stream buffer read failed; finalizing stream invocation state"
+                    );
+                    self.bridge.finalize_a2a_stream_invocation().await;
+                    return Err(e);
+                }
                 Err(_) => BufferDrain {
                     chunks: vec![],
                     channel_closed: false,
