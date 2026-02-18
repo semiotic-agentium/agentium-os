@@ -5,13 +5,13 @@
 pub mod a2a;
 pub mod a2a_store;
 pub mod a2a_transport;
-pub mod graphqlite_unified_store;
 pub mod a2a_types;
 pub mod agent_registry;
 pub mod auto_status;
 pub mod error_classifier;
 pub mod error_mapping;
 pub mod events;
+pub mod graphqlite_unified_store;
 pub mod handlers;
 pub mod request_router;
 pub mod response;

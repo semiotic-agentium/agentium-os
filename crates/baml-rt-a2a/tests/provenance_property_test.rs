@@ -7,7 +7,6 @@ mod common;
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt_core::ids::{ContextId, CorrelationId};
 use baml_rt_provenance::GraphqliteStoreBuilder;
-use std::sync::Arc;
 use test_support::common::send_stream_request;
 use tokio::time::Duration;
 

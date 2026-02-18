@@ -1,8 +1,8 @@
 //! Graph export and rendering for provenance subgraphs.
 //!
-//! This module reads the FalkorDB provenance graph via Cypher queries and
+//! This module reads the GraphQLite provenance graph via Cypher queries and
 //! produces an [`ExportedGraph`] — a portable, renderable representation of
-//! nodes and edges.  Pure-function renderers then convert `ExportedGraph` into
+//! nodes and edges. Pure-function renderers then convert `ExportedGraph` into
 //! Mermaid, Graphviz DOT, or JSON for frontends, tests, and documentation.
 
 pub mod assertions;
@@ -13,14 +13,14 @@ pub mod simplify;
 
 use std::collections::HashMap;
 
+use graphqlite::CypherResult;
 use serde::{Deserialize, Serialize};
-use text_to_cypher::core::execute_cypher_query;
 
-use crate::cypher_parse::{decode_embedded_json, parse_graph_snapshot};
-use crate::error::ProvenanceError;
-use crate::falkordb_store::FalkorDbProvenanceConfig;
+use crate::error::Result;
 use crate::graph_model::GraphNodeLabel;
+use crate::graphqlite_store::GraphqliteProvenanceStore;
 use crate::vocabulary::{a2a, message_directions};
+use std::sync::Arc;
 
 // ── Core types ──────────────────────────────────────────────────────────────
 
@@ -76,117 +76,75 @@ pub enum ExportScope {
     Full,
 }
 
-// ── GraphExporter ───────────────────────────────────────────────────────────
+// ── GraphExporter (GraphQLite) ───────────────────────────────────────────────
 
-/// Reads the FalkorDB provenance graph and produces [`ExportedGraph`] values.
+/// Reads the GraphQLite provenance graph and produces [`ExportedGraph`] values.
 pub struct GraphExporter {
-    config: FalkorDbProvenanceConfig,
+    store: Arc<GraphqliteProvenanceStore>,
 }
 
 impl GraphExporter {
-    pub fn new(config: FalkorDbProvenanceConfig) -> Self {
-        Self { config }
+    pub fn new(store: Arc<GraphqliteProvenanceStore>) -> Self {
+        Self { store }
     }
 
     /// Export the full subgraph for a given `context_id`.
-    ///
-    /// The Cypher query uses `OR` to be inclusive (agents may have a different
-    /// boot context). A Rust-level post-filter then removes nodes whose
-    /// `a2a:context_id` doesn't match, exempting agent nodes which
-    /// legitimately cross context boundaries.
     #[tracing::instrument(skip(self), fields(context_id))]
-    pub async fn export_by_context(&self, context_id: &str) -> crate::error::Result<ExportedGraph> {
-        let query = format!(
-            r#"MATCH (n)-[r]->(m)
-               WHERE n.`a2a:context_id` = "{context_id}"
-                  OR m.`a2a:context_id` = "{context_id}"
-               RETURN labels(n)[0] AS src_label, n.name AS src_id, properties(n) AS src_props,
-                      type(r) AS rel_type, properties(r) AS rel_props,
-                      labels(m)[0] AS tgt_label, m.name AS tgt_id, properties(m) AS tgt_props
-               ORDER BY n.`a2a:event_id`, type(r), m.`a2a:event_id`"#
-        );
-        let raw = execute_cypher_query(&query, &self.config.graph, &self.config.connection, true)
-            .await
-            .map_err(ProvenanceError::Storage)?;
-
-        let graph = parse_export_result(&raw, ExportScope::Context(context_id.to_string()))?;
+    pub async fn export_by_context(&self, context_id: &str) -> Result<ExportedGraph> {
+        const QUERY: &str = "MATCH (a)-[r]->(b) \
+            WHERE a.a2a_context_id = $context AND b.a2a_context_id = $context \
+            RETURN a.id AS src_id, labels(a)[0] AS src_label, properties(a) AS src_props, \
+                   type(r) AS rel_type, properties(r) AS rel_props, \
+                   b.id AS tgt_id, labels(b)[0] AS tgt_label, properties(b) AS tgt_props \
+            ORDER BY a.a2a_event_id, type(r), b.a2a_event_id";
+        let params = serde_json::json!({ "context": context_id });
+        let result = self.store.run_cypher_read(QUERY, &params).await?;
+        let graph =
+            parse_graphqlite_export_result(&result, ExportScope::Context(context_id.to_string()))?;
         Ok(filter_scope(graph, a2a::CONTEXT_ID, context_id))
     }
 
     /// Export the full subgraph for a given `task_id`.
-    ///
-    /// Same inclusive-then-filter strategy as [`export_by_context`].
     #[tracing::instrument(skip(self), fields(task_id))]
-    pub async fn export_by_task(&self, task_id: &str) -> crate::error::Result<ExportedGraph> {
-        let query = format!(
-            r#"MATCH (n)-[r]->(m)
-               WHERE n.`a2a:task_id` = "{task_id}"
-                  OR m.`a2a:task_id` = "{task_id}"
-               RETURN labels(n)[0] AS src_label, n.name AS src_id, properties(n) AS src_props,
-                      type(r) AS rel_type, properties(r) AS rel_props,
-                      labels(m)[0] AS tgt_label, m.name AS tgt_id, properties(m) AS tgt_props
-               ORDER BY n.`a2a:event_id`, type(r), m.`a2a:event_id`"#
-        );
-        let raw = execute_cypher_query(&query, &self.config.graph, &self.config.connection, true)
-            .await
-            .map_err(ProvenanceError::Storage)?;
-
-        let graph = parse_export_result(&raw, ExportScope::Task(task_id.to_string()))?;
+    pub async fn export_by_task(&self, task_id: &str) -> Result<ExportedGraph> {
+        const QUERY: &str = "MATCH (a)-[r]->(b) \
+            WHERE a.a2a_task_id = $task AND b.a2a_task_id = $task \
+            RETURN a.id AS src_id, labels(a)[0] AS src_label, properties(a) AS src_props, \
+                   type(r) AS rel_type, properties(r) AS rel_props, \
+                   b.id AS tgt_id, labels(b)[0] AS tgt_label, properties(b) AS tgt_props \
+            ORDER BY a.a2a_event_id, type(r), b.a2a_event_id";
+        let params = serde_json::json!({ "task": task_id });
+        let result = self.store.run_cypher_read(QUERY, &params).await?;
+        let graph =
+            parse_graphqlite_export_result(&result, ExportScope::Task(task_id.to_string()))?;
         Ok(filter_scope(graph, a2a::TASK_ID, task_id))
-    }
-
-    /// Export the entire graph (use with caution — for dev/debug only).
-    #[tracing::instrument(skip(self))]
-    pub async fn export_full(&self) -> crate::error::Result<ExportedGraph> {
-        let query = r#"MATCH (n)-[r]->(m)
-                       RETURN labels(n)[0] AS src_label, n.name AS src_id, properties(n) AS src_props,
-                              type(r) AS rel_type, properties(r) AS rel_props,
-                              labels(m)[0] AS tgt_label, m.name AS tgt_id, properties(m) AS tgt_props
-                       ORDER BY n.name, type(r), m.name"#;
-        let raw = execute_cypher_query(query, &self.config.graph, &self.config.connection, true)
-            .await
-            .map_err(ProvenanceError::Storage)?;
-
-        parse_export_result(&raw, ExportScope::Full)
     }
 }
 
-// ── Parsing ─────────────────────────────────────────────────────────────────
+// ── Parsing (GraphQLite rows) ───────────────────────────────────────────────
 
-/// Expected column count returned by the graph export Cypher query.
+/// Parse GraphQLite Cypher result into an [`ExportedGraph`].
 ///
-/// Columns: src_label, src_id, src_props, rel_type, rel_props,
-///          tgt_label, tgt_id, tgt_props
-const EXPORT_COLUMN_COUNT: usize = 8;
-
-/// Parse the raw text output of a graph export Cypher query into an
-/// [`ExportedGraph`].
-///
-/// The query must return exactly [`EXPORT_COLUMN_COUNT`] columns per row
-/// in the order defined above.
-pub fn parse_export_result(raw: &str, scope: ExportScope) -> crate::error::Result<ExportedGraph> {
-    let parsed = parse_graph_snapshot(raw).unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
-    let rows = parsed.as_array().cloned().unwrap_or_default();
-
+/// Expects columns: src_id, src_label, src_props, rel_type, rel_props, tgt_id, tgt_label, tgt_props.
+/// Properties may be returned as JSON object or JSON string; keys are normalized from
+/// storage_safe (a2a_*) to vocabulary (a2a:*) for display and filtering.
+fn parse_graphqlite_export_result(
+    result: &CypherResult,
+    scope: ExportScope,
+) -> Result<ExportedGraph> {
     let mut nodes_map: HashMap<String, ExportedNode> = HashMap::new();
     let mut edges: Vec<ExportedEdge> = Vec::new();
 
-    for row in &rows {
-        let cols = match row.as_array() {
-            Some(c) if c.len() >= EXPORT_COLUMN_COUNT => c,
-            _ => continue,
-        };
+    for row in result.iter() {
+        let src_id: String = row.get("src_id").unwrap_or_else(|_| String::new());
+        let src_label: String = row.get("src_label").unwrap_or_else(|_| String::new());
+        let src_props = row_to_properties(row, "src_props");
+        let rel_type: String = row.get("rel_type").unwrap_or_else(|_| String::new());
+        let rel_props = row_to_properties(row, "rel_props");
+        let tgt_id: String = row.get("tgt_id").unwrap_or_else(|_| String::new());
+        let tgt_label: String = row.get("tgt_label").unwrap_or_else(|_| String::new());
+        let tgt_props = row_to_properties(row, "tgt_props");
 
-        let src_label = value_as_str(&cols[0]);
-        let src_id = value_as_str(&cols[1]);
-        let src_props = extract_properties(&cols[2]);
-        let rel_type = value_as_str(&cols[3]);
-        let rel_props = extract_properties(&cols[4]);
-        let tgt_label = value_as_str(&cols[5]);
-        let tgt_id = value_as_str(&cols[6]);
-        let tgt_props = extract_properties(&cols[7]);
-
-        // Insert/update source node.
         if !src_id.is_empty() {
             nodes_map
                 .entry(src_id.clone())
@@ -198,8 +156,6 @@ pub fn parse_export_result(raw: &str, scope: ExportScope) -> crate::error::Resul
                     properties: src_props.clone(),
                 });
         }
-
-        // Insert/update target node.
         if !tgt_id.is_empty() {
             nodes_map
                 .entry(tgt_id.clone())
@@ -208,11 +164,9 @@ pub fn parse_export_result(raw: &str, scope: ExportScope) -> crate::error::Resul
                     id: tgt_id.clone(),
                     label: tgt_label.clone(),
                     event_order: parse_event_order(&tgt_props),
-                    properties: tgt_props,
+                    properties: tgt_props.clone(),
                 });
         }
-
-        // Record the edge.
         if !src_id.is_empty() && !tgt_id.is_empty() && !rel_type.is_empty() {
             edges.push(ExportedEdge {
                 from: src_id,
@@ -223,22 +177,14 @@ pub fn parse_export_result(raw: &str, scope: ExportScope) -> crate::error::Resul
         }
     }
 
-    // Build a temporal lookup for edge sorting before consuming nodes_map.
     let order_of: HashMap<String, Option<u64>> = nodes_map
         .iter()
         .map(|(id, node)| (id.clone(), node.event_order))
         .collect();
 
-    // Temporal ordering: sort nodes by event_order (None last), then by id for
-    // stability. This preserves the causal sequence from the Cypher query's
-    // ORDER BY a2a:event_id.
     let mut nodes: Vec<ExportedNode> = nodes_map.into_values().collect();
     nodes.sort_by(|a, b| cmp_event_order(a.event_order, &a.id, b.event_order, &b.id));
 
-    // Sort edges temporally: primary by source event_order, secondary by
-    // relation name (grouping), tertiary by target event_order. This ensures
-    // that edges fanning out from a hub node (e.g. TaskExecution) appear in
-    // the causal order their targets were created.
     edges.sort_by(|a, b| {
         let a_from_ord = order_of.get(a.from.as_str()).copied().flatten();
         let b_from_ord = order_of.get(b.from.as_str()).copied().flatten();
@@ -248,8 +194,6 @@ pub fn parse_export_result(raw: &str, scope: ExportScope) -> crate::error::Resul
             .then_with(|| a.relation.cmp(&b.relation))
             .then_with(|| cmp_event_order(a_to_ord, &a.to, b_to_ord, &b.to))
     });
-
-    // Deduplicate edges that appear identically (same from/to/relation).
     edges.dedup_by(|a, b| a.from == b.from && a.to == b.to && a.relation == b.relation);
 
     Ok(ExportedGraph {
@@ -257,6 +201,40 @@ pub fn parse_export_result(raw: &str, scope: ExportScope) -> crate::error::Resul
         edges,
         scope,
     })
+}
+
+/// Read a properties column from a GraphQLite row (JSON string) and normalize keys to a2a: form.
+fn row_to_properties(row: &graphqlite::Row, col: &str) -> HashMap<String, serde_json::Value> {
+    let s: String = row.get(col).unwrap_or_default();
+    let map: HashMap<String, serde_json::Value> = serde_json::from_str::<serde_json::Value>(&s)
+        .ok()
+        .and_then(|v| {
+            v.as_object().map(|m| {
+                m.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<HashMap<String, serde_json::Value>>()
+            })
+        })
+        .unwrap_or_default();
+    normalize_property_keys(map)
+}
+
+/// Convert storage_safe keys (a2a_*) to vocabulary keys (a2a:*) for display and filter_scope.
+fn normalize_property_keys(
+    map: HashMap<String, serde_json::Value>,
+) -> HashMap<String, serde_json::Value> {
+    map.into_iter()
+        .map(|(k, v)| {
+            let normalized = if k.starts_with("a2a_") {
+                k.replacen("a2a_", "a2a:", 1)
+            } else if k.starts_with("prov_") {
+                k.replacen("prov_", "prov:", 1)
+            } else {
+                k
+            };
+            (normalized, v)
+        })
+        .collect()
 }
 
 // ── Scope post-filtering ────────────────────────────────────────────────────
@@ -612,96 +590,171 @@ fn value_as_str(v: &serde_json::Value) -> String {
     }
 }
 
-/// Extract a flat property map from a FalkorDB `properties(n)` column value.
-///
-/// The column may arrive as a `Map(...)` debug wrapper (already decoded into a
-/// JSON object by [`parse_graph_snapshot`]) or as a raw JSON object.
+/// Extract a flat property map from a JSON value (object or JSON string).
+/// Used by tests that build ExportedGraph from raw JSON.
 fn extract_properties(v: &serde_json::Value) -> HashMap<String, serde_json::Value> {
     match v {
-        serde_json::Value::Object(map) => map
-            .iter()
-            .map(|(k, v)| (k.clone(), decode_embedded_json(v)))
-            .collect(),
-        serde_json::Value::String(s) => {
-            // Attempt to parse a JSON-encoded string.
-            if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(s)
-            {
-                map.into_iter()
-                    .map(|(k, v)| (k, decode_embedded_json(&v)))
-                    .collect()
-            } else {
-                HashMap::new()
-            }
-        }
+        serde_json::Value::Object(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        serde_json::Value::String(s) => serde_json::from_str::<serde_json::Value>(s)
+            .ok()
+            .and_then(|v| {
+                v.as_object()
+                    .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            })
+            .unwrap_or_default(),
         _ => HashMap::new(),
     }
+}
+
+/// Build ExportedGraph from JSON rows (each row: [src_label, src_id, src_props, rel_type, rel_props, tgt_label, tgt_id, tgt_props]).
+/// Used by tests and by any caller that has row data as JSON.
+pub fn build_graph_from_json_rows(
+    rows: &[Vec<serde_json::Value>],
+    scope: ExportScope,
+) -> Result<ExportedGraph> {
+    const EXPORT_COLUMN_COUNT: usize = 8;
+    let mut nodes_map: HashMap<String, ExportedNode> = HashMap::new();
+    let mut edges: Vec<ExportedEdge> = Vec::new();
+
+    for row in rows {
+        let cols = match row.as_slice() {
+            c if c.len() >= EXPORT_COLUMN_COUNT => c,
+            _ => continue,
+        };
+        let src_label = value_as_str(&cols[0]);
+        let src_id = value_as_str(&cols[1]);
+        let src_props = extract_properties(&cols[2]);
+        let rel_type = value_as_str(&cols[3]);
+        let rel_props = extract_properties(&cols[4]);
+        let tgt_label = value_as_str(&cols[5]);
+        let tgt_id = value_as_str(&cols[6]);
+        let tgt_props = extract_properties(&cols[7]);
+
+        if !src_id.is_empty() {
+            nodes_map
+                .entry(src_id.clone())
+                .or_insert_with(|| ExportedNode {
+                    display_name: derive_display_name(&src_label, &src_props),
+                    id: src_id.clone(),
+                    label: src_label.clone(),
+                    event_order: parse_event_order(&src_props),
+                    properties: src_props.clone(),
+                });
+        }
+        if !tgt_id.is_empty() {
+            nodes_map
+                .entry(tgt_id.clone())
+                .or_insert_with(|| ExportedNode {
+                    display_name: derive_display_name(&tgt_label, &tgt_props),
+                    id: tgt_id.clone(),
+                    label: tgt_label.clone(),
+                    event_order: parse_event_order(&tgt_props),
+                    properties: tgt_props.clone(),
+                });
+        }
+        if !src_id.is_empty() && !tgt_id.is_empty() && !rel_type.is_empty() {
+            edges.push(ExportedEdge {
+                from: src_id,
+                to: tgt_id,
+                relation: rel_type,
+                properties: rel_props,
+            });
+        }
+    }
+
+    let order_of: HashMap<String, Option<u64>> = nodes_map
+        .iter()
+        .map(|(id, node)| (id.clone(), node.event_order))
+        .collect();
+    let mut nodes: Vec<ExportedNode> = nodes_map.into_values().collect();
+    nodes.sort_by(|a, b| cmp_event_order(a.event_order, &a.id, b.event_order, &b.id));
+    edges.sort_by(|a, b| {
+        let a_from_ord = order_of.get(a.from.as_str()).copied().flatten();
+        let b_from_ord = order_of.get(b.from.as_str()).copied().flatten();
+        let a_to_ord = order_of.get(a.to.as_str()).copied().flatten();
+        let b_to_ord = order_of.get(b.to.as_str()).copied().flatten();
+        cmp_event_order(a_from_ord, &a.from, b_from_ord, &b.from)
+            .then_with(|| a.relation.cmp(&b.relation))
+            .then_with(|| cmp_event_order(a_to_ord, &a.to, b_to_ord, &b.to))
+    });
+    edges.dedup_by(|a, b| a.from == b.from && a.to == b.to && a.relation == b.relation);
+
+    Ok(ExportedGraph {
+        nodes,
+        edges,
+        scope,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Build a minimal raw Cypher output row for testing.
     #[allow(clippy::too_many_arguments)]
-    fn make_raw_row(
+    fn make_row(
         src_label: &str,
         src_id: &str,
-        src_props: &str,
+        src_props: serde_json::Value,
         rel_type: &str,
-        rel_props: &str,
+        rel_props: serde_json::Value,
         tgt_label: &str,
         tgt_id: &str,
-        tgt_props: &str,
-    ) -> String {
-        format!(
-            "[\"{src_label}\", \"{src_id}\", {src_props}, \"{rel_type}\", {rel_props}, \"{tgt_label}\", \"{tgt_id}\", {tgt_props}]"
-        )
+        tgt_props: serde_json::Value,
+    ) -> Vec<serde_json::Value> {
+        vec![
+            serde_json::Value::String(src_label.to_string()),
+            serde_json::Value::String(src_id.to_string()),
+            src_props,
+            serde_json::Value::String(rel_type.to_string()),
+            rel_props,
+            serde_json::Value::String(tgt_label.to_string()),
+            serde_json::Value::String(tgt_id.to_string()),
+            tgt_props,
+        ]
     }
 
     #[test]
     fn parse_export_result_empty_input() {
-        let graph = parse_export_result("", ExportScope::Full).expect("should parse empty");
+        let graph = build_graph_from_json_rows(&[], ExportScope::Full).expect("should parse empty");
         assert!(graph.nodes.is_empty());
         assert!(graph.edges.is_empty());
     }
 
     #[test]
     fn parse_export_result_single_edge() {
-        let raw = make_raw_row(
+        let row = make_row(
             "ToolCall",
             "prov-1",
-            r#"Map({"a2a:tool_name": String("support/clickup")})"#,
+            serde_json::json!({"a2a:tool_name": "support/clickup"}),
             "WAS_USED_BY",
-            "Map({})",
+            serde_json::json!({}),
             "ToolArgs",
             "prov-2",
-            r#"Map({"a2a:args": String("{\"action\":\"CreateTask\"}")})"#,
+            serde_json::json!({"a2a:args": "{\"action\":\"CreateTask\"}"}),
         );
-        let graph =
-            parse_export_result(&raw, ExportScope::Context("ctx-1".into())).expect("should parse");
+        let graph = build_graph_from_json_rows(&[row], ExportScope::Context("ctx-1".into()))
+            .expect("should parse");
 
         assert_eq!(graph.nodes.len(), 2);
         assert_eq!(graph.edges.len(), 1);
 
         let tool_node = graph.nodes.iter().find(|n| n.label == "ToolCall").unwrap();
         assert_eq!(tool_node.id, "prov-1");
-        // After strip_tool_prefix, "support/clickup" → "clickup".
         assert!(
             tool_node.display_name.contains("clickup"),
-            "display_name should contain stripped tool name: {}",
+            "display_name: {}",
             tool_node.display_name
         );
         assert!(
             !tool_node.display_name.contains("support/"),
-            "display_name should not contain 'support/' prefix: {}",
+            "display_name: {}",
             tool_node.display_name
         );
 
-        // ToolArgs should show a summary of args, not the tool name.
         let args_node = graph.nodes.iter().find(|n| n.label == "ToolArgs").unwrap();
         assert!(
             args_node.display_name.contains("action=CreateTask"),
-            "ToolArgs display_name should summarize args: {}",
+            "display_name: {}",
             args_node.display_name
         );
 
@@ -713,30 +766,28 @@ mod tests {
 
     #[test]
     fn parse_export_result_deduplicates_nodes() {
-        // Same node appears as both source and target in two different rows.
-        let row1 = make_raw_row(
+        let row1 = make_row(
             "Message",
             "msg-1",
-            r#"Map({"a2a:role": String("user")})"#,
+            serde_json::json!({"a2a:role": "user"}),
             "WAS_RECEIVED_BY",
-            "Map({})",
+            serde_json::json!({}),
             "A2AMessageProcessing",
             "mp-1",
-            "Map({})",
+            serde_json::json!({}),
         );
-        let row2 = make_raw_row(
+        let row2 = make_row(
             "A2AMessageProcessing",
             "mp-1",
-            "Map({})",
+            serde_json::json!({}),
             "WAS_EXECUTED_BY",
-            "Map({})",
+            serde_json::json!({}),
             "ToolCall",
             "tc-1",
-            r#"Map({"a2a:tool_name": String("support/clickup")})"#,
+            serde_json::json!({"a2a:tool_name": "support/clickup"}),
         );
-        let raw = format!("{row1}\n{row2}");
-        let graph = parse_export_result(&raw, ExportScope::Full).expect("should parse");
-
+        let graph =
+            build_graph_from_json_rows(&[row1, row2], ExportScope::Full).expect("should parse");
         assert_eq!(graph.nodes.len(), 3, "msg-1, mp-1, tc-1 should be unique");
         assert_eq!(graph.edges.len(), 2);
     }
@@ -782,27 +833,25 @@ mod tests {
 
     #[test]
     fn parse_export_result_no_results_message() {
-        let graph = parse_export_result("No results returned.", ExportScope::Full)
-            .expect("should parse 'no results'");
+        let graph = build_graph_from_json_rows(&[], ExportScope::Full).expect("empty rows");
         assert!(graph.nodes.is_empty());
         assert!(graph.edges.is_empty());
     }
 
     #[test]
     fn edges_are_sorted_and_deduped() {
-        // Two identical edges should collapse into one.
-        let row = make_raw_row(
+        let row = make_row(
             "Message",
             "msg-1",
-            "Map({})",
+            serde_json::json!({}),
             "WAS_RECEIVED_BY",
-            "Map({})",
+            serde_json::json!({}),
             "A2AMessageProcessing",
             "mp-1",
-            "Map({})",
+            serde_json::json!({}),
         );
-        let raw = format!("{row}\n{row}");
-        let graph = parse_export_result(&raw, ExportScope::Full).expect("should parse");
+        let graph = build_graph_from_json_rows(&[row.clone(), row], ExportScope::Full)
+            .expect("should parse");
         assert_eq!(graph.edges.len(), 1, "duplicate edges should be deduped");
     }
 

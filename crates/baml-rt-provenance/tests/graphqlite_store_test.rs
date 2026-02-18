@@ -25,11 +25,9 @@
 //! (no guarantee) is for API-exposed reads. The same store implements both; the type system
 //! enforces which guarantee the caller gets. API handlers should take `Arc<dyn ProvenanceQueryApi>`.
 
-use baml_rt_core::ids::{
-    AgentId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId,
-};
+use baml_rt_core::ids::{AgentId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId};
 use baml_rt_provenance::{
-    AgentType, GraphqliteStoreBuilder, GlobalEvent, ProvEvent, ProvEventData,
+    AgentType, GlobalEvent, GraphqliteStoreBuilder, ProvEvent, ProvEventData,
     ProvenanceContextReader, ProvenanceQueryApi, ProvenanceWriter, TaskScopedEvent,
 };
 use tempfile::tempdir;
@@ -187,7 +185,11 @@ async fn graphqlite_store_no_stale_read_after_interleaved_writes() {
         .context_messages(&context_id, None)
         .await
         .expect("context_messages");
-    assert_eq!(messages.len(), 1, "no-stale-read: first read must see first message");
+    assert_eq!(
+        messages.len(),
+        1,
+        "no-stale-read: first read must see first message"
+    );
     assert_eq!(messages[0].role, "user");
     assert_eq!(messages[0].content, vec!["First"]);
 
@@ -195,7 +197,11 @@ async fn graphqlite_store_no_stale_read_after_interleaved_writes() {
         .conversation_context(&context_id, None)
         .await
         .expect("conversation_context");
-    assert_eq!(items.len(), 1, "no-stale-read: first read must see first message in conversation_context");
+    assert_eq!(
+        items.len(),
+        1,
+        "no-stale-read: first read must see first message in conversation_context"
+    );
     assert_eq!(items[0].role, "user");
     assert_eq!(items[0].source, "message");
 
@@ -221,7 +227,11 @@ async fn graphqlite_store_no_stale_read_after_interleaved_writes() {
         .context_messages(&context_id, None)
         .await
         .expect("context_messages");
-    assert_eq!(messages.len(), 2, "no-stale-read: second read must see both messages");
+    assert_eq!(
+        messages.len(),
+        2,
+        "no-stale-read: second read must see both messages"
+    );
     assert_eq!(messages[0].role, "user");
     assert_eq!(messages[0].content, vec!["First"]);
     assert_eq!(messages[1].role, "assistant");
@@ -231,7 +241,11 @@ async fn graphqlite_store_no_stale_read_after_interleaved_writes() {
         .conversation_context(&context_id, None)
         .await
         .expect("conversation_context");
-    assert_eq!(items.len(), 2, "no-stale-read: second read must see both messages in conversation_context");
+    assert_eq!(
+        items.len(),
+        2,
+        "no-stale-read: second read must see both messages in conversation_context"
+    );
     assert_eq!(items[0].role, "user");
     assert_eq!(items[1].role, "assistant");
 }

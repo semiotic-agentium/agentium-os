@@ -453,8 +453,8 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
     (agent, extract_dir)
 }
 
-async fn setup_conversational_context_auto_agent(
-) -> (baml_rt::A2aAgent, Arc<GraphqliteProvenanceStore>) {
+async fn setup_conversational_context_auto_agent()
+-> (baml_rt::A2aAgent, Arc<GraphqliteProvenanceStore>) {
     ensure_fixture_runtime_types();
     let built = build_fixture_to_temp_async("conversational-context-auto").await;
     let mut manager = BamlRuntimeManager::new().unwrap();

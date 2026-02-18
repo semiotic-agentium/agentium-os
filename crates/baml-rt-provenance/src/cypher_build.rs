@@ -49,7 +49,7 @@ use crate::types::{
     WasAssociatedWith, WasDerivedFrom, WasGeneratedBy,
 };
 use crate::vocabulary::{
-    a2a, a2a_relation_types, a2a_roles, a2a_relations, base_types, graph, message_directions, prov,
+    a2a, a2a_relation_types, a2a_relations, a2a_roles, base_types, graph, message_directions, prov,
     prov_relations, prov_roles, semantic_labels, storage_safe,
 };
 use serde_json::{Map, Value};
@@ -230,8 +230,7 @@ pub fn build_queries_with_key_style_params(
         let props = used_props(used);
         let activity_label = label_for_activity(&activity_labels, used.activity.as_str());
         let entity_label = label_for_entity(&entity_labels, used.entity.as_str());
-        let rel_type =
-            relation_label(prov_relations::USED, activity_label, entity_label, &props);
+        let rel_type = relation_label(prov_relations::USED, activity_label, entity_label, &props);
         queries.extend(merge_edge_statements(
             activity_label,
             used.activity.as_str(),
@@ -349,8 +348,7 @@ pub fn build_queries_with_key_style_params(
     derived_entries.sort_by_key(|(a, _)| *a);
     for (_, derived) in derived_entries {
         let props = was_derived_from_props(derived);
-        let generated_label =
-            label_for_entity(&entity_labels, derived.generated_entity.as_str());
+        let generated_label = label_for_entity(&entity_labels, derived.generated_entity.as_str());
         let used_label = label_for_entity(&entity_labels, derived.used_entity.as_str());
         let rel_type = relation_label(
             prov_relations::WAS_DERIVED_FROM,
@@ -402,9 +400,11 @@ pub fn build_queries_with_key_style_params(
 fn cypher_value_param(value: &Value, collector: &mut ParamCollector) -> String {
     match value {
         Value::Null => "null".to_string(),
-        Value::Bool(_) | Value::Number(_) | Value::String(_) | Value::Array(_) | Value::Object(_) => {
-            collector.add(value.clone())
-        }
+        Value::Bool(_)
+        | Value::Number(_)
+        | Value::String(_)
+        | Value::Array(_)
+        | Value::Object(_) => collector.add(value.clone()),
     }
 }
 
@@ -438,10 +438,8 @@ fn node_set_clause_param(
     key_style: KeyStyle,
     collector: &mut ParamCollector,
 ) -> String {
-    let mut entries: Vec<(&String, &Value)> = props
-        .iter()
-        .filter(|(k, _)| *k != graph::NODE_ID)
-        .collect();
+    let mut entries: Vec<(&String, &Value)> =
+        props.iter().filter(|(k, _)| *k != graph::NODE_ID).collect();
     entries.sort_by_key(|(a, _)| *a);
     let parts: Vec<String> = entries
         .iter()

@@ -672,9 +672,7 @@ impl ConversationContextSource for ProvenanceTaskStore {
             }
         }
 
-        self.inner
-            .conversation_context(context_id, limit)
-            .await
+        self.inner.conversation_context(context_id, limit).await
     }
 }
 

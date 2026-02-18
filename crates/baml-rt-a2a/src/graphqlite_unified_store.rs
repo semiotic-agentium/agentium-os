@@ -8,8 +8,8 @@ use crate::a2a_store::{
     TaskUpdateEvent, TaskUpdateQueue,
 };
 use crate::a2a_types::{
-    Artifact, ListTasksRequest, ListTasksResponse, Message, Task,
-    TaskArtifactUpdateEvent, TaskState, TaskStatus, TaskStatusUpdateEvent,
+    Artifact, ListTasksRequest, ListTasksResponse, Message, Task, TaskArtifactUpdateEvent,
+    TaskState, TaskStatus, TaskStatusUpdateEvent,
 };
 use async_trait::async_trait;
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
@@ -168,8 +168,7 @@ impl GraphqliteUnifiedStore {
             .map(|m| serde_json::to_string(m).unwrap_or_default())
             .unwrap_or_default();
         let extra_json = serde_json::to_string(&task.extra).unwrap_or_default();
-        let artifacts_json =
-            serde_json::to_string(&task.artifacts).unwrap_or_default();
+        let artifacts_json = serde_json::to_string(&task.artifacts).unwrap_or_default();
         let ord = 0_i64;
         Ok((
             id,
@@ -182,16 +181,25 @@ impl GraphqliteUnifiedStore {
         ))
     }
 
-    fn row_to_task(
-        row: &HashMap<String, Value>,
-        history: Vec<Message>,
-    ) -> Option<Task> {
+    fn row_to_task(row: &HashMap<String, Value>, history: Vec<Message>) -> Option<Task> {
         let id = row.get("id")?.as_str()?;
         let context_id = row.get("context_id").and_then(|v| v.as_str());
-        let status_json = row.get("status_json").and_then(|v| v.as_str()).unwrap_or("");
-        let metadata_json = row.get("metadata_json").and_then(|v| v.as_str()).unwrap_or("{}");
-        let extra_json = row.get("extra_json").and_then(|v| v.as_str()).unwrap_or("{}");
-        let artifacts_json = row.get("artifacts_json").and_then(|v| v.as_str()).unwrap_or("[]");
+        let status_json = row
+            .get("status_json")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let metadata_json = row
+            .get("metadata_json")
+            .and_then(|v| v.as_str())
+            .unwrap_or("{}");
+        let extra_json = row
+            .get("extra_json")
+            .and_then(|v| v.as_str())
+            .unwrap_or("{}");
+        let artifacts_json = row
+            .get("artifacts_json")
+            .and_then(|v| v.as_str())
+            .unwrap_or("[]");
         let status = if status_json.is_empty() {
             None
         } else {
@@ -202,7 +210,7 @@ impl GraphqliteUnifiedStore {
         let artifacts = serde_json::from_str(artifacts_json).unwrap_or_default();
         Some(Task {
             id: Some(TaskId::from_external(ExternalId::new(id))),
-            context_id: context_id.and_then(|c| ContextId::parse_temporal(c)),
+            context_id: context_id.and_then(ContextId::parse_temporal),
             artifacts,
             history,
             status,
@@ -233,9 +241,7 @@ impl TaskRepository for GraphqliteUnifiedStore {
             .and_then(|r| r.get("status_json"))
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty());
-        let status_json = preserve_status
-            .map(String::from)
-            .unwrap_or(status_json);
+        let status_json = preserve_status.map(String::from).unwrap_or(status_json);
         let next_ord = if existing.is_empty() {
             let max: Vec<HashMap<String, Value>> = self
                 .store
@@ -288,7 +294,10 @@ impl TaskRepository for GraphqliteUnifiedStore {
         let _ = self.ensure_schema().await.ok()?;
         let rows = self
             .store
-            .run_sql_query("SELECT * FROM a2a_tasks WHERE id = ?1", &[Value::String(id.to_string())])
+            .run_sql_query(
+                "SELECT * FROM a2a_tasks WHERE id = ?1",
+                &[Value::String(id.to_string())],
+            )
             .await
             .ok()?;
         let row = rows.into_iter().next()?;
@@ -322,32 +331,34 @@ impl TaskRepository for GraphqliteUnifiedStore {
     async fn list(&self, request: &ListTasksRequest) -> ListTasksResponse {
         let _ = match self.ensure_schema().await {
             Ok(()) => (),
-            Err(_) => return ListTasksResponse {
-                tasks: vec![],
-                next_page_token: None,
-                total_size: Some(0),
-                page_size: None,
-                extra: HashMap::new(),
-            },
+            Err(_) => {
+                return ListTasksResponse {
+                    tasks: vec![],
+                    next_page_token: None,
+                    total_size: Some(0),
+                    page_size: None,
+                    extra: HashMap::new(),
+                };
+            }
         };
         let mut sql = "SELECT * FROM a2a_tasks".to_string();
         let mut params: Vec<Value> = vec![];
-        if request.context_id.is_some() {
+        if let Some(ref cid) = request.context_id {
             sql += " WHERE context_id = ?1";
-            params.push(Value::String(
-                request.context_id.as_ref().unwrap().as_str().to_string(),
-            ));
+            params.push(Value::String(cid.as_str().to_string()));
         }
         sql += " ORDER BY ord";
         let rows = match self.store.run_sql_query(&sql, &params).await {
             Ok(r) => r,
-            Err(_) => return ListTasksResponse {
-                tasks: vec![],
-                next_page_token: None,
-                total_size: Some(0),
-                page_size: None,
-                extra: HashMap::new(),
-            },
+            Err(_) => {
+                return ListTasksResponse {
+                    tasks: vec![],
+                    next_page_token: None,
+                    total_size: Some(0),
+                    page_size: None,
+                    extra: HashMap::new(),
+                };
+            }
         };
         let mut tasks: Vec<Task> = Vec::new();
         for row in rows {
@@ -408,7 +419,11 @@ impl TaskRepository for GraphqliteUnifiedStore {
             }
         }
         let total_size = tasks.len() as u64;
-        let page_size = request.page_size.as_ref().and_then(|v| v.as_usize()).unwrap_or(50);
+        let page_size = request
+            .page_size
+            .as_ref()
+            .and_then(|v| v.as_usize())
+            .unwrap_or(50);
         let start = request
             .page_token
             .as_ref()

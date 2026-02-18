@@ -4,10 +4,12 @@
 //! (A2A JSON-RPC forward). Delegates to an internal [`AgentRegistry`](baml_rt_a2a::AgentRegistry) implementation.
 
 mod handlers;
+mod mermaid;
 mod metrics;
 mod openapi;
 mod router;
 mod spans;
 
+pub use mermaid::{MermaidError, MermaidService};
 pub use router::ApiState;
 pub use router::{api_router, serve};

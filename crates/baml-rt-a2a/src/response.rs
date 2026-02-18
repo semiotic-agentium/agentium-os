@@ -1,9 +1,9 @@
 use crate::a2a;
 use crate::a2a_types::JSONRPCId;
 use crate::error_mapping;
-use baml_rt_core::stream_completion::StreamCompletion;
 use baml_rt_core::BamlRtError;
 use baml_rt_core::StreamResult;
+use baml_rt_core::stream_completion::StreamCompletion;
 use serde_json::{Value, json};
 
 pub trait ResponseFormatter: Send + Sync {
@@ -89,7 +89,11 @@ mod tests {
         };
 
         let out = formatter.format_stream(None, &result);
-        assert_eq!(out.len(), 1, "timeout with empty chunks should emit one terminal chunk");
+        assert_eq!(
+            out.len(),
+            1,
+            "timeout with empty chunks should emit one terminal chunk"
+        );
         assert_eq!(
             out[0]
                 .get("result")

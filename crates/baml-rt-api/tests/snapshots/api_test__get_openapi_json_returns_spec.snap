@@ -156,6 +156,82 @@ expression: snapshot
             }
           }
         }
+      },
+      "/mermaid/context/{context_id}": {
+        "get": {
+          "tags": [
+            "mermaid"
+          ],
+          "summary": "Mermaid diagram by context",
+          "description": "Returns the provenance subgraph for the given A2A context ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with GraphQLite provenance.",
+          "operationId": "get_mermaid_context",
+          "parameters": [
+            {
+              "name": "context_id",
+              "in": "path",
+              "description": "A2A context ID",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Mermaid sequenceDiagram",
+              "content": {
+                "text/plain": {}
+              }
+            },
+            "404": {
+              "description": "No graph found for context"
+            },
+            "500": {
+              "description": "Internal error"
+            },
+            "501": {
+              "description": "Mermaid service not available (provenance not configured)"
+            }
+          }
+        }
+      },
+      "/mermaid/task/{task_id}": {
+        "get": {
+          "tags": [
+            "mermaid"
+          ],
+          "summary": "Mermaid diagram by task",
+          "description": "Returns the provenance subgraph for the given A2A task ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with GraphQLite provenance.",
+          "operationId": "get_mermaid_task",
+          "parameters": [
+            {
+              "name": "task_id",
+              "in": "path",
+              "description": "A2A task ID",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Mermaid sequenceDiagram",
+              "content": {
+                "text/plain": {}
+              }
+            },
+            "404": {
+              "description": "No graph found for task"
+            },
+            "500": {
+              "description": "Internal error"
+            },
+            "501": {
+              "description": "Mermaid service not available (provenance not configured)"
+            }
+          }
+        }
       }
     },
     "components": {
@@ -185,6 +261,16 @@ expression: snapshot
           }
         }
       }
-    }
+    },
+    "tags": [
+      {
+        "name": "agents",
+        "description": "Agent discovery and A2A JSON-RPC"
+      },
+      {
+        "name": "mermaid",
+        "description": "Provenance graph as Mermaid sequence diagrams (when GraphQLite is enabled)"
+      }
+    ]
   }
 }

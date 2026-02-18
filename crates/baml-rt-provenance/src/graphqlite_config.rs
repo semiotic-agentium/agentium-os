@@ -75,5 +75,4 @@ impl GraphqliteStoreConfig {
             wal: true,
         }
     }
-
 }

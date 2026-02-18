@@ -1,6 +1,6 @@
 //! Tool index tests using GraphQLite (temp path per test).
 
-use baml_rt_provenance::{index_tools_into_connection, ToolIndexConfig};
+use baml_rt_provenance::{ToolIndexConfig, index_tools_into_connection};
 use baml_rt_tools::{ToolFunctionMetadataExport, ToolName, ToolSecretRequirement, ToolTypeSpec};
 use serde_json::json;
 use tempfile::tempdir;
@@ -50,7 +50,10 @@ async fn tool_index_creates_tool_nodes() {
         .cypher("MATCH (t:ToolFunction) RETURN t.id AS tool_id LIMIT 5")
         .expect("query all");
     let rows: Vec<_> = all.iter().collect();
-    assert!(!rows.is_empty(), "expected at least one ToolFunction node after index_tools");
+    assert!(
+        !rows.is_empty(),
+        "expected at least one ToolFunction node after index_tools"
+    );
     let result = conn
         .cypher_builder("MATCH (t:ToolFunction) WHERE t.id = $id RETURN t LIMIT 1")
         .params(&serde_json::json!({ "id": "support/get_weather" }))

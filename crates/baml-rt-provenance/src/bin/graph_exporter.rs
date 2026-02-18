@@ -1,26 +1,23 @@
 use anyhow::Context;
-use clap::{Parser, ValueEnum};
+use clap::Parser;
+use std::path::PathBuf;
+use std::sync::Arc;
 
-use baml_rt_provenance::FalkorDbProvenanceConfig;
-use baml_rt_provenance::graph_export::GraphExporter;
 use baml_rt_provenance::graph_export::dot::{DotOptions, render_dot};
-use baml_rt_provenance::graph_export::json::render_json;
 use baml_rt_provenance::graph_export::sequence::render_sequence_diagram;
 use baml_rt_provenance::graph_export::simplify::simplify_graph;
+use baml_rt_provenance::{GraphExporter, GraphqliteProvenanceStore, GraphqliteStoreBuilder};
+use clap::ValueEnum;
 
 #[derive(Parser)]
 #[command(
     name = "graph_exporter",
-    about = "Export provenance graphs from FalkorDB as Mermaid, DOT, or JSON"
+    about = "Export provenance graphs from GraphQLite as Mermaid, DOT, or JSON"
 )]
 struct Cli {
-    /// FalkorDB connection string.
-    #[arg(long, default_value = "falkor://127.0.0.1:6379")]
-    connection: String,
-
-    /// FalkorDB graph name.
-    #[arg(long, default_value = "baml_prov")]
-    graph: String,
+    /// Path to GraphQLite database (or ":memory:" for in-memory).
+    #[arg(long, default_value = "provenance.db")]
+    db: PathBuf,
 
     /// Export by context_id.
     #[arg(long, group = "scope")]
@@ -30,17 +27,9 @@ struct Cli {
     #[arg(long, group = "scope")]
     task_id: Option<String>,
 
-    /// Export the full graph (no scope filter).
-    #[arg(long, group = "scope")]
-    full: bool,
-
     /// Output format (defaults to mermaid).
     #[arg(long, value_enum, default_value_t = OutputFormat::Mermaid)]
     format: OutputFormat,
-
-    /// Graph direction (mermaid only): td, lr, bt, rl.
-    #[arg(long, default_value = "td")]
-    direction: String,
 
     /// Show edge labels (mermaid/dot).
     #[arg(long, default_value_t = true)]
@@ -50,8 +39,7 @@ struct Cli {
     #[arg(long)]
     group: bool,
 
-    /// Simplify the graph by collapsing start/complete pairs, removing
-    /// LlmPrompt nodes, and keeping only send-complete FSM tool phases.
+    /// Simplify the graph before rendering.
     #[arg(long)]
     simplify: bool,
 
@@ -62,7 +50,6 @@ struct Cli {
 
 #[derive(Clone, ValueEnum)]
 enum OutputFormat {
-    /// Mermaid sequence diagram (temporal narrative view).
     Mermaid,
     Dot,
     Json,
@@ -71,30 +58,29 @@ enum OutputFormat {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
-    let config = FalkorDbProvenanceConfig::new(&cli.connection, &cli.graph);
-    let exporter = GraphExporter::new(config);
 
-    let graph = if let Some(ctx) = &cli.context_id {
-        eprintln!(
-            "Exporting context_id={ctx} from {}/{}",
-            cli.connection, cli.graph
-        );
-        exporter
-            .export_by_context(ctx)
-            .await
-            .context("export_by_context failed")?
-    } else if let Some(tid) = &cli.task_id {
-        eprintln!(
-            "Exporting task_id={tid} from {}/{}",
-            cli.connection, cli.graph
-        );
-        exporter
-            .export_by_task(tid)
-            .await
-            .context("export_by_task failed")?
+    let scope = cli
+        .context_id
+        .as_ref()
+        .map(|c| ("context_id", c.as_str()))
+        .or_else(|| cli.task_id.as_ref().map(|t| ("task_id", t.as_str())));
+    let (scope_name, scope_value) =
+        scope.context("Must specify either --context-id or --task-id")?;
+
+    let store: Arc<GraphqliteProvenanceStore> = if cli.db.to_string_lossy() == ":memory:" {
+        GraphqliteStoreBuilder::in_memory().build()?
     } else {
-        eprintln!("Exporting full graph from {}/{}", cli.connection, cli.graph);
-        exporter.export_full().await.context("export_full failed")?
+        GraphqliteStoreBuilder::file(&cli.db).build()?
+    };
+    let exporter = GraphExporter::new(store);
+
+    eprintln!(
+        "Exporting {scope_name}={scope_value} from {}",
+        cli.db.display()
+    );
+    let graph = match scope_name {
+        "context_id" => exporter.export_by_context(scope_value).await?,
+        _ => exporter.export_by_task(scope_value).await?,
     };
 
     eprintln!(
@@ -125,7 +111,7 @@ async fn main() -> anyhow::Result<()> {
                 ..DotOptions::default()
             },
         ),
-        OutputFormat::Json => render_json(&graph, true).context("JSON serialization failed")?,
+        OutputFormat::Json => serde_json::to_string_pretty(&graph).context("JSON serialization")?,
     };
 
     if let Some(path) = &cli.output {

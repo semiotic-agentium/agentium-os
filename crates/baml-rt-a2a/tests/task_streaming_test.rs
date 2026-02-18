@@ -290,11 +290,8 @@ async fn test_a2a_session_send_returns_fast_and_next_drains() {
     let message_id = baml_rt_core::ids::MessageId::from_external(
         baml_rt_core::ids::ExternalId::new(format!("msg-{}", context_id.as_str())),
     );
-    let scope = context::RuntimeScope::message_scope(
-        context_id,
-        agent.agent_id().clone(),
-        message_id,
-    );
+    let scope =
+        context::RuntimeScope::message_scope(context_id, agent.agent_id().clone(), message_id);
     let scope_for_open = scope.clone();
     context::with_scope(scope, async move {
         let session_id = handle
@@ -328,8 +325,7 @@ async fn test_a2a_session_send_returns_fast_and_next_drains() {
             };
             if matches!(
                 step,
-                baml_rt_tools::ToolStep::Done { .. }
-                    | baml_rt_tools::ToolStep::Error { .. }
+                baml_rt_tools::ToolStep::Done { .. } | baml_rt_tools::ToolStep::Error { .. }
             ) {
                 break;
             }
@@ -357,11 +353,8 @@ async fn test_a2a_session_send_after_finish_fails() {
     let message_id = baml_rt_core::ids::MessageId::from_external(
         baml_rt_core::ids::ExternalId::new(format!("msg-{}", context_id.as_str())),
     );
-    let scope = context::RuntimeScope::message_scope(
-        context_id,
-        agent.agent_id().clone(),
-        message_id,
-    );
+    let scope =
+        context::RuntimeScope::message_scope(context_id, agent.agent_id().clone(), message_id);
     let scope_for_open = scope.clone();
     context::with_scope(scope, async move {
         let session_id = handle
@@ -388,8 +381,7 @@ async fn test_a2a_session_send_after_finish_fails() {
             };
             if matches!(
                 step,
-                baml_rt_tools::ToolStep::Done { .. }
-                    | baml_rt_tools::ToolStep::Error { .. }
+                baml_rt_tools::ToolStep::Done { .. } | baml_rt_tools::ToolStep::Error { .. }
             ) {
                 break;
             }

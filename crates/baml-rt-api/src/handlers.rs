@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::ApiState;
+use crate::mermaid::MermaidError;
 use crate::metrics;
 use crate::openapi::AgentDiscoveryEntryDto;
 use crate::spans;
@@ -161,6 +162,136 @@ pub async fn post_a2a_sse(
 
     metrics::record_request("post_a2a_sse", "success", start.elapsed());
     Ok(sse)
+}
+
+/// Get provenance graph as a Mermaid sequence diagram for an A2A context.
+#[utoipa::path(
+    get,
+    path = "/mermaid/context/{context_id}",
+    tag = "mermaid",
+    summary = "Mermaid diagram by context",
+    description = "Returns the provenance subgraph for the given A2A context ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with GraphQLite provenance.",
+    params(("context_id" = String, Path, description = "A2A context ID")),
+    responses(
+        (status = 200, description = "Mermaid sequenceDiagram", content_type = "text/plain"),
+        (status = 404, description = "No graph found for context"),
+        (status = 501, description = "Mermaid service not available (provenance not configured)"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_mermaid_context(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(context_id): axum::extract::Path<String>,
+) -> HttpResult<axum::response::Response> {
+    let span = spans::get_mermaid_context(&context_id);
+    let _guard = span.enter();
+    let start = Instant::now();
+    let Some(svc) = &state.mermaid else {
+        metrics::record_request("get_mermaid_context", "error", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Mermaid service not configured",
+        ));
+    };
+    match svc.mermaid_for_context(&context_id).await {
+        Ok(diagram) => {
+            metrics::record_request("get_mermaid_context", "success", start.elapsed());
+            Ok(axum::response::Response::builder()
+                .status(AxumStatus::OK)
+                .header(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8",
+                )
+                .body(axum::body::Body::from(diagram))
+                .expect("response builder"))
+        }
+        Err(MermaidError::NotFound) => {
+            metrics::record_request("get_mermaid_context", "error", start.elapsed());
+            Err(problem(
+                404,
+                "Not Found",
+                format!("no graph for context {context_id}"),
+            ))
+        }
+        Err(MermaidError::Unavailable) => {
+            metrics::record_request("get_mermaid_context", "error", start.elapsed());
+            Err(problem(
+                501,
+                "Not Implemented",
+                "Mermaid service unavailable",
+            ))
+        }
+        Err(MermaidError::Other(e)) => {
+            metrics::record_request("get_mermaid_context", "error", start.elapsed());
+            Err(problem(500, "Internal Server Error", e.to_string()))
+        }
+    }
+}
+
+/// Get provenance graph as a Mermaid sequence diagram for an A2A task.
+#[utoipa::path(
+    get,
+    path = "/mermaid/task/{task_id}",
+    tag = "mermaid",
+    summary = "Mermaid diagram by task",
+    description = "Returns the provenance subgraph for the given A2A task ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with GraphQLite provenance.",
+    params(("task_id" = String, Path, description = "A2A task ID")),
+    responses(
+        (status = 200, description = "Mermaid sequenceDiagram", content_type = "text/plain"),
+        (status = 404, description = "No graph found for task"),
+        (status = 501, description = "Mermaid service not available (provenance not configured)"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_mermaid_task(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(task_id): axum::extract::Path<String>,
+) -> HttpResult<axum::response::Response> {
+    let span = spans::get_mermaid_task(&task_id);
+    let _guard = span.enter();
+    let start = Instant::now();
+    let Some(svc) = &state.mermaid else {
+        metrics::record_request("get_mermaid_task", "error", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Mermaid service not configured",
+        ));
+    };
+    match svc.mermaid_for_task(&task_id).await {
+        Ok(diagram) => {
+            metrics::record_request("get_mermaid_task", "success", start.elapsed());
+            Ok(axum::response::Response::builder()
+                .status(AxumStatus::OK)
+                .header(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8",
+                )
+                .body(axum::body::Body::from(diagram))
+                .expect("response builder"))
+        }
+        Err(MermaidError::NotFound) => {
+            metrics::record_request("get_mermaid_task", "error", start.elapsed());
+            Err(problem(
+                404,
+                "Not Found",
+                format!("no graph for task {task_id}"),
+            ))
+        }
+        Err(MermaidError::Unavailable) => {
+            metrics::record_request("get_mermaid_task", "error", start.elapsed());
+            Err(problem(
+                501,
+                "Not Implemented",
+                "Mermaid service unavailable",
+            ))
+        }
+        Err(MermaidError::Other(e)) => {
+            metrics::record_request("get_mermaid_task", "error", start.elapsed());
+            Err(problem(500, "Internal Server Error", e.to_string()))
+        }
+    }
 }
 
 fn domain_to_problem(

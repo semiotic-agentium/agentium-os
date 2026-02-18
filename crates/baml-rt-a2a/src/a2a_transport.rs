@@ -630,24 +630,28 @@ impl A2aAgentBuilderWithEffectEmitter {
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Graphqlite(store)) => {
                 // Unified: task state and provenance in same GraphQLite DB
-                let backend =
-                    Arc::new(crate::graphqlite_unified_store::GraphqliteUnifiedStore::new(
-                        store.clone(),
-                    ));
-                let task_store: Arc<dyn TaskStoreBackend> = Arc::new(
-                    ProvenanceTaskStore::with_backend(backend, Some(store.clone()), agent_id.clone()),
+                let backend = Arc::new(
+                    crate::graphqlite_unified_store::GraphqliteUnifiedStore::new(store.clone()),
                 );
+                let task_store: Arc<dyn TaskStoreBackend> =
+                    Arc::new(ProvenanceTaskStore::with_backend(
+                        backend,
+                        Some(store.clone()),
+                        agent_id.clone(),
+                    ));
                 (task_store, Some(store as Arc<dyn ProvenanceWriter>))
             }
             (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Graphqlite(store)) => {
                 // GraphQLite unified overrides provided task store
-                let backend =
-                    Arc::new(crate::graphqlite_unified_store::GraphqliteUnifiedStore::new(
-                        store.clone(),
-                    ));
-                let task_store: Arc<dyn TaskStoreBackend> = Arc::new(
-                    ProvenanceTaskStore::with_backend(backend, Some(store.clone()), agent_id.clone()),
+                let backend = Arc::new(
+                    crate::graphqlite_unified_store::GraphqliteUnifiedStore::new(store.clone()),
                 );
+                let task_store: Arc<dyn TaskStoreBackend> =
+                    Arc::new(ProvenanceTaskStore::with_backend(
+                        backend,
+                        Some(store.clone()),
+                        agent_id.clone(),
+                    ));
                 (task_store, Some(store as Arc<dyn ProvenanceWriter>))
             }
         };

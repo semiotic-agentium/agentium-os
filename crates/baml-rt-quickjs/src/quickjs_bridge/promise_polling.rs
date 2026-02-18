@@ -122,9 +122,7 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
         } else {
             attempts.is_multiple_of(EFFECT_CHECK_INTERVAL)
         };
-        if should_recheck
-            && let Some(poller) = poller.as_ref()
-        {
+        if should_recheck && let Some(poller) = poller.as_ref() {
             let new_timeout = poller.timeout_attempts().await;
             tracing::trace!(
                 attempts,

@@ -12,7 +12,7 @@
 use crate::error::Result;
 use crate::vocabulary::graph;
 use baml_rt_tools::ToolFunctionMetadataExport;
-use graphqlite::{escape_string, Connection};
+use graphqlite::{Connection, escape_string};
 use serde_json::json;
 use std::path::Path;
 
@@ -47,7 +47,8 @@ pub async fn index_tools(
     config: &ToolIndexConfig,
     tools: &[ToolFunctionMetadataExport],
 ) -> Result<()> {
-    let conn = Connection::open(&config.path).map_err(|e| crate::error::ProvenanceError::Storage(Box::new(e)))?;
+    let conn = Connection::open(&config.path)
+        .map_err(|e| crate::error::ProvenanceError::Storage(Box::new(e)))?;
     for tool in tools {
         upsert_tool_sync(&conn, tool)?;
     }
@@ -60,7 +61,8 @@ pub async fn index_tools_into_connection(
     config: &ToolIndexConfig,
     tools: &[ToolFunctionMetadataExport],
 ) -> Result<Connection> {
-    let conn = Connection::open(&config.path).map_err(|e| crate::error::ProvenanceError::Storage(Box::new(e)))?;
+    let conn = Connection::open(&config.path)
+        .map_err(|e| crate::error::ProvenanceError::Storage(Box::new(e)))?;
     for tool in tools {
         upsert_tool_sync(&conn, tool)?;
     }

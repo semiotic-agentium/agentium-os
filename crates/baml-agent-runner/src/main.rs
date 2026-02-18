@@ -24,12 +24,16 @@ use baml_rt_core::{
     collect_a2a_stream,
 };
 use baml_rt_observability::{spans, tracing_setup};
-use baml_rt_provenance::{AgentType, GraphqliteStoreBuilder, ProvEvent, ToolIndexConfig, index_tools};
 use baml_rt_provenance::ProvenanceWriter;
+use baml_rt_provenance::graph_export::sequence::render_sequence_diagram;
+use baml_rt_provenance::graph_export::simplify::simplify_graph;
+use baml_rt_provenance::{
+    AgentType, GraphExporter, GraphqliteStoreBuilder, ProvEvent, ToolIndexConfig, index_tools,
+};
 use baml_rt_quickjs::BamlRuntimeManager;
 use baml_rt_tools::tools::ToolAccess;
 use baml_rt_tools::{enforce_tool_access, parse_access_allowlist};
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -201,9 +205,6 @@ impl AgentPackage {
             ProvenanceConfig::Graphqlite(store) => {
                 agent_builder = agent_builder.with_graphqlite_store(store.clone());
             }
-            ProvenanceConfig::WriterOnly(writer) => {
-                agent_builder = agent_builder.with_provenance_writer(writer.clone());
-            }
             ProvenanceConfig::None => {}
         }
 
@@ -258,7 +259,6 @@ impl AgentPackage {
         // Emit AgentBooted provenance event
         let writer: Option<Arc<dyn ProvenanceWriter>> = match provenance_config {
             ProvenanceConfig::Graphqlite(store) => Some(store.clone() as Arc<dyn ProvenanceWriter>),
-            ProvenanceConfig::WriterOnly(w) => Some(w.clone()),
             ProvenanceConfig::None => None,
         };
         if let Some(writer) = writer {
@@ -724,9 +724,11 @@ fn wrap_plaintext_message(text: &str) -> Value {
     serde_json::to_value(request).unwrap_or(Value::Null)
 }
 
+/// Provenance DB: in-memory (default) or file-backed SQLite. No FalkorDB.
 #[derive(Debug, Clone)]
-enum ProvenanceStoreKind {
-    Graphqlite { path: PathBuf },
+enum ProvenanceDb {
+    InMemory,
+    File(PathBuf),
 }
 
 #[derive(Debug, Clone)]
@@ -736,12 +738,7 @@ struct RunnerConfig {
     a2a_stdio: bool,
     serve_http: Option<String>,
     web_dir: Option<PathBuf>,
-    provenance_store: ProvenanceStoreKind,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum ProvenanceStoreChoice {
-    Graphqlite,
+    provenance_db: ProvenanceDb,
 }
 
 #[derive(Debug, Parser)]
@@ -769,13 +766,9 @@ struct Cli {
     #[arg(long, value_name = "DIR")]
     web_dir: Option<PathBuf>,
 
-    /// Provenance storage backend.
-    #[arg(long, value_enum, default_value_t = ProvenanceStoreChoice::Graphqlite)]
-    provenance_store: ProvenanceStoreChoice,
-
-    /// Path to the GraphQLite provenance database (used when provenance store is graphqlite).
-    #[arg(long, value_name = "PATH", default_value = "provenance.db")]
-    provenance_path: PathBuf,
+    /// Provenance SQLite database: ":memory:" for in-memory (default), or a file path for persistence.
+    #[arg(long, value_name = "PATH", default_value = ":memory:")]
+    provenance_db: String,
 }
 
 impl Cli {
@@ -784,10 +777,10 @@ impl Cli {
             .invoke
             .map(|values| (values[0].clone(), values[1].clone(), values[2].clone()));
 
-        let provenance_store = match self.provenance_store {
-            ProvenanceStoreChoice::Graphqlite => ProvenanceStoreKind::Graphqlite {
-                path: self.provenance_path,
-            },
+        let provenance_db = if self.provenance_db == ":memory:" {
+            ProvenanceDb::InMemory
+        } else {
+            ProvenanceDb::File(PathBuf::from(self.provenance_db))
         };
 
         Ok(RunnerConfig {
@@ -796,7 +789,7 @@ impl Cli {
             a2a_stdio: self.a2a_stdio,
             serve_http: self.serve_http,
             web_dir: self.web_dir,
-            provenance_store,
+            provenance_db,
         })
     }
 }
@@ -804,18 +797,72 @@ impl Cli {
 /// Provenance configuration: none, writer only, or GraphQLite (store required).
 enum ProvenanceConfig {
     None,
-    WriterOnly(Arc<dyn ProvenanceWriter>),
     Graphqlite(Arc<baml_rt_provenance::GraphqliteProvenanceStore>),
 }
 
-fn build_provenance_config(store: &ProvenanceStoreKind) -> ProvenanceConfig {
-    match store {
-        ProvenanceStoreKind::Graphqlite { path } => {
-            match GraphqliteStoreBuilder::file(path).build() {
-                Ok(arc) => ProvenanceConfig::Graphqlite(arc),
-                Err(_) => ProvenanceConfig::None,
+fn build_provenance_config(db: &ProvenanceDb) -> ProvenanceConfig {
+    let arc = match db {
+        ProvenanceDb::InMemory => match GraphqliteStoreBuilder::in_memory().build() {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!(error = %e, "Provenance in-memory store failed to build");
+                return ProvenanceConfig::None;
             }
+        },
+        ProvenanceDb::File(path) => match GraphqliteStoreBuilder::file(path).build() {
+            Ok(a) => a,
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "Provenance file store failed to build");
+                return ProvenanceConfig::None;
+            }
+        },
+    };
+    ProvenanceConfig::Graphqlite(arc)
+}
+
+/// Mermaid diagram service backed by GraphQLite provenance. Exported when runner serves HTTP with GraphQLite.
+struct MermaidServiceImpl {
+    store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+}
+
+impl MermaidServiceImpl {
+    fn new(store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait::async_trait]
+impl baml_rt_api::MermaidService for MermaidServiceImpl {
+    async fn mermaid_for_context(
+        &self,
+        context_id: &str,
+    ) -> std::result::Result<String, baml_rt_api::MermaidError> {
+        let exporter = GraphExporter::new(self.store.clone());
+        let graph = exporter
+            .export_by_context(context_id)
+            .await
+            .map_err(|e| baml_rt_api::MermaidError::Other(Box::new(e)))?;
+        if graph.nodes.is_empty() {
+            return Err(baml_rt_api::MermaidError::NotFound);
         }
+        let simplified = simplify_graph(&graph);
+        Ok(render_sequence_diagram(&simplified))
+    }
+
+    async fn mermaid_for_task(
+        &self,
+        task_id: &str,
+    ) -> std::result::Result<String, baml_rt_api::MermaidError> {
+        let exporter = GraphExporter::new(self.store.clone());
+        let graph = exporter
+            .export_by_task(task_id)
+            .await
+            .map_err(|e| baml_rt_api::MermaidError::Other(Box::new(e)))?;
+        if graph.nodes.is_empty() {
+            return Err(baml_rt_api::MermaidError::NotFound);
+        }
+        let simplified = simplify_graph(&graph);
+        Ok(render_sequence_diagram(&simplified))
     }
 }
 
@@ -834,10 +881,11 @@ async fn main() -> anyhow::Result<()> {
     let config = Cli::parse()
         .into_config()
         .context("Failed to parse arguments")?;
-    let provenance_config = build_provenance_config(&config.provenance_store);
+    let provenance_config = build_provenance_config(&config.provenance_db);
     let access_allowlist = parse_access_allowlist();
-    let tool_index = match &config.provenance_store {
-        ProvenanceStoreKind::Graphqlite { path } => Some(ToolIndexConfig::new(path)),
+    let tool_index = match &config.provenance_db {
+        ProvenanceDb::InMemory => Some(ToolIndexConfig::in_memory()),
+        ProvenanceDb::File(path) => Some(ToolIndexConfig::new(path)),
     };
     let mut runner = AgentRunner::new(provenance_config, tool_index, access_allowlist);
 
@@ -888,11 +936,18 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if let Some(bind) = &config.serve_http {
+        let mermaid = match &runner.provenance_config {
+            ProvenanceConfig::Graphqlite(store) => {
+                Some(Arc::new(MermaidServiceImpl::new(store.clone()))
+                    as Arc<dyn baml_rt_api::MermaidService>)
+            }
+            _ => None,
+        };
         let runner = Arc::new(runner);
         let registry: Arc<dyn AgentRegistry> = Arc::new(RunnerRegistry(runner));
         let web_dir = config.web_dir.as_deref();
-        info!(bind = %bind, web_dir = ?web_dir, "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a, GET /openapi.json)");
-        baml_rt_api::serve(registry, bind, web_dir)
+        info!(bind = %bind, web_dir = ?web_dir, "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a, GET /mermaid/..., GET /openapi.json)");
+        baml_rt_api::serve(registry, bind, mermaid, web_dir)
             .await
             .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))?;
         return Ok(());

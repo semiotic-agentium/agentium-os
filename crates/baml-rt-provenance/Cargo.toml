@@ -34,3 +34,9 @@ test-support = { path = "../test-support" }
 
 [features]
 default = []
+cli = ["dep:clap", "dep:anyhow"]
+
+[[bin]]
+name = "graph_exporter"
+path = "src/bin/graph_exporter.rs"
+required-features = ["cli"]

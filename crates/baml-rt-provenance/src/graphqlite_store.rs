@@ -83,8 +83,16 @@ const TOOL_COL_SUCCESS_ALT: &str = "t.`a2a:success`";
 pub type SqlRow = HashMap<String, Value>;
 
 enum WorkerRequest {
-    ReadWithParams(String, Value, oneshot::Sender<std::result::Result<CypherResult, graphqlite::Error>>),
-    Write(String, Value, oneshot::Sender<std::result::Result<(), graphqlite::Error>>),
+    ReadWithParams(
+        String,
+        Value,
+        oneshot::Sender<std::result::Result<CypherResult, graphqlite::Error>>,
+    ),
+    Write(
+        String,
+        Value,
+        oneshot::Sender<std::result::Result<(), graphqlite::Error>>,
+    ),
     /// Execute a single SQL statement (DDL or DML). Params are positional (?1, ?2, ...).
     ExecuteSql(
         String,
@@ -131,7 +139,9 @@ impl MessageRow {
         let direction: String = row
             .get(MSG_COL_DIRECTION)
             .or_else(|_| row.get(MSG_COL_DIRECTION_ALT))?;
-        let role: String = row.get(MSG_COL_ROLE).or_else(|_| row.get(MSG_COL_ROLE_ALT))?;
+        let role: String = row
+            .get(MSG_COL_ROLE)
+            .or_else(|_| row.get(MSG_COL_ROLE_ALT))?;
         let content_str: String = row
             .get(MSG_COL_CONTENT)
             .or_else(|_| row.get(MSG_COL_CONTENT_ALT))?;
@@ -157,13 +167,24 @@ struct ToolCallRow {
 
 impl ToolCallRow {
     fn from_row(row: &Row) -> std::result::Result<Self, graphqlite::Error> {
-        let event_id: String = row.get(TOOL_COL_EVENT_ID).or_else(|_| row.get(TOOL_COL_EVENT_ID_ALT))?;
-        let tool_name: String = row.get(TOOL_COL_TOOL_NAME).or_else(|_| row.get(TOOL_COL_TOOL_NAME_ALT))?;
-        let metadata_str: String = row.get(TOOL_COL_METADATA).or_else(|_| row.get(TOOL_COL_METADATA_ALT))?;
-        let args_str: String = row.get(TOOL_COL_ARGS).or_else(|_| row.get(TOOL_COL_ARGS_ALT))?;
+        let event_id: String = row
+            .get(TOOL_COL_EVENT_ID)
+            .or_else(|_| row.get(TOOL_COL_EVENT_ID_ALT))?;
+        let tool_name: String = row
+            .get(TOOL_COL_TOOL_NAME)
+            .or_else(|_| row.get(TOOL_COL_TOOL_NAME_ALT))?;
+        let metadata_str: String = row
+            .get(TOOL_COL_METADATA)
+            .or_else(|_| row.get(TOOL_COL_METADATA_ALT))?;
+        let args_str: String = row
+            .get(TOOL_COL_ARGS)
+            .or_else(|_| row.get(TOOL_COL_ARGS_ALT))?;
         let metadata = serde_json::from_str(&metadata_str).unwrap_or(Value::String(metadata_str));
         let args = serde_json::from_str(&args_str).unwrap_or(Value::String(args_str));
-        let success: Option<i64> = row.get(TOOL_COL_SUCCESS).or_else(|_| row.get(TOOL_COL_SUCCESS_ALT)).ok();
+        let success: Option<i64> = row
+            .get(TOOL_COL_SUCCESS)
+            .or_else(|_| row.get(TOOL_COL_SUCCESS_ALT))
+            .ok();
         let success = success.map(|v| v != 0);
         Ok(Self {
             event_id,
@@ -267,7 +288,8 @@ fn execute_sql_worker(
         .map(json_to_rusqlite)
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let refs: Vec<&dyn rusqlite::ToSql> = rv.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-    conn.execute(sql, refs.as_slice()).map_err(|e| SqlError(e.to_string()))?;
+    conn.execute(sql, refs.as_slice())
+        .map_err(|e| SqlError(e.to_string()))?;
     Ok(())
 }
 
@@ -305,7 +327,9 @@ fn query_sql_worker(
 
 impl GraphqliteProvenanceStore {
     /// Open a connection from config and enable WAL if requested.
-    fn open_connection(config: &GraphqliteStoreConfig) -> std::result::Result<Connection, graphqlite::Error> {
+    fn open_connection(
+        config: &GraphqliteStoreConfig,
+    ) -> std::result::Result<Connection, graphqlite::Error> {
         let conn = match &config.path {
             crate::graphqlite_config::StorePath::InMemory => Connection::open_in_memory()?,
             crate::graphqlite_config::StorePath::File(path) => Connection::open(path.as_path())?,
@@ -343,13 +367,14 @@ impl GraphqliteBackend {
     pub fn build_store(&self) -> Result<Arc<GraphqliteProvenanceStore>> {
         match self {
             GraphqliteBackend::File(config) => {
-                let path = config
-                    .path
-                    .file_path()
-                    .ok_or_else(|| ProvenanceError::InvalidEvent {
-                        event_id: String::new(),
-                        reason: "file backend requires a file path".to_string(),
-                    })?;
+                let path =
+                    config
+                        .path
+                        .file_path()
+                        .ok_or_else(|| ProvenanceError::InvalidEvent {
+                            event_id: String::new(),
+                            reason: "file backend requires a file path".to_string(),
+                        })?;
                 get_or_init_file_store(path, config.clone())
             }
             GraphqliteBackend::InMemoryShared => get_or_init_shared_in_memory_store(),
@@ -373,7 +398,10 @@ static FILE_STORES: OnceLock<Mutex<HashMap<PathBuf, FileStoreEntry>>> = OnceLock
 
 static SHARED_IN_MEMORY_STORE: OnceLock<Arc<GraphqliteProvenanceStore>> = OnceLock::new();
 
-fn get_or_init_file_store(path: PathBuf, config: GraphqliteStoreConfig) -> Result<Arc<GraphqliteProvenanceStore>> {
+fn get_or_init_file_store(
+    path: PathBuf,
+    config: GraphqliteStoreConfig,
+) -> Result<Arc<GraphqliteProvenanceStore>> {
     let mutex = FILE_STORES.get_or_init(|| Mutex::new(HashMap::new()));
     let mut guard = mutex.lock().map_err(|e| {
         ProvenanceError::Storage(Box::new(std::io::Error::other(format!(
@@ -402,7 +430,9 @@ fn get_or_init_shared_in_memory_store() -> Result<Arc<GraphqliteProvenanceStore>
     Ok(store.clone())
 }
 
-fn build_store_from_config(config: &GraphqliteStoreConfig) -> Result<Arc<GraphqliteProvenanceStore>> {
+fn build_store_from_config(
+    config: &GraphqliteStoreConfig,
+) -> Result<Arc<GraphqliteProvenanceStore>> {
     let conn = {
         let _guard = EXTENSION_LOAD_SERIAL.lock().map_err(|e| {
             ProvenanceError::Storage(Box::new(std::io::Error::other(format!(
@@ -423,7 +453,9 @@ fn build_store_from_config(config: &GraphqliteStoreConfig) -> Result<Arc<Graphql
                     tracing::debug!(query_text = %query, params = ?params, "cypher execute");
                     let result = conn.cypher_builder(&query).params(&params).run();
                     if reply.send(result).is_err() {
-                        tracing::debug!("worker reply dropped (caller likely timed out or dropped)");
+                        tracing::debug!(
+                            "worker reply dropped (caller likely timed out or dropped)"
+                        );
                     }
                 }
                 WorkerRequest::Write(query, params, reply) => {
@@ -431,21 +463,31 @@ fn build_store_from_config(config: &GraphqliteStoreConfig) -> Result<Arc<Graphql
                     let span = spans::cypher_execute(&query, &params);
                     let _guard = span.enter();
                     tracing::debug!(query_text = %query, params = ?params, "cypher execute");
-                    let result = conn.cypher_builder(&query).params(&params).run().map(|_| ());
+                    let result = conn
+                        .cypher_builder(&query)
+                        .params(&params)
+                        .run()
+                        .map(|_| ());
                     if reply.send(result).is_err() {
-                        tracing::debug!("worker reply dropped (caller likely timed out or dropped)");
+                        tracing::debug!(
+                            "worker reply dropped (caller likely timed out or dropped)"
+                        );
                     }
                 }
                 WorkerRequest::ExecuteSql(sql, params, reply) => {
                     let result = execute_sql_worker(conn.sqlite_connection(), &sql, &params);
                     if reply.send(result).is_err() {
-                        tracing::debug!("worker reply dropped (caller likely timed out or dropped)");
+                        tracing::debug!(
+                            "worker reply dropped (caller likely timed out or dropped)"
+                        );
                     }
                 }
                 WorkerRequest::QuerySql(sql, params, reply) => {
                     let result = query_sql_worker(conn.sqlite_connection(), &sql, &params);
                     if reply.send(result).is_err() {
-                        tracing::debug!("worker reply dropped (caller likely timed out or dropped)");
+                        tracing::debug!(
+                            "worker reply dropped (caller likely timed out or dropped)"
+                        );
                     }
                 }
             }
@@ -463,10 +505,21 @@ impl GraphqliteProvenanceStore {
     async fn run_cypher_with_params(&self, query: &str, params: &Value) -> Result<CypherResult> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
-            .send(WorkerRequest::ReadWithParams(query.to_string(), params.clone(), reply_tx))
+            .send(WorkerRequest::ReadWithParams(
+                query.to_string(),
+                params.clone(),
+                reply_tx,
+            ))
             .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
-        let result = reply_rx.await.map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
+        let result = reply_rx
+            .await
+            .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
         result.map_err(map_graphqlite_error)
+    }
+
+    /// Run a read-only Cypher query. Used by graph export (Mermaid, etc.).
+    pub async fn run_cypher_read(&self, query: &str, params: &Value) -> Result<CypherResult> {
+        self.run_cypher_with_params(query, params).await
     }
 
     /// Run a parameterized read; exposed for tests.
@@ -483,9 +536,15 @@ impl GraphqliteProvenanceStore {
     async fn run_cypher_write(&self, query: &str, params: &Value) -> Result<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
-            .send(WorkerRequest::Write(query.to_string(), params.clone(), reply_tx))
+            .send(WorkerRequest::Write(
+                query.to_string(),
+                params.clone(),
+                reply_tx,
+            ))
             .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
-        let result = reply_rx.await.map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
+        let result = reply_rx
+            .await
+            .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
         result.map_err(map_graphqlite_error)
     }
 
@@ -494,9 +553,15 @@ impl GraphqliteProvenanceStore {
     pub async fn run_sql_execute(&self, sql: &str, params: &[Value]) -> Result<()> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
-            .send(WorkerRequest::ExecuteSql(sql.to_string(), params.to_vec(), reply_tx))
+            .send(WorkerRequest::ExecuteSql(
+                sql.to_string(),
+                params.to_vec(),
+                reply_tx,
+            ))
             .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
-        let result = reply_rx.await.map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
+        let result = reply_rx
+            .await
+            .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
         result.map_err(|e| ProvenanceError::Storage(Box::new(e)))
     }
 
@@ -504,9 +569,15 @@ impl GraphqliteProvenanceStore {
     pub async fn run_sql_query(&self, sql: &str, params: &[Value]) -> Result<Vec<SqlRow>> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
-            .send(WorkerRequest::QuerySql(sql.to_string(), params.to_vec(), reply_tx))
+            .send(WorkerRequest::QuerySql(
+                sql.to_string(),
+                params.to_vec(),
+                reply_tx,
+            ))
             .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
-        let result = reply_rx.await.map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
+        let result = reply_rx
+            .await
+            .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
         result.map_err(|e| ProvenanceError::Storage(Box::new(e)))
     }
 }
@@ -517,8 +588,10 @@ impl ProvenanceWriter for GraphqliteProvenanceStore {
         let _start = Instant::now();
         validate_event(&event)?;
         let normalized = self.normalizer.normalize(&event)?;
-        let statements =
-            cypher_build::build_queries_with_key_style_params(&normalized, KeyStyle::StorageSafeUnderscore);
+        let statements = cypher_build::build_queries_with_key_style_params(
+            &normalized,
+            KeyStyle::StorageSafeUnderscore,
+        );
         for stmt in &statements {
             self.run_cypher_write(&stmt.query, &stmt.params).await?;
         }
@@ -582,8 +655,12 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
         let (tool_query, tool_params) =
             ConversationReadModel::tool_query_storage_safe_params(context);
 
-        let message_results = self.run_cypher_with_params(message_query, &message_params).await?;
-        let tool_results = self.run_cypher_with_params(tool_query, &tool_params).await?;
+        let message_results = self
+            .run_cypher_with_params(message_query, &message_params)
+            .await?;
+        let tool_results = self
+            .run_cypher_with_params(tool_query, &tool_params)
+            .await?;
 
         let mut items: Vec<ProvenanceConversationContextItem> = Vec::new();
 
@@ -619,11 +696,16 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
                 continue;
             }
             let phase = ToolSessionPhase::from_metadata(&tool.metadata);
-            let result = tool.metadata.get("result").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
+            let result = tool
+                .metadata
+                .get("result")
+                .cloned()
+                .unwrap_or(Value::Object(serde_json::Map::new()));
             let include_call = !matches!(
                 phase,
                 ToolSessionPhase::Open | ToolSessionPhase::Finish | ToolSessionPhase::Abort
-            ) && (!is_empty_object(&tool.args) || has_meaningful_result(&result));
+            ) && (!is_empty_object(&tool.args)
+                || has_meaningful_result(&result));
 
             if include_call {
                 items.push(ProvenanceConversationContextItem {
@@ -656,7 +738,13 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
             }
         }
 
-        items.sort_by_key(|i| (i.timestamp_ms, event_id_to_timestamp_ms(&i.event_id), i.source.clone()));
+        items.sort_by_key(|i| {
+            (
+                i.timestamp_ms,
+                event_id_to_timestamp_ms(&i.event_id),
+                i.source.clone(),
+            )
+        });
         if let Some(n) = limit {
             if n == 0 {
                 return Ok(Vec::new());
@@ -740,14 +828,16 @@ impl Default for GraphqliteStoreBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use baml_rt_core::ids::{AgentId, EventId, ExternalId, MessageId, TaskId, UuidId};
     use crate::{AgentType, GlobalEvent, ProvEvent, ProvEventData, TaskScopedEvent};
+    use baml_rt_core::ids::{AgentId, EventId, ExternalId, MessageId, TaskId, UuidId};
 
     /// Build a store backed by a unique temp path so tests can run concurrently.
     fn build_test_store() -> Arc<GraphqliteProvenanceStore> {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.keep().join("provenance.db");
-        GraphqliteStoreBuilder::file(path).build().expect("build store")
+        GraphqliteStoreBuilder::file(path)
+            .build()
+            .expect("build store")
     }
 
     #[tokio::test]
@@ -800,7 +890,7 @@ mod tests {
         let (query, params) =
             ConversationReadModel::message_query_storage_safe_params(context_id.as_str());
         let results = store
-            .run_cypher_for_test_with_params(&query, &params)
+            .run_cypher_for_test_with_params(query, &params)
             .await
             .expect("run_cypher");
         assert!(
@@ -868,8 +958,10 @@ mod tests {
         for event in &events {
             store.add_event(event.clone()).await.expect("add_event");
         }
-        let messages =
-            store.context_messages(&context_id, None).await.expect("context_messages");
+        let messages = store
+            .context_messages(&context_id, None)
+            .await
+            .expect("context_messages");
         assert_eq!(messages.len(), 2, "expect user + assistant message");
         assert_eq!(messages[0].role, "user");
         assert_eq!(messages[1].role, "assistant");
