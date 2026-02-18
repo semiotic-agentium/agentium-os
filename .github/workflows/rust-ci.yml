@@ -46,9 +46,16 @@ jobs:
           cache-on-failure: true
           cache-targets: "true"
 
+      - name: Cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            /var/cache/apt/archives
+          key: apt-${{ runner.os }}-build-essential-pkg-config-libssl-dev-binutils-gold-libclang-dev-util-linux
+
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold libclang-dev util-linux
+          sudo apt-get update -qq && sudo apt-get install -y -qq build-essential pkg-config libssl-dev binutils-gold libclang-dev util-linux
 
       - name: System info
         run: |
