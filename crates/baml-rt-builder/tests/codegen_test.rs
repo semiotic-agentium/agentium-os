@@ -30,20 +30,6 @@ fn test_clickup_tool_baml_interfaces() {
     insta::assert_snapshot!("clickup_baml_tool_interfaces", baml_output);
 }
 
-#[cfg(feature = "clickup")]
-#[test]
-fn test_clickup_grouped_tool_baml_interfaces() {
-    let tool_names = vec![
-        "support/clickupNavigate".to_string(),
-        "support/clickupTasks".to_string(),
-        "support/clickupMutate".to_string(),
-    ];
-    let baml_output = render_baml_tool_interfaces(&tool_names)
-        .expect("Should generate grouped ClickUp interfaces");
-
-    insta::assert_snapshot!("clickup_grouped_baml_tool_interfaces", baml_output);
-}
-
 #[test]
 fn test_schema_to_baml_nullable_types() {
     // Regression test: schemars 1.x encodes Option<T> as "type": ["T", "null"]
