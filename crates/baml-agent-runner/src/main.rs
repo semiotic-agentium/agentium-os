@@ -724,6 +724,7 @@ struct RunnerConfig {
     invoke: Option<(String, String, String)>,
     a2a_stdio: bool,
     serve_http: Option<String>,
+    web_dir: Option<PathBuf>,
     provenance_store: ProvenanceStoreKind,
 }
 
@@ -751,6 +752,11 @@ struct Cli {
     /// Bind HTTP API (discovery + A2A routing) on the given address (e.g. 127.0.0.1:8080).
     #[arg(long, value_name = "ADDR")]
     serve_http: Option<String>,
+
+    /// Directory containing built web UI assets (e.g. web/dist).
+    /// When set, the HTTP server serves these files at the root path.
+    #[arg(long, value_name = "DIR")]
+    web_dir: Option<PathBuf>,
 
     /// Provenance storage backend.
     #[arg(long, value_enum, default_value_t = ProvenanceStoreChoice::Falkordb)]
@@ -788,6 +794,7 @@ impl Cli {
             invoke,
             a2a_stdio: self.a2a_stdio,
             serve_http: self.serve_http,
+            web_dir: self.web_dir,
             provenance_store,
         })
     }
@@ -875,8 +882,9 @@ async fn main() -> anyhow::Result<()> {
     if let Some(bind) = &config.serve_http {
         let runner = Arc::new(runner);
         let registry: Arc<dyn AgentRegistry> = Arc::new(RunnerRegistry(runner));
-        info!(bind = %bind, "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a, GET /openapi.json)");
-        baml_rt_api::serve(registry, bind)
+        let web_dir = config.web_dir.as_deref();
+        info!(bind = %bind, web_dir = ?web_dir, "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a, GET /openapi.json)");
+        baml_rt_api::serve(registry, bind, web_dir)
             .await
             .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))?;
         return Ok(());
