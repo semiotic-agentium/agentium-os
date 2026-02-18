@@ -1278,6 +1278,7 @@ dependencies = [
  "baml-rt-observability",
  "baml-rt-tools",
  "clap",
+ "falkordb",
  "insta",
  "serde",
  "serde_json",

@@ -22,6 +22,7 @@ async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 text-to-cypher = { workspace = true }
+falkordb = { workspace = true }
 testcontainers = { workspace = true, optional = true }
 uuid = { workspace = true }
 clap = { workspace = true, optional = true }

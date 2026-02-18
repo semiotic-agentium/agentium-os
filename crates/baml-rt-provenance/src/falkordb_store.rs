@@ -33,6 +33,7 @@ use crate::vocabulary::{
 };
 use async_trait::async_trait;
 use baml_rt_observability::metrics;
+use falkordb::{FalkorClientBuilder, FalkorConnectionInfo, FalkorValue};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -757,7 +758,7 @@ impl ProvenanceContextReader for FalkorDbProvenanceWriter {
     ) -> Result<Vec<ProvenanceContextMessage>> {
         let context = context_id.as_str();
         let message_query = ConversationReadModel::message_query(context);
-        let message_rows_raw = execute_cypher_query(
+        let typed_rows = execute_read_rows(
             &message_query,
             &self.config.graph,
             &self.config.connection,
@@ -765,8 +766,13 @@ impl ProvenanceContextReader for FalkorDbProvenanceWriter {
         )
         .await?;
 
-        let mut messages: Vec<ProvenanceContextMessage> = parse_rows(&message_rows_raw)
+        let mut messages: Vec<ProvenanceContextMessage> = typed_rows
             .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(falkor_value_to_json)
+                    .collect::<Vec<Value>>()
+            })
             .filter_map(|row| MessageRow::parse(&row).ok())
             .map(|message_row| {
                 let role = if message_row.direction == message_directions::RECEIVED {
@@ -811,14 +817,14 @@ impl ProvenanceContextReader for FalkorDbProvenanceWriter {
             "Provenance conversation_context: executing queries"
         );
 
-        let message_rows_raw = execute_cypher_query(
+        let message_typed = execute_read_rows(
             &message_query,
             &self.config.graph,
             &self.config.connection,
             true,
         )
         .await?;
-        let tool_rows_raw = execute_cypher_query(
+        let tool_typed = execute_read_rows(
             &tool_query,
             &self.config.graph,
             &self.config.connection,
@@ -826,8 +832,14 @@ impl ProvenanceContextReader for FalkorDbProvenanceWriter {
         )
         .await?;
 
-        let message_parsed = parse_rows(&message_rows_raw);
-        let tool_parsed = parse_rows(&tool_rows_raw);
+        let message_parsed: Vec<Vec<Value>> = message_typed
+            .into_iter()
+            .map(|row| row.into_iter().map(falkor_value_to_json).collect())
+            .collect();
+        let tool_parsed: Vec<Vec<Value>> = tool_typed
+            .into_iter()
+            .map(|row| row.into_iter().map(falkor_value_to_json).collect())
+            .collect();
 
         let mut items: Vec<ProvenanceConversationContextItem> = Vec::new();
 
@@ -1426,6 +1438,403 @@ fn is_primitive_value(value: &Value) -> bool {
 
 fn json_string_literal(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+/// Execute a read-only (or read-write) Cypher query and return typed rows.
+///
+/// This mirrors `text_to_cypher::core::execute_cypher_query` but skips the
+/// lossy text formatter, returning `Vec<Vec<FalkorValue>>` directly.
+async fn execute_read_rows(
+    query: &str,
+    graph_name: &str,
+    falkordb_connection: &str,
+    read_only: bool,
+) -> std::result::Result<Vec<Vec<FalkorValue>>, Box<dyn std::error::Error + Send + Sync>> {
+    let connection_info: FalkorConnectionInfo = falkordb_connection
+        .try_into()
+        .map_err(|e| format!("Invalid connection info: {e}"))?;
+
+    let client = FalkorClientBuilder::new_async()
+        .with_connection_info(connection_info)
+        .build()
+        .await
+        .map_err(|e| format!("Failed to build FalkorDB client: {e}"))?;
+
+    let graph_name = graph_name.to_string();
+    let query = query.to_string();
+
+    tokio::task::spawn_blocking(move || {
+        let rt =
+            tokio::runtime::Runtime::new().map_err(|e| format!("Failed to create runtime: {e}"))?;
+        rt.block_on(async {
+            let mut graph = client.select_graph(&graph_name);
+            let query_result = if read_only {
+                graph
+                    .ro_query(&query)
+                    .execute()
+                    .await
+                    .map_err(|e| format!("Read query execution failed: {e}"))?
+            } else {
+                graph
+                    .query(&query)
+                    .execute()
+                    .await
+                    .map_err(|e| format!("Query execution failed: {e}"))?
+            };
+            // LazyResultSet is an iterator over Vec<FalkorValue>; collect eagerly.
+            let rows: Vec<Vec<FalkorValue>> = query_result.data.collect();
+            Ok(rows)
+        })
+    })
+    .await
+    .map_err(|e| format!("Failed to execute blocking task: {e}"))?
+}
+
+/// Convert a single `FalkorValue` into a `serde_json::Value`.
+///
+/// This is the typed replacement for the lossy text round-trip through
+/// `format_query_records` → `parse_graph_snapshot`.
+fn falkor_value_to_json(fv: FalkorValue) -> Value {
+    match fv {
+        FalkorValue::String(s) => Value::String(s),
+        FalkorValue::I64(n) => Value::Number(serde_json::Number::from(n)),
+        FalkorValue::F64(f) => serde_json::Number::from_f64(f)
+            .map(Value::Number)
+            .unwrap_or(Value::Null),
+        FalkorValue::Bool(b) => Value::Bool(b),
+        FalkorValue::None => Value::Null,
+        FalkorValue::Array(items) => {
+            Value::Array(items.into_iter().map(falkor_value_to_json).collect())
+        }
+        FalkorValue::Map(map) => {
+            let obj: serde_json::Map<String, Value> = map
+                .into_iter()
+                .map(|(k, v)| (k, falkor_value_to_json(v)))
+                .collect();
+            Value::Object(obj)
+        }
+        // Node and Edge don't implement Serialize in falkordb 0.2.
+        // These variants should never appear in conversation read queries
+        // (which return scalar columns), but we handle them for exhaustiveness.
+        FalkorValue::Node(node) => Value::String(format!("{node:?}")),
+        FalkorValue::Edge(edge) => Value::String(format!("{edge:?}")),
+        FalkorValue::Path(path) => Value::String(format!("{path:?}")),
+        FalkorValue::Point(point) => Value::String(format!("{point:?}")),
+        FalkorValue::Vec32(vec32) => Value::String(format!("{vec32:?}")),
+        FalkorValue::Unparseable(s) => Value::String(s),
+    }
+}
+
+// ---------- Legacy text parsers (retained for unit tests only) ----------
+// NOTE: parse_rows is commented out — no longer used in production after the
+// typed FalkorDB read path replaced it. Kept for potential future use.
+// #[cfg(test)]
+// fn parse_rows(raw: &str) -> Vec<Vec<Value>> {
+//     parse_graph_snapshot(raw)
+//         .and_then(|parsed| parsed.as_array().cloned())
+//         .unwrap_or_default()
+//         .into_iter()
+//         .filter_map(|row| row.as_array().map(|values| values.to_vec()))
+//         .collect()
+// }
+
+#[cfg(test)]
+fn parse_graph_snapshot(raw: &str) -> Option<Value> {
+    if raw.trim().is_empty() || raw.trim() == "No results returned." {
+        return Some(Value::Array(Vec::new()));
+    }
+    let mut rows = Vec::new();
+    for (line_idx, line) in raw.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let record_str = if let Some(idx) = trimmed.find('[') {
+            &trimmed[idx..]
+        } else {
+            trimmed
+        };
+        let record_str = record_str.trim();
+        if !record_str.starts_with('[') || !record_str.ends_with(']') {
+            tracing::debug!(
+                line_idx,
+                line_preview = %record_str.chars().take(240).collect::<String>(),
+                "Skipping FalkorDB line that is not a row record"
+            );
+            continue;
+        }
+        let inner = &record_str[1..record_str.len() - 1];
+        let parts = split_top_level(inner, ',');
+        let mut values = Vec::new();
+        let mut row_ok = true;
+        for (part_idx, part) in parts.into_iter().enumerate() {
+            match parse_debug_value(part.trim()) {
+                Some(value) => values.push(value),
+                None => {
+                    tracing::debug!(
+                        line_idx,
+                        part_idx,
+                        part_preview = %part.chars().take(240).collect::<String>(),
+                        "Skipping FalkorDB row due to unparsable value"
+                    );
+                    row_ok = false;
+                    break;
+                }
+            }
+        }
+        if !row_ok {
+            continue;
+        }
+        rows.push(Value::Array(values));
+    }
+    Some(Value::Array(rows))
+}
+
+#[cfg(test)]
+fn split_top_level(input: &str, delimiter: char) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut depth_bracket: usize = 0;
+    let mut depth_brace: usize = 0;
+    let mut depth_paren: usize = 0;
+    let mut in_string = false;
+    // FalkorDB returns string properties containing JSON with unescaped
+    // inner quotes, e.g. `"{"key":"value"}"`. Track brace/bracket depth
+    // inside strings so we only exit the string when the embedded JSON is
+    // fully closed.
+    let mut string_brace_depth: usize = 0;
+    let mut string_bracket_depth: usize = 0;
+    let mut escape = false;
+    for ch in input.chars() {
+        if in_string {
+            current.push(ch);
+            if escape {
+                escape = false;
+                continue;
+            }
+            if ch == '\\' {
+                escape = true;
+            } else if ch == '{' {
+                string_brace_depth += 1;
+            } else if ch == '}' {
+                string_brace_depth = string_brace_depth.saturating_sub(1);
+            } else if ch == '[' {
+                string_bracket_depth += 1;
+            } else if ch == ']' {
+                string_bracket_depth = string_bracket_depth.saturating_sub(1);
+            } else if ch == '"' && string_brace_depth == 0 && string_bracket_depth == 0 {
+                in_string = false;
+            }
+            // else: stay in string — unescaped quote inside embedded JSON
+            continue;
+        }
+        match ch {
+            '"' => {
+                in_string = true;
+                string_brace_depth = 0;
+                string_bracket_depth = 0;
+                current.push(ch);
+            }
+            '[' => {
+                depth_bracket += 1;
+                current.push(ch);
+            }
+            ']' => {
+                depth_bracket = depth_bracket.saturating_sub(1);
+                current.push(ch);
+            }
+            '{' => {
+                depth_brace += 1;
+                current.push(ch);
+            }
+            '}' => {
+                depth_brace = depth_brace.saturating_sub(1);
+                current.push(ch);
+            }
+            '(' => {
+                depth_paren += 1;
+                current.push(ch);
+            }
+            ')' => {
+                depth_paren = depth_paren.saturating_sub(1);
+                current.push(ch);
+            }
+            _ if ch == delimiter && depth_bracket == 0 && depth_brace == 0 && depth_paren == 0 => {
+                parts.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    if !current.trim().is_empty() {
+        parts.push(current.trim().to_string());
+    }
+    parts
+}
+
+#[cfg(test)]
+fn parse_debug_value(input: &str) -> Option<Value> {
+    let value = input.trim();
+    if value.starts_with("Map(") {
+        return parse_debug_map(value);
+    }
+    if value.starts_with("Array(") {
+        return parse_debug_array(value);
+    }
+    if value.starts_with("String(") {
+        return parse_debug_string(value).map(Value::String);
+    }
+    if value.starts_with("I64(") && value.ends_with(')') {
+        let inner = &value[4..value.len() - 1];
+        return inner
+            .parse::<i64>()
+            .ok()
+            .map(|num| Value::Number(serde_json::Number::from(num)));
+    }
+    if value.starts_with("Integer(") && value.ends_with(')') {
+        let inner = &value[8..value.len() - 1];
+        return inner
+            .parse::<i64>()
+            .ok()
+            .map(|num| Value::Number(serde_json::Number::from(num)));
+    }
+    if value.starts_with("Long(") && value.ends_with(')') {
+        let inner = &value[5..value.len() - 1];
+        return inner
+            .parse::<i64>()
+            .ok()
+            .map(|num| Value::Number(serde_json::Number::from(num)));
+    }
+    if value.starts_with("F64(") && value.ends_with(')') {
+        let inner = &value[4..value.len() - 1];
+        return serde_json::Number::from_f64(inner.parse::<f64>().ok()?).map(Value::Number);
+    }
+    if value.starts_with("Bool(") && value.ends_with(')') {
+        let inner = &value[5..value.len() - 1];
+        return inner.parse::<bool>().ok().map(Value::Bool);
+    }
+    if value == "Null" || value == "null" {
+        return Some(Value::Null);
+    }
+    if value.starts_with('[') && value.ends_with(']') {
+        return parse_bracket_array(value);
+    }
+    if value.starts_with('"') && value.ends_with('"') {
+        return parse_quoted_string_with_json_fallback(value);
+    }
+    Some(Value::String(value.to_string()))
+}
+
+#[cfg(test)]
+fn parse_quoted_string_with_json_fallback(value: &str) -> Option<Value> {
+    if let Ok(parsed) = serde_json::from_str::<String>(value) {
+        return Some(Value::String(parsed));
+    }
+
+    let inner = value
+        .strip_prefix('"')
+        .and_then(|v| v.strip_suffix('"'))
+        .unwrap_or(value);
+
+    // FalkorDB text snapshots sometimes return a quoted payload whose inner
+    // quotes are unescaped, e.g. `"{"k":"v"}"`. Treat the inner segment as
+    // JSON and re-serialize so downstream `decode_embedded_json` can parse it.
+    if let Ok(parsed_json) = serde_json::from_str::<Value>(inner) {
+        return serde_json::to_string(&parsed_json)
+            .ok()
+            .map(Value::String)
+            .or_else(|| Some(Value::String(inner.to_string())));
+    }
+
+    Some(Value::String(inner.to_string()))
+}
+
+#[cfg(test)]
+fn parse_debug_string(value: &str) -> Option<String> {
+    if !value.starts_with("String(") || !value.ends_with(')') {
+        return None;
+    }
+    let inner = &value[7..value.len() - 1];
+    if inner.starts_with('"') && inner.ends_with('"') {
+        if let Ok(parsed) = serde_json::from_str::<String>(inner) {
+            Some(parsed)
+        } else {
+            Some(inner.trim_matches('"').to_string())
+        }
+    } else {
+        let wrapped = format!("\"{}\"", inner);
+        if let Ok(parsed) = serde_json::from_str::<String>(&wrapped) {
+            Some(parsed)
+        } else {
+            Some(inner.to_string())
+        }
+    }
+}
+
+#[cfg(test)]
+fn parse_debug_array(value: &str) -> Option<Value> {
+    if !value.starts_with("Array(") || !value.ends_with(')') {
+        return None;
+    }
+    let inner = &value[6..value.len() - 1];
+    parse_bracket_array(inner)
+}
+
+#[cfg(test)]
+fn parse_bracket_array(value: &str) -> Option<Value> {
+    let trimmed = value.trim();
+    let inner = if trimmed.starts_with('[') && trimmed.ends_with(']') {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+    if inner.trim().is_empty() {
+        return Some(Value::Array(Vec::new()));
+    }
+    let parts = split_top_level(inner, ',');
+    let mut values = Vec::new();
+    for part in parts {
+        values.push(parse_debug_value(part.trim())?);
+    }
+    Some(Value::Array(values))
+}
+
+#[cfg(test)]
+fn parse_debug_map(value: &str) -> Option<Value> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with("Map(") || !trimmed.ends_with(')') {
+        return None;
+    }
+    let inner = &trimmed[4..trimmed.len() - 1];
+    let inner = inner.trim();
+    let inner = if inner.starts_with('{') && inner.ends_with('}') {
+        &inner[1..inner.len() - 1]
+    } else {
+        inner
+    };
+    if inner.trim().is_empty() {
+        return Some(Value::Object(serde_json::Map::new()));
+    }
+    let parts = split_top_level(inner, ',');
+    let mut map = serde_json::Map::new();
+    for part in parts {
+        let mut iter = split_top_level(part.trim(), ':').into_iter();
+        let key_raw = iter.next()?.trim().to_string();
+        let value_raw = iter.collect::<Vec<String>>().join(":");
+        let key = serde_json::from_str::<String>(&key_raw).ok()?;
+        let value = parse_debug_value(value_raw.trim())?;
+        map.insert(key, value);
+    }
+    Some(Value::Object(map))
+}
+
+fn decode_embedded_json(value: &Value) -> Value {
+    match value {
+        Value::String(s) => {
+            serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.clone()))
+        }
+        other => other.clone(),
+    }
 }
 
 fn normalize_message_content(value: &Value) -> String {
