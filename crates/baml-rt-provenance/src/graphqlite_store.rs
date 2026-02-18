@@ -8,16 +8,18 @@
 //!
 //! ## Concurrency caveats (GraphQLite extension, not SQLite)
 //!
-//! **We serialize all Cypher execution per DB path.** The GraphQLite extension's
+//! **We serialize all Cypher execution in the process.** The GraphQLite extension's
 //! generated Cypher scanner (Flex) uses **process-global mutable state** (e.g.
 //! `current_scanner`, `current_token`, line/column globals). Concurrent Cypher
 //! parses in the same process can corrupt that state and produce parse errors or
 //! crashes. SQLite is fine with multiple connections; the extension's parser is not.
 //!
-//! **What we do:** One shared [GraphqliteProvenanceStore] (one connection, one worker
-//! thread) per file path and one for in-memory. All agent and API Cypher traffic
-//! for that DB goes through that single worker. No parallel Cypher execution
-//! against the same DB in one process.
+//! **What we do:** On the **async host** we use a process-global `tokio::sync::Mutex`
+//! so only one Cypher request (read or write) is in flight at a time. The caller
+//! holds the lock (await) for the duration of send + reply; the actual Cypher run
+//! happens in a **dedicated worker thread** that owns the [Connection]. We do not
+//! block the async runtime with Cypher execution. SQL (ExecuteSql, QuerySql) is
+//! not serialized by this mutex and goes through the same worker in order.
 //!
 //! **Upstream fix required:** This should be fixed in GraphQLite by making the
 //! scanner reentrant (Flex `%option reentrant` and per-call state) so that
@@ -54,6 +56,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
+use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::oneshot;
 
 // Column names from ConversationReadModel RETURN clauses (storage-safe underscore form).
@@ -386,11 +389,10 @@ impl GraphqliteBackend {
 /// concurrent opens can race in the extension's C init.
 static EXTENSION_LOAD_SERIAL: Mutex<()> = Mutex::new(());
 
-/// Serializes all Cypher parse/execute in the process. The GraphQLite extension's
-/// scanner uses process-global mutable state; concurrent Cypher from multiple
-/// workers would corrupt it. Hold this lock for the duration of any conn.cypher*
-/// call in the worker loop.
-static CYPHER_EXEC_SERIAL: Mutex<()> = Mutex::new(());
+/// Serializes Cypher requests on the async host. Only one Cypher (read or write)
+/// runs at a time in the process; the caller holds this lock for send + await reply.
+/// The worker thread runs Cypher without a mutex. Initialized on first use.
+static CYPHER_REQUEST_SERIAL: OnceLock<TokioMutex<()>> = OnceLock::new();
 
 /// One shared store per file path. Values are Result so we cache init failures and propagate (no unwrap).
 type FileStoreEntry = std::result::Result<Arc<GraphqliteProvenanceStore>, String>;
@@ -447,7 +449,6 @@ fn build_store_from_config(
         while let Ok(req) = request_rx.recv() {
             match req {
                 WorkerRequest::ReadWithParams(query, params, reply) => {
-                    let _cypher_guard = CYPHER_EXEC_SERIAL.lock().ok();
                     let span = spans::cypher_execute(&query, &params);
                     let _guard = span.enter();
                     tracing::debug!(query_text = %query, params = ?params, "cypher execute");
@@ -459,7 +460,6 @@ fn build_store_from_config(
                     }
                 }
                 WorkerRequest::Write(query, params, reply) => {
-                    let _cypher_guard = CYPHER_EXEC_SERIAL.lock().ok();
                     let span = spans::cypher_execute(&query, &params);
                     let _guard = span.enter();
                     tracing::debug!(query_text = %query, params = ?params, "cypher execute");
@@ -502,7 +502,10 @@ fn build_store_from_config(
 
 impl GraphqliteProvenanceStore {
     /// Run a parameterized read Cypher query (no manual escaping).
+    /// Serialized process-wide via CYPHER_REQUEST_SERIAL so only one Cypher runs at a time.
     async fn run_cypher_with_params(&self, query: &str, params: &Value) -> Result<CypherResult> {
+        let serial = CYPHER_REQUEST_SERIAL.get_or_init(|| TokioMutex::new(()));
+        let _guard = serial.lock().await;
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
             .send(WorkerRequest::ReadWithParams(
@@ -533,7 +536,10 @@ impl GraphqliteProvenanceStore {
     }
 
     /// Run a parameterized write Cypher query via the worker thread (no manual escaping).
+    /// Serialized process-wide via CYPHER_REQUEST_SERIAL so only one Cypher runs at a time.
     async fn run_cypher_write(&self, query: &str, params: &Value) -> Result<()> {
+        let serial = CYPHER_REQUEST_SERIAL.get_or_init(|| TokioMutex::new(()));
+        let _guard = serial.lock().await;
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
             .send(WorkerRequest::Write(
