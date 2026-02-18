@@ -4,7 +4,7 @@ set dotenv-load
 # Rebuilds clickup-agent package and runs it via a2a stdio.
 clickup-agent:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- clickup-agent.tar.gz --a2a-stdio --falkordb-url ${FALKORDB_URL:-redis://localhost:6379}
+    cargo run -p baml-agent-runner --features http-tools -- clickup-agent.tar.gz --a2a-stdio
 
 fmt:
     cargo fmt --all

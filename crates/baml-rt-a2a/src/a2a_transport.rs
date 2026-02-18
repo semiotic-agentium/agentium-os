@@ -5,7 +5,7 @@ use crate::a2a_store::{
     ConversationContextSource, ProvenanceTaskStore, TaskEventRecorder, TaskRepository,
     TaskStoreBackend, TaskUpdateEvent, TaskUpdateQueue,
 };
-use crate::a2a_types::{JSONRPCId, SendMessageRequest};
+use crate::a2a_types::{JSONRPCId, SendMessageRequest, Task};
 use crate::error_classifier::{A2aErrorClassifier, ErrorClassifier};
 use crate::events::{BroadcastEventEmitter, EventEmitter};
 use crate::handlers::{DefaultTaskHandler, TaskHandler};
@@ -1011,6 +1011,23 @@ impl A2aAgent {
                     && let Ok(params) =
                         serde_json::from_value::<SendMessageRequest>(parsed_request.params.clone())
                 {
+                    // When the inbound message carries a task_id (e.g.
+                    // client-assigned on first turn), ensure the parent
+                    // task row exists before persisting the message.
+                    // Upsert with a minimal shell is a no-op when the row
+                    // already exists (merge-preserve keeps existing data).
+                    if let Some(task_id) = params.message.task_id.clone() {
+                        let shell = Task {
+                            id: Some(task_id),
+                            context_id: params.message.context_id.clone(),
+                            artifacts: Vec::new(),
+                            history: Vec::new(),
+                            status: None,
+                            metadata: None,
+                            extra: HashMap::new(),
+                        };
+                        self.task_store.upsert(shell).await?;
+                    }
                     self.task_store.insert_message(&params.message).await?;
                 }
                 let route_span = spans::a2a_route(
@@ -1034,8 +1051,13 @@ impl A2aAgent {
             }
             Ok(_) => metrics::record_a2a_request(method.as_str(), "success", invocation, duration),
             Err(err) => {
+<<<<<<< Updated upstream
                 tracing::warn!(error = %err, "handle_a2a: routing error");
                 metrics::record_a2a_request(method.as_str(), "error", invocation, duration);
+=======
+                tracing::warn!(error = ?err, "handle_a2a: routing error");
+                metrics::record_a2a_request(method.as_str(), "error", is_stream, duration);
+>>>>>>> Stashed changes
                 metrics::record_a2a_error(
                     method.as_str(),
                     self.error_classifier.classify(err),

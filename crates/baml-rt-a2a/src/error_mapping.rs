@@ -138,6 +138,21 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "io",
             Retryability::Retryable,
         ),
+<<<<<<< Updated upstream
+=======
+        BamlRtError::ProvenanceContextRead { source } => {
+            let details = format!("{source}");
+            mapping(
+                error,
+                -32603,
+                "Internal error",
+                Some(serde_json::json!({ "details": details })),
+                "provenance",
+                true,
+            )
+        }
+        BamlRtError::Io(_) => mapping(error, -32603, "Internal error", None, "io", true),
+>>>>>>> Stashed changes
         BamlRtError::ExecutionFailed { .. } => mapping(
             error,
             -32603,
