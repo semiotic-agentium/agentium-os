@@ -24,8 +24,8 @@ use baml_rt_core::{
     collect_a2a_stream,
 };
 use baml_rt_observability::{spans, tracing_setup};
-use baml_rt_provenance::{AgentType, ProvEvent, ToolIndexConfig, index_tools};
-use baml_rt_provenance::{FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, ProvenanceWriter};
+use baml_rt_provenance::{AgentType, GraphqliteStoreBuilder, ProvEvent, ToolIndexConfig, index_tools};
+use baml_rt_provenance::ProvenanceWriter;
 use baml_rt_quickjs::BamlRuntimeManager;
 use baml_rt_tools::tools::ToolAccess;
 use baml_rt_tools::{enforce_tool_access, parse_access_allowlist};
@@ -65,7 +65,7 @@ impl AgentPackage {
     /// The agent_id is generated internally by A2aAgent.
     async fn boot(
         &self,
-        provenance_writer: Option<Arc<dyn ProvenanceWriter>>,
+        provenance_config: &ProvenanceConfig,
         tool_index: Option<ToolIndexConfig>,
         access_allowlist: &Option<HashSet<ToolAccess>>,
     ) -> Result<(A2aAgent, AgentId)> {
@@ -197,8 +197,14 @@ impl AgentPackage {
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
             .with_a2a_session_tool(wants_a2a_session);
 
-        if let Some(writer) = provenance_writer.clone() {
-            agent_builder = agent_builder.with_provenance_writer(writer);
+        match provenance_config {
+            ProvenanceConfig::Graphqlite(store) => {
+                agent_builder = agent_builder.with_graphqlite_store(store.clone());
+            }
+            ProvenanceConfig::WriterOnly(writer) => {
+                agent_builder = agent_builder.with_provenance_writer(writer.clone());
+            }
+            ProvenanceConfig::None => {}
         }
 
         let agent = agent_builder.build().await?;
@@ -240,9 +246,9 @@ impl AgentPackage {
             let manager = runtime_manager_arc.lock().await;
             let tools = manager.export_tool_metadata().await;
             if let Err(err) = index_tools(&index_config, &tools).await {
-                warn!(error = %err, "Failed to index tool metadata in FalkorDB");
+                warn!(error = %err, "Failed to index tool metadata in GraphQLite");
             } else {
-                info!("Tool metadata indexed in FalkorDB");
+                info!("Tool metadata indexed in GraphQLite");
             }
         }
 
@@ -250,7 +256,12 @@ impl AgentPackage {
         let agent_id = agent.agent_id().clone();
 
         // Emit AgentBooted provenance event
-        if let Some(writer) = provenance_writer {
+        let writer: Option<Arc<dyn ProvenanceWriter>> = match provenance_config {
+            ProvenanceConfig::Graphqlite(store) => Some(store.clone() as Arc<dyn ProvenanceWriter>),
+            ProvenanceConfig::WriterOnly(w) => Some(w.clone()),
+            ProvenanceConfig::None => None,
+        };
+        if let Some(writer) = writer {
             // Use stable archive identity from manifest signature
             let archive_path = self.manifest.signature.clone();
             let context_id = context::generate_context_id();
@@ -311,20 +322,20 @@ impl BootedAgent {
 /// Agent runner that manages multiple agent packages
 struct AgentRunner {
     agents: HashMap<String, BootedAgent>,
-    provenance_writer: Option<Arc<dyn ProvenanceWriter>>,
+    provenance_config: ProvenanceConfig,
     tool_index: Option<ToolIndexConfig>,
     access_allowlist: Option<HashSet<ToolAccess>>,
 }
 
 impl AgentRunner {
     fn new(
-        provenance_writer: Option<Arc<dyn ProvenanceWriter>>,
+        provenance_config: ProvenanceConfig,
         tool_index: Option<ToolIndexConfig>,
         access_allowlist: Option<HashSet<ToolAccess>>,
     ) -> Self {
         Self {
             agents: HashMap::new(),
-            provenance_writer,
+            provenance_config,
             tool_index,
             access_allowlist,
         }
@@ -337,7 +348,7 @@ impl AgentRunner {
         // Boot the package into a running agent
         let (agent, _agent_id) = package
             .boot(
-                self.provenance_writer.clone(),
+                &self.provenance_config,
                 self.tool_index.clone(),
                 &self.access_allowlist,
             )
@@ -715,7 +726,7 @@ fn wrap_plaintext_message(text: &str) -> Value {
 
 #[derive(Debug, Clone)]
 enum ProvenanceStoreKind {
-    FalkorDb { url: String, graph: String },
+    Graphqlite { path: PathBuf },
 }
 
 #[derive(Debug, Clone)]
@@ -730,7 +741,7 @@ struct RunnerConfig {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum ProvenanceStoreChoice {
-    Falkordb,
+    Graphqlite,
 }
 
 #[derive(Debug, Parser)]
@@ -759,16 +770,12 @@ struct Cli {
     web_dir: Option<PathBuf>,
 
     /// Provenance storage backend.
-    #[arg(long, value_enum, default_value_t = ProvenanceStoreChoice::Falkordb)]
+    #[arg(long, value_enum, default_value_t = ProvenanceStoreChoice::Graphqlite)]
     provenance_store: ProvenanceStoreChoice,
 
-    /// FalkorDB connection URL (required when provenance store is falkordb).
-    #[arg(long)]
-    falkordb_url: Option<String>,
-
-    /// FalkorDB graph name (defaults to baml_prov).
-    #[arg(long, default_value = "baml_prov")]
-    falkordb_graph: String,
+    /// Path to the GraphQLite provenance database (used when provenance store is graphqlite).
+    #[arg(long, value_name = "PATH", default_value = "provenance.db")]
+    provenance_path: PathBuf,
 }
 
 impl Cli {
@@ -778,15 +785,9 @@ impl Cli {
             .map(|values| (values[0].clone(), values[1].clone(), values[2].clone()));
 
         let provenance_store = match self.provenance_store {
-            ProvenanceStoreChoice::Falkordb => {
-                let url = self.falkordb_url.ok_or_else(|| {
-                    anyhow::anyhow!("--falkordb-url is required for falkordb store")
-                })?;
-                ProvenanceStoreKind::FalkorDb {
-                    url,
-                    graph: self.falkordb_graph,
-                }
-            }
+            ProvenanceStoreChoice::Graphqlite => ProvenanceStoreKind::Graphqlite {
+                path: self.provenance_path,
+            },
         };
 
         Ok(RunnerConfig {
@@ -800,11 +801,20 @@ impl Cli {
     }
 }
 
-fn build_provenance_writer(store: &ProvenanceStoreKind) -> Option<Arc<dyn ProvenanceWriter>> {
+/// Provenance configuration: none, writer only, or GraphQLite (store required).
+enum ProvenanceConfig {
+    None,
+    WriterOnly(Arc<dyn ProvenanceWriter>),
+    Graphqlite(Arc<baml_rt_provenance::GraphqliteProvenanceStore>),
+}
+
+fn build_provenance_config(store: &ProvenanceStoreKind) -> ProvenanceConfig {
     match store {
-        ProvenanceStoreKind::FalkorDb { url, graph } => {
-            let config = FalkorDbProvenanceConfig::new(url.clone(), graph.clone());
-            Some(Arc::new(FalkorDbProvenanceWriter::new(config)))
+        ProvenanceStoreKind::Graphqlite { path } => {
+            match GraphqliteStoreBuilder::file(path).build() {
+                Ok(arc) => ProvenanceConfig::Graphqlite(arc),
+                Err(_) => ProvenanceConfig::None,
+            }
         }
     }
 }
@@ -824,14 +834,12 @@ async fn main() -> anyhow::Result<()> {
     let config = Cli::parse()
         .into_config()
         .context("Failed to parse arguments")?;
-    let provenance_writer = build_provenance_writer(&config.provenance_store);
+    let provenance_config = build_provenance_config(&config.provenance_store);
     let access_allowlist = parse_access_allowlist();
     let tool_index = match &config.provenance_store {
-        ProvenanceStoreKind::FalkorDb { url, graph } => {
-            Some(ToolIndexConfig::new(url.clone(), graph.clone()))
-        }
+        ProvenanceStoreKind::Graphqlite { path } => Some(ToolIndexConfig::new(path)),
     };
-    let mut runner = AgentRunner::new(provenance_writer, tool_index, access_allowlist);
+    let mut runner = AgentRunner::new(provenance_config, tool_index, access_allowlist);
 
     for package in &config.packages {
         let package_path = Path::new(package);

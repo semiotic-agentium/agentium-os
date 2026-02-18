@@ -1,5 +1,4 @@
-#![cfg(feature = "falkordb-tests")]
-//! Provenance attribution test using FalkorDB.
+//! Provenance attribution test using GraphQLite in-memory store.
 
 #![recursion_limit = "256"]
 
@@ -7,10 +6,9 @@ mod common;
 
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt_core::ids::{ContextId, CorrelationId};
-use baml_rt_provenance::{FalkorDbProvenanceConfig, FalkorDbProvenanceWriter};
+use baml_rt_provenance::GraphqliteStoreBuilder;
 use std::sync::Arc;
 use test_support::common::send_stream_request;
-use test_support::common::shared_falkordb;
 use tokio::time::Duration;
 
 async fn collect_responses(
@@ -22,12 +20,9 @@ async fn collect_responses(
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_scope_attribution_without_cross_contamination() {
-    let connection = shared_falkordb().await;
-    let graph = format!("baml_a2a_scope_prop_{}", std::process::id());
-
-    let writer = Arc::new(FalkorDbProvenanceWriter::new(
-        FalkorDbProvenanceConfig::new(connection.to_owned(), graph),
-    ));
+    let writer = GraphqliteStoreBuilder::in_memory()
+        .build()
+        .expect("build store");
     let js = r#"
         globalThis.onChatMessage = async function(message) {
             const text = message?.parts?.[0]?.text || "";
@@ -62,5 +57,5 @@ async fn test_scope_attribution_without_cross_contamination() {
     }
 
     // Core invariant for this suite: request-scoped context survives A2A handling.
-    // Provenance strictness itself is covered in baml-agent-runner Falkor-backed tests.
+    // Provenance strictness itself is covered in baml-agent-runner provenance-backed tests.
 }

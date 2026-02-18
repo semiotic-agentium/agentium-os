@@ -273,9 +273,11 @@ enum TaskStoreConfig {
     Default,
 }
 
-/// Provenance writer configuration: either provided or default (InMemory).
+/// Provenance writer configuration: either provided, default (InMemory), or GraphQLite (task + provenance in same DB).
 enum ProvenanceWriterConfig {
     Provided(Arc<dyn ProvenanceWriter>),
+    /// Task state and provenance in the same GraphQLite DB; build() creates [ProvenanceTaskStore] over [crate::graphqlite_unified_store::GraphqliteUnifiedStore].
+    Graphqlite(Arc<baml_rt_provenance::GraphqliteProvenanceStore>),
     Default,
 }
 
@@ -368,6 +370,15 @@ impl A2aAgentBuilder {
         self
     }
 
+    /// Use GraphQLite for task state and provenance (same DB).
+    pub fn with_graphqlite_store(
+        mut self,
+        store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+    ) -> Self {
+        self.provenance_writer = ProvenanceWriterConfig::Graphqlite(store);
+        self
+    }
+
     pub fn with_a2a_session_tool(mut self, enabled: bool) -> Self {
         self.register_a2a_session_tool = enabled;
         self
@@ -449,6 +460,15 @@ impl A2aAgentBuilderWithEffectEmitter {
     /// Provide a custom provenance writer (overrides default).
     pub fn with_provenance_writer(mut self, writer: Arc<dyn ProvenanceWriter>) -> Self {
         self.provenance_writer = ProvenanceWriterConfig::Provided(writer);
+        self
+    }
+
+    /// Use GraphQLite for task state and provenance (same DB).
+    pub fn with_graphqlite_store(
+        mut self,
+        store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+    ) -> Self {
+        self.provenance_writer = ProvenanceWriterConfig::Graphqlite(store);
         self
     }
 
@@ -607,6 +627,28 @@ impl A2aAgentBuilderWithEffectEmitter {
                 let store: Arc<dyn TaskStoreBackend> =
                     Arc::new(ProvenanceTaskStore::new(None, agent_id.clone()));
                 (store, None)
+            }
+            (TaskStoreConfig::Default, ProvenanceWriterConfig::Graphqlite(store)) => {
+                // Unified: task state and provenance in same GraphQLite DB
+                let backend =
+                    Arc::new(crate::graphqlite_unified_store::GraphqliteUnifiedStore::new(
+                        store.clone(),
+                    ));
+                let task_store: Arc<dyn TaskStoreBackend> = Arc::new(
+                    ProvenanceTaskStore::with_backend(backend, Some(store.clone()), agent_id.clone()),
+                );
+                (task_store, Some(store as Arc<dyn ProvenanceWriter>))
+            }
+            (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Graphqlite(store)) => {
+                // GraphQLite unified overrides provided task store
+                let backend =
+                    Arc::new(crate::graphqlite_unified_store::GraphqliteUnifiedStore::new(
+                        store.clone(),
+                    ));
+                let task_store: Arc<dyn TaskStoreBackend> = Arc::new(
+                    ProvenanceTaskStore::with_backend(backend, Some(store.clone()), agent_id.clone()),
+                );
+                (task_store, Some(store as Arc<dyn ProvenanceWriter>))
             }
         };
 

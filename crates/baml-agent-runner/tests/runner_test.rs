@@ -7,9 +7,8 @@ use baml_rt::tools::BamlTool;
 use baml_rt_core::bus::BusWithEffects;
 use baml_rt_core::context::{self, InvocationScope};
 use baml_rt_core::ids::{AgentId, ContextId, UuidId};
-#[cfg(feature = "falkordb-tests")]
 use baml_rt_provenance::{
-    AgentType, FalkorDbProvenanceConfig, FalkorDbProvenanceWriter, ProvEvent,
+    AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
     ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
     ProvenanceWriter,
 };
@@ -24,10 +23,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use tar::Builder;
-#[cfg(feature = "falkordb-tests")]
-use test_support::common::shared_falkordb;
 use tokio::sync::Semaphore;
-#[cfg(feature = "falkordb-tests")]
 use tokio::time::{Duration, sleep, timeout};
 use ts_rs::TS;
 
@@ -63,13 +59,11 @@ fn e2e_serial_gate() -> &'static Semaphore {
     GATE.get_or_init(|| Semaphore::new(1))
 }
 
-#[cfg(feature = "falkordb-tests")]
 #[derive(Clone)]
 struct StrictProvenanceWriter {
-    inner: Arc<FalkorDbProvenanceWriter>,
+    inner: Arc<GraphqliteProvenanceStore>,
 }
 
-#[cfg(feature = "falkordb-tests")]
 #[async_trait]
 impl ProvenanceWriter for StrictProvenanceWriter {
     async fn add_event(
@@ -83,7 +77,6 @@ impl ProvenanceWriter for StrictProvenanceWriter {
     }
 }
 
-#[cfg(feature = "falkordb-tests")]
 #[async_trait]
 impl ProvenanceContextReader for StrictProvenanceWriter {
     async fn context_messages(
@@ -460,19 +453,16 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
     (agent, extract_dir)
 }
 
-#[cfg(feature = "falkordb-tests")]
 async fn setup_conversational_context_auto_agent(
-    connection: String,
-    graph: String,
-) -> (baml_rt::A2aAgent, Arc<FalkorDbProvenanceWriter>) {
+) -> (baml_rt::A2aAgent, Arc<GraphqliteProvenanceStore>) {
     ensure_fixture_runtime_types();
     let built = build_fixture_to_temp_async("conversational-context-auto").await;
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.load_schema(built.to_str().unwrap()).unwrap();
     manager.register_tool(CalculatorTool).await.unwrap();
-    let provenance = Arc::new(FalkorDbProvenanceWriter::new(
-        FalkorDbProvenanceConfig::new(connection, graph),
-    ));
+    let provenance = GraphqliteStoreBuilder::in_memory()
+        .build()
+        .expect("build GraphQLite store");
     let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
     provenance
         .add_event(ProvEvent::agent_booted(
@@ -1228,32 +1218,17 @@ async fn test_e2e_task_lifecycle_demo_reject_path() {
     );
 }
 
-#[cfg(feature = "falkordb-tests")]
 #[tokio::test]
 async fn test_e2e_conversational_context_auto_via_provenance() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     let _ = dotenvy::dotenv();
-    let connection = shared_falkordb().await;
-    let graph = format!(
-        "runner_conv_ctx_{}_{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("system clock")
-            .as_millis()
-    );
-    eprintln!(
-        "conversational-context-auto: setup start (connection from shared_falkordb, use FALKORDB_CONNECTION when set)"
-    );
-    // Setup includes build_fixture_to_temp_async (baml-agent-builder package: OXC + BAML + tar).
-    // When FALKORDB_CONNECTION is set (CI ambient container), shared_falkordb() returns immediately.
-    // Cold cache or CI contention can exceed 300s; use 600s so this E2E does not flake.
+    eprintln!("conversational-context-auto: setup start");
     let (agent, provenance_reader) = timeout(
         Duration::from_secs(600),
-        setup_conversational_context_auto_agent(connection.to_owned(), graph),
+        setup_conversational_context_auto_agent(),
     )
     .await
-    .expect("agent setup timed out (ensure FALKORDB_CONNECTION is set in CI so shared_falkordb skips testcontainers)");
+    .expect("agent setup timed out");
     eprintln!("conversational-context-auto: setup complete");
     let per_turn_timeout = Duration::from_secs(45);
 
@@ -1287,7 +1262,7 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
         first_texts
     );
 
-    // FalkorDB writes may lag behind turn completion (normalization + Cypher execution);
+    // GraphQLite writes may lag behind turn completion (normalization + Cypher execution);
     // wait until turn-1 conversation context is queryable before issuing turn-2 memory read.
     let context_id = ContextId::new(1, 1);
     sleep(Duration::from_millis(1500)).await; // let async writes settle before first poll
@@ -1319,8 +1294,7 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
     }
     assert!(
         history_ready,
-        "Expected FalkorDB-backed conversation history to contain turn-1 messages before turn-2. \
-         FalkorDB is started via testcontainers (shared_falkordb). \
+        "Expected GraphQLite-backed conversation history to contain turn-1 messages before turn-2. \
          After ~{}s poll ({} attempts x {}ms): got {} messages (roles: {:?}). \
          Failure may indicate provenance write lag or assistant message not yet written.",
         (poll_attempts * poll_interval_ms) / 1000,

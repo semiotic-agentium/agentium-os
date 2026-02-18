@@ -1,7 +1,7 @@
 # A2A Provenance Mapping (W3C PROV)
 
 This document defines how `ProvEvent` is normalized into W3C PROV structures
-and A2A-derived relations for storage in FalkorDB.
+and A2A-derived relations for storage in the provenance graph (GraphQLite).
 
 ## Node Labels and Identity
 
@@ -33,9 +33,9 @@ All nodes created from a `ProvEvent` include:
 - `a2a:event_id` (string)
 - `a2a:task_id` (string, when available)
 
-## Edge Properties (FalkorDB)
+## Edge Properties
 
-FalkorDB supports relationship properties. We currently set:
+The graph backend supports relationship properties. We currently set:
 
 - **PROV edges** (`USED`, `WAS_GENERATED_BY`, `WAS_ASSOCIATED_WITH`, `WAS_DERIVED_FROM`):
   only PROV fields (`prov:role`, `prov:time`, `prov:activity`, `prov:type` as applicable).
@@ -115,35 +115,10 @@ semantics intact.
 ## Notes
 
 - Task entities and task execution activities are created on-demand when task-linked events arrive.
-- `name` is used for deterministic upserts in FalkorDB.
+- `name` (and the graph `id` property) is used for deterministic upserts.
 
-## Validation with text-to-cypher (Library)
+## Validation
 
-Use the text-to-cypher library to generate and execute Cypher against the
-FalkorDB instance populated by the provenance writer.
-
-Example (library-only, no MCP server):
-
-```rust
-use text_to_cypher::{ChatMessage, ChatRequest, ChatRole, TextToCypherClient};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let model = std::env::var("TEXT_TO_CYPHER_MODEL")?;
-    let key = std::env::var("TEXT_TO_CYPHER_KEY")?;
-    let falkor = std::env::var("FALKORDB_CONNECTION")?;
-
-    let client = TextToCypherClient::new(model, key, falkor);
-    let request = ChatRequest {
-        messages: vec![ChatMessage {
-            role: ChatRole::User,
-            content: "List tasks and their artifacts".to_string(),
-        }],
-    };
-
-    let response = client.text_to_cypher("baml_prov", request).await?;
-    println!("Query: {}", response.cypher_query.unwrap_or_default());
-    println!("Result: {}", response.cypher_result.unwrap_or_default());
-    Ok(())
-}
-```
+The provenance store is backed by GraphQLite (SQLite + Cypher). Use the store’s
+read API or execute Cypher via the GraphQLite connection to validate the
+populated graph.

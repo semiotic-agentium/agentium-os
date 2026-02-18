@@ -21,7 +21,6 @@ cargo test -p baml-rt test_name               # specific crate
 cargo test -p baml-rt-a2a test_name -- --nocapture
 
 # Feature-gated test suites
-cargo test -p baml-rt-provenance --features falkordb-tests -j 1
 cargo test -p baml-rt --features llm-tests -j 1
 
 # Lint (run before committing)
@@ -41,12 +40,9 @@ cargo run -p baml-rt-builder --bin regen_fixtures
 cargo run -p baml-rt-builder --bin baml-agent-builder   # lint, compile, package agents
 cargo run -p baml-agent-runner                           # load packaged agents, serve A2A
 
-# FalkorDB for provenance graph tests
-./scripts/falkordb.sh              # commands: up, down, restart, status, logs
-
-# Nextest (CI-style: one run, JUnit, rate-limited FalkorDB tests)
+# Nextest (CI-style: one run, JUnit)
 cargo install cargo-nextest        # once
-./scripts/nextest-ci-local.sh      # full workspace + falkordb/http-tools; JUnit at target/nextest/ci/junit.xml (Docker required for FalkorDB via testcontainers)
+./scripts/nextest-ci-local.sh      # full workspace + http-tools; JUnit at target/nextest/ci/junit.xml
 ```
 
 ## Architecture
@@ -62,7 +58,7 @@ This is a Rust workspace (edition 2024, requires nightly) for the BAML agent run
 - **baml-rt-observability** — OpenTelemetry tracing setup, spans, metrics
 - **baml-rt-quickjs** — QuickJS runtime host: loads JS, bridges JS↔Rust, manages BAML runtime invocations
 - **baml-rt-a2a** — Agent-to-agent protocol: JSON-RPC types, SSE streaming transport, streaming task handling
-- **baml-rt-provenance** — Provenance graph: event normalization, FalkorDB persistence via text-to-cypher
+- **baml-rt-provenance** — Provenance graph: event normalization, GraphQLite persistence
 - **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors
 - **baml-rt-builder** — Agent build pipeline: OXC lint/compile TypeScript, BAML type generation, tar.gz packaging. Binary: `baml-agent-builder`
 - **baml-agent-runner** — Loads packaged agent tar.gz, serves A2A requests. Binary: `baml-agent-runner`
@@ -105,7 +101,6 @@ Other fixtures (stream-js-tool, stream-baml-tool, conversational-context-auto, e
 ### Test-Gating Feature Flags
 
 - `llm-tests` — LLM-dependent tests requiring API keys; run nightly in `llm-smoke.yml`
-- `falkordb-tests` — FalkorDB-dependent tests using testcontainers; run in dedicated CI job
 - `http-tools` — HTTP-dependent tools (ClickUp, Notion); tested separately in CI
 
 ## CI Structure
@@ -114,7 +109,6 @@ Three parallel jobs in `rust-ci.yml` (push/PR to main):
 
 1. **cargo-test (light)** — `baml-rt-core`, `baml-rt-id`, `baml-rt-observability`, `baml-derive-tests`
 2. **cargo-test-heavy (serial, -j 1)** — Remaining workspace crates, http-tools tests, baml-rt-a2a
-3. **cargo-test-falkordb (serial, -j 1)** — `--features falkordb-tests` for provenance, a2a, runner
 
 Nightly `llm-smoke.yml` runs `--features llm-tests` on a cron schedule.
 
@@ -129,7 +123,6 @@ All jobs use sccache (GHA backend) + rust-cache with shared key.
 - **Snapshot tests**: `insta::assert_json_snapshot!` in provenance crate; update with `cargo insta review`
 - **Property tests**: scope attribution, tool session lifecycle, stream ordering (using proptest)
 - **Test fixtures**: `tests/fixtures/agents/` (agent packages), `baml_src/` (BAML schemas)
-- **FalkorDB tests**: use testcontainers, start via `scripts/falkordb.sh` or automatically
 
 ## Rust Conventions
 
@@ -149,5 +142,4 @@ All jobs use sccache (GHA backend) + rust-cache with shared key.
 - **BAML runtime**: pinned git rev from BoundaryML/baml
 - **OXC**: TypeScript parsing/compilation (oxc_parser, oxc_codegen, oxc_transformer, oxc_semantic)
 - **QuickJS**: `quickjs_runtime` crate for JS execution
-- **text-to-cypher**: Cypher query generation for FalkorDB provenance graphs
-- **testcontainers**: FalkorDB integration tests
+- **GraphQLite**: SQLite extension for Cypher-backed provenance graph

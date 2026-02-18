@@ -1,15 +1,13 @@
-#![cfg(feature = "falkordb-tests")]
 #![recursion_limit = "256"]
 
 mod common;
 
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt_core::ids::ContextId;
-use baml_rt_provenance::{FalkorDbProvenanceConfig, FalkorDbProvenanceWriter};
+use baml_rt_provenance::{GraphqliteStoreBuilder, ProvenanceWriter};
 use serde_json::Value;
 use std::sync::Arc;
 use test_support::common::send_stream_request;
-use test_support::common::shared_falkordb;
 use test_support::support::a2a::A2aInMemoryClient;
 use tokio::time::Duration;
 
@@ -22,7 +20,7 @@ async fn collect_responses(
 
 /// Minimal agent that yields one chunk and signals completion so the host's collect()
 /// returns immediately (no 60s safety timeout). Uses TASK_STATE_COMPLETED so chunk_has_final_state is true.
-async fn setup_agent(writer: Arc<FalkorDbProvenanceWriter>) -> A2aAgent {
+async fn setup_agent(writer: Arc<dyn ProvenanceWriter>) -> A2aAgent {
     let js_code = r#"
         globalThis.onChatMessage = async function(message) {
             __chat_yield({
@@ -58,16 +56,12 @@ fn expect_context_id(responses: Vec<Value>) -> String {
 
 #[tokio::test]
 async fn test_context_id_propagates_across_agents() {
-    let connection = shared_falkordb().await;
-    let graph1 = format!("baml_a2a_ctx_prop_{}_1", std::process::id());
-    let graph2 = format!("baml_a2a_ctx_prop_{}_2", std::process::id());
-
-    let writer1 = Arc::new(FalkorDbProvenanceWriter::new(
-        FalkorDbProvenanceConfig::new(connection.to_owned(), graph1),
-    ));
-    let writer2 = Arc::new(FalkorDbProvenanceWriter::new(
-        FalkorDbProvenanceConfig::new(connection.to_owned(), graph2),
-    ));
+    let writer1 = GraphqliteStoreBuilder::in_memory()
+        .build()
+        .expect("build store 1");
+    let writer2 = GraphqliteStoreBuilder::in_memory()
+        .build()
+        .expect("build store 2");
     let agent1 = setup_agent(writer1).await;
     let agent2 = setup_agent(writer2.clone()).await;
 
@@ -97,11 +91,9 @@ async fn test_context_id_propagates_across_agents() {
 /// verifies that each response carries the context_id from its request.
 #[tokio::test]
 async fn test_context_id_preserved_per_request() {
-    let connection = shared_falkordb().await;
-    let graph = format!("baml_a2a_ctx_per_request_{}", std::process::id());
-    let writer = Arc::new(FalkorDbProvenanceWriter::new(
-        FalkorDbProvenanceConfig::new(connection.to_owned(), graph),
-    ));
+    let writer = GraphqliteStoreBuilder::in_memory()
+        .build()
+        .expect("build store");
     let agent = setup_agent(writer).await;
 
     let context_ids: Vec<ContextId> = (0..4).map(|i| ContextId::new(10, i as u64)).collect();

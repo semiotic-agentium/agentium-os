@@ -1,3 +1,31 @@
+//! Provenance store traits: write events and read task/conversation context.
+//!
+//! ## Read intents: agent context vs API
+//!
+//! Two query paths are distinguished at the type level so the type system enforces the
+//! intended behavior:
+//!
+//! - **[ProvenanceReadIntent::AgentContext]** (via [ProvenanceContextReader]): Used by the agent
+//!   runtime for task and conversation context when building prompts. **No-stale-read invariant**
+//!   applies: a read must reflect all prior completed writes. Implementations must enforce this
+//!   (e.g. serialized worker so reads see prior writes).
+//! - **[ProvenanceReadIntent::Api]** (via [ProvenanceQueryApi]): Exposed to APIs for display,
+//!   analytics, or ad-hoc queries. **No guarantee** of no-stale-read; implementations may use
+//!   read replicas, caches, or relaxed ordering. Other provenance queries do not require
+//!   consistency.
+//!
+//! The **typed enum** [ProvenanceReadIntent] documents these two behaviors; the **two traits**
+//! enforce at the type level: agent code holds [ProvenanceContextReader] (or [ProvenanceWriter]),
+//! API code holds [ProvenanceQueryApi]. The same store can implement both.
+//!
+//! ## No-stale-read invariant (ProvenanceContextReader only)
+//!
+//! - **Property:** ∀ write W completed before read R via [ProvenanceContextReader]: R reflects W.
+//! - **Enforcement:** Implementations use a single serialized worker for writes and reads so that
+//!   any read that starts after a write completes sees that write. Callers must await
+//!   [ProvenanceWriter::add_event] (or [ProvenanceWriter::add_events]) before calling the reader
+//!   methods if they need to see those events.
+
 use crate::error::Result;
 use crate::events::ProvEvent;
 use async_trait::async_trait;
@@ -37,6 +65,19 @@ pub struct ProvenanceConversationContextItem {
     pub role: String,
     pub content: Value,
     pub source: String,
+}
+
+/// Intent for a provenance read: enforces which guarantee the caller gets.
+///
+/// - **AgentContext:** No-stale-read required. Use via [ProvenanceContextReader]; implementations
+///   must ensure reads reflect all prior completed writes (e.g. serialized with writes).
+/// - **Api:** No consistency guarantee. Use via [ProvenanceQueryApi]; for APIs, display, analytics.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProvenanceReadIntent {
+    /// Agent/task/conversation context: read must reflect all prior completed writes.
+    AgentContext,
+    /// API or analytics: no guarantee of no-stale-read.
+    Api,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,15 +121,48 @@ impl ToolSessionPhase {
     }
 }
 
+/// Reader for task and conversation context used by agents to build prompts.
+///
+/// **No-stale-read invariant:** A read of [context_messages] or [conversation_context] must
+/// reflect all prior writes that completed before the read. This trait corresponds to
+/// [ProvenanceReadIntent::AgentContext]. Use [ProvenanceQueryApi] for API-exposed reads that do
+/// not require this guarantee.
 #[async_trait]
 pub trait ProvenanceContextReader: Send + Sync {
+    /// Messages for the given context (user + assistant). Used for conversation history.
+    /// Must reflect all prior [ProvenanceWriter::add_event] calls that completed before this call.
     async fn context_messages(
         &self,
         context_id: &ContextId,
         limit: Option<usize>,
     ) -> Result<Vec<ProvenanceContextMessage>>;
 
+    /// Full conversation context (messages + tool calls) for the given context. Used for
+    /// BAML conversation context. Must reflect all prior [ProvenanceWriter::add_event] calls
+    /// that completed before this call.
     async fn conversation_context(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+    ) -> Result<Vec<ProvenanceConversationContextItem>>;
+}
+
+/// Query API for provenance context: **does not** guarantee no-stale-read.
+///
+/// Use this trait for API-exposed reads (display, analytics, ad-hoc queries). Implementations
+/// may use read replicas, caches, or relaxed ordering. Corresponds to [ProvenanceReadIntent::Api].
+/// For agent/task context that requires no-stale-read, use [ProvenanceContextReader] instead.
+#[async_trait]
+pub trait ProvenanceQueryApi: Send + Sync {
+    /// Messages for the given context. No guarantee that the result reflects the latest writes.
+    async fn query_context_messages(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+    ) -> Result<Vec<ProvenanceContextMessage>>;
+
+    /// Full conversation context for the given context. No guarantee of consistency with writes.
+    async fn query_conversation_context(
         &self,
         context_id: &ContextId,
         limit: Option<usize>,

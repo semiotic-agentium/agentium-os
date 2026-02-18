@@ -15,7 +15,7 @@ JavaScript agents use the A2A DSL provided by the runtime shim (`session`, `__ch
 
 ## Task store and provenance (unified design)
 
-The A2A task store and conversation context share a **single source of truth**: the in-memory task store (materialized view). Provenance (e.g. FalkorDB) is a **write-only** audit log; the runtime never reads conversation from it.
+The A2A task store and conversation context share a **single source of truth**: the in-memory task store (materialized view). Provenance (e.g. GraphQLite) is a **write-only** audit log; the runtime never reads conversation from it.
 
 - **Read path:** Task state (`get`, `list`, `cancel`) and **conversation context** both come from the same backend. `TaskStoreBackend` extends `ConversationContextSource`: `conversation_context(context_id, limit)` returns messages from task histories in that context. The runtime’s conversation provider uses this, so there is no separate “provenance read” for context.
 - **Write path:** All mutations (upsert, insert_message, apply_task_delta, record_status_update, record_artifact_update, cancel) go through the store. When a `ProvenanceWriter` is present, the store emits corresponding `ProvEvent`s after accepting the update (provenance lags the view; no path updates only the view or only provenance).

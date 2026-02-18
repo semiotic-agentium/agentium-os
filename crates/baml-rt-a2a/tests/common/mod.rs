@@ -29,18 +29,17 @@ pub fn task_status(state: &str) -> TaskStatus {
     }
 }
 
-#[cfg(feature = "falkordb-tests")]
 pub mod provenance {
     use baml_rt::QuickJSConfig;
     use baml_rt_a2a::A2aAgent;
-    use baml_rt_provenance::FalkorDbProvenanceWriter;
+    use baml_rt_provenance::ProvenanceWriter;
     use std::sync::Arc;
 
-    /// Builds an A2aAgent with FalkorDB provenance writer for FalkorDB-backed tests.
+    /// Builds an A2aAgent with a provenance writer (e.g. GraphQLite in-memory).
     /// Used by provenance_context_test and provenance_property_test (other test binaries).
     #[allow(dead_code)]
     pub async fn build_provenance_agent(
-        writer: Arc<FalkorDbProvenanceWriter>,
+        writer: Arc<dyn ProvenanceWriter>,
         init_js: &str,
     ) -> A2aAgent {
         A2aAgent::builder()
