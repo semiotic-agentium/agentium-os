@@ -1,6 +1,19 @@
 # Nextest config for BAML runtime workspace.
 # See https://nexte.st/docs/configuration/
 
+[nextest]
+experimental = ["setup-scripts"]
+
+# Regenerate fixture TypeScript type declarations once before tests start.
+# Runs for both default and ci profiles (ci inherits from default).
+[scripts.setup.regen-fixtures]
+command = 'cargo run -p baml-rt-builder --bin regen_fixtures'
+slow-timeout = { period = "120s", terminate-after = 2 }
+
+[[profile.default.scripts]]
+filter = 'all()'
+setup = 'regen-fixtures'
+
 [profile.ci]
 # JUnit output for GitHub Actions junit-report-action.
 [profile.ci.junit]

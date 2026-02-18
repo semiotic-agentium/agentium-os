@@ -2,7 +2,7 @@ use baml_rt_builder::builder::{BuildDir, RuntimeTypeGenerator, TypeGenerator};
 use baml_rt_core::{BamlRtError, Result};
 use std::path::{Path, PathBuf};
 
-fn fixture_dir(name: &str) -> PathBuf {
+fn agents_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
@@ -10,7 +10,6 @@ fn fixture_dir(name: &str) -> PathBuf {
         .join("tests")
         .join("fixtures")
         .join("agents")
-        .join(name)
 }
 
 /// Copy `baml-runtime.d.ts` into the fixture's `src/` directory using an atomic
@@ -35,17 +34,9 @@ fn copy_runtime_d_ts(build_dir: &BuildDir, dest_src: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn regen_fixture(name: &str) -> Result<()> {
-    let root = fixture_dir(name);
+async fn regen_fixture(root: &Path) -> Result<()> {
     let baml_src = root.join("baml_src");
     let src_dir = root.join("src");
-
-    if !baml_src.exists() {
-        return Err(BamlRtError::InvalidArgument(format!(
-            "fixture missing baml_src: {}",
-            baml_src.display()
-        )));
-    }
 
     let build_dir = BuildDir::new()?;
     let generator = RuntimeTypeGenerator::new();
@@ -54,12 +45,22 @@ async fn regen_fixture(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Scan `tests/fixtures/agents/` for directories containing `baml_src/`
+/// and regenerate `src/baml-runtime.d.ts` for each.
 #[tokio::main]
 async fn main() -> Result<()> {
-    regen_fixture("stream-baml-tool").await?;
-    regen_fixture("stream-js-tool").await?;
-    regen_fixture("task-lifecycle-demo").await?;
-    regen_fixture("conversational-context-auto").await?;
-    regen_fixture("conversational-persona-demo").await?;
+    let dir = agents_dir();
+    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+        .map_err(BamlRtError::Io)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().join("baml_src").is_dir())
+        .collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in &entries {
+        let name = entry.file_name();
+        eprintln!("regen_fixtures: {}", name.to_string_lossy());
+        regen_fixture(&entry.path()).await?;
+    }
     Ok(())
 }
