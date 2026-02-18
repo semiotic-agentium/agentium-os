@@ -140,6 +140,37 @@ pub(crate) fn resolve_scope_from_active_context(
     })
 }
 
+/// Resolve invocation scope from the stream session map by session id.
+///
+/// Returns the session's `RuntimeScope` if the session exists and has not been
+/// terminated (closed or cancelled). Returns a `JsError` otherwise so that
+/// post-finalization callbacks get a clean rejected-promise instead of a crash.
+pub(crate) fn resolve_scope_from_session(
+    sessions: &super::StreamSessionMap,
+    session_id: super::StreamSessionId,
+) -> std::result::Result<
+    (RuntimeScope, std::sync::Arc<super::StreamInvocationSession>),
+    quickjs_runtime::jsutils::JsError,
+> {
+    let guard = sessions.lock().map_err(|_| {
+        quickjs_runtime::jsutils::JsError::new_str("stream session map lock poisoned")
+    })?;
+    let session = guard.get(&session_id).cloned().ok_or_else(|| {
+        quickjs_runtime::jsutils::JsError::new_str(&format!(
+            "Stream session {} not found (already finalized or never created)",
+            session_id
+        ))
+    })?;
+    if session.is_terminated() {
+        return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
+            "Stream session {} has been cancelled or closed",
+            session_id
+        )));
+    }
+    let scope = session.scope.clone();
+    Ok((scope, session))
+}
+
 pub(crate) async fn run_eval_with_scope(
     runtime: &quickjs_runtime::facades::QuickJsRuntimeFacade,
     scope: &baml_rt_core::context::InvocationScope,

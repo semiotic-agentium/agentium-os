@@ -17,9 +17,10 @@ use quickjs_runtime::quickjsrealmadapter::QuickJsRealmAdapter;
 use quickjs_runtime::values::JsValueFacade;
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Mutex, Semaphore, mpsc};
+use tokio_util::sync::CancellationToken;
 
 mod eval;
 mod js_codegen;
@@ -34,7 +35,7 @@ mod wrappers;
 pub use eval::EffectGatedTimeoutPolicy;
 use scope::{
     InvocationContextId, InvocationContextRegistry, InvocationToken, next_invocation_token,
-    resolve_scope_from_active_context,
+    resolve_scope_from_active_context, resolve_scope_from_session,
 };
 
 type InvocationScopeMap = Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>>;
@@ -46,6 +47,45 @@ type StreamPermit = tokio::sync::OwnedSemaphorePermit;
 type YieldSenderSlot = Arc<StdMutex<Option<mpsc::UnboundedSender<Value>>>>;
 type YieldReceiver = mpsc::UnboundedReceiver<Value>;
 type InFlightCounter = Arc<AtomicU32>;
+
+/// Opaque session identifier for stream invocations.
+///
+/// Each `invoke_js_function_stream` call allocates a unique `StreamSessionId`.
+/// Session-aware native callbacks receive this as their first argument and use it
+/// to look up the owning [`StreamInvocationSession`] in `QuickJSBridge::stream_sessions`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct StreamSessionId(pub(crate) u64);
+
+impl std::fmt::Display for StreamSessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "stream-session-{}", self.0)
+    }
+}
+
+/// Active stream invocation session.
+///
+/// Held in `QuickJSBridge::stream_sessions` for the lifetime of a single stream
+/// invocation. Native callbacks clone the `Arc` to capture the session and resolve
+/// scope, correlation id, and cancellation state.
+pub(crate) struct StreamInvocationSession {
+    /// Retained for diagnostic tracing; not read in production paths yet.
+    #[allow(dead_code)]
+    pub(crate) id: StreamSessionId,
+    pub(crate) scope: RuntimeScope,
+    pub(crate) correlation_id: Option<baml_rt_core::ids::CorrelationId>,
+    pub(crate) cancel: CancellationToken,
+    pub(crate) closed: AtomicBool,
+}
+
+impl StreamInvocationSession {
+    /// Check whether this session has been finalized or cancelled.
+    pub(crate) fn is_terminated(&self) -> bool {
+        self.closed.load(Ordering::Acquire) || self.cancel.is_cancelled()
+    }
+}
+
+pub(crate) type StreamSessionMap =
+    Arc<StdMutex<HashMap<StreamSessionId, Arc<StreamInvocationSession>>>>;
 
 /// RAII guard that decrements the in-flight counter when dropped.
 ///
@@ -165,6 +205,15 @@ pub struct QuickJSBridge {
     /// Incremented synchronously on the event-loop thread when the native is called;
     /// decremented (via [`InFlightGuard`]) when the async body completes.
     in_flight_invoke_count: InFlightCounter,
+    /// Active stream sessions keyed by session id. Populated in `invoke_js_function_stream`,
+    /// drained in `finalize_a2a_stream_invocation`. Session-aware natives resolve scope
+    /// from this map instead of the LIFO `invocation_context_registry`.
+    stream_sessions: StreamSessionMap,
+    /// Monotonic counter for allocating unique `StreamSessionId` values.
+    next_stream_session_id: AtomicU64,
+    /// Session id for the currently active stream invocation (at most one due to semaphore).
+    /// Used by `finalize_a2a_stream_invocation` to close and remove the session.
+    current_stream_session_id: Option<StreamSessionId>,
 }
 
 impl QuickJSBridge {
@@ -247,6 +296,9 @@ impl QuickJSBridge {
             a2a_yield_tx_slot: Arc::new(StdMutex::new(None)),
             a2a_yield_rx: None,
             in_flight_invoke_count: Arc::new(AtomicU32::new(0)),
+            stream_sessions: Arc::new(StdMutex::new(HashMap::new())),
+            next_stream_session_id: AtomicU64::new(1),
+            current_stream_session_id: None,
         };
 
         // Initialize sandbox - remove dangerous globals and implement safe console
@@ -368,6 +420,10 @@ impl QuickJSBridge {
         self.register_baml_invoke_helper().await?;
         self.register_baml_stream_helper().await?;
         self.register_await_helper().await?;
+
+        // Session-aware natives for stream paths (resolve scope from session map).
+        self.register_baml_invoke_session_helper().await?;
+        self.register_baml_stream_session_helper().await?;
 
         for function_name in functions {
             self.register_single_function(&function_name).await?;
@@ -757,6 +813,313 @@ impl QuickJSBridge {
         })?;
 
         tracing::debug!("Registered __baml_stream helper function");
+        Ok(())
+    }
+
+    /// Register `__baml_invoke_session(session_id, function_name, args_json)`.
+    ///
+    /// Session-aware mirror of `__baml_invoke`. Stream JS wrappers call this with a
+    /// baked-in session id so scope is resolved from the session map, not the LIFO registry.
+    async fn register_baml_invoke_session_helper(&mut self) -> Result<()> {
+        let manager_clone = self.baml_manager.clone();
+        let sessions = self.stream_sessions.clone();
+        let in_flight = self.in_flight_invoke_count.clone();
+
+        self.runtime.set_function(
+            &[],
+            "__baml_invoke_session",
+            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
+                if args.len() < 3 {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id, function_name, args)"));
+                }
+                let session_id = tools::parse_session_id_arg(&args)?;
+                let (scope, session) = match resolve_scope_from_session(&sessions, session_id) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        let msg = e.to_string();
+                        tracing::debug!(error = %msg, %session_id, "__baml_invoke_session: session lookup failed, returning rejected promise");
+                        return Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                            Err(quickjs_runtime::jsutils::JsError::new_str(&msg))
+                        }));
+                    }
+                };
+
+                let func_name = if args[1].is_string() {
+                    args[1].get_str().to_string()
+                } else {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Function name must be a string"));
+                };
+                let args_json_str = if args[2].is_string() {
+                    args[2].get_str().to_string()
+                } else {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Args must be a JSON string"));
+                };
+                let args_json: Value = serde_json::from_str(&args_json_str)
+                    .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&format!("Failed to parse JSON args: {}", e)))?;
+
+                let manager_for_promise = manager_clone.clone();
+                let correlation_id = session.correlation_id.clone();
+                let scope_for_tools = scope.clone();
+                let cancel = session.cancel.clone();
+
+                in_flight.fetch_add(1, Ordering::Release);
+                let guard_counter = in_flight.clone();
+
+                Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                    let _in_flight_guard = InFlightGuard(guard_counter);
+                    // Cancellation checkpoint: entry
+                    if cancel.is_cancelled() {
+                        return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                    }
+                    let cancel_inner = cancel.clone();
+                    let run = async move {
+                        context::with_scope(scope, async move {
+                            let manager = manager_for_promise.lock().await;
+                            // Cancellation checkpoint: after acquiring manager lock
+                            if cancel_inner.is_cancelled() {
+                                return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                            }
+                            let invocation_scope = InvocationScope::new(scope_for_tools.clone());
+                            let value = manager
+                                .invoke_function(&invocation_scope, &func_name, args_json)
+                                .await
+                                .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
+                            // Cancellation checkpoint: after BAML invoke, before tool execution
+                            if cancel_inner.is_cancelled() {
+                                return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                            }
+                            let result = manager.execute_tool_from_baml_result_or_value(&scope_for_tools, value).await
+                                .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
+                            Ok(value_to_js_value_facade(result))
+                        })
+                        .await
+                    };
+                    if let Some(correlation_id) = correlation_id {
+                        correlation::with_correlation_id(correlation_id, run).await
+                    } else {
+                        run.await
+                    }
+                }))
+            },
+        ).map_err(|e| BamlRtError::QuickJsWithSource {
+            context: "Failed to register __baml_invoke_session".to_string(),
+            source: Box::new(e),
+        })?;
+
+        tracing::debug!("Registered __baml_invoke_session helper function");
+        Ok(())
+    }
+
+    /// Register `__baml_stream_session(session_id, function_name, args_json)`.
+    ///
+    /// Session-aware mirror of `__baml_stream`. Same structure as `__baml_invoke_session`
+    /// but spawns a BAML stream with incremental results.
+    async fn register_baml_stream_session_helper(&mut self) -> Result<()> {
+        let manager_clone = self.baml_manager.clone();
+        let sessions = self.stream_sessions.clone();
+        let in_flight = self.in_flight_invoke_count.clone();
+
+        self.runtime.set_function(
+            &[],
+            "__baml_stream_session",
+            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
+                if args.len() < 3 {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id, function_name, args)"));
+                }
+                let session_id = tools::parse_session_id_arg(&args)?;
+                let (scope, session) = match resolve_scope_from_session(&sessions, session_id) {
+                    Ok(pair) => pair,
+                    Err(e) => {
+                        let msg = e.to_string();
+                        tracing::debug!(error = %msg, %session_id, "__baml_stream_session: session lookup failed, returning rejected promise");
+                        return Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                            Err(quickjs_runtime::jsutils::JsError::new_str(&msg))
+                        }));
+                    }
+                };
+
+                let func_name = if args[1].is_string() {
+                    args[1].get_str().to_string()
+                } else {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Function name must be a string"));
+                };
+                let args_json_str = if args[2].is_string() {
+                    args[2].get_str().to_string()
+                } else {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Args must be a JSON string"));
+                };
+                let args_json: Value = serde_json::from_str(&args_json_str)
+                    .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&format!("Failed to parse JSON args: {}", e)))?;
+
+                let manager_for_stream = manager_clone.clone();
+                let correlation_id = session.correlation_id.clone();
+                let cancel = session.cancel.clone();
+
+                in_flight.fetch_add(1, Ordering::Release);
+                let guard_counter = in_flight.clone();
+
+                let correlation_id_for_wrap = correlation_id.clone();
+                Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                    let _in_flight_guard = InFlightGuard(guard_counter);
+                    if cancel.is_cancelled() {
+                        return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
+                    }
+                    let run = async move {
+                        use tokio::sync::mpsc;
+                        let (tx, mut rx) = mpsc::channel::<serde_json::Value>(100);
+                        let func_name_stream = func_name.clone();
+                        let args_json_stream = args_json.clone();
+                        let spawn_correlation_id = correlation_id.clone();
+                        let spawn_scope = scope.clone();
+                        let scope_for_stream = spawn_scope.clone();
+                        let cancel_for_spawn = cancel.clone();
+                        tokio::spawn(async move {
+                            let run = async move {
+                                context::with_scope(spawn_scope, async move {
+                                if cancel_for_spawn.is_cancelled() {
+                                    return;
+                                }
+                                if args_json_stream
+                                    .get("__scope_probe")
+                                    .and_then(Value::as_bool)
+                                    == Some(true)
+                                {
+                                    let payload = json!({
+                                        "context_id": scope_for_stream.context_id().to_string(),
+                                        "message_id": scope_for_stream.message_id().to_string(),
+                                        "task_id": scope_for_stream.task_id_opt().map(|id| id.to_string()),
+                                    });
+                                    if let Err(e) = tx.send(payload).await {
+                                        tracing::warn!(error = ?e, "Failed to send scope probe payload");
+                                    }
+                                    return;
+                                }
+
+                                let manager = manager_for_stream.lock().await;
+                                // Cancellation checkpoint: after acquiring manager lock
+                                if cancel_for_spawn.is_cancelled() {
+                                    return;
+                                }
+                                let invocation_scope =
+                                    InvocationScope::new(scope_for_stream.clone());
+                                let stream_result = manager.invoke_function_stream(
+                                    &invocation_scope,
+                                    &func_name_stream,
+                                    args_json_stream,
+                                );
+                                let executor_ref = match manager.executor.as_ref() {
+                                    Some(exec) => exec,
+                                    None => {
+                                        let error_value = serde_json::json!({
+                                            "error": "BAML executor not initialized"
+                                        });
+                                        if let Err(e) = tx.send(error_value).await {
+                                            tracing::warn!(error = ?e, "Stream channel send failed");
+                                        }
+                                        return;
+                                    }
+                                };
+                                let ctx_manager =
+                                    match executor_ref.create_ctx_manager_for_scope(
+                                        &scope_for_stream,
+                                        None,
+                                    ) {
+                                    Ok(manager) => manager,
+                                    Err(err) => {
+                                        let error_value = serde_json::json!({
+                                            "error": format!("Failed to create context manager: {}", err)
+                                        });
+                                        if let Err(e) = tx.send(error_value).await {
+                                            tracing::warn!(error = ?e, "Stream channel send failed");
+                                        }
+                                        return;
+                                    }
+                                };
+                                let mut stream = match stream_result {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        drop(manager);
+                                        let error_value = serde_json::json!({"error": format!("Failed to create stream: {}", e)});
+                                    if let Err(e) = tx.send(error_value).await {
+                                        tracing::warn!(error = ?e, "Stream channel send failed");
+                                    }
+                                        return;
+                                    }
+                                };
+                                drop(manager);
+                                // Cancellation checkpoint: after setup, before expensive stream.run()
+                                if cancel_for_spawn.is_cancelled() {
+                                    return;
+                                }
+                                let env_vars = HashMap::new();
+                                let tx_for_yield = tx.clone();
+                                stream_yield::scope_stream_yield(Some(tx_for_yield), async move {
+                                    let (final_result, _call_id) = stream
+                                        .run(
+                                            None::<fn()>,
+                                            Some(|result: baml_runtime::FunctionResult| {
+                                                if let Some(Ok(parsed)) = result.parsed()
+                                                    && let Ok(parsed_value) =
+                                                        serde_json::to_value(parsed.serialize_partial())
+                                                    && let Err(e) = tx.try_send(parsed_value)
+                                                {
+                                                    tracing::warn!(error = ?e, "Stream channel try_send failed");
+                                                }
+                                            }),
+                                            &ctx_manager,
+                                            None,
+                                            None,
+                                            env_vars,
+                                        )
+                                        .await;
+
+                                    match final_result {
+                                        Ok(result) => {
+                                            if let Some(Ok(parsed)) = result.parsed()
+                                                && let Ok(final_value) =
+                                                    serde_json::to_value(parsed.serialize_partial())
+                                                && let Err(e) = tx.send(final_value).await
+                                            {
+                                                tracing::warn!(error = ?e, "Stream channel send failed");
+                                            }
+                                        }
+                                        Err(e) => {
+                                            let error_value = serde_json::json!({"error": format!("{}", e)});
+                                            if let Err(e) = tx.send(error_value).await {
+                                                tracing::warn!(error = ?e, "Stream channel send failed");
+                                            }
+                                        }
+                                    }
+                                })
+                                .await;
+                                }).await;
+                            };
+                            if let Some(correlation_id) = spawn_correlation_id {
+                                correlation::with_correlation_id(correlation_id, run).await;
+                            } else {
+                                run.await;
+                            }
+                        });
+
+                        let mut results = Vec::new();
+                        while let Some(value) = rx.recv().await {
+                            results.push(value);
+                        }
+                        Ok(value_to_js_value_facade(serde_json::Value::Array(results)))
+                    };
+                    if let Some(correlation_id) = correlation_id_for_wrap {
+                        correlation::with_correlation_id(correlation_id, run).await
+                    } else {
+                        run.await
+                    }
+                }))
+            },
+        ).map_err(|e| BamlRtError::QuickJsWithSource {
+            context: "Failed to register __baml_stream_session".to_string(),
+            source: Box::new(e),
+        })?;
+
+        tracing::debug!("Registered __baml_stream_session helper function");
         Ok(())
     }
 

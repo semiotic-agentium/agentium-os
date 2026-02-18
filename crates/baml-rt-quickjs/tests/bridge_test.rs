@@ -320,6 +320,97 @@ impl BamlTool for ScopeEchoTool {
     }
 }
 
+/// Regression test for error-path cleanup in `invoke_js_function_stream`.
+///
+/// If a stream invocation fails (e.g. missing JS function), the permit, session map
+/// entry, LIFO context, and JS global overrides must all be cleaned up. Otherwise the
+/// next stream invocation would deadlock on the semaphore or see stale globals.
+///
+/// Sequence:
+/// 1. Force failure: `invoke_js_function_stream("nonExistentStreamFn", ...)` → Err
+/// 2. Immediately start a valid stream via `begin_a2a_yield_session` → invoke → collect
+/// 3. Assert the second stream succeeds (no leaked permit/session/globals)
+#[tokio::test]
+async fn test_failed_stream_does_not_leak_state() {
+    let manager = BamlRuntimeManager::new().unwrap();
+    let manager = Arc::new(Mutex::new(manager));
+    let effect_bus = Arc::new(BusWithEffects::new());
+    {
+        let mut m = manager.lock().await;
+        m.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
+    }
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000040").unwrap());
+    let mut bridge = QuickJSBridge::new(manager, agent_id).await.unwrap();
+    bridge.set_effect_liveness(effect_bus as Arc<dyn EffectLiveness>);
+    bridge
+        .register_baml_functions()
+        .await
+        .expect("register helpers");
+
+    // Register a valid onChatMessage that yields one chunk with a final state.
+    bridge
+        .evaluate(
+            None,
+            r#"
+            globalThis.onChatMessage = async function(args) {
+                __chat_yield({
+                    task: { status: { state: "TASK_STATE_COMPLETED" } },
+                    payload: "done"
+                });
+            };
+            "#,
+        )
+        .await
+        .expect("register onChatMessage");
+
+    let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-000000000041").unwrap(),
+    ));
+
+    // --- Step 1: Force stream failure with a nonexistent function ---
+    bridge
+        .setup_a2a_yield_buffer()
+        .await
+        .expect("setup yield buffer");
+    let err = bridge
+        .invoke_js_function_stream(&scope, "nonExistentStreamFn", json!({}))
+        .await;
+    assert!(
+        err.is_err(),
+        "invoke_js_function_stream with missing function should fail"
+    );
+
+    // --- Step 2: Start a valid stream; should NOT deadlock or fail ---
+    let session = baml_rt_quickjs::begin_a2a_yield_session(&mut bridge)
+        .await
+        .expect("begin_a2a_yield_session after failed stream should succeed");
+    let session = context::with_scope(scope.as_scope().clone(), async {
+        session.invoke(&scope, json!({ "message": "hello" })).await
+    })
+    .await
+    .expect("invoke after failed stream should succeed");
+    let result = session
+        .collect()
+        .await
+        .expect("collect after failed stream should succeed");
+
+    // --- Step 3: Verify we got the expected chunk ---
+    assert!(
+        !result.chunks.is_empty(),
+        "second stream should have produced at least one chunk"
+    );
+    assert!(
+        result.chunks.iter().any(|c| c
+            .get("task")
+            .and_then(|t| t.get("status"))
+            .and_then(|s| s.get("state"))
+            .and_then(Value::as_str)
+            == Some("TASK_STATE_COMPLETED")),
+        "second stream should contain the TASK_STATE_COMPLETED chunk"
+    );
+}
+
 #[tokio::test]
 async fn test_tool_session_plan_with_initial_input() {
     tracing::info!("Test: ToolSessionPlan open step with initial_input");
