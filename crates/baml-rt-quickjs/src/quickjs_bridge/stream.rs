@@ -1,3 +1,4 @@
+use super::scope::ClearPolicy;
 use super::{QuickJSBridge, StreamInvocationSession, StreamSessionId};
 use baml_rt_core::context::InvocationScope;
 use baml_rt_core::{BamlRtError, Result};
@@ -439,7 +440,7 @@ impl QuickJSBridge {
         // Execute; session-aware natives resolve scope from session map.
         let script = Script::new("invoke_stream.js", &js_code);
         let js_result = self
-            .run_eval_with_scope(scope, script, false)
+            .run_eval_with_scope(scope, script, ClearPolicy::Keep)
             .await
             .map_err(|e| BamlRtError::QuickJsWithSource {
                 context: format!("Failed to invoke stream function {}", function_name),

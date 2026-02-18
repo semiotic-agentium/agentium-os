@@ -7,6 +7,7 @@
 //! Child spans inherit context automatically through OTEL span nesting - no need to repeat attributes.
 
 use crate::scope::scope_attributes;
+use baml_rt_core::InvocationKind;
 use baml_rt_core::context::RuntimeScope;
 use baml_rt_core::correlation::current_correlation_id;
 use std::path::Path;
@@ -289,11 +290,11 @@ pub fn a2a_route(method: &str, context_id: &str) -> Span {
 ///
 /// Parent: a2a_route
 #[inline]
-pub fn a2a_js_invoke(method: &str, is_stream: bool) -> Span {
+pub fn a2a_js_invoke(method: &str, invocation: InvocationKind) -> Span {
     tracing::info_span!(
         "baml_rt.a2a_js_invoke",
         method = method,
-        is_stream = is_stream,
+        is_stream = invocation.is_stream(),
     )
 }
 

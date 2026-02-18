@@ -2,6 +2,7 @@
 //!
 //! Metrics are defined here to keep instrumentation orthogonal to business logic.
 
+use baml_rt_core::InvocationKind;
 use opentelemetry::metrics::{Counter, Histogram};
 use opentelemetry::{KeyValue, global};
 use std::sync::OnceLock;
@@ -82,11 +83,16 @@ fn tool_invocation_histogram() -> &'static Histogram<f64> {
 }
 
 /// Record completion of an A2A request.
-pub fn record_a2a_request(method: &str, result: &str, is_stream: bool, duration: Duration) {
+pub fn record_a2a_request(
+    method: &str,
+    result: &str,
+    invocation: InvocationKind,
+    duration: Duration,
+) {
     let attributes = &[
         KeyValue::new("method", method.to_string()),
         KeyValue::new("result", result.to_string()),
-        KeyValue::new("stream", is_stream.to_string()),
+        KeyValue::new("stream", invocation.is_stream().to_string()),
     ];
 
     a2a_request_counter().add(1, attributes);
@@ -94,11 +100,11 @@ pub fn record_a2a_request(method: &str, result: &str, is_stream: bool, duration:
 }
 
 /// Record an A2A error by type.
-pub fn record_a2a_error(method: &str, error_type: &str, is_stream: bool) {
+pub fn record_a2a_error(method: &str, error_type: &str, invocation: InvocationKind) {
     let attributes = &[
         KeyValue::new("method", method.to_string()),
         KeyValue::new("error_type", error_type.to_string()),
-        KeyValue::new("stream", is_stream.to_string()),
+        KeyValue::new("stream", invocation.is_stream().to_string()),
     ];
     a2a_error_counter().add(1, attributes);
 }

@@ -25,6 +25,7 @@
 //! **I4 (Provenance Admissibility)**
 //!   Provenance events require message_id in metadata (runtime validation).
 
+use baml_rt_core::Outcome;
 use baml_rt_core::bus::{
     A2aEffectMetadata, A2aLivenessRole, BusWithEffects, EffectEmitter, EffectEvent, EffectLiveness,
     InFlightCounts, ToolEffectMetadata,
@@ -151,7 +152,7 @@ async fn test_liveness_gating_timeout_inner() {
         context_id,
         metadata,
         duration_ms: 100,
-        success: true,
+        outcome: Outcome::Success,
     })
     .await
     .unwrap();
@@ -306,7 +307,7 @@ async fn test_timeout_monotonicity_effect_completion() {
         context_id,
         metadata,
         duration_ms: 1,
-        success: true,
+        outcome: Outcome::Success,
     })
     .await
     .unwrap();
@@ -455,7 +456,7 @@ proptest! {
                                 context_id: context_id.clone(),
                                 metadata,
                                 duration_ms: 100,
-                                success: true,
+                                outcome: Outcome::Success,
                             })
                             .await
                             .unwrap();
@@ -474,7 +475,7 @@ proptest! {
                             context_id: context_id.clone(),
                             metadata,
                             duration_ms: 0,
-                            success: true,
+                            outcome: Outcome::Success,
                         })
                         .await
                         .unwrap();

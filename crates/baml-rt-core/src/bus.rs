@@ -6,6 +6,7 @@
 use crate::context::RuntimeScope;
 use crate::correlation;
 use crate::ids::{AgentId, ContextId, CorrelationId};
+use crate::semantics::Outcome;
 use async_channel::{Receiver, Sender};
 use async_trait::async_trait;
 use futures_util::stream::Stream;
@@ -113,7 +114,7 @@ pub enum EffectEvent {
         context_id: ContextId,
         metadata: ToolEffectMetadata,
         duration_ms: u64,
-        success: bool,
+        outcome: Outcome,
     },
     LlmStarted {
         context_id: ContextId,
@@ -124,7 +125,7 @@ pub enum EffectEvent {
         metadata: LlmEffectMetadata,
         usage: Option<LlmUsage>,
         duration_ms: u64,
-        success: bool,
+        outcome: Outcome,
     },
     A2aStarted {
         context_id: ContextId,
@@ -134,7 +135,7 @@ pub enum EffectEvent {
         context_id: ContextId,
         metadata: A2aEffectMetadata,
         duration_ms: u64,
-        success: bool,
+        outcome: Outcome,
     },
 }
 
@@ -224,7 +225,7 @@ impl EffectStartToken<ToolKind> {
         mut self,
         emitter: &dyn EffectEmitter,
         duration_ms: u64,
-        success: bool,
+        outcome: Outcome,
     ) -> crate::Result<()> {
         let (context_id, metadata) = take_token_parts(&mut self.context_id, &mut self.metadata);
         let metadata = match metadata {
@@ -236,7 +237,7 @@ impl EffectStartToken<ToolKind> {
                 context_id,
                 metadata,
                 duration_ms,
-                success,
+                outcome,
             })
             .await
     }
@@ -248,7 +249,7 @@ impl EffectStartToken<LlmKind> {
         emitter: &dyn EffectEmitter,
         usage: Option<LlmUsage>,
         duration_ms: u64,
-        success: bool,
+        outcome: Outcome,
     ) -> crate::Result<()> {
         let (context_id, metadata) = take_token_parts(&mut self.context_id, &mut self.metadata);
         let metadata = match metadata {
@@ -261,7 +262,7 @@ impl EffectStartToken<LlmKind> {
                 metadata,
                 usage,
                 duration_ms,
-                success,
+                outcome,
             })
             .await
     }
@@ -272,7 +273,7 @@ impl EffectStartToken<A2aKind> {
         mut self,
         emitter: &dyn EffectEmitter,
         duration_ms: u64,
-        success: bool,
+        outcome: Outcome,
     ) -> crate::Result<()> {
         let (context_id, metadata) = take_token_parts(&mut self.context_id, &mut self.metadata);
         let metadata = match metadata {
@@ -284,7 +285,7 @@ impl EffectStartToken<A2aKind> {
                 context_id,
                 metadata,
                 duration_ms,
-                success,
+                outcome,
             })
             .await
     }

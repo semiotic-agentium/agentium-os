@@ -175,7 +175,7 @@ fn normalize_event_with_registry(
             metadata,
             usage,
             duration_ms,
-            success,
+            outcome,
         } => {
             let activity_id = llm_activity_id(event.id());
             let mut attrs = base_attrs(event);
@@ -211,7 +211,7 @@ fn normalize_event_with_registry(
                 a2a::DURATION_MS.to_string(),
                 Value::Number((*duration_ms).into()),
             );
-            attrs.insert(a2a::SUCCESS.to_string(), Value::Bool(*success));
+            attrs.insert(a2a::SUCCESS.to_string(), Value::Bool(bool::from(*outcome)));
 
             doc.insert_activity(
                 activity_id.clone(),
@@ -327,7 +327,7 @@ fn normalize_event_with_registry(
             args,
             metadata,
             duration_ms,
-            success,
+            outcome,
         } => {
             let activity_id = tool_activity_id(event.id());
             let mut attrs = base_attrs(event);
@@ -343,7 +343,7 @@ fn normalize_event_with_registry(
                 a2a::DURATION_MS.to_string(),
                 Value::Number((*duration_ms).into()),
             );
-            attrs.insert(a2a::SUCCESS.to_string(), Value::Bool(*success));
+            attrs.insert(a2a::SUCCESS.to_string(), Value::Bool(bool::from(*outcome)));
 
             doc.insert_activity(
                 activity_id.clone(),

@@ -1,3 +1,4 @@
+use baml_rt_core::Outcome;
 use baml_rt_core::ids::{AgentId, ArtifactId, ContextId, EventId, MessageId, TaskId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -78,7 +79,7 @@ pub enum ProvEventData {
         metadata: Value,
         usage: LlmUsage,
         duration_ms: u64,
-        success: bool,
+        outcome: Outcome,
     },
     ToolCallStarted {
         scope: CallScope,
@@ -94,7 +95,7 @@ pub enum ProvEventData {
         args: Value,
         metadata: Value,
         duration_ms: u64,
-        success: bool,
+        outcome: Outcome,
     },
     AgentBooted {
         agent_id: AgentId,
@@ -249,7 +250,7 @@ impl ProvEvent {
         metadata: Value,
         usage: LlmUsage,
         duration_ms: u64,
-        success: bool,
+        outcome: Outcome,
     ) -> Self {
         ProvEvent::Global(GlobalEvent {
             id: next_event_id(),
@@ -264,7 +265,7 @@ impl ProvEvent {
                 metadata,
                 usage,
                 duration_ms,
-                success,
+                outcome,
             },
         })
     }
@@ -280,7 +281,7 @@ impl ProvEvent {
         metadata: Value,
         usage: LlmUsage,
         duration_ms: u64,
-        success: bool,
+        outcome: Outcome,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
             id: next_event_id(),
@@ -296,7 +297,7 @@ impl ProvEvent {
                 metadata,
                 usage,
                 duration_ms,
-                success,
+                outcome,
             },
         })
     }
@@ -355,7 +356,7 @@ impl ProvEvent {
         args: Value,
         metadata: Value,
         duration_ms: u64,
-        success: bool,
+        outcome: Outcome,
     ) -> Self {
         ProvEvent::Global(GlobalEvent {
             id: next_event_id(),
@@ -368,7 +369,7 @@ impl ProvEvent {
                 args,
                 metadata,
                 duration_ms,
-                success,
+                outcome,
             },
         })
     }
@@ -382,7 +383,7 @@ impl ProvEvent {
         args: Value,
         metadata: Value,
         duration_ms: u64,
-        success: bool,
+        outcome: Outcome,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
             id: next_event_id(),
@@ -396,7 +397,7 @@ impl ProvEvent {
                 args,
                 metadata,
                 duration_ms,
-                success,
+                outcome,
             },
         })
     }

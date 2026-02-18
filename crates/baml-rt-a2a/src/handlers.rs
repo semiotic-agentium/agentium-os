@@ -7,7 +7,7 @@ use crate::a2a_types::{
 use crate::events::EventEmitter;
 use async_trait::async_trait;
 use baml_rt_core::stream_completion::{StreamCompletion, StreamResult};
-use baml_rt_core::{BamlRtError, Result, to_json_value};
+use baml_rt_core::{BamlRtError, InvocationKind, Result, to_json_value};
 use baml_rt_quickjs::QuickJSBridge;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -21,7 +21,7 @@ pub trait TaskHandler: Send + Sync {
     async fn handle_subscribe(
         &self,
         request: SubscribeToTaskRequest,
-        is_stream: bool,
+        invocation: InvocationKind,
     ) -> Result<a2a::A2aOutcome>;
 }
 
@@ -88,7 +88,7 @@ impl TaskHandler for DefaultTaskHandler {
     async fn handle_subscribe(
         &self,
         request: SubscribeToTaskRequest,
-        is_stream: bool,
+        invocation: InvocationKind,
     ) -> Result<a2a::A2aOutcome> {
         let task = self
             .repository
@@ -97,7 +97,7 @@ impl TaskHandler for DefaultTaskHandler {
             .ok_or_else(|| BamlRtError::InvalidArgument(TASK_NOT_FOUND_MSG.to_string()))?;
         let value = to_json_value(&task)?;
 
-        if is_stream {
+        if invocation.is_stream() {
             let mut responses = Vec::new();
             responses.push(to_json_value(&StreamChunk::task(task.clone()))?);
             if let Some(status_ev) = TaskStatusUpdateEvent::from_task_current_status(&task) {

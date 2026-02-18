@@ -8,7 +8,7 @@ use crate::baml_pre_execution::intercept_llm_call_pre_execution;
 use async_trait::async_trait;
 use baml_rt_core::bus::EffectEmitter;
 use baml_rt_core::context;
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, Outcome, Result};
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry};
 use baml_rt_tools::ToolRegistry;
 use baml_runtime::{BamlRuntime, FunctionResultStream, RuntimeContextManager};
@@ -186,7 +186,9 @@ impl BamlExecutor {
                 }
                 Ok(InterceptorDecision::Block(msg)) => {
                     if let Some(ref collector) = collector {
-                        collector.complete_pending_effects(false, 0).await;
+                        collector
+                            .complete_pending_effects(Outcome::Failure, 0)
+                            .await;
                     }
                     return Err(BamlRtError::BamlRuntime(format!(
                         "LLM call blocked by interceptor: {}",
@@ -195,13 +197,17 @@ impl BamlExecutor {
                 }
                 Ok(InterceptorDecision::Substitute(value)) => {
                     if let Some(ref collector) = collector {
-                        collector.complete_pending_effects(true, 0).await;
+                        collector
+                            .complete_pending_effects(Outcome::Success, 0)
+                            .await;
                     }
                     return Ok(value);
                 }
                 Err(e) => {
                     if let Some(ref collector) = collector {
-                        collector.complete_pending_effects(false, 0).await;
+                        collector
+                            .complete_pending_effects(Outcome::Failure, 0)
+                            .await;
                     }
                     return Err(e);
                 }
@@ -272,7 +278,10 @@ impl BamlExecutor {
                 // Complete effect and return immediately; execution errors are not retried
                 if let Some(ref collector) = collector {
                     collector
-                        .complete_pending_effects(false, start_time.elapsed().as_millis() as u64)
+                        .complete_pending_effects(
+                            Outcome::Failure,
+                            start_time.elapsed().as_millis() as u64,
+                        )
                         .await;
                 }
                 return Err(BamlRtError::ExecutionFailed {
@@ -294,7 +303,10 @@ impl BamlExecutor {
                     );
                     if let Some(ref collector) = collector {
                         collector
-                            .complete_pending_effects(true, start_time.elapsed().as_millis() as u64)
+                            .complete_pending_effects(
+                                Outcome::Success,
+                                start_time.elapsed().as_millis() as u64,
+                            )
                             .await;
                     }
                     // Success path continues below with `parsed`
@@ -321,7 +333,7 @@ impl BamlExecutor {
                         if let Some(ref collector) = collector {
                             collector
                                 .complete_pending_effects(
-                                    false,
+                                    Outcome::Failure,
                                     start_time.elapsed().as_millis() as u64,
                                 )
                                 .await;
