@@ -2,27 +2,26 @@
 
 mod common;
 
+use std::{fs, path::PathBuf, sync::Arc};
+
 use async_trait::async_trait;
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt_a2a::AgentRegistry;
-use baml_rt_core::A2aRequestHandler;
-use baml_rt_core::bus::BusWithEffects;
-use baml_rt_core::ids::{AgentId, ContextId, UuidId};
-use baml_rt_core::{AgentDiscoveryEntry, AgentRouteKey};
-use baml_rt_provenance::graph_export::sequence::render_sequence_diagram;
-use baml_rt_provenance::graph_export::simplify::simplify_graph;
+use baml_rt_core::{
+    A2aRequestHandler, AgentDiscoveryEntry, AgentRouteKey,
+    bus::BusWithEffects,
+    ids::{AgentId, ContextId, UuidId},
+};
 use baml_rt_provenance::{
     AgentType, GraphExporter, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
     ProvenanceContextReader, ProvenanceConversationContextItem, ProvenanceWriter,
+    graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
 };
 use baml_rt_tools::clickup::ClickUpTool;
 use common::{
     StrictProvenanceWriter, TempEnvVar, build_clickup_agent_to_temp_async, e2e_serial_gate,
 };
 use serde_json::{Value, json};
-use std::fs;
-use std::path::PathBuf;
-use std::sync::Arc;
 use test_support::common::{chunks_from_responses, message_texts_from_chunks, send_stream_request};
 use tokio::time::{Duration, sleep, timeout};
 
@@ -135,9 +134,11 @@ impl MockClickUpState {
 }
 
 async fn start_clickup_mock_server() -> std::io::Result<(RunningHttpServer, MockClickUpState)> {
-    use axum::extract::{Path as AxumPath, State as AxumState};
-    use axum::routing::get;
-    use axum::{Json, Router};
+    use axum::{
+        Json, Router,
+        extract::{Path as AxumPath, State as AxumState},
+        routing::get,
+    };
 
     async fn list_teams(AxumState(state): AxumState<MockClickUpState>) -> Json<Value> {
         state.push_hit("GET /api/v2/team".to_string()).await;
@@ -390,103 +391,116 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
         }
     };
 
-    let context_id = ContextId::new(77, 7);
-    let correlation_id = baml_rt_core::correlation::generate_correlation_id();
-    let request_body = send_stream_request(
-        "clickup-vox-1",
-        "How many tasks are in progress?",
-        correlation_id.as_str(),
-        Some(context_id.clone()),
-    );
-
     let http_client = reqwest::Client::new();
     let a2a_url = format!("{}/agents/clickup-agent/default/a2a", runner_api.base_url);
-    let response = timeout(
-        Duration::from_secs(180),
-        http_client.post(&a2a_url).json(&request_body).send(),
-    )
-    .await
-    .expect("a2a HTTP request timed out")
-    .expect("a2a HTTP request failed");
-    assert!(
-        response.status().is_success(),
-        "Expected 2xx from /a2a, got {}",
-        response.status()
-    );
-    let responses: Vec<Value> = response
-        .json()
-        .await
-        .expect("parse /a2a response body as JSON");
-    assert!(
-        !responses.is_empty(),
-        "Expected non-empty JSON-RPC response array from /a2a"
-    );
-
-    let chunks = chunks_from_responses(&responses);
-    let texts = message_texts_from_chunks(&chunks);
-    assert!(
-        !texts.is_empty(),
-        "Expected at least one assistant message chunk. Raw: {}",
-        serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
-    );
-
+    let context_id = ContextId::new(77, 7);
     let mut matched_tool_result: Option<Value> = None;
     let mut conversation_items: Vec<ProvenanceConversationContextItem> = Vec::new();
-    let mut last_signature = String::new();
-    let mut stagnant_polls = 0u32;
-    for _ in 0..120 {
-        let items = provenance_reader
-            .conversation_context(&context_id, Some(200))
+    let mut turn_texts: Vec<String> = Vec::new();
+    let turn_prompts = [
+        "How many tasks are in progress?",
+        "Please continue and fetch the required ClickUp data to compute the exact count.",
+        "Continue and use tool calls to finish the exact in-progress task count.",
+    ];
+
+    for (turn, prompt) in turn_prompts.iter().enumerate() {
+        let correlation_id = baml_rt_core::correlation::generate_correlation_id();
+        let request_body = send_stream_request(
+            &format!("clickup-vox-{}", turn + 1),
+            prompt,
+            correlation_id.as_str(),
+            Some(context_id.clone()),
+        );
+
+        let response = timeout(
+            Duration::from_secs(180),
+            http_client.post(&a2a_url).json(&request_body).send(),
+        )
+        .await
+        .expect("a2a HTTP request timed out")
+        .expect("a2a HTTP request failed");
+        assert!(
+            response.status().is_success(),
+            "Expected 2xx from /a2a, got {}",
+            response.status()
+        );
+        let responses: Vec<Value> = response
+            .json()
             .await
+            .expect("parse /a2a response body as JSON");
+        assert!(
+            !responses.is_empty(),
+            "Expected non-empty JSON-RPC response array from /a2a"
+        );
+
+        let chunks = chunks_from_responses(&responses);
+        let texts = message_texts_from_chunks(&chunks);
+        assert!(
+            !texts.is_empty(),
+            "Expected at least one assistant message chunk. Raw: {}",
+            serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+        );
+        turn_texts.extend(texts);
+
+        let mut last_signature = String::new();
+        let mut stagnant_polls = 0u32;
+        for _ in 0..40 {
+            let items = provenance_reader
+                .conversation_context(&context_id, Some(220))
+                .await
+                .unwrap_or_default();
+            conversation_items = items.clone();
+            matched_tool_result = items
+                .iter()
+                .filter(|item| item.source == "tool_result")
+                .find_map(|item| {
+                    let tasks = item
+                        .content
+                        .get("result")
+                        .and_then(|result| result.get("tasks"))
+                        .and_then(Value::as_array)?;
+                    if tasks.len() == 2 {
+                        Some(item.content.clone())
+                    } else {
+                        None
+                    }
+                });
+            if matched_tool_result.is_some() {
+                break;
+            }
+            let signature = serde_json::to_string(
+                &conversation_items
+                    .iter()
+                    .map(|i| (&i.event_id, &i.source, &i.content))
+                    .collect::<Vec<_>>(),
+            )
             .unwrap_or_default();
-        conversation_items = items.clone();
-        matched_tool_result = items
-            .iter()
-            .filter(|item| item.source == "tool_result")
-            .find_map(|item| {
-                let tasks = item
-                    .content
-                    .get("result")
-                    .and_then(|result| result.get("tasks"))
-                    .and_then(Value::as_array)?;
-                if tasks.len() == 2 {
-                    Some(item.content.clone())
-                } else {
-                    None
-                }
-            });
+            if signature == last_signature {
+                stagnant_polls += 1;
+            } else {
+                stagnant_polls = 0;
+                last_signature = signature;
+            }
+            if stagnant_polls >= 12 {
+                break;
+            }
+            sleep(Duration::from_millis(250)).await;
+        }
+
         if matched_tool_result.is_some() {
             break;
         }
-        let signature = serde_json::to_string(
-            &conversation_items
-                .iter()
-                .map(|i| (&i.event_id, &i.source, &i.content))
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or_default();
-        if signature == last_signature {
-            stagnant_polls += 1;
-        } else {
-            stagnant_polls = 0;
-            last_signature = signature;
-        }
-        // Fail faster when the conversation has stopped changing and the expected
-        // list-tasks output never appeared, instead of waiting the full timeout.
-        if stagnant_polls >= 20 {
-            break;
-        }
-        sleep(Duration::from_millis(500)).await;
     }
 
     let tool_result = matched_tool_result.unwrap_or_else(|| {
         panic!(
-            "Expected a tool_result with exactly 2 tasks in provenance context. \
-             Sources seen: {:?}",
+            "Expected a tool_result with exactly 2 tasks in provenance context after follow-up turns. \
+             Sources seen: {:?}. Assistant texts: {:?}",
             conversation_items
                 .iter()
                 .map(|i| i.source.as_str())
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            turn_texts
         )
     });
     let tasks = tool_result
