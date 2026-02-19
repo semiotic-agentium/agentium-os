@@ -69,12 +69,18 @@ class UpdateTaskInput {
   priority int? @description("ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")
 }
 
+/// Delete a task from the workspace.
+class DeleteTaskInput {
+  task_id string
+  confirm_delete bool
+}
+
 /// Union of all ClickUp action inputs.
 ///
 /// The LLM picks the appropriate variant based on the desired action.
 /// In generated BAML this becomes:
-/// `type ClickUpInput = ListTeamsInput | ListSpacesInput | … | UpdateTaskInput`
-type ClickUpInput = ListTeamsInput | ListSpacesInput | ListListsInput | ListTasksInput | GetTaskInput | CreateTaskInput | UpdateTaskInput
+/// `type ClickUpInput = ListTeamsInput | ListSpacesInput | … | DeleteTaskInput`
+type ClickUpInput = ListTeamsInput | ListSpacesInput | ListListsInput | ListTasksInput | GetTaskInput | CreateTaskInput | UpdateTaskInput | DeleteTaskInput
 
 /// Summary of a single ClickUp task, projected from the API response.
 class ClickUpTaskSummary {

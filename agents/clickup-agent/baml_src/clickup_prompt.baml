@@ -25,6 +25,7 @@ function ChooseClickUpAction(
     - GetTaskInput: get details of a specific task (needs task_id)
     - CreateTaskInput: create a new task (needs list_id, name; optional: description, priority)
     - UpdateTaskInput: update status/description/priority of a task (needs task_id)
+    - DeleteTaskInput: permanently delete a task (needs task_id, confirm_delete)
 
     RESPONSE GATE (apply before choosing tool calls):
     1) If conversation_history already contains the needed data, return FinalResponse immediately
@@ -53,6 +54,17 @@ function ChooseClickUpAction(
     8. After a successful CreateTaskInput or UpdateTaskInput tool_result appears in conversation_history,
        your very next decision MUST be FinalResponse summarizing the result.
        Do NOT emit another tool plan unless the user asked for an additional action.
+    9. DELETION SAFETY — this rule overrides all others for delete operations:
+       a) When the user asks to delete a task, send DeleteTaskInput with confirm_delete=false.
+       b) When the tool_result message contains "Please confirm", you MUST return FinalResponse
+          relaying the confirmation question to the user. Do NOT send another plan.
+          Do NOT set confirm_delete=true. STOP and WAIT for a new user message.
+       c) Only when a NEW user message explicitly says "yes", "confirm", "go ahead", or similar
+          affirmation AFTER the confirmation question was shown, send DeleteTaskInput
+          with confirm_delete=true.
+       d) If the user says "no" or "cancel", return FinalResponse saying the deletion was cancelled.
+    10. After a successful DeleteTaskInput tool_result with message containing "Deleted task",
+        return FinalResponse summarizing the deletion.
 
     STRICT PLAN VALIDITY:
     - If you return a plan, it MUST have exactly 4 steps and in this exact order:
