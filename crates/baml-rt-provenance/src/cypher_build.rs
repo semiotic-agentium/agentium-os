@@ -42,7 +42,7 @@
 //! `cypher_builder(&stmt.query).params(&stmt.params).run()`. Read queries live in
 //! [crate::graph_model::ConversationReadModel]; this module only builds **write** statements.
 
-use crate::graph_model::{GraphNodeLabel, TOOL_CALL_ARGS_EDGE};
+use crate::graph_model::GraphNodeLabel;
 use crate::normalizer::{A2aDerivedRelation, NormalizedProv};
 use crate::types::{
     Activity, Agent, Entity, ProvActivityId, ProvAgentId, ProvEntityId, QualifiedGeneration, Used,
@@ -135,8 +135,6 @@ pub fn build_queries_with_key_style_params(
     key_style: KeyStyle,
 ) -> Vec<CypherStatement> {
     let mut queries = Vec::new();
-    let mut tool_args_by_event: HashMap<String, (String, String)> = HashMap::new();
-    let mut tool_calls_by_event: HashMap<String, (String, String)> = HashMap::new();
 
     let mut entity_entries: Vec<(&ProvEntityId, &Entity)> =
         normalized.document.entities().collect();
@@ -152,14 +150,6 @@ pub fn build_queries_with_key_style_params(
             .map(|value| value.as_str())
             .unwrap_or("ProvEntity");
         let props = entity_props(id, entity);
-        if label == GraphNodeLabel::ToolArgs.as_str()
-            && let Some(event_id) = props.get(a2a::EVENT_ID).and_then(Value::as_str)
-        {
-            tool_args_by_event.insert(
-                event_id.to_string(),
-                (id.as_str().to_string(), label.to_string()),
-            );
-        }
         let mut collector = ParamCollector::new();
         let clause = merge_node_param(label, id.as_str(), &props, key_style, &mut collector);
         queries.push(CypherStatement {
@@ -182,14 +172,6 @@ pub fn build_queries_with_key_style_params(
             .map(|value| value.as_str())
             .unwrap_or("ProvActivity");
         let props = activity_props(id, activity);
-        if label == GraphNodeLabel::ToolCall.as_str()
-            && let Some(event_id) = props.get(a2a::EVENT_ID).and_then(Value::as_str)
-        {
-            tool_calls_by_event.insert(
-                event_id.to_string(),
-                (id.as_str().to_string(), label.to_string()),
-            );
-        }
         let mut collector = ParamCollector::new();
         let clause = merge_node_param(label, id.as_str(), &props, key_style, &mut collector);
         queries.push(CypherStatement {
@@ -240,29 +222,6 @@ pub fn build_queries_with_key_style_params(
             &props,
             key_style,
         ));
-    }
-
-    for (event_id, (tool_call_id, tool_call_label)) in &tool_calls_by_event {
-        if let Some((tool_args_id, tool_args_label)) = tool_args_by_event.get(event_id) {
-            let mut props = HashMap::new();
-            props.insert(
-                prov::BASE_TYPE.to_string(),
-                Value::String(prov_relations::USED.to_string()),
-            );
-            props.insert(
-                TOOL_CALL_ARGS_EDGE.role_key.to_string(),
-                Value::String(TOOL_CALL_ARGS_EDGE.role_value.to_string()),
-            );
-            queries.extend(merge_edge_statements(
-                tool_call_label,
-                tool_call_id,
-                TOOL_CALL_ARGS_EDGE.edge_label,
-                tool_args_label,
-                tool_args_id,
-                &props,
-                key_style,
-            ));
-        }
     }
     let mut generated_entries: Vec<(&String, &WasGeneratedBy)> =
         normalized.document.was_generated_by().collect();

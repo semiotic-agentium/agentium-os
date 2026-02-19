@@ -30,6 +30,7 @@ use baml_rt_provenance::{
     AgentType, GlobalEvent, GraphqliteStoreBuilder, ProvEvent, ProvEventData,
     ProvenanceContextReader, ProvenanceQueryApi, ProvenanceWriter, TaskScopedEvent,
 };
+use std::collections::HashSet;
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -321,4 +322,291 @@ async fn graphqlite_store_query_api_returns_same_shape_as_reader() {
         .expect("query_conversation_context");
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].source, "message");
+}
+
+/// Reproduce the ClickUp agent bug: tool calls written to graphqlite must
+/// appear in conversation_context as tool_call + tool_result items.
+#[tokio::test]
+async fn graphqlite_conversation_context_includes_tool_calls() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.keep().join("provenance_tool.db");
+    let store = GraphqliteStoreBuilder::file(path)
+        .build()
+        .expect("build store");
+
+    let context_id = ContextId::new(42, 1);
+    let task_id = TaskId::from_external(ExternalId::new("task-tool-1"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap());
+
+    // 1) AgentBooted + TaskCreated (required bootstrap)
+    store
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(100),
+            context_id: context_id.clone(),
+            timestamp_ms: 1_700_000_000_000,
+            data: ProvEventData::AgentBooted {
+                agent_id: agent_id.clone(),
+                agent_type: AgentType::new("test").expect("agent_type"),
+                agent_version: "1.0.0".to_string(),
+                archive_path: "test@1.0.0".to_string(),
+            },
+        }))
+        .await
+        .expect("AgentBooted");
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(101),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_000_001,
+            data: ProvEventData::TaskCreated {
+                task_id: task_id.clone(),
+                agent_id: agent_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskCreated");
+
+    // 2) User message
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(102),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_000_002,
+            data: ProvEventData::MessageReceived {
+                id: MessageId::from_external(ExternalId::new("msg-1")),
+                role: "user".to_string(),
+                content: vec!["list my tasks".to_string()],
+                metadata: None,
+            },
+        }))
+        .await
+        .expect("MessageReceived");
+
+    // 3) ToolCallStarted (send phase) — mirrors what the interceptor writes
+    let tool_args = serde_json::json!({"action":"ListTeams"});
+    let started_metadata = serde_json::json!({
+        "message_id": "msg-1",
+        "task_id": "task-tool-1",
+        "agent_id": "00000000-0000-0000-0000-000000000099",
+        "phase": "send"
+    });
+    store
+        .add_event(ProvEvent::tool_call_started_task(
+            context_id.clone(),
+            task_id.clone(),
+            "support/clickup".to_string(),
+            None,
+            tool_args.clone(),
+            started_metadata,
+        ))
+        .await
+        .expect("ToolCallStarted");
+
+    // 4) ToolCallCompleted (send phase with result) — the key event
+    let completed_metadata = serde_json::json!({
+        "message_id": "msg-1",
+        "task_id": "task-tool-1",
+        "agent_id": "00000000-0000-0000-0000-000000000099",
+        "phase": "send",
+        "result": {
+            "tasks": [],
+            "items": [{"id": "9013491519", "name": "Test Workspace", "kind": "team"}],
+            "message": "Found 1 team(s)"
+        }
+    });
+    store
+        .add_event(ProvEvent::tool_call_completed_task(
+            context_id.clone(),
+            task_id.clone(),
+            "support/clickup".to_string(),
+            None,
+            tool_args,
+            completed_metadata,
+            616,
+            baml_rt_core::Outcome::Success,
+        ))
+        .await
+        .expect("ToolCallCompleted");
+
+    // 5) Read conversation_context — must include exactly one tool_call + tool_result
+    let items = store
+        .conversation_context(&context_id, None)
+        .await
+        .expect("conversation_context");
+
+    let tool_call_items: Vec<_> = items.iter().filter(|i| i.source == "tool_call").collect();
+    let tool_result_items: Vec<_> = items.iter().filter(|i| i.source == "tool_result").collect();
+    assert_eq!(
+        tool_call_items.len(),
+        1,
+        "expected exactly one tool_call item, got {} items total: {:?}",
+        items.len(),
+        items.iter().map(|i| &i.source).collect::<Vec<_>>()
+    );
+    assert!(
+        tool_result_items.len() == 1,
+        "expected exactly one tool_result item, got {} items total: {:?}",
+        items.len(),
+        items.iter().map(|i| &i.source).collect::<Vec<_>>()
+    );
+    let unique_tool_items: HashSet<String> = items
+        .iter()
+        .filter(|i| i.source.starts_with("tool_"))
+        .map(|i| format!("{}|{}|{}", i.event_id, i.source, i.content))
+        .collect();
+    assert_eq!(
+        unique_tool_items.len(),
+        tool_call_items.len() + tool_result_items.len(),
+        "duplicate tool_call/tool_result entries detected: {:?}",
+        items
+            .iter()
+            .filter(|i| i.source.starts_with("tool_"))
+            .map(|i| format!("{}|{}|{}", i.event_id, i.source, i.content))
+            .collect::<Vec<_>>()
+    );
+    let result_message = tool_result_items[0]
+        .content
+        .get("result")
+        .and_then(|v| v.get("message"))
+        .and_then(|v| v.as_str());
+    assert_eq!(result_message, Some("Found 1 team(s)"));
+}
+
+/// Failed tool calls must still appear in conversation_context as tool_result
+/// entries so retries/recovery can use prior failure context.
+#[tokio::test]
+async fn graphqlite_conversation_context_includes_failed_tool_results() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.keep().join("provenance_tool_failed.db");
+    let store = GraphqliteStoreBuilder::file(path)
+        .build()
+        .expect("build store");
+
+    let context_id = ContextId::new(43, 1);
+    let task_id = TaskId::from_external(ExternalId::new("task-tool-failure"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000098").unwrap());
+
+    store
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(200),
+            context_id: context_id.clone(),
+            timestamp_ms: 1_700_000_000_100,
+            data: ProvEventData::AgentBooted {
+                agent_id: agent_id.clone(),
+                agent_type: AgentType::new("test").expect("agent_type"),
+                agent_version: "1.0.0".to_string(),
+                archive_path: "test@1.0.0".to_string(),
+            },
+        }))
+        .await
+        .expect("AgentBooted");
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(201),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_000_101,
+            data: ProvEventData::TaskCreated {
+                task_id: task_id.clone(),
+                agent_id: agent_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskCreated");
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(202),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_000_102,
+            data: ProvEventData::MessageReceived {
+                id: MessageId::from_external(ExternalId::new("msg-failure")),
+                role: "user".to_string(),
+                content: vec!["list all tasks".to_string()],
+                metadata: None,
+            },
+        }))
+        .await
+        .expect("MessageReceived");
+
+    let tool_args = serde_json::json!({"tasks_action":"ListTasks"});
+    let started_metadata = serde_json::json!({
+        "message_id": "msg-failure",
+        "task_id": "task-tool-failure",
+        "agent_id": "00000000-0000-0000-0000-000000000098",
+        "phase": "send"
+    });
+    store
+        .add_event(ProvEvent::tool_call_started_task(
+            context_id.clone(),
+            task_id.clone(),
+            "support/clickup".to_string(),
+            None,
+            tool_args.clone(),
+            started_metadata,
+        ))
+        .await
+        .expect("ToolCallStarted");
+
+    let completed_metadata = serde_json::json!({
+        "message_id": "msg-failure",
+        "task_id": "task-tool-failure",
+        "agent_id": "00000000-0000-0000-0000-000000000098",
+        "phase": "send",
+        "error": "Invalid argument: list_id is required"
+    });
+    store
+        .add_event(ProvEvent::tool_call_completed_task(
+            context_id.clone(),
+            task_id,
+            "support/clickup".to_string(),
+            None,
+            tool_args,
+            completed_metadata,
+            23,
+            baml_rt_core::Outcome::Failure,
+        ))
+        .await
+        .expect("ToolCallCompletedFailure");
+
+    let items = store
+        .conversation_context(&context_id, None)
+        .await
+        .expect("conversation_context");
+
+    let tool_call_items: Vec<_> = items.iter().filter(|i| i.source == "tool_call").collect();
+    let tool_result_items: Vec<_> = items.iter().filter(|i| i.source == "tool_result").collect();
+    assert_eq!(
+        tool_call_items.len(),
+        1,
+        "failed call should still emit tool_call"
+    );
+    assert_eq!(
+        tool_result_items.len(),
+        1,
+        "failed call should still emit tool_result"
+    );
+    let unique_tool_items: HashSet<String> = items
+        .iter()
+        .filter(|i| i.source.starts_with("tool_"))
+        .map(|i| format!("{}|{}|{}", i.event_id, i.source, i.content))
+        .collect();
+    assert_eq!(
+        unique_tool_items.len(),
+        tool_call_items.len() + tool_result_items.len(),
+        "duplicate tool entries detected"
+    );
+    let error_message = tool_result_items[0]
+        .content
+        .get("error")
+        .and_then(|v| v.as_str());
+    assert_eq!(
+        error_message,
+        Some("Invalid argument: list_id is required"),
+        "failed result should carry metadata.error"
+    );
 }

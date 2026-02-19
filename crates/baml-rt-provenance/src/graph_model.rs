@@ -273,7 +273,7 @@ impl ConversationReadModel {
             "MATCH (t:{tool_call_label}) \
              WHERE t.`a2a:context_id` = \"{context}\" \
              MATCH (t)-[used:{tool_args_edge}]->(args:{tool_args_label}) \
-             RETURN t.`a2a:event_id`, t.`a2a:tool_name`, toString(t.`a2a:metadata`), toString(args.`a2a:args`), used.`{tool_args_role}`, args.`{tool_args_type}`, t.`a2a:success` \
+             RETURN DISTINCT t.`a2a:event_id`, t.`a2a:tool_name`, toString(t.`a2a:metadata`), toString(args.`a2a:args`), used.`{tool_args_role}`, args.`{tool_args_type}`, t.`a2a:success` \
              ORDER BY t.`a2a:event_id`"
         )
     }
@@ -309,7 +309,7 @@ impl ConversationReadModel {
             "MATCH (t:{tool_call_label}) \
              WHERE t.a2a_context_id = \"{context}\" \
              MATCH (t)-[used:{tool_args_edge}]->(args:{tool_args_label}) \
-             RETURN t.a2a_event_id, t.a2a_tool_name, toString(t.a2a_metadata), toString(args.a2a_args), used.prov_role, args.prov_type, t.a2a_success \
+             RETURN DISTINCT t.a2a_event_id, t.a2a_tool_name, toString(t.a2a_metadata), toString(args.a2a_args), used.prov_role, args.prov_type, t.a2a_success \
              ORDER BY t.a2a_event_id"
         )
     }
@@ -319,7 +319,7 @@ impl ConversationReadModel {
     pub fn tool_query_storage_safe_params(context: &str) -> (&'static str, serde_json::Value) {
         const QUERY: &str = "MATCH (t:ToolCall) WHERE t.a2a_context_id = $context \
              MATCH (t)-[used:WAS_USED_BY]->(args:ToolArgs) \
-             RETURN t.a2a_event_id, t.a2a_tool_name, toString(t.a2a_metadata), toString(args.a2a_args), used.prov_role, args.prov_type, t.a2a_success \
+             RETURN DISTINCT t.a2a_event_id, t.a2a_tool_name, toString(t.a2a_metadata), toString(args.a2a_args), used.prov_role, args.prov_type, t.a2a_success \
              ORDER BY t.a2a_event_id";
         let params = serde_json::json!({ "context": context });
         (QUERY, params)
