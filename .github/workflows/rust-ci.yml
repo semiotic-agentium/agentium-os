@@ -53,7 +53,7 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev binutils-gold libclang-dev util-linux
+          sudo apt update && sudo apt install -y build-essential pkg-config libssl-dev libclang-dev util-linux
 
       - name: System info
         run: |
@@ -77,6 +77,7 @@ jobs:
             --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-rt/llm-tests,baml-agent-runner/llm-tests
         env:
           RUSTUP_TOOLCHAIN: stable
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=bfd"
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
       - name: Publish JUnit report
