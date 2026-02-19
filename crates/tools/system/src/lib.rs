@@ -6,7 +6,7 @@
 
 pub mod a2a_session;
 pub mod bundle;
-mod metadata;
+pub mod metadata;
 pub mod tools;
 
 pub use a2a_session::A2aSessionBundle;

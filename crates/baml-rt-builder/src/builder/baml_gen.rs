@@ -19,8 +19,9 @@ fn write_line(output: &mut String, line: &str) -> Result<()> {
 
 /// Generate BAML tool interface file with FSM-aware prompting hints
 pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
-    // Force link of support module so support/calculate is in inventory (regen_fixtures + builder).
+    // Force link so inventory sees these metadata registrations (regen_fixtures + builder).
     let _ = support::support_calculate_metadata;
+    let _ = baml_rt_tools_system::metadata::system_internal_a2a_metadata;
     let tool_metadata = resolve_manifest_tools(tool_names)?;
 
     let mut output = String::new();

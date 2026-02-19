@@ -72,13 +72,6 @@ jobs:
         with:
           tool: cargo-nextest
 
-      # Regenerate fixture type declarations once before tests start.
-      # nextest runs each test in its own process; without this pre-step,
-      # multiple processes invoke regen_fixtures concurrently, risking
-      # partial-read race conditions on generated_tools.baml files.
-      - name: Regenerate fixture types
-        run: cargo run -p baml-rt-builder --bin regen_fixtures
-
       - name: Run nextest
         run: |
           cargo nextest run --workspace --locked --profile ci \
