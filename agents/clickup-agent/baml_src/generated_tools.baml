@@ -25,34 +25,52 @@ enum ToolSessionOp {
 }
 
 // Domain types generated from #[derive(BamlType)]
-/// Which ClickUp action to perform.
-enum ClickUpAction {
-  ListTeams
-  ListSpaces
-  ListLists
-  ListTasks
-  GetTask
-  CreateTask
-  UpdateTask
+/// List all teams/workspaces — no parameters needed.
+class ListTeamsInput {
 }
 
-/// Input for the ClickUp tool.
-///
-/// Uses a flat struct with an `action` discriminator instead of a Rust enum
-/// so that BAML (which lacks sum types) can represent it as a single class
-/// with an enum field. Per-action field requirements are validated at runtime
-/// in [`ClickUpTool::execute`].
-class ClickUpInput {
-  action ClickUpAction
-  team_id string? @description("Required for ListSpaces.")
-  space_id string? @description("Required for ListLists.")
-  list_id string? @description("Required for ListTasks and CreateTask.")
-  task_id string? @description("Required for GetTask and UpdateTask.")
-  name string? @description("Required for CreateTask.")
+/// List spaces in a team.
+class ListSpacesInput {
+  team_id string
+}
+
+/// List task-lists in a space.
+class ListListsInput {
+  space_id string
+}
+
+/// List tasks in a list.
+class ListTasksInput {
+  list_id string
+}
+
+/// Get details of a specific task.
+class GetTaskInput {
+  task_id string
+}
+
+/// Create a new task in a list.
+class CreateTaskInput {
+  list_id string
+  name string
   description string?
   priority int? @description("ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")
-  status string? @description("Task status string. Used by UpdateTask.")
 }
+
+/// Update an existing task's status, description, or priority.
+class UpdateTaskInput {
+  task_id string
+  status string? @description("Task status string (e.g. in progress).")
+  description string?
+  priority int? @description("ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")
+}
+
+/// Union of all ClickUp action inputs.
+///
+/// The LLM picks the appropriate variant based on the desired action.
+/// In generated BAML this becomes:
+/// `type ClickUpInput = ListTeamsInput | ListSpacesInput | … | UpdateTaskInput`
+type ClickUpInput = ListTeamsInput | ListSpacesInput | ListListsInput | ListTasksInput | GetTaskInput | CreateTaskInput | UpdateTaskInput
 
 /// Summary of a single ClickUp task, projected from the API response.
 class ClickUpTaskSummary {

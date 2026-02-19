@@ -17,52 +17,95 @@ use ts_rs::TS;
 /// ClickUp v2 REST API base URL.
 pub const BASE_URL: &str = "https://api.clickup.com/api/v2";
 
-/// Which ClickUp action to perform.
+// ---------------------------------------------------------------------------
+// Per-action input types
+// ---------------------------------------------------------------------------
+
+/// List all teams/workspaces — no parameters needed.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[serde(deny_unknown_fields)]
 #[ts(export)]
-pub enum ClickUpAction {
-    ListTeams,
-    ListSpaces,
-    ListLists,
-    ListTasks,
-    GetTask,
-    CreateTask,
-    UpdateTask,
+pub struct ListTeamsInput {}
+
+/// List spaces in a team.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[serde(deny_unknown_fields)]
+#[ts(export)]
+pub struct ListSpacesInput {
+    pub team_id: String,
 }
 
-/// Input for the ClickUp tool.
-///
-/// Uses a flat struct with an `action` discriminator instead of a Rust enum
-/// so that BAML (which lacks sum types) can represent it as a single class
-/// with an enum field. Per-action field requirements are validated at runtime
-/// in [`ClickUpTool::execute`].
+/// List task-lists in a space.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[serde(deny_unknown_fields)]
 #[ts(export)]
-pub struct ClickUpInput {
-    pub action: ClickUpAction,
-    /// Required for `ListSpaces`.
-    #[baml(description = "Required for ListSpaces.")]
-    pub team_id: Option<String>,
-    /// Required for `ListLists`.
-    #[baml(description = "Required for ListLists.")]
-    pub space_id: Option<String>,
-    /// Required for `ListTasks` and `CreateTask`.
-    #[baml(description = "Required for ListTasks and CreateTask.")]
-    pub list_id: Option<String>,
-    /// Required for `GetTask` and `UpdateTask`.
-    #[baml(description = "Required for GetTask and UpdateTask.")]
-    pub task_id: Option<String>,
-    /// Required for `CreateTask`.
-    #[baml(description = "Required for CreateTask.")]
-    pub name: Option<String>,
-    /// The clickup-task description
+pub struct ListListsInput {
+    pub space_id: String,
+}
+
+/// List tasks in a list.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[serde(deny_unknown_fields)]
+#[ts(export)]
+pub struct ListTasksInput {
+    pub list_id: String,
+}
+
+/// Get details of a specific task.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[serde(deny_unknown_fields)]
+#[ts(export)]
+pub struct GetTaskInput {
+    pub task_id: String,
+}
+
+/// Create a new task in a list.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[serde(deny_unknown_fields)]
+#[ts(export)]
+pub struct CreateTaskInput {
+    pub list_id: String,
+    pub name: String,
+    /// The task description.
     pub description: Option<String>,
     /// ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
     #[baml(description = "ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")]
     pub priority: Option<u8>,
-    /// Task status string (e.g. \"in progress\"). Used by `UpdateTask`.
-    #[baml(description = "Task status string. Used by UpdateTask.")]
+}
+
+/// Update an existing task's status, description, or priority.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[serde(deny_unknown_fields)]
+#[ts(export)]
+pub struct UpdateTaskInput {
+    pub task_id: String,
+    /// Task status string (e.g. "in progress").
+    #[baml(description = "Task status string (e.g. in progress).")]
     pub status: Option<String>,
+    /// The task description.
+    pub description: Option<String>,
+    /// ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
+    #[baml(description = "ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")]
+    pub priority: Option<u8>,
+}
+
+/// Union of all ClickUp action inputs.
+///
+/// The LLM picks the appropriate variant based on the desired action.
+/// In generated BAML this becomes:
+/// `type ClickUpInput = ListTeamsInput | ListSpacesInput | … | UpdateTaskInput`
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[baml(union)]
+#[serde(untagged)]
+#[ts(export)]
+pub enum ClickUpInput {
+    ListTeams(ListTeamsInput),
+    ListSpaces(ListSpacesInput),
+    ListLists(ListListsInput),
+    ListTasks(ListTasksInput),
+    GetTask(GetTaskInput),
+    CreateTask(CreateTaskInput),
+    UpdateTask(UpdateTaskInput),
 }
 
 // ---------------------------------------------------------------------------
@@ -254,12 +297,6 @@ impl ClickUpTool {
 
     fn api_key() -> std::result::Result<String, ClickUpError> {
         std::env::var("CLICKUP_API_KEY").map_err(ClickUpError::MissingApiKey)
-    }
-
-    fn require<'a>(value: &'a Option<String>, field: &str, action: &str) -> Result<&'a str> {
-        value.as_deref().ok_or_else(|| {
-            BamlRtError::InvalidArgument(format!("{field} is required for {action}"))
-        })
     }
 
     #[tracing::instrument(skip_all, fields(url))]
@@ -563,47 +600,40 @@ impl BamlTool for ClickUpTool {
         "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks."
     }
 
-    #[tracing::instrument(skip(self), fields(action = ?args.action))]
+    #[tracing::instrument(skip(self))]
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         let api_key = Self::api_key()?;
-        match args.action {
-            ClickUpAction::ListTeams => self.list_teams(&api_key).await,
-            ClickUpAction::ListSpaces => {
-                let team_id = Self::require(&args.team_id, "team_id", "ListSpaces")?;
-                self.list_spaces(&api_key, team_id).await
+        match args {
+            ClickUpInput::ListTeams(_) => self.list_teams(&api_key).await,
+            ClickUpInput::ListSpaces(input) => {
+                self.list_spaces(&api_key, &input.team_id).await
             }
-            ClickUpAction::ListLists => {
-                let space_id = Self::require(&args.space_id, "space_id", "ListLists")?;
-                self.list_lists(&api_key, space_id).await
+            ClickUpInput::ListLists(input) => {
+                self.list_lists(&api_key, &input.space_id).await
             }
-            ClickUpAction::ListTasks => {
-                let list_id = Self::require(&args.list_id, "list_id", "ListTasks")?;
-                self.list_tasks(&api_key, list_id).await
+            ClickUpInput::ListTasks(input) => {
+                self.list_tasks(&api_key, &input.list_id).await
             }
-            ClickUpAction::GetTask => {
-                let task_id = Self::require(&args.task_id, "task_id", "GetTask")?;
-                self.get_task(&api_key, task_id).await
+            ClickUpInput::GetTask(input) => {
+                self.get_task(&api_key, &input.task_id).await
             }
-            ClickUpAction::CreateTask => {
-                let list_id = Self::require(&args.list_id, "list_id", "CreateTask")?;
-                let name = Self::require(&args.name, "name", "CreateTask")?;
+            ClickUpInput::CreateTask(input) => {
                 self.create_task(
                     &api_key,
-                    list_id,
-                    name,
-                    args.description.as_deref(),
-                    args.priority,
+                    &input.list_id,
+                    &input.name,
+                    input.description.as_deref(),
+                    input.priority,
                 )
                 .await
             }
-            ClickUpAction::UpdateTask => {
-                let task_id = Self::require(&args.task_id, "task_id", "UpdateTask")?;
+            ClickUpInput::UpdateTask(input) => {
                 self.update_task(
                     &api_key,
-                    task_id,
-                    args.status.as_deref(),
-                    args.description.as_deref(),
-                    args.priority,
+                    &input.task_id,
+                    input.status.as_deref(),
+                    input.description.as_deref(),
+                    input.priority,
                 )
                 .await
             }
@@ -617,7 +647,13 @@ pub fn clickup_metadata() -> ToolFunctionMetadata {
         .expect("support/clickup is a compile-time constant");
 
     let baml_decl = [
-        ClickUpAction::baml_decl(),
+        ListTeamsInput::baml_decl(),
+        ListSpacesInput::baml_decl(),
+        ListListsInput::baml_decl(),
+        ListTasksInput::baml_decl(),
+        GetTaskInput::baml_decl(),
+        CreateTaskInput::baml_decl(),
+        UpdateTaskInput::baml_decl(),
         ClickUpInput::baml_decl(),
         ClickUpTaskSummary::baml_decl(),
         ClickUpItem::baml_decl(),
