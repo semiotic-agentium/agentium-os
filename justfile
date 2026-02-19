@@ -12,6 +12,24 @@ clickup-agent-provenance:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
     cargo run -p baml-agent-runner --features http-tools -- clickup-agent.tar.gz --a2a-stdio --provenance-db {{provenance_db}}
 
+# Rebuilds notion-agent package and runs it via a2a stdio.
+notion-agent:
+    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
+    cargo run -p baml-agent-runner --features http-tools -- notion-agent.tar.gz --a2a-stdio
+
+# Same as notion-agent, but persists provenance to provenance.db for graph_exporter.
+notion-agent-provenance:
+    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
+    cargo run -p baml-agent-runner --features http-tools -- notion-agent.tar.gz --a2a-stdio --provenance-db {{provenance_db}}
+
+# Runs the HTTP Notion demo script (starts runner if needed and streams one request).
+notion-demo:
+    ./scripts/run-notion-demo.sh
+
+# Stops the background runner started by notion-demo.
+notion-demo-stop:
+    ./scripts/stop-notion-demo.sh
+
 fmt:
     cargo fmt --all
 

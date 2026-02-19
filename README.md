@@ -173,7 +173,14 @@ The project uses [just](https://github.com/casey/just) as a command runner. A `.
 | `just test-crate <crate>` | `just test-crate baml-rt-provenance` | Run tests for a single crate with the same CI feature flags. |
 | `just test-unit` | `just test-unit` | Run only unit tests that need neither FalkorDB nor API keys. |
 | `just clickup-agent` | `just clickup-agent` | Build and run the ClickUp agent: packages it via `baml-agent-builder` then launches the runner in A2A stdio mode. Uses in-memory SQLite provenance by default. |
+| `just clickup-agent-provenance` | `just clickup-agent-provenance` | Same as `clickup-agent`, but persists provenance to `provenance.db`. |
+| `just notion-agent` | `just notion-agent` | Build and run the Notion agent in A2A stdio mode (HTTP tools enabled). Uses in-memory provenance by default. |
+| `just notion-agent-provenance` | `just notion-agent-provenance` | Same as `notion-agent`, but persists provenance to `provenance.db`. |
+| `just notion-demo` | `just notion-demo` | Start the Notion HTTP demo runner and stream one request; writes SSE output and captures context/task IDs when present. |
+| `just notion-demo-stop` | `just notion-demo-stop` | Stop the background runner started by `notion-demo`. |
 | `just provenance-mermaid <context_id>` | `just provenance-mermaid ctx-1771426017780-2` | Export a simplified Mermaid sequence diagram for a given provenance context ID. |
+
+For a provenance-first walkthrough of the Notion flow, see `docs/notion-demo.md`.
 
 ### CI feature flags
 
