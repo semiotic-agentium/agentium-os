@@ -124,6 +124,30 @@ impl EventId {
         Self(MonotonicId::new("prov", counter).into_string())
     }
 }
+
+impl From<String> for EventId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for EventId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<String> for MessageId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for MessageId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
 impl AgentId {
     pub fn from_uuid(id: UuidId) -> Self {
         Self(id.to_string())

@@ -109,42 +109,49 @@ impl<'a> A2aYieldSession<'a, YieldBufferReady, NonResolvingPromise> {
     }
 }
 
+/// Reads task state from a stream chunk. Supports both object shape (yield buffer) and
+/// stringified JSON (tool/serialization boundary); treats parse failure as missing state.
+fn chunk_state(chunk: &Value) -> Option<String> {
+    fn from_val(val: &Value) -> Option<String> {
+        val.get("status")
+            .and_then(|s| s.get("state"))
+            .and_then(Value::as_str)
+            .map(String::from)
+    }
+    fn from_maybe_string(val: &Value) -> Option<String> {
+        from_val(val).or_else(|| {
+            val.as_str().and_then(|s| {
+                match serde_json::from_str::<Value>(s) {
+                    Ok(parsed) => from_val(&parsed),
+                    Err(e) => {
+                        tracing::trace!(error = %e, "chunk_state: stringified task/statusUpdate parse failed");
+                        None
+                    }
+                }
+            })
+        })
+    }
+    chunk
+        .get("task")
+        .and_then(from_maybe_string)
+        .or_else(|| chunk.get("statusUpdate").and_then(from_maybe_string))
+}
+
 fn chunk_has_final_state(chunk: &Value) -> bool {
     if chunk.get("final").and_then(Value::as_bool).unwrap_or(false) {
         return true;
     }
-    let state = chunk
-        .get("task")
-        .and_then(|t| t.get("status"))
-        .and_then(|s| s.get("state"))
-        .and_then(Value::as_str)
-        .or_else(|| {
-            chunk
-                .get("statusUpdate")
-                .and_then(|s| s.get("status"))
-                .and_then(|s| s.get("state"))
-                .and_then(Value::as_str)
-        });
     matches!(
-        state,
+        chunk_state(chunk).as_deref(),
         Some("TASK_STATE_COMPLETED") | Some("TASK_STATE_FAILED")
     )
 }
 
 fn chunk_has_input_required_state(chunk: &Value) -> bool {
-    let state = chunk
-        .get("task")
-        .and_then(|t| t.get("status"))
-        .and_then(|s| s.get("state"))
-        .and_then(Value::as_str)
-        .or_else(|| {
-            chunk
-                .get("statusUpdate")
-                .and_then(|s| s.get("status"))
-                .and_then(|s| s.get("state"))
-                .and_then(Value::as_str)
-        });
-    matches!(state, Some("TASK_STATE_INPUT_REQUIRED"))
+    matches!(
+        chunk_state(chunk).as_deref(),
+        Some("TASK_STATE_INPUT_REQUIRED")
+    )
 }
 
 impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
@@ -192,18 +199,28 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
             };
             if !drain.chunks.is_empty() {
                 all.extend(drain.chunks);
-                if all.iter().any(chunk_has_final_state) {
-                    self.bridge.finalize_a2a_stream_invocation().await;
-                    return Ok(StreamResult {
-                        chunks: all,
-                        completion: StreamCompletion::SemanticFinal,
-                    });
-                }
-                if all.iter().any(chunk_has_input_required_state) {
+                let has_input_req = all.iter().any(chunk_has_input_required_state);
+                let has_final = all.iter().any(chunk_has_final_state);
+                tracing::trace!(
+                    chunk_count = all.len(),
+                    has_input_required = has_input_req,
+                    has_final = has_final,
+                    "a2a stream collect: drain extended"
+                );
+                // Prefer suspension over final: if both INPUT_REQUIRED and COMPLETED appear
+                // (e.g. same batch or ordering), stop at INPUT_REQUIRED so the client can resume.
+                if has_input_req {
                     self.bridge.finalize_a2a_stream_invocation().await;
                     return Ok(StreamResult {
                         chunks: all,
                         completion: StreamCompletion::InputRequired,
+                    });
+                }
+                if has_final {
+                    self.bridge.finalize_a2a_stream_invocation().await;
+                    return Ok(StreamResult {
+                        chunks: all,
+                        completion: StreamCompletion::SemanticFinal,
                     });
                 }
             }

@@ -1,0 +1,14 @@
+{
+  "version": "1.0.0",
+  "name": "tool-discovery-demo",
+  "entry_point": "dist/index.js",
+  "signature": "tool-discovery-demo@1.0.0",
+  "tools": [
+    "system/discover_tools",
+    "support/calculate"
+  ],
+  "discovery": {
+    "description": "Fixture: uses system/discover_tools to find tools and respond about Notion, ClickUp, or calculation.",
+    "capabilities": []
+  }
+}

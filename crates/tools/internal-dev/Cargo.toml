@@ -7,6 +7,7 @@ publish = false
 description = "Internal development tool bundle for BAML runtime tests"
 
 [dependencies]
+baml-rt-core = { path = "../../baml-rt-core" }
 baml-rt-tools = { path = "../../baml-rt-tools" }
 async-trait = { workspace = true }
 inventory = { workspace = true }

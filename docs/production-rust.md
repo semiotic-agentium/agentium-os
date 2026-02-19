@@ -98,7 +98,7 @@ Never use `let _ = fallible_operation().await;` without explicit error handling.
 
 **The problem:** Tool metadata (e.g. `support/calculate`) is registered via `inventory::submit!` in `baml_rt_tools::support`. When the builder or `regen_fixtures` runs, `resolve_manifest_tools` reads from that inventory. If no code in the binary references the `support` module, the linker may drop it (dead code elimination), so the inventory stays empty and regen fails with "Tool metadata missing for: support/calculate".
 
-**The pattern:** In the code path that uses the inventory (e.g. at the start of `render_baml_tool_interfaces`), hold a reference to the provider function so the module is linked and its `register_tool_metadata!(...)` runs:
+**The pattern:** In the code path that uses the inventory (e.g. at the start of `render_baml_tool_interfaces`), hold a reference to the provider function so the module is linked and its `register_tool!(...)` runs:
 
 ```rust
 // Force link of support module so support/calculate is in inventory (regen_fixtures + builder).

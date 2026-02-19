@@ -24,5 +24,3 @@ pub use a2a::{A2aMethod, A2aOutcome, A2aRequest};
 pub use a2a_transport::{A2aAgent, A2aAgentBuilder};
 pub use agent_registry::AgentRegistry;
 pub use baml_rt_core::A2aRequestHandler;
-// Re-export system bundle for agents that register system/a2a (manifest-declared).
-pub use baml_rt_tools_system::A2aSessionBundle;

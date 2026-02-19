@@ -421,8 +421,9 @@ async fn test_tool_session_plan_with_initial_input() {
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.register_tool(ScopeEchoTool).await.unwrap();
 
-    // Minimal plan: open with initial_input (for tool name resolution), then finish.
+    // Minimal plan: __type so tool is resolved from registry by class name (TestScope_echo).
     let plan = json!({
+        "__type": "TestScope_echoSessionPlan",
         "steps": [
             { "op": "open", "initial_input": {} },
             { "op": "finish" }
@@ -435,7 +436,7 @@ async fn test_tool_session_plan_with_initial_input() {
 
     let result = context::with_scope(scope.as_scope().clone(), async {
         manager
-            .execute_tool_from_baml_result_or_value(scope.as_scope(), plan)
+            .execute_tool_from_baml_result_or_value(scope.as_scope(), plan, None)
             .await
     })
     .await;

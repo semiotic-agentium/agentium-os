@@ -320,8 +320,12 @@ impl BamlExecutor {
                         tracing::warn!(error = ?e, "Failed to process trace events for LLM interception");
                     }
 
-                    if let Some(tool_result) =
-                        maybe_execute_tool_from_result(&self.tool_registry, &json_value).await?
+                    if let Some(tool_result) = maybe_execute_tool_from_result(
+                        &self.tool_registry,
+                        &json_value,
+                        scope.context_id().as_str(),
+                    )
+                    .await?
                     {
                         return Ok(tool_result);
                     }
@@ -506,12 +510,15 @@ impl BamlExecutor {
 async fn maybe_execute_tool_from_result(
     tool_registry: &Arc<ToolRegistry>,
     result: &Value,
+    context_id: &str,
 ) -> Result<Option<Value>> {
     let Some((tool_name, tool_args)) = extract_tool_call(result)? else {
         return Ok(None);
     };
 
-    let tool_result = tool_registry.execute(&tool_name, tool_args).await?;
+    let tool_result = tool_registry
+        .execute(&tool_name, tool_args, context_id)
+        .await?;
     Ok(Some(tool_result))
 }
 
@@ -626,7 +633,9 @@ mod tests {
             "message": "hello"
         });
 
-        let tool_result = maybe_execute_tool_from_result(&registry, &result)
+        let scope = baml_rt_core::context::current_scope().unwrap();
+        let context_id = scope.context_id().as_str();
+        let tool_result = maybe_execute_tool_from_result(&registry, &result, context_id)
             .await
             .unwrap()
             .expect("expected tool execution");
@@ -642,7 +651,9 @@ mod tests {
             AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000041").unwrap());
         let _scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id);
         let result = json!({ "value": "not a tool" });
-        let tool_result = maybe_execute_tool_from_result(&registry, &result)
+        let scope = baml_rt_core::context::current_scope().unwrap();
+        let context_id = scope.context_id().as_str();
+        let tool_result = maybe_execute_tool_from_result(&registry, &result, context_id)
             .await
             .unwrap();
 

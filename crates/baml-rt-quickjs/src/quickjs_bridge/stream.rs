@@ -1,17 +1,15 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-
-use baml_rt_core::{BamlRtError, Result, context::InvocationScope};
-use quickjs_runtime::{
-    jsutils::Script, quickjsrealmadapter::QuickJsRealmAdapter, values::JsValueFacade,
-};
+use super::scope::ClearPolicy;
+use super::{QuickJSBridge, StreamInvocationSession, StreamSessionId};
+use baml_rt_core::context::InvocationScope;
+use baml_rt_core::{BamlRtError, Result};
+use quickjs_runtime::jsutils::Script;
+use quickjs_runtime::quickjsrealmadapter::QuickJsRealmAdapter;
+use quickjs_runtime::values::JsValueFacade;
 use serde_json::Value;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio_util::sync::CancellationToken;
-
-use super::{QuickJSBridge, StreamInvocationSession, StreamSessionId, scope::ClearPolicy};
 
 /// What a single drain of the yield channel observed. Bridge exposes; collector interprets.
 #[derive(Debug)]

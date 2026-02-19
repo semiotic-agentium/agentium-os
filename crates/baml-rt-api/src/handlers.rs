@@ -1,23 +1,24 @@
 //! HTTP handlers: discovery and A2A forward (POST and SSE).
 
-use std::{
-    convert::Infallible,
-    sync::Arc,
-    time::{Duration, Instant},
-};
-
-use axum::{
-    Json,
-    extract::State,
-    http::StatusCode as AxumStatus,
-    response::sse::{Event, KeepAlive, Sse},
-};
-use baml_rt_core::{AgentRouteKey, BamlRtError, collect_a2a_stream};
-use futures_util::{StreamExt, stream::Stream};
+use axum::Json;
+use axum::extract::State;
+use axum::http::StatusCode as AxumStatus;
+use axum::response::sse::{Event, KeepAlive, Sse};
+use baml_rt_core::AgentRouteKey;
+use baml_rt_core::BamlRtError;
+use baml_rt_core::collect_a2a_stream;
+use futures_util::stream::{self, Stream};
 use http_api_problem::HttpApiProblem;
 use serde_json::Value;
+use std::convert::Infallible;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use crate::{ApiState, mermaid::MermaidError, metrics, openapi::AgentDiscoveryEntryDto, spans};
+use crate::ApiState;
+use crate::mermaid::MermaidError;
+use crate::metrics;
+use crate::openapi::AgentDiscoveryEntryDto;
+use crate::spans;
 
 /// HTTP result type for handlers that return RFC 7807 problem details on error.
 type HttpResult<T> = Result<T, HttpApiProblem>;
@@ -126,6 +127,11 @@ pub async fn post_a2a_sse(
     axum::extract::Path((agent_package, agent_instance_id)): axum::extract::Path<(String, String)>,
     Json(body): Json<Value>,
 ) -> HttpResult<Sse<impl Stream<Item = Result<Event, Infallible>>>> {
+    tracing::info!(
+        agent_package = %agent_package,
+        agent_instance_id = %agent_instance_id,
+        "A2A SSE request received"
+    );
     let span = spans::post_a2a_sse(&agent_package, &agent_instance_id);
     let _guard = span.enter();
     let start = Instant::now();
@@ -140,6 +146,7 @@ pub async fn post_a2a_sse(
         ));
     }
 
+    tracing::debug!(%agent_package, "A2A SSE: calling handle_a2a_stream");
     let stream = match state.registry.handle_a2a_stream(&key, body).await {
         Ok(r) => r,
         Err(e) => {
@@ -147,13 +154,32 @@ pub async fn post_a2a_sse(
             return Err(domain_to_problem(&e, &agent_package, &agent_instance_id));
         }
     };
-    let stream = stream.map(|value| {
-        let data = serde_json::to_string(&value).unwrap_or_else(|_| {
-            "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32603,\"message\":\"serialization failed\"}}"
-                .to_string()
-        });
-        Ok(Event::default().data(data))
-    });
+    tracing::info!(%agent_package, "A2A SSE: stream obtained, collecting responses");
+    let responses = collect_a2a_stream(stream).await;
+    tracing::info!(
+        %agent_package,
+        count = responses.len(),
+        "A2A SSE: stream collected, building SSE response"
+    );
+    let data_strings: Result<Vec<String>, HttpApiProblem> = responses
+        .into_iter()
+        .map(|v| {
+            serde_json::to_string(&v)
+                .map_err(|e| problem(500, "Internal Server Error", format!("Serialization: {e}")))
+        })
+        .collect();
+    let data_strings = match data_strings {
+        Ok(d) => d,
+        Err(e) => {
+            metrics::record_request("post_a2a_sse", "error", start.elapsed());
+            return Err(e);
+        }
+    };
+    let stream = stream::iter(
+        data_strings
+            .into_iter()
+            .map(|data| Ok(Event::default().data(data))),
+    );
 
     let sse =
         Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text(""));

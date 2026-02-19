@@ -5,6 +5,7 @@ pub mod agent_routing;
 pub mod bus;
 pub mod context;
 pub mod correlation;
+pub mod deferred;
 pub mod error;
 pub mod ids;
 pub mod json;
@@ -14,7 +15,10 @@ pub mod stream_completion;
 pub mod types;
 
 pub use a2a_handler::{A2aRequestHandler, collect_a2a_stream, collect_a2a_stream_until};
-pub use agent_routing::{AgentDiscoveryEntry, AgentRouteKey};
+pub use agent_routing::{
+    AgentCard, AgentDiscoveryEntry, AgentListCatalogueHolder, AgentLister, AgentRouteKey,
+    route_key_from_request,
+};
 pub use bus::{
     A2aEffectMetadata, A2aKind, Bus, BusApi, BusStream, BusWithEffects, Command, DomainEvent,
     EffectEmitter, EffectEvent, EffectKind, EffectLiveness, EffectRuntime, EffectStartToken,
@@ -22,6 +26,7 @@ pub use bus::{
     Subscriber, ToolEffectMetadata, ToolKind,
 };
 pub use context::{InvocationContext, InvocationScope, RuntimeScope, Scoped};
+pub use deferred::DeferredHolder;
 pub use error::{BamlRtError, Result};
 pub use ids::{AgentId, ArtifactId, ContextId, CorrelationId, EventId, MessageId, TaskId};
 pub use json::to_json_value;

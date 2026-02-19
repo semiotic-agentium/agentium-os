@@ -14,6 +14,7 @@ baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-quickjs = { path = "../baml-rt-quickjs" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
 baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
+baml-rt-tools-system = { path = "../tools/system" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 flate2 = { workspace = true }
@@ -30,6 +31,7 @@ test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
 async-trait = { workspace = true }
 dotenvy = { workspace = true }
+futures-util = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 ts-rs = { workspace = true }

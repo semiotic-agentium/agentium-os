@@ -1,19 +1,22 @@
 //! Compiler implementations for BAML and TypeScript
 
-use std::{ffi::OsStr, fs, path::Path};
-
+use crate::builder::a2a_shim_gen::render_a2a_shim;
+use crate::builder::baml_gen::render_baml_tool_interfaces;
+use crate::builder::baml_signature_gen::{extract_baml_signatures, session_plan_functions_map};
+use crate::builder::traits::{FileSystem, TypeGenerator, TypeScriptCompiler};
+use crate::builder::ts_gen::{load_manifest_tools, render_ts_declarations};
+use crate::builder::types::BuildDir;
 use baml_rt_core::{BamlRtError, Result};
+use std::ffi::OsStr;
+use std::fs;
+use std::path::Path;
 
-use crate::builder::{
-    a2a_shim_gen::render_a2a_shim,
-    baml_gen::render_baml_tool_interfaces,
-    baml_signature_gen::extract_baml_signatures,
-    traits::{FileSystem, TypeGenerator, TypeScriptCompiler},
-    ts_gen::{load_manifest_tools, render_ts_declarations},
-    types::BuildDir,
-};
-
-/// TypeScript compiler using OXC
+/// TypeScript compiler using OXC.
+///
+/// OXC's semantic pass (SemanticBuilder) does **scope and symbol resolution only**—it does not
+/// perform TypeScript type checking. Property/type mismatches (e.g. using `.agents` on a
+/// SessionPlan type) are not reported; only parse errors and scope/semantic errors are.
+/// Type checking would require a separate type checker (e.g. tsc or oxlint --type-aware).
 pub struct OxcTypeScriptCompiler<FS> {
     filesystem: FS,
 }
@@ -61,6 +64,7 @@ impl<FS: FileSystem> TypeScriptCompiler for OxcTypeScriptCompiler<FS> {
             }
 
             let mut program = parse_result.program;
+            // Scope/symbol resolution only; no TypeScript type checking (see struct doc).
             let semantic_result = SemanticBuilder::new()
                 .with_excess_capacity(2.0)
                 .build(&program);
@@ -153,9 +157,8 @@ impl Default for RuntimeTypeGenerator {
 #[async_trait::async_trait]
 impl TypeGenerator for RuntimeTypeGenerator {
     async fn generate(&self, baml_src: &Path, build_dir: &BuildDir) -> Result<()> {
-        use std::collections::HashMap;
-
         use baml_runtime::BamlRuntime;
+        use std::collections::HashMap;
 
         // Generate BAML tool interfaces (committed in repo; regen_fixtures runs periodically to match manifest).
         // Uses atomic write (write tmp + rename) so concurrent nextest processes never
@@ -183,6 +186,16 @@ impl TypeGenerator for RuntimeTypeGenerator {
             fs::create_dir_all(parent).map_err(BamlRtError::Io)?;
         }
         atomic_write(&ts_output_path, declarations.as_bytes())?;
+
+        // Emit session-plan function map so the runtime can resolve tool from the invoking
+        // function name (no reliance on __type in prompt output).
+        let session_plan_map = session_plan_functions_map(&ir_signature);
+        if !session_plan_map.is_empty() {
+            let manifest_path = build_dir.join("session_plan_functions.json");
+            let json =
+                serde_json::to_string_pretty(&session_plan_map).map_err(BamlRtError::Json)?;
+            atomic_write(&manifest_path, json.as_bytes())?;
+        }
 
         Ok(())
     }

@@ -8,11 +8,14 @@
 //! tools (e.g. from `baml-rt-tools` or another catalogue) and passing the
 //! selected tool IDs into [`run_bootstrap`].
 
-use std::{fs, path::Path};
+use baml_rt_core::package::ManifestDiscovery;
+use baml_rt_core::{AgentManifest, BamlRtError, Result};
+use std::fs;
+use std::path::Path;
 
-use baml_rt_core::{BamlRtError, Result};
-
-use crate::builder::{compiler::RuntimeTypeGenerator, traits::TypeGenerator, types::BuildDir};
+use crate::builder::compiler::RuntimeTypeGenerator;
+use crate::builder::traits::TypeGenerator;
+use crate::builder::types::BuildDir;
 
 /// Slug for directory/manifest: kebab-case, alphanumeric and hyphens only.
 pub fn slug_from_name(name: &str) -> String {
@@ -122,13 +125,23 @@ pub async fn run_bootstrap(
 }
 
 fn manifest_json(name: &str, description: &str, tools: &[String]) -> String {
-    let tools_json = serde_json::to_string(tools).expect("tool ids are valid JSON");
-    format!(
-        r#"{{"version":"1.0.0","name":"{}","description":"{}","entry_point":"src/index.ts","runtime_version":"0.1.0","tools":{}}}"#,
-        name.replace('"', "\\\""),
-        description.replace('"', "\\\""),
-        tools_json
-    )
+    let discovery = if description.is_empty() {
+        None
+    } else {
+        Some(ManifestDiscovery {
+            description: Some(description.to_string()),
+            capabilities: Vec::new(),
+        })
+    };
+    let manifest = AgentManifest {
+        version: "1.0.0".to_string(),
+        name: name.to_string(),
+        entry_point: "src/index.ts".to_string(),
+        signature: format!("{}@1.0.0", name),
+        tools: tools.to_vec(),
+        discovery,
+    };
+    serde_json::to_string_pretty(&manifest).expect("manifest serializes to JSON")
 }
 
 fn prompt_template_no_tools(prompt_name: &str) -> String {

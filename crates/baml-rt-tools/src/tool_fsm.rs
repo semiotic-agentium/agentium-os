@@ -138,8 +138,13 @@ impl From<BamlRtError> for ToolSessionError {
 
 #[derive(Debug, Clone)]
 pub enum ToolStep {
+    /// More output may follow; session remains open.
     Streaming { output: Value },
+    /// Session is yielding output but suspending (e.g. input required). Session remains open; do not call finish.
+    Suspended { output: Value },
+    /// Session completed; caller may finish or abort.
     Done { output: Option<Value> },
+    /// Session failed; caller should abort.
     Error { error: ToolFailure },
 }
 
