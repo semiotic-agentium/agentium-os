@@ -1,0 +1,29 @@
+# rustfmt configuration — edition 2024, nightly required.
+#
+# Philosophy: use the defaults where they work, deviate only with reason,
+# and enforce consistently. The formatter is the authority on style; humans
+# should not need to think about whitespace.
+#
+# Several options below (imports_granularity, group_imports,
+# use_field_init_shorthand, style_edition) are nightly-only. This is fine:
+# the workspace already requires nightly for edition 2024.
+
+unstable_features = true
+edition = "2024"
+style_edition = "2024"
+
+# --- Layout -----------------------------------------------------------
+max_width = 100                         # default; explicit for clarity
+use_small_heuristics = "Default"        # derive sub-widths from max_width
+
+# --- Imports ----------------------------------------------------------
+imports_granularity = "Crate"           # merge same-crate imports
+group_imports = "StdExternalCrate"      # blank line between std / external / crate
+reorder_imports = true                  # alphabetical within each group
+
+# --- Idioms -----------------------------------------------------------
+use_field_init_shorthand = true         # Foo { x } instead of Foo { x: x }
+
+# --- Comments ---------------------------------------------------------
+wrap_comments = false                   # preserve section-divider and wide comments
+format_code_in_doc_comments = false     # doc-comment code blocks are often illustrative
