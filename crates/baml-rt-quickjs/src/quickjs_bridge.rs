@@ -162,7 +162,7 @@ fn tool_step_to_value(step: ToolStep) -> Value {
             "error": {
                 "kind": format!("{:?}", error.kind),
                 "message": error.message,
-                "retryable": error.retryable
+                "retryable": bool::from(error.retryability)
             }
         }),
     }

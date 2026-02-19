@@ -5,7 +5,7 @@
 
 use baml_rt_core::bus::{EffectEmitter, LlmEffectMetadata};
 use baml_rt_core::context;
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, InvocationKind, Result};
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry, LLMCallContext};
 use baml_runtime::RuntimeContextManager;
 use baml_types::{BamlMap, BamlValue};
@@ -103,7 +103,7 @@ pub async fn intercept_llm_call_pre_execution(
     ctx_manager: &RuntimeContextManager,
     interceptor_registry: &Arc<Mutex<InterceptorRegistry>>,
     env_vars: HashMap<String, String>,
-    stream: bool,
+    invocation: InvocationKind,
     effect_emitter: Option<&Arc<dyn EffectEmitter>>,
     collector: Option<&crate::baml_collector::BamlLLMCollector>,
 ) -> Result<InterceptorDecision> {
@@ -117,7 +117,7 @@ pub async fn intercept_llm_call_pre_execution(
             None, // type_builder
             None, // client_registry
             env_vars,
-            stream,
+            invocation.is_stream(),
         )
         .await;
 

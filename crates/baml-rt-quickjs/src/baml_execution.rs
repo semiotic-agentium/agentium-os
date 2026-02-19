@@ -8,7 +8,7 @@ use crate::baml_pre_execution::intercept_llm_call_pre_execution;
 use async_trait::async_trait;
 use baml_rt_core::bus::EffectEmitter;
 use baml_rt_core::context;
-use baml_rt_core::{BamlRtError, Outcome, Result};
+use baml_rt_core::{BamlRtError, InvocationKind, Outcome, Result};
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry};
 use baml_rt_tools::ToolRegistry;
 use baml_runtime::{BamlRuntime, FunctionResultStream, RuntimeContextManager};
@@ -175,7 +175,7 @@ impl BamlExecutor {
                 &ctx_manager,
                 registry,
                 env_vars.clone(),
-                false, // stream = false for regular calls
+                InvocationKind::Invoke,
                 self.effect_emitter.as_ref(),
                 collector.as_ref(),
             )

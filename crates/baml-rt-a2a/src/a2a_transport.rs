@@ -234,24 +234,24 @@ pub struct A2aAgentBuilder {
     runtime: RuntimeConfig,
     bridge: BridgeConfig,
     quickjs_config: QuickJSConfig,
-    register_baml_functions: bool,
+    register_baml_functions: RegistrationMode,
     init_js: Vec<String>,
     task_store: TaskStoreConfig,
     provenance_writer: ProvenanceWriterConfig,
     agent_id: AgentIdConfig,
-    register_a2a_session_tool: bool,
+    register_a2a_session_tool: RegistrationMode,
 }
 
 pub struct A2aAgentBuilderWithEffectEmitter {
     runtime: RuntimeConfig,
     bridge: BridgeConfig,
     quickjs_config: QuickJSConfig,
-    register_baml_functions: bool,
+    register_baml_functions: RegistrationMode,
     init_js: Vec<String>,
     task_store: TaskStoreConfig,
     provenance_writer: ProvenanceWriterConfig,
     agent_id: AgentIdConfig,
-    register_a2a_session_tool: bool,
+    register_a2a_session_tool: RegistrationMode,
     effect_emitter: Arc<dyn EffectEmitter>, // REQUIRED - enforced by typestate
 }
 
@@ -287,6 +287,25 @@ enum AgentIdConfig {
     AutoGenerate,
 }
 
+/// Explicit registration toggle for optional helpers/tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistrationMode {
+    Register,
+    Skip,
+}
+
+impl RegistrationMode {
+    pub const fn should_register(self) -> bool {
+        matches!(self, Self::Register)
+    }
+}
+
+impl From<bool> for RegistrationMode {
+    fn from(value: bool) -> Self {
+        if value { Self::Register } else { Self::Skip }
+    }
+}
+
 impl Default for A2aAgentBuilder {
     fn default() -> Self {
         Self::new()
@@ -300,7 +319,7 @@ impl A2aAgentBuilder {
     /// - `runtime`: Creates new `BamlRuntimeManager`
     /// - `bridge`: Auto-created from runtime + agent_id + config
     /// - `quickjs_config`: `QuickJSConfig::default()`
-    /// - `register_baml_functions`: `true`
+    /// - `register_baml_functions`: `RegistrationMode::Register`
     /// - `init_js`: Empty vec
     /// - `task_store`: `ProvenanceTaskStore` (no provenance writer)
     /// - `provenance_writer`: None
@@ -312,12 +331,12 @@ impl A2aAgentBuilder {
             runtime: RuntimeConfig::Default,
             bridge: BridgeConfig::AutoCreate,
             quickjs_config: QuickJSConfig::default(),
-            register_baml_functions: true,
+            register_baml_functions: RegistrationMode::Register,
             init_js: Vec::new(),
             task_store: TaskStoreConfig::Default,
             provenance_writer: ProvenanceWriterConfig::Default,
             agent_id: AgentIdConfig::AutoGenerate,
-            register_a2a_session_tool: false,
+            register_a2a_session_tool: RegistrationMode::Skip,
         }
     }
 
@@ -347,8 +366,8 @@ impl A2aAgentBuilder {
     }
 
     /// Enable or disable registration of BAML helper functions.
-    pub fn with_baml_helpers(mut self, enabled: bool) -> Self {
-        self.register_baml_functions = enabled;
+    pub fn with_baml_helpers(mut self, mode: impl Into<RegistrationMode>) -> Self {
+        self.register_baml_functions = mode.into();
         self
     }
 
@@ -379,8 +398,8 @@ impl A2aAgentBuilder {
         self
     }
 
-    pub fn with_a2a_session_tool(mut self, enabled: bool) -> Self {
-        self.register_a2a_session_tool = enabled;
+    pub fn with_a2a_session_tool(mut self, mode: impl Into<RegistrationMode>) -> Self {
+        self.register_a2a_session_tool = mode.into();
         self
     }
 
@@ -440,8 +459,8 @@ impl A2aAgentBuilderWithEffectEmitter {
     }
 
     /// Enable or disable registration of BAML helper functions.
-    pub fn with_baml_helpers(mut self, enabled: bool) -> Self {
-        self.register_baml_functions = enabled;
+    pub fn with_baml_helpers(mut self, mode: impl Into<RegistrationMode>) -> Self {
+        self.register_baml_functions = mode.into();
         self
     }
 
@@ -472,8 +491,8 @@ impl A2aAgentBuilderWithEffectEmitter {
         self
     }
 
-    pub fn with_a2a_session_tool(mut self, enabled: bool) -> Self {
-        self.register_a2a_session_tool = enabled;
+    pub fn with_a2a_session_tool(mut self, mode: impl Into<RegistrationMode>) -> Self {
+        self.register_a2a_session_tool = mode.into();
         self
     }
 
@@ -555,12 +574,12 @@ impl A2aAgentBuilderWithEffectEmitter {
             bridge_guard.set_effect_liveness(self.effect_emitter.clone());
         }
 
-        if self.register_baml_functions || !self.init_js.is_empty() {
+        if self.register_baml_functions.should_register() || !self.init_js.is_empty() {
             tracing::debug!(
                 "A2aAgentBuilder::build: Registering BAML functions and/or evaluating init_js"
             );
             let mut bridge_guard = bridge.lock().await;
-            if self.register_baml_functions {
+            if self.register_baml_functions.should_register() {
                 tracing::debug!("A2aAgentBuilder::build: Calling register_baml_functions()");
                 // INVARIANT L1: Bridge initialization must terminate within bounded time
                 // Add timeout to detect hangs in function registration
@@ -725,7 +744,7 @@ impl A2aAgentBuilderWithEffectEmitter {
             stream_sessions: Arc::new(Mutex::new(HashMap::new())),
         };
 
-        if self.register_a2a_session_tool {
+        if self.register_a2a_session_tool.should_register() {
             tracing::debug!("A2aAgentBuilder::build: register_a2a_session_tool start");
             agent.register_a2a_session_tool().await?;
             tracing::debug!("A2aAgentBuilder::build: register_a2a_session_tool done");

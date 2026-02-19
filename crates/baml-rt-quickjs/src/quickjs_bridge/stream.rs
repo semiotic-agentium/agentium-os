@@ -6,8 +6,8 @@ use quickjs_runtime::jsutils::Script;
 use quickjs_runtime::quickjsrealmadapter::QuickJsRealmAdapter;
 use quickjs_runtime::values::JsValueFacade;
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio_util::sync::CancellationToken;
 
@@ -320,9 +320,7 @@ impl QuickJSBridge {
 
         // All remaining work is fallible. On error, finalize cleans up any
         // partially-installed state (session, LIFO context, globals, permit).
-        let result = self
-            .start_stream_session(scope, function_name, args)
-            .await;
+        let result = self.start_stream_session(scope, function_name, args).await;
         if result.is_err() {
             self.finalize_a2a_stream_invocation().await;
         }
@@ -342,10 +340,8 @@ impl QuickJSBridge {
         args: Value,
     ) -> Result<()> {
         // --- Allocate session ---
-        let session_id = StreamSessionId(
-            self.next_stream_session_id
-                .fetch_add(1, Ordering::Relaxed),
-        );
+        let session_id =
+            StreamSessionId(self.next_stream_session_id.fetch_add(1, Ordering::Relaxed));
         let correlation_id = baml_rt_core::correlation::current_correlation_id();
         let session = Arc::new(StreamInvocationSession {
             id: session_id,
