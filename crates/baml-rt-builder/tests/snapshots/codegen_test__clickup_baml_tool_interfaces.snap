@@ -80,6 +80,13 @@ class DeleteTaskInput {
 /// The LLM picks the appropriate variant based on the desired action.
 /// In generated BAML this becomes:
 /// `type ClickUpInput = ListTeamsInput | ListSpacesInput | … | DeleteTaskInput`
+///
+/// **Variant order matters**: `serde(untagged)` tries variants top-down and
+/// takes the first successful match. Ordering invariants:
+/// - `GetTask` must precede `UpdateTask` so that `{ "task_id": "..." }`
+/// (without optional update fields) resolves to `GetTask`, not `UpdateTask`.
+/// - `DeleteTask` has `confirm_delete: bool` which disambiguates it from
+/// `GetTask`, so its position is flexible.
 type ClickUpInput = ListTeamsInput | ListSpacesInput | ListListsInput | ListTasksInput | GetTaskInput | CreateTaskInput | UpdateTaskInput | DeleteTaskInput
 
 /// Summary of a single ClickUp task, projected from the API response.
