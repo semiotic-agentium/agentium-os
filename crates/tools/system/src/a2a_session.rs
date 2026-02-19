@@ -5,8 +5,8 @@ use std::{collections::VecDeque, sync::Arc};
 use async_trait::async_trait;
 use baml_rt_core::{A2aRequestHandler, Result};
 use baml_rt_tools::{
-    BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
-    ToolSession, ToolSessionError, ToolStep,
+    BundleName, SessionPhase, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure,
+    ToolHandler, ToolSession, ToolSessionError, ToolStep,
     tools::{ToolFunctionMetadata, ToolSessionContext, validate_open_input},
 };
 use futures_util::StreamExt;
@@ -81,7 +81,7 @@ impl ToolHandler for A2aSessionToolHandler {
             queue: VecDeque::new(),
             output_rx: None,
             stream_handle: None,
-            closed: false,
+            state: SessionPhase::Open,
         }))
     }
 }
@@ -95,7 +95,7 @@ struct A2aSession {
     /// JoinHandle for the task that consumes the A2A stream. Aborted in Drop so the task
     /// does not outlive the session and trigger "context is being shutdown" panics.
     stream_handle: Option<JoinHandle<()>>,
-    closed: bool,
+    state: SessionPhase,
 }
 
 fn parse_send_input(input: Value) -> std::result::Result<Vec<ConversationPart>, String> {
@@ -241,7 +241,7 @@ fn merge_outputs(outputs: Vec<InternalA2aNextOutput>) -> InternalA2aNextOutput {
 #[async_trait]
 impl ToolSession for A2aSession {
     async fn send(&mut self, input: Value) -> std::result::Result<(), ToolSessionError> {
-        if self.closed {
+        if self.state.is_closed() {
             return Err(ToolSessionError::Tool(ToolFailure::invalid_input(format!(
                 "A2A session {session_id} is closed",
                 session_id = self.ctx.session_id
@@ -328,6 +328,7 @@ impl ToolSession for A2aSession {
                 }
                 Err(_) => {
                     self.output_rx = None;
+                    self.state.close();
                 }
             }
         }
@@ -335,7 +336,7 @@ impl ToolSession for A2aSession {
     }
 
     async fn finish(&mut self) -> std::result::Result<(), ToolSessionError> {
-        self.closed = true;
+        self.state.close();
         Ok(())
     }
 
@@ -343,7 +344,7 @@ impl ToolSession for A2aSession {
         &mut self,
         _reason: Option<String>,
     ) -> std::result::Result<(), ToolSessionError> {
-        self.closed = true;
+        self.state.close();
         Ok(())
     }
 }

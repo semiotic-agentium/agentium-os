@@ -20,7 +20,7 @@ use tokio::sync::Mutex as TokioMutex;
 use crate::{
     bundles::BundleType,
     tool_catalog::{InventoryCatalog, ToolCatalog},
-    tool_fsm::{ToolFailure, ToolSession, ToolSessionError, ToolSessionId, ToolStep},
+    tool_fsm::{SessionPhase, ToolFailure, ToolSession, ToolSessionError, ToolSessionId, ToolStep},
     tool_schema::{ToolType, json_schema_value},
     ts_gen::render_tool_typescript,
 };
@@ -1620,7 +1620,7 @@ struct OneShotSession {
     ctx: ToolSessionContext,
     executor: Box<dyn ToolExecutor>,
     input: Option<Value>,
-    completed: bool,
+    state: SessionPhase,
 }
 
 impl OneShotSession {
@@ -1629,7 +1629,7 @@ impl OneShotSession {
             ctx,
             executor,
             input: None,
-            completed: false,
+            state: SessionPhase::Open,
         }
     }
 }
@@ -1647,7 +1647,7 @@ impl ToolSession for OneShotSession {
     }
 
     async fn next(&mut self) -> std::result::Result<ToolStep, ToolSessionError> {
-        if self.completed {
+        if self.state.is_closed() {
             return Ok(ToolStep::Done { output: None });
         }
         let input = self.input.take().ok_or_else(|| {
@@ -1664,14 +1664,14 @@ impl ToolSession for OneShotSession {
                 });
             }
         };
-        self.completed = true;
+        self.state.close();
         Ok(ToolStep::Done {
             output: Some(output),
         })
     }
 
     async fn finish(&mut self) -> std::result::Result<(), ToolSessionError> {
-        self.completed = true;
+        self.state.close();
         Ok(())
     }
 
@@ -1679,7 +1679,7 @@ impl ToolSession for OneShotSession {
         &mut self,
         _reason: Option<String>,
     ) -> std::result::Result<(), ToolSessionError> {
-        self.completed = true;
+        self.state.close();
         Ok(())
     }
 }

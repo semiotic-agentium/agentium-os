@@ -1,7 +1,7 @@
 use baml_rt_core::{BamlRtError, StreamResult, stream_completion::StreamCompletion};
 use serde_json::{Value, json};
 
-use crate::{a2a, a2a_types::JSONRPCId, error_mapping};
+use crate::{a2a, a2a::StreamFinality, a2a_types::JSONRPCId, error_mapping};
 
 pub trait ResponseFormatter: Send + Sync {
     fn format_success(&self, id: Option<JSONRPCId>, result: Value) -> Value;
@@ -21,17 +21,22 @@ impl ResponseFormatter for JsonRpcResponseFormatter {
         if total == 0
             && let Some(chunk) = synthetic_terminal_chunk_for_empty_stream(result.completion)
         {
-            return vec![a2a::stream_chunk_response(id, chunk, 0, true)];
+            return vec![a2a::stream_chunk_response(
+                id,
+                chunk,
+                0,
+                StreamFinality::Final,
+            )];
         }
         let mark_last_final = result.is_semantically_final();
         let mut responses = Vec::with_capacity(total);
         for (idx, chunk) in result.chunks.iter().cloned().enumerate() {
-            responses.push(a2a::stream_chunk_response(
-                id.clone(),
-                chunk,
-                idx,
-                mark_last_final && idx + 1 == total,
-            ));
+            let finality = if mark_last_final && idx + 1 == total {
+                StreamFinality::Final
+            } else {
+                StreamFinality::NotFinal
+            };
+            responses.push(a2a::stream_chunk_response(id.clone(), chunk, idx, finality));
         }
         responses
     }

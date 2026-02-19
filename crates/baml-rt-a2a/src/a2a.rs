@@ -156,6 +156,18 @@ pub enum A2aOutcome {
     Stream(StreamResult),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamFinality {
+    Final,
+    NotFinal,
+}
+
+impl StreamFinality {
+    pub const fn is_final(self) -> bool {
+        matches!(self, Self::Final)
+    }
+}
+
 pub fn success_response(id: Option<JSONRPCId>, result: Value) -> Value {
     serde_json::to_value(JSONRPCSuccessResponse {
         jsonrpc: JSONRPC_VERSION.to_string(),
@@ -200,14 +212,14 @@ pub fn stream_chunk_response(
     id: Option<JSONRPCId>,
     chunk: Value,
     index: usize,
-    is_final: bool,
+    finality: StreamFinality,
 ) -> Value {
     serde_json::to_value(JSONRPCSuccessResponse {
         jsonrpc: JSONRPC_VERSION.to_string(),
         result: json!({
             "stream": true,
             "index": index,
-            "final": is_final,
+            "final": finality.is_final(),
             "chunk": chunk,
         }),
         id,

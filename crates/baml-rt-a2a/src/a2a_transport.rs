@@ -17,7 +17,7 @@ use baml_rt_quickjs::{
     BamlRuntimeManager, QuickJSBridge, QuickJSConfig, baml_execution::ConversationContextProvider,
 };
 use baml_rt_tools::{
-    ToolFailure, ToolHandler, ToolName, ToolSession, ToolSessionError, ToolTypeSpec,
+    SessionPhase, ToolFailure, ToolHandler, ToolName, ToolSession, ToolSessionError, ToolTypeSpec,
     tools::{ToolFunctionMetadata, ToolSessionContext},
 };
 use baml_rt_tools_system::A2aSessionBundle;
@@ -1104,7 +1104,7 @@ impl ToolHandler for JsToolHandler {
             bridge: self.bridge.clone(),
             tool_name: self.tool_name.clone(),
             input: None,
-            completed: false,
+            state: SessionPhase::Open,
         }))
     }
 }
@@ -1114,7 +1114,7 @@ struct JsToolSession {
     bridge: Arc<Mutex<QuickJSBridge>>,
     tool_name: String,
     input: Option<Value>,
-    completed: bool,
+    state: SessionPhase,
 }
 
 #[async_trait]
@@ -1130,7 +1130,7 @@ impl ToolSession for JsToolSession {
     }
 
     async fn next(&mut self) -> std::result::Result<baml_rt_tools::ToolStep, ToolSessionError> {
-        if self.completed {
+        if self.state.is_closed() {
             return Ok(baml_rt_tools::ToolStep::Done { output: None });
         }
         let input = self.input.take().ok_or_else(|| {
@@ -1165,19 +1165,19 @@ impl ToolSession for JsToolSession {
         })?
         .map_err(ToolSessionError::Transport)?;
         if let Some(error) = result.get("error").and_then(Value::as_str) {
-            self.completed = true;
+            self.state.close();
             return Ok(baml_rt_tools::ToolStep::Error {
                 error: ToolFailure::execution_failed(error.to_string()),
             });
         }
-        self.completed = true;
+        self.state.close();
         Ok(baml_rt_tools::ToolStep::Done {
             output: Some(result),
         })
     }
 
     async fn finish(&mut self) -> std::result::Result<(), ToolSessionError> {
-        self.completed = true;
+        self.state.close();
         Ok(())
     }
 
@@ -1185,7 +1185,7 @@ impl ToolSession for JsToolSession {
         &mut self,
         _reason: Option<String>,
     ) -> std::result::Result<(), ToolSessionError> {
-        self.completed = true;
+        self.state.close();
         Ok(())
     }
 }
