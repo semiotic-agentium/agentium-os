@@ -12,34 +12,47 @@ function ChooseClickUpAction(
     Each call you make ONE decision: either execute ONE tool action plan or return FinalResponse.
     Never output partial plans.
 
-    Available actions (set as the `action` field in ClickUpInput):
+    Available actions — each is a distinct input type for the Send step.
+    Pick the one that matches the user's intent:
 
     Navigation (discover IDs you don't already have):
-    - ListTeams: list all teams/workspaces (no parameters needed)
-    - ListSpaces: list spaces in a team (needs team_id from prior tool results in conversation_history)
-    - ListLists: list task lists in a space (needs space_id from prior tool results in conversation_history)
+    - ListTeamsInput: list all teams/workspaces (empty object — no fields)
+    - ListSpacesInput: list spaces in a team (needs team_id from prior tool results)
+    - ListListsInput: list task lists in a space (needs space_id from prior tool results)
 
     Task management:
-    - ListTasks: list tasks in a list (needs list_id from prior tool results in conversation_history)
-    - GetTask: get details of a specific task (needs task_id)
-    - CreateTask: create a new task (needs list_id, name; optional: description, priority)
-    - UpdateTask: update status/description/priority of a task (needs task_id)
+    - ListTasksInput: list tasks in a list (needs list_id from prior tool results)
+    - GetTaskInput: get details of a specific task (needs task_id)
+    - CreateTaskInput: create a new task (needs list_id, name; optional: description, priority)
+    - UpdateTaskInput: update status/description/priority of a task (needs task_id)
 
     RESPONSE GATE (apply before choosing tool calls):
-    1) If conversation_history already contains the needed data, return FinalResponse immediately.
-    2) If the latest tool_result contains a non-empty "tasks" array and the user asked to list/find/filter tasks
+    1) If conversation_history already contains the needed data, return FinalResponse immediately
+       with a human-readable summary.
+       If the user asks to filter the already available tasks (e.g. "which are in progress"),
+       return FinalResponse directly from history; do NOT emit any plan.
+    2) OTHERWISE, if the data is NOT yet available in conversation_history, you MUST return a
+       SupportClickupSessionPlan to fetch it. Never return FinalResponse when the required data
+       has not been retrieved yet. Start with ListTeamsInput if no IDs are known.
+    3) If the latest tool_result contains a non-empty "tasks" array and the user asked to list/find/filter tasks
        (for example: "in progress", "to do", "done"), return FinalResponse immediately by filtering those tasks.
        Do NOT call another tool. Do NOT return a plan.
-    3) ListTasks already includes status, id, name, and url, which is enough for status-based task queries.
-       For these queries, never call GetTask after ListTasks.
+    4) ListTasks already includes status, id, name, and url, which is enough for status-based task queries.
+       For these queries, never call GetTaskInput after ListTasksInput.
 
     DECISION LOGIC — follow this in order:
     1. If you can answer from prior tool results, return FinalResponse with a concise human summary.
     2. Otherwise return exactly one valid 4-step plan: Open -> Send -> Next -> Finish.
-    3. Extract IDs from prior tool results exactly as given (e.g. team_id "123").
-    4. Never repeat the same action with the same IDs when the latest tool result is unchanged.
-    5. Never use null for required IDs.
-    6. For UpdateTask requests: if the latest tool_result already shows the requested status, return FinalResponse.
+    3. Extract IDs from prior tool results in conversation_history. For example, if a prior tool result returned
+       team_id "123", use that exact value in the next call.
+    4. Do not repeat the same action with the same IDs if the latest tool result did not change.
+    5. Always provide concrete IDs from prior tool results — never use null for a required ID.
+    6. For CreateTaskInput: if list_id is missing, do discovery actions first (ListTeamsInput/ListSpacesInput/ListListsInput).
+    7. For UpdateTaskInput: if the latest tool_result already confirms the target task
+       is at the requested status, return FinalResponse immediately. Do NOT call UpdateTaskInput again.
+    8. After a successful CreateTaskInput or UpdateTaskInput tool_result appears in conversation_history,
+       your very next decision MUST be FinalResponse summarizing the result.
+       Do NOT emit another tool plan unless the user asked for an additional action.
 
     STRICT PLAN VALIDITY:
     - If you return a plan, it MUST have exactly 4 steps and in this exact order:
