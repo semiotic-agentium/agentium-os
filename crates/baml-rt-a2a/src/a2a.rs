@@ -2,18 +2,20 @@
 //!
 //! This provides a thin adapter layer without adding external dependencies.
 
+use baml_rt_core::{
+    BamlRtError, InvocationKind, Result, context,
+    context::InvocationScope,
+    ids::{ContextId, DerivedId, ExternalId, MessageId, TaskId},
+    stream_completion::StreamResult,
+    to_json_value,
+};
+use serde_json::{Map, Value, json};
+use uuid::Uuid;
+
 use crate::a2a_types::{
     A2aMessageId, JSONRPCError, JSONRPCErrorResponse, JSONRPCId, JSONRPCRequest,
     JSONRPCSuccessResponse, ListTasksRequest, Message, ROLE_AGENT, SendMessageRequest, Task,
 };
-use baml_rt_core::InvocationKind;
-use baml_rt_core::context;
-use baml_rt_core::context::InvocationScope;
-use baml_rt_core::ids::{ContextId, DerivedId, ExternalId, MessageId, TaskId};
-use baml_rt_core::stream_completion::StreamResult;
-use baml_rt_core::{BamlRtError, Result, to_json_value};
-use serde_json::{Map, Value, json};
-use uuid::Uuid;
 
 const JSONRPC_VERSION: &str = "2.0";
 
@@ -478,21 +480,25 @@ pub fn request_to_js_value(request: &A2aRequest) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::A2aRequest;
-    use crate::a2a_types::{
-        JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER, SendMessageRequest,
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex, OnceLock},
     };
-    use crate::{A2aAgent, A2aRequestHandler};
+
     use baml_rt_core::{BamlRtError, Result};
-    use opentelemetry::global;
-    use opentelemetry::trace::TracerProvider as _;
-    use opentelemetry_sdk::testing::trace::InMemorySpanExporterBuilder;
-    use opentelemetry_sdk::trace::TracerProvider;
+    use opentelemetry::{global, trace::TracerProvider as _};
+    use opentelemetry_sdk::{testing::trace::InMemorySpanExporterBuilder, trace::TracerProvider};
     use serde_json::{Value, json};
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex, OnceLock};
     use tokio::time::{Duration, timeout};
     use tracing_subscriber::layer::SubscriberExt;
+
+    use super::A2aRequest;
+    use crate::{
+        A2aAgent, A2aRequestHandler,
+        a2a_types::{
+            JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER, SendMessageRequest,
+        },
+    };
 
     /// Watchdog timeout for agent setup and tests - ensures tests fail fast if they hang.
     const TEST_WATCHDOG_TIMEOUT_SECS: u64 = 30; // 30 seconds for agent setup/tests
@@ -645,8 +651,9 @@ mod tests {
     }
 
     fn user_message(message_id: &str, text: &str) -> Message {
-        use crate::a2a_types::A2aMessageId;
         use baml_rt_core::ids::ExternalId;
+
+        use crate::a2a_types::A2aMessageId;
         Message {
             message_id: A2aMessageId::incoming(ExternalId::new(message_id)),
             role: MessageRole::String(ROLE_USER.to_string()),

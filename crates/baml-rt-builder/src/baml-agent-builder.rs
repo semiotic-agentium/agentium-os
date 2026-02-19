@@ -7,30 +7,31 @@
 
 #![recursion_limit = "256"]
 
+use std::{
+    collections::HashSet,
+    fs,
+    io::{self, BufRead, Write},
+    path::PathBuf,
+    sync::Arc,
+};
+
 use baml_rt_builder::builder::{
     AgentDir, BuildDir, BuilderService, FileSystem, FunctionName, Linter, OxcLinter,
     OxcTypeScriptCompiler, PackagePath, RuntimeTypeGenerator, StdFileSystem, StdPackager,
     bootstrap::{run_bootstrap, slug_from_name},
 };
-use baml_rt_core::ids::AgentId;
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, Result, ids::AgentId};
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge};
-use baml_rt_tools::tool_catalog::all_tool_metadata;
-use baml_rt_tools::{enforce_tool_access, parse_access_allowlist};
+use baml_rt_tools::{
+    enforce_tool_access, parse_access_allowlist, tool_catalog::all_tool_metadata, tools::ToolAccess,
+};
 use baml_rt_tools_system as _;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
-use std::collections::HashSet;
-use std::fs;
-use std::io::{self, BufRead, Write};
-use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::warn;
 use uuid::Uuid;
-
-use baml_rt_tools::tools::ToolAccess;
 
 #[derive(Parser)]
 #[command(name = "baml-agent-builder")]
@@ -402,6 +403,7 @@ async fn load_agent_package(
     access_allowlist: &Option<HashSet<ToolAccess>>,
 ) -> Result<LoadedAgent> {
     use std::sync::Arc;
+
     use tokio::sync::Mutex;
 
     // Extract package

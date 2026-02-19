@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::{
     document::ProvDocument,
     types::{
@@ -5,7 +7,6 @@ use crate::{
         QualifiedGeneration, Used, WasAssociatedWith, WasDerivedFrom, WasGeneratedBy,
     },
 };
-use std::collections::HashMap;
 
 pub struct EntityBuilder {
     id: ProvEntityId,

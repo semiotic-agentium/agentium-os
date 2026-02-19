@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 //! Property tests for task status FSM invariants.
 //!
 //! ## Core Properties (A2A Life-of-a-Task)
@@ -17,8 +18,7 @@
 
 mod common;
 
-use baml_rt_a2a::a2a_store::TaskStore;
-use baml_rt_a2a::a2a_types::TaskState;
+use baml_rt_a2a::{a2a_store::TaskStore, a2a_types::TaskState};
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
 use proptest::prelude::*;
 

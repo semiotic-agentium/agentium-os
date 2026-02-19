@@ -3,23 +3,23 @@
 //! This module executes BAML functions using the compiled IL (Intermediate Language)
 //! from the BAML compiler.
 
-use crate::baml_collector::BamlLLMCollector;
-use crate::baml_pre_execution::intercept_llm_call_pre_execution;
+use std::{collections::HashMap, path::Path, sync::Arc, time::Instant};
+
 use async_trait::async_trait;
-use baml_rt_core::bus::EffectEmitter;
-use baml_rt_core::context;
-use baml_rt_core::{BamlRtError, InvocationKind, Outcome, Result};
+use baml_rt_core::{BamlRtError, InvocationKind, Outcome, Result, bus::EffectEmitter, context};
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry};
 use baml_rt_tools::ToolRegistry;
 use baml_runtime::{BamlRuntime, FunctionResultStream, RuntimeContextManager};
 use baml_types::BamlValue;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Instant;
-use tokio::sync::Mutex;
-use tokio::time::{Duration, sleep};
+use tokio::{
+    sync::Mutex,
+    time::{Duration, sleep},
+};
+
+use crate::{
+    baml_collector::BamlLLMCollector, baml_pre_execution::intercept_llm_call_pre_execution,
+};
 
 /// Policy for retrying BAML calls when the LLM response fails to parse.
 ///
@@ -559,14 +559,14 @@ fn parse_tool_call_object(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use async_trait::async_trait;
-    use baml_rt_tools::BamlTool;
-    use baml_rt_tools::bundles::BundleType;
+    use baml_rt_tools::{BamlTool, bundles::BundleType};
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
     use ts_rs::TS;
+
+    use super::*;
 
     // Test bundle for test tools
     struct Test;

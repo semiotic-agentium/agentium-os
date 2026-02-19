@@ -3,24 +3,30 @@
 //! This module maps BAML function calls (executed in Rust) to QuickJS,
 //! allowing JavaScript code to invoke BAML functions.
 
-use crate::baml::BamlRuntimeManager;
-use crate::js_value_converter::value_to_js_value_facade;
-use baml_rt_core::bus::EffectLiveness;
-use baml_rt_core::context::{self, InvocationScope, RuntimeScope};
-use baml_rt_core::correlation;
-use baml_rt_core::{BamlRtError, Result};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+    },
+};
+
+use baml_rt_core::{
+    BamlRtError, Result,
+    bus::EffectLiveness,
+    context::{self, InvocationScope, RuntimeScope},
+    correlation,
+};
 use baml_rt_tools::ToolStep;
-use quickjs_runtime::builder::QuickJsRuntimeBuilder;
-use quickjs_runtime::facades::QuickJsRuntimeFacade;
-use quickjs_runtime::jsutils::Script;
-use quickjs_runtime::quickjsrealmadapter::QuickJsRealmAdapter;
-use quickjs_runtime::values::JsValueFacade;
+use quickjs_runtime::{
+    builder::QuickJsRuntimeBuilder, facades::QuickJsRuntimeFacade, jsutils::Script,
+    quickjsrealmadapter::QuickJsRealmAdapter, values::JsValueFacade,
+};
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
+
+use crate::{baml::BamlRuntimeManager, js_value_converter::value_to_js_value_facade};
 
 mod eval;
 mod js_codegen;

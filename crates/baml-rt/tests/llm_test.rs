@@ -8,8 +8,10 @@
 //! timeout is not applied until the promise executor has had time to run.
 
 use baml_rt::baml_execution::ParseRetryPolicy;
-use baml_rt_core::context::{self, InvocationScope};
-use baml_rt_core::ids::{AgentId, UuidId};
+use baml_rt_core::{
+    context::{self, InvocationScope},
+    ids::{AgentId, UuidId},
+};
 use serde_json::json;
 use test_support::common::{require_api_key, setup_baml_runtime_default, setup_bridge};
 use uuid::Uuid;

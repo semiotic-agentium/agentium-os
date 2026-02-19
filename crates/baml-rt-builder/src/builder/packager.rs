@@ -1,14 +1,16 @@
 //! Packager implementation for creating tar.gz agent packages
 
-use crate::builder::traits::{FileSystem, Packager};
-use crate::builder::types::{AgentDir, BuildDir};
+use std::{fs, path::Path};
+
 use baml_rt_core::{AgentManifest, BamlRtError, Result};
-use flate2::Compression;
-use flate2::write::GzEncoder;
-use std::fs;
-use std::path::Path;
+use flate2::{Compression, write::GzEncoder};
 use tar::{Builder, Header};
 use uuid::Uuid;
+
+use crate::builder::{
+    traits::{FileSystem, Packager},
+    types::{AgentDir, BuildDir},
+};
 
 /// Standard packager implementation
 pub struct StdPackager<FS> {

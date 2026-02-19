@@ -8,13 +8,12 @@
 //! - Loading BAML schemas
 //! - Managing tool registries
 
-use crate::baml::BamlRuntimeManager;
-use crate::quickjs_bridge::QuickJSBridge;
 use async_trait::async_trait;
-use baml_rt_core::Result;
-use baml_rt_core::context;
+use baml_rt_core::{Result, context};
 use baml_rt_tools::{BamlTool, ToolSessionId, ToolStep};
 use serde_json::Value;
+
+use crate::{baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
 
 /// Trait for executing BAML functions
 #[async_trait]

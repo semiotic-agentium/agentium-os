@@ -6,12 +6,12 @@
 //! Root spans include runtime scope attributes (context_id, message_id, task_id) when available.
 //! Child spans inherit context automatically through OTEL span nesting - no need to repeat attributes.
 
-use crate::scope::scope_attributes;
-use baml_rt_core::InvocationKind;
-use baml_rt_core::context::RuntimeScope;
-use baml_rt_core::correlation::current_correlation_id;
 use std::path::Path;
+
+use baml_rt_core::{InvocationKind, context::RuntimeScope, correlation::current_correlation_id};
 use tracing::Span;
+
+use crate::scope::scope_attributes;
 
 // Builder operations
 

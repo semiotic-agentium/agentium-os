@@ -1,5 +1,7 @@
-use crate::events::ProvEventData;
-use crate::vocabulary::{a2a, a2a_roles, a2a_types, prov, semantic_labels};
+use crate::{
+    events::ProvEventData,
+    vocabulary::{a2a, a2a_roles, a2a_types, prov, semantic_labels},
+};
 
 /// Canonical node labels in the persisted provenance graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

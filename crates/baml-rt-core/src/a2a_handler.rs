@@ -1,8 +1,8 @@
-use crate::Result;
-use crate::bus::BusStream;
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde_json::Value;
+
+use crate::{Result, bus::BusStream};
 
 /// Shared A2A request handling abstraction used by both transport and tools.
 #[async_trait]

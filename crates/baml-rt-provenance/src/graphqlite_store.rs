@@ -34,30 +34,34 @@
 //!
 //! [Connection]: graphqlite::Connection
 
-use crate::cypher_build::{self, KeyStyle};
-use crate::error::{ProvenanceError, Result};
-use crate::graph_model::ConversationReadModel;
-use crate::graphqlite_config::GraphqliteStoreConfig;
-use crate::normalizer::{DefaultProvNormalizer, ProvNormalizer, validate_event};
-use crate::spans;
-use crate::store::{
-    ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
-    ProvenanceQueryApi, ProvenanceWriter, ToolSessionPhase,
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock, mpsc},
+    thread,
+    time::Instant,
 };
-use crate::vocabulary::message_directions;
+
 use async_trait::async_trait;
 use baml_rt_core::ids::ContextId;
 use graphqlite::{Connection, CypherResult, Row};
 use rusqlite::types::Value as RusqliteValue;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex, OnceLock};
-use std::thread;
-use std::time::Instant;
-use tokio::sync::Mutex as TokioMutex;
-use tokio::sync::oneshot;
+use tokio::sync::{Mutex as TokioMutex, oneshot};
+
+use crate::{
+    cypher_build::{self, KeyStyle},
+    error::{ProvenanceError, Result},
+    graph_model::ConversationReadModel,
+    graphqlite_config::GraphqliteStoreConfig,
+    normalizer::{DefaultProvNormalizer, ProvNormalizer, validate_event},
+    spans,
+    store::{
+        ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
+        ProvenanceQueryApi, ProvenanceWriter, ToolSessionPhase,
+    },
+    vocabulary::message_directions,
+};
 
 // Column names from ConversationReadModel RETURN clauses (storage-safe underscore form).
 const MSG_COL_EVENT_ID: &str = "m.a2a_event_id";
@@ -858,9 +862,10 @@ impl Default for GraphqliteStoreBuilder {
 
 #[cfg(test)]
 mod tests {
+    use baml_rt_core::ids::{AgentId, EventId, ExternalId, MessageId, TaskId, UuidId};
+
     use super::*;
     use crate::{AgentType, GlobalEvent, ProvEvent, ProvEventData, TaskScopedEvent};
-    use baml_rt_core::ids::{AgentId, EventId, ExternalId, MessageId, TaskId, UuidId};
 
     /// Build a store backed by a unique temp path so tests can run concurrently.
     fn build_test_store() -> Arc<GraphqliteProvenanceStore> {

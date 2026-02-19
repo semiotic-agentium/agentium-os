@@ -3,8 +3,10 @@
 //! Registers metadata with baml-rt-tools inventory so manifest resolution
 //! can find internal-dev/* tools.
 
-use baml_rt_tools::tools::{ToolFunctionMetadata, ToolMetadataBuilder, TypeBasedMetadataBuilder};
-use baml_rt_tools::{parse_tool_name_and_class, register_tool_metadata};
+use baml_rt_tools::{
+    parse_tool_name_and_class, register_tool_metadata,
+    tools::{ToolFunctionMetadata, ToolMetadataBuilder, TypeBasedMetadataBuilder},
+};
 
 use crate::tools::{
     A2aRelayInput, A2aRelayOutput, CalculatorInput, CalculatorOutput, DelayedInput, DelayedOutput,

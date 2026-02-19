@@ -20,8 +20,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{ExportedEdge, ExportedGraph, ExportedNode};
-use crate::graph_model::GraphNodeLabel;
-use crate::vocabulary::a2a;
+use crate::{graph_model::GraphNodeLabel, vocabulary::a2a};
 
 /// Simplify an [`ExportedGraph`] for human-readable rendering.
 ///
@@ -188,9 +187,10 @@ fn is_complete_event(node: &ExportedNode) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::graph_export::{ExportScope, ExportedEdge, ExportedGraph, ExportedNode};
-    use std::collections::HashMap;
 
     fn node_with_props(
         id: &str,

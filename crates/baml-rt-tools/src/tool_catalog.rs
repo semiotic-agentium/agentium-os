@@ -1,7 +1,8 @@
-use crate::ToolName;
-use crate::tools::ToolFunctionMetadata;
-use baml_rt_core::{BamlRtError, Result};
 use std::collections::HashMap;
+
+use baml_rt_core::{BamlRtError, Result};
+
+use crate::{ToolName, tools::ToolFunctionMetadata};
 
 pub struct ToolMetadataProvider(pub fn() -> ToolFunctionMetadata);
 

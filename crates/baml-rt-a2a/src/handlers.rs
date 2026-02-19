@@ -1,16 +1,23 @@
-use crate::a2a;
-use crate::a2a_store::{TaskEventRecorder, TaskRepository, TaskUpdateEvent, TaskUpdateQueue};
-use crate::a2a_types::{
-    GetTaskRequest, ListTasksRequest, ListTasksResponse, StreamChunk, SubscribeToTaskRequest,
-    TaskStatusUpdateEvent,
-};
-use crate::events::EventEmitter;
-use async_trait::async_trait;
-use baml_rt_core::stream_completion::{StreamCompletion, StreamResult};
-use baml_rt_core::{BamlRtError, InvocationKind, Result, to_json_value};
-use baml_rt_quickjs::QuickJSBridge;
 use std::sync::Arc;
+
+use async_trait::async_trait;
+use baml_rt_core::{
+    BamlRtError, InvocationKind, Result,
+    stream_completion::{StreamCompletion, StreamResult},
+    to_json_value,
+};
+use baml_rt_quickjs::QuickJSBridge;
 use tokio::sync::Mutex;
+
+use crate::{
+    a2a,
+    a2a_store::{TaskEventRecorder, TaskRepository, TaskUpdateEvent, TaskUpdateQueue},
+    a2a_types::{
+        GetTaskRequest, ListTasksRequest, ListTasksResponse, StreamChunk, SubscribeToTaskRequest,
+        TaskStatusUpdateEvent,
+    },
+    events::EventEmitter,
+};
 
 const TASK_NOT_FOUND_MSG: &str = "Task not found";
 

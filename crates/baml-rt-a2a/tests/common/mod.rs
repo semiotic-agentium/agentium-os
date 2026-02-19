@@ -1,8 +1,9 @@
 //! Shared helpers for baml-rt-a2a integration tests.
 
+use std::collections::HashMap;
+
 use baml_rt_a2a::a2a_types::{Task, TaskState, TaskStatus};
 use baml_rt_core::ids::{ContextId, TaskId};
-use std::collections::HashMap;
 
 /// Builds a minimal Task for testing (TaskStore / apply_task_delta).
 /// Used by apply_task_delta_concurrent_test and task_fsm_property_test (other test binaries).
@@ -30,10 +31,11 @@ pub fn task_status(state: &str) -> TaskStatus {
 }
 
 pub mod provenance {
+    use std::sync::Arc;
+
     use baml_rt::QuickJSConfig;
     use baml_rt_a2a::A2aAgent;
     use baml_rt_provenance::ProvenanceWriter;
-    use std::sync::Arc;
 
     /// Builds an A2aAgent with a provenance writer (e.g. GraphQLite in-memory).
     /// Used by provenance_context_test and provenance_property_test (other test binaries).

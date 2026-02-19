@@ -11,5 +11,4 @@ mod router;
 mod spans;
 
 pub use mermaid::{MermaidError, MermaidService};
-pub use router::ApiState;
-pub use router::{api_router, serve};
+pub use router::{ApiState, api_router, serve};

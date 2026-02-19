@@ -3,6 +3,8 @@
 //! These newtypes prevent mixing different ID types at compile time,
 //! following the production-rust.md guidelines for strong types at boundaries.
 
+use std::fmt;
+
 pub use baml_rt_id::{
     ConstantConstructible, ConstantId, DerivedConstructible, DerivedId, ExternalConstructible,
     ExternalId, MonotonicConstructible, MonotonicId, ProvActivitySemantics, ProvAgentSemantics,
@@ -12,7 +14,6 @@ pub use baml_rt_id::{
     ProvKind, ProvVocabularyType, TemporalConstructible, TemporalId, UuidConstructible, UuidId,
 };
 use serde::{Deserialize, Serialize};
-use std::fmt;
 
 macro_rules! define_id_type {
     ($(#[$doc:meta])* $name:ident) => {

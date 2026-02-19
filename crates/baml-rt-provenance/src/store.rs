@@ -26,11 +26,11 @@
 //!   [ProvenanceWriter::add_event] (or [ProvenanceWriter::add_events]) before calling the reader
 //!   methods if they need to see those events.
 
-use crate::error::Result;
-use crate::events::ProvEvent;
 use async_trait::async_trait;
 use baml_rt_core::ids::ContextId;
 use serde_json::Value;
+
+use crate::{error::Result, events::ProvEvent};
 
 #[async_trait]
 pub trait ProvenanceWriter: ProvenanceContextReader + Send + Sync {

@@ -2,16 +2,16 @@
 //!
 //! Provides a builder pattern for constructing and configuring the BAML runtime environment.
 
-use crate::baml::BamlRuntimeManager;
-use crate::quickjs_bridge::QuickJSBridge;
-use baml_rt_core::bus::{BusApi, BusWithEffects};
-use baml_rt_core::bus::{EffectEmitter, EffectLiveness};
-use baml_rt_core::{BamlRtError, Result};
+use std::{path::PathBuf, sync::Arc, time::Duration};
+
+use baml_rt_core::{
+    BamlRtError, Result,
+    bus::{BusApi, BusWithEffects, EffectEmitter, EffectLiveness},
+};
 use baml_rt_interceptor::{InterceptorPipeline, LLMInterceptor, ToolInterceptor};
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::Mutex;
+
+use crate::{baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
 
 /// Configuration for QuickJS runtime options.
 ///

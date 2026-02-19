@@ -4,8 +4,10 @@
 #![recursion_limit = "256"]
 
 use baml_rt::interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor};
-use baml_rt_core::context;
-use baml_rt_core::ids::{AgentId, UuidId};
+use baml_rt_core::{
+    context,
+    ids::{AgentId, UuidId},
+};
 use serde_json::json;
 use test_support::common::{
     CalculatorTool, agent_fixture, ensure_fixture_runtime_types, setup_baml_runtime_from_fixture,

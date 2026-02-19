@@ -8,20 +8,15 @@ pub use a2a_test_helpers::{
     user_message,
 };
 mod test_tools;
+// Fixture helpers
+use std::{path::PathBuf, sync::Arc};
+
+use baml_rt::{A2aAgent, QuickJSConfig, baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
 pub use test_tools::{
     AddNumbersInput, AddNumbersOutput, AddNumbersTool, DelayedResponseTool, UppercaseTool,
     WeatherTool,
 };
-
-// Fixture helpers
-use std::path::PathBuf;
-use std::sync::Arc;
 use tokio::sync::Mutex;
-
-use baml_rt::A2aAgent;
-use baml_rt::QuickJSConfig;
-use baml_rt::baml::BamlRuntimeManager;
-use baml_rt::quickjs_bridge::QuickJSBridge;
 
 pub fn fixture_path(relative_path: &str) -> PathBuf {
     workspace_root()
@@ -119,8 +114,10 @@ fn quickjs_config_for_tests() -> QuickJSConfig {
 }
 
 pub async fn setup_bridge(baml_manager: Arc<Mutex<BamlRuntimeManager>>) -> QuickJSBridge {
-    use baml_rt_core::bus::{BusWithEffects, EffectEmitter, EffectLiveness};
-    use baml_rt_core::ids::AgentId;
+    use baml_rt_core::{
+        bus::{BusWithEffects, EffectEmitter, EffectLiveness},
+        ids::AgentId,
+    };
     use uuid::Uuid;
     // Generate a temporary agent_id for test context
     let temp_agent_id = AgentId::from_uuid(baml_rt_core::ids::UuidId::new(Uuid::new_v4()));

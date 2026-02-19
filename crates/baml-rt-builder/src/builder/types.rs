@@ -3,9 +3,11 @@
 //! These newtypes provide compile-time guarantees about the validity and meaning
 //! of values passed between different parts of the system.
 
-use std::fmt;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 /// Agent directory path - validated to exist and contain required structure
 #[derive(Debug, Clone)]

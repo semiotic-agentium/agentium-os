@@ -13,16 +13,16 @@
 
 #![recursion_limit = "256"]
 
-use baml_rt::a2a_types::SendMessageRequest;
-use baml_rt::baml::BamlRuntimeManager;
-use baml_rt::tools::BamlTool;
-use baml_rt::{A2aAgent, A2aRequestHandler, QuickJSConfig};
+use std::{collections::HashMap, sync::Arc};
+
+use baml_rt::{
+    A2aAgent, A2aRequestHandler, QuickJSConfig, a2a_types::SendMessageRequest,
+    baml::BamlRuntimeManager, tools::BamlTool,
+};
 use baml_rt_tools::bundles::BundleType;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashMap;
-use std::sync::Arc;
 use test_support::common::{
     AddNumbersTool, build_minimal_a2a_agent, chunk_content, is_error_response, send_stream_request,
     user_message,
@@ -229,6 +229,7 @@ async fn test_streaming_tool_failure_mid_stream() {
 #[tokio::test(flavor = "current_thread")]
 async fn test_allowlist_violation_during_stream() {
     use std::collections::HashSet;
+
     use test_support::common::CalculatorTool;
 
     let mut runtime = BamlRuntimeManager::new().unwrap();

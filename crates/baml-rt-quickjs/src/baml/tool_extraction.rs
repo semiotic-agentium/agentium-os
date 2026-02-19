@@ -243,8 +243,9 @@ pub(crate) fn normalize_plan_input(value: Value) -> Result<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use proptest::prelude::*;
+
+    use super::*;
 
     fn proptest_cfg(cases: u32) -> ProptestConfig {
         let mut cfg = ProptestConfig::with_cases(cases);

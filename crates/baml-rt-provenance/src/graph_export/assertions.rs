@@ -4,8 +4,9 @@
 //! node existence, edge counts, path traversal — replacing fragile raw-Cypher
 //! string comparisons and monolithic snapshot tests.
 
-use super::{ExportedGraph, ExportedNode};
 use std::collections::HashSet;
+
+use super::{ExportedGraph, ExportedNode};
 
 // ── Path assertion types ────────────────────────────────────────────────────
 
@@ -219,9 +220,10 @@ fn nodes_matching_step<'a>(graph: &'a ExportedGraph, step: &PathStep) -> Vec<&'a
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::graph_export::{ExportScope, ExportedEdge, ExportedGraph, ExportedNode};
-    use std::collections::HashMap;
 
     fn make_node(id: &str, label: &str, props: &[(&str, &str)]) -> ExportedNode {
         ExportedNode {

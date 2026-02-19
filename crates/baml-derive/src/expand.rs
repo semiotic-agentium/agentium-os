@@ -9,10 +9,10 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{DataEnum, DataStruct, DeriveInput, Fields, Type};
 
-use crate::attrs::{
-    extract_doc_comment, parse_container_attrs, parse_field_attrs, parse_variant_attrs,
+use crate::{
+    attrs::{extract_doc_comment, parse_container_attrs, parse_field_attrs, parse_variant_attrs},
+    resolve::resolve_type_tokens,
 };
-use crate::resolve::resolve_type_tokens;
 
 /// Main entry point: expand `#[derive(BamlType)]` for any supported data type.
 pub(crate) fn expand_derive(input: &DeriveInput) -> Result<TokenStream, syn::Error> {

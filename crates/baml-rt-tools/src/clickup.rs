@@ -3,9 +3,6 @@
 //! Provides a [`BamlTool`] implementation that calls the ClickUp v2 REST API.
 //! Supports listing, getting, creating, and updating tasks.
 
-use crate::bundles::Support;
-use crate::register_tool_metadata;
-use crate::tools::{BamlTool, ToolFunctionMetadata, ToolSecretRequirement};
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
@@ -13,6 +10,12 @@ use baml_rt_core::{BamlRtError, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+
+use crate::{
+    bundles::Support,
+    register_tool_metadata,
+    tools::{BamlTool, ToolFunctionMetadata, ToolSecretRequirement},
+};
 
 /// ClickUp v2 REST API base URL.
 pub const BASE_URL: &str = "https://api.clickup.com/api/v2";
@@ -669,18 +672,10 @@ impl BamlTool for ClickUpTool {
         let api_key = Self::api_key()?;
         match args {
             ClickUpInput::ListTeams(_) => self.list_teams(&api_key).await,
-            ClickUpInput::ListSpaces(input) => {
-                self.list_spaces(&api_key, &input.team_id).await
-            }
-            ClickUpInput::ListLists(input) => {
-                self.list_lists(&api_key, &input.space_id).await
-            }
-            ClickUpInput::ListTasks(input) => {
-                self.list_tasks(&api_key, &input.list_id).await
-            }
-            ClickUpInput::GetTask(input) => {
-                self.get_task(&api_key, &input.task_id).await
-            }
+            ClickUpInput::ListSpaces(input) => self.list_spaces(&api_key, &input.team_id).await,
+            ClickUpInput::ListLists(input) => self.list_lists(&api_key, &input.space_id).await,
+            ClickUpInput::ListTasks(input) => self.list_tasks(&api_key, &input.list_id).await,
+            ClickUpInput::GetTask(input) => self.get_task(&api_key, &input.task_id).await,
             ClickUpInput::CreateTask(input) => {
                 self.create_task(
                     &api_key,

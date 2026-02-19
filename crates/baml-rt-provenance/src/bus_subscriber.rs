@@ -1,11 +1,13 @@
 //! Bus subscriber: maps command/event/effect envelopes to provenance events.
 
-use crate::effect_subscriber::ProvenanceEffectSubscriber;
-use crate::events::ProvEvent;
-use crate::store::ProvenanceWriter;
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use baml_rt_core::bus::{EffectSubscriber, Envelope, Payload, Subscriber};
-use std::sync::Arc;
+
+use crate::{
+    effect_subscriber::ProvenanceEffectSubscriber, events::ProvEvent, store::ProvenanceWriter,
+};
 
 pub struct ProvenanceBusSubscriber {
     writer: Arc<dyn ProvenanceWriter>,

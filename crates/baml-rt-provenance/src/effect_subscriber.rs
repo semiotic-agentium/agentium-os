@@ -1,12 +1,18 @@
 //! Provenance subscriber: converts EffectEvent to ProvEvent.
 
-use crate::events::{LlmUsage, ProvEvent};
-use crate::store::ProvenanceWriter;
-use async_trait::async_trait;
-use baml_rt_core::bus::{EffectEvent, EffectSubscriber};
-use baml_rt_core::ids::{ContextId, ExternalId, MessageId, TaskId};
-use serde_json::Value;
 use std::sync::Arc;
+
+use async_trait::async_trait;
+use baml_rt_core::{
+    bus::{EffectEvent, EffectSubscriber},
+    ids::{ContextId, ExternalId, MessageId, TaskId},
+};
+use serde_json::Value;
+
+use crate::{
+    events::{LlmUsage, ProvEvent},
+    store::ProvenanceWriter,
+};
 
 /// Event type for provenance event construction
 #[derive(Debug, Clone, Copy)]

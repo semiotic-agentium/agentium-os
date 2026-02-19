@@ -1,6 +1,3 @@
-use crate::bundles::Support;
-use crate::register_tool_metadata;
-use crate::tools::{BamlTool, ToolFunctionMetadata};
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
@@ -8,6 +5,12 @@ use baml_rt_core::Result;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
+
+use crate::{
+    bundles::Support,
+    register_tool_metadata,
+    tools::{BamlTool, ToolFunctionMetadata},
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]

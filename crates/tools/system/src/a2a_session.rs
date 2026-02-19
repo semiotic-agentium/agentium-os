@@ -1,23 +1,25 @@
 //! system/internal_a2a tool: session-based A2A conversation call.
 
-use crate::metadata::system_internal_a2a_metadata;
-use crate::tools::{
-    ConversationChunk, ConversationMessage, ConversationPart, InternalA2aNextOutput,
-    InternalA2aOpenInput, InternalA2aSendInput, InternalA2aTarget,
-};
+use std::{collections::VecDeque, sync::Arc};
+
 use async_trait::async_trait;
 use baml_rt_core::{A2aRequestHandler, Result};
-use baml_rt_tools::tools::validate_open_input;
-use baml_rt_tools::tools::{ToolFunctionMetadata, ToolSessionContext};
 use baml_rt_tools::{
     BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
     ToolSession, ToolSessionError, ToolStep,
+    tools::{ToolFunctionMetadata, ToolSessionContext, validate_open_input},
 };
 use futures_util::StreamExt;
 use serde_json::Value;
-use std::collections::VecDeque;
-use std::sync::Arc;
 use tokio::task::JoinHandle;
+
+use crate::{
+    metadata::system_internal_a2a_metadata,
+    tools::{
+        ConversationChunk, ConversationMessage, ConversationPart, InternalA2aNextOutput,
+        InternalA2aOpenInput, InternalA2aSendInput, InternalA2aTarget,
+    },
+};
 
 /// System bundle exposing the system/internal_a2a tool.
 pub struct A2aSessionBundle {

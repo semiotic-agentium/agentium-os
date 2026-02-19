@@ -11,16 +11,17 @@ pub mod json;
 pub mod sequence;
 pub mod simplify;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use graphqlite::CypherResult;
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
-use crate::graph_model::GraphNodeLabel;
-use crate::graphqlite_store::GraphqliteProvenanceStore;
-use crate::vocabulary::{a2a, message_directions};
-use std::sync::Arc;
+use crate::{
+    error::Result,
+    graph_model::GraphNodeLabel,
+    graphqlite_store::GraphqliteProvenanceStore,
+    vocabulary::{a2a, message_directions},
+};
 
 // ── Core types ──────────────────────────────────────────────────────────────
 

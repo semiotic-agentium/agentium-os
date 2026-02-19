@@ -3,14 +3,16 @@
 //! Generates BAML tool interface files with detailed descriptions and examples
 //! following Anthropic's best practices for tool use prompting.
 
-use crate::builder::schema_to_baml;
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write,
+};
+
 use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::support;
-use baml_rt_tools::tool_catalog::resolve_manifest_tools;
-use baml_rt_tools::tools::ToolFunctionMetadata;
+use baml_rt_tools::{support, tool_catalog::resolve_manifest_tools, tools::ToolFunctionMetadata};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
-use std::fmt::Write;
+
+use crate::builder::schema_to_baml;
 
 fn write_line(output: &mut String, line: &str) -> Result<()> {
     writeln!(output, "{}", line)

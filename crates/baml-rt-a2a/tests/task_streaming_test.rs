@@ -1,11 +1,14 @@
 #![recursion_limit = "256"]
 
-use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest};
-use baml_rt::baml::BamlRuntimeManager;
-use baml_rt::{A2aAgent, A2aRequestHandler, QuickJSConfig};
+use std::sync::{Arc, OnceLock};
+
+use baml_rt::{
+    A2aAgent, A2aRequestHandler, QuickJSConfig,
+    a2a_types::{JSONRPCId, JSONRPCRequest},
+    baml::BamlRuntimeManager,
+};
 use baml_rt_core::context;
 use serde_json::{Value, json};
-use std::sync::{Arc, OnceLock};
 use test_support::common::{
     AddNumbersTool, CalculatorTool, first_message_text_from_stream, first_task_id_from_stream,
     send_stream_request,

@@ -2,20 +2,20 @@
 
 #![recursion_limit = "256"]
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
-use baml_rt::baml::BamlRuntimeManager;
-use baml_rt::quickjs_bridge::QuickJSBridge;
-use baml_rt_core::bus::{BusWithEffects, EffectEmitter, EffectLiveness};
-use baml_rt_core::context::{self, InvocationScope, RuntimeScope};
-use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
-use baml_rt_tools::BamlTool;
-use baml_rt_tools::bundles::BundleType;
+use baml_rt::{baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
+use baml_rt_core::{
+    bus::{BusWithEffects, EffectEmitter, EffectLiveness},
+    context::{self, InvocationScope, RuntimeScope},
+    ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
+};
+use baml_rt_tools::{BamlTool, bundles::BundleType};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use tokio::task::LocalSet;
+use tokio::{sync::Mutex, task::LocalSet};
 use ts_rs::TS;
 
 // Test bundle for test tools

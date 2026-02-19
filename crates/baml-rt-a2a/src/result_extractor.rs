@@ -1,6 +1,7 @@
-use crate::a2a_types::{SendMessageResponse, StreamResponse, Task};
 use baml_rt_core::Result;
 use serde_json::Value;
+
+use crate::a2a_types::{SendMessageResponse, StreamResponse, Task};
 
 pub trait ResultExtractor: Send + Sync {
     fn extract_stream_response(&self, value: &Value) -> Result<Option<StreamResponse>>;

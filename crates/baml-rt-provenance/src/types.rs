@@ -1,3 +1,5 @@
+use std::{collections::HashMap, fmt};
+
 use baml_rt_id::{
     ProvActivitySemantics, ProvAgentSemantics, ProvConstantActivitySemantics,
     ProvConstantAgentSemantics, ProvConstantEntitySemantics, ProvConstantIdTemplate,
@@ -5,8 +7,6 @@ use baml_rt_id::{
     ProvDerivedIdTemplate, ProvEntitySemantics,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fmt;
 
 macro_rules! define_prov_id_type {
     ($(#[$doc:meta])* $name:ident, $sem_trait:ident, $derived_trait:ident, $const_trait:ident) => {

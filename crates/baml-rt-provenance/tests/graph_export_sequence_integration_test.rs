@@ -1,9 +1,10 @@
-use baml_rt_core::Outcome;
-use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
-use baml_rt_provenance::graph_export::sequence::render_sequence_diagram;
-use baml_rt_provenance::graph_export::simplify::simplify_graph;
+use baml_rt_core::{
+    Outcome,
+    ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
+};
 use baml_rt_provenance::{
     AgentType, GraphExporter, GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvenanceWriter,
+    graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
 };
 use tempfile::tempdir;
 

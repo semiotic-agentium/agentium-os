@@ -5,20 +5,21 @@
 //! - `raw_blocks`: render mode (raw skips Notable lines / Missing info hints).
 //! - `max_depth`: limit child block expansion depth (0 disables expansion).
 
-use crate::bundles::Support;
-use crate::register_tool_metadata;
-use crate::spans;
-use crate::tools::{BamlTool, ToolAccess, ToolFunctionMetadata, ToolSecretRequirement};
+use std::{collections::VecDeque, fmt, time::Duration};
+
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
 use baml_rt_core::{BamlRtError, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
-use std::fmt;
-use std::time::Duration;
 use ts_rs::TS;
+
+use crate::{
+    bundles::Support,
+    register_tool_metadata, spans,
+    tools::{BamlTool, ToolAccess, ToolFunctionMetadata, ToolSecretRequirement},
+};
 
 /// Notion REST API base URL.
 pub const BASE_URL: &str = "https://api.notion.com/v1";
@@ -762,9 +763,11 @@ fn next_depth_for_children(depth: u32, max_depth: u32) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{NotionClient, RetryAfter, backoff_delay, next_depth_for_children};
-    use reqwest::header::HeaderValue;
     use std::time::Duration;
+
+    use reqwest::header::HeaderValue;
+
+    use super::{NotionClient, RetryAfter, backoff_delay, next_depth_for_children};
 
     #[test]
     fn next_depth_for_children_respects_max_depth() {
@@ -1287,8 +1290,10 @@ pub fn notion_search_pages_metadata() -> ToolFunctionMetadata {
 }
 
 pub fn notion_metadata() -> ToolFunctionMetadata {
-    use crate::tool_schema::ts_decl;
-    use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
+    use crate::{
+        ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class,
+        tool_schema::ts_decl,
+    };
     let (name, class_name) = parse_tool_name_and_class("support/notion")
         .expect("support/notion is a compile-time constant");
     let mut extra_ts_decls = Vec::new();

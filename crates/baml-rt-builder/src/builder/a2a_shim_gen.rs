@@ -4,11 +4,10 @@
 //! generated at compile time when the compiler runs. Types agents need are
 //! bootstrap-generated in baml-runtime.d.ts, not here.
 
-use baml_rt_core::{BamlRtError, Result};
-use genco::fmt::Error as GencoFmtError;
-use genco::lang::js;
-use genco::prelude::*;
 use std::fmt;
+
+use baml_rt_core::{BamlRtError, Result};
+use genco::{fmt::Error as GencoFmtError, lang::js, prelude::*};
 
 /// Wrapper so genco fmt errors can be used as [`std::error::Error`] source.
 /// genco's fmt::Error does not implement Error; this preserves the chain in BamlRtError.

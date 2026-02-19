@@ -2,10 +2,11 @@
 //!
 //! This crate re-exports functionality from the workspace sub-crates.
 
-pub use baml_rt_core::context::generate_context_id;
-pub use baml_rt_core::correlation::{current_correlation_id, generate_correlation_id};
-pub use baml_rt_core::{BamlRtError, Result};
-pub use baml_rt_core::{collect_a2a_stream, collect_a2a_stream_until};
+pub use baml_rt_core::{
+    BamlRtError, Result, collect_a2a_stream, collect_a2a_stream_until,
+    context::generate_context_id,
+    correlation::{current_correlation_id, generate_correlation_id},
+};
 pub mod error {
     pub use baml_rt_core::error::*;
 }

@@ -2,8 +2,9 @@
 //! and assert on created layout and key content (no TUI).
 //! Uses insta snapshot testing for generated artifacts.
 
-use baml_rt_builder::builder::bootstrap::{run_bootstrap, slug_from_name};
 use std::fs;
+
+use baml_rt_builder::builder::bootstrap::{run_bootstrap, slug_from_name};
 use tempfile::TempDir;
 
 fn collect_artifacts(root_path: &std::path::Path) -> String {

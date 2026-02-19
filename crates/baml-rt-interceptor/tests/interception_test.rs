@@ -1,17 +1,18 @@
 //! Integration and end-to-end tests for LLM interception.
 
+use std::{sync::Arc, time::Duration};
+
 use baml_rt::{
     error::Result,
     interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor},
 };
+use baml_rt_core::{
+    context,
+    ids::{AgentId, UuidId},
+};
 use serde_json::Value;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::sync::Mutex;
-
-use baml_rt_core::context;
-use baml_rt_core::ids::{AgentId, UuidId};
 use test_support::common::{require_api_key, setup_baml_runtime_manager_default};
+use tokio::sync::Mutex;
 
 /// Stub interceptor: substitutes "Hello, Test!" for SimpleGreeting so integration tests avoid real LLM calls.
 struct StubSimpleGreetingInterceptor;

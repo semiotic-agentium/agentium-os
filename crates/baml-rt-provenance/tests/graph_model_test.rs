@@ -1,7 +1,7 @@
-use baml_rt_provenance::vocabulary::{a2a_roles, a2a_types, prov};
 use baml_rt_provenance::{
     ALL_EVENT_KINDS, EDGE_WAS_USED_BY, EventGraphKind, GraphNodeLabel, TOOL_CALL_ARGS_EDGE,
     mapping_for_event_kind,
+    vocabulary::{a2a_roles, a2a_types, prov},
 };
 
 #[test]

@@ -4,8 +4,10 @@
 //! that all CLI subcommands work correctly end-to-end.
 
 use tempfile::TempDir;
-use test_support::common::{agent_fixture, ensure_fixture_runtime_types, workspace_root};
-use test_support::support::cli::CliHarness;
+use test_support::{
+    common::{agent_fixture, ensure_fixture_runtime_types, workspace_root},
+    support::cli::CliHarness,
+};
 
 #[test]
 fn test_cli_package_agent() {
@@ -90,13 +92,12 @@ async fn test_full_integration_package_load_execute() {
     // FULL INTEGRATION TEST: Package agent -> Load package -> Execute JavaScript function
     // This verifies the complete flow from TypeScript compilation to function execution
 
-    use baml_rt::baml::BamlRuntimeManager;
-    use baml_rt::quickjs_bridge::QuickJSBridge;
+    use std::{fs, sync::Arc};
+
+    use baml_rt::{baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
     use baml_rt_core::ids::{AgentId, UuidId};
     use baml_rt_quickjs::begin_a2a_yield_session;
     use serde_json::json;
-    use std::fs;
-    use std::sync::Arc;
     use tokio::sync::Mutex;
 
     // Use stream-baml-tool fixture

@@ -1,8 +1,9 @@
+use std::collections::HashMap;
+
 use crate::types::{
     Activity, Agent, Entity, ProvActivityId, ProvAgentId, ProvEntityId, QualifiedGeneration, Used,
     WasAssociatedWith, WasDerivedFrom, WasGeneratedBy,
 };
-use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default)]
 pub struct ProvDocument {

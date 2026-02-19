@@ -1,21 +1,23 @@
 //! Tests for tool registration (Rust and JavaScript)
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use baml_rt::tools::BamlTool;
+use baml_rt_core::{
+    context::InvocationScope,
+    ids::{AgentId, UuidId},
+};
+use baml_rt_tools::bundles::BundleType;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use ts_rs::TS;
-
-use baml_rt_core::context::InvocationScope;
-use baml_rt_core::ids::{AgentId, UuidId};
-use baml_rt_tools::bundles::BundleType;
-use std::sync::Arc;
 use test_support::common::{
     assert_tool_registered_in_js, setup_baml_runtime_default, setup_baml_runtime_manager_default,
     setup_bridge,
 };
 use tokio::sync::Mutex;
+use ts_rs::TS;
 
 // Test bundle for test tools
 struct Test;

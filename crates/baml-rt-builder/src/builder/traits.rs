@@ -3,9 +3,11 @@
 //! These traits provide a clean abstraction for different operations
 //! in the agent building pipeline, enabling testability and modularity.
 
-use crate::builder::types::{AgentDir, BuildDir};
-use baml_rt_core::Result;
 use std::path::Path;
+
+use baml_rt_core::Result;
+
+use crate::builder::types::{AgentDir, BuildDir};
 
 /// Trait for linting source code
 #[async_trait::async_trait]

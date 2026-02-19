@@ -1,7 +1,8 @@
+use std::collections::BTreeMap;
+
 use baml_rt_core::ids::{ContextId, ExternalId, MessageId};
 use baml_rt_provenance::{ProvEvent, normalize_event};
 use serde_json::{Value, json};
-use std::collections::BTreeMap;
 
 #[tokio::test]
 async fn test_normalize_event_snapshot_for_tool_call_started() {

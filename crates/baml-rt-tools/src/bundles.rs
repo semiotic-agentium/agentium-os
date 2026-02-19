@@ -3,9 +3,10 @@
 //! Bundles are represented as Rust types for compile-time type safety.
 //! Each bundle implements `BundleType` to provide its metadata.
 
-use crate::tools::BundleName;
 use baml_rt_core::Result;
 use serde_json::Value;
+
+use crate::tools::BundleName;
 
 /// Trait for tool bundle types
 ///

@@ -1,6 +1,6 @@
-use baml_rt_core::bus::EffectLiveness;
-use baml_rt_core::ids::ContextId;
 use std::sync::Arc;
+
+use baml_rt_core::{bus::EffectLiveness, ids::ContextId};
 
 /// Encapsulates effect-gated timeout logic for promise polling.
 ///

@@ -3,21 +3,27 @@
 //! This module provides a trait-based system for registering tool functions
 //! that can be called by LLMs during BAML function execution or directly from JavaScript.
 
-use crate::bundles::BundleType;
-use crate::tool_catalog::{InventoryCatalog, ToolCatalog};
-use crate::tool_fsm::{ToolFailure, ToolSession, ToolSessionError, ToolSessionId, ToolStep};
-use crate::tool_schema::{ToolType, json_schema_value};
-use crate::ts_gen::render_tool_typescript;
+use std::{
+    collections::{HashMap, HashSet},
+    future::Future,
+    marker::PhantomData,
+    pin::Pin,
+    sync::{Arc, Mutex as StdMutex},
+};
+
 use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
-use std::future::Future;
-use std::marker::PhantomData;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex as StdMutex};
 use tokio::sync::Mutex as TokioMutex;
+
+use crate::{
+    bundles::BundleType,
+    tool_catalog::{InventoryCatalog, ToolCatalog},
+    tool_fsm::{ToolFailure, ToolSession, ToolSessionError, ToolSessionId, ToolStep},
+    tool_schema::{ToolType, json_schema_value},
+    ts_gen::render_tool_typescript,
+};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ToolAccess {

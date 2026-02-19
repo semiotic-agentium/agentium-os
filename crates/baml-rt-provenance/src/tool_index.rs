@@ -9,12 +9,13 @@
 //! Remaining properties are set via a separate MATCH+SET query, which uses the
 //! transform path and param binding. See upstream executor_merge.c / find_node_by_pattern.
 
-use crate::error::Result;
-use crate::vocabulary::graph;
+use std::path::Path;
+
 use baml_rt_tools::ToolFunctionMetadataExport;
 use graphqlite::{Connection, escape_string};
 use serde_json::json;
-use std::path::Path;
+
+use crate::{error::Result, vocabulary::graph};
 
 const TOOL_LABEL: &str = "ToolFunction";
 

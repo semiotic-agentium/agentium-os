@@ -8,12 +8,13 @@
 //! relationships, this renderer is inherently temporal: participants line up
 //! across the top and messages flow downward in causal order.
 
-use std::collections::HashSet;
-use std::fmt::Write;
+use std::{collections::HashSet, fmt::Write};
 
 use super::{ExportedGraph, ExportedNode};
-use crate::graph_model::GraphNodeLabel;
-use crate::vocabulary::{a2a, agent_types};
+use crate::{
+    graph_model::GraphNodeLabel,
+    vocabulary::{a2a, agent_types},
+};
 
 /// Maximum character length for content previews on sequence diagram arrows.
 const SEQUENCE_CONTENT_PREVIEW_LEN: usize = 50;
@@ -352,9 +353,10 @@ fn escape_sequence_text(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::graph_export::{ExportScope, ExportedEdge, ExportedGraph, ExportedNode};
-    use std::collections::HashMap;
 
     fn msg_node(id: &str, role: &str, content: &str, order: Option<u64>) -> ExportedNode {
         let mut props = HashMap::new();

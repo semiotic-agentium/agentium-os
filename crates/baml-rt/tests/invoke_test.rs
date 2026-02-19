@@ -2,10 +2,14 @@
 //!
 //! `test_invoke_simple_greeting` uses an interceptor stub so it does not call the real LLM.
 
-use baml_rt::BamlRtError;
-use baml_rt::interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor};
-use baml_rt_core::context::InvocationScope;
-use baml_rt_core::ids::{AgentId, UuidId};
+use baml_rt::{
+    BamlRtError,
+    interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor},
+};
+use baml_rt_core::{
+    context::InvocationScope,
+    ids::{AgentId, UuidId},
+};
 use serde_json::Value;
 use test_support::common::{ensure_baml_src_exists, setup_baml_runtime_manager_default};
 

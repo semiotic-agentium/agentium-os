@@ -1,15 +1,14 @@
 //! Axum router and API state for the HTTP surface.
 
+use std::{path::Path, sync::Arc};
+
 use axum::Router;
 use baml_rt_a2a::AgentRegistry;
-use std::path::Path;
-use std::sync::Arc;
 use tower_http::services::{ServeDir, ServeFile};
 use utoipa::openapi::OpenApi as OpenApiSpec;
 use utoipa_axum::router::OpenApiRouter;
 
-use crate::MermaidService;
-use crate::handlers;
+use crate::{MermaidService, handlers};
 
 /// Shared state for API handlers: registry (from runner), OpenAPI spec, optional Mermaid service.
 #[derive(Clone)]

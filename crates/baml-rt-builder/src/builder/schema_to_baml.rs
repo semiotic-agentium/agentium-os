@@ -2,10 +2,13 @@
 //!
 //! Converts JSON Schema definitions into BAML type definitions (classes, enums, etc.)
 
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Write,
+};
+
 use baml_rt_core::{BamlRtError, Result};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
-use std::fmt::Write;
 
 fn escape_baml_string(value: &str) -> String {
     value.chars().flat_map(|c| c.escape_default()).collect()

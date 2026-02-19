@@ -3,13 +3,14 @@
 //! Covers typed function signatures (args + return), supporting type declarations
 //! (interfaces, enums, type aliases), and primitives/optional/union/list/map.
 
+use std::collections::HashMap;
+
 use baml_rt_builder::builder::{
     baml_signature_gen::extract_baml_signatures,
     ts_gen::{load_manifest_tools, render_ts_declarations},
 };
 use baml_runtime::BamlRuntime;
 use internal_baml_core::feature_flags::FeatureFlags;
-use std::collections::HashMap;
 
 fn workspace_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

@@ -1,13 +1,15 @@
-use anyhow::{Context, bail};
-use clap::Parser;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
-use baml_rt_provenance::graph_export::dot::{DotOptions, render_dot};
-use baml_rt_provenance::graph_export::sequence::render_sequence_diagram;
-use baml_rt_provenance::graph_export::simplify::simplify_graph;
-use baml_rt_provenance::{GraphExporter, GraphqliteProvenanceStore, GraphqliteStoreBuilder};
-use clap::ValueEnum;
+use anyhow::{Context, bail};
+use baml_rt_provenance::{
+    GraphExporter, GraphqliteProvenanceStore, GraphqliteStoreBuilder,
+    graph_export::{
+        dot::{DotOptions, render_dot},
+        sequence::render_sequence_diagram,
+        simplify::simplify_graph,
+    },
+};
+use clap::{Parser, ValueEnum};
 
 #[derive(Parser)]
 #[command(
