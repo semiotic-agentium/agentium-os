@@ -1,10 +1,16 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 set dotenv-load
+provenance_db := "provenance.db"
 
 # Rebuilds clickup-agent package and runs it via a2a stdio.
 clickup-agent:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- clickup-agent.tar.gz --a2a-stdio --falkordb-url ${FALKORDB_URL:-redis://localhost:6379}
+    cargo run -p baml-agent-runner --features http-tools -- clickup-agent.tar.gz --a2a-stdio
+
+# Same as clickup-agent, but persists provenance to provenance.db for graph_exporter.
+clickup-agent-provenance:
+    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
+    cargo run -p baml-agent-runner --features http-tools -- clickup-agent.tar.gz --a2a-stdio --provenance-db {{provenance_db}}
 
 fmt:
     cargo fmt --all
@@ -32,4 +38,4 @@ test-unit:
 # Export a Mermaid sequence diagram for a given context-id.
 # Usage: just provenance-mermaid ctx-1771426017780-2
 provenance-mermaid context_id:
-    cargo run -p baml-rt-provenance --features cli --bin graph_exporter -- --context-id {{context_id}} --simplify --format mermaid
+    cargo run -p baml-rt-provenance --features cli --bin graph_exporter -- --db {{provenance_db}} --context-id {{context_id}} --simplify --format mermaid

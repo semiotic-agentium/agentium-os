@@ -6,7 +6,14 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-static EVENT_COUNTER: AtomicU64 = AtomicU64::new(1);
+// Process-local monotonic counter for provenance event IDs.
+//
+// IDs are persisted in file-backed stores and reused as part of node identities
+// (e.g. `tool_call:prov-<id>`). If every process started at `prov-1`, reopening
+// the same DB would collide with old IDs and MERGE/ON CREATE would reuse stale
+// nodes. Seed from wall-clock nanoseconds to make IDs unique across process
+// restarts while remaining monotonic within a process.
+static EVENT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn now_millis() -> u64 {
     SystemTime::now()
@@ -15,8 +22,25 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
+fn seed_event_counter() -> u64 {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(1);
+    let pid_component = (std::process::id() as u64) & 0xFFFF;
+    nanos.saturating_add(pid_component).max(1)
+}
+
 fn next_event_id() -> EventId {
-    let id = EVENT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut current = EVENT_COUNTER.load(Ordering::Relaxed);
+    if current == 0 {
+        let seed = seed_event_counter();
+        match EVENT_COUNTER.compare_exchange(0, seed, Ordering::SeqCst, Ordering::Relaxed) {
+            Ok(_) => current = seed,
+            Err(existing) => current = existing,
+        }
+    }
+    let id = EVENT_COUNTER.fetch_add(1, Ordering::Relaxed).max(current);
     EventId::from_counter(id)
 }
 

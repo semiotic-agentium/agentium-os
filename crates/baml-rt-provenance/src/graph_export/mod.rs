@@ -93,9 +93,9 @@ impl GraphExporter {
     pub async fn export_by_context(&self, context_id: &str) -> Result<ExportedGraph> {
         const QUERY: &str = "MATCH (a)-[r]->(b) \
             WHERE a.a2a_context_id = $context AND b.a2a_context_id = $context \
-            RETURN a.id AS src_id, labels(a)[0] AS src_label, properties(a) AS src_props, \
-                   type(r) AS rel_type, properties(r) AS rel_props, \
-                   b.id AS tgt_id, labels(b)[0] AS tgt_label, properties(b) AS tgt_props \
+            RETURN a.id AS src_id, labels(a)[0] AS src_label, toString(properties(a)) AS src_props, \
+                   type(r) AS rel_type, toString(properties(r)) AS rel_props, \
+                   b.id AS tgt_id, labels(b)[0] AS tgt_label, toString(properties(b)) AS tgt_props \
             ORDER BY a.a2a_event_id, type(r), b.a2a_event_id";
         let params = serde_json::json!({ "context": context_id });
         let result = self.store.run_cypher_read(QUERY, &params).await?;
@@ -109,9 +109,9 @@ impl GraphExporter {
     pub async fn export_by_task(&self, task_id: &str) -> Result<ExportedGraph> {
         const QUERY: &str = "MATCH (a)-[r]->(b) \
             WHERE a.a2a_task_id = $task AND b.a2a_task_id = $task \
-            RETURN a.id AS src_id, labels(a)[0] AS src_label, properties(a) AS src_props, \
-                   type(r) AS rel_type, properties(r) AS rel_props, \
-                   b.id AS tgt_id, labels(b)[0] AS tgt_label, properties(b) AS tgt_props \
+            RETURN a.id AS src_id, labels(a)[0] AS src_label, toString(properties(a)) AS src_props, \
+                   type(r) AS rel_type, toString(properties(r)) AS rel_props, \
+                   b.id AS tgt_id, labels(b)[0] AS tgt_label, toString(properties(b)) AS tgt_props \
             ORDER BY a.a2a_event_id, type(r), b.a2a_event_id";
         let params = serde_json::json!({ "task": task_id });
         let result = self.store.run_cypher_read(QUERY, &params).await?;
@@ -136,14 +136,14 @@ fn parse_graphqlite_export_result(
     let mut edges: Vec<ExportedEdge> = Vec::new();
 
     for row in result.iter() {
-        let src_id: String = row.get("src_id").unwrap_or_else(|_| String::new());
-        let src_label: String = row.get("src_label").unwrap_or_else(|_| String::new());
-        let src_props = row_to_properties(row, "src_props");
-        let rel_type: String = row.get("rel_type").unwrap_or_else(|_| String::new());
-        let rel_props = row_to_properties(row, "rel_props");
-        let tgt_id: String = row.get("tgt_id").unwrap_or_else(|_| String::new());
-        let tgt_label: String = row.get("tgt_label").unwrap_or_else(|_| String::new());
-        let tgt_props = row_to_properties(row, "tgt_props");
+        let src_id = row_get_string_any(row, &["src_id", "a.id"]).unwrap_or_default();
+        let src_label = row_get_string_any(row, &["src_label", "labels(a)[0]"]).unwrap_or_default();
+        let src_props = row_to_properties(row, &["src_props", "toString(properties(a))"]);
+        let rel_type = row_get_string_any(row, &["rel_type", "type(r)"]).unwrap_or_default();
+        let rel_props = row_to_properties(row, &["rel_props", "toString(properties(r))"]);
+        let tgt_id = row_get_string_any(row, &["tgt_id", "b.id"]).unwrap_or_default();
+        let tgt_label = row_get_string_any(row, &["tgt_label", "labels(b)[0]"]).unwrap_or_default();
+        let tgt_props = row_to_properties(row, &["tgt_props", "toString(properties(b))"]);
 
         if !src_id.is_empty() {
             nodes_map
@@ -203,9 +203,13 @@ fn parse_graphqlite_export_result(
     })
 }
 
+fn row_get_string_any(row: &graphqlite::Row, cols: &[&str]) -> Option<String> {
+    cols.iter().find_map(|col| row.get::<String>(col).ok())
+}
+
 /// Read a properties column from a GraphQLite row (JSON string) and normalize keys to a2a: form.
-fn row_to_properties(row: &graphqlite::Row, col: &str) -> HashMap<String, serde_json::Value> {
-    let s: String = row.get(col).unwrap_or_default();
+fn row_to_properties(row: &graphqlite::Row, cols: &[&str]) -> HashMap<String, serde_json::Value> {
+    let s = row_get_string_any(row, cols).unwrap_or_default();
     let map: HashMap<String, serde_json::Value> = serde_json::from_str::<serde_json::Value>(&s)
         .ok()
         .and_then(|v| {

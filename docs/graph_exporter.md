@@ -7,7 +7,14 @@ lives in `crates/baml-rt-provenance/src/bin/graph_exporter.rs`.
 ## Quick Start
 
 Requires a GraphQLite database file with provenance data (the agent runner
-writes to it when started with `--provenance-db <path>`; default is in-memory).
+writes to it when started with `--provenance-db <path>`).
+
+Example runner invocation with file-backed provenance:
+
+```sh
+cargo run -p baml-agent-runner -- \
+  <agent-package>.tar.gz --a2a-stdio --provenance-db provenance.db
+```
 
 ```sh
 cargo run -p baml-rt-provenance --features cli --bin graph_exporter -- \
@@ -144,7 +151,9 @@ debugging provenance issues but produces noisy diagrams.
 
 ## Connection Options
 
-- `--db <PATH>` — Path to GraphQLite database file (default: `provenance.db`). Use `:memory:` for an empty in-memory DB (no data).
+- `--db <PATH>` — Path to GraphQLite database file (default: `provenance.db`).
+  `:memory:` is process-local and not usable for cross-process export.
+  Ensure runner was started with `--provenance-db <PATH>`.
 - `--output <PATH>` — write to file instead of stdout
 
 ## Examples

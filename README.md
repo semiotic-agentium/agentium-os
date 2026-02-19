@@ -172,7 +172,7 @@ The project uses [just](https://github.com/casey/just) as a command runner. A `.
 | `just test-build` | `just test-build` | Compile-only (no execution) — useful as a quick pre-push sanity check. |
 | `just test-crate <crate>` | `just test-crate baml-rt-provenance` | Run tests for a single crate with the same CI feature flags. |
 | `just test-unit` | `just test-unit` | Run only unit tests that need neither FalkorDB nor API keys. |
-| `just clickup-agent` | `just clickup-agent` | Build and run the ClickUp agent: packages it via `baml-agent-builder` then launches the runner in A2A stdio mode. Connects to FalkorDB at `$FALKORDB_URL` (default `redis://localhost:6379`). |
+| `just clickup-agent` | `just clickup-agent` | Build and run the ClickUp agent: packages it via `baml-agent-builder` then launches the runner in A2A stdio mode. Uses in-memory SQLite provenance by default. |
 | `just provenance-mermaid <context_id>` | `just provenance-mermaid ctx-1771426017780-2` | Export a simplified Mermaid sequence diagram for a given provenance context ID. |
 
 ### CI feature flags

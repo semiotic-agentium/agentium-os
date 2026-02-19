@@ -184,11 +184,18 @@ impl ToolCallRow {
             .or_else(|_| row.get(TOOL_COL_ARGS_ALT))?;
         let metadata = serde_json::from_str(&metadata_str).unwrap_or(Value::String(metadata_str));
         let args = serde_json::from_str(&args_str).unwrap_or(Value::String(args_str));
-        let success: Option<i64> = row
-            .get(TOOL_COL_SUCCESS)
-            .or_else(|_| row.get(TOOL_COL_SUCCESS_ALT))
-            .ok();
-        let success = success.map(|v| v != 0);
+        // GraphQLite stores booleans natively (not as integers), so try
+        // bool first, then fall back to i64 for compatibility.
+        let success: Option<bool> = row
+            .get::<bool>(TOOL_COL_SUCCESS)
+            .or_else(|_| row.get::<bool>(TOOL_COL_SUCCESS_ALT))
+            .ok()
+            .or_else(|| {
+                row.get::<i64>(TOOL_COL_SUCCESS)
+                    .or_else(|_| row.get::<i64>(TOOL_COL_SUCCESS_ALT))
+                    .ok()
+                    .map(|v| v != 0)
+            });
         Ok(Self {
             event_id,
             tool_name,
@@ -199,7 +206,7 @@ impl ToolCallRow {
     }
 
     fn is_completed(&self) -> bool {
-        self.success.unwrap_or(false)
+        self.success.is_some()
     }
 }
 
@@ -236,6 +243,15 @@ fn has_meaningful_result(value: &Value) -> bool {
         Value::Array(a) => !a.is_empty(),
         Value::String(s) => !s.trim().is_empty(),
         _ => true,
+    }
+}
+
+fn metadata_error(metadata: &Value) -> Option<Value> {
+    let error = metadata.get("error")?;
+    if has_meaningful_result(error) {
+        Some(error.clone())
+    } else {
+        None
     }
 }
 
@@ -707,11 +723,12 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
                 .get("result")
                 .cloned()
                 .unwrap_or(Value::Object(serde_json::Map::new()));
+            let error = metadata_error(&tool.metadata);
+            let has_outcome = has_meaningful_result(&result) || error.is_some();
             let include_call = !matches!(
                 phase,
                 ToolSessionPhase::Open | ToolSessionPhase::Finish | ToolSessionPhase::Abort
-            ) && (!is_empty_object(&tool.args)
-                || has_meaningful_result(&result));
+            ) && (!is_empty_object(&tool.args) || has_outcome);
 
             if include_call {
                 items.push(ProvenanceConversationContextItem {
@@ -729,16 +746,24 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
                 });
             }
 
-            if include_call && has_meaningful_result(&result) {
+            if include_call && has_outcome {
+                let mut content = serde_json::Map::new();
+                content.insert("tool_name".to_string(), Value::String(tool.tool_name));
+                content.insert(
+                    "fsm_phase".to_string(),
+                    Value::String(phase.label().to_string()),
+                );
+                if has_meaningful_result(&result) {
+                    content.insert("result".to_string(), result);
+                }
+                if let Some(error) = error {
+                    content.insert("error".to_string(), error);
+                }
                 items.push(ProvenanceConversationContextItem {
                     timestamp_ms: event_id_to_timestamp_ms(&tool.event_id),
                     event_id: tool.event_id,
                     role: "tool".to_string(),
-                    content: serde_json::json!({
-                        "tool_name": tool.tool_name,
-                        "fsm_phase": phase.label(),
-                        "result": result
-                    }),
+                    content: Value::Object(content),
                     source: "tool_result".to_string(),
                 });
             }

@@ -122,14 +122,17 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "tool_execution",
             Retryability::Retryable,
         ),
-        BamlRtError::ProvenanceContextRead { .. } => mapping(
-            error,
-            -32603,
-            "Internal error",
-            None,
-            "provenance",
-            Retryability::Retryable,
-        ),
+        BamlRtError::ProvenanceContextRead { source } => {
+            let details = format!("{source}");
+            mapping(
+                error,
+                -32603,
+                "Internal error",
+                Some(serde_json::json!({ "details": details })),
+                "provenance",
+                Retryability::Retryable,
+            )
+        }
         BamlRtError::Io(_) => mapping(
             error,
             -32603,
