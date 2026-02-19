@@ -5,8 +5,9 @@
 # should not need to think about whitespace.
 #
 # Several options below (imports_granularity, group_imports,
-# use_field_init_shorthand, style_edition) are nightly-only. This is fine:
-# the workspace already requires nightly for edition 2024.
+# use_field_init_shorthand, style_edition) are nightly-only.
+# rust-toolchain.toml pins nightly so `cargo fmt` works locally.
+# CI overrides to stable for build/test to avoid nightly regressions.
 
 unstable_features = true
 edition = "2024"
