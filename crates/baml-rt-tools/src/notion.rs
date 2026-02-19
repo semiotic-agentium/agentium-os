@@ -755,9 +755,11 @@ fn next_depth_for_children(depth: u32, max_depth: u32) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{NotionClient, NotionInput, RetryAfter, backoff_delay, next_depth_for_children};
-    use reqwest::header::HeaderValue;
     use std::time::Duration;
+
+    use reqwest::header::HeaderValue;
+
+    use super::{NotionClient, NotionInput, RetryAfter, backoff_delay, next_depth_for_children};
 
     #[test]
     fn next_depth_for_children_respects_max_depth() {
