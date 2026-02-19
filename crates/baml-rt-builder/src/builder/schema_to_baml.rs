@@ -551,6 +551,8 @@ fn to_pascal_case(s: &str) -> String {
 }
 
 fn write_line(output: &mut String, line: &str) -> Result<()> {
-    writeln!(output, "{}", line)
-        .map_err(|e| BamlRtError::InvalidArgument(format!("Format error: {}", e)))
+    writeln!(output, "{}", line).map_err(|e| BamlRtError::InvalidArgumentWithSource {
+        message: "Format error".into(),
+        source: Box::new(e),
+    })
 }

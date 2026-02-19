@@ -221,7 +221,19 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "internal",
             Retryability::Permanent,
         ),
+        BamlRtError::AgentDirNotFound { .. }
+        | BamlRtError::BamlSrcNotFound { .. }
+        | BamlRtError::PackageNotFound { .. }
+        | BamlRtError::InvalidPackageExtension { .. } => mapping(
+            error,
+            -32600,
+            "Invalid request",
+            None,
+            "invalid_argument",
+            Retryability::Permanent,
+        ),
         BamlRtError::ParsedResultFailed { .. }
+        | BamlRtError::IrSignatureExtraction { .. }
         | BamlRtError::SystemTime(_)
         | BamlRtError::TarHeaderPath(_) => mapping(
             error,

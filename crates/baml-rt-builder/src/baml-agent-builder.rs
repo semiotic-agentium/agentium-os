@@ -172,15 +172,17 @@ async fn bootstrap_agent(
             .with_default(&default_name)
             .with_help_message("Display name for the agent (used for slug in manifest)")
             .prompt()
-            .map_err(|e| {
-                BamlRtError::InvalidArgument(format!("Prompt cancelled or failed: {}", e))
+            .map_err(|e| BamlRtError::InvalidArgumentWithSource {
+                message: "Prompt cancelled or failed".into(),
+                source: Box::new(e),
             })?;
 
         let description = inquire::Text::new("Description")
             .with_help_message("Short description of the agent")
             .prompt()
-            .map_err(|e| {
-                BamlRtError::InvalidArgument(format!("Prompt cancelled or failed: {}", e))
+            .map_err(|e| BamlRtError::InvalidArgumentWithSource {
+                message: "Prompt cancelled or failed".into(),
+                source: Box::new(e),
             })?;
 
         let tool_options: Vec<(String, String)> = all_tool_metadata()
@@ -201,8 +203,9 @@ async fn bootstrap_agent(
             let raw = inquire::MultiSelect::new("Tools (space to select, type to filter)", choices)
                 .with_help_message("Select tools to include in the agent. You can type to search.")
                 .prompt()
-                .map_err(|e| {
-                    BamlRtError::InvalidArgument(format!("Prompt cancelled or failed: {}", e))
+                .map_err(|e| BamlRtError::InvalidArgumentWithSource {
+                    message: "Prompt cancelled or failed".into(),
+                    source: Box::new(e),
                 })?;
             raw.into_iter()
                 .filter_map(|label| {

@@ -16,8 +16,10 @@ use serde_json::Value;
 use crate::builder::schema_to_baml;
 
 fn write_line(output: &mut String, line: &str) -> Result<()> {
-    writeln!(output, "{}", line)
-        .map_err(|e| BamlRtError::InvalidArgument(format!("Format error: {}", e)))
+    writeln!(output, "{}", line).map_err(|e| BamlRtError::InvalidArgumentWithSource {
+        message: "Format error".into(),
+        source: Box::new(e),
+    })
 }
 
 /// Generate BAML tool interface file with FSM-aware prompting hints

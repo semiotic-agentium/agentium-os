@@ -17,18 +17,12 @@ impl AgentDir {
     /// Create a new AgentDir, validating that it exists and contains baml_src
     pub fn new(path: PathBuf) -> baml_rt_core::Result<Self> {
         if !path.exists() {
-            return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
-                "Agent directory does not exist: {}",
-                path.display()
-            )));
+            return Err(baml_rt_core::BamlRtError::AgentDirNotFound { path });
         }
 
         let baml_src = path.join("baml_src");
         if !baml_src.exists() {
-            return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
-                "baml_src directory not found in {}",
-                path.display()
-            )));
+            return Err(baml_rt_core::BamlRtError::BamlSrcNotFound { path });
         }
 
         Ok(Self(path))
@@ -64,17 +58,11 @@ impl PackagePath {
     /// Create a new PackagePath, validating it exists and has .tar.gz extension
     pub fn new(path: PathBuf) -> baml_rt_core::Result<Self> {
         if !path.exists() {
-            return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
-                "Package file does not exist: {}",
-                path.display()
-            )));
+            return Err(baml_rt_core::BamlRtError::PackageNotFound { path });
         }
 
         if path.extension().and_then(|s| s.to_str()) != Some("gz") {
-            return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
-                "Package file must have .tar.gz extension: {}",
-                path.display()
-            )));
+            return Err(baml_rt_core::BamlRtError::InvalidPackageExtension { path });
         }
 
         Ok(Self(path))

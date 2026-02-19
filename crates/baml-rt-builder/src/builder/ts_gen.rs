@@ -1,13 +1,26 @@
-use std::{collections::HashSet, fs, path::Path};
+use std::{collections::HashSet, fmt, fs, path::Path};
 
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_tools::ts_gen::render_tool_typescript;
-use genco::{lang::js, prelude::*};
+use genco::{fmt::Error as GencoFmtError, lang::js, prelude::*};
 use internal_baml_core::ir::ir_hasher::IRSignature;
 
 use crate::builder::ir_to_ts::{
     collect_type_decl_deps, emit_type_declarations_tokens, type_to_ts_expr,
 };
+
+/// Wrapper so genco fmt errors can be used as [`std::error::Error`] source.
+/// genco's `fmt::Error` does not implement `Error`; this preserves the chain.
+#[derive(Debug)]
+struct GencoRenderError(GencoFmtError);
+
+impl fmt::Display for GencoRenderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for GencoRenderError {}
 
 pub fn load_manifest_tools(baml_src: &Path) -> Result<Vec<String>> {
     let agent_dir = baml_src.parent().ok_or_else(|| {
@@ -88,7 +101,10 @@ pub fn render_ts_declarations(ir_signature: &IRSignature, tool_names: &[String])
 
     tokens
         .to_file_string()
-        .map_err(|e| BamlRtError::InvalidArgument(format!("TypeScript render error: {e}")))
+        .map_err(|e| BamlRtError::InvalidArgumentWithSource {
+            message: "TypeScript render error".into(),
+            source: Box::new(GencoRenderError(e)),
+        })
 }
 
 /// Build an object type for function args: { name1: Type1; name2: Type2; ... }.
