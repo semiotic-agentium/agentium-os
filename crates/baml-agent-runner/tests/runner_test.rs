@@ -33,17 +33,64 @@ impl BundleType for Test {
         "Test tools for unit testing"
     }
 }
-use baml_rt::a2a_types::SendMessageRequest;
+use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, SendMessageRequest};
 #[cfg(feature = "llm-tests")]
 use baml_rt_a2a::A2aSessionBundle;
-use common::{
-    StrictProvenanceWriter, build_agent_dir_to_temp, collect_stream_responses, e2e_serial_gate,
-    jsonrpc_request, send_message_request,
-};
+use common::{StrictProvenanceWriter, build_agent_dir_to_temp, e2e_serial_gate};
 use test_support::common::{
     CalculatorTool, agent_fixture, chunks_from_responses, ensure_baml_src_exists,
     ensure_fixture_runtime_types, message_texts_from_chunks, user_message, workspace_root,
 };
+
+fn jsonrpc_request(method: &str, params: serde_json::Value, id: &str) -> JSONRPCRequest {
+    JSONRPCRequest {
+        jsonrpc: "2.0".to_string(),
+        method: method.to_string(),
+        params: Some(params),
+        id: Some(JSONRPCId::String(id.to_string())),
+    }
+}
+
+fn send_message_request(params: SendMessageRequest, id: &str) -> JSONRPCRequest {
+    jsonrpc_request(
+        "message.sendStream",
+        serde_json::to_value(params).expect("serialize SendMessageRequest"),
+        id,
+    )
+}
+
+async fn collect_stream_responses(
+    agent: &baml_rt::A2aAgent,
+    request: JSONRPCRequest,
+) -> baml_rt::Result<Vec<Value>> {
+    let stream = agent
+        .handle_a2a_stream(serde_json::to_value(request).expect("request json"))
+        .await?;
+    Ok(baml_rt::collect_a2a_stream_until(stream, |item| {
+        let state = item
+            .get("result")
+            .and_then(|r| r.get("chunk"))
+            .and_then(|c| c.get("task"))
+            .and_then(|t| t.get("status"))
+            .and_then(|s| s.get("state"))
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                item.get("result")
+                    .and_then(|r| r.get("chunk"))
+                    .and_then(|c| c.get("statusUpdate"))
+                    .and_then(|s| s.get("status"))
+                    .and_then(|s| s.get("state"))
+                    .and_then(|v| v.as_str())
+            });
+        let is_final = item
+            .get("result")
+            .and_then(|r| r.get("final"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        is_final || matches!(state, Some("TASK_STATE_INPUT_REQUIRED"))
+    })
+    .await)
+}
 
 /// Build fixture with baml-agent-builder, extract tar to temp dir, return path to extracted dir (has dist + baml_src).
 fn build_fixture_to_temp(fixture_name: &str) -> std::path::PathBuf {
