@@ -89,11 +89,29 @@ pub struct UpdateTaskInput {
     pub priority: Option<u8>,
 }
 
+/// Delete a task from the workspace.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[serde(deny_unknown_fields)]
+#[ts(export)]
+pub struct DeleteTaskInput {
+    pub task_id: String,
+    /// Must be `true` for the deletion to proceed. The LLM should first
+    /// confirm with the user before setting this to `true`.
+    pub confirm_delete: bool,
+}
+
 /// Union of all ClickUp action inputs.
 ///
 /// The LLM picks the appropriate variant based on the desired action.
 /// In generated BAML this becomes:
-/// `type ClickUpInput = ListTeamsInput | ListSpacesInput | … | UpdateTaskInput`
+/// `type ClickUpInput = ListTeamsInput | ListSpacesInput | … | DeleteTaskInput`
+///
+/// **Variant order matters**: `serde(untagged)` tries variants top-down and
+/// takes the first successful match. Ordering invariants:
+/// - `GetTask` must precede `UpdateTask` so that `{ "task_id": "..." }`
+///   (without optional update fields) resolves to `GetTask`, not `UpdateTask`.
+/// - `DeleteTask` has `confirm_delete: bool` which disambiguates it from
+///   `GetTask`, so its position is flexible.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[baml(union)]
 #[serde(untagged)]
@@ -106,6 +124,7 @@ pub enum ClickUpInput {
     GetTask(GetTaskInput),
     CreateTask(CreateTaskInput),
     UpdateTask(UpdateTaskInput),
+    DeleteTask(DeleteTaskInput),
 }
 
 // ---------------------------------------------------------------------------
@@ -586,6 +605,39 @@ impl ClickUpTool {
             items: vec![],
         })
     }
+
+    #[tracing::instrument(skip(self, api_key))]
+    async fn delete_task(&self, api_key: &str, task_id: &str) -> Result<ClickUpOutput> {
+        let resp = self
+            .client
+            .delete(format!("{BASE_URL}/task/{task_id}"))
+            .header("Authorization", api_key)
+            .send()
+            .await
+            .map_err(ClickUpError::Http)?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let code = status.as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(match code {
+                401 => ClickUpError::Unauthorized { body },
+                404 => ClickUpError::NotFound { body },
+                429 => {
+                    let reset_at = "unknown".to_string();
+                    ClickUpError::RateLimited { body, reset_at }
+                }
+                _ => ClickUpError::Api { status: code, body },
+            }
+            .into());
+        }
+
+        Ok(ClickUpOutput {
+            message: format!("Deleted task {task_id}"),
+            tasks: vec![],
+            items: vec![],
+        })
+    }
 }
 
 #[async_trait]
@@ -600,8 +652,20 @@ impl BamlTool for ClickUpTool {
         "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks."
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self), fields(action))]
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
+        let action = match &args {
+            ClickUpInput::ListTeams(_) => "ListTeams",
+            ClickUpInput::ListSpaces(_) => "ListSpaces",
+            ClickUpInput::ListLists(_) => "ListLists",
+            ClickUpInput::ListTasks(_) => "ListTasks",
+            ClickUpInput::GetTask(_) => "GetTask",
+            ClickUpInput::CreateTask(_) => "CreateTask",
+            ClickUpInput::UpdateTask(_) => "UpdateTask",
+            ClickUpInput::DeleteTask(_) => "DeleteTask",
+        };
+        tracing::Span::current().record("action", action);
+
         let api_key = Self::api_key()?;
         match args {
             ClickUpInput::ListTeams(_) => self.list_teams(&api_key).await,
@@ -637,6 +701,20 @@ impl BamlTool for ClickUpTool {
                 )
                 .await
             }
+            ClickUpInput::DeleteTask(input) => {
+                if !input.confirm_delete {
+                    Ok(ClickUpOutput {
+                        message: format!(
+                            "Task {} identified. Please confirm you want to delete it.",
+                            input.task_id
+                        ),
+                        tasks: vec![],
+                        items: vec![],
+                    })
+                } else {
+                    self.delete_task(&api_key, &input.task_id).await
+                }
+            }
         }
     }
 }
@@ -654,6 +732,7 @@ pub fn clickup_metadata() -> ToolFunctionMetadata {
         GetTaskInput::baml_decl(),
         CreateTaskInput::baml_decl(),
         UpdateTaskInput::baml_decl(),
+        DeleteTaskInput::baml_decl(),
         ClickUpInput::baml_decl(),
         ClickUpTaskSummary::baml_decl(),
         ClickUpItem::baml_decl(),
