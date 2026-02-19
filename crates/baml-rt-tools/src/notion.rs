@@ -273,6 +273,7 @@ impl From<NotionError> for BamlRtError {
 struct NotionClient {
     client: reqwest::Client,
     api_key: Option<String>,
+    base_url: String,
 }
 
 #[derive(Debug, Clone)]
@@ -304,10 +305,24 @@ impl fmt::Display for RetryAfter {
 impl NotionClient {
     fn new() -> Self {
         let api_key = std::env::var("NOTION_API_TOKEN").ok();
+        let base_url = Self::resolve_base_url();
         Self {
             client: reqwest::Client::new(),
             api_key,
+            base_url,
         }
+    }
+
+    fn resolve_base_url() -> String {
+        std::env::var("NOTION_API_BASE_URL")
+            .ok()
+            .map(|raw| raw.trim().trim_end_matches('/').to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| BASE_URL.to_string())
+    }
+
+    fn base_url(&self) -> &str {
+        self.base_url.as_str()
     }
 
     fn api_key(&self) -> std::result::Result<&str, NotionError> {
@@ -425,6 +440,7 @@ impl NotionClient {
     ) -> Result<NotionOutput> {
         let span = spans::notion_search_pages(query.map(|q| q.len()), page_size);
         let _guard = span.enter();
+        let base_url = self.base_url();
         let mut body = serde_json::Map::new();
         if let Some(q) = query {
             body.insert(
@@ -449,7 +465,7 @@ impl NotionClient {
         let json = self
             .send_request(
                 self.client
-                    .post(format!("{BASE_URL}/search"))
+                    .post(format!("{base_url}/search"))
                     .headers(self.auth_headers(api_key)?)
                     .json(&serde_json::Value::Object(body)),
             )
@@ -479,11 +495,12 @@ impl NotionClient {
     async fn get_page(&self, api_key: &str, page_id: &str) -> Result<NotionOutput> {
         let span = spans::notion_get_page(page_id);
         let _guard = span.enter();
+        let base_url = self.base_url();
         let normalized = Self::normalize_id(page_id)?;
         let json = self
             .send_request(
                 self.client
-                    .get(format!("{BASE_URL}/pages/{normalized}"))
+                    .get(format!("{base_url}/pages/{normalized}"))
                     .headers(self.auth_headers(api_key)?),
             )
             .await?;
@@ -565,11 +582,12 @@ impl NotionClient {
     ) -> std::result::Result<NotionPageSummary, NotionError> {
         let span = spans::notion_fetch_page_summary(page_id);
         let _guard = span.enter();
+        let base_url = self.base_url();
         let normalized = Self::normalize_id(page_id)?;
         let json = self
             .send_request(
                 self.client
-                    .get(format!("{BASE_URL}/pages/{normalized}"))
+                    .get(format!("{base_url}/pages/{normalized}"))
                     .headers(self.auth_headers(api_key)?),
             )
             .await?;
@@ -595,9 +613,10 @@ impl NotionClient {
     )> {
         let span = spans::notion_get_page_blocks(block_id);
         let _guard = span.enter();
+        let base_url = self.base_url();
         let mut request = self
             .client
-            .get(format!("{BASE_URL}/blocks/{block_id}/children"))
+            .get(format!("{base_url}/blocks/{block_id}/children"))
             .headers(self.auth_headers(api_key)?);
         let mut params: Vec<(&str, String)> = Vec::new();
         if let Some(cursor) = start_cursor {
@@ -755,11 +774,22 @@ fn next_depth_for_children(depth: u32, max_depth: u32) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{
+        sync::{Mutex, OnceLock},
+        time::Duration,
+    };
 
     use reqwest::header::HeaderValue;
+    use test_support::common::TempEnvVar;
 
-    use super::{NotionClient, NotionInput, RetryAfter, backoff_delay, next_depth_for_children};
+    use super::{
+        BASE_URL, NotionClient, NotionInput, RetryAfter, backoff_delay, next_depth_for_children,
+    };
+
+    fn notion_api_base_url_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn next_depth_for_children_respects_max_depth() {
@@ -831,6 +861,37 @@ mod tests {
             result.is_err(),
             "mixed page_id + block_id must not match any variant"
         );
+    }
+
+    #[test]
+    fn notion_base_url_defaults_to_constant() {
+        let _guard = notion_api_base_url_test_lock()
+            .lock()
+            .expect("lock notion base URL test mutex");
+        let _env = TempEnvVar::remove("NOTION_API_BASE_URL");
+        let client = NotionClient::new();
+        assert_eq!(client.base_url(), BASE_URL);
+    }
+
+    #[test]
+    fn notion_base_url_uses_override_and_trims_trailing_slash() {
+        let _guard = notion_api_base_url_test_lock()
+            .lock()
+            .expect("lock notion base URL test mutex");
+        let _env = TempEnvVar::set("NOTION_API_BASE_URL", " https://mock.notion.local/v1/ ");
+        let client = NotionClient::new();
+        assert_eq!(client.base_url(), "https://mock.notion.local/v1");
+    }
+
+    #[test]
+    fn notion_base_url_is_bound_at_client_creation() {
+        let _guard = notion_api_base_url_test_lock()
+            .lock()
+            .expect("lock notion base URL test mutex");
+        let _env_unset = TempEnvVar::remove("NOTION_API_BASE_URL");
+        let client = NotionClient::new();
+        let _env_override = TempEnvVar::set("NOTION_API_BASE_URL", "https://mock.notion.local");
+        assert_eq!(client.base_url(), BASE_URL);
     }
 }
 
