@@ -105,6 +105,13 @@ pub struct DeleteTaskInput {
 /// The LLM picks the appropriate variant based on the desired action.
 /// In generated BAML this becomes:
 /// `type ClickUpInput = ListTeamsInput | ListSpacesInput | … | DeleteTaskInput`
+///
+/// **Variant order matters**: `serde(untagged)` tries variants top-down and
+/// takes the first successful match. Ordering invariants:
+/// - `GetTask` must precede `UpdateTask` so that `{ "task_id": "..." }`
+///   (without optional update fields) resolves to `GetTask`, not `UpdateTask`.
+/// - `DeleteTask` has `confirm_delete: bool` which disambiguates it from
+///   `GetTask`, so its position is flexible.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[baml(union)]
 #[serde(untagged)]
@@ -645,8 +652,20 @@ impl BamlTool for ClickUpTool {
         "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks."
     }
 
-    #[tracing::instrument(skip(self))]
+    #[tracing::instrument(skip(self), fields(action))]
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
+        let action = match &args {
+            ClickUpInput::ListTeams(_) => "ListTeams",
+            ClickUpInput::ListSpaces(_) => "ListSpaces",
+            ClickUpInput::ListLists(_) => "ListLists",
+            ClickUpInput::ListTasks(_) => "ListTasks",
+            ClickUpInput::GetTask(_) => "GetTask",
+            ClickUpInput::CreateTask(_) => "CreateTask",
+            ClickUpInput::UpdateTask(_) => "UpdateTask",
+            ClickUpInput::DeleteTask(_) => "DeleteTask",
+        };
+        tracing::Span::current().record("action", action);
+
         let api_key = Self::api_key()?;
         match args {
             ClickUpInput::ListTeams(_) => self.list_teams(&api_key).await,
