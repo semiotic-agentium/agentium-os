@@ -317,6 +317,14 @@ impl ClickUpTool {
         }
     }
 
+    fn base_url() -> String {
+        std::env::var("CLICKUP_API_BASE_URL")
+            .ok()
+            .map(|raw| raw.trim().trim_end_matches('/').to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| BASE_URL.to_string())
+    }
+
     fn api_key() -> std::result::Result<String, ClickUpError> {
         std::env::var("CLICKUP_API_KEY").map_err(ClickUpError::MissingApiKey)
     }
@@ -363,10 +371,11 @@ impl ClickUpTool {
 
     #[tracing::instrument(skip(self, api_key))]
     async fn list_teams(&self, api_key: &str) -> Result<ClickUpOutput> {
+        let base_url = Self::base_url();
         let json = self
             .send_request(
                 self.client
-                    .get(format!("{BASE_URL}/team"))
+                    .get(format!("{base_url}/team"))
                     .header("Authorization", api_key),
             )
             .await?;
@@ -396,10 +405,11 @@ impl ClickUpTool {
 
     #[tracing::instrument(skip(self, api_key))]
     async fn list_spaces(&self, api_key: &str, team_id: &str) -> Result<ClickUpOutput> {
+        let base_url = Self::base_url();
         let json = self
             .send_request(
                 self.client
-                    .get(format!("{BASE_URL}/team/{team_id}/space"))
+                    .get(format!("{base_url}/team/{team_id}/space"))
                     .header("Authorization", api_key),
             )
             .await?;
@@ -429,10 +439,11 @@ impl ClickUpTool {
 
     #[tracing::instrument(skip(self, api_key))]
     async fn list_lists(&self, api_key: &str, space_id: &str) -> Result<ClickUpOutput> {
+        let base_url = Self::base_url();
         let json = self
             .send_request(
                 self.client
-                    .get(format!("{BASE_URL}/space/{space_id}/list"))
+                    .get(format!("{base_url}/space/{space_id}/list"))
                     .header("Authorization", api_key),
             )
             .await?;
@@ -463,10 +474,11 @@ impl ClickUpTool {
 
     #[tracing::instrument(skip(self, api_key))]
     async fn list_tasks(&self, api_key: &str, list_id: &str) -> Result<ClickUpOutput> {
+        let base_url = Self::base_url();
         let json = self
             .send_request(
                 self.client
-                    .get(format!("{BASE_URL}/list/{list_id}/task"))
+                    .get(format!("{base_url}/list/{list_id}/task"))
                     .header("Authorization", api_key),
             )
             .await?;
@@ -501,10 +513,11 @@ impl ClickUpTool {
 
     #[tracing::instrument(skip(self, api_key))]
     async fn get_task(&self, api_key: &str, task_id: &str) -> Result<ClickUpOutput> {
+        let base_url = Self::base_url();
         let json = self
             .send_request(
                 self.client
-                    .get(format!("{BASE_URL}/task/{task_id}"))
+                    .get(format!("{base_url}/task/{task_id}"))
                     .header("Authorization", api_key),
             )
             .await?;
@@ -531,6 +544,7 @@ impl ClickUpTool {
         description: Option<&str>,
         priority: Option<u8>,
     ) -> Result<ClickUpOutput> {
+        let base_url = Self::base_url();
         let mut body = serde_json::json!({ "name": name });
         if let Some(desc) = description {
             body["description"] = serde_json::Value::String(desc.to_string());
@@ -542,7 +556,7 @@ impl ClickUpTool {
         let json = self
             .send_request(
                 self.client
-                    .post(format!("{BASE_URL}/list/{list_id}/task"))
+                    .post(format!("{base_url}/list/{list_id}/task"))
                     .header("Authorization", api_key)
                     .json(&body),
             )
@@ -570,6 +584,7 @@ impl ClickUpTool {
         description: Option<&str>,
         priority: Option<u8>,
     ) -> Result<ClickUpOutput> {
+        let base_url = Self::base_url();
         let mut body = serde_json::Map::new();
         if let Some(s) = status {
             body.insert(
@@ -590,7 +605,7 @@ impl ClickUpTool {
         let json = self
             .send_request(
                 self.client
-                    .put(format!("{BASE_URL}/task/{task_id}"))
+                    .put(format!("{base_url}/task/{task_id}"))
                     .header("Authorization", api_key)
                     .json(&serde_json::Value::Object(body)),
             )
@@ -611,9 +626,10 @@ impl ClickUpTool {
 
     #[tracing::instrument(skip(self, api_key))]
     async fn delete_task(&self, api_key: &str, task_id: &str) -> Result<ClickUpOutput> {
+        let base_url = Self::base_url();
         let resp = self
             .client
-            .delete(format!("{BASE_URL}/task/{task_id}"))
+            .delete(format!("{base_url}/task/{task_id}"))
             .header("Authorization", api_key)
             .send()
             .await

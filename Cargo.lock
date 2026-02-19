@@ -924,6 +924,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "baml-rt",
  "baml-rt-a2a",
  "baml-rt-api",
@@ -935,6 +936,7 @@ dependencies = [
  "clap",
  "dotenvy",
  "flate2",
+ "reqwest 0.12.26",
  "schemars 1.2.1",
  "serde",
  "serde_json",
