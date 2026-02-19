@@ -5,16 +5,18 @@
 //! Uses fixture `stream-baml-tool` and BAML function `ChooseCalcTool` (returns session plan object).
 //! LLM calls are stubbed so tests do not require an API key.
 
-use baml_rt::A2aAgent;
-use baml_rt::QuickJSConfig;
-use baml_rt::baml::BamlRuntimeManager;
-use baml_rt::interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor};
-use baml_rt_core::bus::{BusWithEffects, EffectEmitter, EffectLiveness};
-use baml_rt_core::context::{self, InvocationScope};
-use serde_json::json;
-use std::fs;
-use std::sync::Arc;
+use std::{fs, sync::Arc};
 
+use baml_rt::{
+    A2aAgent, QuickJSConfig,
+    baml::BamlRuntimeManager,
+    interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor},
+};
+use baml_rt_core::{
+    bus::{BusWithEffects, EffectEmitter, EffectLiveness},
+    context::{self, InvocationScope},
+};
+use serde_json::json;
 use test_support::common::{CalculatorTool, agent_fixture, ensure_fixture_runtime_types};
 
 /// Stub interceptor: returns a canned session plan for ChooseCalcTool so tests avoid real LLM calls.

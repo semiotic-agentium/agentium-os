@@ -33,8 +33,16 @@ jobs:
             sudo apt-get update && sudo apt-get install -y zstd
           fi
 
-      - name: Install Rust
+      - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Install nightly rustfmt
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+
+      - name: Enforce formatting (nightly rustfmt)
+        run: cargo +nightly fmt --check
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
@@ -68,6 +76,7 @@ jobs:
           cargo nextest run --workspace --locked --profile ci \
             --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-rt/llm-tests,baml-agent-runner/llm-tests
         env:
+          RUSTUP_TOOLCHAIN: stable
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
       - name: Publish JUnit report

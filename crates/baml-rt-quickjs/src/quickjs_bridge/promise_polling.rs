@@ -5,15 +5,20 @@
 //! Effect-gated timeout (L5–L6) distinguishes "waiting on effect" from
 //! "will never yield". See docs/HOST_QUICKJS_STREAM_INVARIANTS.md.
 
-use crate::quickjs_bridge::eval::EffectGatedTimeoutPolicy;
-use baml_rt_core::bus::EffectLiveness;
-use baml_rt_core::context::{InvocationScope, RuntimeScope};
-use baml_rt_core::{BamlRtError, Result};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex as StdMutex},
+};
+
+use baml_rt_core::{
+    BamlRtError, Result,
+    bus::EffectLiveness,
+    context::{InvocationScope, RuntimeScope},
+};
 use quickjs_runtime::facades::QuickJsRuntimeFacade;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex as StdMutex};
 
 use super::scope::InvocationToken;
+use crate::quickjs_bridge::eval::EffectGatedTimeoutPolicy;
 
 type EvalResultMap = Arc<StdMutex<HashMap<InvocationToken, Option<String>>>>;
 type InvocationScopeMap = Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>>;

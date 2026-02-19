@@ -25,18 +25,22 @@
 //! **I4 (Provenance Admissibility)**
 //!   Provenance events require message_id in metadata (runtime validation).
 
-use baml_rt_core::Outcome;
-use baml_rt_core::bus::{
-    A2aEffectMetadata, A2aLivenessRole, BusWithEffects, EffectEmitter, EffectEvent, EffectLiveness,
-    InFlightCounts, ToolEffectMetadata,
+use std::{collections::HashMap, sync::Arc};
+
+use baml_rt_core::{
+    Outcome,
+    bus::{
+        A2aEffectMetadata, A2aLivenessRole, BusWithEffects, EffectEmitter, EffectEvent,
+        EffectLiveness, InFlightCounts, ToolEffectMetadata,
+    },
+    ids::{AgentId, ContextId, UuidId},
 };
-use baml_rt_core::ids::{AgentId, ContextId, UuidId};
 use proptest::prelude::*;
 use serde_json::json;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use tokio::time::{Duration, timeout};
+use tokio::{
+    sync::RwLock,
+    time::{Duration, timeout},
+};
 
 fn proptest_cfg(cases: u32) -> ProptestConfig {
     let mut cfg = ProptestConfig::with_cases(cases);

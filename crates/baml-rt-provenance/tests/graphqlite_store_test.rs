@@ -25,12 +25,13 @@
 //! (no guarantee) is for API-exposed reads. The same store implements both; the type system
 //! enforces which guarantee the caller gets. API handlers should take `Arc<dyn ProvenanceQueryApi>`.
 
+use std::collections::HashSet;
+
 use baml_rt_core::ids::{AgentId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId};
 use baml_rt_provenance::{
     AgentType, GlobalEvent, GraphqliteStoreBuilder, ProvEvent, ProvEventData,
     ProvenanceContextReader, ProvenanceQueryApi, ProvenanceWriter, TaskScopedEvent,
 };
-use std::collections::HashSet;
 use tempfile::tempdir;
 
 #[tokio::test]

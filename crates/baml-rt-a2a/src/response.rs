@@ -1,10 +1,7 @@
-use crate::a2a;
-use crate::a2a_types::JSONRPCId;
-use crate::error_mapping;
-use baml_rt_core::BamlRtError;
-use baml_rt_core::StreamResult;
-use baml_rt_core::stream_completion::StreamCompletion;
+use baml_rt_core::{BamlRtError, StreamResult, stream_completion::StreamCompletion};
 use serde_json::{Value, json};
+
+use crate::{a2a, a2a_types::JSONRPCId, error_mapping};
 
 pub trait ResponseFormatter: Send + Sync {
     fn format_success(&self, id: Option<JSONRPCId>, result: Value) -> Value;
@@ -77,8 +74,9 @@ fn synthetic_terminal_chunk_for_empty_stream(completion: StreamCompletion) -> Op
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use baml_rt_core::stream_completion::{StreamCompletion, StreamResult};
+
+    use super::*;
 
     #[test]
     fn format_stream_emits_terminal_chunk_on_timeout_when_empty() {

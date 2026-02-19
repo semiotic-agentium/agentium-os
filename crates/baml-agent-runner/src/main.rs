@@ -8,40 +8,46 @@
 
 mod package;
 
+use std::{
+    collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
 use anyhow::Context;
 use async_trait::async_trait;
-use baml_rt_a2a::a2a_transport::RegistrationMode;
-use baml_rt_a2a::a2a_types::A2aMessageId;
-use baml_rt_a2a::a2a_types::{
-    JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER, SendMessageConfiguration,
-    SendMessageRequest,
+use baml_rt_a2a::{
+    A2aAgent, A2aRequestHandler, AgentRegistry, a2a,
+    a2a_transport::RegistrationMode,
+    a2a_types::{
+        A2aMessageId, JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER,
+        SendMessageConfiguration, SendMessageRequest,
+    },
 };
-use baml_rt_a2a::{A2aAgent, A2aRequestHandler, AgentRegistry, a2a};
-use baml_rt_core::bus::BusStream;
-use baml_rt_core::context::{self, InvocationScope};
-use baml_rt_core::ids::{AgentId, DerivedId, ExternalId, TaskId};
 use baml_rt_core::{
     AgentDiscoveryEntry, AgentManifest, AgentRouteKey, BamlRtError, ContextId, Result,
+    bus::BusStream,
     collect_a2a_stream,
+    context::{self, InvocationScope},
+    ids::{AgentId, DerivedId, ExternalId, TaskId},
 };
 use baml_rt_observability::{spans, tracing_setup};
-use baml_rt_provenance::ProvenanceWriter;
-use baml_rt_provenance::graph_export::sequence::render_sequence_diagram;
-use baml_rt_provenance::graph_export::simplify::simplify_graph;
 use baml_rt_provenance::{
-    AgentType, GraphExporter, GraphqliteStoreBuilder, ProvEvent, ToolIndexConfig, index_tools,
+    AgentType, GraphExporter, GraphqliteStoreBuilder, ProvEvent, ProvenanceWriter, ToolIndexConfig,
+    graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
+    index_tools,
 };
 use baml_rt_quickjs::BamlRuntimeManager;
-use baml_rt_tools::tools::ToolAccess;
-use baml_rt_tools::{enforce_tool_access, parse_access_allowlist};
+use baml_rt_tools::{enforce_tool_access, parse_access_allowlist, tools::ToolAccess};
 use clap::Parser;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt},
+    sync::Mutex,
+};
 use tracing::{error, info, warn};
 
 /// Inert agent package - just holds package data

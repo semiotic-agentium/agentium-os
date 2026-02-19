@@ -5,10 +5,12 @@
 //! names with dynamic data in structured attributes. Instruments are cached
 //! using OnceLock for zero-allocation hot paths.
 
-use opentelemetry::metrics::{Counter, Histogram};
-use opentelemetry::{KeyValue, global};
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::{sync::OnceLock, time::Duration};
+
+use opentelemetry::{
+    KeyValue, global,
+    metrics::{Counter, Histogram},
+};
 
 // Static caches - initialized once, reused forever
 static TOOL_REGISTRATION_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();

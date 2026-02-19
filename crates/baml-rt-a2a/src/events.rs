@@ -1,6 +1,7 @@
-use crate::a2a_store::TaskUpdateEvent;
 use async_trait::async_trait;
 use tokio::sync::broadcast;
+
+use crate::a2a_store::TaskUpdateEvent;
 
 #[async_trait]
 pub trait EventEmitter: Send + Sync {

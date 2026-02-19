@@ -7,13 +7,18 @@
 
 #![recursion_limit = "256"]
 
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+
 use baml_rt_core::ids::{AgentId, UuidId};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge};
 use proptest::prelude::*;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::sync::{Mutex, oneshot};
-use tokio::time::{Duration, timeout};
+use tokio::{
+    sync::{Mutex, oneshot},
+    time::{Duration, timeout},
+};
 
 fn proptest_cfg(cases: u32) -> ProptestConfig {
     let mut cfg = ProptestConfig::with_cases(cases);

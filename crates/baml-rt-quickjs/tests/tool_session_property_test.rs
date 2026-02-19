@@ -8,11 +8,11 @@
 
 use async_trait::async_trait;
 use baml_rt::baml::BamlRuntimeManager;
-use baml_rt_core::context::{self, InvocationScope, RuntimeScope};
-use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, UuidId};
-use baml_rt_tools::BamlTool;
-use baml_rt_tools::ToolStep;
-use baml_rt_tools::bundles::BundleType;
+use baml_rt_core::{
+    context::{self, InvocationScope, RuntimeScope},
+    ids::{AgentId, ContextId, ExternalId, MessageId, UuidId},
+};
+use baml_rt_tools::{BamlTool, ToolStep, bundles::BundleType};
 use proptest::prelude::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

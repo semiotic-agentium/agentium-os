@@ -1,14 +1,13 @@
-use crate::events::ProvEvent;
-use crate::store::ProvenanceWriter;
+use std::sync::Arc;
+
 use async_trait::async_trait;
-use baml_rt_core::context::RuntimeScope;
-use baml_rt_core::ids::MessageId;
-use baml_rt_core::{BamlRtError, Outcome, Result};
+use baml_rt_core::{BamlRtError, Outcome, Result, context::RuntimeScope, ids::MessageId};
 use baml_rt_interceptor::{
     InterceptorDecision, LLMCallContext, LLMInterceptor, ToolCallContext, ToolInterceptor,
 };
 use serde_json::Value;
-use std::sync::Arc;
+
+use crate::{events::ProvEvent, store::ProvenanceWriter};
 
 pub struct ProvenanceInterceptor {
     writer: Arc<dyn ProvenanceWriter>,

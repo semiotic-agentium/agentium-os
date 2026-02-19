@@ -1,4 +1,3 @@
-use crate::vocabulary::a2a_types;
 use baml_rt_core::ids::{AgentId, ArtifactId, EventId, MessageId, TaskId};
 use baml_rt_id::{
     ConstantConstructible, ConstantId, DerivedConstructible, DerivedId, ProvActivitySemantics,
@@ -6,6 +5,8 @@ use baml_rt_id::{
     ProvDerivedActivitySemantics, ProvDerivedAgentSemantics, ProvDerivedEntitySemantics,
     ProvDerivedIdTemplate, ProvEntitySemantics, ProvIdSemantics, ProvKind, ProvVocabularyType,
 };
+
+use crate::vocabulary::a2a_types;
 
 /// Provenance ID semantics for derived graph nodes.
 ///

@@ -3,6 +3,8 @@
 //! Uses insta snapshots to verify generated output, reducing round trips
 //! during development and catching regressions.
 
+use std::{collections::HashMap, path::PathBuf};
+
 use baml_rt_builder::builder::{
     baml_gen::render_baml_tool_interfaces,
     baml_signature_gen::extract_baml_signatures,
@@ -12,8 +14,6 @@ use baml_rt_builder::builder::{
 use baml_runtime::BamlRuntime;
 use internal_baml_core::feature_flags::FeatureFlags;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::path::PathBuf;
 
 #[cfg(feature = "clickup")]
 #[test]

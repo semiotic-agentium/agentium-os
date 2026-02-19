@@ -1,7 +1,8 @@
+use std::collections::HashMap;
+
 use baml_rt_core::ids::{ArtifactId, ContextId, DerivedId, ExternalId, MessageId, TaskId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
 
 pub const MESSAGE_KIND: &str = "message";
 pub const ROLE_USER: &str = "ROLE_USER";

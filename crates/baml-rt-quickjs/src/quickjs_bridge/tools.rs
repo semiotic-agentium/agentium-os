@@ -1,19 +1,18 @@
-use super::wrappers;
+use std::sync::atomic::Ordering;
+
+use baml_rt_core::{BamlRtError, Result, context, correlation};
+use baml_rt_tools::ToolSessionId;
+use quickjs_runtime::{
+    jsutils::Script, quickjsrealmadapter::QuickJsRealmAdapter, values::JsValueFacade,
+};
+use serde_json::Value;
+use tokio::time::{Duration, timeout};
+
 use super::{
     QuickJSBridge, StreamSessionId, empty_open_input, resolve_scope_from_session,
-    tool_step_to_value,
+    tool_step_to_value, wrappers,
 };
 use crate::js_value_converter::value_to_js_value_facade;
-use baml_rt_core::context;
-use baml_rt_core::correlation;
-use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::ToolSessionId;
-use quickjs_runtime::jsutils::Script;
-use quickjs_runtime::quickjsrealmadapter::QuickJsRealmAdapter;
-use quickjs_runtime::values::JsValueFacade;
-use serde_json::Value;
-use std::sync::atomic::Ordering;
-use tokio::time::{Duration, timeout};
 
 /// Parse a `StreamSessionId` from the first element of a JS args array.
 ///

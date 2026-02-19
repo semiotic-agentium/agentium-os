@@ -1,12 +1,15 @@
-use crate::result_pipeline::ResultStoragePipeline;
+use std::{
+    collections::{HashSet, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+    sync::Arc,
+};
+
 use async_trait::async_trait;
 use baml_rt_core::Result;
 use serde_json::Value;
-use std::collections::HashSet;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 use tokio::sync::Mutex;
+
+use crate::result_pipeline::ResultStoragePipeline;
 
 #[async_trait]
 pub trait ResultDeduplicator: Send + Sync {

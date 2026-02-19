@@ -1,13 +1,16 @@
+#![recursion_limit = "256"]
 //! I2: Concurrency test for apply_task_delta. Ensures no interleaving violations:
 //! concurrent apply_task_delta calls for the same task result in a valid store state.
 
 mod common;
 
-use baml_rt_a2a::a2a_store::{TaskChunkApplier, TaskStore};
-use baml_rt_a2a::a2a_types::TaskState;
+use std::{collections::HashMap, sync::Arc};
+
+use baml_rt_a2a::{
+    a2a_store::{TaskChunkApplier, TaskStore},
+    a2a_types::TaskState,
+};
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
-use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::Mutex;
 
 #[tokio::test]

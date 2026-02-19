@@ -1,11 +1,15 @@
-use crate::a2a_store::TaskStoreBackend;
-use crate::a2a_types::{
-    Message, SendMessageResponse, StreamResponse, Task, TaskArtifactUpdateEvent,
-    TaskStatusUpdateEvent,
-};
-use crate::events::EventEmitter;
-use baml_rt_core::Result;
 use std::sync::Arc;
+
+use baml_rt_core::Result;
+
+use crate::{
+    a2a_store::TaskStoreBackend,
+    a2a_types::{
+        Message, SendMessageResponse, StreamResponse, Task, TaskArtifactUpdateEvent,
+        TaskStatusUpdateEvent,
+    },
+    events::EventEmitter,
+};
 
 pub struct TaskProcessor {
     task_store: Arc<dyn TaskStoreBackend>,

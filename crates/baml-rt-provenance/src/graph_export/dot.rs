@@ -3,8 +3,7 @@
 //! Produces a DOT `digraph` string that can be rendered to SVG/PDF via the
 //! `dot` command-line tool or embedded via `@viz-js/viz` WASM.
 
-use std::collections::BTreeMap;
-use std::fmt::Write;
+use std::{collections::BTreeMap, fmt::Write};
 
 use super::ExportedGraph;
 use crate::graph_model::GraphNodeLabel;
@@ -152,9 +151,10 @@ fn escape_dot_label(s: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::graph_export::{ExportScope, ExportedEdge, ExportedGraph, ExportedNode};
-    use std::collections::HashMap;
 
     fn node(id: &str, label: &str, display: &str) -> ExportedNode {
         ExportedNode {

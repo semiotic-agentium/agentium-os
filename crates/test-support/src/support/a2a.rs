@@ -1,13 +1,13 @@
 //! In-memory A2A test client.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
-use baml_rt::tools::BamlTool;
-use baml_rt::{A2aRequestHandler, Result};
+use baml_rt::{A2aRequestHandler, Result, tools::BamlTool};
 use baml_rt_tools::bundles::Support;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Arc;
 use tokio::task;
 use ts_rs::TS;
 

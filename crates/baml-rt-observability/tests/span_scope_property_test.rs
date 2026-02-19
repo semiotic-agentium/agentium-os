@@ -1,13 +1,22 @@
-use baml_rt_core::context::RuntimeScope;
-use baml_rt_core::ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
+
+use baml_rt_core::{
+    context::RuntimeScope,
+    ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
+};
 use baml_rt_observability::spans;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use tracing::field::{Field, Visit};
-use tracing::{Id, Subscriber};
-use tracing_subscriber::layer::{Context, Layer};
-use tracing_subscriber::prelude::*;
-use tracing_subscriber::registry::LookupSpan;
+use tracing::{
+    Id, Subscriber,
+    field::{Field, Visit},
+};
+use tracing_subscriber::{
+    layer::{Context, Layer},
+    prelude::*,
+    registry::LookupSpan,
+};
 
 #[derive(Debug, Default)]
 struct FieldCapture {

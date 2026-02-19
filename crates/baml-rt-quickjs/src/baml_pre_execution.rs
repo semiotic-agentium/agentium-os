@@ -3,15 +3,17 @@
 //! This module implements pre-execution interception by using BAML's build_request
 //! to intercept LLM calls before the HTTP request is sent.
 
-use baml_rt_core::bus::{EffectEmitter, LlmEffectMetadata};
-use baml_rt_core::context;
-use baml_rt_core::{BamlRtError, InvocationKind, Result};
+use std::{collections::HashMap, sync::Arc};
+
+use baml_rt_core::{
+    BamlRtError, InvocationKind, Result,
+    bus::{EffectEmitter, LlmEffectMetadata},
+    context,
+};
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry, LLMCallContext};
 use baml_runtime::RuntimeContextManager;
 use baml_types::{BamlMap, BamlValue};
 use serde_json::{Value, json};
-use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::Mutex;
 
 // Helper function for ergonomic metadata construction

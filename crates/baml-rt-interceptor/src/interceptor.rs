@@ -3,11 +3,11 @@
 //! Provides a trait-based system for intercepting, logging, and potentially blocking
 //! LLM calls and tool executions for governance, tracing, and security purposes.
 
-use async_trait::async_trait;
-use baml_rt_core::context::RuntimeScope;
-use baml_rt_core::{BamlRtError, Result};
-use serde_json::Value;
 use std::sync::Arc;
+
+use async_trait::async_trait;
+use baml_rt_core::{BamlRtError, Result, context::RuntimeScope};
+use serde_json::Value;
 
 /// Result of an interception decision
 #[derive(Debug, Clone)]

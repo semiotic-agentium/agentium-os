@@ -1,9 +1,10 @@
 //! File system operations implementation
 
-use crate::builder::traits::FileSystem;
+use std::{fs, path::Path};
+
 use baml_rt_core::{BamlRtError, Result};
-use std::fs;
-use std::path::Path;
+
+use crate::builder::traits::FileSystem;
 
 /// Standard file system implementation
 #[derive(Clone, Copy)]

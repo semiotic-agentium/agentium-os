@@ -1,8 +1,11 @@
 //! Builder service that orchestrates the agent building pipeline
 
-use crate::builder::traits::{Linter, Packager, TypeGenerator, TypeScriptCompiler};
-use crate::builder::types::{AgentDir, BuildDir};
 use baml_rt_core::Result;
+
+use crate::builder::{
+    traits::{Linter, Packager, TypeGenerator, TypeScriptCompiler},
+    types::{AgentDir, BuildDir},
+};
 
 /// Service that orchestrates the agent building process
 pub struct BuilderService<L, TC, TG, P> {

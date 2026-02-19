@@ -1,15 +1,18 @@
 //! HTTP API tests: discovery, A2A forward, and error mapping.
 //! Uses insta snapshots with selective redaction for variant parts (IDs, instance URLs, etc.).
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+};
 use baml_rt_a2a::AgentRegistry;
 use baml_rt_api::api_router;
 use baml_rt_core::{AgentDiscoveryEntry, AgentRouteKey, BamlRtError, BusStream, Result};
 use futures_util::stream;
 use serde_json::Value;
-use std::sync::Arc;
 use tower::ServiceExt;
 
 /// Snapshot-friendly response: status + body with variant parts redacted.

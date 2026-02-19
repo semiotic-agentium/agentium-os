@@ -1,8 +1,9 @@
 //! Tool metadata registration for the system bundle.
 
-use baml_rt_tools::parse_tool_name_and_class;
-use baml_rt_tools::register_tool_metadata;
-use baml_rt_tools::tools::{ToolFunctionMetadata, ToolMetadataBuilder, TypeBasedMetadataBuilder};
+use baml_rt_tools::{
+    parse_tool_name_and_class, register_tool_metadata,
+    tools::{ToolFunctionMetadata, ToolMetadataBuilder, TypeBasedMetadataBuilder},
+};
 
 use crate::tools::{InternalA2aNextOutput, InternalA2aOpenInput, InternalA2aSendInput};
 

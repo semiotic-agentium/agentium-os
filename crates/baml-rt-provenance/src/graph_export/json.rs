@@ -19,9 +19,10 @@ pub fn render_json(graph: &ExportedGraph, pretty: bool) -> Result<String, serde_
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::graph_export::{ExportScope, ExportedEdge, ExportedGraph, ExportedNode};
-    use std::collections::HashMap;
 
     fn sample_graph() -> ExportedGraph {
         ExportedGraph {

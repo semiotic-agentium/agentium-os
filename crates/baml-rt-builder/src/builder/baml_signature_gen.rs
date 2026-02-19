@@ -3,9 +3,10 @@
 //! Uses the loaded BAML runtime's IntermediateRepr (via IRSignature) as the sole type
 //! authority; no BAML source text parsing.
 
+use std::ops::Deref;
+
 use baml_rt_core::{BamlRtError, Result};
 use internal_baml_core::ir::ir_hasher::IRSignature;
-use std::ops::Deref;
 
 /// Extract full function signatures (name, inputs, output) from a loaded BAML runtime.
 ///

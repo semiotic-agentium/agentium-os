@@ -10,18 +10,21 @@
 
 #![recursion_limit = "256"]
 
+use std::sync::Arc;
+
 use baml_rt::interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor};
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt_core::ids::ContextId;
 use proptest::prelude::*;
 use serde_json::json;
-use std::sync::Arc;
 use test_support::common::{
     CalculatorTool, agent_fixture, ensure_fixture_runtime_types, first_message_text_from_stream,
     is_error_response, send_stream_request,
 };
-use tokio::task::JoinSet;
-use tokio::time::{Duration, sleep, timeout};
+use tokio::{
+    task::JoinSet,
+    time::{Duration, sleep, timeout},
+};
 
 fn proptest_cfg(cases: u32) -> ProptestConfig {
     let mut cfg = ProptestConfig::with_cases(cases);

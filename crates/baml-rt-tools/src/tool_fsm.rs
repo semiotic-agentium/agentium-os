@@ -1,11 +1,11 @@
 //! Tool session FSM primitives.
 
+use std::{borrow::Cow, fmt};
+
 use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, Retryability};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::borrow::Cow;
-use std::fmt;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

@@ -1,9 +1,10 @@
 //! Package loading seam: extract tar.gz and parse manifest.
 //! Tests can use this with fixture tarballs or inject (extract_dir, manifest).
 
+use std::path::{Path, PathBuf};
+
 use baml_rt_core::{AgentManifest, BamlRtError, Result};
 use baml_rt_observability::spans;
-use std::path::{Path, PathBuf};
 use tracing::info;
 
 /// Load an agent package from a tar.gz path: extract to a temp dir and return

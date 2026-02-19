@@ -1,14 +1,13 @@
+use std::{collections::HashSet, fs, path::Path};
+
+use baml_rt_core::{BamlRtError, Result};
+use baml_rt_tools::ts_gen::render_tool_typescript;
+use genco::{lang::js, prelude::*};
+use internal_baml_core::ir::ir_hasher::IRSignature;
+
 use crate::builder::ir_to_ts::{
     collect_type_decl_deps, emit_type_declarations_tokens, type_to_ts_expr,
 };
-use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::ts_gen::render_tool_typescript;
-use genco::lang::js;
-use genco::prelude::*;
-use internal_baml_core::ir::ir_hasher::IRSignature;
-use std::collections::HashSet;
-use std::fs;
-use std::path::Path;
 
 pub fn load_manifest_tools(baml_src: &Path) -> Result<Vec<String>> {
     let agent_dir = baml_src.parent().ok_or_else(|| {

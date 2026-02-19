@@ -1,9 +1,13 @@
 //! Linter implementation using OXC parser
 
-use crate::builder::traits::{FileSystem, Linter};
-use crate::builder::types::AgentDir;
-use baml_rt_core::{BamlRtError, Result};
 use std::fs;
+
+use baml_rt_core::{BamlRtError, Result};
+
+use crate::builder::{
+    traits::{FileSystem, Linter},
+    types::AgentDir,
+};
 
 /// OXC-based linter implementation
 pub struct OxcLinter<FS> {

@@ -31,14 +31,20 @@
 //! **CG4 (Stream Promise Non-Resolution):** The type parameter `P` encodes promise semantics;
 //! `NonResolvingPromise` ensures only stream invocation (no wait for resolution) is used.
 
-use crate::quickjs_bridge::{BufferDrain, QuickJSBridge};
-use baml_rt_core::Result;
-use baml_rt_core::context::InvocationScope;
-use baml_rt_core::stream_completion::{StreamCompletion, StreamResult};
+use std::{
+    marker::PhantomData,
+    time::{Duration, Instant},
+};
+
+use baml_rt_core::{
+    Result,
+    context::InvocationScope,
+    stream_completion::{StreamCompletion, StreamResult},
+};
 use serde_json::Value;
-use std::marker::PhantomData;
-use std::time::{Duration, Instant};
 use tokio::time::sleep;
+
+use crate::quickjs_bridge::{BufferDrain, QuickJSBridge};
 
 /// State marker: yield buffer is installed and ready for one stream invocation.
 pub struct YieldBufferReady;

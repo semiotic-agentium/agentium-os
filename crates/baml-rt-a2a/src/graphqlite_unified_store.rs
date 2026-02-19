@@ -3,24 +3,29 @@
 //! Persists tasks, messages, and update queue in SQL tables in the same SQLite
 //! file; conversation context is read from the provenance graph.
 
-use crate::a2a_store::{
-    ConversationContextSource, TaskChunkApplier, TaskEventRecorder, TaskRepository,
-    TaskUpdateEvent, TaskUpdateQueue,
-};
-use crate::a2a_types::{
-    Artifact, ListTasksRequest, ListTasksResponse, Message, Task, TaskArtifactUpdateEvent,
-    TaskState, TaskStatus, TaskStatusUpdateEvent,
-};
+use std::{collections::HashMap, sync::Arc};
+
 use async_trait::async_trait;
-use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{
+    BamlRtError, Result,
+    ids::{ContextId, ExternalId, TaskId},
+};
 use baml_rt_provenance::{
     GraphqliteProvenanceStore, ProvenanceContextReader, ProvenanceConversationContextItem,
 };
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::Arc;
 use tokio::sync::OnceCell;
+
+use crate::{
+    a2a_store::{
+        ConversationContextSource, TaskChunkApplier, TaskEventRecorder, TaskRepository,
+        TaskUpdateEvent, TaskUpdateQueue,
+    },
+    a2a_types::{
+        Artifact, ListTasksRequest, ListTasksResponse, Message, Task, TaskArtifactUpdateEvent,
+        TaskState, TaskStatus, TaskStatusUpdateEvent,
+    },
+};
 
 /// SQL schema: tasks table (id, context_id, status_json, metadata_json, extra_json, artifacts_json, ord).
 const SCHEMA_TASKS: &str = r#"

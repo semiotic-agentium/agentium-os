@@ -1,8 +1,7 @@
 //! Test tool implementations for testing BAML tool system.
 
 use async_trait::async_trait;
-use baml_rt::Result;
-use baml_rt::tools::BamlTool;
+use baml_rt::{Result, tools::BamlTool};
 use baml_rt_tools::{
     bundles::Support,
     support::{CalculatorInput, CalculatorOutput, MathOperation},

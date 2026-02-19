@@ -1,8 +1,7 @@
 //! Test tool implementations used across test suites.
 
 use async_trait::async_trait;
-use baml_rt::Result;
-use baml_rt::tools::BamlTool;
+use baml_rt::{Result, tools::BamlTool};
 use baml_rt_tools::bundles::{BundleType, Support};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

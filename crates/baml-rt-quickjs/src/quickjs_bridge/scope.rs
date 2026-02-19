@@ -9,11 +9,16 @@
 //! invocation order does not need to be serialised. Re-entrant safe (nested invocations
 //! push; resolution is LIFO). No globals; no JS token args.
 
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
 use baml_rt_core::context::RuntimeScope;
 use quickjs_runtime::values::JsValueFacade;
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
 
 /// Opaque host-only context id for the duration of an invocation. Never exposed to JS.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -190,11 +195,15 @@ pub(crate) async fn run_eval_with_scope(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use baml_rt_core::context::InvocationScope;
-    use baml_rt_core::ids::{AgentId, UuidId};
-    use proptest::prelude::*;
     use std::collections::HashSet;
+
+    use baml_rt_core::{
+        context::InvocationScope,
+        ids::{AgentId, UuidId},
+    };
+    use proptest::prelude::*;
+
+    use super::*;
 
     fn proptest_cfg(cases: u32) -> ProptestConfig {
         let mut cfg = ProptestConfig::with_cases(cases);

@@ -1,9 +1,10 @@
 //! Rendering BAML definition structs into BAML text.
 
+use std::fmt::Write;
+
 use crate::types::{
     BamlClassDef, BamlDefinition, BamlEnumDef, BamlFieldDef, BamlUnionDef, BamlVariantDef,
 };
-use std::fmt::Write;
 
 /// Render a single `BamlDefinition` to BAML text.
 #[must_use]

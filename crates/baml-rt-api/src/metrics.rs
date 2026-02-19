@@ -2,10 +2,12 @@
 //!
 //! Instruments are cached with OnceLock per the metrics guide (no repeated creation on hot path).
 
-use opentelemetry::metrics::{Counter, Histogram};
-use opentelemetry::{KeyValue, global};
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::{sync::OnceLock, time::Duration};
+
+use opentelemetry::{
+    KeyValue, global,
+    metrics::{Counter, Histogram},
+};
 
 const METER_NAME: &str = "baml_rt_api";
 

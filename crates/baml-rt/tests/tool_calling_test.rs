@@ -10,8 +10,10 @@
 //! Voidship tests use a stub interceptor so no API key is required.
 
 use async_trait::async_trait;
-use baml_rt::interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor};
-use baml_rt::tools::BamlTool;
+use baml_rt::{
+    interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor},
+    tools::BamlTool,
+};
 use baml_rt_tools::bundles::BundleType;
 
 // Test bundle for test tools
@@ -23,21 +25,25 @@ impl BundleType for Test {
         "Test tools for unit testing"
     }
 }
+use std::sync::Arc;
+
+use baml_rt_core::{
+    context::{self, InvocationScope},
+    ids::{AgentId, UuidId},
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::sync::Arc;
-use tokio::sync::Barrier;
-use tokio::time::{Duration, timeout};
-use ts_rs::TS;
-
-use baml_rt_core::context::{self, InvocationScope};
-use baml_rt_core::ids::{AgentId, UuidId};
 use test_support::common::{
     CalculatorTool, WeatherTool, agent_fixture, assert_tool_registered_in_js,
     ensure_fixture_runtime_types, setup_baml_runtime_default, setup_baml_runtime_from_fixture,
     setup_bridge,
 };
+use tokio::{
+    sync::Barrier,
+    time::{Duration, timeout},
+};
+use ts_rs::TS;
 
 /// Stub interceptor: returns a canned session plan for ChooseCalcTool so voidship tests avoid real LLM calls.
 struct StubChooseCalcToolInterceptor;

@@ -42,18 +42,22 @@
 //! `cypher_builder(&stmt.query).params(&stmt.params).run()`. Read queries live in
 //! [crate::graph_model::ConversationReadModel]; this module only builds **write** statements.
 
-use crate::graph_model::GraphNodeLabel;
-use crate::normalizer::{A2aDerivedRelation, NormalizedProv};
-use crate::types::{
-    Activity, Agent, Entity, ProvActivityId, ProvAgentId, ProvEntityId, QualifiedGeneration, Used,
-    WasAssociatedWith, WasDerivedFrom, WasGeneratedBy,
-};
-use crate::vocabulary::{
-    a2a, a2a_relation_types, a2a_relations, a2a_roles, base_types, graph, message_directions, prov,
-    prov_relations, prov_roles, semantic_labels, storage_safe,
-};
-use serde_json::{Map, Value};
 use std::collections::HashMap;
+
+use serde_json::{Map, Value};
+
+use crate::{
+    graph_model::GraphNodeLabel,
+    normalizer::{A2aDerivedRelation, NormalizedProv},
+    types::{
+        Activity, Agent, Entity, ProvActivityId, ProvAgentId, ProvEntityId, QualifiedGeneration,
+        Used, WasAssociatedWith, WasDerivedFrom, WasGeneratedBy,
+    },
+    vocabulary::{
+        a2a, a2a_relation_types, a2a_relations, a2a_roles, base_types, graph, message_directions,
+        prov, prov_relations, prov_roles, semantic_labels, storage_safe,
+    },
+};
 
 /// Collects placeholder names and values for a parameterized Cypher query.
 /// Use [build_query_with_key_style_params]; do not escape values manually.

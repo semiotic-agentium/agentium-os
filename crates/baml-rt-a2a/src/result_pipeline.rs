@@ -1,10 +1,14 @@
-use crate::a2a_store::TaskStoreBackend;
-use crate::events::EventEmitter;
-use crate::result_extractor::{A2aResultExtractor, ResultExtractor};
-use crate::result_processor::TaskProcessor;
+use std::sync::Arc;
+
 use baml_rt_core::Result;
 use serde_json::Value;
-use std::sync::Arc;
+
+use crate::{
+    a2a_store::TaskStoreBackend,
+    events::EventEmitter,
+    result_extractor::{A2aResultExtractor, ResultExtractor},
+    result_processor::TaskProcessor,
+};
 
 #[async_trait::async_trait]
 pub trait ResultStoragePipeline: Send + Sync {

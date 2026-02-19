@@ -3,8 +3,9 @@
 //! Provides a comprehensive error hierarchy using `thiserror` for proper error handling
 //! and error chaining throughout the codebase.
 
-use anyhow::Error as AnyhowError;
 use std::time::SystemTimeError;
+
+use anyhow::Error as AnyhowError;
 use thiserror::Error;
 
 /// Main error type for the BAML runtime integration

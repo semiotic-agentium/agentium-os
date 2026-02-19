@@ -6,31 +6,38 @@
 //! scope-from-token for attribution.
 
 mod tool_extraction;
-pub(crate) use tool_extraction::{
-    ToolSessionOp, extract_tool_call, extract_tool_session_plan, normalize_plan_input,
-    resolve_tool_name_from_input_with_registry,
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::Path,
+    sync::Arc,
+    time::Instant,
 };
 
-use crate::baml_execution::{BamlExecutor, ConversationContextProvider, ParseRetryPolicy};
-use crate::traits::{BamlFunctionExecutor, SchemaLoader};
 use async_trait::async_trait;
-use baml_rt_core::bus::{EffectEmitter, ToolEffectMetadata};
-use baml_rt_core::context;
-use baml_rt_core::correlation::current_correlation_id;
-use baml_rt_core::types::FunctionSignature;
-use baml_rt_core::{BamlRtError, Outcome, Result};
+use baml_rt_core::{
+    BamlRtError, Outcome, Result,
+    bus::{EffectEmitter, ToolEffectMetadata},
+    context,
+    correlation::current_correlation_id,
+    types::FunctionSignature,
+};
 use baml_rt_interceptor::{InterceptorRegistry, ToolCallContext};
 use baml_rt_observability::metrics;
 use baml_rt_tools::{
     ToolFunctionMetadataExport, ToolRegistry as ConcreteToolRegistry, ToolSessionId, ToolStep,
 };
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::Mutex as TokioMutex;
+pub(crate) use tool_extraction::{
+    ToolSessionOp, extract_tool_call, extract_tool_session_plan, normalize_plan_input,
+    resolve_tool_name_from_input_with_registry,
+};
+
+use crate::{
+    baml_execution::{BamlExecutor, ConversationContextProvider, ParseRetryPolicy},
+    traits::{BamlFunctionExecutor, SchemaLoader},
+};
 
 // Helper function to build metadata map with correlation/message/task/agent ids.
 fn build_metadata_map_with_phase(
@@ -151,8 +158,9 @@ impl ToolExecutionHandle {
         name: &str,
         args: Value,
     ) -> Result<Value> {
-        use baml_rt_interceptor::ToolCallContext;
         use std::time::Instant;
+
+        use baml_rt_interceptor::ToolCallContext;
 
         let start = Instant::now();
         let context_id = scope.context_id().clone();

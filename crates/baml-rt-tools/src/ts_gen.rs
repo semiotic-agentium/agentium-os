@@ -1,7 +1,7 @@
-use crate::tools::ToolFunctionMetadata;
 use baml_rt_core::{BamlRtError, Result};
-use genco::lang::js;
-use genco::prelude::*;
+use genco::{lang::js, prelude::*};
+
+use crate::tools::ToolFunctionMetadata;
 
 pub fn render_tool_typescript(tools: &[ToolFunctionMetadata]) -> Result<String> {
     let mut tokens: js::Tokens = quote!(

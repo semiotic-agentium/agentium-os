@@ -1,10 +1,11 @@
+use std::collections::HashMap;
+
 use baml_rt::a2a_types::{
     A2aMessageId, JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER,
     SendMessageRequest,
 };
 use baml_rt_core::ids::{ContextId, ExternalId};
 use serde_json::Value;
-use std::collections::HashMap;
 
 pub fn user_message(message_id: &str, text: &str, context_id: Option<ContextId>) -> Message {
     Message {

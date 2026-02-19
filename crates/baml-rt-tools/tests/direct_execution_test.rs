@@ -1,9 +1,10 @@
 //! Integration tests for direct BAML tool execution (Rust + JS tools).
 
+use std::sync::Arc;
+
 use baml_rt::A2aAgent;
 use baml_rt_core::context::InvocationScope;
 use serde_json::json;
-use std::sync::Arc;
 use test_support::support;
 
 #[tokio::test]

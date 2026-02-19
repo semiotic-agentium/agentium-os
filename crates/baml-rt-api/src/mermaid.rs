@@ -1,8 +1,7 @@
 //! Narrow trait for Mermaid diagram serving. Implemented by the runtime when
 //! provenance (GraphQLite) is enabled; the API consumes this trait only.
 
-use std::error::Error;
-use std::fmt;
+use std::{error::Error, fmt};
 
 /// Errors from the Mermaid service (no provenance types; API stays decoupled).
 #[derive(Debug)]

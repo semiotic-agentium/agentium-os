@@ -2,11 +2,13 @@
 //!
 //! Metrics are defined here to keep instrumentation orthogonal to business logic.
 
+use std::{sync::OnceLock, time::Duration};
+
 use baml_rt_core::InvocationKind;
-use opentelemetry::metrics::{Counter, Histogram};
-use opentelemetry::{KeyValue, global};
-use std::sync::OnceLock;
-use std::time::Duration;
+use opentelemetry::{
+    KeyValue, global,
+    metrics::{Counter, Histogram},
+};
 
 const METER_NAME: &str = "baml_rt";
 

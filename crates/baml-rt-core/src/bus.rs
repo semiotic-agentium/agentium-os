@@ -3,20 +3,26 @@
 //! This is the canonical transport-agnostic boundary for runtime observation and
 //! liveness. All command, domain-event, and effect signals flow as envelopes.
 
-use crate::context::RuntimeScope;
-use crate::correlation;
-use crate::ids::{AgentId, ContextId, CorrelationId};
-use crate::semantics::Outcome;
+use std::{
+    collections::HashMap,
+    marker::PhantomData,
+    pin::Pin,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
 use async_channel::{Receiver, Sender};
 use async_trait::async_trait;
 use futures_util::stream::Stream;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::marker::PhantomData;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
+
+use crate::{
+    context::RuntimeScope,
+    correlation,
+    ids::{AgentId, ContextId, CorrelationId},
+    semantics::Outcome,
+};
 
 pub type BusStream<T> = Pin<Box<dyn Stream<Item = T> + Send + 'static>>;
 

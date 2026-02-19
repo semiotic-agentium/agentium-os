@@ -3,12 +3,12 @@
 //! Each context gets its own QuickJS runtime for isolation.
 //! This enables multi-tenant scenarios and prevents state pollution.
 
-use crate::baml::BamlRuntimeManager;
-use crate::quickjs_bridge::QuickJSBridge;
-use baml_rt_core::Result;
-use baml_rt_core::ids::AgentId;
 use std::sync::Arc;
+
+use baml_rt_core::{Result, ids::AgentId};
 use tokio::sync::Mutex;
+
+use crate::{baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
 
 /// A BAML execution context with isolated QuickJS runtime
 ///

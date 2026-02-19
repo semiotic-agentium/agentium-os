@@ -8,12 +8,18 @@
 //! Runtime context must be threaded explicitly at runtime boundaries.
 //! Missing scope is a failure condition; APIs return `Result`, not `Option`.
 
-use crate::error::Result;
-use crate::ids::{AgentId, ContextId, MessageId, TaskId};
+use std::{
+    ops::Deref,
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
 use baml_rt_id::ExternalId;
-use std::ops::Deref;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::{
+    error::Result,
+    ids::{AgentId, ContextId, MessageId, TaskId},
+};
 
 /// Error when no invocation scope is set (e.g. not running inside `with_scope`).
 pub const NO_SCOPE_MESSAGE: &str =

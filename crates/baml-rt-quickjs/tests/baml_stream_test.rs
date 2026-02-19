@@ -3,14 +3,18 @@
 
 #![recursion_limit = "256"]
 
-use baml_rt::A2aAgent;
-use baml_rt::QuickJSConfig;
-use baml_rt::baml::BamlRuntimeManager;
-use baml_rt::interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor};
-use baml_rt_core::context;
-use baml_rt_core::ids::{AgentId, UuidId};
-use serde_json::Value;
 use std::sync::Arc;
+
+use baml_rt::{
+    A2aAgent, QuickJSConfig,
+    baml::BamlRuntimeManager,
+    interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor},
+};
+use baml_rt_core::{
+    context,
+    ids::{AgentId, UuidId},
+};
+use serde_json::Value;
 
 /// Stub interceptor: substitutes for ChooseCalcToolStream so no real LLM call is made.
 struct StubChooseCalcToolStreamInterceptor;

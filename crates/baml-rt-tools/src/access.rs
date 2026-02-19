@@ -1,9 +1,13 @@
-use crate::ToolName;
-use crate::tool_catalog::{InventoryCatalog, ToolCatalog};
-use crate::tools::ToolAccess;
-use baml_rt_core::{BamlRtError, Result};
 use std::collections::HashSet;
+
+use baml_rt_core::{BamlRtError, Result};
 use tracing::warn;
+
+use crate::{
+    ToolName,
+    tool_catalog::{InventoryCatalog, ToolCatalog},
+    tools::ToolAccess,
+};
 
 pub fn parse_access_allowlist() -> Option<HashSet<ToolAccess>> {
     let raw = std::env::var("BAML_TOOL_ACCESS_ALLOWLIST").ok()?;

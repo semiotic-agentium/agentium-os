@@ -3,12 +3,12 @@
 //! Semantics aligned with upstream BoundaryML TS generator: primitives, optional
 //! as T | null, unions, classes, enums, lists, maps. No BAML source parsing.
 
+use std::collections::HashSet;
+
 use baml_rt_core::{BamlRtError, Result};
 use baml_types::ir_type::{LiteralValue, TypeNonStreaming, TypeValue, UnionTypeViewGeneric};
-use genco::lang::js;
-use genco::prelude::*;
+use genco::{lang::js, prelude::*};
 use internal_baml_core::ir::ir_hasher::IRSignature;
-use std::collections::HashSet;
 
 /// Result of mapping one IR type: TS type expression and any type names that must be declared.
 #[derive(Debug, Clone)]

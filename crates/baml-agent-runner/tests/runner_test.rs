@@ -1,30 +1,34 @@
 //! Tests for agent runner binary
 
+use std::{
+    collections::HashSet,
+    fs,
+    path::Path,
+    sync::{Arc, OnceLock},
+};
+
 use async_trait::async_trait;
-use baml_rt::A2aRequestHandler;
-use baml_rt::baml::BamlRuntimeManager;
-use baml_rt::tools::BamlTool;
-use baml_rt_core::bus::BusWithEffects;
-use baml_rt_core::context::{self, InvocationScope};
-use baml_rt_core::ids::{AgentId, ContextId, UuidId};
+use baml_rt::{A2aRequestHandler, baml::BamlRuntimeManager, tools::BamlTool};
+use baml_rt_core::{
+    bus::BusWithEffects,
+    context::{self, InvocationScope},
+    ids::{AgentId, ContextId, UuidId},
+};
 use baml_rt_provenance::{
     AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
     ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
     ProvenanceWriter,
 };
 use baml_rt_tools::bundles::BundleType;
-use flate2::Compression;
-use flate2::write::GzEncoder;
+use flate2::{Compression, write::GzEncoder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::HashSet;
-use std::fs;
-use std::path::Path;
-use std::sync::{Arc, OnceLock};
 use tar::Builder;
-use tokio::sync::Semaphore;
-use tokio::time::{Duration, sleep, timeout};
+use tokio::{
+    sync::Semaphore,
+    time::{Duration, sleep, timeout},
+};
 use ts_rs::TS;
 
 // Bundle type for test tools (used as AddNumbersTool::Bundle; referenced in test_runner_tool_types_for_package_build).
@@ -39,12 +43,13 @@ impl BundleType for Test {
 use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, SendMessageRequest};
 #[cfg(feature = "llm-tests")]
 use baml_rt_a2a::A2aSessionBundle;
-
-use test_support::common::{
-    CalculatorTool, agent_fixture, chunks_from_responses, ensure_baml_src_exists,
-    ensure_fixture_runtime_types, message_texts_from_chunks, user_message, workspace_root,
+use test_support::{
+    common::{
+        CalculatorTool, agent_fixture, chunks_from_responses, ensure_baml_src_exists,
+        ensure_fixture_runtime_types, message_texts_from_chunks, user_message, workspace_root,
+    },
+    support::cli::CliHarness,
 };
-use test_support::support::cli::CliHarness;
 
 fn init_test_tracing() {
     static TRACING: OnceLock<()> = OnceLock::new();

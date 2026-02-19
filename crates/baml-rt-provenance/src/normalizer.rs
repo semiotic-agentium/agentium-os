@@ -1,29 +1,35 @@
-use crate::document::ProvDocument;
-use crate::error::{ProvenanceError, Result};
-use crate::events::{CallScope, ProvEvent, ProvEventData};
-use crate::id_semantics::{
-    AgentBootActivityId, AgentBootActivityInput, AgentRuntimeInstanceId, AgentRuntimeInstanceInput,
-    ArchiveEntityId, ArchiveEntityInput, ArtifactByEventEntityId, ArtifactByEventEntityInput,
-    ArtifactByIdEntityId, ArtifactByIdEntityInput, ArtifactByTypeEntityId,
-    ArtifactByTypeEntityInput, ArtifactIdentity, LlmCallActivityId, LlmCallActivityInput,
-    LlmPromptEntityId, LlmPromptEntityInput, MessageEntityId, MessageEntityInput,
-    MessageProcessingActivityId, MessageProcessingActivityInput, RunnerRuntimeInstanceId,
-    TaskEntityId, TaskEntityInput, TaskExecutionActivityId, TaskExecutionActivityInput,
-    TaskStateEntityId, TaskStateEntityInput, TaskStatePrevEntityId, TaskStatePrevEntityInput,
-    ToolArgsEntityId, ToolArgsEntityInput, ToolCallActivityId, ToolCallActivityInput,
-};
-use crate::types::{
-    Activity, Agent, Entity, ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef,
-    QualifiedGeneration, Used, WasAssociatedWith, WasDerivedFrom, WasGeneratedBy,
-};
-use crate::vocabulary::{
-    a2a, a2a_relation_types, a2a_relations, a2a_roles, agent_types, message_directions, prov_roles,
-};
+use std::collections::HashMap;
+
 use baml_rt_core::ids::{
     AgentId, ArtifactId, ContextId, EventId, MessageId, ProvVocabularyType, TaskId, UuidId,
 };
 use serde_json::Value;
-use std::collections::HashMap;
+
+use crate::{
+    document::ProvDocument,
+    error::{ProvenanceError, Result},
+    events::{CallScope, ProvEvent, ProvEventData},
+    id_semantics::{
+        AgentBootActivityId, AgentBootActivityInput, AgentRuntimeInstanceId,
+        AgentRuntimeInstanceInput, ArchiveEntityId, ArchiveEntityInput, ArtifactByEventEntityId,
+        ArtifactByEventEntityInput, ArtifactByIdEntityId, ArtifactByIdEntityInput,
+        ArtifactByTypeEntityId, ArtifactByTypeEntityInput, ArtifactIdentity, LlmCallActivityId,
+        LlmCallActivityInput, LlmPromptEntityId, LlmPromptEntityInput, MessageEntityId,
+        MessageEntityInput, MessageProcessingActivityId, MessageProcessingActivityInput,
+        RunnerRuntimeInstanceId, TaskEntityId, TaskEntityInput, TaskExecutionActivityId,
+        TaskExecutionActivityInput, TaskStateEntityId, TaskStateEntityInput, TaskStatePrevEntityId,
+        TaskStatePrevEntityInput, ToolArgsEntityId, ToolArgsEntityInput, ToolCallActivityId,
+        ToolCallActivityInput,
+    },
+    types::{
+        Activity, Agent, Entity, ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef,
+        QualifiedGeneration, Used, WasAssociatedWith, WasDerivedFrom, WasGeneratedBy,
+    },
+    vocabulary::{
+        a2a, a2a_relation_types, a2a_relations, a2a_roles, agent_types, message_directions,
+        prov_roles,
+    },
+};
 
 #[derive(Debug, Clone)]
 pub struct NormalizedProv {

@@ -3,9 +3,12 @@
 //! This module provides task-local correlation IDs so async boundaries
 //! can retain request context without requiring JS changes.
 
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
 use crate::ids::CorrelationId;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 tokio::task_local! {
     static CORRELATION_ID: CorrelationId;

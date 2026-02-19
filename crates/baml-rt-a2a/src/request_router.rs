@@ -1,19 +1,18 @@
-use crate::a2a;
-use crate::a2a_types;
-use crate::handlers::TaskHandler;
-use crate::result_pipeline::ResultStoragePipeline;
+use std::{sync::Arc, time::Instant};
+
 use async_trait::async_trait;
-use baml_rt_core::bus::{A2aEffectMetadata, A2aLivenessRole, EffectEmitter, EffectEvent};
-use baml_rt_core::context::InvocationScope;
-use baml_rt_core::ids::AgentId;
-use baml_rt_core::{BamlRtError, Outcome, Result};
+use baml_rt_core::{
+    BamlRtError, Outcome, Result,
+    bus::{A2aEffectMetadata, A2aLivenessRole, EffectEmitter, EffectEvent},
+    context::InvocationScope,
+    ids::AgentId,
+};
 use baml_rt_observability::{metrics, spans};
-use baml_rt_quickjs::QuickJSBridge;
-use baml_rt_quickjs::begin_a2a_yield_session;
+use baml_rt_quickjs::{QuickJSBridge, begin_a2a_yield_session};
 use serde_json::Value;
-use std::sync::Arc;
-use std::time::Instant;
 use tokio::sync::Mutex;
+
+use crate::{a2a, a2a_types, handlers::TaskHandler, result_pipeline::ResultStoragePipeline};
 
 /// Non-stream invocation: waits for JS promise to resolve and returns the result.
 ///
@@ -269,13 +268,16 @@ impl RequestRouter for MethodBasedRouter {
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
+    use baml_rt_core::{
+        InvocationKind,
+        bus::BusWithEffects,
+        stream_completion::{StreamCompletion, StreamResult},
+    };
+    use serde_json::json;
+
     use super::*;
     use crate::a2a_types::{GetTaskRequest, ListTasksRequest, SubscribeToTaskRequest};
-    use async_trait::async_trait;
-    use baml_rt_core::InvocationKind;
-    use baml_rt_core::bus::BusWithEffects;
-    use baml_rt_core::stream_completion::{StreamCompletion, StreamResult};
-    use serde_json::json;
 
     struct MockJsInvoker {
         stream_chunks: Vec<Value>,

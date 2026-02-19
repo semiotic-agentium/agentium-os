@@ -6,13 +6,14 @@
 //! These spans are children of invoke_function/invoke_baml_function spans and inherit
 //! context automatically through OTEL span nesting - no need to repeat attributes.
 
-use crate::interceptor::{
-    InterceptorDecision, LLMCallContext, LLMInterceptor, ToolCallContext, ToolInterceptor,
-};
 use async_trait::async_trait;
 use baml_rt_core::Result;
 use serde_json::Value;
 use tracing::{Level, error, info, span};
+
+use crate::interceptor::{
+    InterceptorDecision, LLMCallContext, LLMInterceptor, ToolCallContext, ToolInterceptor,
+};
 
 /// Tracing interceptor for LLM calls
 ///

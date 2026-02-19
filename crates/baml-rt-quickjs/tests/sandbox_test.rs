@@ -5,8 +5,9 @@
 
 #![recursion_limit = "256"]
 
-use baml_rt::A2aAgent;
 use std::sync::Arc;
+
+use baml_rt::A2aAgent;
 
 #[tokio::test]
 async fn test_sandbox_environment() {
