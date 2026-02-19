@@ -30,7 +30,7 @@ use crate::{
         ConversationContextSource, ProvenanceTaskStore, TaskEventRecorder, TaskRepository,
         TaskStoreBackend, TaskUpdateEvent, TaskUpdateQueue,
     },
-    a2a_types::{JSONRPCId, SendMessageRequest},
+    a2a_types::JSONRPCId,
     error_classifier::{A2aErrorClassifier, ErrorClassifier},
     events::{BroadcastEventEmitter, EventEmitter},
     handlers::{DefaultTaskHandler, TaskHandler},
@@ -1029,10 +1029,7 @@ impl A2aAgent {
         let outcome = correlation::with_correlation_id(correlation_id, async move {
             let invocation_scope = InvocationScope::new(scope.clone());
             context::with_scope(scope, async move {
-                if parsed_request.method == a2a::A2aMethod::MessageSendStream
-                    && let Ok(params) =
-                        serde_json::from_value::<SendMessageRequest>(parsed_request.params.clone())
-                {
+                if let a2a::A2aParams::MessageSendStream(params) = &parsed_request.params {
                     // When the inbound message carries a task_id (e.g.
                     // client-assigned on first turn), ensure the parent
                     // task row exists before persisting the message.

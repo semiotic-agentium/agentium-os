@@ -12,9 +12,13 @@ use baml_rt_core::{
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
-use crate::a2a_types::{
-    A2aMessageId, JSONRPCError, JSONRPCErrorResponse, JSONRPCId, JSONRPCRequest,
-    JSONRPCSuccessResponse, ListTasksRequest, Message, ROLE_AGENT, SendMessageRequest, Task,
+use crate::{
+    a2a_types::{
+        A2aMessageId, GetTaskRequest, JSONRPCError, JSONRPCErrorResponse, JSONRPCId,
+        JSONRPCRequest, JSONRPCSuccessResponse, ListTasksRequest, Message, ROLE_AGENT,
+        SendMessageRequest, SubscribeToTaskRequest, Task,
+    },
+    wire::{A2aWireMethod, A2aWireRequest},
 };
 
 const JSONRPC_VERSION: &str = "2.0";
@@ -38,30 +42,11 @@ impl A2aMethod {
     }
 }
 
-impl std::str::FromStr for A2aMethod {
-    type Err = BamlRtError;
-
-    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
-        match value {
-            "message.send" => Err(BamlRtError::InvalidArgument(
-                "Only message.sendStream is supported".to_string(),
-            )),
-            "message.sendStream" => Ok(A2aMethod::MessageSendStream),
-            "tasks.get" => Ok(A2aMethod::TasksGet),
-            "tasks.list" => Ok(A2aMethod::TasksList),
-            "tasks.subscribe" => Ok(A2aMethod::TasksSubscribe),
-            _ => Err(BamlRtError::InvalidArgument(
-                "Unsupported A2A request method".to_string(),
-            )),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct A2aRequest {
     pub id: Option<JSONRPCId>,
     pub method: A2aMethod,
-    pub params: Value,
+    pub params: A2aParams,
     pub invocation: InvocationKind,
     pub context_id: Option<ContextId>,
     pub message_id: Option<MessageId>,
@@ -70,70 +55,67 @@ pub struct A2aRequest {
 
 impl A2aRequest {
     pub fn from_value(value: Value) -> Result<Self> {
-        let request: JSONRPCRequest = serde_json::from_value(value).map_err(BamlRtError::Json)?;
-        if request.jsonrpc != JSONRPC_VERSION {
+        let raw: JSONRPCRequest = serde_json::from_value(value).map_err(BamlRtError::Json)?;
+        if raw.jsonrpc != JSONRPC_VERSION {
             return Err(BamlRtError::InvalidArgument(format!(
                 "Unsupported jsonrpc version: {version}",
-                version = request.jsonrpc
+                version = raw.jsonrpc
             )));
         }
+        let request = A2aWireRequest::try_from_raw(raw)?;
 
         let id = request.id;
-        let method: A2aMethod = request.method.parse()?;
-        let mut params_value = request.params.unwrap_or(Value::Null);
         let mut context_id = None;
         let mut message_id = None;
         let mut task_id = None;
-        let invocation = match method {
-            A2aMethod::MessageSendStream => {
-                let mut params: SendMessageRequest =
-                    serde_json::from_value(params_value.clone()).map_err(BamlRtError::Json)?;
+        let (method, params, invocation) = match request.method {
+            A2aWireMethod::MessageSendStream { params } => {
+                let mut params = *params;
                 if params.message.context_id.is_none() {
                     params.message.context_id = Some(context::generate_context_id());
                 }
                 context_id = params.message.context_id.clone();
                 message_id = Some(params.message.message_id.as_message_id().clone());
                 task_id = params.message.task_id.clone();
-                params_value = to_json_value(&params)?;
-                params_value = augment_message_params(params_value, &params.message);
-                InvocationKind::Stream
+                (
+                    A2aMethod::MessageSendStream,
+                    A2aParams::MessageSendStream(Box::new(params)),
+                    InvocationKind::Stream,
+                )
             }
-            A2aMethod::TasksGet | A2aMethod::TasksList | A2aMethod::TasksSubscribe => {
-                if method == A2aMethod::TasksGet
-                    && let Some(id) = params_value.get("id").and_then(Value::as_str)
-                {
-                    task_id = Some(TaskId::from_external(ExternalId::new(id)));
-                }
-                if method == A2aMethod::TasksSubscribe
-                    && let Some(id) = params_value.get("id").and_then(Value::as_str)
-                {
-                    task_id = Some(TaskId::from_external(ExternalId::new(id)));
-                }
-                if method == A2aMethod::TasksList
-                    && let Ok(params) =
-                        serde_json::from_value::<ListTasksRequest>(params_value.clone())
-                {
-                    context_id = params.context_id;
-                }
-                let stream_flag = params_value
-                    .get("stream")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false)
-                    && method == A2aMethod::TasksSubscribe;
-                InvocationKind::from(stream_flag)
+            A2aWireMethod::TasksGet { params } => {
+                task_id = Some(params.id.clone());
+                (
+                    A2aMethod::TasksGet,
+                    A2aParams::TasksGet(params),
+                    InvocationKind::Invoke,
+                )
+            }
+            A2aWireMethod::TasksList { params } => {
+                let params: ListTasksRequest = params.into();
+                context_id = params.context_id.clone();
+                (
+                    A2aMethod::TasksList,
+                    A2aParams::TasksList(params),
+                    InvocationKind::Invoke,
+                )
+            }
+            A2aWireMethod::TasksSubscribe { params } => {
+                let stream_flag = params.stream.unwrap_or(false);
+                let request: SubscribeToTaskRequest = params.into();
+                task_id = Some(request.id.clone());
+                (
+                    A2aMethod::TasksSubscribe,
+                    A2aParams::TasksSubscribe(request),
+                    InvocationKind::from(stream_flag),
+                )
             }
         };
-
-        params_value = normalize_params(params_value);
-        if let Value::Object(mut map) = params_value {
-            map.remove("stream");
-            params_value = Value::Object(map);
-        }
 
         Ok(Self {
             id,
             method,
-            params: params_value,
+            params,
             invocation,
             context_id,
             message_id,
@@ -154,6 +136,32 @@ impl A2aRequest {
 pub enum A2aOutcome {
     Response(Value),
     Stream(StreamResult),
+}
+
+#[derive(Debug, Clone)]
+pub enum A2aParams {
+    MessageSendStream(Box<SendMessageRequest>),
+    TasksGet(GetTaskRequest),
+    TasksList(ListTasksRequest),
+    TasksSubscribe(SubscribeToTaskRequest),
+}
+
+impl A2aParams {
+    pub fn as_send_message(&self) -> Option<&SendMessageRequest> {
+        match self {
+            A2aParams::MessageSendStream(params) => Some(params),
+            _ => None,
+        }
+    }
+
+    pub fn to_value(&self) -> Result<Value> {
+        match self {
+            A2aParams::MessageSendStream(params) => to_json_value(params),
+            A2aParams::TasksGet(params) => to_json_value(params),
+            A2aParams::TasksList(params) => to_json_value(params),
+            A2aParams::TasksSubscribe(params) => to_json_value(params),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,25 +241,6 @@ pub fn stream_chunk_response(
     })
 }
 
-fn normalize_params(value: Value) -> Value {
-    match value {
-        Value::Null => Value::Object(Map::new()),
-        Value::Object(map) => Value::Object(map),
-        Value::Array(items) => {
-            let mut map = Map::new();
-            for (idx, item) in items.into_iter().enumerate() {
-                map.insert(format!("arg{idx}", idx = idx), item);
-            }
-            Value::Object(map)
-        }
-        other => {
-            let mut map = Map::new();
-            map.insert("value".to_string(), other);
-            Value::Object(map)
-        }
-    }
-}
-
 fn id_to_string(value: &JSONRPCId) -> String {
     match value {
         JSONRPCId::String(s) => s.clone(),
@@ -267,14 +256,12 @@ pub fn extract_jsonrpc_id(value: &Value) -> Option<JSONRPCId> {
 }
 
 pub fn extract_agent_name(value: &Value) -> Option<String> {
-    let request: JSONRPCRequest = serde_json::from_value(value.clone()).ok()?;
-    let Ok(method) = request.method.parse::<A2aMethod>() else {
-        return None;
+    let raw: JSONRPCRequest = serde_json::from_value(value.clone()).ok()?;
+    let request = A2aWireRequest::try_from_raw(raw).ok()?;
+    let params = match request.method {
+        A2aWireMethod::MessageSendStream { params } => *params,
+        _ => return None,
     };
-    if method != A2aMethod::MessageSendStream {
-        return None;
-    }
-    let params: SendMessageRequest = serde_json::from_value(request.params?).ok()?;
     metadata_value_as_string(params.metadata.as_ref(), "agent")
         .or_else(|| metadata_value_as_string(params.metadata.as_ref(), "agent_name"))
         .or_else(|| metadata_value_as_string(params.message.metadata.as_ref(), "agent"))
@@ -289,30 +276,6 @@ fn metadata_value_as_string(
         .and_then(|meta| meta.get(key))
         .and_then(|value| value.as_str())
         .map(|value| value.to_string())
-}
-
-fn augment_message_params(mut params_value: Value, message: &Message) -> Value {
-    let message_text = message_text(message);
-    if let Value::Object(ref mut map) = params_value
-        && let Some(text) = message_text
-    {
-        map.entry("text".to_string()).or_insert(Value::String(text));
-    }
-    params_value
-}
-
-fn message_text(message: &Message) -> Option<String> {
-    let mut parts = Vec::new();
-    for part in &message.parts {
-        if let Some(text) = part.text.as_deref() {
-            parts.push(text);
-        }
-    }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join("\n"))
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -478,15 +441,10 @@ impl JsChunkNormalizer {
 }
 
 /// Value passed to JS handler. For message.sendStream we pass only the incoming message payload (parts).
-pub fn request_to_js_value(request: &A2aRequest) -> Value {
-    match request.method {
-        A2aMethod::MessageSendStream => {
-            serde_json::from_value::<SendMessageRequest>(request.params.clone())
-                .ok()
-                .map(|params| json!({ "parts": params.message.parts }))
-                .unwrap_or_else(|| json!({ "parts": [] }))
-        }
-        _ => request.params.clone(),
+pub fn request_to_js_value(request: &A2aRequest) -> Result<Value> {
+    match request.params.as_send_message() {
+        Some(params) => Ok(json!({ "parts": params.message.parts })),
+        None => request.params.to_value(),
     }
 }
 

@@ -58,7 +58,7 @@ impl JsInvoker for QuickJsInvoker {
         let handle = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             handle.block_on(async move {
-                let js_request = a2a::request_to_js_value(&request);
+                let js_request = a2a::request_to_js_value(&request)?;
                 let mut bridge = bridge.lock().await;
                 bridge
                     .invoke_js_function(&scope, "onChatMessage", js_request)
@@ -80,7 +80,7 @@ impl JsInvoker for QuickJsInvoker {
         let handle = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             handle.block_on(async move {
-                let js_request = a2a::request_to_js_value(&request);
+                let js_request = a2a::request_to_js_value(&request)?;
                 let mut bridge = bridge.lock().await;
                 let session = begin_a2a_yield_session(&mut bridge).await?;
                 let session = session.invoke(&scope, js_request).await?;
@@ -135,22 +135,12 @@ impl RequestRouter for MethodBasedRouter {
         request: &a2a::A2aRequest,
         scope: &InvocationScope,
     ) -> Result<a2a::A2aOutcome> {
-        match request.method {
-            a2a::A2aMethod::TasksGet => {
-                let req =
-                    serde_json::from_value(request.params.clone()).map_err(BamlRtError::Json)?;
-                self.task_handler.handle_get(req).await
-            }
-            a2a::A2aMethod::TasksList => {
-                let req =
-                    serde_json::from_value(request.params.clone()).map_err(BamlRtError::Json)?;
-                self.task_handler.handle_list(req).await
-            }
-            a2a::A2aMethod::TasksSubscribe => {
-                let req =
-                    serde_json::from_value(request.params.clone()).map_err(BamlRtError::Json)?;
+        match &request.params {
+            a2a::A2aParams::TasksGet(req) => self.task_handler.handle_get(req.clone()).await,
+            a2a::A2aParams::TasksList(req) => self.task_handler.handle_list(req.clone()).await,
+            a2a::A2aParams::TasksSubscribe(req) => {
                 self.task_handler
-                    .handle_subscribe(req, request.invocation)
+                    .handle_subscribe(req.clone(), request.invocation)
                     .await
             }
             _ => {
