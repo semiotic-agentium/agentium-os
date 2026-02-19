@@ -1,9 +1,16 @@
 {
   "version": "1.0.0",
   "name": "clickup-agent",
-  "description": "Agent that interacts with ClickUp tasks and spaces",
   "entry_point": "src/index.ts",
   "signature": "clickup-agent@1.0.0",
-  "runtime_version": "0.1.0",
-  "tools": ["support/clickup"]
+  "tools": [
+    "support/clickup",
+    "system/discover_agents",
+    "system/discover_tools",
+    "system/internal_a2a"
+  ],
+  "discovery": {
+    "description": "Agent that interacts with ClickUp tasks and spaces",
+    "capabilities": []
+  }
 }

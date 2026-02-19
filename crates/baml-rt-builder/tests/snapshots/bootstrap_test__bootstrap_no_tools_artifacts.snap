@@ -6,10 +6,12 @@ expression: artifacts
 {
   "version": "1.0.0",
   "name": "explorer-agent",
-  "description": "Test description for explorer",
   "entry_point": "src/index.ts",
-  "runtime_version": "0.1.0",
-  "tools": []
+  "signature": "explorer-agent@1.0.0",
+  "tools": [],
+  "discovery": {
+    "description": "Test description for explorer"
+  }
 }
 
 === baml_src/explorer_agent_prompt.baml ===

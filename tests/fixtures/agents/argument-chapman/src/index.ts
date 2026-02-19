@@ -1,9 +1,13 @@
 /// <reference path="./baml-runtime.d.ts" />
 /**
- * Fixture: argument-chapman. Replies with one contradiction line (Monty Python argument sketch).
- * Uses __chat_register({ run }) DSL; run(ctx) returns SessionResult.
+ * Fixture: argument-chapman. Two-turn contradiction (Monty Python argument sketch).
+ * Turn 1: reply with one line, then awaitInput("Your next line?") → INPUT_REQUIRED.
+ * Turn 2 (resume): reply to the user's line, then COMPLETED.
  */
 import type { SessionResult } from "./baml-runtime";
+
+const FALLBACK = "Yes it is.";
+const TIMEOUT_MS = 1200;
 
 __chat_register({
   run: async (ctx): Promise<SessionResult> => {
@@ -11,18 +15,19 @@ __chat_register({
     try {
       const reply = await Promise.race([
         ArgumentReply({ other_message: text }),
-        new Promise<string>((resolve) => {
-          setTimeout(() => resolve("Yes it is."), 1200);
-        }),
+        new Promise<string>((resolve) => setTimeout(() => resolve(FALLBACK), TIMEOUT_MS)),
       ]);
-      const line = typeof reply === "string" ? reply : "Yes it is.";
+      const line = typeof reply === "string" ? reply : FALLBACK;
       ctx.emit.message(line);
-      // Explicit final chunk so stream completes (UntilFinalChunk); shim also emits on return.
-      (globalThis as unknown as { __chat_yield?: (chunk: unknown) => void }).__chat_yield?.({
-        task: { status: { state: "TASK_STATE_COMPLETED" } },
-        final: true,
-      });
-      return { message: line };
+      const nextMessage = await ctx.emit.awaitInput("Your next line?");
+      const nextText = messageText(nextMessage) || "Nothing.";
+      const secondReply = await Promise.race([
+        ArgumentReply({ other_message: nextText }),
+        new Promise<string>((resolve) => setTimeout(() => resolve(FALLBACK), TIMEOUT_MS)),
+      ]);
+      const secondLine = typeof secondReply === "string" ? secondReply : FALLBACK;
+      ctx.emit.message(secondLine);
+      return { message: secondLine };
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       return { error: errMsg };

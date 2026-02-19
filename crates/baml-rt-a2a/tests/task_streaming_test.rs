@@ -8,6 +8,8 @@ use baml_rt::{
     baml::BamlRuntimeManager,
 };
 use baml_rt_core::context;
+use baml_rt_core::{AgentDiscoveryEntry, AgentLister};
+use baml_rt_tools_system::SystemBundle;
 use serde_json::{Value, json};
 use test_support::common::{
     AddNumbersTool, CalculatorTool, first_message_text_from_stream, first_task_id_from_stream,
@@ -37,7 +39,6 @@ fn fixture_js_code() -> String {
             __chat_yield({
                 statusUpdate: { status: { state: "TASK_STATE_WORKING" } }
             });
-            __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_COMPLETED" } } });
             return;
         }
         if (text.startsWith("tool-call:")) {
@@ -49,7 +50,6 @@ fn fixture_js_code() -> String {
             } catch (e) {
                 __chat_yield({ message: { parts: [{ text: `tool_error=${String(e)}` }] } });
             }
-            __chat_yield({ final: true });
             return;
         }
         if (text.startsWith("baml-tool:")) {
@@ -61,15 +61,21 @@ fn fixture_js_code() -> String {
             } catch (e) {
                 __chat_yield({ message: { parts: [{ text: `tool_error=${String(e)}` }] } });
             }
-            __chat_yield({ final: true });
             return;
         }
         __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
         __chat_yield({ artifactUpdate: { artifact: { name: "rite-log", parts: [{ text: "sealed" }] } } });
-        __chat_yield({ final: true });
     };
     "#
     .to_string()
+}
+
+struct EmptyAgentList;
+
+impl AgentLister for EmptyAgentList {
+    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
+        vec![]
+    }
 }
 
 async fn acquire_test_permit() -> tokio::sync::OwnedSemaphorePermit {
@@ -99,15 +105,23 @@ const SYSTEM_A2A_TOOL: &str = "system/internal_a2a";
 /// Agent with system/internal_a2a tool registered (for session FSM tests).
 async fn setup_agent_with_a2a_session_tool() -> A2aAgent {
     let manager = BamlRuntimeManager::new().unwrap();
-    A2aAgent::builder()
+    let agent = A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(fixture_js_code())
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
-        .with_a2a_session_tool(true)
         .build()
         .await
-        .unwrap()
+        .unwrap();
+    let registry = agent.runtime().lock().await.tool_registry();
+    registry
+        .register_bundle(SystemBundle::new(
+            Arc::new(EmptyAgentList),
+            registry.clone(),
+            Arc::new(agent.clone()),
+        ))
+        .unwrap();
+    agent
 }
 
 #[tokio::test]
@@ -288,7 +302,6 @@ async fn test_a2a_session_send_returns_fast_and_next_drains() {
         let mgr = runtime.lock().await;
         mgr.tool_session_handle()
     };
-
     let context_id = context::generate_context_id();
     let message_id = baml_rt_core::ids::MessageId::from_external(
         baml_rt_core::ids::ExternalId::new(format!("msg-{}", context_id.as_str())),
@@ -317,6 +330,7 @@ async fn test_a2a_session_send_returns_fast_and_next_drains() {
             "session send() must return in under 50ms (enqueue only), took {:?}",
             elapsed
         );
+        let mut last_step = None;
         for _ in 0..8 {
             let next = tokio::time::timeout(
                 std::time::Duration::from_millis(500),
@@ -326,17 +340,23 @@ async fn test_a2a_session_send_returns_fast_and_next_drains() {
             let Ok(Ok(step)) = next else {
                 break;
             };
-            if matches!(
+            let terminal = matches!(
                 step,
-                baml_rt_tools::ToolStep::Done { .. } | baml_rt_tools::ToolStep::Error { .. }
-            ) {
+                baml_rt_tools::ToolStep::Done { .. }
+                    | baml_rt_tools::ToolStep::Error { .. }
+                    | baml_rt_tools::ToolStep::Suspended { .. }
+            );
+            last_step = Some(step);
+            if terminal {
                 break;
             }
         }
-        handle
-            .tool_session_finish(&session_id)
-            .await
-            .expect("session_finish");
+        if matches!(last_step, Some(baml_rt_tools::ToolStep::Done { .. })) {
+            handle
+                .tool_session_finish(&session_id)
+                .await
+                .expect("session_finish");
+        }
     })
     .await;
 }
@@ -351,7 +371,6 @@ async fn test_a2a_session_send_after_finish_fails() {
         let mgr = runtime.lock().await;
         mgr.tool_session_handle()
     };
-
     let context_id = context::generate_context_id();
     let message_id = baml_rt_core::ids::MessageId::from_external(
         baml_rt_core::ids::ExternalId::new(format!("msg-{}", context_id.as_str())),
@@ -373,6 +392,7 @@ async fn test_a2a_session_send_after_finish_fails() {
             .tool_session_send(&session_id, send_input.clone())
             .await
             .expect("first send");
+        let mut last_step = None;
         for _ in 0..8 {
             let next = tokio::time::timeout(
                 std::time::Duration::from_millis(500),
@@ -382,17 +402,23 @@ async fn test_a2a_session_send_after_finish_fails() {
             let Ok(Ok(step)) = next else {
                 break;
             };
-            if matches!(
+            let terminal = matches!(
                 step,
-                baml_rt_tools::ToolStep::Done { .. } | baml_rt_tools::ToolStep::Error { .. }
-            ) {
+                baml_rt_tools::ToolStep::Done { .. }
+                    | baml_rt_tools::ToolStep::Error { .. }
+                    | baml_rt_tools::ToolStep::Suspended { .. }
+            );
+            last_step = Some(step);
+            if terminal {
                 break;
             }
         }
-        handle
-            .tool_session_finish(&session_id)
-            .await
-            .expect("finish");
+        if matches!(last_step, Some(baml_rt_tools::ToolStep::Done { .. })) {
+            handle
+                .tool_session_finish(&session_id)
+                .await
+                .expect("finish");
+        }
         let err = handle
             .tool_session_send(&session_id, send_input)
             .await

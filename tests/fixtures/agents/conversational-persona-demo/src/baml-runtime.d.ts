@@ -6,11 +6,48 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
+export interface AgentCardDto { name: string;
+version: string;
+agentPackage: string;
+agentInstanceId: string;
+tools: string[];
+description: string | null;
+capabilities: string[];
+ }
+
+export interface InternalA2aNextOutput { chunks: ConversationChunk[];
+completion: InternalA2aCompletion | null;
+ }
+
+export type RoutePath = "List_capabilities" | "Delegate";
+
+export interface SelectedAgent { agent_package: string;
+agent_instance_id: string;
+ }
+
+export interface SystemDiscover_agentsSessionPlan { steps: SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsNextStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep[];
+ }
+
+export interface SystemInternal_a2aSessionPlan { steps: SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aNextStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep[];
+ }
+
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
 declare global {
 
+declare function BuildDelegatePlan(args: { agent_package: string; agent_instance_id: string; user_message: string }): Promise<SystemInternal_a2aSessionPlan>;
+
+declare function FormatCapabilities(args: { user_message: string; agents: AgentCardDto[] }): Promise<string>;
+
+declare function GetDiscoverAgentsPlan(args: { user_message: string }): Promise<SystemDiscover_agentsSessionPlan>;
+
 declare function PersonaChat(args: { user_message: string }): Promise<string>;
+
+declare function RouteIntent(args: { user_message: string }): Promise<RoutePath>;
+
+declare function SelectAgentForMessage(args: { user_message: string; agents: AgentCardDto[] }): Promise<SelectedAgent | null>;
+
+declare function SummarizeDelegatedResult(args: { a2a_output: InternalA2aNextOutput }): Promise<string>;
 
 }
 

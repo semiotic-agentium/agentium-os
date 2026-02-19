@@ -690,6 +690,31 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
     }
 }
 
+/// Discovery record for tool search (name, bundle, description, tags, access, origin).
+/// Discovery lists globally available tools only; no per-agent invokability.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDiscoveryRecord {
+    pub name: ToolName,
+    pub bundle: BundleName,
+    pub description: String,
+    pub tags: Vec<String>,
+    pub access: Option<ToolAccess>,
+    pub origin: ToolOrigin,
+}
+
+impl ToolDiscoveryRecord {
+    pub fn from_metadata(metadata: &ToolFunctionMetadata) -> Self {
+        Self {
+            name: metadata.name.clone(),
+            bundle: metadata.name.bundle().clone(),
+            description: metadata.description.clone(),
+            tags: metadata.tags.clone(),
+            access: metadata.access,
+            origin: metadata.origin,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolBundleMetadata {
     pub name: BundleName,
@@ -698,6 +723,18 @@ pub struct ToolBundleMetadata {
     pub secret_requirements: Vec<ToolSecretRequirement>,
 }
 
+/// Declares whether this tool ever emits `ToolStep::Streaming` from `next()`.
+///
+/// The session protocol: after `send(input)`, the caller calls `next()` until the step indicates
+/// completion. Each `next()` returns a `ToolStep`: `Streaming { output }` (more to come),
+/// `Done { output }` (completion), or `Error { error }`.
+///
+/// - **OneShot:** This tool only ever returns `Done` or `Error` from `next()`. One `next()` after
+///   a `send()` returns the full result and signals completion. `ToolRegistry::execute()` (one
+///   open → send → next → finish) is allowed.
+/// - **Streaming:** This tool may return `ToolStep::Streaming` one or more times. Each `next()` may
+///   block or buffer and does *not* indicate completion until the step is `Done`. Callers must
+///   use `open_session` and call `next()` in a loop until `Done`. `execute()` is disabled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCapability {
     OneShot,
@@ -713,9 +750,14 @@ pub enum ToolOrigin {
     Guest,
 }
 
+/// Context passed to a tool when a session is opened. context_id (from invocation scope)
+/// is set by the executor so tools (e.g. internal_a2a) can attach it to outbound requests for
+/// session continuity (e.g. INPUT_REQUIRED resume).
 pub struct ToolSessionContext {
     pub session_id: ToolSessionId,
     pub tool_name: ToolName,
+    /// Invocation scope context_id; used by internal_a2a for delegated session continuity.
+    pub context_id: String,
 }
 
 #[async_trait]
@@ -785,6 +827,11 @@ pub enum ToolSessionAdvance {
         output: Value,
         session: ToolSessionHandle<Ready>,
     },
+    /// Session yielded output but is suspended (e.g. input required). Session remains open; do not call finish.
+    Suspended {
+        output: Value,
+        session: ToolSessionHandle<Ready>,
+    },
     Done {
         output: Option<Value>,
         session: ToolSessionHandle<Closed>,
@@ -806,8 +853,9 @@ impl ToolSessionHandle<AwaitingInput> {
         registry: Arc<ToolRegistry>,
         name: &str,
         open_input: Value,
+        context_id: &str,
     ) -> Result<ToolSessionHandle<AwaitingInput>> {
-        let session_id = registry.open_session(name, open_input).await?;
+        let session_id = registry.open_session(name, open_input, context_id).await?;
         Ok(ToolSessionHandle {
             id: session_id,
             registry,
@@ -851,12 +899,20 @@ impl ToolSessionHandle<Ready> {
                         .session_abort(&id, Some(error.message.clone()))
                         .await?;
                 }
-                ToolStep::Streaming { .. } => {}
+                ToolStep::Streaming { .. } | ToolStep::Suspended { .. } => {}
             }
             step
         };
         match step {
             ToolStep::Streaming { output } => Ok(ToolSessionAdvance::Streaming {
+                output,
+                session: ToolSessionHandle {
+                    id,
+                    registry: registry_handle,
+                    _state: PhantomData,
+                },
+            }),
+            ToolStep::Suspended { output } => Ok(ToolSessionAdvance::Suspended {
                 output,
                 session: ToolSessionHandle {
                     id,
@@ -975,9 +1031,38 @@ where
 }
 
 /// Wrapper that implements ToolHandler for any BamlTool
-struct ToolWrapper<T: BamlTool> {
-    tool: Arc<T>,
-    metadata: ToolFunctionMetadata,
+pub(crate) struct ToolWrapper<T: BamlTool> {
+    pub(crate) tool: Arc<T>,
+    pub(crate) metadata: ToolFunctionMetadata,
+}
+
+/// Build metadata and handler from a BamlTool (type-level metadata only).
+/// Used by the single tool-provider inventory for host registration.
+pub fn create_tool_handler<T: BamlTool>(
+    tool: T,
+) -> Result<(ToolFunctionMetadata, Arc<dyn ToolHandler>)> {
+    let name = ToolName::parse(&T::name())?;
+    let expected_bundle = T::Bundle::bundle_name()?;
+    if name.bundle() != &expected_bundle {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "Tool '{}' bundle '{}' does not match Bundle type '{}'",
+            name,
+            name.bundle(),
+            expected_bundle
+        )));
+    }
+    let description_str = tool.description().to_string();
+    let metadata = TypeBasedMetadataBuilder::<T::OpenInput, T::Input, T::Output>::new(
+        name.clone(),
+        T::class_name(),
+        description_str.clone(),
+    )
+    .build_metadata();
+    let handler: Arc<dyn ToolHandler> = Arc::new(ToolWrapper {
+        tool: Arc::new(tool),
+        metadata: metadata.clone(),
+    });
+    Ok((metadata, handler))
 }
 
 #[async_trait]
@@ -1004,6 +1089,58 @@ impl<T: BamlTool> ToolHandler for ToolWrapper<T> {
             })
         }));
         Ok(Box::new(OneShotSession::new(ctx, executor)))
+    }
+}
+
+struct MultiSendSession {
+    /// Reserved for session-scoped tracing/abort; not yet used. In production, allow(dead_code) is a smell—revisit when adding session-scoped ops.
+    #[allow(dead_code)]
+    ctx: ToolSessionContext,
+    executor: Box<dyn ToolExecutor>,
+    pending: Option<Value>,
+}
+
+impl MultiSendSession {
+    fn new(ctx: ToolSessionContext, executor: Box<dyn ToolExecutor>) -> Self {
+        Self {
+            ctx,
+            executor,
+            pending: None,
+        }
+    }
+}
+
+/// Session that allows multiple Send/Next pairs. Each Send runs the executor and stores the
+/// result; Next returns that result (and clears it so the next Next returns None until next Send).
+#[async_trait]
+impl ToolSession for MultiSendSession {
+    async fn send(&mut self, input: Value) -> std::result::Result<(), ToolSessionError> {
+        let output = match self.executor.execute(input).await {
+            Ok(value) => value,
+            Err(err) => {
+                return Err(ToolSessionError::Tool(ToolFailure::from_error(&err)));
+            }
+        };
+        self.pending = Some(output);
+        Ok(())
+    }
+
+    async fn next(&mut self) -> std::result::Result<ToolStep, ToolSessionError> {
+        let output = self.pending.take();
+        Ok(ToolStep::Done {
+            output: output.map(Some).unwrap_or(None),
+        })
+    }
+
+    async fn finish(&mut self) -> std::result::Result<(), ToolSessionError> {
+        Ok(())
+    }
+
+    async fn abort(
+        &mut self,
+        _reason: Option<String>,
+    ) -> std::result::Result<(), ToolSessionError> {
+        Ok(())
     }
 }
 
@@ -1081,20 +1218,9 @@ impl ToolRegistry {
     /// registry.register(MyTool).expect("register tool");
     /// ```
     pub fn register<T: BamlTool>(&self, tool: T) -> Result<()> {
-        // Derive tool name from Bundle and LOCAL_NAME
-        let tool_name_str = T::name();
-        let name = ToolName::parse(&tool_name_str)?;
-
-        // Validate that the tool's bundle matches the Bundle type
-        let expected_bundle = T::Bundle::bundle_name()?;
-        if name.bundle() != &expected_bundle {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "Tool '{}' bundle '{}' does not match Bundle type '{}'",
-                name,
-                name.bundle(),
-                expected_bundle
-            )));
-        }
+        let (metadata, tool_handler) = create_tool_handler(tool)?;
+        let name = metadata.name.clone();
+        let description_str = metadata.description.clone();
 
         let mut inner = self.inner.lock().unwrap();
         if let Some(allowlist) = &inner.allowlist
@@ -1113,24 +1239,9 @@ impl ToolRegistry {
             )));
         }
 
-        let description_str = tool.description().to_string();
-        let class_name = T::class_name();
-        let metadata = TypeBasedMetadataBuilder::<T::OpenInput, T::Input, T::Output>::new(
-            name.clone(),
-            class_name.clone(),
-            description_str.clone(),
-        )
-        .build_metadata();
-
-        let tool_handler: Arc<dyn ToolHandler> = Arc::new(ToolWrapper {
-            tool: Arc::new(tool),
-            metadata,
-        });
-
-        inner.tools.insert(
-            name.clone(),
-            (tool_handler.metadata().clone(), tool_handler),
-        );
+        inner
+            .tools
+            .insert(name.clone(), (metadata.clone(), tool_handler));
 
         let span = crate::spans::register_tool(&name, &description_str);
         let _guard = span.enter();
@@ -1267,6 +1378,12 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// Search the **whole** tool catalog (all tools the host knows about from inventory). Discovery is global.
+    pub fn search_tools(&self, query: &str, limit: usize) -> Vec<ToolDiscoveryRecord> {
+        let full_catalog = crate::tool_catalog::all_tool_metadata();
+        crate::tool_discovery::search_tools(&full_catalog, query, limit)
+    }
+
     pub fn validate_allowlist_registered(&self) -> Result<()> {
         let inner = self.inner.lock().unwrap();
         if let Some(allowlist) = &inner.allowlist {
@@ -1331,7 +1448,13 @@ impl ToolRegistry {
     }
 
     /// Open a tool session and return its session id.
-    pub async fn open_session(&self, name: &str, open_input: Value) -> Result<ToolSessionId> {
+    /// Open a tool session. `context_id` is the invocation scope id (always present).
+    pub async fn open_session(
+        &self,
+        name: &str,
+        open_input: Value,
+        context_id: &str,
+    ) -> Result<ToolSessionId> {
         let start = std::time::Instant::now();
         let parsed = ToolName::parse(name)?;
         let session_id = ToolSessionId::random();
@@ -1358,6 +1481,7 @@ impl ToolRegistry {
         let ctx = ToolSessionContext {
             session_id: session_id.clone(),
             tool_name: metadata.name.clone(),
+            context_id: context_id.to_string(),
         };
         let session = handler.open_session(ctx, open_input).await?;
         {
@@ -1476,8 +1600,8 @@ impl ToolRegistry {
         Ok(())
     }
 
-    /// Execute a tool function by name (single-shot convenience).
-    pub async fn execute(&self, name: &str, args: Value) -> Result<Value> {
+    /// Execute a tool function by name (single-shot convenience). `context_id` is the invocation scope id.
+    pub async fn execute(&self, name: &str, args: Value, context_id: &str) -> Result<Value> {
         let start = std::time::Instant::now();
         let span = crate::spans::execute_tool(name);
         let _guard = span.enter();
@@ -1505,11 +1629,11 @@ impl ToolRegistry {
 
         // For execute, open_input is always () (empty object)
         let session_id = self
-            .open_session(&parsed.to_string(), empty_open_input())
+            .open_session(&parsed.to_string(), empty_open_input(), context_id)
             .await?;
         self.session_send(&session_id, args).await?;
         let result = match self.session_next(&session_id).await? {
-            ToolStep::Streaming { output } => {
+            ToolStep::Streaming { output } | ToolStep::Suspended { output } => {
                 self.session_finish(&session_id).await?;
                 Ok(output)
             }
@@ -1613,6 +1737,72 @@ where
             })
         }));
         Ok(Box::new(OneShotSession::new(ctx, executor)))
+    }
+}
+
+/// Session tool with multiple Send/Next pairs, built from an async function and pre-built metadata.
+///
+/// Send and next are **paired** FSM steps: one send runs the executor, one next returns that
+/// result (as `ToolStep::Done`). Whether and how the tool supports continuation (e.g. paging)
+/// is up to the tool's input/output types; the session protocol is purely FSM advancement.
+///
+/// Open validates OI; each Send runs the executor and Next returns that result. Use when you have
+/// runtime deps and want multi-request sessions without implementing [ToolHandler].
+pub fn create_multi_send_session_tool_from_async<OI, I, O, F>(
+    metadata: ToolFunctionMetadata,
+    executor: F,
+) -> Arc<dyn ToolHandler>
+where
+    OI: for<'de> Deserialize<'de> + Send + Sync + 'static,
+    I: crate::tool_schema::ToolType + Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static,
+    O: crate::tool_schema::ToolType + Serialize + Send + Sync + 'static,
+    F: Fn(I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>> + Send + Sync + 'static,
+{
+    Arc::new(MultiSendSessionToolFromAsync::<OI, I, O, F> {
+        metadata,
+        executor: Arc::new(executor),
+        _phantom: PhantomData,
+    })
+}
+
+/// Internal handler for create_multi_send_session_tool_from_async.
+struct MultiSendSessionToolFromAsync<OI, I, O, F> {
+    metadata: ToolFunctionMetadata,
+    executor: Arc<F>,
+    _phantom: PhantomData<(OI, I, O)>,
+}
+
+#[async_trait]
+impl<OI, I, O, F> ToolHandler for MultiSendSessionToolFromAsync<OI, I, O, F>
+where
+    OI: for<'de> Deserialize<'de> + Send + Sync + 'static,
+    I: crate::tool_schema::ToolType + Serialize + for<'de> Deserialize<'de> + Send + Sync + 'static,
+    O: crate::tool_schema::ToolType + Serialize + Send + Sync + 'static,
+    F: Fn(I) -> Pin<Box<dyn Future<Output = Result<O>> + Send>> + Send + Sync + 'static,
+{
+    fn metadata(&self) -> &ToolFunctionMetadata {
+        &self.metadata
+    }
+
+    async fn open_session(
+        &self,
+        ctx: ToolSessionContext,
+        open_input: Value,
+    ) -> Result<Box<dyn ToolSession>> {
+        validate_open_input::<OI>(open_input)?;
+        let handler = self.executor.clone();
+        let executor: Box<dyn ToolExecutor> = Box::new(ExecutorAdapter::new(move |input| {
+            let parsed: I = match deserialize_tool_input(input) {
+                Ok(value) => value,
+                Err(err) => return Box::pin(async move { Err(err) }),
+            };
+            let future = handler(parsed);
+            Box::pin(async move {
+                let output = future.await?;
+                serialize_tool_output(output)
+            })
+        }));
+        Ok(Box::new(MultiSendSession::new(ctx, executor)))
     }
 }
 

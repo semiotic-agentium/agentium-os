@@ -6,38 +6,32 @@
 //! scope-from-token for attribution.
 
 mod tool_extraction;
-use std::{
-    collections::{HashMap, HashSet},
-    fs,
-    path::Path,
-    sync::Arc,
-    time::Instant,
+pub(crate) use tool_extraction::{
+    ToolSessionOp, extract_tool_call, extract_tool_session_plan, normalize_plan_input,
+    resolve_tool_name_from_input_with_registry, resolve_tool_name_from_plan_type_with_registry,
+    resolve_tool_name_from_session_plan_with_registry,
 };
 
+use crate::baml_execution::{BamlExecutor, ConversationContextProvider, ParseRetryPolicy};
+use crate::traits::{BamlFunctionExecutor, SchemaLoader};
 use async_trait::async_trait;
-use baml_rt_core::{
-    BamlRtError, Outcome, Result,
-    bus::{EffectEmitter, ToolEffectMetadata},
-    context,
-    correlation::current_correlation_id,
-    types::FunctionSignature,
-};
+use baml_rt_core::bus::{EffectEmitter, ToolEffectMetadata};
+use baml_rt_core::context;
+use baml_rt_core::correlation::current_correlation_id;
+use baml_rt_core::types::FunctionSignature;
+use baml_rt_core::{BamlRtError, Outcome, Result};
 use baml_rt_interceptor::{InterceptorRegistry, ToolCallContext};
 use baml_rt_observability::metrics;
 use baml_rt_tools::{
     ToolFunctionMetadataExport, ToolRegistry as ConcreteToolRegistry, ToolSessionId, ToolStep,
 };
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex as TokioMutex;
-pub(crate) use tool_extraction::{
-    ToolSessionOp, extract_tool_call, extract_tool_session_plan, normalize_plan_input,
-    resolve_tool_name_from_input_with_registry,
-};
-
-use crate::{
-    baml_execution::{BamlExecutor, ConversationContextProvider, ParseRetryPolicy},
-    traits::{BamlFunctionExecutor, SchemaLoader},
-};
 
 // Helper function to build metadata map with correlation/message/task/agent ids.
 fn build_metadata_map_with_phase(
@@ -93,11 +87,17 @@ fn tool_session_trace(message: &str) {
     }
 }
 
+/// Map from BAML function name to session plan type name (from builder-generated session_plan_functions.json).
+/// When set, the runtime resolves the tool from the invoking function name instead of requiring __type in the JSON.
+pub type SessionPlanFunctionsMap = std::collections::HashMap<String, String>;
+
 /// Manages the BAML runtime and function registry
 pub struct BamlRuntimeManager {
     function_registry: HashMap<String, FunctionSignature>,
     pub(crate) executor: Option<BamlExecutor>,
     tool_registry: Arc<ConcreteToolRegistry>,
+    /// Builder-generated map: function name → session plan type. Lets the runtime resolve tool from the call site.
+    session_plan_functions: Option<SessionPlanFunctionsMap>,
     interceptor_registry: Arc<TokioMutex<InterceptorRegistry>>,
     tool_session_scopes: Arc<TokioMutex<HashMap<ToolSessionId, ToolSessionScope>>>,
     tool_session_states: Arc<TokioMutex<HashMap<ToolSessionId, ToolCallSessionState>>>,
@@ -158,9 +158,8 @@ impl ToolExecutionHandle {
         name: &str,
         args: Value,
     ) -> Result<Value> {
-        use std::time::Instant;
-
         use baml_rt_interceptor::ToolCallContext;
+        use std::time::Instant;
 
         let start = Instant::now();
         let context_id = scope.context_id().clone();
@@ -228,7 +227,10 @@ impl ToolExecutionHandle {
         let final_args = args;
 
         // Execute the tool
-        let result = self.tool_registry.execute(name, final_args).await;
+        let result = self
+            .tool_registry
+            .execute(name, final_args, context_id.as_str())
+            .await;
 
         // Calculate duration
         let duration = start.elapsed();
@@ -299,7 +301,10 @@ impl ToolSessionExecutionHandle {
         let _ = interceptor_registry.intercept_tool_call(&context).await?;
         drop(interceptor_registry);
 
-        let result = self.tool_registry.open_session(tool_name, open_input).await;
+        let result = self
+            .tool_registry
+            .open_session(tool_name, open_input, context_id.as_str())
+            .await;
         let duration_ms = start.elapsed().as_millis() as u64;
         let completion_result: Result<Value> = match &result {
             Ok(_) => Ok(Value::Null),
@@ -701,6 +706,7 @@ impl BamlRuntimeManager {
             function_registry: HashMap::new(),
             executor: None,
             tool_registry: Arc::new(ConcreteToolRegistry::new()),
+            session_plan_functions: None,
             interceptor_registry: Arc::new(TokioMutex::new(InterceptorRegistry::new())),
             tool_session_scopes: Arc::new(TokioMutex::new(HashMap::new())),
             tool_session_states: Arc::new(TokioMutex::new(HashMap::new())),
@@ -822,8 +828,27 @@ impl BamlRuntimeManager {
 
         self.executor = Some(executor);
 
+        // Load builder-generated session plan function map so we can resolve tool from the invoking function name (no __type in prompt required).
+        let manifest_path = project_root.join("session_plan_functions.json");
+        self.session_plan_functions = if manifest_path.exists() {
+            match std::fs::read_to_string(&manifest_path) {
+                Ok(s) => serde_json::from_str(&s).ok(),
+                Err(e) => {
+                    tracing::warn!(path = %manifest_path.display(), error = %e, "Could not read session_plan_functions.json");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         tracing::info!(
             function_count = self.function_registry.len(),
+            session_plan_manifest = self
+                .session_plan_functions
+                .as_ref()
+                .map(|m| m.len())
+                .unwrap_or(0),
             "Loaded BAML IL"
         );
 
@@ -875,8 +900,11 @@ impl BamlRuntimeManager {
 
         // Pass tool registry and interceptor registry to executor
         let interceptor_registry = Some(self.interceptor_registry.clone());
-        executor
+        let result = executor
             .execute_function(scope, function_name, args, interceptor_registry)
+            .await?;
+        // If the BAML function returned a session plan (e.g. GetDiscoverAgentsPlan) or tool call, execute it and return the tool output so JS gets e.g. { agents, done } not the raw plan.
+        self.execute_tool_from_baml_result_or_value(scope, result, Some(function_name))
             .await
     }
 
@@ -1162,13 +1190,40 @@ impl BamlRuntimeManager {
         self.execute_tool(scope, &tool_name, call.args).await
     }
 
+    /// Execute a tool from a BAML result: session plan (requires source_baml_function) or single tool call (resolved by input schema).
+    ///
+    /// Session plans are bound to a tool by **type**. Resolution order (no reliance on prompt emitting __type when manifest is present):
+    /// 1. If we have the invoking function name and a builder-generated manifest (session_plan_functions.json), use it to get the plan type and resolve the tool from the registry.
+    /// 2. Otherwise, require __type on the plan or first step and resolve from the registry by class name.
     pub async fn execute_tool_from_baml_result_or_value(
         &self,
         scope: &context::RuntimeScope,
         baml_result: Value,
+        source_baml_function: Option<&str>,
     ) -> Result<Value> {
         if let Some(plan) = extract_tool_session_plan(&baml_result)? {
-            let tool_name = self.resolve_tool_name_from_plan_steps(&plan).await?;
+            let tool_name = if let (Some(func_name), Some(map)) =
+                (source_baml_function, &self.session_plan_functions)
+            {
+                if let Some(plan_type) = map.get(func_name) {
+                    resolve_tool_name_from_plan_type_with_registry(
+                        &self.tool_registry,
+                        plan_type.as_str(),
+                    )
+                    .ok()
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let tool_name = tool_name
+                .or_else(|| resolve_tool_name_from_session_plan_with_registry(&self.tool_registry, &baml_result).ok())
+                .ok_or_else(|| {
+                    BamlRtError::InvalidArgument(
+                        "Session plan tool could not be resolved: no manifest entry for the invoking function and no __type on the plan or first step.".to_string(),
+                    )
+                })?;
             return self.execute_tool_session_plan(scope, tool_name, plan).await;
         }
         if let Some(call) = extract_tool_call(&baml_result)? {
@@ -1176,26 +1231,6 @@ impl BamlRuntimeManager {
             return self.execute_tool(scope, &tool_name, call.args).await;
         }
         Ok(baml_result)
-    }
-
-    async fn resolve_tool_name_from_plan_steps(&self, steps: &[ToolSessionOp]) -> Result<String> {
-        let input = steps.iter().find_map(|step| match step {
-            ToolSessionOp::Open { initial_input, .. } => initial_input.as_ref(),
-            ToolSessionOp::Send { input, .. } => Some(input),
-            _ => None,
-        });
-        if let Some(input) = input {
-            return self.resolve_tool_name_from_input(input).await;
-        }
-
-        let tools = self.tool_registry.list_tools();
-        if tools.len() == 1 {
-            return Ok(tools[0].clone());
-        }
-
-        Err(BamlRtError::InvalidArgument(
-            "ToolSessionPlan must include initial_input or input to bind a tool".to_string(),
-        ))
     }
 
     async fn resolve_tool_name_from_input(&self, input: &Value) -> Result<String> {
@@ -1252,6 +1287,7 @@ impl BamlRuntimeManager {
         let mut session_id: Option<ToolSessionId> = None;
         let mut last_output: Option<Value> = None;
         let mut streaming_outputs: Vec<Value> = Vec::new();
+        let mut suspended = false;
 
         let total_steps = steps.len();
         for (index, step) in steps.into_iter().enumerate() {
@@ -1271,8 +1307,11 @@ impl BamlRuntimeManager {
                             "Tool session already open".to_string(),
                         ));
                     }
-                    // For Open step, use initial_input if provided, otherwise empty object
-                    let open_input = initial_input.clone().unwrap_or_else(empty_open_input);
+                    // For Open step, use initial_input if provided and non-null, otherwise empty object
+                    let open_input = initial_input
+                        .clone()
+                        .and_then(|v| if v.is_null() { None } else { Some(v) })
+                        .unwrap_or_else(empty_open_input);
                     let session = self
                         .open_tool_session(&plan_scope, &tool_name, open_input)
                         .await?;
@@ -1306,6 +1345,15 @@ impl BamlRuntimeManager {
                             ToolStep::Streaming { output } => {
                                 streaming_outputs.push(output);
                             }
+                            ToolStep::Suspended { output } => {
+                                streaming_outputs.push(output);
+                                suspended = true;
+                                tracing::debug!(
+                                    tool = %tool_name,
+                                    "FSM Next: breaking on Suspended (session left open for resume)"
+                                );
+                                break;
+                            }
                             ToolStep::Done { output } => {
                                 last_output = output;
                                 if !has_remaining_steps {
@@ -1326,6 +1374,13 @@ impl BamlRuntimeManager {
                     }
                 }
                 ToolSessionOp::Finish { reason } => {
+                    if suspended {
+                        tracing::debug!(
+                            tool = %tool_name,
+                            "FSM step: Finish skipped (session suspended, left open)"
+                        );
+                        continue;
+                    }
                     tracing::debug!(
                         tool = %tool_name,
                         reason = ?reason,
@@ -1350,12 +1405,23 @@ impl BamlRuntimeManager {
             }
         }
 
-        // If session is still open and no explicit Next was called, call Next to get result
-        if let Some(session) = session_id.as_ref() {
+        // If session is still open and no explicit Next was called, call Next to get result.
+        // Skip when we broke on Suspended (session left open for resume).
+        if suspended {
+            // Leave session open; streaming_outputs already has the suspended output.
+        } else if let Some(session) = session_id.as_ref() {
             loop {
                 match self.tool_session_next(session).await? {
                     ToolStep::Streaming { output } => {
                         streaming_outputs.push(output);
+                    }
+                    ToolStep::Suspended { output } => {
+                        streaming_outputs.push(output);
+                        tracing::debug!(
+                            tool = %tool_name,
+                            "FSM fallback Next: breaking on Suspended (session left open)"
+                        );
+                        break;
                     }
                     ToolStep::Done { output } => {
                         last_output = output;
@@ -1420,6 +1486,7 @@ impl Default for BamlRuntimeManager {
             function_registry: HashMap::new(),
             executor: None,
             tool_registry: Arc::new(ConcreteToolRegistry::new()),
+            session_plan_functions: None,
             interceptor_registry: Arc::new(TokioMutex::new(InterceptorRegistry::new())),
             tool_session_scopes: Arc::new(TokioMutex::new(HashMap::new())),
             tool_session_states: Arc::new(TokioMutex::new(HashMap::new())),

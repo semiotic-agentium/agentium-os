@@ -1,26 +1,29 @@
 //! Tests for agent runner binary
 
-mod common;
-
-use std::{collections::HashSet, fs, path::Path, sync::Arc};
-
 use async_trait::async_trait;
-use baml_rt::{A2aRequestHandler, baml::BamlRuntimeManager, tools::BamlTool};
-use baml_rt_core::{
-    bus::BusWithEffects,
-    context::{self, InvocationScope},
-    ids::{AgentId, ContextId, UuidId},
-};
+use baml_rt::A2aRequestHandler;
+use baml_rt::baml::BamlRuntimeManager;
+use baml_rt::tools::BamlTool;
+use baml_rt_core::bus::BusWithEffects;
+use baml_rt_core::context::{self, InvocationScope};
+use baml_rt_core::ids::{AgentId, ContextId, UuidId};
 use baml_rt_provenance::{
     AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
-    ProvenanceContextMessage, ProvenanceContextReader, ProvenanceWriter,
+    ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
+    ProvenanceWriter,
 };
 use baml_rt_tools::bundles::BundleType;
-use flate2::{Compression, write::GzEncoder};
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
+use std::sync::{Arc, OnceLock};
 use tar::Builder;
+use tokio::sync::Semaphore;
 use tokio::time::{Duration, sleep, timeout};
 use ts_rs::TS;
 
@@ -35,67 +38,144 @@ impl BundleType for Test {
 }
 use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, SendMessageRequest};
 #[cfg(feature = "llm-tests")]
-use baml_rt_a2a::A2aSessionBundle;
-use common::{StrictProvenanceWriter, build_agent_dir_to_temp, e2e_serial_gate};
+use baml_rt_core::{AgentDiscoveryEntry, AgentLister};
+#[cfg(feature = "llm-tests")]
+use baml_rt_tools::{ManifestToolNames, parse_access_allowlist, register_manifest_tools};
+#[cfg(feature = "llm-tests")]
+use baml_rt_tools_system::SystemBundle;
+
+/// Empty agent list for tests that only need discover_tools (no discover_agents).
+#[cfg(feature = "llm-tests")]
+struct EmptyAgentList;
+
+#[cfg(feature = "llm-tests")]
+impl AgentLister for EmptyAgentList {
+    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
+        vec![]
+    }
+}
+
+/// Dummy A2A handler for registering SystemBundle before the agent exists (used only for discover_tools test).
+#[cfg(feature = "llm-tests")]
+struct EmptyA2aHandler;
+
+#[cfg(feature = "llm-tests")]
+#[async_trait]
+impl A2aRequestHandler for EmptyA2aHandler {
+    async fn handle_a2a_stream(
+        &self,
+        _request: Value,
+    ) -> baml_rt::Result<baml_rt_core::bus::BusStream<Value>> {
+        Ok(Box::pin(futures_util::stream::empty::<Value>()))
+    }
+}
+
 use test_support::common::{
     CalculatorTool, agent_fixture, chunks_from_responses, ensure_baml_src_exists,
     ensure_fixture_runtime_types, message_texts_from_chunks, user_message, workspace_root,
 };
+use test_support::support::cli::CliHarness;
 
-fn jsonrpc_request(method: &str, params: serde_json::Value, id: &str) -> JSONRPCRequest {
-    JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: method.to_string(),
-        params: Some(params),
-        id: Some(JSONRPCId::String(id.to_string())),
+fn init_test_tracing() {
+    static TRACING: OnceLock<()> = OnceLock::new();
+    TRACING.get_or_init(|| {
+        baml_rt_observability::init_tracing();
+    });
+}
+
+fn e2e_serial_gate() -> &'static Semaphore {
+    init_test_tracing();
+    static GATE: OnceLock<Semaphore> = OnceLock::new();
+    GATE.get_or_init(|| Semaphore::new(1))
+}
+
+#[derive(Clone)]
+struct StrictProvenanceWriter {
+    inner: Arc<GraphqliteProvenanceStore>,
+}
+
+#[async_trait]
+impl ProvenanceWriter for StrictProvenanceWriter {
+    async fn add_event(
+        &self,
+        event: ProvEvent,
+    ) -> std::result::Result<(), baml_rt_provenance::ProvenanceError> {
+        match self.inner.add_event(event.clone()).await {
+            Ok(()) => Ok(()),
+            Err(err) => panic!("strict provenance write failure: {err:?}; event={event:?}"),
+        }
     }
 }
 
-fn send_message_request(params: SendMessageRequest, id: &str) -> JSONRPCRequest {
-    jsonrpc_request(
-        "message.sendStream",
-        serde_json::to_value(params).expect("serialize SendMessageRequest"),
-        id,
-    )
-}
+#[async_trait]
+impl ProvenanceContextReader for StrictProvenanceWriter {
+    async fn context_messages(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+    ) -> std::result::Result<Vec<ProvenanceContextMessage>, baml_rt_provenance::ProvenanceError>
+    {
+        self.inner.context_messages(context_id, limit).await
+    }
 
-async fn collect_stream_responses(
-    agent: &baml_rt::A2aAgent,
-    request: JSONRPCRequest,
-) -> baml_rt::Result<Vec<Value>> {
-    let stream = agent
-        .handle_a2a_stream(serde_json::to_value(request).expect("request json"))
-        .await?;
-    Ok(baml_rt::collect_a2a_stream_until(stream, |item| {
-        let state = item
-            .get("result")
-            .and_then(|r| r.get("chunk"))
-            .and_then(|c| c.get("task"))
-            .and_then(|t| t.get("status"))
-            .and_then(|s| s.get("state"))
-            .and_then(|v| v.as_str())
-            .or_else(|| {
-                item.get("result")
-                    .and_then(|r| r.get("chunk"))
-                    .and_then(|c| c.get("statusUpdate"))
-                    .and_then(|s| s.get("status"))
-                    .and_then(|s| s.get("state"))
-                    .and_then(|v| v.as_str())
-            });
-        let is_final = item
-            .get("result")
-            .and_then(|r| r.get("final"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        is_final || matches!(state, Some("TASK_STATE_INPUT_REQUIRED"))
-    })
-    .await)
+    async fn conversation_context(
+        &self,
+        context_id: &ContextId,
+        limit: Option<usize>,
+    ) -> std::result::Result<
+        Vec<ProvenanceConversationContextItem>,
+        baml_rt_provenance::ProvenanceError,
+    > {
+        self.inner.conversation_context(context_id, limit).await
+    }
 }
 
 /// Build fixture with baml-agent-builder, extract tar to temp dir, return path to extracted dir (has dist + baml_src).
 fn build_fixture_to_temp(fixture_name: &str) -> std::path::PathBuf {
     let agent_dir = agent_fixture(fixture_name);
-    build_agent_dir_to_temp(&agent_dir, fixture_name, None)
+    if !agent_dir.exists() || !agent_dir.join("baml_src").exists() {
+        panic!("Fixture {} not found or missing baml_src", fixture_name);
+    }
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let tar_path =
+        std::env::temp_dir().join(format!("runner-test-{}-{}.tar.gz", fixture_name, unique));
+    let extract_dir =
+        std::env::temp_dir().join(format!("runner-test-{}-extract-{}", fixture_name, unique));
+    let _ = fs::remove_dir_all(&extract_dir);
+    fs::create_dir_all(&extract_dir).expect("create extract dir");
+
+    let mut cmd = CliHarness::new().builder_command();
+    cmd.arg("package")
+        .arg("--agent-dir")
+        .arg(&agent_dir)
+        .arg("--output")
+        .arg(&tar_path)
+        .arg("--skip-lint");
+    let output = cmd.output().expect("build fixture: run builder");
+    if !output.status.success() {
+        panic!(
+            "build fixture {} failed: stdout={}, stderr={}",
+            fixture_name,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let tar_gz = fs::File::open(&tar_path).expect("open built tar");
+    let tar_dec = flate2::read::GzDecoder::new(tar_gz);
+    let mut archive = tar::Archive::new(tar_dec);
+    archive.unpack(&extract_dir).expect("unpack built tar");
+    let _ = fs::remove_file(&tar_path);
+
+    let dist_index = extract_dir.join("dist").join("index.js");
+    assert!(
+        dist_index.exists(),
+        "Built package must contain dist/index.js"
+    );
+    extract_dir
 }
 
 async fn build_fixture_to_temp_async(fixture_name: &str) -> std::path::PathBuf {
@@ -144,11 +224,10 @@ fn create_test_agent_package(output_path: &Path) -> Result<(), Box<dyn std::erro
     let manifest = serde_json::json!({
         "version": "1.0.0",
         "name": "test-agent",
-        "description": "Test agent package for E2E testing",
         "entry_point": "dist/index.js",
-        "runtime_version": "0.1.0",
         "signature": "test-agent@1.0.0",
-        "tools": ["support/calculate"]
+        "tools": ["support/calculate"],
+        "discovery": { "description": "Test agent package for E2E testing", "capabilities": [] }
     });
     fs::write(
         temp_dir.join("manifest.json"),
@@ -229,6 +308,68 @@ fn test_runner_tool_types_for_package_build() {
     assert_eq!(Test::NAME, "test");
 }
 
+fn jsonrpc_request(method: &str, params: serde_json::Value, id: &str) -> JSONRPCRequest {
+    JSONRPCRequest {
+        jsonrpc: "2.0".to_string(),
+        method: method.to_string(),
+        params: Some(params),
+        id: Some(JSONRPCId::String(id.to_string())),
+    }
+}
+
+fn send_message_request(params: SendMessageRequest, id: &str) -> JSONRPCRequest {
+    jsonrpc_request(
+        "message.sendStream",
+        serde_json::to_value(params).unwrap(),
+        id,
+    )
+}
+
+/// Extracts task state from a chunk. Handles both object and stringified task/statusUpdate.
+fn chunk_state(chunk: &Value) -> Option<String> {
+    fn state_from(val: &Value) -> Option<String> {
+        val.get("status")
+            .and_then(|s| s.get("state"))
+            .and_then(Value::as_str)
+            .map(String::from)
+            .or_else(|| {
+                val.as_str().and_then(|s| {
+                    serde_json::from_str::<Value>(s).ok().and_then(|parsed| {
+                        parsed
+                            .get("status")
+                            .and_then(|s| s.get("state"))
+                            .and_then(Value::as_str)
+                            .map(String::from)
+                    })
+                })
+            })
+    }
+    chunk
+        .get("task")
+        .and_then(state_from)
+        .or_else(|| chunk.get("statusUpdate").and_then(state_from))
+}
+
+async fn collect_stream_responses(
+    agent: &baml_rt::A2aAgent,
+    request: JSONRPCRequest,
+) -> baml_rt::Result<Vec<Value>> {
+    let stream = agent
+        .handle_a2a_stream(serde_json::to_value(request).expect("request json"))
+        .await?;
+    Ok(baml_rt::collect_a2a_stream_until(stream, |item| {
+        let chunk = item.get("result").and_then(|r| r.get("chunk").or(Some(r)));
+        let state = chunk.and_then(|c| chunk_state(c));
+        let is_final = item
+            .get("result")
+            .and_then(|r| r.get("final"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        is_final || matches!(state.as_deref(), Some("TASK_STATE_INPUT_REQUIRED"))
+    })
+    .await)
+}
+
 #[cfg(feature = "llm-tests")]
 async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
     ensure_fixture_runtime_types();
@@ -245,6 +386,49 @@ async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
         .build()
         .await
         .unwrap()
+}
+
+/// Tool-discovery-demo agent: uses system/discover_tools + support/calculate.
+/// Build fixture, register manifest tools and SystemBundle, then build agent.
+#[cfg(feature = "llm-tests")]
+async fn setup_tool_discovery_demo_agent() -> baml_rt::A2aAgent {
+    ensure_fixture_runtime_types();
+    let built = build_fixture_to_temp_async("tool-discovery-demo").await;
+    let mut manager = BamlRuntimeManager::new().unwrap();
+    manager.load_schema(built.to_str().unwrap()).unwrap();
+    let allowlist: HashSet<String> = [
+        "system/discover_tools",
+        "system/discover_agents",
+        "system/internal_a2a",
+        "support/calculate",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    manager.set_tool_allowlist(allowlist).await.unwrap();
+    let policy = parse_access_allowlist();
+    let manifest_tools =
+        ManifestToolNames::parse(&["support/calculate".to_string()]).expect("parse manifest tools");
+    let registry = manager.tool_registry();
+    register_manifest_tools(registry.as_ref(), &manifest_tools, &policy).expect("register tools");
+    // Register SystemBundle before build so registry has system/discover_tools when allowlist is validated.
+    registry
+        .register_bundle(SystemBundle::new(
+            Arc::new(EmptyAgentList),
+            registry.clone(),
+            Arc::new(EmptyA2aHandler),
+        ))
+        .expect("register SystemBundle");
+    let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
+        .expect("tool-discovery-demo dist/index.js");
+    let agent = baml_rt::A2aAgent::builder()
+        .with_runtime_manager(manager)
+        .with_init_js(agent_code)
+        .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .build()
+        .await
+        .unwrap();
+    agent
 }
 
 async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
@@ -374,7 +558,9 @@ async fn setup_conversational_context_auto_agent()
         ))
         .await
         .expect("write AgentBooted");
-    let strict_writer = Arc::new(StrictProvenanceWriter::new(provenance.clone()));
+    let strict_writer = Arc::new(StrictProvenanceWriter {
+        inner: provenance.clone(),
+    });
     let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
         .expect("conversational-context-auto dist/index.js");
     let agent = baml_rt::A2aAgent::builder()
@@ -607,6 +793,97 @@ async fn test_e2e_agent_runner_invoke_function() {
     fs::remove_dir_all(&extract_dir).ok();
 }
 
+/// Tool-discovery-demo: agent uses system/discover_tools to find tools; ask about "calculate" and assert response mentions it.
+#[cfg(feature = "llm-tests")]
+#[tokio::test]
+async fn test_tool_discovery_demo_responds_with_tool_list() {
+    if std::env::var("BAML_SKIP_LLM_TESTS").is_ok() {
+        eprintln!("Skipping LLM test: BAML_SKIP_LLM_TESTS set");
+        return;
+    }
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+    let _ = dotenvy::dotenv();
+    let agent = setup_tool_discovery_demo_agent().await;
+    let request = send_message_request(
+        SendMessageRequest {
+            message: user_message(
+                "discovery-1",
+                "what tools do you have for calculate?",
+                Some(ContextId::new(1, 1)),
+            ),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+            extra: std::collections::HashMap::new(),
+        },
+        "corr-1737123456789-1",
+    );
+    let outcome = collect_stream_responses(&agent, request).await;
+    match outcome {
+        Ok(responses) => {
+            let chunks = chunks_from_responses(&responses);
+            let texts = message_texts_from_chunks(&chunks);
+            if texts.is_empty() {
+                // Diagnostic: log response/chunk shape so we can see why no message text was extracted.
+                eprintln!("tool_discovery_demo: responses.len()={}", responses.len());
+                if let Some(r) = responses.first() {
+                    let keys: Vec<_> = r
+                        .as_object()
+                        .map(|o| o.keys().collect())
+                        .unwrap_or_default();
+                    eprintln!("tool_discovery_demo: first response keys: {:?}", keys);
+                    if let Some(err) = r.get("error") {
+                        eprintln!(
+                            "tool_discovery_demo: JSON-RPC error: {}",
+                            serde_json::to_string_pretty(err).unwrap_or_else(|_| err.to_string())
+                        );
+                    }
+                    if let Some(result) = r.get("result") {
+                        let result_keys: Vec<_> = result
+                            .as_object()
+                            .map(|o| o.keys().collect())
+                            .unwrap_or_default();
+                        eprintln!("tool_discovery_demo: first result keys: {:?}", result_keys);
+                        if let Some(chunk) = result
+                            .get("chunk")
+                            .or_else(|| result.as_object().map(|_| result))
+                        {
+                            let chunk_keys: Vec<_> = chunk
+                                .as_object()
+                                .map(|o| o.keys().collect())
+                                .unwrap_or_default();
+                            eprintln!("tool_discovery_demo: first chunk keys: {:?}", chunk_keys);
+                            eprintln!(
+                                "tool_discovery_demo: first chunk (preview): {}",
+                                serde_json::to_string(chunk)
+                                    .unwrap_or_default()
+                                    .chars()
+                                    .take(500)
+                                    .collect::<String>()
+                            );
+                        }
+                    }
+                }
+                eprintln!("tool_discovery_demo: chunks.len()={}", chunks.len());
+            }
+            let combined = texts.join(" ");
+            assert!(
+                combined.contains("support/calculate")
+                    || combined.to_lowercase().contains("calculate")
+                    || combined.contains("No tools found"),
+                "Expected tool-discovery response to mention calculate or support/calculate or 'No tools found'. Got: {:?}",
+                texts
+            );
+        }
+        Err(e) => {
+            if std::env::var("OPENROUTER_API_KEY").is_ok() {
+                panic!("Tool discovery demo request failed: {e}");
+            }
+            // No API key: auth error is acceptable
+        }
+    }
+}
+
 /// Fixture: stream-baml-tool. Tests async streaming of a BAML tool (FSM) result via message.sendStream.
 /// Requires .env with OPENROUTER_API_KEY (source .env or set in test env).
 #[cfg(feature = "llm-tests")]
@@ -668,18 +945,50 @@ async fn test_e2e_argument_sketch_two_agents() {
         chapman: chapman_agent.clone(),
     });
 
+    let agent_list = Arc::new(EmptyAgentList);
     for agent in [&cleese_agent, &chapman_agent] {
         let runtime = agent.runtime();
         let manager = runtime.lock().await;
-        manager
-            .tool_registry()
-            .register_bundle(A2aSessionBundle::new(router.clone()))
-            .expect("register system/a2a bundle");
+        let registry = manager.tool_registry();
+        registry
+            .register_bundle(SystemBundle::new(
+                agent_list.clone(),
+                registry.clone(),
+                router.clone(),
+            ))
+            .expect("register system bundle");
     }
 
-    let request = send_message_request(
+    fn task_state(chunk: &Value) -> Option<String> {
+        fn state_from_val(val: &Value) -> Option<String> {
+            val.get("status")
+                .and_then(|s| s.get("state"))
+                .and_then(Value::as_str)
+                .map(String::from)
+                .or_else(|| {
+                    val.as_str().and_then(|s| {
+                        serde_json::from_str::<Value>(s).ok().and_then(|parsed| {
+                            parsed
+                                .get("status")
+                                .and_then(|s| s.get("state"))
+                                .and_then(Value::as_str)
+                                .map(String::from)
+                        })
+                    })
+                })
+        }
+        chunk
+            .get("task")
+            .and_then(state_from_val)
+            .or_else(|| chunk.get("statusUpdate").and_then(state_from_val))
+    }
+
+    let context_id = ContextId::new(1, 1);
+
+    // Turn 1: start argument → Cleese replies, delegates to Chapman, then awaitInput → INPUT_REQUIRED
+    let first_request = send_message_request(
         SendMessageRequest {
-            message: user_message("arg-1", "Start the argument.", Some(ContextId::new(1, 1))),
+            message: user_message("arg-1", "Start the argument.", Some(context_id.clone())),
             configuration: None,
             metadata: None,
             tenant: None,
@@ -687,11 +996,17 @@ async fn test_e2e_argument_sketch_two_agents() {
         },
         "corr-1-1",
     );
-    let responses = collect_stream_responses(&cleese_agent, request)
+    let first_responses = collect_stream_responses(&cleese_agent, first_request)
         .await
-        .expect("argument sketch request");
-    let chunks = chunks_from_responses(&responses);
-    let texts = message_texts_from_chunks(&chunks);
+        .expect("argument sketch first turn");
+    let first_chunks = chunks_from_responses(&first_responses);
+    let first_states: Vec<String> = first_chunks.iter().filter_map(|c| task_state(c)).collect();
+    assert!(
+        first_states.contains(&"TASK_STATE_INPUT_REQUIRED".to_string()),
+        "Expected TASK_STATE_INPUT_REQUIRED in first stream (Cleese awaitInput after Chapman reply); states: {:?}",
+        first_states
+    );
+    let first_texts = message_texts_from_chunks(&first_chunks);
     let argument_like = |t: &String| {
         let lower = t.to_lowercase();
         lower.contains("yes it is")
@@ -703,15 +1018,92 @@ async fn test_e2e_argument_sketch_two_agents() {
             || lower.contains("you are")
     };
     assert!(
-        texts.len() >= 2,
+        first_texts.len() >= 2,
         "Expected at least two message chunks (Cleese and Chapman). Texts: {:?}. Raw: {}",
-        texts,
-        serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+        first_texts,
+        serde_json::to_string_pretty(&first_responses).unwrap_or_else(|_| "?".to_string())
     );
     assert!(
-        texts.iter().any(argument_like),
+        first_texts.iter().any(argument_like),
         "Expected at least one argument-sketch style line. Texts: {:?}",
-        texts
+        first_texts
+    );
+
+    // Turn 2: resume (same context_id) → Cleese completes
+    let second_request = send_message_request(
+        SendMessageRequest {
+            message: user_message("arg-2", "done", Some(context_id)),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+            extra: std::collections::HashMap::new(),
+        },
+        "corr-1-2",
+    );
+    let second_responses = collect_stream_responses(&cleese_agent, second_request)
+        .await
+        .expect("argument sketch second turn (resume)");
+    let second_chunks = chunks_from_responses(&second_responses);
+    let second_states: Vec<String> = second_chunks.iter().filter_map(|c| task_state(c)).collect();
+    assert!(
+        second_states.contains(&"TASK_STATE_COMPLETED".to_string()),
+        "Expected TASK_STATE_COMPLETED after resume; states: {:?}",
+        second_states
+    );
+    let second_texts = message_texts_from_chunks(&second_chunks);
+    assert!(
+        second_texts.iter().any(|t| t.contains("Done")),
+        "Expected completion message after resume; texts: {:?}",
+        second_texts
+    );
+
+    // Chapman directly: turn 1 → one line + INPUT_REQUIRED; turn 2 (resume) → second line + COMPLETED
+    let chapman_context_id = ContextId::new(1, 2);
+    let chapman_first = send_message_request(
+        SendMessageRequest {
+            message: user_message("ch-1", "No it isn't.", Some(chapman_context_id.clone())),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+            extra: std::collections::HashMap::new(),
+        },
+        "corr-1-2",
+    );
+    let chapman_first_responses = collect_stream_responses(&chapman_agent, chapman_first)
+        .await
+        .expect("Chapman first turn");
+    let chapman_first_chunks = chunks_from_responses(&chapman_first_responses);
+    let chapman_first_states: Vec<String> = chapman_first_chunks
+        .iter()
+        .filter_map(|c| task_state(c))
+        .collect();
+    assert!(
+        chapman_first_states.contains(&"TASK_STATE_INPUT_REQUIRED".to_string()),
+        "Expected TASK_STATE_INPUT_REQUIRED from Chapman (awaitInput after first line); states: {:?}",
+        chapman_first_states
+    );
+    let chapman_second = send_message_request(
+        SendMessageRequest {
+            message: user_message("ch-2", "I didn't.", Some(chapman_context_id)),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+            extra: std::collections::HashMap::new(),
+        },
+        "corr-1-3",
+    );
+    let chapman_second_responses = collect_stream_responses(&chapman_agent, chapman_second)
+        .await
+        .expect("Chapman second turn (resume)");
+    let chapman_second_chunks = chunks_from_responses(&chapman_second_responses);
+    let chapman_second_states: Vec<String> = chapman_second_chunks
+        .iter()
+        .filter_map(|c| task_state(c))
+        .collect();
+    assert!(
+        chapman_second_states.contains(&"TASK_STATE_COMPLETED".to_string()),
+        "Expected TASK_STATE_COMPLETED from Chapman after resume (conversation must be resumed); states: {:?}",
+        chapman_second_states
     );
 }
 

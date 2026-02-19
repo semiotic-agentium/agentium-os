@@ -45,8 +45,15 @@ class ConversationPart {
   mediaType string?
 }
 
+enum InternalA2aCompletion {
+  DONE
+  INPUTREQUIRED
+    @alias("INPUT_REQUIRED")
+}
+
 class InternalA2aNextOutput {
   chunks ConversationChunk[]
+  completion InternalA2aCompletion | null? @description("Set to INPUT_REQUIRED when the delegated agent yielded TASK_STATE_INPUT_REQUIRED.")
 }
 
 class InternalA2aOpenInput {
@@ -94,6 +101,5 @@ class SystemInternal_a2aAbortStep {
 type SystemInternal_a2aSessionStep = SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aNextStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep
 
 class SystemInternal_a2aSessionPlan {
-  steps SystemInternal_a2aSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{op: 'Open'}, {op: 'Send', input: {...}}, {op: 'Next'}, {op: 'Finish'}].")
+  steps SystemInternal_a2aSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Optionally include __type on the plan (e.g. \"SystemInternal_a2aSessionPlan\") or on each step (e.g. \"SystemInternal_a2aOpenStep\") for tool resolution when the runtime has no manifest. Example: [{\"__type\": \"SystemInternal_a2aOpenStep\", op: \"Open\"}, {\"__type\": \"SystemInternal_a2aSendStep\", op: \"Send\", input: {...}}, {\"__type\": \"SystemInternal_a2aNextStep\", op: \"Next\"}, {\"__type\": \"SystemInternal_a2aFinishStep\", op: \"Finish\"}].")
 }
-

@@ -21,6 +21,7 @@ store-failure-output = true
 
 # Rate-limit provenance/heavy tests (max 1 at a time) to avoid resource contention.
 [test-groups]
+llm = { max-threads = 8 }
 provenance = { max-threads = 1 }
 
 [[profile.ci.overrides]]

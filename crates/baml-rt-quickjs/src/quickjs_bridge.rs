@@ -162,6 +162,7 @@ fn empty_open_input() -> Value {
 fn tool_step_to_value(step: ToolStep) -> Value {
     match step {
         ToolStep::Streaming { output } => json!({ "status": "streaming", "output": output }),
+        ToolStep::Suspended { output } => json!({ "status": "suspended", "output": output }),
         ToolStep::Done { output } => json!({ "status": "done", "output": output }),
         ToolStep::Error { error } => json!({
             "status": "error",
@@ -452,21 +453,7 @@ impl QuickJSBridge {
             &[],
             "__baml_invoke",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                // Resolve scope from active context. When no context is active (e.g. orphaned
-                // continuation after stream finalization), return a rejected promise instead of
-                // throwing synchronously. A synchronous throw inside a promise-reaction handler
-                // becomes an unhandled rejection that crashes the runtime; a rejected promise
-                // propagates cleanly through JS await/try-catch.
-                let scope = match resolve_scope_from_active_context(&registry) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let msg = e.to_string();
-                        tracing::debug!(error = %msg, "__baml_invoke: no active invocation context, returning rejected promise");
-                        return Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
-                            Err(quickjs_runtime::jsutils::JsError::new_str(&msg))
-                        }));
-                    }
-                };
+                let scope = resolve_scope_from_active_context(&registry)?;
                 if args.len() < 2 {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (function_name, args)"));
                 }
@@ -512,7 +499,13 @@ impl QuickJSBridge {
                                 .invoke_function(&invocation_scope, &func_name_clone, args_json)
                                 .await
                                 .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
-                            let result = manager.execute_tool_from_baml_result_or_value(&scope_for_tools, value).await
+                            let result = manager
+                                .execute_tool_from_baml_result_or_value(
+                                    &scope_for_tools,
+                                    value,
+                                    Some(&func_name_clone),
+                                )
+                                .await
                                 .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
                             Ok(value_to_js_value_facade(result))
                         })
@@ -589,9 +582,7 @@ impl QuickJSBridge {
                     .map_err(|_| quickjs_runtime::jsutils::JsError::new_str("eval_results lock poisoned"))?;
                 let key = InvocationToken(token);
                 if !guard.contains_key(&key) {
-                    // Late completion after timeout/cancel: token slot may already be gone.
-                    // Ignore to keep completion idempotent.
-                    return Ok(JsValueFacade::Undefined);
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Missing eval result slot for token"));
                 }
                 guard.insert(key, Some(json_str));
                 Ok(JsValueFacade::Undefined)
@@ -615,17 +606,7 @@ impl QuickJSBridge {
             &[],
             "__baml_stream",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                // Same graceful missing-context handling as __baml_invoke.
-                let scope = match resolve_scope_from_active_context(&registry) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let msg = e.to_string();
-                        tracing::debug!(error = %msg, "__baml_stream: no active invocation context, returning rejected promise");
-                        return Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
-                            Err(quickjs_runtime::jsutils::JsError::new_str(&msg))
-                        }));
-                    }
-                };
+                let scope = resolve_scope_from_active_context(&registry)?;
                 if args.len() < 2 {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (function_name, args)"));
                 }
@@ -894,7 +875,9 @@ impl QuickJSBridge {
                             if cancel_inner.is_cancelled() {
                                 return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
                             }
-                            let result = manager.execute_tool_from_baml_result_or_value(&scope_for_tools, value).await
+                            let result = manager
+                                .execute_tool_from_baml_result_or_value(&scope_for_tools, value, Some(&func_name))
+                                .await
                                 .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
                             Ok(value_to_js_value_facade(result))
                         })

@@ -10,6 +10,7 @@ This directory contains test fixtures used by the test suite.
   - `stream-js-tool` — JS-only streaming (emit, artifact, no BAML tools)
   - `conversational-context-auto` — Multi-turn chat with BAML functions and tool routing
   - `conversational-persona-demo` — Persona-based chat
+  - **`tool-discovery-demo`** — Uses `system/discover_tools` + BAML prompt to find tools by query (e.g. "Notion", "calculate"). Ad hoc verification: `./scripts/verify-tool-discovery.sh --build`.
 
   Each agent’s `src/baml-runtime.d.ts` is **generated** from its `baml_src/` by the runtime type generator. To refresh all fixture declarations after changing the generator or BAML:
 

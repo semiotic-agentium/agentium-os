@@ -236,6 +236,50 @@ expression: snapshot
     },
     "components": {
       "schemas": {
+        "AgentCardDto": {
+          "type": "object",
+          "description": "Cut-down agent card (included in every GET /agents item).",
+          "required": [
+            "name",
+            "version",
+            "agent_package",
+            "agent_instance_id",
+            "tools",
+            "capabilities"
+          ],
+          "properties": {
+            "agent_instance_id": {
+              "type": "string"
+            },
+            "agent_package": {
+              "type": "string"
+            },
+            "capabilities": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "description": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
         "AgentDiscoveryEntryDto": {
           "type": "object",
           "description": "Discovery entry for one running agent (GET /agents response item).",
@@ -243,9 +287,14 @@ expression: snapshot
             "agent_package",
             "agent_instance_id",
             "name",
-            "version"
+            "version",
+            "agent_card"
           ],
           "properties": {
+            "agent_card": {
+              "$ref": "#/components/schemas/AgentCardDto",
+              "description": "Agent card (cut-down shape) for discovery."
+            },
             "agent_instance_id": {
               "type": "string"
             },

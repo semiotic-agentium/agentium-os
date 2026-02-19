@@ -77,6 +77,5 @@ class SupportCalculateAbortStep {
 type SupportCalculateSessionStep = SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateNextStep | SupportCalculateFinishStep | SupportCalculateAbortStep
 
 class SupportCalculateSessionPlan {
-  steps SupportCalculateSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{op: 'Open'}, {op: 'Send', input: {...}}, {op: 'Next'}, {op: 'Finish'}].")
+  steps SupportCalculateSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Optionally include __type on the plan (e.g. \"SupportCalculateSessionPlan\") or on each step (e.g. \"SupportCalculateOpenStep\") for tool resolution when the runtime has no manifest. Example: [{\"__type\": \"SupportCalculateOpenStep\", op: \"Open\"}, {\"__type\": \"SupportCalculateSendStep\", op: \"Send\", input: {...}}, {\"__type\": \"SupportCalculateNextStep\", op: \"Next\"}, {\"__type\": \"SupportCalculateFinishStep\", op: \"Finish\"}].")
 }
-

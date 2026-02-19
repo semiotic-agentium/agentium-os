@@ -20,19 +20,13 @@ If the tool needs secrets:
 
 Expose a metadata function and register it for codegen:
 
-- Use `TypeBasedMetadataBuilder` and `register_tool_metadata!`.
+- Use `TypeBasedMetadataBuilder` for a metadata fn and a build fn that returns the handler (or `Err` when the tool is not compiled).
+- Register with the single mechanism: `register_tool!(metadata_fn, build_fn)`.
 - The tool name should be a namespaced string like `support/<tool>`.
 
-This metadata is used by the builder to generate BAML and TypeScript interfaces.
+This metadata is used by the builder to generate BAML and TypeScript interfaces. The runner registers all manifest tools via `register_manifest_tools` (single inventory); no per-tool match in the runner.
 
-## 3) Register the tool in the agent runner
-
-Add the tool to `crates/baml-agent-runner/src/main.rs` under the manifest tool registration loop:
-
-- Match on the tool name string.
-- Instantiate and register the tool with `runtime_manager.register_tool(...)`.
-
-## 4) Allowlist the tool in the agent manifest
+## 3) Allowlist the tool in the agent manifest
 
 In the agent package `manifest.json`, include the tool name in the `tools` array:
 
@@ -44,14 +38,16 @@ In the agent package `manifest.json`, include the tool name in the `tools` array
 
 Host tools MUST be declared in the manifest allowlist, otherwise registration will fail.
 
-## 5) Add the agent prompt + entrypoint
+## 4) Add the agent prompt + entrypoint
 
 Create or update an agent under `agents/<agent-name>`:
 
 - Add a BAML prompt that emits a `ToolSessionPlan`.
 - Add a `src/index.ts` that calls the BAML prompt and formats responses.
 
-## 6) Generate artifacts
+**Session plan tool resolution:** The runtime resolves which tool to run in two ways. **Primary:** When the agent is built with the builder, it emits `session_plan_functions.json` (function name → session plan type). The runtime uses the **invoking BAML function name** and this manifest to resolve the tool—no `__type` in the plan JSON is required. **Fallback:** If there is no manifest or no entry for the function (e.g. dynamic calls), the plan JSON must include a `__type` field: on the plan object (e.g. `SupportCalculateSessionPlan`) or on each step (e.g. `SupportCalculateOpenStep`). The builder-generated BAML class description mentions `__type` for that fallback case; you only need the model to emit it when not using a built agent package with the manifest.
+
+## 5) Generate artifacts
 
 Generated files are commonly committed for agent packages:
 
