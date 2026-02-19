@@ -10,33 +10,36 @@ function ChooseNotionAction(user_message: string) -> ReadOnlyResponse | SupportN
     Use prior turns if present in ctx.tags.conversation_history.
 
     Available tools:
-    - support/notion: a single tool with action enum:
-      - SearchPages (query, start_cursor, page_size)
-      - GetPage (page_id)
-      - GetPageBlocks (block_id, start_cursor, page_size)
+    - support/notion: a single tool with typed input variants:
+      - NotionSearchPagesInput (query, start_cursor, page_size)
+      - NotionGetPageInput (page_id)
+      - NotionGetPageBlocksInput (block_id, start_cursor, page_size, raw_blocks, max_depth)
 
     Guidance:
-    - If the user provides a page_id or block_id, prefer the matching get tool.
-    - If the user asks "what are we working on" or similar, start with search.
-    - If the user asks for a summary/brief/commitments/roadmap/status, include GetPageBlocks in the plan.
-    - If no identifier is provided, return search results and ask a follow-up.
-    - Never call GetPageBlocks without a concrete page_id or block_id from SearchPages or the user.
-      If you don't have an id yet, stop after SearchPages and ask the user to pick a page.
-    - Use only ONE action per plan. Do NOT chain GetPage then GetPageBlocks in the same plan.
-      If a summary is needed and you have a page_id or block_id, call GetPageBlocks only.
+    - If the user provides a page_id, block_id, or Notion URL, prefer NotionGetPageBlocksInput and pass that identifier as block_id.
+    - If the user asks "what are we working on" or similar, start with NotionSearchPagesInput.
+    - Never call NotionGetPageBlocksInput without a concrete identifier from the user or prior turns.
+    - If no identifier is available, do NotionSearchPagesInput only and ask the user to pick one page.
     - Do not attempt writes or edits.
-    - If the user asks to write/edit/delete/archive/create:
-      - Return ReadOnlyResponse with a short apology and a read-only next step.
 
-    Otherwise, choose exactly one session plan and produce steps:
-    Open -> Send -> Next -> Finish.
-    You may chain multiple Send -> Next steps to discover IDs.
-    Example (user wants summary but no page_id):
-      Open -> Send(action=SearchPages) -> Next -> Send(action=GetPageBlocks, block_id=<from pages>) -> Next -> Finish.
+    RESPONSE GATE (apply before choosing a plan):
+    1) If conversation_history already contains relevant blocks and the user asks for
+       summary/brief/commitments/roadmap/status, return ReadOnlyResponse immediately.
+    2) If the user asks to write/edit/delete/archive/create, return ReadOnlyResponse
+       with a short apology and a read-only next step.
+    3) If the user asks for block-level details or summary but no page_id/block_id is
+       available yet, return exactly one NotionSearchPagesInput plan (do not guess IDs).
+    4) Otherwise, return exactly one plan using one input variant.
+
+    STRICT PLAN VALIDITY:
+    - If you return a plan, it MUST have exactly 4 steps and this exact order:
+      Open -> Send -> Next -> Finish
+    - Include exactly one Send step per plan (one tool action per turn).
+    - Never return partial plans.
 
     SUMMARY BEHAVIOR:
     - If the user asked for a summary/brief/commitments/roadmap/status AND the conversation history already contains
-      retrieved blocks (tool result from GetPageBlocks), return a ReadOnlyResponse with the summary instead of another plan.
+      retrieved blocks (tool result from NotionGetPageBlocksInput), return a ReadOnlyResponse with the summary instead of another plan.
     - Use this exact format for summaries:
       Commitments:
       - ...
