@@ -4,14 +4,19 @@ use baml_rt_builder::builder::{BuildDir, RuntimeTypeGenerator, TypeGenerator};
 use baml_rt_core::{BamlRtError, Result};
 use baml_tools_system as _; // Force link so system tool metadata is in inventory
 
-fn agents_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+fn agents_dir() -> Result<PathBuf> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
         .parent()
         .and_then(|p| p.parent())
-        .unwrap()
-        .join("tests")
-        .join("fixtures")
-        .join("agents")
+        .ok_or_else(|| {
+            BamlRtError::InvalidArgument(format!(
+                "Could not determine workspace root from manifest dir: {}",
+                manifest_dir.display()
+            ))
+        })?;
+
+    Ok(workspace_root.join("tests").join("fixtures").join("agents"))
 }
 
 fn copy_runtime_d_ts(build_dir: &BuildDir, dest_src: &Path) -> Result<()> {
@@ -42,7 +47,7 @@ async fn regen_fixture(root: &Path) -> Result<()> {
 /// and regenerate `src/baml-runtime.d.ts` for each.
 #[tokio::main]
 async fn main() -> Result<()> {
-    let dir = agents_dir();
+    let dir = agents_dir()?;
     let mut entries: Vec<_> = std::fs::read_dir(&dir)
         .map_err(BamlRtError::Io)?
         .filter_map(|e| e.ok())
