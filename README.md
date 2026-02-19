@@ -181,6 +181,7 @@ The project uses [just](https://github.com/casey/just) as a command runner. A `.
 | `just provenance-mermaid <context_id>` | `just provenance-mermaid ctx-1771426017780-2` | Export a simplified Mermaid sequence diagram for a given provenance context ID. |
 
 For a provenance-first walkthrough of the Notion flow, see `docs/notion-demo.md`.
+For the next-stage Notion demo/UX strategy and invariants, see `docs/notion-experience-blueprint.md`.
 
 ### CI feature flags
 
