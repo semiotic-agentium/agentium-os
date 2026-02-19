@@ -766,7 +766,7 @@ struct Cli {
     #[arg(long, value_name = "DIR")]
     web_dir: Option<PathBuf>,
 
-    /// Provenance SQLite database: ":memory:" for in-memory (default), or a file path for persistence.
+    /// Provenance SQLite database path. Default is ":memory:".
     #[arg(long, value_name = "PATH", default_value = ":memory:")]
     provenance_db: String,
 }
@@ -881,6 +881,14 @@ async fn main() -> anyhow::Result<()> {
     let config = Cli::parse()
         .into_config()
         .context("Failed to parse arguments")?;
+    match &config.provenance_db {
+        ProvenanceDb::InMemory => info!(
+            "Provenance backend: in-memory (:memory:). External graph_exporter cannot read this process-local data."
+        ),
+        ProvenanceDb::File(path) => {
+            info!(path = %path.display(), "Provenance backend: sqlite file")
+        }
+    }
     let provenance_config = build_provenance_config(&config.provenance_db);
     let access_allowlist = parse_access_allowlist();
     let tool_index = match &config.provenance_db {

@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{Context, bail};
 use clap::Parser;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -59,6 +59,13 @@ enum OutputFormat {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    if cli.db.to_string_lossy() == ":memory:" {
+        bail!(
+            "--db :memory: creates a new empty in-memory DB in this process. \
+Use the same file path passed to baml-agent-runner --provenance-db <path>."
+        );
+    }
+
     let scope = cli
         .context_id
         .as_ref()
@@ -67,11 +74,7 @@ async fn main() -> anyhow::Result<()> {
     let (scope_name, scope_value) =
         scope.context("Must specify either --context-id or --task-id")?;
 
-    let store: Arc<GraphqliteProvenanceStore> = if cli.db.to_string_lossy() == ":memory:" {
-        GraphqliteStoreBuilder::in_memory().build()?
-    } else {
-        GraphqliteStoreBuilder::file(&cli.db).build()?
-    };
+    let store: Arc<GraphqliteProvenanceStore> = GraphqliteStoreBuilder::file(&cli.db).build()?;
     let exporter = GraphExporter::new(store);
 
     eprintln!(
