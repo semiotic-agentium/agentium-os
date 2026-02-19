@@ -9,7 +9,7 @@ on:
 
 permissions:
   contents: read
-  actions: write  # rust-cache and sccache need write to save cache entries
+  actions: write  # rust-cache needs write to save cache entries
   packages: read
   checks: write   # required for JUnit report action to create check runs
 
@@ -19,7 +19,6 @@ env:
   CARGO_INCREMENTAL: "0"
   CARGO_PROFILE_DEV_INCREMENTAL: "false"
   CARGO_PROFILE_TEST_INCREMENTAL: "false"
-  RUSTFLAGS: "-C debuginfo=0 -C link-arg=-fuse-ld=gold"
 
 jobs:
   nextest:
@@ -34,14 +33,6 @@ jobs:
             sudo apt-get update && sudo apt-get install -y zstd
           fi
 
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@v0.0.9
-
-      - name: Configure sccache
-        run: |
-          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
-          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -50,7 +41,7 @@ jobs:
         with:
           shared-key: "ci-nextest"
           cache-on-failure: true
-          cache-targets: "false"
+          cache-targets: "true"
 
       - name: Install build dependencies
         run: |
@@ -86,7 +77,3 @@ jobs:
           report_paths: "target/nextest/ci/junit.xml"
           require_tests: false
           check_name: Nextest results
-
-      - name: Show sccache stats
-        if: always()
-        run: sccache --show-stats
