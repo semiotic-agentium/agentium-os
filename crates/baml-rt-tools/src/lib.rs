@@ -19,7 +19,8 @@ pub use access::{enforce_tool_access, parse_access_allowlist};
 pub use bundles::{BundleType, Support};
 pub use tool_catalog::{InventoryCatalog, ToolCatalog};
 pub use tool_fsm::{
-    ToolFailure, ToolFailureKind, ToolSession, ToolSessionError, ToolSessionId, ToolStep,
+    SessionPhase, ToolFailure, ToolFailureKind, ToolSession, ToolSessionError, ToolSessionId,
+    ToolStep,
 };
 pub use tool_schema::{ToolType, json_schema_value, ts_decl, ts_name};
 pub use tools::{

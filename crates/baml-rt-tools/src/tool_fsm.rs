@@ -71,6 +71,23 @@ pub struct ToolFailure {
     pub retryability: Retryability,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum SessionPhase {
+    #[default]
+    Open,
+    Closed,
+}
+
+impl SessionPhase {
+    pub const fn is_closed(self) -> bool {
+        matches!(self, Self::Closed)
+    }
+
+    pub fn close(&mut self) {
+        *self = Self::Closed;
+    }
+}
+
 impl ToolFailure {
     pub fn invalid_input(message: impl Into<String>) -> Self {
         Self {
