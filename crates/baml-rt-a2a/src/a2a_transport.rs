@@ -787,7 +787,7 @@ impl A2aAgentBuilderWithEffectEmitter {
 impl A2aRequestHandler for A2aAgent {
     async fn handle_a2a_stream(&self, request: Value) -> Result<BusStream<Value>> {
         if let Ok(parsed) = a2a::A2aRequest::from_value(request.clone())
-            && parsed.method == a2a::A2aMethod::MessageSendStream
+            && parsed.method() == a2a::A2aMethod::MessageSendStream
             && parsed.is_stream()
         {
             return self.handle_live_message_stream(request, parsed).await;
@@ -987,7 +987,7 @@ impl A2aAgent {
         let request_message_id = parsed_request.message_id.clone().unwrap_or_else(|| {
             MessageId::from_external(ExternalId::new(format!(
                 "a2a-{method}-{correlation_id}",
-                method = parsed_request.method.as_str(),
+                method = parsed_request.method().as_str(),
                 correlation_id = correlation_id.as_str()
             )))
         });
@@ -1011,19 +1011,19 @@ impl A2aAgent {
         let span = if parsed_request.is_stream() {
             spans::a2a_stream(
                 Some(&scope),
-                parsed_request.method.as_str(),
+                parsed_request.method().as_str(),
                 correlation_id.as_str(),
             )
         } else {
             spans::a2a_request(
                 Some(&scope),
-                parsed_request.method.as_str(),
+                parsed_request.method().as_str(),
                 correlation_id.as_str(),
             )
         };
         let _guard = span.enter();
         let start = std::time::Instant::now();
-        let method = parsed_request.method;
+        let method = parsed_request.method();
         let invocation = parsed_request.invocation;
 
         let outcome = correlation::with_correlation_id(correlation_id, async move {
@@ -1043,7 +1043,7 @@ impl A2aAgent {
                     self.task_store.insert_message(&params.message).await?;
                 }
                 let route_span = spans::a2a_route(
-                    parsed_request.method.as_str(),
+                    parsed_request.method().as_str(),
                     invocation_scope.context_id().as_str(),
                 );
                 let _route_guard = route_span.enter();

@@ -71,12 +71,12 @@ pub enum A2aWireMethod {
     TasksSubscribe { params: SubscribeToTaskParams },
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
 /// Wire-only params for tasks.list.
 ///
 /// This mirrors ListTasksRequest but derives Default so we can accept omitted
 /// params (null or missing) on the wire and treat them as empty.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ListTasksParams {
     pub context_id: Option<ContextId>,
     pub history_length: Option<NumberOrString>,

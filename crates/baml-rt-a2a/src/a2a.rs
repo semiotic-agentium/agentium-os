@@ -45,7 +45,6 @@ impl A2aMethod {
 #[derive(Debug, Clone)]
 pub struct A2aRequest {
     pub id: Option<JSONRPCId>,
-    pub method: A2aMethod,
     pub params: A2aParams,
     pub invocation: InvocationKind,
     pub context_id: Option<ContextId>,
@@ -68,7 +67,7 @@ impl A2aRequest {
         let mut context_id = None;
         let mut message_id = None;
         let mut task_id = None;
-        let (method, params, invocation) = match request.method {
+        let (params, invocation) = match request.method {
             A2aWireMethod::MessageSendStream { params } => {
                 let mut params = *params;
                 if params.message.context_id.is_none() {
@@ -78,34 +77,24 @@ impl A2aRequest {
                 message_id = Some(params.message.message_id.as_message_id().clone());
                 task_id = params.message.task_id.clone();
                 (
-                    A2aMethod::MessageSendStream,
                     A2aParams::MessageSendStream(Box::new(params)),
                     InvocationKind::Stream,
                 )
             }
             A2aWireMethod::TasksGet { params } => {
                 task_id = Some(params.id.clone());
-                (
-                    A2aMethod::TasksGet,
-                    A2aParams::TasksGet(params),
-                    InvocationKind::Invoke,
-                )
+                (A2aParams::TasksGet(params), InvocationKind::Invoke)
             }
             A2aWireMethod::TasksList { params } => {
                 let params: ListTasksRequest = params.into();
                 context_id = params.context_id.clone();
-                (
-                    A2aMethod::TasksList,
-                    A2aParams::TasksList(params),
-                    InvocationKind::Invoke,
-                )
+                (A2aParams::TasksList(params), InvocationKind::Invoke)
             }
             A2aWireMethod::TasksSubscribe { params } => {
                 let stream_flag = params.stream.unwrap_or(false);
                 let request: SubscribeToTaskRequest = params.into();
                 task_id = Some(request.id.clone());
                 (
-                    A2aMethod::TasksSubscribe,
                     A2aParams::TasksSubscribe(request),
                     InvocationKind::from(stream_flag),
                 )
@@ -114,7 +103,6 @@ impl A2aRequest {
 
         Ok(Self {
             id,
-            method,
             params,
             invocation,
             context_id,
@@ -125,6 +113,10 @@ impl A2aRequest {
 
     pub fn correlation_id(&self) -> Option<String> {
         self.id.as_ref().map(id_to_string)
+    }
+
+    pub fn method(&self) -> A2aMethod {
+        self.params.method()
     }
 
     pub fn is_stream(&self) -> bool {
@@ -147,6 +139,15 @@ pub enum A2aParams {
 }
 
 impl A2aParams {
+    pub fn method(&self) -> A2aMethod {
+        match self {
+            A2aParams::MessageSendStream(_) => A2aMethod::MessageSendStream,
+            A2aParams::TasksGet(_) => A2aMethod::TasksGet,
+            A2aParams::TasksList(_) => A2aMethod::TasksList,
+            A2aParams::TasksSubscribe(_) => A2aMethod::TasksSubscribe,
+        }
+    }
+
     pub fn as_send_message(&self) -> Option<&SendMessageRequest> {
         match self {
             A2aParams::MessageSendStream(params) => Some(params),

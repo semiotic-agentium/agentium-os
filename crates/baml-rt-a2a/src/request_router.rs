@@ -58,6 +58,7 @@ impl JsInvoker for QuickJsInvoker {
         let handle = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             handle.block_on(async move {
+                // If params serialization fails, surface the error instead of sending an empty payload.
                 let js_request = a2a::request_to_js_value(&request)?;
                 let mut bridge = bridge.lock().await;
                 bridge
@@ -80,6 +81,7 @@ impl JsInvoker for QuickJsInvoker {
         let handle = tokio::runtime::Handle::current();
         tokio::task::spawn_blocking(move || {
             handle.block_on(async move {
+                // If params serialization fails, surface the error instead of sending an empty payload.
                 let js_request = a2a::request_to_js_value(&request)?;
                 let mut bridge = bridge.lock().await;
                 let session = begin_a2a_yield_session(&mut bridge).await?;
@@ -146,7 +148,7 @@ impl RequestRouter for MethodBasedRouter {
             _ => {
                 let start = Instant::now();
                 let context_id = scope.context_id().clone();
-                let route_span = spans::a2a_route(request.method.as_str(), context_id.as_str());
+                let route_span = spans::a2a_route(request.method().as_str(), context_id.as_str());
                 let _route_guard = route_span.enter();
 
                 // Build metadata
@@ -175,7 +177,7 @@ impl RequestRouter for MethodBasedRouter {
 
                 let effect_metadata = A2aEffectMetadata {
                     agent_id: self.agent_id.clone(),
-                    method: request.method.as_str().to_string(),
+                    method: request.method().as_str().to_string(),
                     request_id: request.id.as_ref().and_then(|id| match id {
                         a2a_types::JSONRPCId::String(s) => Some(s.clone()),
                         a2a_types::JSONRPCId::Integer(n) => Some(n.to_string()),
@@ -199,7 +201,8 @@ impl RequestRouter for MethodBasedRouter {
 
                 // Compute result so we always emit A2aCompleted on every exit (success or failure)
                 let result = async {
-                    let js_span = spans::a2a_js_invoke(request.method.as_str(), request.invocation);
+                    let js_span =
+                        spans::a2a_js_invoke(request.method().as_str(), request.invocation);
                     let _js_guard = js_span.enter();
                     let mut normalizer = a2a::JsChunkNormalizer::new(scope);
                     if request.is_stream() {
