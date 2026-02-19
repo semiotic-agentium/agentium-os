@@ -36,6 +36,9 @@ dist/
 *.swo
 *~
 
+# Provenance databases (created by demo scripts / --provenance-db flag)
+provenance.db
+
 # Nix
 .direnv/
 result

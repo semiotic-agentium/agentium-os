@@ -2,23 +2,24 @@
 
 type ChatMessageWithToken = ChatMessage;
 
-function wantsSummary(text: string): boolean {
-  const lowered = text.toLowerCase();
-  const keywords = [
-    "summarize",
-    "summary",
-    "what are we working on",
-    "status",
-    "impact",
-    "roadmap",
-    "brief",
-    "commitments",
-  ];
-  return keywords.some((k) => lowered.includes(k));
-}
+type ToolSessionHandle = {
+  send(args: Record<string, unknown>): Promise<unknown>;
+  continue(): Promise<unknown>;
+  finish(): Promise<unknown>;
+  abort(reason?: string): Promise<unknown>;
+};
+
+declare function openToolSession(
+  toolName: string,
+  openInput?: Record<string, unknown>,
+): Promise<ToolSessionHandle>;
+
+const NOTION_TOOL_NAME = "support/notion";
+const NOTION_ID_PATTERN =
+  /([0-9a-fA-F]{32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/;
 
 type NotionPageSummary = { id: string; title: string; url: string };
-type NotionBlockSummary = { text?: string | null };
+type NotionBlockSummary = { block_type?: string; text?: string | null };
 type NotionSource = { page_id: string; url: string };
 type NotionSummary = {
   commitments?: string[];
@@ -39,7 +40,49 @@ type ReadOnlyResponse = {
   next_step?: string;
 };
 
+type NotionSearchPagesInput = {
+  query?: string;
+  start_cursor?: string;
+  page_size?: number;
+};
+
+type NotionGetPageInput = {
+  page_id: string;
+};
+
+type NotionGetPageBlocksInput = {
+  block_id: string;
+  start_cursor?: string;
+  page_size?: number;
+  raw_blocks?: "raw" | "enriched";
+  max_depth?: number;
+};
+
+type NotionToolInput =
+  | NotionSearchPagesInput
+  | NotionGetPageInput
+  | NotionGetPageBlocksInput;
+
 type NotionActionResult = NotionOutput | ReadOnlyResponse | null;
+
+function wantsSummary(text: string): boolean {
+  const lowered = text.toLowerCase();
+  const keywords = [
+    "summarize",
+    "summary",
+    "what are we working on",
+    "status",
+    "impact",
+    "roadmap",
+    "brief",
+    "commitments",
+  ];
+  return keywords.some((k) => lowered.includes(k));
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === "object";
+}
 
 // Agent pattern: tools return structured data, agent renders UX.
 // See docs/agent-patterns.md for the rationale and checklist.
@@ -47,14 +90,74 @@ function isReadOnlyResponse(action: NotionActionResult): action is ReadOnlyRespo
   if (!action || typeof action !== "object") return false;
   const candidate = action as Record<string, unknown>;
   if (typeof candidate.message !== "string") return false;
-  const hasPages = "pages" in candidate || "blocks" in candidate || "sources" in candidate;
+  const hasPages =
+    "pages" in candidate || "blocks" in candidate || "sources" in candidate;
   return !hasPages;
 }
 
-function formatSources(
-  sources?: NotionSource[],
-  pages?: NotionPageSummary[]
-): string {
+function isNotionOutput(value: unknown): value is NotionOutput {
+  if (!isObject(value)) return false;
+  return (
+    Array.isArray((value as NotionOutput).pages) ||
+    Array.isArray((value as NotionOutput).blocks) ||
+    Array.isArray((value as NotionOutput).sources)
+  );
+}
+
+function extractNotionOutput(value: unknown): NotionOutput | null {
+  if (isNotionOutput(value)) return value;
+  if (isObject(value) && isNotionOutput(value.output)) {
+    return value.output;
+  }
+  return null;
+}
+
+function extractNotionId(text: string): string | null {
+  const match = text.match(NOTION_ID_PATTERN);
+  if (!match) return null;
+
+  const candidate = match[1] ?? match[0];
+  const trimmed = text.trim();
+  if (trimmed === candidate) return candidate;
+
+  const lowered = text.toLowerCase();
+  if (
+    lowered.includes("notion") ||
+    lowered.includes("block") ||
+    lowered.includes("notion.so") ||
+    lowered.includes("notion.site")
+  ) {
+    return candidate;
+  }
+
+  return null;
+}
+
+async function executeNotionAction(
+  input: NotionToolInput,
+): Promise<NotionOutput | null> {
+  let session: ToolSessionHandle | null = null;
+  try {
+    session = await openToolSession(NOTION_TOOL_NAME);
+    await session.send(input as unknown as Record<string, unknown>);
+    const next = await session.continue();
+    await session.finish();
+    session = null;
+    return extractNotionOutput(next);
+  } catch (err) {
+    if (session) {
+      const reason = err instanceof Error ? err.message : String(err);
+      try {
+        await session.abort(reason);
+      } catch {
+        // Ignore abort errors because we're already on the error path.
+      }
+    }
+    throw err;
+  }
+}
+
+function formatSources(sources?: NotionSource[], pages?: NotionPageSummary[]): string {
   if (!sources || sources.length === 0) return "";
   const pageTitleById = new Map<string, string>();
   (pages || []).forEach((p) => pageTitleById.set(p.id, p.title));
@@ -93,7 +196,6 @@ async function summarizeBlocks(args: {
 }): Promise<NotionSummary | null> {
   try {
     const result = await SummarizeNotionContent(args);
-    if (result && typeof result === "string") return result;
     if (result && typeof result === "object") {
       const output = result as NotionSummary;
       if (
@@ -119,9 +221,23 @@ async function onChatMessage(message: ChatMessageWithToken): Promise<void> {
   await s.run(async () => {
     const text = s.text() || "unknown";
 
-    const toolResult = await ChooseNotionAction({
-      user_message: text,
-    });
+    let toolResult: NotionActionResult = null;
+    const directId = extractNotionId(text);
+    if (directId) {
+      try {
+        toolResult = await executeNotionAction({
+          block_id: directId,
+          max_depth: 2,
+        });
+      } catch (err) {
+        console.warn("Direct Notion ID lookup failed, falling back to LLM", err);
+        toolResult = await ChooseNotionAction({ user_message: text });
+      }
+    } else {
+      toolResult = await ChooseNotionAction({
+        user_message: text,
+      });
+    }
 
     if (isReadOnlyResponse(toolResult)) {
       const nextStep = toolResult.next_step
@@ -177,7 +293,10 @@ async function onChatMessage(message: ChatMessageWithToken): Promise<void> {
           "\n\nMissing:\n- Page content not retrieved. Provide a Notion page link or ID, or ensure the integration has access.";
       }
 
-      if ((!output.pages || output.pages.length === 0) && (!output.blocks || output.blocks.length === 0)) {
+      if (
+        (!output.pages || output.pages.length === 0) &&
+        (!output.blocks || output.blocks.length === 0)
+      ) {
         response +=
           "\n\nMissing:\n- No Notion pages found for this request. Provide a page link or adjust the query, or ensure the integration has access.";
       }

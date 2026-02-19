@@ -7,6 +7,9 @@ cd "$ROOT_DIR"
 PORT="${NOTION_DEMO_PORT:-8081}"
 LOG_FILE="${NOTION_DEMO_LOG:-/tmp/notion-runner.log}"
 PID_FILE="${NOTION_DEMO_PID:-/tmp/notion-runner.pid}"
+PACKAGE_FILE="${NOTION_DEMO_PACKAGE:-/tmp/notion-agent.tar.gz}"
+STREAM_FILE="${NOTION_DEMO_STREAM:-/tmp/notion-demo-sse.log}"
+PROVENANCE_DB="${NOTION_DEMO_PROVENANCE_DB:-provenance.db}"
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required but not found in PATH" >&2
@@ -22,11 +25,11 @@ if [ -f .env ]; then
 fi
 
 # Build agent package
-cargo run -p baml-rt-builder --features notion --bin baml-agent-builder -- \
-  package -a agents/notion-agent -o /tmp/notion-agent.tar.gz
+cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- \
+  package --agent-dir agents/notion-agent --output "$PACKAGE_FILE"
 
 # Build runner binary so we can track its PID (cargo run wraps the process)
-cargo build -p baml-agent-runner --features notion
+cargo build -p baml-agent-runner --features http-tools
 RUNNER_BIN="${NOTION_DEMO_RUNNER_BIN:-target/debug/baml-agent-runner}"
 if [ ! -x "$RUNNER_BIN" ]; then
   echo "Runner binary not found: $RUNNER_BIN" >&2
@@ -46,8 +49,9 @@ fi
 # Start runner in background
 RUST_LOG=${RUST_LOG:-baml_rt_a2a=debug,baml_rt_quickjs=debug,baml_rt_tools=debug} \
   nohup "$RUNNER_BIN" \
+    "$PACKAGE_FILE" \
     --serve-http 127.0.0.1:"$PORT" \
-    /tmp/notion-agent.tar.gz \
+    --provenance-db "$PROVENANCE_DB" \
     >"$LOG_FILE" 2>&1 &
 
 echo $! > "$PID_FILE"
@@ -65,16 +69,40 @@ if ! lsof -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
   exit 1
 fi
 
-DEFAULT_PAGE_ID="303cff78-8181-809b-9e8c-de431eb8c30e"
 if [ -n "${NOTION_DEMO_TEXT:-}" ]; then
   TEXT="$NOTION_DEMO_TEXT"
+elif [ -n "${NOTION_DEMO_PAGE_ID:-}" ]; then
+  TEXT="Summarize this Notion page ${NOTION_DEMO_PAGE_ID}. Focus on commitments, conflicts, missing info, and source links."
 else
-  TEXT="Summarize this Notion page ${DEFAULT_PAGE_ID}. Focus on commitments, conflicts, missing info, and be a little funny."
+  TEXT="What are we working on right now? Search Notion and summarize commitments, conflicts, and missing info with sources."
 fi
+
+echo "Streaming demo request to notion-agent on :${PORT} (provenance db: ${PROVENANCE_DB})" >&2
 
 jq -n --arg text "$TEXT" \
   '{jsonrpc:"2.0", method:"message.sendStream", params:{message:{messageId:"msg-2",role:"ROLE_USER",parts:[{text:$text}]}}, id:"corr-1700000000000-2"}' | \
   curl -s -N -X POST "http://127.0.0.1:${PORT}/agents/notion-agent/default/a2a/sse" \
     -H "Content-Type: application/json" \
     -H "Accept: text/event-stream" \
-    -d @-
+    -d @- | tee "$STREAM_FILE"
+
+CONTEXT_ID="$(
+  (
+    sed -n 's/^data: //p' "$STREAM_FILE" \
+      | jq -r '.. | objects | .contextId? // empty' || true
+  ) 2>/dev/null | tail -n 1
+)"
+TASK_ID="$(
+  (
+    sed -n 's/^data: //p' "$STREAM_FILE" \
+      | jq -r '.result.chunk.task.id? // empty' || true
+  ) 2>/dev/null | tail -n 1
+)"
+
+if [ -n "$CONTEXT_ID" ]; then
+  echo "Captured context id: $CONTEXT_ID" >&2
+  echo "Export sequence diagram: just provenance-mermaid $CONTEXT_ID" >&2
+fi
+if [ -n "$TASK_ID" ]; then
+  echo "Captured task id: $TASK_ID" >&2
+fi

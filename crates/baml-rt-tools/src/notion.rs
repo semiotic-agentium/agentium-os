@@ -43,6 +43,7 @@ fn backoff_delay(retries: usize) -> Duration {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct NotionSearchPagesInput {
     pub query: Option<String>,
@@ -50,48 +51,39 @@ pub struct NotionSearchPagesInput {
     pub page_size: Option<u32>,
 }
 
-/// Which Notion action to perform.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
-pub enum NotionAction {
-    SearchPages,
-    GetPage,
-    GetPageBlocks,
-}
-
-/// Input for the Notion tool (single tool with action discriminator).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
-pub struct NotionInput {
-    pub action: NotionAction,
-    pub query: Option<String>,
-    pub start_cursor: Option<String>,
-    pub page_size: Option<u32>,
-    pub page_id: Option<String>,
-    pub block_id: Option<String>,
-    /// Render mode for blocks (raw skips Notable lines / Missing info hints).
-    pub raw_blocks: Option<BlockRenderMode>,
-    /// Max child block depth to expand (0 = no child expansion).
-    pub max_depth: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct NotionGetPageInput {
     pub page_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct NotionGetPageBlocksInput {
-    pub block_id: Option<String>,
-    pub page_id: Option<String>,
+    pub block_id: String,
     pub start_cursor: Option<String>,
     pub page_size: Option<u32>,
     /// Render mode for blocks (raw skips Notable lines / Missing info hints).
     pub raw_blocks: Option<BlockRenderMode>,
     /// Max child block depth to expand (0 = no child expansion).
     pub max_depth: Option<u32>,
+}
+
+/// Input for the Notion tool as per-action typed variants.
+///
+/// `deny_unknown_fields` on each variant ensures untagged routing rejects
+/// mismatched fields. An empty object `{}` resolves to `SearchPages` (all
+/// fields optional), which is intentional: a bare search is a safe default.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[baml(union)]
+#[serde(untagged)]
+#[ts(export)]
+pub enum NotionInput {
+    SearchPages(NotionSearchPagesInput),
+    GetPage(NotionGetPageInput),
+    GetPageBlocks(NotionGetPageBlocksInput),
 }
 
 // ---------------------------------------------------------------------------
@@ -767,7 +759,7 @@ mod tests {
 
     use reqwest::header::HeaderValue;
 
-    use super::{NotionClient, RetryAfter, backoff_delay, next_depth_for_children};
+    use super::{NotionClient, NotionInput, RetryAfter, backoff_delay, next_depth_for_children};
 
     #[test]
     fn next_depth_for_children_respects_max_depth() {
@@ -804,6 +796,41 @@ mod tests {
             NotionClient::parse_retry_after(None),
             RetryAfter::Missing
         ));
+    }
+
+    #[test]
+    fn notion_input_routes_empty_object_to_search_pages() {
+        let input: NotionInput = serde_json::from_str("{}").unwrap();
+        assert!(matches!(input, NotionInput::SearchPages(_)));
+    }
+
+    #[test]
+    fn notion_input_routes_query_to_search_pages() {
+        let input: NotionInput = serde_json::from_str(r#"{"query":"roadmap"}"#).unwrap();
+        assert!(
+            matches!(input, NotionInput::SearchPages(ref s) if s.query.as_deref() == Some("roadmap"))
+        );
+    }
+
+    #[test]
+    fn notion_input_routes_page_id_to_get_page() {
+        let input: NotionInput = serde_json::from_str(r#"{"page_id":"abc123"}"#).unwrap();
+        assert!(matches!(input, NotionInput::GetPage(ref p) if p.page_id == "abc123"));
+    }
+
+    #[test]
+    fn notion_input_routes_block_id_to_get_page_blocks() {
+        let input: NotionInput = serde_json::from_str(r#"{"block_id":"def456"}"#).unwrap();
+        assert!(matches!(input, NotionInput::GetPageBlocks(ref b) if b.block_id == "def456"));
+    }
+
+    #[test]
+    fn notion_input_rejects_mixed_fields() {
+        let result = serde_json::from_str::<NotionInput>(r#"{"page_id":"abc","block_id":"def"}"#);
+        assert!(
+            result.is_err(),
+            "mixed page_id + block_id must not match any variant"
+        );
     }
 }
 
@@ -877,14 +904,6 @@ impl NotionTool {
     }
 }
 
-fn require_id(value: Option<String>, label: &str) -> std::result::Result<String, NotionError> {
-    value
-        .filter(|v| !v.trim().is_empty())
-        .ok_or_else(|| NotionError::InvalidId {
-            id: format!("missing {label}"),
-        })
-}
-
 #[async_trait]
 impl BamlTool for NotionTool {
     type Bundle = Support;
@@ -899,31 +918,27 @@ impl BamlTool for NotionTool {
 
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         let api_key = self.client.api_key()?;
-        match args.action {
-            NotionAction::SearchPages => {
+        match args {
+            NotionInput::SearchPages(input) => {
                 self.client
                     .search_pages(
                         api_key,
-                        args.query.as_deref(),
-                        args.start_cursor.as_deref(),
-                        args.page_size,
+                        input.query.as_deref(),
+                        input.start_cursor.as_deref(),
+                        input.page_size,
                     )
                     .await
             }
-            NotionAction::GetPage => {
-                let page_id = require_id(args.page_id, "page_id")?;
-                self.client.get_page(api_key, &page_id).await
-            }
-            NotionAction::GetPageBlocks => {
-                let block_id = require_id(args.block_id.or(args.page_id), "block_id")?;
-                let render_mode = args.raw_blocks.unwrap_or_default();
-                let max_depth = args.max_depth.unwrap_or(2).min(MAX_BLOCK_DEPTH);
+            NotionInput::GetPage(input) => self.client.get_page(api_key, &input.page_id).await,
+            NotionInput::GetPageBlocks(input) => {
+                let render_mode = input.raw_blocks.unwrap_or_default();
+                let max_depth = input.max_depth.unwrap_or(2).min(MAX_BLOCK_DEPTH);
                 self.client
                     .get_page_blocks(
                         api_key,
-                        &block_id,
-                        args.start_cursor.as_deref(),
-                        args.page_size,
+                        &input.block_id,
+                        input.start_cursor.as_deref(),
+                        input.page_size,
                         render_mode,
                         max_depth,
                     )
@@ -1044,13 +1059,12 @@ impl BamlTool for NotionGetPageBlocksTool {
 
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         let api_key = self.client.api_key()?;
-        let block_id = require_id(args.block_id.or(args.page_id), "block_id")?;
         let render_mode = args.raw_blocks.unwrap_or_default();
         let max_depth = args.max_depth.unwrap_or(2).min(MAX_BLOCK_DEPTH);
         self.client
             .get_page_blocks(
                 api_key,
-                &block_id,
+                &args.block_id,
                 args.start_cursor.as_deref(),
                 args.page_size,
                 render_mode,
@@ -1297,11 +1311,14 @@ pub fn notion_metadata() -> ToolFunctionMetadata {
     let (name, class_name) = parse_tool_name_and_class("support/notion")
         .expect("support/notion is a compile-time constant");
     let mut extra_ts_decls = Vec::new();
-    if let Some(decl) = ts_decl::<NotionAction>() {
+    if let Some(decl) = ts_decl::<BlockRenderMode>() {
         extra_ts_decls.push(decl);
     }
     let baml_decl = [
-        NotionAction::baml_decl(),
+        NotionSearchPagesInput::baml_decl(),
+        NotionGetPageInput::baml_decl(),
+        NotionGetPageBlocksInput::baml_decl(),
+        BlockRenderMode::baml_decl(),
         NotionInput::baml_decl(),
         NotionPageSummary::baml_decl(),
         NotionBlockSummary::baml_decl(),
@@ -1367,6 +1384,7 @@ pub fn notion_get_page_blocks_metadata() -> ToolFunctionMetadata {
     let (name, class_name) = parse_tool_name_and_class("support/notionGetPageBlocks")
         .expect("support/notionGetPageBlocks is a compile-time constant");
     let baml_decl = [
+        BlockRenderMode::baml_decl(),
         NotionGetPageBlocksInput::baml_decl(),
         NotionPageSummary::baml_decl(),
         NotionBlockSummary::baml_decl(),

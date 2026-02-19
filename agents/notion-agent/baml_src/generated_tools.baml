@@ -11,38 +11,49 @@
 //
 // CRITICAL FSM RULES:
 // - Open MUST come before any Send step
-// - Open uses 'initial_input' for open-time session configuration when supported
-// - Send uses 'input' for message payloads
+// - Open may include 'initial_input' only when the step schema defines that field
+// - Send uses 'input' field (for subsequent inputs)
 // - After Send, call Next to retrieve results
 // - Always Finish or Abort to close the session
 
 enum ToolSessionOp {
-  Open @description("Open a new tool session. MUST be the first step in any plan. Use 'initial_input' for open-time configuration when this step schema includes it.")
-  Send @description("Send input to an already-open session. Can ONLY be used after an Open step. Provide payload in the 'input' field.")
+  Open @description("Open a new tool session. MUST be the first step in any plan. Include 'initial_input' only when the step schema defines that field.")
+  Send @description("Send input to an already-open session. Can ONLY be used after an Open step. Use 'input' field (NOT 'initial_input').")
   Next @description("Retrieve the next output from the session. Call this after Send to get results. For streaming tools, call Next multiple times until Done.")
   Finish @description("Close the session gracefully after completing all operations. Always call Finish when done with a tool session.")
   Abort @description("Close the session with an error. Use this if something went wrong and you need to terminate the session.")
 }
 
 // Domain types generated from #[derive(BamlType)]
-/// Which Notion action to perform.
-enum NotionAction {
-  SearchPages
-  GetPage
-  GetPageBlocks
-}
-
-/// Input for the Notion tool (single tool with action discriminator).
-class NotionInput {
-  action NotionAction
+class NotionSearchPagesInput {
   query string?
   start_cursor string?
   page_size int?
-  page_id string?
-  block_id string?
-  raw_blocks bool?
+}
+
+class NotionGetPageInput {
+  page_id string
+}
+
+class NotionGetPageBlocksInput {
+  block_id string
+  start_cursor string?
+  page_size int?
+  raw_blocks BlockRenderMode?
   max_depth int?
 }
+
+enum BlockRenderMode {
+  Raw
+  Enriched
+}
+
+/// Input for the Notion tool as per-action typed variants.
+///
+/// `deny_unknown_fields` on each variant ensures untagged routing rejects
+/// mismatched fields. An empty object `{}` resolves to `SearchPages` (all
+/// fields optional), which is intentional: a bare search is a safe default.
+type NotionInput = NotionSearchPagesInput | NotionGetPageInput | NotionGetPageBlocksInput
 
 class NotionPageSummary {
   id string
@@ -101,6 +112,6 @@ class SupportNotionAbortStep {
 type SupportNotionSessionStep = SupportNotionOpenStep | SupportNotionSendStep | SupportNotionNextStep | SupportNotionFinishStep | SupportNotionAbortStep
 
 class SupportNotionSessionPlan {
-  steps SupportNotionSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (with open-time initial_input when supported), 2) Send (with input payload), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{op: 'Open'}, {op: 'Send', input: {...}}, {op: 'Next'}, {op: 'Finish'}]. Access: read.")
+  steps SupportNotionSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{op: 'Open'}, {op: 'Send', input: {...}}, {op: 'Next'}, {op: 'Finish'}]. Access: read.")
 }
 
