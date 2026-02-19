@@ -1,7 +1,7 @@
 //! Tool session FSM primitives.
 
 use async_trait::async_trait;
-use baml_rt_core::BamlRtError;
+use baml_rt_core::{BamlRtError, Retryability};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
@@ -68,7 +68,7 @@ pub enum ToolFailureKind {
 pub struct ToolFailure {
     pub kind: ToolFailureKind,
     pub message: String,
-    pub retryable: bool,
+    pub retryability: Retryability,
 }
 
 impl ToolFailure {
@@ -76,7 +76,7 @@ impl ToolFailure {
         Self {
             kind: ToolFailureKind::InvalidInput,
             message: message.into(),
-            retryable: false,
+            retryability: Retryability::Permanent,
         }
     }
 
@@ -84,7 +84,7 @@ impl ToolFailure {
         Self {
             kind: ToolFailureKind::ExecutionFailed,
             message: message.into(),
-            retryable: false,
+            retryability: Retryability::Permanent,
         }
     }
 
@@ -102,7 +102,7 @@ impl ToolFailure {
         Self {
             kind,
             message: error.to_string(),
-            retryable: false,
+            retryability: Retryability::Permanent,
         }
     }
 }

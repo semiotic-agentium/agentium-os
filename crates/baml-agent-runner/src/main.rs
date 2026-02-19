@@ -10,6 +10,7 @@ mod package;
 
 use anyhow::Context;
 use async_trait::async_trait;
+use baml_rt_a2a::a2a_transport::RegistrationMode;
 use baml_rt_a2a::a2a_types::A2aMessageId;
 use baml_rt_a2a::a2a_types::{
     JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER, SendMessageConfiguration,
@@ -197,9 +198,9 @@ impl AgentPackage {
             .any(|t| t == "system/internal_a2a");
         let mut agent_builder = A2aAgent::builder()
             .with_runtime_handle(runtime_manager_arc.clone())
-            .with_baml_helpers(true) // Register BAML functions
+            .with_baml_helpers(RegistrationMode::Register)
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
-            .with_a2a_session_tool(wants_a2a_session);
+            .with_a2a_session_tool(RegistrationMode::from(wants_a2a_session));
 
         match provenance_config {
             ProvenanceConfig::Graphqlite(store) => {
