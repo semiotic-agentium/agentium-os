@@ -28,6 +28,8 @@ use baml_rt_tools::{
     tool_catalog::all_tool_metadata,
 };
 use baml_rt_tools_system as _;
+#[cfg(feature = "clickup")]
+use baml_tools_clickup as _;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -467,79 +469,8 @@ async fn load_agent_package(
         if !tools.is_empty() {
             rm.set_tool_allowlist(tools.iter().cloned().collect::<HashSet<_>>())
                 .await?;
-<<<<<<< Updated upstream
             let manifest_tool_names = ManifestToolNames::parse(&tools)?;
             register_manifest_tools(rm.tool_registry().as_ref(), &manifest_tool_names, policy)?;
-=======
-
-            for tool_name in &tools {
-                enforce_tool_access(tool_name, access_allowlist)?;
-                match tool_name.as_str() {
-                    "support/calculate" => {
-                        rm.register_tool(baml_rt_tools::support::CalculatorTool)
-                            .await?;
-                    }
-                    "support/clickup" => {
-                        #[cfg(feature = "clickup")]
-                        {
-                            rm.register_tool(baml_tools_clickup::ClickUpTool::new())
-                                .await?;
-                        }
-                        #[cfg(not(feature = "clickup"))]
-                        {
-                            bail!(
-                                "ClickUp tool not compiled: enable baml-rt-builder feature 'clickup'"
-                            );
-                        }
-                    }
-                    "support/notionSearchPages" => {
-                        #[cfg(feature = "notion")]
-                        {
-                            rm.register_tool(baml_rt_tools::notion::NotionSearchPagesTool::new())
-                                .await?;
-                        }
-                        #[cfg(not(feature = "notion"))]
-                        {
-                            bail!(
-                                "Notion tool not compiled: enable baml-rt-builder feature 'notion'"
-                            );
-                        }
-                    }
-                    "support/notionGetPage" => {
-                        #[cfg(feature = "notion")]
-                        {
-                            rm.register_tool(baml_rt_tools::notion::NotionGetPageTool::new())
-                                .await?;
-                        }
-                        #[cfg(not(feature = "notion"))]
-                        {
-                            bail!(
-                                "Notion tool not compiled: enable baml-rt-builder feature 'notion'"
-                            );
-                        }
-                    }
-                    "support/notionGetPageBlocks" => {
-                        #[cfg(feature = "notion")]
-                        {
-                            rm.register_tool(baml_rt_tools::notion::NotionGetPageBlocksTool::new())
-                                .await?;
-                        }
-                        #[cfg(not(feature = "notion"))]
-                        {
-                            bail!(
-                                "Notion tool not compiled: enable baml-rt-builder feature 'notion'"
-                            );
-                        }
-                    }
-                    other => {
-                        warn!(
-                            tool = other,
-                            "Unknown tool in manifest, skipping registration"
-                        );
-                    }
-                }
-            }
->>>>>>> Stashed changes
         }
 
         rm

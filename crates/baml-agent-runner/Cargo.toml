@@ -14,7 +14,7 @@ baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-quickjs = { path = "../baml-rt-quickjs" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
 baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
-baml-tools-system = { path = "../tools/system" }
+baml-rt-tools-system = { package = "baml-tools-system", path = "../tools/system" }
 baml-tools-clickup = { path = "../tools/clickup", optional = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }

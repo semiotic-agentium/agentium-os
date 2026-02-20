@@ -3,6 +3,8 @@
 //! Provides a [`BamlTool`] implementation that calls the ClickUp v2 REST API.
 //! Supports listing, getting, creating, and updating tasks.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
@@ -10,8 +12,10 @@ use baml_rt_core::{BamlRtError, Result};
 use baml_rt_tools::{
     ToolMetadataBuilder, TypeBasedMetadataBuilder,
     bundles::Support,
-    parse_tool_name_and_class, register_tool_metadata,
-    tools::{BamlTool, ToolFunctionMetadata, ToolSecretRequirement},
+    parse_tool_name_and_class, register_tool,
+    tools::{
+        BamlTool, ToolFunctionMetadata, ToolHandler, ToolSecretRequirement, create_tool_handler,
+    },
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -766,4 +770,8 @@ pub fn clickup_metadata() -> ToolFunctionMetadata {
     .build_metadata()
 }
 
-register_tool_metadata!(clickup_metadata);
+fn clickup_build() -> Result<Arc<dyn ToolHandler>> {
+    create_tool_handler(ClickUpTool::new()).map(|(_, h)| h)
+}
+
+register_tool!(clickup_metadata, clickup_build);
