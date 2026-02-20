@@ -83,19 +83,15 @@ async fn baml_to_ts_typed_function_declaration() {
 }
 
 // ---------------------------------------------------------------------------
-// Supporting type: interface emitted for class return type
+// Supporting type: type alias emitted for session plan return type
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn baml_to_ts_emits_interface_for_return_class() {
+async fn baml_to_ts_emits_type_alias_for_return_type() {
     let ts = generate_ts_from_fixture("stream-baml-tool").expect("generate TS");
     assert!(
-        ts.contains("export interface SupportCalculateSessionPlan"),
-        "expected interface for return class SupportCalculateSessionPlan"
-    );
-    assert!(
-        ts.contains("steps:"),
-        "expected steps field on SupportCalculateSessionPlan"
+        ts.contains("export type SupportCalculateSessionPlan"),
+        "expected type alias for return type SupportCalculateSessionPlan"
     );
 }
 
@@ -132,11 +128,11 @@ async fn baml_to_ts_includes_tool_declarations() {
 }
 
 // ---------------------------------------------------------------------------
-// Type mapper: class return type produces name and deps
+// Type mapper: return type re-aliases to named type alias
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn baml_to_ts_type_mapper_class_produces_deps() {
+async fn baml_to_ts_type_mapper_re_aliases_return_type() {
     let baml_src = fixture_baml_src("stream-baml-tool");
     if !baml_src.exists() {
         return;
@@ -150,15 +146,19 @@ async fn baml_to_ts_type_mapper_class_produces_deps() {
         .functions
         .get("ChooseCalcTool")
         .expect("ChooseCalcTool in IR");
-    let frag =
+    let raw_frag =
         baml_rt_builder::builder::ir_to_ts::type_to_ts_expr(func.output.as_ref(), &ir_signature)
             .expect("type_to_ts_expr");
+
+    // BAML IR expands non-recursive type aliases inline; re_alias_frag restores the name
+    let frag = baml_rt_builder::builder::ir_to_ts::re_alias_frag(raw_frag, &ir_signature)
+        .expect("re_alias_frag");
 
     assert_eq!(frag.expr, "SupportCalculateSessionPlan");
     assert!(
         frag.deps
             .contains(&"SupportCalculateSessionPlan".to_string()),
-        "deps should include return class name"
+        "deps should include return type alias name"
     );
 }
 

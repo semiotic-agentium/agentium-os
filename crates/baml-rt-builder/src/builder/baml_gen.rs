@@ -208,10 +208,6 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
     let abort_step_name = format!("{}AbortStep", class_name);
     let step_union_name = format!("{}SessionStep", class_name);
     let plan_type_name = format!("{}SessionPlan", class_name);
-    let access_note = tool
-        .access
-        .map(|access| format!(" Access: {}.", access))
-        .unwrap_or_default();
 
     // Generate distinct step types for each FSM operation
     write_line(output, &format!("class {} {{", open_step_name))?;
@@ -294,17 +290,13 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
     )?;
     write_line(output, "")?;
 
-    // Generate session plan with FSM guidance and example. Runtime resolves the tool from the
-    // builder-generated manifest mapping (function name -> plan type).
-    write_line(output, &format!("class {} {{", plan_type_name))?;
+    // Generate session plan as a type alias for the step array.
+    // Using a type alias (not a wrapper class) avoids BAML's 1-field class
+    // coercion ambiguity that can cause steps to be silently dropped.
     write_line(
         output,
-        &format!(
-            "  steps {}[] @description(\"Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Runtime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Example: [{{op: \\\"Open\\\"}}, {{op: \\\"Send\\\", input: {{...}}}}, {{op: \\\"Next\\\"}}, {{op: \\\"Finish\\\"}}].{}\")",
-            step_union_name, access_note
-        ),
+        &format!("type {} = {}[]", plan_type_name, step_union_name),
     )?;
-    write_line(output, "}")?;
 
     Ok(())
 }

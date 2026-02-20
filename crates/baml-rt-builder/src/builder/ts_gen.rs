@@ -6,7 +6,7 @@ use internal_baml_core::ir::ir_hasher::IRSignature;
 
 use crate::builder::{
     error::{BamlBuilderError, Result},
-    ir_to_ts::{collect_type_decl_deps, emit_type_declarations_tokens, type_to_ts_expr},
+    ir_to_ts::{collect_type_decl_deps, emit_type_declarations_tokens, re_alias_frag, type_to_ts_expr},
 };
 
 /// Wrapper so genco fmt errors can be used as [`std::error::Error`] source.
@@ -59,7 +59,10 @@ pub fn render_ts_declarations(ir_signature: &IRSignature, tool_names: &[String])
     let mut func_decls: Vec<(String, String, String)> = Vec::new();
     for (name, func_sig) in &ir_signature.functions {
         let args_frag = build_args_frag(func_sig, ir_signature)?;
-        let return_frag = type_to_ts_expr(func_sig.output.as_ref(), ir_signature)?;
+        let return_frag = re_alias_frag(
+            type_to_ts_expr(func_sig.output.as_ref(), ir_signature)?,
+            ir_signature,
+        )?;
         all_type_deps.extend(collect_type_decl_deps(&args_frag));
         all_type_deps.extend(collect_type_decl_deps(&return_frag));
         func_decls.push((name.clone(), args_frag.expr, return_frag.expr));

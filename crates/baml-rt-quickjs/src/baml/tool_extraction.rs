@@ -184,7 +184,23 @@ pub enum ToolSessionOp {
 }
 
 /// Extract and convert JSON tool session plan into typed operations.
+///
+/// Accepts two formats:
+/// - Bare array: `[{op: "Open", ...}, ...]` (from BAML type alias)
+/// - Wrapped object: `{steps: [{op: "Open", ...}, ...]}` (legacy class format)
 pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<Vec<ToolSessionOp>>> {
+    // Bare array format (type alias: `type XSessionPlan = XSessionStep[]`)
+    if let Some(arr) = result.as_array() {
+        if arr.iter().all(|v| {
+            v.as_object()
+                .is_some_and(|obj| obj.get("op").and_then(|v| v.as_str()).is_some())
+        }) {
+            return parse_steps_array(arr).map(Some);
+        }
+        return Ok(None);
+    }
+
+    // Wrapped object format (legacy: `class XSessionPlan { steps XSessionStep[] }`)
     let obj = match result.as_object() {
         Some(obj) => obj,
         None => return Ok(None),
@@ -197,6 +213,11 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<Vec<Too
         BamlRtError::InvalidArgument("ToolSessionPlan.steps must be an array".to_string())
     })?;
 
+    parse_steps_array(steps_array).map(Some)
+}
+
+/// Parse an array of step objects into typed `ToolSessionOp` values.
+fn parse_steps_array(steps_array: &[Value]) -> Result<Vec<ToolSessionOp>> {
     let mut steps = Vec::new();
     for step_value in steps_array {
         let step_obj = step_value.as_object().ok_or_else(|| {
@@ -209,7 +230,6 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<Vec<Too
             ));
         }
 
-        let step_type = step_obj.get("__type").and_then(|v| v.as_str());
         let op_str = step_obj
             .get("op")
             .and_then(|v| v.as_str())
@@ -225,32 +245,18 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<Vec<Too
 
         let op = match op_str.as_str() {
             "open" => {
-                let initial_input = match step_type {
-                    Some("SupportCalculateOpenStep") | Some(_) => {
-                        step_obj.get("initial_input").cloned()
-                    }
-                    _ => step_obj.get("initial_input").cloned(),
-                };
+                let initial_input = step_obj.get("initial_input").cloned();
                 ToolSessionOp::Open {
                     initial_input,
                     reason,
                 }
             }
             "send" => {
-                let input = match step_type {
-                    Some("SupportCalculateSendStep") | Some(_) => {
-                        step_obj.get("input").cloned().ok_or_else(|| {
-                            BamlRtError::InvalidArgument(
-                                "Send step missing required 'input' field".to_string(),
-                            )
-                        })?
-                    }
-                    _ => step_obj.get("input").cloned().ok_or_else(|| {
-                        BamlRtError::InvalidArgument(
-                            "Send step missing required 'input' field".to_string(),
-                        )
-                    })?,
-                };
+                let input = step_obj.get("input").cloned().ok_or_else(|| {
+                    BamlRtError::InvalidArgument(
+                        "Send step missing required 'input' field".to_string(),
+                    )
+                })?;
                 ToolSessionOp::Send { input, reason }
             }
             "next" => ToolSessionOp::Next { reason },
@@ -258,8 +264,7 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<Vec<Too
             "abort" => ToolSessionOp::Abort { reason },
             other => {
                 return Err(BamlRtError::InvalidArgument(format!(
-                    "Unknown tool session op '{}'",
-                    other
+                    "Unknown tool session op '{other}'",
                 )));
             }
         };
@@ -267,7 +272,7 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<Vec<Too
         steps.push(op);
     }
 
-    Ok(Some(steps))
+    Ok(steps)
 }
 
 /// Normalize plan input (string JSON → parsed Value).
@@ -354,8 +359,8 @@ mod tests {
         }
     }
 
-    /// Steps array with valid op values, no tool_name.
-    fn valid_steps_array() -> impl Strategy<Value = Value> {
+    /// Steps as objects with valid op values, no tool_name.
+    fn valid_step_objects() -> impl Strategy<Value = Vec<Value>> {
         let op_strategy = prop_oneof![Just("open"), Just("next"), Just("finish"), Just("abort"),];
         prop::collection::vec(
             op_strategy.prop_map(|op| {
@@ -366,23 +371,41 @@ mod tests {
             }),
             1..6,
         )
-        .prop_map(|steps| {
+    }
+
+    /// Wrapped format: `{steps: [...]}`
+    fn valid_wrapped_steps() -> impl Strategy<Value = Value> {
+        valid_step_objects().prop_map(|steps| {
             let mut obj = serde_json::Map::new();
             obj.insert("steps".to_string(), Value::Array(steps));
             Value::Object(obj)
         })
     }
 
+    /// Bare array format: `[{op: ...}, ...]`
+    fn valid_bare_steps() -> impl Strategy<Value = Value> {
+        valid_step_objects().prop_map(Value::Array)
+    }
+
     proptest! {
         #![proptest_config(proptest_cfg(32))]
 
-        /// Invariant: Extracted plan steps have valid op and no tool_name in payload.
+        /// Invariant: Wrapped format extracts all steps.
         #[test]
-        fn prop_extract_plan_steps_valid(v in valid_steps_array()) {
+        fn prop_extract_plan_steps_wrapped(v in valid_wrapped_steps()) {
             let steps = extract_tool_session_plan(&v).unwrap().expect("steps");
             assert!(!steps.is_empty());
-            // All steps were parsed; type system enforces ToolSessionOp variants (no tool_name).
-            assert_eq!(steps.len(), v.get("steps").and_then(|a| a.as_array()).map(|a| a.len()).unwrap_or(0));
+            let expected_len = v.get("steps").and_then(|a| a.as_array()).map(|a| a.len()).unwrap_or(0);
+            assert_eq!(steps.len(), expected_len);
+        }
+
+        /// Invariant: Bare array format extracts all steps.
+        #[test]
+        fn prop_extract_plan_steps_bare_array(v in valid_bare_steps()) {
+            let steps = extract_tool_session_plan(&v).unwrap().expect("steps");
+            assert!(!steps.is_empty());
+            let expected_len = v.as_array().map(|a| a.len()).unwrap_or(0);
+            assert_eq!(steps.len(), expected_len);
         }
     }
 }

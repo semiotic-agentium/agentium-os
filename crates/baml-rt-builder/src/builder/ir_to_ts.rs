@@ -53,7 +53,11 @@ fn type_to_ts_inner(ty: &TypeNonStreaming, deps: &mut Vec<String>) -> Result<Str
         }
         T::List(inner, _) => {
             let inner_ts = recursive(inner)?;
-            format!("{inner_ts}[]")
+            if inner_ts.contains('|') {
+                format!("({inner_ts})[]")
+            } else {
+                format!("{inner_ts}[]")
+            }
         }
         T::Map(_k, v, _) => {
             let v_ts = recursive(v)?;
@@ -104,6 +108,25 @@ fn type_to_ts_inner(ty: &TypeNonStreaming, deps: &mut Vec<String>) -> Result<Str
 /// Collect all type names that need declarations (classes, enums, type aliases) from a fragment's deps.
 pub fn collect_type_decl_deps(frag: &TsTypeFrag) -> HashSet<String> {
     frag.deps.iter().cloned().collect()
+}
+
+/// If the expanded TS expression matches a known type alias, substitute the alias name.
+///
+/// BAML's IR expands non-recursive type aliases inline, so a function returning
+/// `SupportCalculateSessionPlan` (alias for `SupportCalculateSessionStep[]`) has
+/// its output stored as `List(Union(...))`. This function reverses that expansion
+/// by comparing the generated TS expression against each alias's expanded form.
+pub fn re_alias_frag(frag: TsTypeFrag, ir: &IRSignature) -> Result<TsTypeFrag> {
+    for (alias_name, type_node) in &ir.type_aliases {
+        let alias_expr = type_to_ts_inner(type_node.field_type.as_ref(), &mut Vec::new())?;
+        if alias_expr == frag.expr {
+            return Ok(TsTypeFrag {
+                expr: alias_name.clone(),
+                deps: vec![alias_name.clone()],
+            });
+        }
+    }
+    Ok(frag)
 }
 
 /// Emit TypeScript type declarations (interfaces, enums, type aliases) for the given set of type names.

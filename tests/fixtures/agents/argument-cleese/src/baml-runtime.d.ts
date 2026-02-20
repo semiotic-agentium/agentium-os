@@ -6,8 +6,7 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface SystemInternal_a2aSessionPlan { steps: SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aNextStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep[];
- }
+export type SystemInternal_a2aSessionPlan = (SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aNextStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep)[];
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
