@@ -2,8 +2,6 @@
 
 pub mod access;
 pub mod bundles;
-#[cfg(feature = "clickup")]
-pub mod clickup;
 pub mod host_registration;
 mod metrics;
 #[cfg(feature = "notion")]
