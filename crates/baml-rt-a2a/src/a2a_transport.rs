@@ -20,7 +20,7 @@ use baml_rt_tools::{
     ToolFailure, ToolHandler, ToolName, ToolSession, ToolSessionError, ToolTypeSpec,
     tools::{ToolFunctionMetadata, ToolSessionContext},
 };
-use baml_rt_tools_system::A2aSessionBundle;
+use baml_tools_system::A2aSessionBundle;
 use serde_json::Value;
 use tokio::sync::{Mutex, broadcast};
 

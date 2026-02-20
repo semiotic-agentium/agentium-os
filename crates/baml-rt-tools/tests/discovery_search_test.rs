@@ -1,6 +1,7 @@
 //! Tests for tool discovery: ToolRegistry::search_tools is global (whole catalog from inventory).
 
 use baml_rt_tools::ToolRegistry;
+use baml_tools_calculator as _;
 
 #[tokio::test]
 async fn search_tools_global_catalog_exact_full_name_ranks_first() {

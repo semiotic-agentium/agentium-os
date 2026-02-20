@@ -47,7 +47,7 @@ use baml_rt_core::{AgentDiscoveryEntry, AgentLister};
 #[cfg(feature = "llm-tests")]
 use baml_rt_tools::{ManifestToolNames, parse_access_allowlist, register_manifest_tools};
 #[cfg(feature = "llm-tests")]
-use baml_rt_tools_system::SystemBundle;
+use baml_tools_system::SystemBundle;
 
 /// Empty agent list for tests that only need discover_tools (no discover_agents).
 #[cfg(feature = "llm-tests")]

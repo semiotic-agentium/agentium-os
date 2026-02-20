@@ -1,0 +1,18 @@
+[package]
+name = "baml-tools-calculator"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "Calculator support tool for BAML runtime"
+
+[dependencies]
+baml-rt-core = { path = "../../baml-rt-core" }
+baml-rt-tools = { path = "../../baml-rt-tools" }
+baml-derive-core = { path = "../../baml-derive-core" }
+baml-derive = { path = "../../baml-derive" }
+serde = { workspace = true }
+async-trait = { workspace = true }
+schemars = { workspace = true }
+ts-rs = { workspace = true }
+inventory = { workspace = true }

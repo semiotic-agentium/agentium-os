@@ -9,7 +9,8 @@ use std::{
 };
 
 use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::{support, tool_catalog::resolve_manifest_tools, tools::ToolFunctionMetadata};
+use baml_rt_tools::{tool_catalog::resolve_manifest_tools, tools::ToolFunctionMetadata};
+use baml_tools_calculator as _;
 use serde_json::Value;
 
 use crate::builder::schema_to_baml;
@@ -22,8 +23,8 @@ fn write_line(output: &mut String, line: &str) -> Result<()> {
 /// Generate BAML tool interface file with FSM-aware prompting hints
 pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     // Force link so inventory sees these metadata registrations (regen_fixtures + builder).
-    let _ = support::support_calculate_metadata;
-    let _ = baml_rt_tools_system::metadata::system_internal_a2a_metadata;
+    let _ = baml_tools_calculator::support_calculate_metadata;
+    let _ = baml_tools_system::metadata::system_internal_a2a_metadata;
     #[cfg(feature = "clickup")]
     let _ = baml_tools_clickup::clickup_metadata;
     let tool_metadata = resolve_manifest_tools(tool_names)?;

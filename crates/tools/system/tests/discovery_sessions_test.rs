@@ -6,8 +6,9 @@ use async_trait::async_trait;
 use baml_rt_core::{
     A2aRequestHandler, AgentCard, AgentDiscoveryEntry, AgentLister, BusStream, ContextId, Result,
 };
-use baml_rt_tools::{ToolRegistry, ToolStep, support::CalculatorTool};
-use baml_rt_tools_system::SystemBundle;
+use baml_rt_tools::{ToolRegistry, ToolStep};
+use baml_tools_calculator::CalculatorTool;
+use baml_tools_system::SystemBundle;
 use futures_util::stream;
 use serde_json::{Value, json};
 

@@ -27,9 +27,10 @@ use baml_rt_tools::{
     ManifestToolNames, ToolAccessPolicy, parse_access_allowlist, register_manifest_tools,
     tool_catalog::all_tool_metadata,
 };
-use baml_rt_tools_system as _;
+use baml_tools_calculator as _;
 #[cfg(feature = "clickup")]
 use baml_tools_clickup as _;
+use baml_tools_system as _;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 use tokio::sync::Mutex;

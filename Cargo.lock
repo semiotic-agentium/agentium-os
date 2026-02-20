@@ -933,6 +933,7 @@ dependencies = [
  "baml-rt-provenance",
  "baml-rt-quickjs",
  "baml-rt-tools",
+ "baml-tools-calculator",
  "baml-tools-clickup",
  "baml-tools-system",
  "clap",
@@ -1171,6 +1172,7 @@ dependencies = [
  "baml-rt-quickjs",
  "baml-rt-tools",
  "baml-runtime",
+ "baml-tools-calculator",
  "baml-tools-clickup",
  "baml-tools-system",
  "baml-types",
@@ -1310,6 +1312,7 @@ dependencies = [
  "baml-derive-core",
  "baml-rt",
  "baml-rt-core",
+ "baml-tools-calculator",
  "genco",
  "inventory",
  "notion-client",
@@ -1432,6 +1435,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "baml-tools-calculator"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "baml-derive 0.1.0",
+ "baml-derive-core",
+ "baml-rt-core",
+ "baml-rt-tools",
+ "inventory",
+ "schemars 1.2.1",
+ "serde",
+ "ts-rs",
+]
+
+[[package]]
 name = "baml-tools-clickup"
 version = "0.1.0"
 dependencies = [
@@ -1474,6 +1492,7 @@ dependencies = [
  "async-trait",
  "baml-rt-core",
  "baml-rt-tools",
+ "baml-tools-calculator",
  "futures-util",
  "inventory",
  "schemars 1.2.1",
@@ -7746,6 +7765,7 @@ dependencies = [
  "baml-rt",
  "baml-rt-core",
  "baml-rt-tools",
+ "baml-tools-calculator",
  "dotenvy",
  "schemars 1.2.1",
  "serde",
