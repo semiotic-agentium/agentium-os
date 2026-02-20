@@ -257,7 +257,7 @@ impl ProvenanceTaskStore {
         }
     }
 
-    /// Task store backed by a persistent backend (e.g. [crate::graphqlite_unified_store::GraphqliteUnifiedStore])
+    /// Task store backed by a persistent backend (e.g. [crate::graphqlite_task_subgraph_store::GraphqliteTaskSubgraphStore])
     /// with optional provenance writer. Use the same store as both backend and writer for unified persistence.
     pub fn with_backend(
         inner: Arc<dyn TaskStoreBackend>,

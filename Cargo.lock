@@ -1254,10 +1254,10 @@ dependencies = [
  "baml-rt-interceptor",
  "baml-rt-observability",
  "baml-rt-tools",
+ "baml-rt-vocabulary",
  "clap",
  "graphqlite",
  "insta",
- "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -1356,6 +1356,14 @@ dependencies = [
  "tokio",
  "ts-rs",
  "uuid",
+]
+
+[[package]]
+name = "baml-rt-vocabulary"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde_json",
 ]
 
 [[package]]

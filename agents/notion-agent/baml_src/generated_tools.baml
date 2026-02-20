@@ -25,22 +25,35 @@ enum ToolSessionOp {
 }
 
 // Domain types generated from #[derive(BamlType)]
-/// Which Notion action to perform.
-enum NotionAction {
-  SearchPages
-  GetPage
-  GetPageBlocks
-}
-
-/// Input for the Notion tool (single tool with action discriminator).
-class NotionInput {
-  action NotionAction
+class NotionSearchPagesInput {
   query string?
   start_cursor string?
   page_size int?
-  page_id string?
-  block_id string?
 }
+
+class NotionGetPageInput {
+  page_id string
+}
+
+class NotionGetPageBlocksInput {
+  block_id string
+  start_cursor string?
+  page_size int?
+  raw_blocks BlockRenderMode?
+  max_depth int?
+}
+
+enum BlockRenderMode {
+  Raw
+  Enriched
+}
+
+/// Input for the Notion tool as per-action typed variants.
+///
+/// `deny_unknown_fields` on each variant ensures untagged routing rejects
+/// mismatched fields. An empty object `{}` resolves to `SearchPages` (all
+/// fields optional), which is intentional: a bare search is a safe default.
+type NotionInput = NotionSearchPagesInput | NotionGetPageInput | NotionGetPageBlocksInput
 
 class NotionPageSummary {
   id string
@@ -130,8 +143,15 @@ class DiscoverToolsSendInput {
   limit int?
 }
 
+enum InternalA2aCompletion {
+  DONE
+  INPUTREQUIRED
+    @alias("INPUT_REQUIRED")
+}
+
 class InternalA2aNextOutput {
   chunks ConversationChunk[]
+  completion InternalA2aCompletion | null? @description("Set to INPUT_REQUIRED when the delegated agent yielded TASK_STATE_INPUT_REQUIRED.")
 }
 
 class InternalA2aOpenInput {
@@ -185,7 +205,7 @@ class SupportNotionAbortStep {
 type SupportNotionSessionStep = SupportNotionOpenStep | SupportNotionSendStep | SupportNotionNextStep | SupportNotionFinishStep | SupportNotionAbortStep
 
 class SupportNotionSessionPlan {
-  steps SupportNotionSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Optionally include __type on the plan (e.g. \"SupportNotionSessionPlan\") or on each step (e.g. \"SupportNotionOpenStep\") for tool resolution when the runtime has no manifest. Example: [{\"__type\": \"SupportNotionOpenStep\", op: \"Open\"}, {\"__type\": \"SupportNotionSendStep\", op: \"Send\", input: {...}}, {\"__type\": \"SupportNotionNextStep\", op: \"Next\"}, {\"__type\": \"SupportNotionFinishStep\", op: \"Finish\"}]. Access: read.")
+  steps SupportNotionSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Runtime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Example: [{op: \"Open\"}, {op: \"Send\", input: {...}}, {op: \"Next\"}, {op: \"Finish\"}]. Access: read.")
 }
 
 class SystemDiscover_agentsOpenStep {
@@ -218,7 +238,7 @@ class SystemDiscover_agentsAbortStep {
 type SystemDiscover_agentsSessionStep = SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsNextStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep
 
 class SystemDiscover_agentsSessionPlan {
-  steps SystemDiscover_agentsSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Optionally include __type on the plan (e.g. \"SystemDiscover_agentsSessionPlan\") or on each step (e.g. \"SystemDiscover_agentsOpenStep\") for tool resolution when the runtime has no manifest. Example: [{\"__type\": \"SystemDiscover_agentsOpenStep\", op: \"Open\"}, {\"__type\": \"SystemDiscover_agentsSendStep\", op: \"Send\", input: {...}}, {\"__type\": \"SystemDiscover_agentsNextStep\", op: \"Next\"}, {\"__type\": \"SystemDiscover_agentsFinishStep\", op: \"Finish\"}].")
+  steps SystemDiscover_agentsSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Runtime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Example: [{op: \"Open\"}, {op: \"Send\", input: {...}}, {op: \"Next\"}, {op: \"Finish\"}].")
 }
 
 class SystemDiscover_toolsOpenStep {
@@ -251,7 +271,7 @@ class SystemDiscover_toolsAbortStep {
 type SystemDiscover_toolsSessionStep = SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsNextStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep
 
 class SystemDiscover_toolsSessionPlan {
-  steps SystemDiscover_toolsSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Optionally include __type on the plan (e.g. \"SystemDiscover_toolsSessionPlan\") or on each step (e.g. \"SystemDiscover_toolsOpenStep\") for tool resolution when the runtime has no manifest. Example: [{\"__type\": \"SystemDiscover_toolsOpenStep\", op: \"Open\"}, {\"__type\": \"SystemDiscover_toolsSendStep\", op: \"Send\", input: {...}}, {\"__type\": \"SystemDiscover_toolsNextStep\", op: \"Next\"}, {\"__type\": \"SystemDiscover_toolsFinishStep\", op: \"Finish\"}].")
+  steps SystemDiscover_toolsSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Runtime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Example: [{op: \"Open\"}, {op: \"Send\", input: {...}}, {op: \"Next\"}, {op: \"Finish\"}].")
 }
 
 class SystemInternal_a2aOpenStep {
@@ -284,5 +304,5 @@ class SystemInternal_a2aAbortStep {
 type SystemInternal_a2aSessionStep = SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aNextStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep
 
 class SystemInternal_a2aSessionPlan {
-  steps SystemInternal_a2aSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Optionally include __type on the plan (e.g. \"SystemInternal_a2aSessionPlan\") or on each step (e.g. \"SystemInternal_a2aOpenStep\") for tool resolution when the runtime has no manifest. Example: [{\"__type\": \"SystemInternal_a2aOpenStep\", op: \"Open\"}, {\"__type\": \"SystemInternal_a2aSendStep\", op: \"Send\", input: {...}}, {\"__type\": \"SystemInternal_a2aNextStep\", op: \"Next\"}, {\"__type\": \"SystemInternal_a2aFinishStep\", op: \"Finish\"}].")
+  steps SystemInternal_a2aSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Runtime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Example: [{op: \"Open\"}, {op: \"Send\", input: {...}}, {op: \"Next\"}, {op: \"Finish\"}].")
 }
