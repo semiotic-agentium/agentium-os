@@ -27,6 +27,8 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     let _ = baml_tools_system::metadata::system_internal_a2a_metadata;
     #[cfg(feature = "clickup")]
     let _ = baml_tools_clickup::clickup_metadata;
+    #[cfg(feature = "notion")]
+    let _ = baml_tools_notion::notion_metadata;
     let tool_metadata = resolve_manifest_tools(tool_names)?;
 
     let mut output = String::new();

@@ -16,6 +16,7 @@ members = [
   "crates/tools/calculator",
   "crates/tools/internal-dev",
   "crates/tools/clickup",
+  "crates/tools/notion",
   "crates/tools/system",
 ]
 default-members = [

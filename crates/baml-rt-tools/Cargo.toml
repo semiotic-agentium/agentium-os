@@ -17,9 +17,7 @@ tokio = { workspace = true }
 schemars = "1.1.0"
 ts-rs = "11.1.0"
 uuid = { workspace = true }
-reqwest = { workspace = true, optional = true }
 thiserror = { workspace = true }
-notion-client = { version = "1.0.11", optional = true }
 genco = { workspace = true }
 inventory = { workspace = true }
 opentelemetry = { workspace = true }
@@ -27,7 +25,7 @@ opentelemetry = { workspace = true }
 [features]
 default = []
 clickup = []
-notion = ["dep:reqwest", "dep:notion-client"]
+notion = []
 http-tools = ["clickup", "notion"]
 
 [dev-dependencies]
