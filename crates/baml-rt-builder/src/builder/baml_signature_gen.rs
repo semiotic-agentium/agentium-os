@@ -47,12 +47,74 @@ fn session_plan_type_name_from_generic<T>(ty: &TypeGeneric<T>) -> Option<String>
 /// Build a map from BAML function name to session plan type name for every function whose
 /// return type is (or wraps) a class ending with "SessionPlan". The runtime uses this to
 /// resolve the tool from the call site (source_baml_function) without requiring __type in the JSON.
+///
+/// Handles both class-based session plans (`class XSessionPlan { steps ... }`) detected
+/// directly in the IR, and type-alias session plans (`type XSessionPlan = XSessionStep[]`)
+/// which the IR inlines to `List(Union(...))`. The latter are matched by comparing the
+/// function's expanded output type against known SessionPlan alias expansions.
 pub fn session_plan_functions_map(ir: &IRSignature) -> std::collections::HashMap<String, String> {
+    // Pre-compute canonical representations for type aliases ending in "SessionPlan".
+    // These aliases get inlined in function output types, so we reverse the expansion here.
+    let plan_alias_lookup: std::collections::HashMap<String, String> = ir
+        .type_aliases
+        .iter()
+        .filter(|(name, _)| name.ends_with("SessionPlan"))
+        .map(|(name, type_node)| {
+            (
+                canonical_type_key(type_node.field_type.as_ref()),
+                name.clone(),
+            )
+        })
+        .collect();
+
     let mut map = std::collections::HashMap::new();
     for (name, func_sig) in &ir.functions {
+        // Direct match: Class or RecursiveTypeAlias with "SessionPlan" suffix.
         if let Some(plan_type) = session_plan_type_name_from_generic(&func_sig.output) {
             map.insert(name.clone(), plan_type);
+            continue;
+        }
+        // Fallback: the output type may be an inlined type alias. Compare its canonical
+        // representation against known SessionPlan alias expansions.
+        let output_key = canonical_type_key(&func_sig.output);
+        if let Some(alias_name) = plan_alias_lookup.get(&output_key) {
+            map.insert(name.clone(), alias_name.clone());
         }
     }
     map
+}
+
+/// Metadata-ignoring canonical representation of a type for structural comparison.
+///
+/// Two types that differ only in IR metadata (source positions, constraints) produce
+/// the same key. Used to match inlined type alias expansions against their definitions.
+fn canonical_type_key<T>(ty: &TypeGeneric<T>) -> String {
+    match ty {
+        TypeGeneric::Top(_) => "top".into(),
+        TypeGeneric::Primitive(tv, _) => format!("prim:{tv:?}"),
+        TypeGeneric::Enum { name, .. } => format!("enum:{name}"),
+        TypeGeneric::Literal(lit, _) => format!("lit:{lit:?}"),
+        TypeGeneric::Class { name, .. } => format!("class:{name}"),
+        TypeGeneric::RecursiveTypeAlias { name, .. } => format!("alias:{name}"),
+        TypeGeneric::List(inner, _) => format!("[{}]", canonical_type_key(inner)),
+        TypeGeneric::Map(k, v, _) => {
+            format!("map<{},{}>", canonical_type_key(k), canonical_type_key(v))
+        }
+        TypeGeneric::Tuple(inner, _) => {
+            let parts: Vec<String> = inner.iter().map(|t| canonical_type_key(t)).collect();
+            format!("({})", parts.join(","))
+        }
+        TypeGeneric::Arrow(_, _) => "arrow".into(),
+        TypeGeneric::Union(union_gen, _) => match union_gen.view() {
+            UnionTypeViewGeneric::Null => "null".into(),
+            UnionTypeViewGeneric::Optional(inner) => {
+                format!("{}?", canonical_type_key(inner))
+            }
+            UnionTypeViewGeneric::OneOf(variants)
+            | UnionTypeViewGeneric::OneOfOptional(variants) => {
+                let parts: Vec<String> = variants.iter().map(|t| canonical_type_key(t)).collect();
+                parts.join("|")
+            }
+        },
+    }
 }
