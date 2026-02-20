@@ -1,13 +1,11 @@
 //! System bundle type and unified system tool bundle.
 
-use baml_rt_core::A2aRequestHandler;
-use baml_rt_core::AgentLister;
-use baml_rt_tools::bundles::BundleType;
-use baml_rt_tools::{ToolBundle, ToolBundleMetadata, ToolRegistry};
 use std::sync::Arc;
 
-use crate::a2a_session::A2aSessionBundle;
-use crate::discover_bundle::DiscoverBundle;
+use baml_rt_core::{A2aRequestHandler, AgentLister};
+use baml_rt_tools::{ToolBundle, ToolBundleMetadata, ToolRegistry, bundles::BundleType};
+
+use crate::{a2a_session::A2aSessionBundle, discover_bundle::DiscoverBundle};
 
 /// System bundle — host tools for system operations (name/description only).
 pub struct System;

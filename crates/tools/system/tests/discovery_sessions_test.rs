@@ -1,15 +1,15 @@
 //! Tests for system discovery sessions: discover_agents and discover_tools via SystemBundle.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use baml_rt_core::{
     A2aRequestHandler, AgentCard, AgentDiscoveryEntry, AgentLister, BusStream, Result,
 };
-use baml_rt_tools::support::CalculatorTool;
-use baml_rt_tools::{ToolRegistry, ToolStep};
+use baml_rt_tools::{ToolRegistry, ToolStep, support::CalculatorTool};
 use baml_rt_tools_system::SystemBundle;
 use futures_util::stream;
 use serde_json::{Value, json};
-use std::sync::Arc;
 
 struct MockA2aHandler;
 

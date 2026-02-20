@@ -3,10 +3,13 @@
 //! Registers metadata with baml-rt-tools inventory so manifest resolution
 //! can find internal-dev/* tools. BamlTool impls live in test-support.
 
-use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::tools::{ToolFunctionMetadata, ToolMetadataBuilder, TypeBasedMetadataBuilder};
-use baml_rt_tools::{ToolHandler, parse_tool_name_and_class, register_tool};
 use std::sync::Arc;
+
+use baml_rt_core::{BamlRtError, Result};
+use baml_rt_tools::{
+    ToolHandler, parse_tool_name_and_class, register_tool,
+    tools::{ToolFunctionMetadata, ToolMetadataBuilder, TypeBasedMetadataBuilder},
+};
 
 fn internal_dev_build_unused() -> Result<Arc<dyn ToolHandler>> {
     Err(BamlRtError::InvalidArgument(

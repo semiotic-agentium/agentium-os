@@ -1,40 +1,43 @@
 //! A2A request handler interface for non-standard transports.
 
-use crate::a2a;
-use crate::a2a_store::{
-    ConversationContextSource, ProvenanceTaskStore, TaskEventRecorder, TaskRepository,
-    TaskStoreBackend, TaskUpdateEvent, TaskUpdateQueue,
-};
-use crate::a2a_types::{JSONRPCId, SendMessageRequest};
-use crate::error_classifier::{A2aErrorClassifier, ErrorClassifier};
-use crate::events::{BroadcastEventEmitter, EventEmitter};
-use crate::handlers::{DefaultTaskHandler, TaskHandler};
-use crate::request_router::{MethodBasedRouter, QuickJsInvoker, RequestRouter};
-use crate::response::{JsonRpcResponseFormatter, ResponseFormatter};
-use crate::result_deduplicator::{
-    DeduplicatingPipeline, HashResultDeduplicator, ResultDeduplicator,
-};
-use crate::result_pipeline::{A2aResultPipeline, ResultStoragePipeline};
+use std::{collections::HashMap, sync::Arc};
+
 use async_trait::async_trait;
-use baml_rt_core::bus::{BusStream, EffectEmitter};
-use baml_rt_core::context::{self, InvocationScope};
-use baml_rt_core::correlation;
-use baml_rt_core::ids::{ExternalId, MessageId};
-use baml_rt_core::stream_completion::StreamCompletion;
-use baml_rt_core::{A2aRequestHandler, BamlRtError, Result};
+use baml_rt_core::{
+    A2aRequestHandler, BamlRtError, Result,
+    bus::{BusStream, EffectEmitter},
+    context::{self, InvocationScope},
+    correlation,
+    ids::{ExternalId, MessageId},
+    stream_completion::StreamCompletion,
+};
 use baml_rt_observability::{metrics, spans};
 use baml_rt_provenance::{ProvenanceInterceptor, ProvenanceWriter};
-use baml_rt_quickjs::baml_execution::ConversationContextProvider;
-use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, QuickJSConfig};
-use baml_rt_tools::tools::ToolFunctionMetadata;
-use baml_rt_tools::tools::ToolSessionContext;
-use baml_rt_tools::{ToolFailure, ToolSessionError};
-use baml_rt_tools::{ToolHandler, ToolName, ToolSession, ToolTypeSpec};
+use baml_rt_quickjs::{
+    BamlRuntimeManager, QuickJSBridge, QuickJSConfig, baml_execution::ConversationContextProvider,
+};
+use baml_rt_tools::{
+    ToolFailure, ToolHandler, ToolName, ToolSession, ToolSessionError, ToolTypeSpec,
+    tools::{ToolFunctionMetadata, ToolSessionContext},
+};
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use tokio::sync::broadcast;
+use tokio::sync::{Mutex, broadcast};
+
+use crate::{
+    a2a,
+    a2a_store::{
+        ConversationContextSource, ProvenanceTaskStore, TaskEventRecorder, TaskRepository,
+        TaskStoreBackend, TaskUpdateEvent, TaskUpdateQueue,
+    },
+    a2a_types::{JSONRPCId, SendMessageRequest},
+    error_classifier::{A2aErrorClassifier, ErrorClassifier},
+    events::{BroadcastEventEmitter, EventEmitter},
+    handlers::{DefaultTaskHandler, TaskHandler},
+    request_router::{MethodBasedRouter, QuickJsInvoker, RequestRouter},
+    response::{JsonRpcResponseFormatter, ResponseFormatter},
+    result_deduplicator::{DeduplicatingPipeline, HashResultDeduplicator, ResultDeduplicator},
+    result_pipeline::{A2aResultPipeline, ResultStoragePipeline},
+};
 
 /// Conversation context from the unified task store (single source of truth).
 /// No separate provenance read path; store view and provenance write are one concept.
@@ -1139,10 +1142,12 @@ impl ToolSession for JsToolSession {
 
 #[cfg(test)]
 mod tests {
-    use super::A2aAgent;
+    use std::sync::Arc;
+
     use baml_rt_core::context::InvocationScope;
     use serde_json::json;
-    use std::sync::Arc;
+
+    use super::A2aAgent;
 
     #[tokio::test]
     async fn js_tool_can_be_called_via_baml_tool_registry() {

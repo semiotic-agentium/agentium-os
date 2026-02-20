@@ -1,11 +1,14 @@
 //! Single tool-provider inventory: type-level metadata + runtime handler build.
 //! One mechanism for catalog and host registration.
 
-use crate::ToolName;
-use crate::tools::{ToolFunctionMetadata, ToolHandler};
+use std::{collections::HashMap, sync::Arc};
+
 use baml_rt_core::{BamlRtError, Result};
-use std::collections::HashMap;
-use std::sync::Arc;
+
+use crate::{
+    ToolName,
+    tools::{ToolFunctionMetadata, ToolHandler},
+};
 
 /// Single provider type per tool: type-level metadata + build handler.
 pub struct ToolProvider {

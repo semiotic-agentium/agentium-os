@@ -1,15 +1,18 @@
 //! discover_agents and discover_tools built via create_multi_send_session_tool_from_async
 //! (open + multiple send/next).
 
+use std::sync::Arc;
+
+use baml_rt_core::AgentLister;
+use baml_rt_tools::{
+    ToolRegistry, create_multi_send_session_tool_from_async, tools::ToolFunctionMetadata,
+};
+
 use crate::tools::{
     AgentCardDto, DiscoverAgentsNextOutput, DiscoverAgentsOpenInput, DiscoverAgentsSendInput,
     DiscoverToolsNextOutput, DiscoverToolsOpenInput, DiscoverToolsSendInput,
     ToolDiscoveryRecordDto,
 };
-use baml_rt_core::AgentLister;
-use baml_rt_tools::tools::ToolFunctionMetadata;
-use baml_rt_tools::{ToolRegistry, create_multi_send_session_tool_from_async};
-use std::sync::Arc;
 
 fn card_to_dto(c: &baml_rt_core::AgentCard) -> AgentCardDto {
     AgentCardDto {

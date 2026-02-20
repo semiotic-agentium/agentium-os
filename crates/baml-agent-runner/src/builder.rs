@@ -4,12 +4,12 @@
 //! Execution entrypoints are only available on RunnerReady, guaranteeing
 //! discovery and A2A providers are wired before any mode runs.
 
+use std::{path::Path, sync::Arc};
+
 use baml_rt_a2a::A2aRequestHandler;
 use baml_rt_core::{AgentLister, Result};
 use baml_rt_provenance::ToolIndexConfig;
 use serde_json::Value;
-use std::path::Path;
-use std::sync::Arc;
 
 use crate::{AgentPackage, BootedAgent, ProvenanceConfig, RunnerRegistry, ToolAccessPolicy};
 

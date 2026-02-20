@@ -8,14 +8,11 @@
 //! tools (e.g. from `baml-rt-tools` or another catalogue) and passing the
 //! selected tool IDs into [`run_bootstrap`].
 
-use baml_rt_core::package::ManifestDiscovery;
-use baml_rt_core::{AgentManifest, BamlRtError, Result};
-use std::fs;
-use std::path::Path;
+use std::{fs, path::Path};
 
-use crate::builder::compiler::RuntimeTypeGenerator;
-use crate::builder::traits::TypeGenerator;
-use crate::builder::types::BuildDir;
+use baml_rt_core::{AgentManifest, BamlRtError, Result, package::ManifestDiscovery};
+
+use crate::builder::{compiler::RuntimeTypeGenerator, traits::TypeGenerator, types::BuildDir};
 
 /// Slug for directory/manifest: kebab-case, alphanumeric and hyphens only.
 pub fn slug_from_name(name: &str) -> String {

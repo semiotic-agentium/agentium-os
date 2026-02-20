@@ -1,15 +1,17 @@
 //! Compiler implementations for BAML and TypeScript
 
-use crate::builder::a2a_shim_gen::render_a2a_shim;
-use crate::builder::baml_gen::render_baml_tool_interfaces;
-use crate::builder::baml_signature_gen::{extract_baml_signatures, session_plan_functions_map};
-use crate::builder::traits::{FileSystem, TypeGenerator, TypeScriptCompiler};
-use crate::builder::ts_gen::{load_manifest_tools, render_ts_declarations};
-use crate::builder::types::BuildDir;
+use std::{ffi::OsStr, fs, path::Path};
+
 use baml_rt_core::{BamlRtError, Result};
-use std::ffi::OsStr;
-use std::fs;
-use std::path::Path;
+
+use crate::builder::{
+    a2a_shim_gen::render_a2a_shim,
+    baml_gen::render_baml_tool_interfaces,
+    baml_signature_gen::{extract_baml_signatures, session_plan_functions_map},
+    traits::{FileSystem, TypeGenerator, TypeScriptCompiler},
+    ts_gen::{load_manifest_tools, render_ts_declarations},
+    types::BuildDir,
+};
 
 /// TypeScript compiler using OXC.
 ///
@@ -157,8 +159,9 @@ impl Default for RuntimeTypeGenerator {
 #[async_trait::async_trait]
 impl TypeGenerator for RuntimeTypeGenerator {
     async fn generate(&self, baml_src: &Path, build_dir: &BuildDir) -> Result<()> {
-        use baml_runtime::BamlRuntime;
         use std::collections::HashMap;
+
+        use baml_runtime::BamlRuntime;
 
         // Generate BAML tool interfaces (committed in repo; regen_fixtures runs periodically to match manifest).
         // Uses atomic write (write tmp + rename) so concurrent nextest processes never

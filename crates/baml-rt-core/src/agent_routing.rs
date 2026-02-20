@@ -1,9 +1,10 @@
 //! Agent routing identity: package + instance id for strict HTTP path routing.
 //! Used by the runner registry and the HTTP API surface.
 
-use crate::{BamlRtError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::{BamlRtError, Result};
 
 /// Route key for an agent instance: agent_package (e.g. manifest name) + agent_instance_id.
 /// Used in HTTP paths: `/agents/{agent_package}/{agent_instance_id}/...`

@@ -3,8 +3,9 @@
 //! Ranking: exact full-name > local-name exact > prefix > token overlap (tags) > token overlap (description).
 //! Tie-break: lexical tool name ascending for stable output.
 
-use crate::tools::{ToolDiscoveryRecord, ToolFunctionMetadata};
 use std::cmp::Ordering;
+
+use crate::tools::{ToolDiscoveryRecord, ToolFunctionMetadata};
 
 /// Normalize query for deterministic matching: lowercase, collapse whitespace, tokenize.
 fn tokenize(s: &str) -> Vec<String> {

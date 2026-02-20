@@ -3,8 +3,9 @@
 //! Prefer construction-time injection (e.g. typestate builder with concrete providers)
 //! so dependencies are never unset. This type remains for compatibility; `get()` errors if not set.
 
-use crate::{BamlRtError, Result};
 use std::sync::{Arc, RwLock};
+
+use crate::{BamlRtError, Result};
 
 /// Holder for a trait object that is set after initialization.
 /// `get()` returns an error if not yet set. Prefer injecting concrete implementations at build time.
