@@ -1041,6 +1041,86 @@ mod tests {
         assert!(any_final, "subscribe stream should include a final chunk");
     }
 
+    /// Proves the typed-params refactor preserves the JS payload for message.sendStream.
+    /// The argument-sketch E2E test depends on JS receiving `{ "parts": [...] }`.
+    #[test]
+    fn test_request_to_js_value_preserves_parts_payload() {
+        use super::request_to_js_value;
+
+        let request_json = json!({
+            "jsonrpc": "2.0",
+            "id": "corr-proof",
+            "method": "message.sendStream",
+            "params": {
+                "message": {
+                    "messageId": "msg-proof",
+                    "role": "ROLE_USER",
+                    "parts": [
+                        { "text": "No we didn't." },
+                        { "text": "Second part." }
+                    ]
+                }
+            }
+        });
+
+        let parsed = A2aRequest::from_value(request_json).expect("parse request");
+        let js_value = request_to_js_value(&parsed).expect("js value");
+
+        let parts = js_value
+            .get("parts")
+            .and_then(Value::as_array)
+            .expect("js payload should have parts array");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(
+            parts[0].get("text").and_then(Value::as_str),
+            Some("No we didn't.")
+        );
+        assert_eq!(
+            parts[1].get("text").and_then(Value::as_str),
+            Some("Second part.")
+        );
+
+        // Verify no extra top-level keys leaked into the JS payload.
+        let obj = js_value.as_object().expect("js payload should be object");
+        assert_eq!(
+            obj.keys().collect::<Vec<_>>(),
+            vec!["parts"],
+            "JS payload should contain only 'parts'"
+        );
+    }
+
+    /// Verifies that metadata fields (method, context_id, invocation) are correctly
+    /// derived from typed params after the wire-types refactor.
+    #[test]
+    fn test_from_value_populates_metadata_from_typed_params() {
+        use baml_rt_core::InvocationKind;
+
+        use super::A2aMethod;
+
+        let request_json = json!({
+            "jsonrpc": "2.0",
+            "id": "corr-meta",
+            "method": "message.sendStream",
+            "params": {
+                "message": {
+                    "messageId": "msg-meta",
+                    "role": "ROLE_USER",
+                    "parts": [{ "text": "hello" }],
+                    "contextId": "ctx-42"
+                }
+            }
+        });
+
+        let parsed = A2aRequest::from_value(request_json).expect("parse request");
+        assert_eq!(parsed.method(), A2aMethod::MessageSendStream);
+        assert_eq!(parsed.invocation, InvocationKind::Stream);
+        assert_eq!(
+            parsed.context_id.as_ref().map(|c| c.as_str()),
+            Some("ctx-42"),
+        );
+        assert!(parsed.message_id.is_some());
+    }
+
     #[test]
     fn test_a2a_jsonrpc_version_validation() {
         let request = json!({
