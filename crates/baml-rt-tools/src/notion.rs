@@ -5,7 +5,7 @@
 //! - `raw_blocks`: render mode (raw skips Notable lines / Missing info hints).
 //! - `max_depth`: limit child block expansion depth (0 disables expansion).
 
-use std::{fmt, sync::Arc};
+use std::{collections::VecDeque, fmt, time::Duration};
 
 use async_trait::async_trait;
 use baml_derive::BamlType;
@@ -17,11 +17,8 @@ use ts_rs::TS;
 
 use crate::{
     bundles::Support,
-    register_tool, spans,
-    tools::{
-        BamlTool, ToolAccess, ToolFunctionMetadata, ToolHandler, ToolSecretRequirement,
-        create_tool_handler,
-    },
+    register_tool_metadata, spans,
+    tools::{BamlTool, ToolAccess, ToolFunctionMetadata, ToolSecretRequirement},
 };
 
 /// Notion REST API base URL.
@@ -29,13 +26,24 @@ pub const BASE_URL: &str = "https://api.notion.com/v1";
 /// Notion API version header value.
 pub const NOTION_VERSION: &str = "2025-09-03";
 const MAX_BLOCK_DEPTH: u32 = 10;
+const MAX_RATE_LIMIT_RETRIES: usize = 3;
+const RATE_LIMIT_BASE_DELAY_MS: u64 = 500;
+const RATE_LIMIT_MAX_DELAY_MS: u64 = 5_000;
 const MAX_BLOCK_PAGES: usize = 10;
+
+fn backoff_delay(retries: usize) -> Duration {
+    let shift = u32::try_from(retries).unwrap_or(u32::MAX);
+    let multiplier = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
+    let backoff = RATE_LIMIT_BASE_DELAY_MS.saturating_mul(multiplier);
+    Duration::from_millis(backoff.min(RATE_LIMIT_MAX_DELAY_MS))
+}
 
 // ---------------------------------------------------------------------------
 // Input types
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct NotionSearchPagesInput {
     pub query: Option<String>,
@@ -43,38 +51,15 @@ pub struct NotionSearchPagesInput {
     pub page_size: Option<u32>,
 }
 
-/// Which Notion action to perform.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
-pub enum NotionAction {
-    SearchPages,
-    GetPage,
-    GetPageBlocks,
-}
-
-/// Input for the Notion tool (single tool with action discriminator).
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
-pub struct NotionInput {
-    pub action: NotionAction,
-    pub query: Option<String>,
-    pub start_cursor: Option<String>,
-    pub page_size: Option<u32>,
-    pub page_id: Option<String>,
-    pub block_id: Option<String>,
-    /// Render mode for blocks (raw skips Notable lines / Missing info hints).
-    pub raw_blocks: Option<BlockRenderMode>,
-    /// Max child block depth to expand (0 = no child expansion).
-    pub max_depth: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct NotionGetPageInput {
     pub page_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct NotionGetPageBlocksInput {
     pub block_id: String,
@@ -84,6 +69,21 @@ pub struct NotionGetPageBlocksInput {
     pub raw_blocks: Option<BlockRenderMode>,
     /// Max child block depth to expand (0 = no child expansion).
     pub max_depth: Option<u32>,
+}
+
+/// Input for the Notion tool as per-action typed variants.
+///
+/// `deny_unknown_fields` on each variant ensures untagged routing rejects
+/// mismatched fields. An empty object `{}` resolves to `SearchPages` (all
+/// fields optional), which is intentional: a bare search is a safe default.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[baml(union)]
+#[serde(untagged)]
+#[ts(export)]
+pub enum NotionInput {
+    SearchPages(NotionSearchPagesInput),
+    GetPage(NotionGetPageInput),
+    GetPageBlocks(NotionGetPageBlocksInput),
 }
 
 // ---------------------------------------------------------------------------
@@ -207,16 +207,25 @@ pub enum NotionError {
     Http(#[source] reqwest::Error),
 
     #[error("Notion API authentication failed ({status}): {body}")]
-    Unauthorized { status: u16, body: String },
+    Unauthorized {
+        status: reqwest::StatusCode,
+        body: String,
+    },
 
     #[error("Notion resource not found (404): {body}")]
     NotFound { body: String },
 
     #[error("Notion rate limit exceeded (429), retry after {retry_after}: {body}")]
-    RateLimited { body: String, retry_after: String },
+    RateLimited {
+        body: String,
+        retry_after: RetryAfter,
+    },
 
     #[error("Notion API returned {status}: {body}")]
-    Api { status: u16, body: String },
+    Api {
+        status: reqwest::StatusCode,
+        body: String,
+    },
 
     #[error("Failed to deserialize Notion response")]
     Deserialize(#[source] reqwest::Error),
@@ -232,6 +241,9 @@ pub enum NotionError {
 
     #[error("Invalid Notion header value: {message}")]
     InvalidHeader { message: String },
+
+    #[error("Failed to clone Notion request")]
+    RequestClone,
 }
 
 impl From<NotionError> for BamlRtError {
@@ -247,7 +259,8 @@ impl From<NotionError> for BamlRtError {
             | NotionError::RateLimited { .. }
             | NotionError::Api { .. }
             | NotionError::Deserialize(_)
-            | NotionError::UnexpectedShape { .. } => BamlRtError::ToolExecution(err.to_string()),
+            | NotionError::UnexpectedShape { .. }
+            | NotionError::RequestClone => BamlRtError::ToolExecution(err.to_string()),
         }
     }
 }
@@ -260,15 +273,56 @@ impl From<NotionError> for BamlRtError {
 struct NotionClient {
     client: reqwest::Client,
     api_key: Option<String>,
+    base_url: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum RetryAfter {
+    Seconds(u64),
+    Unknown(String),
+    Missing,
+}
+
+impl RetryAfter {
+    fn as_duration(&self) -> Option<Duration> {
+        match self {
+            RetryAfter::Seconds(seconds) => Some(Duration::from_secs(*seconds)),
+            RetryAfter::Unknown(_) | RetryAfter::Missing => None,
+        }
+    }
+}
+
+impl fmt::Display for RetryAfter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RetryAfter::Seconds(seconds) => write!(f, "{seconds}s"),
+            RetryAfter::Unknown(raw) => write!(f, "unknown({raw})"),
+            RetryAfter::Missing => write!(f, "missing"),
+        }
+    }
 }
 
 impl NotionClient {
     fn new() -> Self {
         let api_key = std::env::var("NOTION_API_TOKEN").ok();
+        let base_url = Self::resolve_base_url();
         Self {
             client: reqwest::Client::new(),
             api_key,
+            base_url,
         }
+    }
+
+    fn resolve_base_url() -> String {
+        std::env::var("NOTION_API_BASE_URL")
+            .ok()
+            .map(|raw| raw.trim().trim_end_matches('/').to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| BASE_URL.to_string())
+    }
+
+    fn base_url(&self) -> &str {
+        self.base_url.as_str()
     }
 
     fn api_key(&self) -> std::result::Result<&str, NotionError> {
@@ -318,34 +372,63 @@ impl NotionClient {
         &self,
         request: reqwest::RequestBuilder,
     ) -> std::result::Result<serde_json::Value, NotionError> {
-        let url = request
-            .try_clone()
-            .and_then(|req| req.build().ok())
-            .map(|req| req.url().to_string())
-            .unwrap_or_else(|| "unknown".to_string());
+        let request = request.build().map_err(NotionError::Http)?;
+        let url = request.url().to_string();
         let span = spans::notion_request(&url);
         let _guard = span.enter();
-        let resp = request.send().await.map_err(NotionError::Http)?;
+        let mut retries = 0usize;
 
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            let retry_after = resp
-                .headers()
-                .get("retry-after")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown")
-                .to_string();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(match code {
-                401 | 403 => NotionError::Unauthorized { status: code, body },
-                404 => NotionError::NotFound { body },
-                429 => NotionError::RateLimited { body, retry_after },
-                _ => NotionError::Api { status: code, body },
-            });
+        loop {
+            let req = request.try_clone().ok_or(NotionError::RequestClone)?;
+            let resp = self.client.execute(req).await.map_err(NotionError::Http)?;
+
+            let status = resp.status();
+            if !status.is_success() {
+                let retry_after = Self::parse_retry_after(resp.headers().get("retry-after"));
+                let body = resp.text().await.unwrap_or_default();
+                if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+                    && retries < MAX_RATE_LIMIT_RETRIES
+                {
+                    let delay = retry_after
+                        .as_duration()
+                        .unwrap_or_else(|| backoff_delay(retries));
+                    tracing::warn!(
+                        retries = retries + 1,
+                        retry_after = %retry_after,
+                        "Notion rate limit hit; backing off"
+                    );
+                    retries += 1;
+                    tokio::time::sleep(delay).await;
+                    continue;
+                }
+                return Err(match status {
+                    reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+                        NotionError::Unauthorized { status, body }
+                    }
+                    reqwest::StatusCode::NOT_FOUND => NotionError::NotFound { body },
+                    reqwest::StatusCode::TOO_MANY_REQUESTS => {
+                        NotionError::RateLimited { body, retry_after }
+                    }
+                    _ => NotionError::Api { status, body },
+                });
+            }
+
+            return resp.json().await.map_err(NotionError::Deserialize);
         }
+    }
 
-        resp.json().await.map_err(NotionError::Deserialize)
+    fn parse_retry_after(value: Option<&reqwest::header::HeaderValue>) -> RetryAfter {
+        let Some(value) = value else {
+            return RetryAfter::Missing;
+        };
+        let raw = match value.to_str() {
+            Ok(raw) => raw,
+            Err(_) => return RetryAfter::Unknown("invalid-utf8".to_string()),
+        };
+        match raw.trim().parse::<u64>() {
+            Ok(seconds) => RetryAfter::Seconds(seconds),
+            Err(_) => RetryAfter::Unknown(raw.to_string()),
+        }
     }
 
     async fn search_pages(
@@ -357,6 +440,7 @@ impl NotionClient {
     ) -> Result<NotionOutput> {
         let span = spans::notion_search_pages(query.map(|q| q.len()), page_size);
         let _guard = span.enter();
+        let base_url = self.base_url();
         let mut body = serde_json::Map::new();
         if let Some(q) = query {
             body.insert(
@@ -381,7 +465,7 @@ impl NotionClient {
         let json = self
             .send_request(
                 self.client
-                    .post(format!("{BASE_URL}/search"))
+                    .post(format!("{base_url}/search"))
                     .headers(self.auth_headers(api_key)?)
                     .json(&serde_json::Value::Object(body)),
             )
@@ -411,11 +495,12 @@ impl NotionClient {
     async fn get_page(&self, api_key: &str, page_id: &str) -> Result<NotionOutput> {
         let span = spans::notion_get_page(page_id);
         let _guard = span.enter();
+        let base_url = self.base_url();
         let normalized = Self::normalize_id(page_id)?;
         let json = self
             .send_request(
                 self.client
-                    .get(format!("{BASE_URL}/pages/{normalized}"))
+                    .get(format!("{base_url}/pages/{normalized}"))
                     .headers(self.auth_headers(api_key)?),
             )
             .await?;
@@ -497,11 +582,12 @@ impl NotionClient {
     ) -> std::result::Result<NotionPageSummary, NotionError> {
         let span = spans::notion_fetch_page_summary(page_id);
         let _guard = span.enter();
+        let base_url = self.base_url();
         let normalized = Self::normalize_id(page_id)?;
         let json = self
             .send_request(
                 self.client
-                    .get(format!("{BASE_URL}/pages/{normalized}"))
+                    .get(format!("{base_url}/pages/{normalized}"))
                     .headers(self.auth_headers(api_key)?),
             )
             .await?;
@@ -517,7 +603,7 @@ impl NotionClient {
         start_cursor: Option<&str>,
         page_size: Option<u32>,
         render_mode: BlockRenderMode,
-        _include_page_summary: bool,
+        include_page_summary: bool,
     ) -> Result<(
         Vec<NotionPageSummary>,
         Vec<NotionSource>,
@@ -527,9 +613,10 @@ impl NotionClient {
     )> {
         let span = spans::notion_get_page_blocks(block_id);
         let _guard = span.enter();
+        let base_url = self.base_url();
         let mut request = self
             .client
-            .get(format!("{BASE_URL}/blocks/{block_id}/children"))
+            .get(format!("{base_url}/blocks/{block_id}/children"))
             .headers(self.auth_headers(api_key)?);
         let mut params: Vec<(&str, String)> = Vec::new();
         if let Some(cursor) = start_cursor {
@@ -555,7 +642,8 @@ impl NotionClient {
 
         let mut pages = Vec::new();
         let mut sources = Vec::new();
-        if let Some(parent_page_id) = extract_parent_page_id(&json)
+        if include_page_summary
+            && let Some(parent_page_id) = extract_parent_page_id(&json)
             && let Ok(page) = self.fetch_page_summary(api_key, &parent_page_id).await
         {
             sources.push(NotionSource {
@@ -633,20 +721,24 @@ impl NotionClient {
         api_key: &str,
         blocks: &[NotionBlockSummary],
         visited: &mut std::collections::HashSet<String>,
-        _max_depth: u32,
+        max_depth: u32,
         render_mode: BlockRenderMode,
     ) -> Result<Vec<NotionBlockSummary>> {
+        const MAX_CHILD_BLOCKS_TOTAL: usize = 2000;
         let mut all_children = Vec::new();
-        let mut stack: Vec<String> = blocks
+        let mut queue: VecDeque<(String, u32)> = blocks
             .iter()
             .filter(|b| b.has_children)
-            .map(|b| b.id.clone())
+            .map(|b| (b.id.clone(), 0))
             .collect();
 
-        while let Some(block_id) = stack.pop() {
+        while let Some((block_id, depth)) = queue.pop_front() {
             if !visited.insert(block_id.clone()) {
                 continue;
             }
+            let Some(next_depth) = next_depth_for_children(depth, max_depth) else {
+                continue;
+            };
             let span = spans::notion_fetch_child_blocks(&block_id);
             let _guard = span.enter();
             let (_pages, _sources, child_blocks, _next, _has_more) = self
@@ -654,14 +746,201 @@ impl NotionClient {
                 .await?;
             for child in child_blocks.iter().filter(|b| b.has_children) {
                 if !visited.contains(&child.id) {
-                    stack.push(child.id.clone());
+                    queue.push_back((child.id.clone(), next_depth));
                 }
             }
             all_children.extend(child_blocks);
+            if all_children.len() >= MAX_CHILD_BLOCKS_TOTAL {
+                tracing::warn!(
+                    block_id = block_id,
+                    max_blocks = MAX_CHILD_BLOCKS_TOTAL,
+                    "Notion child block expansion truncated"
+                );
+                break;
+            }
         }
 
         Ok(all_children)
     }
+}
+
+fn next_depth_for_children(depth: u32, max_depth: u32) -> Option<u32> {
+    if depth >= max_depth {
+        None
+    } else {
+        Some(depth + 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        sync::{Mutex, OnceLock},
+        time::Duration,
+    };
+
+    use reqwest::header::HeaderValue;
+    use test_support::common::TempEnvVar;
+
+    use super::{
+        BASE_URL, NotionClient, NotionInput, RetryAfter, backoff_delay, next_depth_for_children,
+    };
+
+    fn notion_api_base_url_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    #[test]
+    fn next_depth_for_children_respects_max_depth() {
+        assert_eq!(next_depth_for_children(0, 0), None);
+        assert_eq!(next_depth_for_children(0, 1), Some(1));
+        assert_eq!(next_depth_for_children(1, 1), None);
+        assert_eq!(next_depth_for_children(1, 2), Some(2));
+    }
+
+    #[test]
+    fn backoff_delay_is_capped() {
+        assert_eq!(backoff_delay(0), Duration::from_millis(500));
+        assert_eq!(backoff_delay(1), Duration::from_millis(1000));
+        assert_eq!(backoff_delay(2), Duration::from_millis(2000));
+        assert_eq!(backoff_delay(3), Duration::from_millis(4000));
+        assert_eq!(backoff_delay(4), Duration::from_millis(5000));
+    }
+
+    #[test]
+    fn parse_retry_after_header() {
+        let header = HeaderValue::from_static("120");
+        assert!(matches!(
+            NotionClient::parse_retry_after(Some(&header)),
+            RetryAfter::Seconds(120)
+        ));
+
+        let header = HeaderValue::from_static("n/a");
+        assert!(matches!(
+            NotionClient::parse_retry_after(Some(&header)),
+            RetryAfter::Unknown(value) if value == "n/a"
+        ));
+
+        assert!(matches!(
+            NotionClient::parse_retry_after(None),
+            RetryAfter::Missing
+        ));
+    }
+
+    #[test]
+    fn notion_input_routes_empty_object_to_search_pages() {
+        let input: NotionInput = serde_json::from_str("{}").unwrap();
+        assert!(matches!(input, NotionInput::SearchPages(_)));
+    }
+
+    #[test]
+    fn notion_input_routes_query_to_search_pages() {
+        let input: NotionInput = serde_json::from_str(r#"{"query":"roadmap"}"#).unwrap();
+        assert!(
+            matches!(input, NotionInput::SearchPages(ref s) if s.query.as_deref() == Some("roadmap"))
+        );
+    }
+
+    #[test]
+    fn notion_input_routes_page_id_to_get_page() {
+        let input: NotionInput = serde_json::from_str(r#"{"page_id":"abc123"}"#).unwrap();
+        assert!(matches!(input, NotionInput::GetPage(ref p) if p.page_id == "abc123"));
+    }
+
+    #[test]
+    fn notion_input_routes_block_id_to_get_page_blocks() {
+        let input: NotionInput = serde_json::from_str(r#"{"block_id":"def456"}"#).unwrap();
+        assert!(matches!(input, NotionInput::GetPageBlocks(ref b) if b.block_id == "def456"));
+    }
+
+    #[test]
+    fn notion_input_rejects_mixed_fields() {
+        let result = serde_json::from_str::<NotionInput>(r#"{"page_id":"abc","block_id":"def"}"#);
+        assert!(
+            result.is_err(),
+            "mixed page_id + block_id must not match any variant"
+        );
+    }
+
+    #[test]
+    fn notion_base_url_defaults_to_constant() {
+        let _guard = notion_api_base_url_test_lock()
+            .lock()
+            .expect("lock notion base URL test mutex");
+        let _env = TempEnvVar::remove("NOTION_API_BASE_URL");
+        let client = NotionClient::new();
+        assert_eq!(client.base_url(), BASE_URL);
+    }
+
+    #[test]
+    fn notion_base_url_uses_override_and_trims_trailing_slash() {
+        let _guard = notion_api_base_url_test_lock()
+            .lock()
+            .expect("lock notion base URL test mutex");
+        let _env = TempEnvVar::set("NOTION_API_BASE_URL", " https://mock.notion.local/v1/ ");
+        let client = NotionClient::new();
+        assert_eq!(client.base_url(), "https://mock.notion.local/v1");
+    }
+
+    #[test]
+    fn notion_base_url_is_bound_at_client_creation() {
+        let _guard = notion_api_base_url_test_lock()
+            .lock()
+            .expect("lock notion base URL test mutex");
+        let _env_unset = TempEnvVar::remove("NOTION_API_BASE_URL");
+        let client = NotionClient::new();
+        let _env_override = TempEnvVar::set("NOTION_API_BASE_URL", "https://mock.notion.local");
+        assert_eq!(client.base_url(), BASE_URL);
+    }
+}
+
+fn extract_notable_lines(blocks: &[NotionBlockSummary]) -> Option<NotionBlockSummary> {
+    const MAX_LINES: usize = 12;
+    let mut lines = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for block in blocks {
+        let Some(text) = block.text.as_ref() else {
+            continue;
+        };
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let keep = matches!(
+            block.block_type.as_str(),
+            "heading_1"
+                | "heading_2"
+                | "heading_3"
+                | "bulleted_list_item"
+                | "numbered_list_item"
+                | "to_do"
+        );
+        if !keep {
+            continue;
+        }
+        let key = trimmed.to_lowercase();
+        if seen.insert(key) {
+            lines.push(trimmed.to_string());
+        }
+        if lines.len() >= MAX_LINES {
+            break;
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    let body = lines
+        .into_iter()
+        .map(|line| format!("- {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(NotionBlockSummary {
+        id: "notable-lines".to_string(),
+        block_type: "notable_lines".to_string(),
+        text: Some(format!("Notable lines:\n{body}")),
+        has_children: false,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -686,14 +965,6 @@ impl NotionTool {
     }
 }
 
-fn require_id(value: Option<String>, label: &str) -> std::result::Result<String, NotionError> {
-    value
-        .filter(|v| !v.trim().is_empty())
-        .ok_or_else(|| NotionError::InvalidId {
-            id: format!("missing {label}"),
-        })
-}
-
 #[async_trait]
 impl BamlTool for NotionTool {
     type Bundle = Support;
@@ -708,31 +979,27 @@ impl BamlTool for NotionTool {
 
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         let api_key = self.client.api_key()?;
-        match args.action {
-            NotionAction::SearchPages => {
+        match args {
+            NotionInput::SearchPages(input) => {
                 self.client
                     .search_pages(
                         api_key,
-                        args.query.as_deref(),
-                        args.start_cursor.as_deref(),
-                        args.page_size,
+                        input.query.as_deref(),
+                        input.start_cursor.as_deref(),
+                        input.page_size,
                     )
                     .await
             }
-            NotionAction::GetPage => {
-                let page_id = require_id(args.page_id, "page_id")?;
-                self.client.get_page(api_key, &page_id).await
-            }
-            NotionAction::GetPageBlocks => {
-                let block_id = require_id(args.block_id.or(args.page_id), "block_id")?;
-                let render_mode = args.raw_blocks.unwrap_or_default();
-                let max_depth = args.max_depth.unwrap_or(2).min(MAX_BLOCK_DEPTH);
+            NotionInput::GetPage(input) => self.client.get_page(api_key, &input.page_id).await,
+            NotionInput::GetPageBlocks(input) => {
+                let render_mode = input.raw_blocks.unwrap_or_default();
+                let max_depth = input.max_depth.unwrap_or(2).min(MAX_BLOCK_DEPTH);
                 self.client
                     .get_page_blocks(
                         api_key,
-                        &block_id,
-                        args.start_cursor.as_deref(),
-                        args.page_size,
+                        &input.block_id,
+                        input.start_cursor.as_deref(),
+                        input.page_size,
                         render_mode,
                         max_depth,
                     )
@@ -937,6 +1204,73 @@ fn extract_page_title(json: &serde_json::Value) -> Option<String> {
     None
 }
 
+fn extract_blocks(
+    json: &serde_json::Value,
+    render_mode: BlockRenderMode,
+) -> Vec<NotionBlockSummary> {
+    let Some(results) = json.get("results").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+
+    let mut blocks = Vec::new();
+    for block in results {
+        if let Some(summary) = parse_block_summary(block) {
+            blocks.push(summary);
+        }
+        if !render_mode.is_raw()
+            && let Some(hint) = extract_missing_hint(block)
+        {
+            blocks.push(hint);
+        }
+    }
+    blocks
+}
+
+fn parse_block_summary(json: &serde_json::Value) -> Option<NotionBlockSummary> {
+    if json.get("object")?.as_str()? != "block" {
+        return None;
+    }
+    let id = json.get("id")?.as_str()?.to_string();
+    let block_type = json.get("type")?.as_str()?.to_string();
+    let has_children = json
+        .get("has_children")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let text = extract_block_text(json, &block_type);
+
+    Some(NotionBlockSummary {
+        id,
+        block_type,
+        text,
+        has_children,
+    })
+}
+
+fn extract_block_text(json: &serde_json::Value, block_type: &str) -> Option<String> {
+    let block = json.get(block_type)?;
+    if block_type == "table_row" {
+        let cells = block.get("cells")?.as_array()?;
+        let mut parts = Vec::new();
+        for cell in cells {
+            let text = extract_rich_text(cell);
+            parts.push(text);
+        }
+        let text = parts.join(" | ");
+        return if text.trim().is_empty() {
+            None
+        } else {
+            Some(text)
+        };
+    }
+    let rich_text = block.get("rich_text")?.as_array()?;
+    let text = rich_text
+        .iter()
+        .filter_map(|t| t.get("plain_text").and_then(|v| v.as_str()))
+        .collect::<Vec<_>>()
+        .join("");
+    if text.is_empty() { None } else { Some(text) }
+}
+
 fn extract_rich_text(value: &serde_json::Value) -> String {
     let Some(array) = value.as_array() else {
         return String::new();
@@ -979,107 +1313,6 @@ fn extract_missing_hint(json: &serde_json::Value) -> Option<NotionBlockSummary> 
         )),
         has_children: false,
     })
-}
-
-fn extract_blocks(
-    json: &serde_json::Value,
-    render_mode: BlockRenderMode,
-) -> Vec<NotionBlockSummary> {
-    let Some(results) = json.get("results").and_then(|v| v.as_array()) else {
-        return Vec::new();
-    };
-
-    let mut blocks = Vec::new();
-    for block in results {
-        if let Some(summary) = parse_block_summary(block) {
-            blocks.push(summary);
-        }
-        if !render_mode.is_raw()
-            && let Some(hint) = extract_missing_hint(block)
-        {
-            blocks.push(hint);
-        }
-    }
-    blocks
-}
-
-fn extract_notable_lines(blocks: &[NotionBlockSummary]) -> Option<NotionBlockSummary> {
-    const MAX_LINES: usize = 12;
-    let mut lines = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for block in blocks {
-        let Some(text) = block.text.as_ref() else {
-            continue;
-        };
-        let trimmed = text.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let keep = matches!(
-            block.block_type.as_str(),
-            "heading_1"
-                | "heading_2"
-                | "heading_3"
-                | "bulleted_list_item"
-                | "numbered_list_item"
-                | "to_do"
-        );
-        if !keep {
-            continue;
-        }
-        let key = trimmed.to_lowercase();
-        if seen.insert(key) {
-            lines.push(trimmed.to_string());
-        }
-        if lines.len() >= MAX_LINES {
-            break;
-        }
-    }
-    if lines.is_empty() {
-        return None;
-    }
-    let body = lines
-        .into_iter()
-        .map(|line| format!("- {line}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    Some(NotionBlockSummary {
-        id: "notable-lines".to_string(),
-        block_type: "notable_lines".to_string(),
-        text: Some(format!("Notable lines:\n{body}")),
-        has_children: false,
-    })
-}
-
-fn parse_block_summary(json: &serde_json::Value) -> Option<NotionBlockSummary> {
-    if json.get("object")?.as_str()? != "block" {
-        return None;
-    }
-    let id = json.get("id")?.as_str()?.to_string();
-    let block_type = json.get("type")?.as_str()?.to_string();
-    let has_children = json
-        .get("has_children")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let text = extract_block_text(json, &block_type);
-
-    Some(NotionBlockSummary {
-        id,
-        block_type,
-        text,
-        has_children,
-    })
-}
-
-fn extract_block_text(json: &serde_json::Value, block_type: &str) -> Option<String> {
-    let block = json.get(block_type)?;
-    let rich_text = block.get("rich_text")?.as_array()?;
-    let text = rich_text
-        .iter()
-        .filter_map(|t| t.get("plain_text").and_then(|v| v.as_str()))
-        .collect::<Vec<_>>()
-        .join("");
-    if text.is_empty() { None } else { Some(text) }
 }
 
 fn extract_parent_page_id(json: &serde_json::Value) -> Option<String> {
@@ -1139,11 +1372,14 @@ pub fn notion_metadata() -> ToolFunctionMetadata {
     let (name, class_name) = parse_tool_name_and_class("support/notion")
         .expect("support/notion is a compile-time constant");
     let mut extra_ts_decls = Vec::new();
-    if let Some(decl) = ts_decl::<NotionAction>() {
+    if let Some(decl) = ts_decl::<BlockRenderMode>() {
         extra_ts_decls.push(decl);
     }
     let baml_decl = [
-        NotionAction::baml_decl(),
+        NotionSearchPagesInput::baml_decl(),
+        NotionGetPageInput::baml_decl(),
+        NotionGetPageBlocksInput::baml_decl(),
+        BlockRenderMode::baml_decl(),
         NotionInput::baml_decl(),
         NotionPageSummary::baml_decl(),
         NotionBlockSummary::baml_decl(),
@@ -1209,6 +1445,7 @@ pub fn notion_get_page_blocks_metadata() -> ToolFunctionMetadata {
     let (name, class_name) = parse_tool_name_and_class("support/notionGetPageBlocks")
         .expect("support/notionGetPageBlocks is a compile-time constant");
     let baml_decl = [
+        BlockRenderMode::baml_decl(),
         NotionGetPageBlocksInput::baml_decl(),
         NotionPageSummary::baml_decl(),
         NotionBlockSummary::baml_decl(),
@@ -1236,23 +1473,7 @@ pub fn notion_get_page_blocks_metadata() -> ToolFunctionMetadata {
     .build_metadata()
 }
 
-fn notion_search_pages_build() -> Result<Arc<dyn ToolHandler>> {
-    create_tool_handler(NotionSearchPagesTool::new()).map(|(_, h)| h)
-}
-fn notion_get_page_build() -> Result<Arc<dyn ToolHandler>> {
-    create_tool_handler(NotionGetPageTool::new()).map(|(_, h)| h)
-}
-fn notion_get_page_blocks_build() -> Result<Arc<dyn ToolHandler>> {
-    create_tool_handler(NotionGetPageBlocksTool::new()).map(|(_, h)| h)
-}
-fn notion_build() -> Result<Arc<dyn ToolHandler>> {
-    create_tool_handler(NotionTool::new()).map(|(_, h)| h)
-}
-
-register_tool!(notion_search_pages_metadata, notion_search_pages_build);
-register_tool!(notion_get_page_metadata, notion_get_page_build);
-register_tool!(
-    notion_get_page_blocks_metadata,
-    notion_get_page_blocks_build
-);
-register_tool!(notion_metadata, notion_build);
+register_tool_metadata!(notion_search_pages_metadata);
+register_tool_metadata!(notion_get_page_metadata);
+register_tool_metadata!(notion_get_page_blocks_metadata);
+register_tool_metadata!(notion_metadata);
