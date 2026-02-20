@@ -1,0 +1,26 @@
+[package]
+name = "baml-tools-notion"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "Notion host tool for BAML runtime"
+
+[dependencies]
+baml-rt-core = { path = "../../baml-rt-core" }
+baml-rt-tools = { path = "../../baml-rt-tools" }
+baml-derive-core = { path = "../../baml-derive-core" }
+baml-derive = { path = "../../baml-derive" }
+serde_json = { workspace = true }
+serde = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+schemars = { workspace = true }
+ts-rs = { workspace = true }
+reqwest = { workspace = true }
+thiserror = { workspace = true }
+inventory = { workspace = true }
+
+[dev-dependencies]
+test-support = { path = "../../test-support" }

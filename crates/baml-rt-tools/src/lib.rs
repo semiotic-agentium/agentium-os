@@ -4,8 +4,6 @@ pub mod access;
 pub mod bundles;
 pub mod host_registration;
 mod metrics;
-#[cfg(feature = "notion")]
-pub mod notion;
 mod spans;
 pub mod tool_catalog;
 pub mod tool_discovery;

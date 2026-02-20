@@ -25,6 +25,27 @@ fn test_clickup_tool_baml_interfaces() {
     insta::assert_snapshot!("clickup_baml_tool_interfaces", baml_output);
 }
 
+#[cfg(feature = "notion")]
+#[test]
+fn test_notion_tool_baml_interfaces() {
+    let tool_names = vec!["support/notion".to_string()];
+    let baml_output =
+        render_baml_tool_interfaces(&tool_names).expect("Should generate Notion BAML interfaces");
+
+    assert!(
+        baml_output.contains("type NotionInput"),
+        "Expected NotionInput union in generated BAML"
+    );
+    assert!(
+        baml_output.contains("class NotionOutput"),
+        "Expected NotionOutput class in generated BAML"
+    );
+    assert!(
+        baml_output.contains("class SupportNotionOpenStep"),
+        "Expected SupportNotion session scaffolding in generated BAML"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // ClickUp tool codegen — validates that schemars 1.x nullable types
 // (Option<T> → "type": ["T", "null"]) and u8 integers are mapped correctly.

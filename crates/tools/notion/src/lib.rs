@@ -11,18 +11,19 @@ use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
 use baml_rt_core::{BamlRtError, Result};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-use ts_rs::TS;
-
-use crate::{
+use baml_rt_tools::{
+    ToolMetadataBuilder, TypeBasedMetadataBuilder,
     bundles::Support,
-    register_tool, spans,
+    parse_tool_name_and_class, register_tool,
+    tool_schema::ts_decl,
     tools::{
         BamlTool, ToolAccess, ToolFunctionMetadata, ToolHandler, ToolSecretRequirement,
         create_tool_handler,
     },
 };
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// Notion REST API base URL.
 pub const BASE_URL: &str = "https://api.notion.com/v1";
@@ -33,6 +34,45 @@ const MAX_RATE_LIMIT_RETRIES: usize = 3;
 const RATE_LIMIT_BASE_DELAY_MS: u64 = 500;
 const RATE_LIMIT_MAX_DELAY_MS: u64 = 5_000;
 const MAX_BLOCK_PAGES: usize = 10;
+
+mod spans {
+    #[inline]
+    pub fn notion_request(url: &str) -> tracing::Span {
+        tracing::debug_span!("baml_rt_tools.notion_request", url = url)
+    }
+
+    #[inline]
+    pub fn notion_search_pages(query_len: Option<usize>, page_size: Option<u32>) -> tracing::Span {
+        tracing::debug_span!(
+            "baml_rt_tools.notion_search_pages",
+            query_len = query_len,
+            page_size = page_size
+        )
+    }
+
+    #[inline]
+    pub fn notion_get_page(page_id: &str) -> tracing::Span {
+        tracing::debug_span!("baml_rt_tools.notion_get_page", page_id = page_id)
+    }
+
+    #[inline]
+    pub fn notion_get_page_blocks(block_id: &str) -> tracing::Span {
+        tracing::debug_span!("baml_rt_tools.notion_get_page_blocks", block_id = block_id)
+    }
+
+    #[inline]
+    pub fn notion_fetch_page_summary(page_id: &str) -> tracing::Span {
+        tracing::debug_span!("baml_rt_tools.notion_fetch_page_summary", page_id = page_id)
+    }
+
+    #[inline]
+    pub fn notion_fetch_child_blocks(parent_id: &str) -> tracing::Span {
+        tracing::debug_span!(
+            "baml_rt_tools.notion_fetch_child_blocks",
+            parent_id = parent_id
+        )
+    }
+}
 
 fn backoff_delay(retries: usize) -> Duration {
     let shift = u32::try_from(retries).unwrap_or(u32::MAX);
@@ -1374,7 +1414,6 @@ fn extract_parent_page_id(json: &serde_json::Value) -> Option<String> {
 // ---------------------------------------------------------------------------
 
 pub fn notion_search_pages_metadata() -> ToolFunctionMetadata {
-    use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
     let (name, class_name) = parse_tool_name_and_class("support/notionSearchPages")
         .expect("support/notionSearchPages is a compile-time constant");
     let baml_decl = [
@@ -1406,10 +1445,6 @@ pub fn notion_search_pages_metadata() -> ToolFunctionMetadata {
 }
 
 pub fn notion_metadata() -> ToolFunctionMetadata {
-    use crate::{
-        ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class,
-        tool_schema::ts_decl,
-    };
     let (name, class_name) = parse_tool_name_and_class("support/notion")
         .expect("support/notion is a compile-time constant");
     let mut extra_ts_decls = Vec::new();
@@ -1450,7 +1485,6 @@ pub fn notion_metadata() -> ToolFunctionMetadata {
 }
 
 pub fn notion_get_page_metadata() -> ToolFunctionMetadata {
-    use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
     let (name, class_name) = parse_tool_name_and_class("support/notionGetPage")
         .expect("support/notionGetPage is a compile-time constant");
     let baml_decl = [
@@ -1482,7 +1516,6 @@ pub fn notion_get_page_metadata() -> ToolFunctionMetadata {
 }
 
 pub fn notion_get_page_blocks_metadata() -> ToolFunctionMetadata {
-    use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
     let (name, class_name) = parse_tool_name_and_class("support/notionGetPageBlocks")
         .expect("support/notionGetPageBlocks is a compile-time constant");
     let baml_decl = [

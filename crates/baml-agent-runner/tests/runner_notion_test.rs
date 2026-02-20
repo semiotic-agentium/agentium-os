@@ -13,7 +13,7 @@ use baml_rt_provenance::{
     AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
     ProvenanceContextReader, ProvenanceConversationContextItem, ProvenanceWriter,
 };
-use baml_rt_tools::notion::NotionTool;
+use baml_tools_notion::NotionTool;
 use common::{
     RunningHttpServer, StrictProvenanceWriter, TempDirCleanup, TempEnvVar,
     build_notion_agent_to_temp_async, contains_kv, e2e_serial_gate, start_http_server,

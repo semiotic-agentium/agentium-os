@@ -30,6 +30,8 @@ use baml_rt_tools::{
 use baml_tools_calculator as _;
 #[cfg(feature = "clickup")]
 use baml_tools_clickup as _;
+#[cfg(feature = "notion")]
+use baml_tools_notion as _;
 use baml_tools_system as _;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
