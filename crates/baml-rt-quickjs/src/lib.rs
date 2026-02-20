@@ -14,7 +14,8 @@ pub mod runtime;
 pub mod traits;
 
 pub use a2a_stream::{
-    A2aYieldSession, InvocationComplete, YieldBufferReady, begin_a2a_yield_session,
+    A2aYieldSessionComplete, A2aYieldSessionReady, InvocationComplete, NonResolvingPromise,
+    YieldBufferReady, begin_a2a_yield_session,
 };
 pub use baml::{BamlRuntimeManager, ToolSessionExecutionHandle};
 pub use context::{BamlContext, ContextMetadata};
