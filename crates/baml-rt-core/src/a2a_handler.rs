@@ -2,13 +2,20 @@ use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde_json::Value;
 
-use crate::{Result, bus::BusStream};
+use crate::{Result, bus::BusStream, deferred::DeferredHolder};
 
 /// Shared A2A request handling abstraction used by both transport and tools.
 #[async_trait]
 pub trait A2aRequestHandler: Send + Sync {
     /// Canonical streaming entrypoint for A2A handling.
     async fn handle_a2a_stream(&self, request: Value) -> Result<BusStream<Value>>;
+}
+
+#[async_trait]
+impl A2aRequestHandler for DeferredHolder<dyn A2aRequestHandler> {
+    async fn handle_a2a_stream(&self, request: Value) -> Result<BusStream<Value>> {
+        self.get()?.handle_a2a_stream(request).await
+    }
 }
 
 /// Collects a stream at the callsite that needs buffered responses.

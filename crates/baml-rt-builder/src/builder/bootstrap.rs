@@ -10,7 +10,7 @@
 
 use std::{fs, path::Path};
 
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{AgentManifest, BamlRtError, Result, package::ManifestDiscovery};
 
 use crate::builder::{compiler::RuntimeTypeGenerator, traits::TypeGenerator, types::BuildDir};
 
@@ -122,13 +122,23 @@ pub async fn run_bootstrap(
 }
 
 fn manifest_json(name: &str, description: &str, tools: &[String]) -> String {
-    let tools_json = serde_json::to_string(tools).expect("tool ids are valid JSON");
-    format!(
-        r#"{{"version":"1.0.0","name":"{}","description":"{}","entry_point":"src/index.ts","runtime_version":"0.1.0","tools":{}}}"#,
-        name.replace('"', "\\\""),
-        description.replace('"', "\\\""),
-        tools_json
-    )
+    let discovery = if description.is_empty() {
+        None
+    } else {
+        Some(ManifestDiscovery {
+            description: Some(description.to_string()),
+            capabilities: Vec::new(),
+        })
+    };
+    let manifest = AgentManifest {
+        version: "1.0.0".to_string(),
+        name: name.to_string(),
+        entry_point: "src/index.ts".to_string(),
+        signature: format!("{}@1.0.0", name),
+        tools: tools.to_vec(),
+        discovery,
+    };
+    serde_json::to_string_pretty(&manifest).expect("manifest serializes to JSON")
 }
 
 fn prompt_template_no_tools(prompt_name: &str) -> String {

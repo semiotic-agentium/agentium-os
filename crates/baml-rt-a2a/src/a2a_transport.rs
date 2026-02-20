@@ -17,10 +17,9 @@ use baml_rt_quickjs::{
     BamlRuntimeManager, QuickJSBridge, QuickJSConfig, baml_execution::ConversationContextProvider,
 };
 use baml_rt_tools::{
-    SessionPhase, ToolFailure, ToolHandler, ToolName, ToolSession, ToolSessionError, ToolTypeSpec,
+    ToolFailure, ToolHandler, ToolName, ToolSession, ToolSessionError, ToolTypeSpec,
     tools::{ToolFunctionMetadata, ToolSessionContext},
 };
-use baml_rt_tools_system::A2aSessionBundle;
 use serde_json::Value;
 use tokio::sync::{Mutex, broadcast};
 
@@ -220,16 +219,6 @@ impl A2aAgent {
 
         Ok(())
     }
-
-    pub async fn register_a2a_session_tool(&self) -> Result<()> {
-        let bundle = A2aSessionBundle::new(Arc::new(self.clone()));
-        let registry = {
-            let runtime = self.runtime.lock().await;
-            runtime.tool_registry()
-        };
-        registry.register_bundle(bundle)?;
-        Ok(())
-    }
 }
 
 /// Builder for configuring an A2A agent and its subcomponents.
@@ -237,24 +226,22 @@ pub struct A2aAgentBuilder {
     runtime: RuntimeConfig,
     bridge: BridgeConfig,
     quickjs_config: QuickJSConfig,
-    register_baml_functions: RegistrationMode,
+    register_baml_functions: bool,
     init_js: Vec<String>,
     task_store: TaskStoreConfig,
     provenance_writer: ProvenanceWriterConfig,
     agent_id: AgentIdConfig,
-    register_a2a_session_tool: RegistrationMode,
 }
 
 pub struct A2aAgentBuilderWithEffectEmitter {
     runtime: RuntimeConfig,
     bridge: BridgeConfig,
     quickjs_config: QuickJSConfig,
-    register_baml_functions: RegistrationMode,
+    register_baml_functions: bool,
     init_js: Vec<String>,
     task_store: TaskStoreConfig,
     provenance_writer: ProvenanceWriterConfig,
     agent_id: AgentIdConfig,
-    register_a2a_session_tool: RegistrationMode,
     effect_emitter: Arc<dyn EffectEmitter>, // REQUIRED - enforced by typestate
 }
 
@@ -290,25 +277,6 @@ enum AgentIdConfig {
     AutoGenerate,
 }
 
-/// Explicit registration toggle for optional helpers/tools.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RegistrationMode {
-    Register,
-    Skip,
-}
-
-impl RegistrationMode {
-    pub const fn should_register(self) -> bool {
-        matches!(self, Self::Register)
-    }
-}
-
-impl From<bool> for RegistrationMode {
-    fn from(value: bool) -> Self {
-        if value { Self::Register } else { Self::Skip }
-    }
-}
-
 impl Default for A2aAgentBuilder {
     fn default() -> Self {
         Self::new()
@@ -322,7 +290,7 @@ impl A2aAgentBuilder {
     /// - `runtime`: Creates new `BamlRuntimeManager`
     /// - `bridge`: Auto-created from runtime + agent_id + config
     /// - `quickjs_config`: `QuickJSConfig::default()`
-    /// - `register_baml_functions`: `RegistrationMode::Register`
+    /// - `register_baml_functions`: `true`
     /// - `init_js`: Empty vec
     /// - `task_store`: `ProvenanceTaskStore` (no provenance writer)
     /// - `provenance_writer`: None
@@ -334,12 +302,11 @@ impl A2aAgentBuilder {
             runtime: RuntimeConfig::Default,
             bridge: BridgeConfig::AutoCreate,
             quickjs_config: QuickJSConfig::default(),
-            register_baml_functions: RegistrationMode::Register,
+            register_baml_functions: true,
             init_js: Vec::new(),
             task_store: TaskStoreConfig::Default,
             provenance_writer: ProvenanceWriterConfig::Default,
             agent_id: AgentIdConfig::AutoGenerate,
-            register_a2a_session_tool: RegistrationMode::Skip,
         }
     }
 
@@ -369,8 +336,8 @@ impl A2aAgentBuilder {
     }
 
     /// Enable or disable registration of BAML helper functions.
-    pub fn with_baml_helpers(mut self, mode: impl Into<RegistrationMode>) -> Self {
-        self.register_baml_functions = mode.into();
+    pub fn with_baml_helpers(mut self, enabled: bool) -> Self {
+        self.register_baml_functions = enabled;
         self
     }
 
@@ -401,11 +368,6 @@ impl A2aAgentBuilder {
         self
     }
 
-    pub fn with_a2a_session_tool(mut self, mode: impl Into<RegistrationMode>) -> Self {
-        self.register_a2a_session_tool = mode.into();
-        self
-    }
-
     /// Provide an agent ID (overrides auto-generation).
     pub fn with_agent_id(mut self, agent_id: baml_rt_core::ids::AgentId) -> Self {
         self.agent_id = AgentIdConfig::Provided(agent_id);
@@ -429,7 +391,6 @@ impl A2aAgentBuilder {
             task_store: self.task_store,
             provenance_writer: self.provenance_writer,
             agent_id: self.agent_id,
-            register_a2a_session_tool: self.register_a2a_session_tool,
             effect_emitter: emitter,
         }
     }
@@ -462,8 +423,8 @@ impl A2aAgentBuilderWithEffectEmitter {
     }
 
     /// Enable or disable registration of BAML helper functions.
-    pub fn with_baml_helpers(mut self, mode: impl Into<RegistrationMode>) -> Self {
-        self.register_baml_functions = mode.into();
+    pub fn with_baml_helpers(mut self, enabled: bool) -> Self {
+        self.register_baml_functions = enabled;
         self
     }
 
@@ -491,11 +452,6 @@ impl A2aAgentBuilderWithEffectEmitter {
         store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
     ) -> Self {
         self.provenance_writer = ProvenanceWriterConfig::Graphqlite(store);
-        self
-    }
-
-    pub fn with_a2a_session_tool(mut self, mode: impl Into<RegistrationMode>) -> Self {
-        self.register_a2a_session_tool = mode.into();
         self
     }
 
@@ -577,12 +533,12 @@ impl A2aAgentBuilderWithEffectEmitter {
             bridge_guard.set_effect_liveness(self.effect_emitter.clone());
         }
 
-        if self.register_baml_functions.should_register() || !self.init_js.is_empty() {
+        if self.register_baml_functions || !self.init_js.is_empty() {
             tracing::debug!(
                 "A2aAgentBuilder::build: Registering BAML functions and/or evaluating init_js"
             );
             let mut bridge_guard = bridge.lock().await;
-            if self.register_baml_functions.should_register() {
+            if self.register_baml_functions {
                 tracing::debug!("A2aAgentBuilder::build: Calling register_baml_functions()");
                 // INVARIANT L1: Bridge initialization must terminate within bounded time
                 // Add timeout to detect hangs in function registration
@@ -746,12 +702,6 @@ impl A2aAgentBuilderWithEffectEmitter {
             update_tx,
             stream_sessions: Arc::new(Mutex::new(HashMap::new())),
         };
-
-        if self.register_a2a_session_tool.should_register() {
-            tracing::debug!("A2aAgentBuilder::build: register_a2a_session_tool start");
-            agent.register_a2a_session_tool().await?;
-            tracing::debug!("A2aAgentBuilder::build: register_a2a_session_tool done");
-        }
 
         tracing::debug!("A2aAgentBuilder::build: validate_tool_allowlist_registered start");
         {
@@ -1101,7 +1051,7 @@ impl ToolHandler for JsToolHandler {
             bridge: self.bridge.clone(),
             tool_name: self.tool_name.clone(),
             input: None,
-            state: SessionPhase::Open,
+            completed: false,
         }))
     }
 }
@@ -1111,7 +1061,7 @@ struct JsToolSession {
     bridge: Arc<Mutex<QuickJSBridge>>,
     tool_name: String,
     input: Option<Value>,
-    state: SessionPhase,
+    completed: bool,
 }
 
 #[async_trait]
@@ -1127,7 +1077,7 @@ impl ToolSession for JsToolSession {
     }
 
     async fn next(&mut self) -> std::result::Result<baml_rt_tools::ToolStep, ToolSessionError> {
-        if self.state.is_closed() {
+        if self.completed {
             return Ok(baml_rt_tools::ToolStep::Done { output: None });
         }
         let input = self.input.take().ok_or_else(|| {
@@ -1162,19 +1112,19 @@ impl ToolSession for JsToolSession {
         })?
         .map_err(ToolSessionError::Transport)?;
         if let Some(error) = result.get("error").and_then(Value::as_str) {
-            self.state.close();
+            self.completed = true;
             return Ok(baml_rt_tools::ToolStep::Error {
                 error: ToolFailure::execution_failed(error.to_string()),
             });
         }
-        self.state.close();
+        self.completed = true;
         Ok(baml_rt_tools::ToolStep::Done {
             output: Some(result),
         })
     }
 
     async fn finish(&mut self) -> std::result::Result<(), ToolSessionError> {
-        self.state.close();
+        self.completed = true;
         Ok(())
     }
 
@@ -1182,7 +1132,7 @@ impl ToolSession for JsToolSession {
         &mut self,
         _reason: Option<String>,
     ) -> std::result::Result<(), ToolSessionError> {
-        self.state.close();
+        self.completed = true;
         Ok(())
     }
 }

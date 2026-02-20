@@ -200,7 +200,7 @@ hang or be prematurely closed depending on heuristics.
 
 | Layer | Mechanism |
 |-------|-----------|
-| **Collection** | `A2aYieldSession::collect()` returns explicit `StreamCompletion` (`SemanticFinal`, `InputRequired`, `ChannelClosed`, `Timeout`). |
+| **Collection** | `A2aYieldSessionComplete::collect()` returns explicit `StreamCompletion` (`SemanticFinal`, `InputRequired`, `ChannelClosed`, `Timeout`). |
 | **Transport** | `run_live_stream_session` matches on `stream_result.completion`; no chunk-shape booleans for control flow. |
 | **Testing** | `a2a` unit tests cover stream and task paths; hangs regress to watchdog timeout failures. |
 

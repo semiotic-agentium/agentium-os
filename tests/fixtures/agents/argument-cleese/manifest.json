@@ -1,9 +1,11 @@
 {
   "version": "1.0.0",
   "name": "argument-cleese",
-  "description": "Fixture: Monty Python argument sketch agent (initiator)",
   "entry_point": "src/index.ts",
   "signature": "argument-cleese@1.0.0",
-  "runtime_version": "0.1.0",
-  "tools": ["system/internal_a2a"]
+  "tools": ["system/internal_a2a"],
+  "discovery": {
+    "description": "Fixture: Monty Python argument sketch agent (initiator)",
+    "capabilities": ["a2a"]
+  }
 }

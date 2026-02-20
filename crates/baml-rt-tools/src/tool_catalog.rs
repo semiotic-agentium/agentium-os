@@ -1,12 +1,24 @@
-use std::collections::HashMap;
+//! Single tool-provider inventory: type-level metadata + runtime handler build.
+//! One mechanism for catalog and host registration.
+
+use std::{collections::HashMap, sync::Arc};
 
 use baml_rt_core::{BamlRtError, Result};
 
-use crate::{ToolName, tools::ToolFunctionMetadata};
+use crate::{
+    ToolName,
+    tools::{ToolFunctionMetadata, ToolHandler},
+};
 
-pub struct ToolMetadataProvider(pub fn() -> ToolFunctionMetadata);
+/// Single provider type per tool: type-level metadata + build handler.
+pub struct ToolProvider {
+    /// Type-level metadata (name, description, schema, etc.). Always from the type.
+    pub metadata: fn() -> ToolFunctionMetadata,
+    /// Build runtime handler. Returns Err when tool is not compiled (e.g. feature off).
+    pub build: fn() -> Result<Arc<dyn ToolHandler>>,
+}
 
-inventory::collect!(ToolMetadataProvider);
+inventory::collect!(ToolProvider);
 
 pub trait ToolCatalog {
     fn by_name(&self, name: &ToolName) -> Option<&ToolFunctionMetadata>;
@@ -41,11 +53,42 @@ impl ToolCatalog for InventoryCatalog {
     }
 }
 
+/// All tool metadata from the single inventory (type-level only).
 pub fn all_tool_metadata() -> Vec<ToolFunctionMetadata> {
-    inventory::iter::<ToolMetadataProvider>
+    inventory::iter::<ToolProvider>
         .into_iter()
-        .map(|provider| (provider.0)())
+        .map(|p| (p.metadata)())
         .collect()
+}
+
+/// Parsed list of tool names from manifest. Use at boundary instead of raw `Vec<String>`.
+#[derive(Debug, Clone)]
+pub struct ManifestToolNames(Vec<ToolName>);
+
+impl ManifestToolNames {
+    /// Parse manifest tool name strings into validated tool names.
+    pub fn parse(names: &[String]) -> Result<Self> {
+        let mut out = Vec::with_capacity(names.len());
+        for s in names {
+            out.push(ToolName::parse(s)?);
+        }
+        Ok(Self(out))
+    }
+
+    pub fn as_slice(&self) -> &[ToolName] {
+        &self.0
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &ToolName> {
+        self.0.iter()
+    }
+}
+
+impl std::ops::Deref for ManifestToolNames {
+    type Target = [ToolName];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 pub fn resolve_manifest_tools(tool_names: &[String]) -> Result<Vec<ToolFunctionMetadata>> {
@@ -82,11 +125,15 @@ pub fn resolve_manifest_tools_with_catalog<C: ToolCatalog>(
     Ok(resolved)
 }
 
+/// Single macro per tool: submits one ToolProvider (metadata at type level + build).
 #[macro_export]
-macro_rules! register_tool_metadata {
-    ($provider:path) => {
+macro_rules! register_tool {
+    ($metadata_fn:path, $build_fn:path) => {
         inventory::submit! {
-            $crate::tool_catalog::ToolMetadataProvider($provider)
+            $crate::tool_catalog::ToolProvider {
+                metadata: $metadata_fn,
+                build: $build_fn,
+            }
         }
     };
 }

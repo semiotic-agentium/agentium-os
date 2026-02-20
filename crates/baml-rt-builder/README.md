@@ -6,6 +6,7 @@ Agent build pipeline and packaging utilities.
 
 - TypeScript/JavaScript linting and compilation via OXC.
 - BAML type generation and schema handling for packaging.
+- BAML type generation and schema handling for packaging.
 - **Runtime type generation**: typed `baml-runtime.d.ts` from BAML runtime IR (no BAML source parsing).
 - Agent packaging into distributable archives.
 

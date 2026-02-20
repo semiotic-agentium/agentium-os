@@ -14,11 +14,8 @@ pub async fn load_package(package_path: &Path) -> Result<(PathBuf, AgentManifest
     let span = spans::load_agent_package(package_path);
     let _guard = span.enter();
 
-    let epoch_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| BamlRtError::InvalidArgument(e.to_string()))?
-        .as_secs();
-    let extract_dir = std::env::temp_dir().join(format!("baml-agent-{}", epoch_secs));
+    let unique_id = uuid::Uuid::new_v4();
+    let extract_dir = std::env::temp_dir().join(format!("baml-agent-{}", unique_id));
     std::fs::create_dir_all(&extract_dir).map_err(BamlRtError::Io)?;
 
     {

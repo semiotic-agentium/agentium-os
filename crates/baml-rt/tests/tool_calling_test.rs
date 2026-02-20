@@ -7,13 +7,21 @@
 //! `test_e2e_voidship_baml_tool_calling`; concurrent E2E is
 //! `test_e2e_voidship_baml_tool_calling_concurrent`. Overlapping union/LLM
 //! E2E tests have been retired in favour of this vertical slice.
-//! Voidship tests use a stub interceptor so no API key is required.
+//!
+//! E2E tests that invoke a BAML function and then execute its result pass the
+//! **same** function name to `execute_tool_from_baml_result_or_value` (mirrors
+//! production: the QuickJS bridge passes the invoking function name automatically).
+
+/// BAML function name in the `stream-baml-tool` fixture that returns a session plan.
+/// Used for both invoke and execute_tool so the source of the tool result is explicit.
+/// BAML function under test in stream-baml-tool E2E. Single source of truth for both
+/// invoke_function and execute_tool_from_baml_result_or_value (runtime uses it with
+/// session_plan_functions.json to resolve the tool). In the composed flow the QuickJS
+/// bridge passes the invoking function name automatically.
+const STREAM_BAML_TOOL_FUNCTION: &str = "ChooseCalcTool";
 
 use async_trait::async_trait;
-use baml_rt::{
-    interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor},
-    tools::BamlTool,
-};
+use baml_rt::tools::BamlTool;
 use baml_rt_tools::bundles::BundleType;
 
 // Test bundle for test tools
@@ -36,56 +44,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use test_support::common::{
     CalculatorTool, WeatherTool, agent_fixture, assert_tool_registered_in_js,
-    ensure_fixture_runtime_types, setup_baml_runtime_default, setup_baml_runtime_from_fixture,
-    setup_bridge,
+    ensure_fixture_runtime_types, require_api_key, setup_baml_runtime_default,
+    setup_baml_runtime_from_fixture, setup_bridge,
 };
 use tokio::{
     sync::Barrier,
     time::{Duration, timeout},
 };
 use ts_rs::TS;
-
-/// Stub interceptor: returns a canned session plan for ChooseCalcTool so voidship tests avoid real LLM calls.
-struct StubChooseCalcToolInterceptor;
-
-#[async_trait::async_trait]
-impl LLMInterceptor for StubChooseCalcToolInterceptor {
-    async fn intercept_llm_call(
-        &self,
-        context: &LLMCallContext,
-    ) -> baml_rt_core::Result<InterceptorDecision> {
-        if context.function_name == "ChooseCalcTool" {
-            Ok(InterceptorDecision::Substitute(json!({
-                "steps": [
-                    { "op": "Open", "reason": "stub open" },
-                    {
-                        "op": "Send",
-                        "input": {
-                            "expression": {
-                                "left": 2,
-                                "operation": "Add",
-                                "right": 3
-                            }
-                        },
-                        "reason": "stub send"
-                    },
-                    { "op": "Next", "reason": "stub next" },
-                    { "op": "Finish", "reason": "stub finish" }
-                ]
-            })))
-        } else {
-            Ok(InterceptorDecision::Allow)
-        }
-    }
-
-    async fn on_llm_call_complete(
-        &self,
-        _context: &LLMCallContext,
-        _result: &baml_rt_core::Result<serde_json::Value>,
-        _duration_ms: u64,
-    ) {
-    }
-}
 
 /// **Purpose:** Verify tool registration and direct execution from Rust (execute_tool_with_scope,
 /// list_tools) under an invocation scope; no LLM call required.
@@ -229,17 +195,16 @@ async fn test_llm_tool_calling_js() {
 }
 
 /// **Purpose:** Authoritative single-request E2E: load fixture `stream-baml-tool`, invoke
-/// `ChooseCalcTool`, execute the chosen tool, assert result (2+3=5). LLM stubbed so no API key required.
+/// `ChooseCalcTool`, execute the chosen tool, assert result (2+3=5). Requires API key for LLM.
 #[tokio::test]
 async fn test_e2e_voidship_baml_tool_calling() {
+    let _ = require_api_key();
+
     ensure_fixture_runtime_types();
     let baml_manager = setup_baml_runtime_from_fixture("stream-baml-tool");
     {
         let mut manager = baml_manager.lock().await;
         manager.register_tool(CalculatorTool).await.unwrap();
-        manager
-            .register_llm_interceptor(StubChooseCalcToolInterceptor)
-            .await;
     }
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-0000000000b1").unwrap());
@@ -250,7 +215,7 @@ async fn test_e2e_voidship_baml_tool_calling() {
         manager
             .invoke_function(
                 scope.as_scope(),
-                "ChooseCalcTool",
+                STREAM_BAML_TOOL_FUNCTION,
                 json!({"user_message": "Perform the rite of sums."}),
             )
             .await
@@ -261,7 +226,11 @@ async fn test_e2e_voidship_baml_tool_calling() {
         Ok(tool_choice) => {
             let manager = baml_manager.lock().await;
             let tool_result = manager
-                .execute_tool_from_baml_result_or_value(scope.as_scope(), tool_choice)
+                .execute_tool_from_baml_result_or_value(
+                    scope.as_scope(),
+                    tool_choice,
+                    Some(STREAM_BAML_TOOL_FUNCTION),
+                )
                 .await
                 .expect("Should execute tool from BAML result");
             let value = tool_result
@@ -277,22 +246,20 @@ async fn test_e2e_voidship_baml_tool_calling() {
 }
 
 /// **Purpose:** Authoritative concurrent E2E: four requests with distinct agent IDs run
-/// concurrently; each invokes ChooseCalcTool and executes the tool. Uses a single stub
-/// plan (2+3=5) so all get 5.0—concurrency tests parallel execution path, not varying LLM output.
+/// concurrently; each invokes ChooseCalcTool and executes the tool; assert each result
+/// matches its request (no cross-contamination of scope/results).
 #[tokio::test]
 async fn test_e2e_voidship_baml_tool_calling_concurrent() {
     unsafe {
         std::env::set_var("BAML_TRACE_TOOL_SESSION", "1");
     }
+    let _ = require_api_key();
 
     ensure_fixture_runtime_types();
     let agent_dir = agent_fixture("stream-baml-tool");
     let mut manager = baml_rt::baml::BamlRuntimeManager::new().unwrap();
     manager.load_schema(agent_dir.to_str().unwrap()).unwrap();
     manager.register_tool(CalculatorTool).await.unwrap();
-    manager
-        .register_llm_interceptor(StubChooseCalcToolInterceptor)
-        .await;
     let manager = Arc::new(manager);
 
     let barrier = Arc::new(Barrier::new(4));
@@ -313,18 +280,24 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
             let scope = InvocationScope::synthetic_message(agent_id);
             barrier.wait().await;
 
-            // Stub returns same plan (2+3=5) for all; we assert 5.0 (no cross-contamination of scope).
+            let left = (idx as f64) + 2.0;
+            let right = (idx as f64) + 3.0;
+            let expected = left + right;
             let result = context::with_scope(scope.as_scope().clone(), async {
                 let tool_choice = manager
                     .invoke_function(
                         scope.as_scope(),
-                        "ChooseCalcTool",
-                        json!({"user_message": format!("Compute (req {})", idx)}),
+                        STREAM_BAML_TOOL_FUNCTION,
+                        json!({"user_message": format!("Compute {} + {} (req {})", left, right, idx)}),
                     )
                     .await?;
-                println!("ChooseCalcTool result (req {}): {:?}", idx, tool_choice);
+                println!("{} result (req {}): {:?}", STREAM_BAML_TOOL_FUNCTION, idx, tool_choice);
                 manager
-                    .execute_tool_from_baml_result_or_value(scope.as_scope(), tool_choice)
+                    .execute_tool_from_baml_result_or_value(
+                        scope.as_scope(),
+                        tool_choice,
+                        Some(STREAM_BAML_TOOL_FUNCTION),
+                    )
                     .await
             })
             .await?;
@@ -333,11 +306,10 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
                 .get("result")
                 .and_then(|v| v.as_f64())
                 .unwrap_or_default();
-            let expected = 5.0; // stub plan is 2+3
             if (value - expected).abs() > f64::EPSILON {
                 return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
-                    "Expected stub result 5.0, got {}",
-                    value
+                    "Expected {} + {} = {}, got {}",
+                    left, right, expected, value
                 )));
             }
             Ok::<(), baml_rt_core::BamlRtError>(())

@@ -94,7 +94,7 @@ proptest! {
                         .await
                         .expect("tool_session_next");
                     match step {
-                        ToolStep::Streaming { output: _ } => {
+                        ToolStep::Streaming { output: _ } | ToolStep::Suspended { output: _ } => {
                             manager.tool_session_finish(&session_id).await.expect("finish");
                         }
                         ToolStep::Done { output: _ } => {
@@ -153,7 +153,9 @@ proptest! {
                     .await
                     .expect("tool_session_next");
                 match step {
-                    ToolStep::Streaming { output: _ } | ToolStep::Done { output: _ } => {
+                    ToolStep::Streaming { output: _ }
+                    | ToolStep::Suspended { output: _ }
+                    | ToolStep::Done { output: _ } => {
                         manager.tool_session_finish(&session_id).await.expect("finish");
                     }
                     ToolStep::Error { error } => {

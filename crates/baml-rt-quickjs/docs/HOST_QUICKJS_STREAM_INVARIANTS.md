@@ -4,12 +4,13 @@ This document records invariant and liveness properties of the host/QuickJS boun
 
 ## Type-safe components
 
-- **`A2aYieldSession<'a, S>`** — Linear session for one stream request; `S` ∈ {`YieldBufferReady`, `InvocationComplete`}.
-- **`begin_a2a_yield_session(bridge)`** → `Result<A2aYieldSession<'_, YieldBufferReady>>` — Setup; caller must eventually call `invoke`.
-- **`A2aYieldSession::invoke(self, request)`** (on `YieldBufferReady`) → `Result<A2aYieldSession<'_, InvocationComplete>>` — Run JS; caller must eventually call `collect`.
-- **`A2aYieldSession::collect(self)`** (on `InvocationComplete`) → `Result<Vec<Value>>` — Read buffer; returns in finite time.
+- **`A2aYieldSessionReady<'a>`** — Session in ready phase (yield buffer installed); only `invoke` may be called.
+- **`A2aYieldSessionComplete<'a>`** — Session after `invoke`; holds `session_id` and `yield_rx` (host-only; never exposed to JS). Only `collect` may be called; invalid state (collect without invoke) is unrepresentable.
+- **`begin_a2a_yield_session(bridge)`** → `Result<A2aYieldSessionReady<'_>>` — Setup (no-op for channels; per-session channel created on invoke); caller must eventually call `invoke`.
+- **`A2aYieldSessionReady::invoke(self, scope, request)`** → `Result<A2aYieldSessionComplete<'_>>` — Run JS via `invoke_js_function_stream`; returns session with `session_id` and `yield_rx`; caller must eventually call `collect`.
+- **`A2aYieldSessionComplete::collect(self)`** → `Result<StreamResult>` — Drains session’s `yield_rx` via `drain_yield_buffer`; calls `finalize_a2a_stream_invocation(session_id)` on completion. Returns in finite time.
 
-The type system enforces the ordering: `collect` cannot be called before `invoke`, and `invoke` cannot be called before `begin`.
+The type system enforces the ordering: `collect` exists only on `A2aYieldSessionComplete`; `invoke` exists only on `A2aYieldSessionReady`.
 
 ## Liveness (semi-formal)
 
@@ -21,42 +22,75 @@ Notation: □ = always, ◇ = eventually.
 | **L2** | □(invoke returns Ok(s′) → ◇(collect(s′) called)) | After invoke succeeds, caller eventually collects. |
 | **L3** | □(collect called → ◇(collect returns)) | Collect terminates in finite time. |
 | **L4** | Promise poll loop: after at most max_attempts_ms steps, loop exits (__eval_result set or error) | Bounded exit; does not distinguish "waiting on I/O" from "will never yield". |
+| **L6** | Stream promise non-termination: the promise from `onChatMessage()` is designed never to resolve; chunks are yielded via `__chat_yield` and collected by the host. | Host never waits on stream promise resolution. |
 
 ## Data flow
 
-1. **Host** holds `bridge: Arc<Mutex<QuickJSBridge>>` and runs, under one lock, the session:
-   `begin_a2a_yield_session(&mut *bridge)` → `session.invoke(js_request)` → `session.collect()`.
-2. **JS** sees `globalThis.__baml_chat_yield_buffer` and `globalThis.__baml_chat_yield` (set by setup).
-   `onChatMessage` runs; it may call `__baml_chat_yield(chunk)` and may `await` (e.g. `openToolSession`, BAML). The stream handler typically **does not terminate** (no final promise resolution).
-3. **Host** reads chunks from the yield buffer via `get_a2a_yield_buffer()` at a time of its choosing (e.g. after a timeout or when the buffer has grown); it does **not** wait for the JS promise to resolve. The return value of `onChatMessage` is ignored.
+1. **Host** runs the session: `begin_a2a_yield_session(&mut bridge)` → `ready.invoke(scope, js_request)` → `complete.collect()`. Each `invoke_js_function_stream` acquires the stream semaphore (one permit), creates a per-session channel, sets the host-only `current_stream_session_id_slot`, and runs the stream IIFE.
+2. **JS** sees `globalThis.__chat_yield` set by the **stream IIFE** to `function(chunk) { __baml_chat_yield_host(JSON.stringify(chunk)); }`. No host state (e.g. session id) is passed into JS. Scope for tool/baml is resolved by the host via LIFO (context entered when the stream starts).
+3. **Host** routes yields: `__baml_chat_yield_host(chunk_json)` reads `current_stream_session_id_slot`, looks up the sender in `a2a_yield_tx_by_session`, and sends the parsed chunk. The caller drains its session’s receiver via `drain_yield_buffer(rx)` and finalizes with `finalize_a2a_stream_invocation(session_id)`.
 
 ## Invariants
 
-### 1. Single-writer yield buffer (per stream request)
+### 1. Single-active-stream (one permit)
 
 **Property:**
 
-- Before each stream request, the host sets `globalThis.__baml_chat_yield_buffer = []` and `globalThis.__baml_chat_yield`; only the current `onChatMessage` call may push to that buffer for the duration of that call.
-- After the promise for that call resolves, the host reads and clears the buffer exactly once.
+- At most one stream invocation holds the stream semaphore permit at a time. The bridge uses `Semaphore::new(1)`. So at most one “active” stream is running JS for yield purposes; concurrent stream requests are serialized at invoke.
 
 **Formal:**
 
-- ∀ stream request r:
-  `setup_a2a_yield_buffer()` runs once before `invoke_js_function(..., r)`;
-  `get_a2a_yield_buffer()` runs when the host decides to read (e.g. after a timeout or poll); the JS promise for that invoke typically **does not resolve** (stream is non-terminating).
-  No other code clears or replaces `__baml_chat_yield_buffer` between setup and get.
+- ∀ time t: |{ s : stream session s holds the permit at t }| ≤ 1.
 
 **Enforcement:**
 
 | Layer        | Mechanism                                                                 |
 |-------------|----------------------------------------------------------------------------|
-| Application | Invoker holds bridge lock for full sequence; no other caller runs JS.     |
-| Contract     | Agent uses `session(message).run(...)`; runtime shim calls `__chat_yield(chunk)`; host sets `__chat_yield` before stream requests and ignores return. |
-| Testing     | `stream_request_uses_only_invoke_stream_chunks` (mock invoker).            |
+| Application | `invoke_js_function_stream` acquires `stream_semaphore.clone().acquire_owned()`; the permit is stored in `StreamInvocationSession` and released when the session is removed in `finalize_a2a_stream_invocation(session_id)`. |
+| Concurrency | Only one permit; no cross-stream concurrency of JS execution for streams.  |
 
 ---
 
-### 2. No bridge re-entrancy while stream invoke is in progress
+### 2. Host-only session identity (no host state in JS)
+
+**Property:**
+
+- `StreamSessionId` and `current_stream_session_id_slot` are never exposed to JS. JS never receives or sends a session id. Routing of yields is done entirely in the host.
+
+**Formal:**
+
+- ∀ chunk yielded from JS: the host function `__baml_chat_yield_host(chunk_json)` receives only the chunk payload; session identity is read from `current_stream_session_id_slot` in the host. No JS variable or argument carries `StreamSessionId`.
+
+**Enforcement:**
+
+| Layer        | Mechanism                                                                 |
+|-------------|----------------------------------------------------------------------------|
+| Application | IIFE sets only `globalThis.__chat_yield = function(chunk) { __baml_chat_yield_host(JSON.stringify(chunk)); }`; no `__sid` or `__streamSessionId` in args or globals. |
+| Host        | `register_chat_yield_host` registers `__baml_chat_yield_host(chunk_json)`; implementation reads `current_stream_session_id_slot` and `a2a_yield_tx_by_session`. |
+| Testing     | No session id in any JS fixture or shim for stream yield.                  |
+
+---
+
+### 3. Per-session channel and current-stream slot
+
+**Property:**
+
+- Each stream has its own channel `(tx, rx)`. The sender is stored in `a2a_yield_tx_by_session[session_id]`; the receiver is returned to the caller from `invoke_js_function_stream` and drained via `drain_yield_buffer(rx)`. When a stream starts, `current_stream_session_id_slot` is set to that session’s id; when it is finalized, the slot is cleared (if it matches). Yields from JS go to the channel of the current stream only.
+
+**Formal:**
+
+- ∀ stream session s with id `sid`: at start, `current_stream_session_id_slot = Some(sid)` and `a2a_yield_tx_by_session[sid] = tx`; at finalize, slot is cleared for `sid`, session and `tx` are removed. ∀ call to `__baml_chat_yield_host`: chunk is sent to `a2a_yield_tx_by_session[current_stream_session_id_slot]` when the slot is `Some`.
+
+**Enforcement:**
+
+| Layer        | Mechanism                                                                 |
+|-------------|----------------------------------------------------------------------------|
+| Application | `start_stream_session` creates channel, inserts tx, sets slot; `finalize_a2a_stream_invocation(session_id)` clears slot and removes session and tx. `__baml_chat_yield_host` reads slot and map. |
+| Contract    | Caller uses the `rx` returned from `invoke_js_function_stream` for `drain_yield_buffer` and calls `finalize_a2a_stream_invocation(session_id)` when done. |
+
+---
+
+### 4. No bridge re-entrancy while stream invoke is in progress
 
 **Property:**
 
@@ -81,7 +115,7 @@ Notation: □ = always, ◇ = eventually.
 
 ---
 
-### 3. Non-stream evals: promise resolution observable after running pending jobs
+### 5. Non-stream evals: promise resolution observable after running pending jobs
 
 **Property:**
 
@@ -104,38 +138,73 @@ Notation: □ = always, ◇ = eventually.
 
 ---
 
-### 4. Yield buffer read uses same JSON path as write
+### 6. Yield chunk JSON round-trip
 
 **Property:**
 
-- Chunks written in JS via `__baml_chat_yield(chunk)` are read by the host as `Value::Array` after `JSON.stringify(buf)` in JS and `evaluate()` (which parses the returned string as JSON). The shape must match what the stream normalizer and pipeline expect.
+- Chunks written in JS via `__chat_yield(chunk)` are stringified in JS and passed to `__baml_chat_yield_host(chunk_json)`. The host parses the JSON to `Value` and pushes to the session’s channel. The collector drains `Value` from the channel. The shape must match what the stream normalizer and pipeline expect.
 
 **Formal:**
 
-- `get_a2a_yield_buffer()` evals code that does `buf = __baml_chat_yield_buffer; __baml_chat_yield_buffer = []; return JSON.stringify(buf);`.
-  Host parses the eval result as JSON; if it is an array, that array is the chunk list; otherwise host uses `[]`.
+- ∀ chunk: JS calls `__baml_chat_yield_host(JSON.stringify(chunk))`; host does `Value = serde_json::from_str(chunk_json)` and `tx.send(Value)`; collector receives `Value` from `drain_yield_buffer(rx)`. No separate eval for buffer read; the channel is the single path.
 
 **Enforcement:**
 
 | Layer        | Mechanism                                                                 |
 |-------------|----------------------------------------------------------------------------|
-| Application | `get_a2a_yield_buffer` uses `evaluate()` so the string is parsed once in Rust. |
+| Application | `__baml_chat_yield_host` parses one JSON string and sends one `Value`; `drain_yield_buffer` returns `BufferDrain { chunks: Vec<Value>, .. }`. |
 | Contract    | Agent yields plain objects (message/task/statusUpdate/artifactUpdate); normalizer accepts them. |
+
+---
+
+### 7. Coordination via globalThis only (no host state in JS)
+
+**Property:**
+
+- `globalThis.__chat_yield` is set in the stream IIFE for coordination only (which host function to call). It is not used to pass host state (e.g. session id). The IIFE may set other globals for coordination (e.g. which native to call), but must not inject tokens or session ids that could be forged or misused by hostile JS.
+
+**Formal:**
+
+- The only stream-related global set by the IIFE is `globalThis.__chat_yield = function(chunk) { __baml_chat_yield_host(JSON.stringify(chunk)); }`. No `__sid`, `__streamSessionId`, or other host-issued token appears in JS.
+
+**Enforcement:**
+
+| Layer        | Mechanism                                                                 |
+|-------------|----------------------------------------------------------------------------|
+| Application | `start_stream_session` generates the IIFE with no session id in args and no session id in the override; session routing is entirely in the host. |
+| Security    | Host state (StreamSessionId, invocation tokens) is never passed into JS for stream yield or tool/baml dispatch; host resolves from LIFO or slot. |
 
 ---
 
 ## Summary table
 
-| ID | Invariant                          | Violation symptom        | Mitigation                                      |
-|----|------------------------------------|---------------------------|-------------------------------------------------|
-| 1  | Single-writer buffer per request   | Wrong or missing chunks  | One lock for setup→invoke→get; no fallback.    |
-| 2  | No bridge re-entrancy during invoke | Hang (deadlock)         | No A2A session from inside stream handler.      |
-| 3  | Promise resolution observable     | Hang (infinite poll loop) | Run pending jobs before each __eval_result check. |
-| 4  | JSON round-trip for buffer         | Bad chunks / parse error | evaluate() for get_a2a_yield_buffer.           |
+| ID | Invariant                              | Violation symptom           | Mitigation                                        |
+|----|----------------------------------------|-----------------------------|---------------------------------------------------|
+| 1  | Single-active-stream (one permit)      | Multiple streams racing     | Semaphore(1); permit in session, released on finalize. |
+| 2  | Host-only session identity             | Host state in JS / escape   | No session id in JS; __baml_chat_yield_host reads slot. |
+| 3  | Per-session channel and current slot   | Wrong or missing chunks     | Per-session tx/rx; slot set at start, cleared at finalize. |
+| 4  | No bridge re-entrancy during invoke    | Hang (deadlock)             | No A2A session from inside stream handler.       |
+| 5  | Promise resolution observable         | Hang (infinite poll loop)   | Run pending jobs before each __eval_result check. |
+| 6  | Yield chunk JSON round-trip            | Bad chunks / parse error    | Host parses chunk_json and sends Value to channel. |
+| 7  | Coordination via globalThis only       | Host state in JS            | IIFE sets only __chat_yield → host; no tokens in JS. |
+
+## Concurrent stream invariants (summary)
+
+These properties govern the stream/yield boundary and concurrency model:
+
+| ID   | Property | Formal |
+|------|----------|--------|
+| **S1** | Single permit | ∀ t: at most one stream session holds the semaphore permit. |
+| **S2** | Host-only session id | No `StreamSessionId` or session token is ever passed to or from JS. |
+| **S3** | Current-stream slot | When a stream runs, `current_stream_session_id_slot = Some(sid)`; `__baml_chat_yield_host` routes to `a2a_yield_tx_by_session[slot]`; on finalize, slot cleared for that sid. |
+| **S4** | Per-session channel | Each stream has exactly one (tx, rx); tx in map keyed by session id, rx returned to caller and drained via `drain_yield_buffer(rx)`. |
+| **S5** | Coordination only in globalThis | `globalThis.__chat_yield` is set by the IIFE to call the host; it does not carry or store host state (no session id, no tokens). |
+
+**Concurrency:** With one permit (current design), stream invocations are **serialized**: only one stream's JS runs at a time. To allow concurrent streams, the semaphore capacity would be increased and the "current" stream would need to be resolved per execution (e.g. async context or explicit session id from a trusted path); invariants S2 and S5 (no host state in JS) would remain.
 
 ## Change applied
 
-- **Invariant 3:** In `evaluate()`’s promise-polling loop, call `exe_rt_task_in_event_loop(rt.run_pending_jobs_if_any())` **before** evaluating the check script that reads `globalThis.__eval_result`, so the runtime can run promise continuations before we look. This preserves the invariant that “after running pending jobs, __eval_result is visible if the promise has resolved.”
+- **Invariant 5 (formerly 3):** In `evaluate()`’s promise-polling loop, call `exe_rt_task_in_event_loop(rt.run_pending_jobs_if_any())` **before** evaluating the check script that reads `globalThis.__eval_result`, so the runtime can run promise continuations before we look. This preserves the invariant that “after running pending jobs, __eval_result is visible if the promise has resolved.”
 
 ---
 

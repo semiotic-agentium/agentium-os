@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use baml_rt_builder::builder::{BuildDir, RuntimeTypeGenerator, TypeGenerator};
 use baml_rt_core::{BamlRtError, Result};
+use baml_rt_tools_system as _; // Force link so system tool metadata is in inventory
 
 fn agents_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -13,12 +14,7 @@ fn agents_dir() -> PathBuf {
         .join("agents")
 }
 
-/// Copy `baml-runtime.d.ts` into the fixture's `src/` directory using an atomic
-/// write (temp file + rename) so concurrent nextest processes never read a
-/// partially-written file.
 fn copy_runtime_d_ts(build_dir: &BuildDir, dest_src: &Path) -> Result<()> {
-    use std::io::Write;
-
     let d_ts_src = build_dir.join("dist").join("baml-runtime.d.ts");
     let d_ts_dest = dest_src.join("baml-runtime.d.ts");
     if !d_ts_src.exists() {
@@ -27,11 +23,7 @@ fn copy_runtime_d_ts(build_dir: &BuildDir, dest_src: &Path) -> Result<()> {
         ));
     }
     std::fs::create_dir_all(dest_src).map_err(BamlRtError::Io)?;
-    let data = std::fs::read(&d_ts_src).map_err(BamlRtError::Io)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dest_src).map_err(BamlRtError::Io)?;
-    tmp.write_all(&data).map_err(BamlRtError::Io)?;
-    tmp.persist(&d_ts_dest)
-        .map_err(|e| BamlRtError::Io(e.error))?;
+    std::fs::copy(&d_ts_src, &d_ts_dest).map_err(BamlRtError::Io)?;
     Ok(())
 }
 

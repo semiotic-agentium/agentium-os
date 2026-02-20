@@ -1,8 +1,8 @@
 /// <reference path="./baml-runtime.d.ts" />
 /**
- * Fixture: argument-cleese. Starts the argument and sends one line to Chapman.
- * Same pattern as stream-baml-tool: run(ctx), BAML functions only, no openToolSession or token.
- * Flow: ArgumentReply (prompt) → emit line → CleeseSendToChapman (prompt returns session plan, runtime executes) → emit Chapman reply.
+ * Fixture: argument-cleese. Starts the argument, sends one line to Chapman via internal_a2a, then uses INPUT_REQUIRED.
+ * Turn 1: ArgumentReply → emit line → CleeseSendToChapman → emit Chapman reply → awaitInput("Say 'done' to finish.") → INPUT_REQUIRED.
+ * Turn 2 (resume): return { message: "Done." } → COMPLETED.
  */
 import type { SessionResult } from "./baml-runtime";
 
@@ -35,6 +35,8 @@ __chat_register({
 
       const chapmanResult = await CleeseSendToChapman({ first_line: myLine });
       emitFromToolResult(ctx.emit, chapmanResult);
+
+      await ctx.emit.awaitInput("Say 'done' to finish.");
       return { message: "Done." };
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);

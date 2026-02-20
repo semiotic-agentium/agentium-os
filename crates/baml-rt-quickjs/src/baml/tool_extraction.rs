@@ -1,12 +1,50 @@
 //! Tool call and tool session plan extraction from JSON.
 //!
-//! Parses BAML tool call results and `ToolSessionPlan` steps into typed
-//! structures for execution. Tool identity is derived from input schema
-//! matching; no raw `tool_name` in payload for attribution.
+//! Session plans are bound to a tool by manifest mapping (function name -> plan type),
+//! then resolved from the registry via `ToolFunctionMetadata::class_name`.
+//! Single tool calls still resolve by input schema when exactly one tool matches.
 
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_tools::ToolRegistry as ConcreteToolRegistry;
 use serde_json::Value;
+
+/// Derive the tool class name from a session plan type string (e.g. `SupportCalculateSessionPlan` → `SupportCalculate`).
+fn class_name_from_plan_type(plan_type: &str) -> Option<&str> {
+    plan_type.strip_suffix("SessionPlan")
+}
+
+/// Resolve tool name from a known session plan type name (e.g. from the builder-generated manifest).
+///
+/// Used when the invoking BAML function is known and we have a manifest mapping function → plan type,
+/// so we do not rely on __type in the prompt output.
+pub(crate) fn resolve_tool_name_from_plan_type_with_registry(
+    registry: &ConcreteToolRegistry,
+    plan_type: &str,
+) -> Result<String> {
+    let class_name = class_name_from_plan_type(plan_type)
+        .map(String::from)
+        .unwrap_or_else(|| plan_type.to_string());
+
+    let matches: Vec<String> = registry
+        .all_metadata()
+        .into_iter()
+        .filter(|metadata| metadata.class_name == class_name)
+        .map(|metadata| metadata.name.to_string())
+        .collect();
+
+    match matches.len() {
+        1 => Ok(matches.into_iter().next().unwrap()),
+        0 => Err(BamlRtError::InvalidArgument(format!(
+            "No registered tool has class_name {:?} (from plan type {:?}). Ensure the tool is registered.",
+            class_name, plan_type
+        ))),
+        _ => Err(BamlRtError::InvalidArgument(format!(
+            "Multiple tools match session plan class {:?}: {}.",
+            class_name,
+            matches.join(", ")
+        ))),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ToolCall {

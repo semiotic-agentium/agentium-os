@@ -1,9 +1,11 @@
 {
   "version": "1.0.0",
   "name": "stream-baml-tool",
-  "description": "Fixture: streams result from a BAML tool (FSM) driven by message.sendStream",
   "entry_point": "src/index.ts",
   "signature": "stream-baml-tool@1.0.0",
-  "runtime_version": "0.1.0",
-  "tools": ["support/calculate"]
+  "tools": ["support/calculate"],
+  "discovery": {
+    "description": "Fixture: streams result from a BAML tool (FSM) driven by message.sendStream",
+    "capabilities": []
+  }
 }

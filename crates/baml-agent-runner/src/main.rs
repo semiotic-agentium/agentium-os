@@ -6,13 +6,14 @@
 
 #![recursion_limit = "256"]
 
+mod builder;
 mod package;
 
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, RwLock,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -21,18 +22,19 @@ use anyhow::Context;
 use async_trait::async_trait;
 use baml_rt_a2a::{
     A2aAgent, A2aRequestHandler, AgentRegistry, a2a,
-    a2a_transport::RegistrationMode,
     a2a_types::{
         A2aMessageId, JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER,
         SendMessageConfiguration, SendMessageRequest,
     },
 };
 use baml_rt_core::{
-    AgentDiscoveryEntry, AgentManifest, AgentRouteKey, BamlRtError, ContextId, Result,
+    AgentCard, AgentDiscoveryEntry, AgentLister, AgentManifest, AgentRouteKey, BamlRtError,
+    ContextId, Result,
     bus::BusStream,
     collect_a2a_stream,
     context::{self, InvocationScope},
     ids::{AgentId, DerivedId, ExternalId, TaskId},
+    route_key_from_request,
 };
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_provenance::{
@@ -41,7 +43,10 @@ use baml_rt_provenance::{
     index_tools,
 };
 use baml_rt_quickjs::BamlRuntimeManager;
-use baml_rt_tools::{enforce_tool_access, parse_access_allowlist, tools::ToolAccess};
+use baml_rt_tools::{
+    ManifestToolNames, ToolAccessPolicy, parse_access_allowlist, register_manifest_tools,
+};
+use baml_rt_tools_system::SystemBundle;
 use clap::Parser;
 use serde_json::Value;
 use tokio::{
@@ -51,15 +56,31 @@ use tokio::{
 use tracing::{error, info, warn};
 
 /// Inert agent package - just holds package data
-struct AgentPackage {
+pub(crate) struct AgentPackage {
     manifest: AgentManifest,
     extract_dir: PathBuf,
     baml_src: PathBuf,
 }
 
+/// Boot typestate: schema loaded into runtime manager.
+struct SchemaLoaded {
+    runtime_manager: BamlRuntimeManager,
+}
+
+/// Boot typestate: manifest + host system tools registered, allowlist enforced.
+struct ToolsRegistered {
+    runtime_manager: BamlRuntimeManager,
+}
+
+/// Boot typestate: A2A agent built and JS initialized.
+struct JsInitialized {
+    runtime_manager: Arc<Mutex<BamlRuntimeManager>>,
+    agent: A2aAgent,
+}
+
 impl AgentPackage {
     /// Load an agent package from a tar.gz file (inert - does not boot the agent)
-    async fn load_from_file(package_path: &Path) -> Result<Self> {
+    pub(crate) async fn load_from_file(package_path: &Path) -> Result<Self> {
         let (extract_dir, manifest) = package::load_package(package_path).await?;
         let baml_src = extract_dir.join("baml_src");
         Ok(Self {
@@ -69,144 +90,61 @@ impl AgentPackage {
         })
     }
 
-    /// Boot this package into a running A2aAgent
-    ///
-    /// This creates the runtime, loads BAML schema, creates QuickJS bridge,
-    /// loads JavaScript code, and returns a configured A2aAgent.
-    /// The agent_id is generated internally by A2aAgent.
-    async fn boot(
-        &self,
-        provenance_config: &ProvenanceConfig,
-        tool_index: Option<ToolIndexConfig>,
-        access_allowlist: &Option<HashSet<ToolAccess>>,
-    ) -> Result<(A2aAgent, AgentId)> {
-        let span = spans::load_agent_package(&self.extract_dir);
-        let _guard = span.enter();
-
-        // Create runtime manager and load BAML schema
+    async fn load_schema_phase(&self) -> Result<SchemaLoaded> {
         let mut runtime_manager = BamlRuntimeManager::new()?;
-        {
-            let schema_span = spans::load_baml_schema(&self.baml_src);
-            let _schema_guard = schema_span.enter();
-            let baml_src_str = self.baml_src.to_str().ok_or_else(|| {
-                BamlRtError::InvalidArgument("BAML source path contains invalid UTF-8".to_string())
-            })?;
-            runtime_manager.load_schema(baml_src_str)?;
-            info!(agent = self.manifest.name, "BAML schema loaded");
-        }
+        let schema_span = spans::load_baml_schema(&self.baml_src);
+        let _schema_guard = schema_span.enter();
+        let baml_src_str = self.baml_src.to_str().ok_or_else(|| {
+            BamlRtError::InvalidArgument("BAML source path contains invalid UTF-8".to_string())
+        })?;
+        runtime_manager.load_schema(baml_src_str)?;
+        info!(agent = self.manifest.name, "BAML schema loaded");
+        Ok(SchemaLoaded { runtime_manager })
+    }
 
+    async fn register_tools_phase(
+        &self,
+        loaded: SchemaLoaded,
+        policy: &ToolAccessPolicy,
+        agent_list_catalogue: Arc<dyn AgentLister>,
+        a2a_handler: Arc<dyn A2aRequestHandler>,
+    ) -> Result<ToolsRegistered> {
+        let runtime_manager = loaded.runtime_manager;
+
+        let manifest_tool_names = ManifestToolNames::parse(&self.manifest.tools)?;
+        register_manifest_tools(
+            runtime_manager.tool_registry().as_ref(),
+            &manifest_tool_names,
+            policy,
+        )?;
+
+        // Host composes tool catalogue: system bundle (internal_a2a, discover_agents, discover_tools)
+        let tool_registry = runtime_manager.tool_registry();
+        tool_registry.register_bundle(SystemBundle::new(
+            agent_list_catalogue,
+            tool_registry.clone(),
+            a2a_handler,
+        ))?;
+
+        // Apply allowlist after host bundle registration so system/* tools are optional
+        // unless explicitly declared in the agent manifest.
         runtime_manager
             .set_tool_allowlist(self.manifest.tools.iter().cloned().collect::<HashSet<_>>())
             .await?;
 
-        // Register tool instances for every tool declared in the manifest
-        for tool_name in &self.manifest.tools {
-            enforce_tool_access(tool_name, access_allowlist)?;
-            match tool_name.as_str() {
-                "support/calculate" => {
-                    runtime_manager
-                        .register_tool(baml_rt_tools::support::CalculatorTool)
-                        .await?;
-                }
-                "support/clickup" => {
-                    #[cfg(feature = "clickup")]
-                    {
-                        runtime_manager
-                            .register_tool(baml_rt_tools::clickup::ClickUpTool::new())
-                            .await?;
-                    }
-                    #[cfg(not(feature = "clickup"))]
-                    {
-                        return Err(BamlRtError::InvalidArgument(
-                            "ClickUp tool not compiled: enable baml-agent-runner feature 'clickup'"
-                                .to_string(),
-                        ));
-                    }
-                }
-                "support/notion" => {
-                    #[cfg(feature = "notion")]
-                    {
-                        runtime_manager
-                            .register_tool(baml_rt_tools::notion::NotionTool::new())
-                            .await?;
-                    }
-                    #[cfg(not(feature = "notion"))]
-                    {
-                        return Err(BamlRtError::InvalidArgument(
-                            "Notion tool not compiled: enable baml-agent-runner feature 'notion'"
-                                .to_string(),
-                        ));
-                    }
-                }
-                "support/notionSearchPages" => {
-                    #[cfg(feature = "notion")]
-                    {
-                        runtime_manager
-                            .register_tool(baml_rt_tools::notion::NotionSearchPagesTool::new())
-                            .await?;
-                    }
-                    #[cfg(not(feature = "notion"))]
-                    {
-                        return Err(BamlRtError::InvalidArgument(
-                            "Notion tool not compiled: enable baml-agent-runner feature 'notion'"
-                                .to_string(),
-                        ));
-                    }
-                }
-                "support/notionGetPage" => {
-                    #[cfg(feature = "notion")]
-                    {
-                        runtime_manager
-                            .register_tool(baml_rt_tools::notion::NotionGetPageTool::new())
-                            .await?;
-                    }
-                    #[cfg(not(feature = "notion"))]
-                    {
-                        return Err(BamlRtError::InvalidArgument(
-                            "Notion tool not compiled: enable baml-agent-runner feature 'notion'"
-                                .to_string(),
-                        ));
-                    }
-                }
-                "support/notionGetPageBlocks" => {
-                    #[cfg(feature = "notion")]
-                    {
-                        runtime_manager
-                            .register_tool(baml_rt_tools::notion::NotionGetPageBlocksTool::new())
-                            .await?;
-                    }
-                    #[cfg(not(feature = "notion"))]
-                    {
-                        return Err(BamlRtError::InvalidArgument(
-                            "Notion tool not compiled: enable baml-agent-runner feature 'notion'"
-                                .to_string(),
-                        ));
-                    }
-                }
-                "system/internal_a2a" => {
-                    // Registered by A2aAgent at build time when with_a2a_session_tool(true)
-                }
-                other => {
-                    warn!(
-                        tool = other,
-                        "Unknown tool in manifest, skipping registration"
-                    );
-                }
-            }
-        }
+        Ok(ToolsRegistered { runtime_manager })
+    }
 
-        // Build A2aAgent - it will generate agent_id internally and create QuickJS bridge
-        let runtime_manager_arc = Arc::new(Mutex::new(runtime_manager));
-        let wants_a2a_session = self
-            .manifest
-            .tools
-            .iter()
-            .any(|t| t == "system/internal_a2a");
+    async fn build_agent_phase(
+        &self,
+        registered: ToolsRegistered,
+        provenance_config: &ProvenanceConfig,
+    ) -> Result<JsInitialized> {
+        let runtime_manager_arc = Arc::new(Mutex::new(registered.runtime_manager));
         let mut agent_builder = A2aAgent::builder()
             .with_runtime_handle(runtime_manager_arc.clone())
-            .with_baml_helpers(RegistrationMode::Register)
-            .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
-            .with_a2a_session_tool(RegistrationMode::from(wants_a2a_session));
+            .with_baml_helpers(true)
+            .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
 
         match provenance_config {
             ProvenanceConfig::Graphqlite(store) => {
@@ -216,8 +154,13 @@ impl AgentPackage {
         }
 
         let agent = agent_builder.build().await?;
+        Ok(JsInitialized {
+            runtime_manager: runtime_manager_arc,
+            agent,
+        })
+    }
 
-        // Load and evaluate agent JavaScript code
+    async fn initialize_js_phase(&self, built: JsInitialized) -> Result<JsInitialized> {
         let entry_point_path = self.extract_dir.join(&self.manifest.entry_point);
         if entry_point_path.exists() {
             let eval_span = spans::evaluate_agent_code(&self.manifest.entry_point);
@@ -230,7 +173,7 @@ impl AgentPackage {
                 "Loading agent JavaScript code"
             );
 
-            let bridge = agent.bridge();
+            let bridge = built.agent.bridge();
             let mut bridge_guard = bridge.lock().await;
             match bridge_guard.evaluate(None, &agent_code).await {
                 Ok(_) => info!("Agent code executed successfully"),
@@ -249,6 +192,34 @@ impl AgentPackage {
                 "Agent entry point not found, skipping JavaScript initialization"
             );
         }
+
+        Ok(built)
+    }
+
+    /// Boot this package into a running A2aAgent.
+    ///
+    /// The host (runner) composes the tool catalogue at startup: tools live in crates/tools
+    /// and are registered here. The relationship between agent and tools is indirect — mediated by the host.
+    pub(crate) async fn boot(
+        &self,
+        provenance_config: &ProvenanceConfig,
+        tool_index: Option<ToolIndexConfig>,
+        policy: &ToolAccessPolicy,
+        agent_list_catalogue: Arc<dyn AgentLister>,
+        a2a_handler: Arc<dyn A2aRequestHandler>,
+    ) -> Result<(A2aAgent, AgentId)> {
+        let span = spans::load_agent_package(&self.extract_dir);
+        let _guard = span.enter();
+        let loaded = self.load_schema_phase().await?;
+        let registered = self
+            .register_tools_phase(loaded, policy, agent_list_catalogue, a2a_handler)
+            .await?;
+        let built = self
+            .build_agent_phase(registered, provenance_config)
+            .await?;
+        let initialized = self.initialize_js_phase(built).await?;
+        let agent = initialized.agent;
+        let runtime_manager_arc = initialized.runtime_manager;
 
         if let Some(index_config) = tool_index {
             let manager = runtime_manager_arc.lock().await;
@@ -280,7 +251,7 @@ impl AgentPackage {
                 context_id,
                 agent_id.clone(),
                 agent_type_parsed,
-                self.manifest.version.clone(),
+                self.version().to_string(),
                 archive_path,
             );
             if let Err(e) = writer.add_event(boot_event).await {
@@ -298,20 +269,30 @@ impl AgentPackage {
         &self.manifest.name
     }
 
-    /// Get the manifest version
+    /// Get the manifest version (used for provenance AgentBooted and discovery card).
     fn version(&self) -> &str {
         &self.manifest.version
     }
+
+    /// Get the full manifest (for discovery card derivation)
+    fn manifest(&self) -> &AgentManifest {
+        &self.manifest
+    }
 }
 
-/// Booted agent - holds the running A2aAgent and metadata for discovery.
-struct BootedAgent {
+/// Booted agent - holds the running A2aAgent and full manifest for discovery.
+#[derive(Clone)]
+pub(crate) struct BootedAgent {
     agent: A2aAgent,
-    name: String,
-    version: String,
+    manifest: AgentManifest,
 }
 
 impl BootedAgent {
+    /// Manifest version (for discovery card and listing).
+    fn version(&self) -> &str {
+        &self.manifest.version
+    }
+
     async fn invoke_function(&self, function_name: &str, args: Value) -> Result<Value> {
         let scope = InvocationScope::synthetic_message(self.agent.agent_id().clone());
         let bridge = self.agent.bridge();
@@ -326,100 +307,138 @@ impl BootedAgent {
     }
 }
 
-/// Agent runner that manages multiple agent packages
-struct AgentRunner {
-    agents: HashMap<String, BootedAgent>,
+/// Agent runner (host) that manages agents and composes the tool catalogue at startup.
+/// Tools live in crates/tools; the relationship between an agent and its tools is indirect — mediated by the host.
+/// Uses interior mutability for agents so the runner can be shared as Arc before loading completes.
+pub(crate) struct AgentRunner {
+    agents: RwLock<HashMap<String, BootedAgent>>,
     provenance_config: ProvenanceConfig,
     tool_index: Option<ToolIndexConfig>,
-    access_allowlist: Option<HashSet<ToolAccess>>,
+    access_policy: ToolAccessPolicy,
 }
 
 impl AgentRunner {
-    fn new(
+    pub(crate) fn new(
         provenance_config: ProvenanceConfig,
         tool_index: Option<ToolIndexConfig>,
-        access_allowlist: Option<HashSet<ToolAccess>>,
+        access_policy: ToolAccessPolicy,
     ) -> Self {
         Self {
-            agents: HashMap::new(),
+            agents: RwLock::new(HashMap::new()),
             provenance_config,
             tool_index,
-            access_allowlist,
+            access_policy,
         }
     }
 
-    /// Load and boot an agent package
-    async fn load_agent(&mut self, package_path: &Path) -> Result<()> {
-        let package = AgentPackage::load_from_file(package_path).await?;
-        let name = package.name().to_string();
-        // Boot the package into a running agent
-        let (agent, _agent_id) = package
-            .boot(
-                &self.provenance_config,
-                self.tool_index.clone(),
-                &self.access_allowlist,
-            )
-            .await?;
+    pub(crate) fn provenance_config(&self) -> &ProvenanceConfig {
+        &self.provenance_config
+    }
 
-        let version = package.version().to_string();
-        let booted = BootedAgent {
-            agent,
-            name: name.clone(),
-            version: version.clone(),
-        };
+    pub(crate) fn tool_index(&self) -> &Option<ToolIndexConfig> {
+        &self.tool_index
+    }
 
-        info!(agent = name, "Agent loaded and booted successfully");
-        self.agents.insert(name.clone(), booted);
-        Ok(())
+    pub(crate) fn access_policy(&self) -> &ToolAccessPolicy {
+        &self.access_policy
+    }
+
+    /// Insert a booted agent (used by builder during load phase).
+    pub(crate) fn insert_agent(&self, name: String, booted: BootedAgent) {
+        let mut guard = self.agents.write().expect("RwLock poison");
+        guard.insert(name.clone(), booted);
+        let count = guard.len();
+        drop(guard);
+        tracing::info!(agent = %name, total_agents = count, "Runner: agent inserted (discovery will see this count)");
     }
 
     /// Execute a function in a specific agent
-    async fn invoke(&self, agent_name: &str, function_name: &str, args: Value) -> Result<Value> {
+    pub(crate) async fn invoke(
+        &self,
+        agent_name: &str,
+        function_name: &str,
+        args: Value,
+    ) -> Result<Value> {
         let span = spans::invoke_function(None, agent_name, function_name);
         let _guard = span.enter();
 
-        let agent = self.agents.get(agent_name).ok_or_else(|| {
-            BamlRtError::InvalidArgument(format!("Agent '{}' not found", agent_name))
-        })?;
-
+        let agent = {
+            let agents = self.agents.read().expect("RwLock poison");
+            agents.get(agent_name).cloned().ok_or_else(|| {
+                BamlRtError::InvalidArgument(format!("Agent '{}' not found", agent_name))
+            })?
+        };
         agent.invoke_function(function_name, args).await
     }
 
     /// List loaded agent names (for CLI display).
-    fn list_agents(&self) -> Vec<String> {
-        self.agents.keys().cloned().collect()
+    pub(crate) fn list_agents(&self) -> Vec<String> {
+        self.agents
+            .read()
+            .expect("RwLock poison")
+            .keys()
+            .cloned()
+            .collect()
     }
 
     /// List running agents as discovery entries (for HTTP GET /agents).
-    fn discovery_entries(&self) -> Vec<AgentDiscoveryEntry> {
+    pub(crate) fn discovery_entries(&self) -> Vec<AgentDiscoveryEntry> {
         self.agents
+            .read()
+            .expect("RwLock poison")
             .iter()
-            .map(|(pkg, booted)| AgentDiscoveryEntry {
-                agent_package: pkg.clone(),
-                agent_instance_id: "default".to_string(),
-                name: booted.name.clone(),
-                version: booted.version.clone(),
+            .map(|(pkg, booted)| {
+                let m = &booted.manifest;
+                let version = booted.version().to_string();
+                let agent_card = AgentCard {
+                    name: m.name.clone(),
+                    version: version.clone(),
+                    agent_package: pkg.clone(),
+                    agent_instance_id: "default".to_string(),
+                    tools: m.tools.clone(),
+                    description: m.discovery.as_ref().and_then(|d| d.description.clone()),
+                    capabilities: m
+                        .discovery
+                        .as_ref()
+                        .map(|d| d.capabilities.clone())
+                        .unwrap_or_default(),
+                };
+                AgentDiscoveryEntry {
+                    agent_package: pkg.clone(),
+                    agent_instance_id: "default".to_string(),
+                    name: m.name.clone(),
+                    version,
+                    agent_card,
+                }
             })
             .collect()
     }
 
     /// Handle A2A request by route key (for HTTP POST /agents/.../a2a).
-    async fn handle_a2a_by_key(
+    pub(crate) async fn handle_a2a_by_key(
         &self,
         key: &AgentRouteKey,
         request: Value,
     ) -> Result<BusStream<Value>> {
-        let booted = self.agents.get(&key.agent_package).ok_or_else(|| {
-            BamlRtError::InvalidArgument(format!(
-                "Agent {}/{} not found",
-                key.agent_package, key.agent_instance_id
-            ))
-        })?;
+        info!(
+            agent_package = %key.agent_package,
+            agent_instance_id = %key.agent_instance_id,
+            "A2A request: dispatching to agent"
+        );
+        let booted = self
+            .agents
+            .read()
+            .expect("RwLock poison")
+            .get(&key.agent_package)
+            .cloned()
+            .ok_or_else(|| {
+                BamlRtError::InvalidArgument(format!(
+                    "Agent {}/{} not found",
+                    key.agent_package, key.agent_instance_id
+                ))
+            })?;
         let scope = InvocationScope::synthetic_message(booted.agent.agent_id().clone());
         let agent = booted.agent.clone();
-        // NOTE: SSE streams must stay on the host runtime. A short-lived runtime
-        // would drop spawned tasks inside the stream handler, resulting in only
-        // keep-alives on the client.
         context::with_scope(scope.as_scope().clone(), async move {
             agent.handle_a2a_stream(request).await
         })
@@ -428,7 +447,7 @@ impl AgentRunner {
 
     /// Run the A2A JSON-RPC loop over the given reader/writer (one JSON-RPC request per line).
     /// Enables tests to use in-memory buffers instead of stdin/stdout.
-    async fn run_a2a_loop<R, W>(&self, reader: R, mut writer: W) -> Result<()>
+    pub(crate) async fn run_a2a_loop<R, W>(&self, reader: R, mut writer: W) -> Result<()>
     where
         R: tokio::io::AsyncBufRead + Unpin,
         W: AsyncWriteExt + Unpin,
@@ -461,22 +480,25 @@ impl AgentRunner {
                 }
             };
 
-            let agent = match self.agents.get(&agent_name) {
-                Some(agent) => agent,
-                None => {
-                    let response = a2a::error_response(
-                        request_id,
-                        -32601,
-                        "Agent not found",
-                        Some(Value::String(agent_name)),
-                    );
-                    let serialized = serde_json::to_string(&response)
-                        .unwrap_or_else(|_| "{\"error\":\"serialization failed\"}".to_string());
-                    writer.write_all(serialized.as_bytes()).await?;
-                    writer.write_all(b"\n").await?;
-                    writer.flush().await?;
-                    continue;
-                }
+            let agent = {
+                let agents = self.agents.read().expect("RwLock poison");
+                agents.get(&agent_name).cloned()
+            };
+            let agent = if let Some(agent) = agent {
+                agent
+            } else {
+                let response = a2a::error_response(
+                    request_id,
+                    -32601,
+                    "Agent not found",
+                    Some(Value::String(agent_name)),
+                );
+                let serialized = serde_json::to_string(&response)
+                    .unwrap_or_else(|_| "{\"error\":\"serialization failed\"}".to_string());
+                writer.write_all(serialized.as_bytes()).await?;
+                writer.write_all(b"\n").await?;
+                writer.flush().await?;
+                continue;
             };
 
             let method = request_value
@@ -506,19 +528,21 @@ impl AgentRunner {
         Ok(())
     }
 
-    async fn run_a2a_stdio(&self) -> Result<()> {
+    pub(crate) async fn run_a2a_stdio(&self) -> Result<()> {
         use tokio::io;
         let stdin = io::stdin();
         let stdout = io::stdout();
         self.run_a2a_loop(io::BufReader::new(stdin), stdout).await
     }
 
-    fn prepare_a2a_request(&self, request: &mut Value) -> Result<(String, Value)> {
+    pub(crate) fn prepare_a2a_request(&self, request: &mut Value) -> Result<(String, Value)> {
         let method = request
             .get("method")
             .and_then(|v| v.as_str())
             .ok_or_else(|| BamlRtError::InvalidArgument("A2A request missing method".to_string()))?
             .to_string();
+
+        let agents = self.agents.read().expect("RwLock poison");
 
         if is_a2a_method(&method) {
             let agent_name = a2a::extract_agent_name(request).or_else(|| {
@@ -531,8 +555,8 @@ impl AgentRunner {
             if let Some(agent_name) = agent_name {
                 return Ok((agent_name, request.clone()));
             }
-            if self.agents.len() == 1 {
-                let agent_name = self.agents.keys().next().cloned().unwrap_or_default();
+            if agents.len() == 1 {
+                let agent_name = agents.keys().next().cloned().unwrap_or_default();
                 return Ok((agent_name, request.clone()));
             }
             return Err(BamlRtError::InvalidArgument(
@@ -563,12 +587,10 @@ impl AgentRunner {
 
         let (agent_name, method_name) = if let Some(agent_name) = agent_name {
             (agent_name, method_base)
-        } else if let Some((agent_name, method_name)) =
-            split_agent_method(&method_base, &self.agents)
-        {
+        } else if let Some((agent_name, method_name)) = split_agent_method(&method_base, &agents) {
             (agent_name, method_name)
-        } else if self.agents.len() == 1 {
-            let agent_name = self.agents.keys().next().cloned().unwrap_or_default();
+        } else if agents.len() == 1 {
+            let agent_name = agents.keys().next().cloned().unwrap_or_default();
             (agent_name, method_base)
         } else {
             return Err(BamlRtError::InvalidArgument(
@@ -604,20 +626,35 @@ impl AgentRunner {
 }
 
 /// Thin wrapper so we can pass the runner as `Arc<dyn AgentRegistry>` to the HTTP API.
-struct RunnerRegistry(Arc<AgentRunner>);
+pub(crate) struct RunnerRegistry(pub(crate) Arc<AgentRunner>);
+
+impl AgentLister for RunnerRegistry {
+    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
+        let entries = self.0.discovery_entries();
+        tracing::info!(
+            count = entries.len(),
+            "Discovery list_agents called (same registry as HTTP GET /agents)"
+        );
+        entries
+    }
+}
 
 #[async_trait]
 impl AgentRegistry for RunnerRegistry {
-    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
-        self.0.discovery_entries()
-    }
-
     async fn handle_a2a_stream(
         &self,
         key: &AgentRouteKey,
         request: Value,
     ) -> Result<BusStream<Value>> {
         self.0.handle_a2a_by_key(key, request).await
+    }
+}
+
+#[async_trait]
+impl A2aRequestHandler for RunnerRegistry {
+    async fn handle_a2a_stream(&self, request: Value) -> Result<BusStream<Value>> {
+        let key = route_key_from_request(&request)?;
+        self.0.handle_a2a_by_key(&key, request).await
     }
 }
 
@@ -802,7 +839,7 @@ impl Cli {
 }
 
 /// Provenance configuration: none, writer only, or GraphQLite (store required).
-enum ProvenanceConfig {
+pub(crate) enum ProvenanceConfig {
     None,
     Graphqlite(Arc<baml_rt_provenance::GraphqliteProvenanceStore>),
 }
@@ -902,7 +939,11 @@ async fn main() -> anyhow::Result<()> {
         ProvenanceDb::InMemory => Some(ToolIndexConfig::in_memory()),
         ProvenanceDb::File(path) => Some(ToolIndexConfig::new(path)),
     };
-    let mut runner = AgentRunner::new(provenance_config, tool_index, access_allowlist);
+    let mut builder = builder::RunnerBuilder::<builder::Loading>::new(
+        provenance_config,
+        tool_index,
+        access_allowlist,
+    );
 
     for package in &config.packages {
         let package_path = Path::new(package);
@@ -911,8 +952,9 @@ async fn main() -> anyhow::Result<()> {
             std::process::exit(1);
         }
 
-        match runner.load_agent(package_path).await {
-            Ok(_) => {
+        match builder.load_agent(package_path).await {
+            Ok(b) => {
+                builder = b;
                 info!(package_path = %package_path.display(), "Agent package loaded");
             }
             Err(e) => {
@@ -927,10 +969,12 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    let ready = builder.build();
+
     if let Some((agent_name, function_name, json_args)) = config.invoke {
         let args_value: Value =
             serde_json::from_str(&json_args).context("Invalid JSON arguments")?;
-        let result = runner
+        let result = ready
             .invoke(&agent_name, &function_name, args_value)
             .await
             .context("Function invocation failed")?;
@@ -938,8 +982,7 @@ async fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    // If we get here, just loaded agents without invoking
-    let agents = runner.list_agents();
+    let agents = ready.list_agents();
     if agents.is_empty() {
         eprintln!("Error: No agents loaded");
         std::process::exit(1);
@@ -951,28 +994,76 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if let Some(bind) = &config.serve_http {
-        let mermaid = match &runner.provenance_config {
+        let mermaid = match ready.runner().provenance_config() {
             ProvenanceConfig::Graphqlite(store) => {
                 Some(Arc::new(MermaidServiceImpl::new(store.clone()))
                     as Arc<dyn baml_rt_api::MermaidService>)
             }
             _ => None,
         };
-        let runner = Arc::new(runner);
-        let registry: Arc<dyn AgentRegistry> = Arc::new(RunnerRegistry(runner));
+        let registry_impl = ready.registry();
         let web_dir = config.web_dir.as_deref();
         info!(bind = %bind, web_dir = ?web_dir, "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a, GET /mermaid/..., GET /openapi.json)");
-        baml_rt_api::serve(registry, bind, mermaid, web_dir)
+        baml_rt_api::serve(registry_impl, bind, mermaid, web_dir)
             .await
             .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))?;
         return Ok(());
     }
 
     if config.a2a_stdio {
-        runner.run_a2a_stdio().await?;
+        ready.run_a2a_stdio().await?;
         return Ok(());
     }
 
     info!("Agent Runner completed successfully");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use baml_rt_core::route_key_from_request;
+
+    #[test]
+    fn route_key_from_request_extracts_key() {
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "message.sendStream",
+            "params": {
+                "metadata": {
+                    "target": {
+                        "agent_package": "my-pkg",
+                        "agent_instance_id": "inst-1"
+                    }
+                }
+            },
+            "id": 1
+        });
+        let key = route_key_from_request(&request).unwrap();
+        assert_eq!(key.agent_package, "my-pkg");
+        assert_eq!(key.agent_instance_id, "inst-1");
+    }
+
+    #[test]
+    fn route_key_from_request_default_instance_id() {
+        let request = serde_json::json!({
+            "params": {
+                "metadata": {
+                    "target": {
+                        "agent_package": "solo"
+                    }
+                }
+            }
+        });
+        let key = route_key_from_request(&request).unwrap();
+        assert_eq!(key.agent_package, "solo");
+        assert_eq!(key.agent_instance_id, "default");
+    }
+
+    #[test]
+    fn route_key_from_request_missing_target_err() {
+        let request = serde_json::json!({
+            "params": { "metadata": {} }
+        });
+        assert!(route_key_from_request(&request).is_err());
+    }
 }

@@ -50,17 +50,12 @@ type InvocationContextRegistrySlot = Arc<StdMutex<InvocationContextRegistry>>;
 type EvalResultMap = Arc<StdMutex<HashMap<InvocationToken, Option<String>>>>;
 type StreamSemaphore = Arc<Semaphore>;
 type StreamPermit = tokio::sync::OwnedSemaphorePermit;
-type YieldSenderSlot = Arc<StdMutex<Option<mpsc::UnboundedSender<Value>>>>;
-type YieldReceiver = mpsc::UnboundedReceiver<Value>;
 type InFlightCounter = Arc<AtomicU32>;
 
-/// Opaque session identifier for stream invocations.
-///
-/// Each `invoke_js_function_stream` call allocates a unique `StreamSessionId`.
-/// Session-aware native callbacks receive this as their first argument and use it
-/// to look up the owning [`StreamInvocationSession`] in `QuickJSBridge::stream_sessions`.
+/// Host-only stream session identifier. Never exposed to JS; used for yield routing and finalization.
+/// Each `invoke_js_function_stream` call allocates a unique id; session is looked up in `stream_sessions`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct StreamSessionId(pub(crate) u64);
+pub struct StreamSessionId(pub(crate) u64);
 
 impl std::fmt::Display for StreamSessionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -72,7 +67,9 @@ impl std::fmt::Display for StreamSessionId {
 ///
 /// Held in `QuickJSBridge::stream_sessions` for the lifetime of a single stream
 /// invocation. Native callbacks clone the `Arc` to capture the session and resolve
-/// scope, correlation id, and cancellation state.
+/// scope, correlation id, and cancellation state. The permit is released when
+/// the session is removed from the map (drop). The context is exited in
+/// `finalize_a2a_stream_invocation` before removal.
 pub(crate) struct StreamInvocationSession {
     /// Retained for diagnostic tracing; not read in production paths yet.
     #[allow(dead_code)]
@@ -81,6 +78,11 @@ pub(crate) struct StreamInvocationSession {
     pub(crate) correlation_id: Option<baml_rt_core::ids::CorrelationId>,
     pub(crate) cancel: CancellationToken,
     pub(crate) closed: AtomicBool,
+    /// Held so the semaphore permit is released when this session is dropped (RAII; not read).
+    #[allow(dead_code)]
+    pub(crate) permit: Option<StreamPermit>,
+    /// LIFO context id to exit when this session is finalized.
+    pub(crate) context_id: Option<InvocationContextId>,
 }
 
 impl StreamInvocationSession {
@@ -162,6 +164,7 @@ fn empty_open_input() -> Value {
 fn tool_step_to_value(step: ToolStep) -> Value {
     match step {
         ToolStep::Streaming { output } => json!({ "status": "streaming", "output": output }),
+        ToolStep::Suspended { output } => json!({ "status": "suspended", "output": output }),
         ToolStep::Done { output } => json!({ "status": "done", "output": output }),
         ToolStep::Error { error } => json!({
             "status": "error",
@@ -194,19 +197,9 @@ pub struct QuickJSBridge {
     correlation_id_by_token: CorrelationMap,
     /// Token → eval result (None while pending). Strictly keyed by token.
     eval_results_by_token: EvalResultMap,
-    /// Token for the active stream (legacy); unused when tokenless.
-    current_stream_token: Option<InvocationToken>,
-    /// Active stream invocation context; exited when stream is finalized or next stream starts.
-    current_stream_context_id: Option<InvocationContextId>,
-    /// Only one stream invocation may be active at a time so invocation token state
-    /// is not overwritten by a concurrent stream. Acquired in invoke_js_function_stream, released in get_a2a_yield_buffer.
+    /// Up to N stream invocations may be active; each holds a permit in its session.
+    /// Permit is released when the session is removed in finalize_a2a_stream_invocation.
     stream_semaphore: StreamSemaphore,
-    /// Permit held while a stream is active; dropped in get_a2a_yield_buffer.
-    stream_permit: Option<StreamPermit>,
-    /// Active stream yield sink. JS host callback pushes chunks into this channel.
-    a2a_yield_tx_slot: YieldSenderSlot,
-    /// Active stream yield receiver, drained by get_a2a_yield_buffer().
-    a2a_yield_rx: Option<YieldReceiver>,
     /// Number of `__baml_invoke` / `__baml_stream` async bodies currently in-flight on tokio.
     /// Incremented synchronously on the event-loop thread when the native is called;
     /// decremented (via [`InFlightGuard`]) when the async body completes.
@@ -215,11 +208,14 @@ pub struct QuickJSBridge {
     /// drained in `finalize_a2a_stream_invocation`. Session-aware natives resolve scope
     /// from this map instead of the LIFO `invocation_context_registry`.
     stream_sessions: StreamSessionMap,
+    /// Per-session yield senders. Host-only: __baml_chat_yield_host(chunk_json) reads
+    /// current_stream_session_id_slot and sends here. Never expose session id to JS.
+    a2a_yield_tx_by_session: Arc<StdMutex<HashMap<StreamSessionId, mpsc::UnboundedSender<Value>>>>,
+    /// Host-only "current" stream session for yield routing. Set when stream starts,
+    /// cleared when it finalizes. JS never sees this; __baml_chat_yield_host uses it.
+    current_stream_session_id_slot: Arc<StdMutex<Option<StreamSessionId>>>,
     /// Monotonic counter for allocating unique `StreamSessionId` values.
     next_stream_session_id: AtomicU64,
-    /// Session id for the currently active stream invocation (at most one due to semaphore).
-    /// Used by `finalize_a2a_stream_invocation` to close and remove the session.
-    current_stream_session_id: Option<StreamSessionId>,
 }
 
 impl QuickJSBridge {
@@ -295,22 +291,20 @@ impl QuickJSBridge {
             invocation_scope_by_token: Arc::new(StdMutex::new(HashMap::new())),
             correlation_id_by_token: Arc::new(StdMutex::new(HashMap::new())),
             eval_results_by_token: Arc::new(StdMutex::new(HashMap::new())),
-            current_stream_token: None,
-            current_stream_context_id: None,
             stream_semaphore: Arc::new(Semaphore::new(1)),
-            stream_permit: None,
-            a2a_yield_tx_slot: Arc::new(StdMutex::new(None)),
-            a2a_yield_rx: None,
             in_flight_invoke_count: Arc::new(AtomicU32::new(0)),
             stream_sessions: Arc::new(StdMutex::new(HashMap::new())),
+            a2a_yield_tx_by_session: Arc::new(StdMutex::new(HashMap::new())),
+            current_stream_session_id_slot: Arc::new(StdMutex::new(None)),
             next_stream_session_id: AtomicU64::new(1),
-            current_stream_session_id: None,
         };
 
         // Initialize sandbox - remove dangerous globals and implement safe console
         // INVARIANT L1: Bridge initialization must terminate within bounded time
         // Timeout is handled in initialize_sandbox() itself
         bridge.initialize_sandbox().await?;
+
+        bridge.register_chat_yield_host().await?;
 
         Ok(bridge)
     }
@@ -452,21 +446,7 @@ impl QuickJSBridge {
             &[],
             "__baml_invoke",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                // Resolve scope from active context. When no context is active (e.g. orphaned
-                // continuation after stream finalization), return a rejected promise instead of
-                // throwing synchronously. A synchronous throw inside a promise-reaction handler
-                // becomes an unhandled rejection that crashes the runtime; a rejected promise
-                // propagates cleanly through JS await/try-catch.
-                let scope = match resolve_scope_from_active_context(&registry) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let msg = e.to_string();
-                        tracing::debug!(error = %msg, "__baml_invoke: no active invocation context, returning rejected promise");
-                        return Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
-                            Err(quickjs_runtime::jsutils::JsError::new_str(&msg))
-                        }));
-                    }
-                };
+                let scope = resolve_scope_from_active_context(&registry)?;
                 if args.len() < 2 {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (function_name, args)"));
                 }
@@ -512,7 +492,13 @@ impl QuickJSBridge {
                                 .invoke_function(&invocation_scope, &func_name_clone, args_json)
                                 .await
                                 .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
-                            let result = manager.execute_tool_from_baml_result_or_value(&scope_for_tools, value).await
+                            let result = manager
+                                .execute_tool_from_baml_result_or_value(
+                                    &scope_for_tools,
+                                    value,
+                                    Some(&func_name_clone),
+                                )
+                                .await
                                 .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
                             Ok(value_to_js_value_facade(result))
                         })
@@ -589,9 +575,7 @@ impl QuickJSBridge {
                     .map_err(|_| quickjs_runtime::jsutils::JsError::new_str("eval_results lock poisoned"))?;
                 let key = InvocationToken(token);
                 if !guard.contains_key(&key) {
-                    // Late completion after timeout/cancel: token slot may already be gone.
-                    // Ignore to keep completion idempotent.
-                    return Ok(JsValueFacade::Undefined);
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Missing eval result slot for token"));
                 }
                 guard.insert(key, Some(json_str));
                 Ok(JsValueFacade::Undefined)
@@ -615,17 +599,7 @@ impl QuickJSBridge {
             &[],
             "__baml_stream",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                // Same graceful missing-context handling as __baml_invoke.
-                let scope = match resolve_scope_from_active_context(&registry) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        let msg = e.to_string();
-                        tracing::debug!(error = %msg, "__baml_stream: no active invocation context, returning rejected promise");
-                        return Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
-                            Err(quickjs_runtime::jsutils::JsError::new_str(&msg))
-                        }));
-                    }
-                };
+                let scope = resolve_scope_from_active_context(&registry)?;
                 if args.len() < 2 {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (function_name, args)"));
                 }
@@ -894,7 +868,9 @@ impl QuickJSBridge {
                             if cancel_inner.is_cancelled() {
                                 return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
                             }
-                            let result = manager.execute_tool_from_baml_result_or_value(&scope_for_tools, value).await
+                            let result = manager
+                                .execute_tool_from_baml_result_or_value(&scope_for_tools, value, Some(&func_name))
+                                .await
                                 .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
                             Ok(value_to_js_value_facade(result))
                         })
@@ -1204,8 +1180,9 @@ impl QuickJSBridge {
         (token, prelude)
     }
 
-    /// Remove an invocation token so it can no longer be used for scope lookup. Call when the
-    /// invocation completes (after evaluate returns for non-stream, or in get_a2a_yield_buffer for stream).
+    /// Remove an invocation token so it can no longer be used for scope lookup. Reserved for
+    /// post-invocation cleanup of scope/correlation maps.
+    #[allow(dead_code)]
     fn remove_invocation_token(&mut self, token: &InvocationToken) {
         if let Ok(mut map) = self.invocation_scope_by_token.lock() {
             map.remove(token);

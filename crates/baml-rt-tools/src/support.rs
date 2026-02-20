@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
@@ -8,8 +10,8 @@ use ts_rs::TS;
 
 use crate::{
     bundles::Support,
-    register_tool_metadata,
-    tools::{BamlTool, ToolFunctionMetadata},
+    register_tool,
+    tools::{BamlTool, ToolFunctionMetadata, ToolHandler, create_tool_handler},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
@@ -75,7 +77,11 @@ pub fn support_calculate_metadata() -> ToolFunctionMetadata {
     .build_metadata()
 }
 
-register_tool_metadata!(support_calculate_metadata);
+fn support_calculate_build() -> Result<Arc<dyn ToolHandler>> {
+    create_tool_handler(CalculatorTool).map(|(_, h)| h)
+}
+
+register_tool!(support_calculate_metadata, support_calculate_build);
 
 /// Calculator tool (support/calculate) for fixture and demo use.
 pub struct CalculatorTool;

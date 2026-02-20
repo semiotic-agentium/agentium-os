@@ -24,13 +24,13 @@ use baml_rt_core::{BamlRtError, Result, ids::AgentId};
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge};
 use baml_rt_tools::{
-    enforce_tool_access, parse_access_allowlist, tool_catalog::all_tool_metadata, tools::ToolAccess,
+    ManifestToolNames, ToolAccessPolicy, parse_access_allowlist, register_manifest_tools,
+    tool_catalog::all_tool_metadata,
 };
 use baml_rt_tools_system as _;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 use tokio::sync::Mutex;
-use tracing::warn;
 use uuid::Uuid;
 
 #[derive(Parser)]
@@ -283,8 +283,8 @@ async fn run_agent(
 
     // Load the agent package
     println!("📦 Loading agent package: {}", package_path);
-    let access_allowlist = parse_access_allowlist();
-    let agent = load_agent_package(package_path.as_path(), &access_allowlist).await?;
+    let access_policy = parse_access_allowlist();
+    let agent = load_agent_package(package_path.as_path(), &access_policy).await?;
     println!("✅ Agent loaded: {}", agent.name());
 
     // If function is specified, call it once
@@ -400,7 +400,7 @@ impl LoadedAgent {
 
 async fn load_agent_package(
     package_path: &std::path::Path,
-    access_allowlist: &Option<HashSet<ToolAccess>>,
+    policy: &ToolAccessPolicy,
 ) -> Result<LoadedAgent> {
     use std::sync::Arc;
 
@@ -467,64 +467,8 @@ async fn load_agent_package(
         if !tools.is_empty() {
             rm.set_tool_allowlist(tools.iter().cloned().collect::<HashSet<_>>())
                 .await?;
-
-            for tool_name in &tools {
-                enforce_tool_access(tool_name, access_allowlist)?;
-                match tool_name.as_str() {
-                    "support/calculate" => {
-                        rm.register_tool(baml_rt_tools::support::CalculatorTool)
-                            .await?;
-                    }
-                    "support/notionSearchPages" => {
-                        #[cfg(feature = "notion")]
-                        {
-                            rm.register_tool(baml_rt_tools::notion::NotionSearchPagesTool::new())
-                                .await?;
-                        }
-                        #[cfg(not(feature = "notion"))]
-                        {
-                            return Err(BamlRtError::InvalidArgument(
-                                "Notion tool not compiled: enable baml-rt-builder feature 'notion'"
-                                    .to_string(),
-                            ));
-                        }
-                    }
-                    "support/notionGetPage" => {
-                        #[cfg(feature = "notion")]
-                        {
-                            rm.register_tool(baml_rt_tools::notion::NotionGetPageTool::new())
-                                .await?;
-                        }
-                        #[cfg(not(feature = "notion"))]
-                        {
-                            return Err(BamlRtError::InvalidArgument(
-                                "Notion tool not compiled: enable baml-rt-builder feature 'notion'"
-                                    .to_string(),
-                            ));
-                        }
-                    }
-                    "support/notionGetPageBlocks" => {
-                        #[cfg(feature = "notion")]
-                        {
-                            rm.register_tool(baml_rt_tools::notion::NotionGetPageBlocksTool::new())
-                                .await?;
-                        }
-                        #[cfg(not(feature = "notion"))]
-                        {
-                            return Err(BamlRtError::InvalidArgument(
-                                "Notion tool not compiled: enable baml-rt-builder feature 'notion'"
-                                    .to_string(),
-                            ));
-                        }
-                    }
-                    other => {
-                        warn!(
-                            tool = other,
-                            "Unknown tool in manifest, skipping registration"
-                        );
-                    }
-                }
-            }
+            let manifest_tool_names = ManifestToolNames::parse(&tools)?;
+            register_manifest_tools(rm.tool_registry().as_ref(), &manifest_tool_names, policy)?;
         }
 
         rm

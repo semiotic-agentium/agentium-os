@@ -39,7 +39,7 @@ where
         output: &std::path::Path,
         lint: bool,
     ) -> Result<()> {
-        // Stage 1: Lint (if enabled)
+        // Stage 1: Lint (if enabled) — Oxlint (same project as OXC)
         if lint {
             println!("\n🔍 Linting source code...");
             self.linter.lint(agent_dir).await?;

@@ -1,9 +1,16 @@
 {
   "version": "1.0.0",
   "name": "notion-agent",
-  "description": "Agent that reads Notion pages and blocks",
   "entry_point": "src/index.ts",
   "signature": "notion-agent@1.0.0",
-  "runtime_version": "0.1.0",
-  "tools": ["support/notion"]
+  "tools": [
+    "support/notion",
+    "system/discover_agents",
+    "system/discover_tools",
+    "system/internal_a2a"
+  ],
+  "discovery": {
+    "description": "Agent that reads Notion pages and blocks",
+    "capabilities": []
+  }
 }

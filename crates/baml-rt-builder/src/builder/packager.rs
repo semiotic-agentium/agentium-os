@@ -96,6 +96,21 @@ impl<FS: FileSystem> Packager for StdPackager<FS> {
             add_directory_to_tar(&mut tar, &dist_build, "dist", &self.filesystem)?;
         }
 
+        // Add session_plan_functions.json (generated from BAML IR; runtime uses it to resolve tool from function name)
+        let session_plan_manifest = build_dir.join("session_plan_functions.json");
+        if session_plan_manifest.exists() {
+            let content = fs::read_to_string(&session_plan_manifest).map_err(BamlRtError::Io)?;
+            let mut header = Header::new_gnu();
+            header
+                .set_path("session_plan_functions.json")
+                .map_err(BamlRtError::TarHeaderPath)?;
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append(&header, content.as_bytes())
+                .map_err(BamlRtError::Io)?;
+        }
+
         tar.finish().map_err(BamlRtError::Io)?;
         Ok(())
     }

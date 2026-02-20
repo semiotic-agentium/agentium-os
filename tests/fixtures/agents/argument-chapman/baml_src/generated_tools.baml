@@ -45,8 +45,15 @@ class ConversationPart {
   mediaType string?
 }
 
+enum InternalA2aCompletion {
+  DONE
+  INPUTREQUIRED
+    @alias("INPUT_REQUIRED")
+}
+
 class InternalA2aNextOutput {
   chunks ConversationChunk[]
+  completion InternalA2aCompletion | null? @description("Set to INPUT_REQUIRED when the delegated agent yielded TASK_STATE_INPUT_REQUIRED.")
 }
 
 class InternalA2aOpenInput {
@@ -94,6 +101,5 @@ class SystemInternal_a2aAbortStep {
 type SystemInternal_a2aSessionStep = SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aNextStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep
 
 class SystemInternal_a2aSessionPlan {
-  steps SystemInternal_a2aSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Example: [{op: 'Open'}, {op: 'Send', input: {...}}, {op: 'Next'}, {op: 'Finish'}].")
+  steps SystemInternal_a2aSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Runtime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Example: [{op: \"Open\"}, {op: \"Send\", input: {...}}, {op: \"Next\"}, {op: \"Finish\"}].")
 }
-

@@ -373,11 +373,12 @@ async fn test_failed_stream_does_not_leak_state() {
         .setup_a2a_yield_buffer()
         .await
         .expect("setup yield buffer");
-    let err = bridge
+    let failed = bridge
         .invoke_js_function_stream(&scope, "nonExistentStreamFn", json!({}))
-        .await;
+        .await
+        .is_err();
     assert!(
-        err.is_err(),
+        failed,
         "invoke_js_function_stream with missing function should fail"
     );
 
@@ -412,8 +413,8 @@ async fn test_failed_stream_does_not_leak_state() {
 }
 
 #[tokio::test]
-async fn test_tool_session_plan_with_initial_input() {
-    tracing::info!("Test: ToolSessionPlan open step with initial_input");
+async fn test_tool_session_plan_requires_manifest_mapping() {
+    tracing::info!("Test: ToolSessionPlan requires manifest mapping by source function");
 
     use baml_rt::baml::BamlRuntimeManager;
     use serde_json::json;
@@ -421,7 +422,7 @@ async fn test_tool_session_plan_with_initial_input() {
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.register_tool(ScopeEchoTool).await.unwrap();
 
-    // Minimal plan: open with initial_input (for tool name resolution), then finish.
+    // Minimal plan with only FSM operations.
     let plan = json!({
         "steps": [
             { "op": "open", "initial_input": {} },
@@ -435,20 +436,24 @@ async fn test_tool_session_plan_with_initial_input() {
 
     let result = context::with_scope(scope.as_scope().clone(), async {
         manager
-            .execute_tool_from_baml_result_or_value(scope.as_scope(), plan)
+            .execute_tool_from_baml_result_or_value(scope.as_scope(), plan, None)
             .await
     })
     .await;
 
     assert!(
-        result.is_ok(),
-        "Tool session plan should execute successfully: {:?}",
-        result.as_ref().err()
+        result.is_err(),
+        "Tool session plan without manifest mapping should fail: {:?}",
+        result
     );
-    let _output = result.unwrap();
-    // Plan executed under scope; output shape depends on tool/session (may be object or null).
+    let err_text = result.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        err_text.contains("Session plan tool could not be resolved"),
+        "expected manifest mapping error, got: {}",
+        err_text
+    );
 
-    tracing::info!("✅ ToolSessionPlan with initial_input executed successfully");
+    tracing::info!("✅ ToolSessionPlan enforces manifest mapping with no metadata fallback");
 }
 
 /// Operations requiring invocation scope must be called with explicit scope.

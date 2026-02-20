@@ -5,8 +5,8 @@ use std::{collections::VecDeque, sync::Arc};
 use async_trait::async_trait;
 use baml_rt_core::{A2aRequestHandler, Result};
 use baml_rt_tools::{
-    BundleName, SessionPhase, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure,
-    ToolHandler, ToolSession, ToolSessionError, ToolStep,
+    BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
+    ToolSession, ToolSessionError, ToolStep,
     tools::{ToolFunctionMetadata, ToolSessionContext, validate_open_input},
 };
 use futures_util::StreamExt;
@@ -16,8 +16,8 @@ use tokio::task::JoinHandle;
 use crate::{
     metadata::system_internal_a2a_metadata,
     tools::{
-        ConversationChunk, ConversationMessage, ConversationPart, InternalA2aNextOutput,
-        InternalA2aOpenInput, InternalA2aSendInput, InternalA2aTarget,
+        ConversationChunk, ConversationMessage, ConversationPart, InternalA2aCompletion,
+        InternalA2aNextOutput, InternalA2aOpenInput, InternalA2aSendInput, InternalA2aTarget,
     },
 };
 
@@ -81,7 +81,7 @@ impl ToolHandler for A2aSessionToolHandler {
             queue: VecDeque::new(),
             output_rx: None,
             stream_handle: None,
-            state: SessionPhase::Open,
+            closed: false,
         }))
     }
 }
@@ -95,7 +95,7 @@ struct A2aSession {
     /// JoinHandle for the task that consumes the A2A stream. Aborted in Drop so the task
     /// does not outlive the session and trigger "context is being shutdown" panics.
     stream_handle: Option<JoinHandle<()>>,
-    state: SessionPhase,
+    closed: bool,
 }
 
 fn parse_send_input(input: Value) -> std::result::Result<Vec<ConversationPart>, String> {
@@ -230,18 +230,38 @@ fn to_conversation_chunk(value: Value) -> ConversationChunk {
     }
 }
 
+fn chunk_value_has_input_required(value: &Value) -> bool {
+    let state = value
+        .get("task")
+        .and_then(|t| t.get("status"))
+        .and_then(|s| s.get("state"))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            value
+                .get("statusUpdate")
+                .and_then(|s| s.get("status"))
+                .and_then(|s| s.get("state"))
+                .and_then(Value::as_str)
+        });
+    matches!(state, Some("TASK_STATE_INPUT_REQUIRED"))
+}
+
 fn merge_outputs(outputs: Vec<InternalA2aNextOutput>) -> InternalA2aNextOutput {
     let mut chunks = Vec::new();
+    let mut completion = None;
     for out in outputs {
         chunks.extend(out.chunks);
+        if matches!(out.completion, Some(InternalA2aCompletion::InputRequired)) {
+            completion = Some(InternalA2aCompletion::InputRequired);
+        }
     }
-    InternalA2aNextOutput { chunks }
+    InternalA2aNextOutput { chunks, completion }
 }
 
 #[async_trait]
 impl ToolSession for A2aSession {
     async fn send(&mut self, input: Value) -> std::result::Result<(), ToolSessionError> {
-        if self.state.is_closed() {
+        if self.closed {
             return Err(ToolSessionError::Tool(ToolFailure::invalid_input(format!(
                 "A2A session {session_id} is closed",
                 session_id = self.ctx.session_id
@@ -263,10 +283,20 @@ impl ToolSession for A2aSession {
                 Ok(stream) => {
                     futures_util::pin_mut!(stream);
                     while let Some(response) = stream.next().await {
+                        let chunk = extract_chunk_value(response.clone());
+                        let input_required = chunk_value_has_input_required(&chunk);
                         let out = InternalA2aNextOutput {
                             chunks: vec![to_conversation_chunk(response)],
+                            completion: if input_required {
+                                Some(InternalA2aCompletion::InputRequired)
+                            } else {
+                                None
+                            },
                         };
                         if tx.send(out).await.is_err() {
+                            break;
+                        }
+                        if input_required {
                             break;
                         }
                     }
@@ -287,6 +317,7 @@ impl ToolSession for A2aSession {
                             status_update: None,
                             artifact_update: None,
                         }],
+                        completion: None,
                     };
                     let _ = tx.send(fallback).await;
                 }
@@ -303,13 +334,22 @@ impl ToolSession for A2aSession {
             while let Some(next) = self.queue.pop_front() {
                 batch.push(next);
             }
-            let value = serde_json::to_value(merge_outputs(batch)).map_err(|e| {
+            let merged = merge_outputs(batch);
+            let value = serde_json::to_value(&merged).map_err(|e| {
                 ToolSessionError::Tool(ToolFailure::execution_failed(format!(
                     "Invalid A2A output: {error}",
                     error = e
                 )))
             })?;
-            return Ok(ToolStep::Streaming { output: value });
+            let step = if matches!(
+                merged.completion,
+                Some(InternalA2aCompletion::InputRequired)
+            ) {
+                ToolStep::Suspended { output: value }
+            } else {
+                ToolStep::Streaming { output: value }
+            };
+            return Ok(step);
         }
         if let Some(rx) = &self.output_rx {
             match rx.recv().await {
@@ -318,17 +358,25 @@ impl ToolSession for A2aSession {
                     while let Ok(next) = rx.try_recv() {
                         batch.push(next);
                     }
-                    let value = serde_json::to_value(merge_outputs(batch)).map_err(|e| {
+                    let merged = merge_outputs(batch);
+                    let value = serde_json::to_value(&merged).map_err(|e| {
                         ToolSessionError::Tool(ToolFailure::execution_failed(format!(
                             "Invalid A2A output: {error}",
                             error = e
                         )))
                     })?;
-                    return Ok(ToolStep::Streaming { output: value });
+                    let step = if matches!(
+                        merged.completion,
+                        Some(InternalA2aCompletion::InputRequired)
+                    ) {
+                        ToolStep::Suspended { output: value }
+                    } else {
+                        ToolStep::Streaming { output: value }
+                    };
+                    return Ok(step);
                 }
                 Err(_) => {
                     self.output_rx = None;
-                    self.state.close();
                 }
             }
         }
@@ -336,7 +384,7 @@ impl ToolSession for A2aSession {
     }
 
     async fn finish(&mut self) -> std::result::Result<(), ToolSessionError> {
-        self.state.close();
+        self.closed = true;
         Ok(())
     }
 
@@ -344,7 +392,7 @@ impl ToolSession for A2aSession {
         &mut self,
         _reason: Option<String>,
     ) -> std::result::Result<(), ToolSessionError> {
-        self.state.close();
+        self.closed = true;
         Ok(())
     }
 }

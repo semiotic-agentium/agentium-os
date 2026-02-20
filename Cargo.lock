@@ -933,9 +933,11 @@ dependencies = [
  "baml-rt-provenance",
  "baml-rt-quickjs",
  "baml-rt-tools",
+ "baml-rt-tools-system",
  "clap",
  "dotenvy",
  "flate2",
+ "futures-util",
  "reqwest 0.12.26",
  "schemars 1.2.1",
  "serde",
@@ -1327,6 +1329,7 @@ name = "baml-rt-tools-internal-dev"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "baml-rt-core",
  "baml-rt-tools",
  "inventory",
  "schemars 1.2.1",

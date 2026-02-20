@@ -5,7 +5,7 @@
 //! - `raw_blocks`: render mode (raw skips Notable lines / Missing info hints).
 //! - `max_depth`: limit child block expansion depth (0 disables expansion).
 
-use std::{collections::VecDeque, fmt, time::Duration};
+use std::{collections::VecDeque, fmt, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use baml_derive::BamlType;
@@ -17,8 +17,11 @@ use ts_rs::TS;
 
 use crate::{
     bundles::Support,
-    register_tool_metadata, spans,
-    tools::{BamlTool, ToolAccess, ToolFunctionMetadata, ToolSecretRequirement},
+    register_tool, spans,
+    tools::{
+        BamlTool, ToolAccess, ToolFunctionMetadata, ToolHandler, ToolSecretRequirement,
+        create_tool_handler,
+    },
 };
 
 /// Notion REST API base URL.
@@ -1473,7 +1476,26 @@ pub fn notion_get_page_blocks_metadata() -> ToolFunctionMetadata {
     .build_metadata()
 }
 
-register_tool_metadata!(notion_search_pages_metadata);
-register_tool_metadata!(notion_get_page_metadata);
-register_tool_metadata!(notion_get_page_blocks_metadata);
-register_tool_metadata!(notion_metadata);
+fn notion_search_pages_build() -> Result<Arc<dyn ToolHandler>> {
+    create_tool_handler(NotionSearchPagesTool::new()).map(|(_, h)| h)
+}
+
+fn notion_get_page_build() -> Result<Arc<dyn ToolHandler>> {
+    create_tool_handler(NotionGetPageTool::new()).map(|(_, h)| h)
+}
+
+fn notion_get_page_blocks_build() -> Result<Arc<dyn ToolHandler>> {
+    create_tool_handler(NotionGetPageBlocksTool::new()).map(|(_, h)| h)
+}
+
+fn notion_build() -> Result<Arc<dyn ToolHandler>> {
+    create_tool_handler(NotionTool::new()).map(|(_, h)| h)
+}
+
+register_tool!(notion_search_pages_metadata, notion_search_pages_build);
+register_tool!(notion_get_page_metadata, notion_get_page_build);
+register_tool!(
+    notion_get_page_blocks_metadata,
+    notion_get_page_blocks_build
+);
+register_tool!(notion_metadata, notion_build);

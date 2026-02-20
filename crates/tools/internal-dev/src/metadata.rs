@@ -1,12 +1,21 @@
-//! Tool metadata registration for the internal-dev bundle.
+//! Tool metadata registration for the internal-dev bundle (single mechanism: register_tool!).
 //!
 //! Registers metadata with baml-rt-tools inventory so manifest resolution
-//! can find internal-dev/* tools.
+//! can find internal-dev/* tools. BamlTool impls live in test-support.
 
+use std::sync::Arc;
+
+use baml_rt_core::{BamlRtError, Result};
 use baml_rt_tools::{
-    parse_tool_name_and_class, register_tool_metadata,
+    ToolHandler, parse_tool_name_and_class, register_tool,
     tools::{ToolFunctionMetadata, ToolMetadataBuilder, TypeBasedMetadataBuilder},
 };
+
+fn internal_dev_build_unused() -> Result<Arc<dyn ToolHandler>> {
+    Err(BamlRtError::InvalidArgument(
+        "internal-dev tools are provided by test-support at runtime".to_string(),
+    ))
+}
 
 use crate::tools::{
     A2aRelayInput, A2aRelayOutput, CalculatorInput, CalculatorOutput, DelayedInput, DelayedOutput,
@@ -76,8 +85,11 @@ fn internal_dev_a2a_relay_metadata() -> ToolFunctionMetadata {
     .build_metadata()
 }
 
-register_tool_metadata!(internal_dev_calculate_metadata);
-register_tool_metadata!(internal_dev_get_weather_metadata);
-register_tool_metadata!(internal_dev_uppercase_metadata);
-register_tool_metadata!(internal_dev_delayed_response_metadata);
-register_tool_metadata!(internal_dev_a2a_relay_metadata);
+register_tool!(internal_dev_calculate_metadata, internal_dev_build_unused);
+register_tool!(internal_dev_get_weather_metadata, internal_dev_build_unused);
+register_tool!(internal_dev_uppercase_metadata, internal_dev_build_unused);
+register_tool!(
+    internal_dev_delayed_response_metadata,
+    internal_dev_build_unused
+);
+register_tool!(internal_dev_a2a_relay_metadata, internal_dev_build_unused);
