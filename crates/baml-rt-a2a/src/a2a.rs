@@ -441,11 +441,27 @@ impl JsChunkNormalizer {
     }
 }
 
-/// Value passed to JS handler. For message.sendStream we pass only the incoming
-/// message payload (`parts`) to preserve the long-standing JS handler contract.
+/// Value passed to JS handler. For message.sendStream we pass parts and routing
+/// identifiers so JS session keys can resume the correct conversation.
 pub fn request_to_js_value(request: &A2aRequest) -> Result<Value> {
     match request.params.as_send_message() {
-        Some(params) => Ok(json!({ "parts": params.message.parts })),
+        Some(params) => {
+            let mut obj = serde_json::Map::new();
+            obj.insert("parts".to_string(), json!(params.message.parts));
+            if let Some(ref cid) = params.message.context_id {
+                obj.insert(
+                    "contextId".to_string(),
+                    Value::String(cid.as_str().to_string()),
+                );
+            }
+            if let Some(ref tid) = params.message.task_id {
+                obj.insert(
+                    "taskId".to_string(),
+                    Value::String(tid.as_str().to_string()),
+                );
+            }
+            Ok(Value::Object(obj))
+        }
         None => request.params.to_value(),
     }
 }
@@ -1081,13 +1097,14 @@ mod tests {
             Some("Second part.")
         );
 
-        // Verify no extra top-level keys leaked into the JS payload.
+        // Verify required payload fields are present, and only known routing keys can be added.
         let obj = js_value.as_object().expect("js payload should be object");
-        assert_eq!(
-            obj.keys().collect::<Vec<_>>(),
-            vec!["parts"],
-            "JS payload should contain only 'parts'"
+        assert!(
+            obj.contains_key("parts"),
+            "JS payload should always include 'parts'"
         );
+        let allowed = ["parts", "contextId", "taskId"];
+        assert!(obj.keys().all(|k| allowed.contains(&k.as_str())));
     }
 
     /// Verifies that metadata fields (method, context_id, invocation) are correctly
