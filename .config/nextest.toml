@@ -14,6 +14,8 @@ filter = 'all()'
 setup = 'regen-fixtures'
 
 [profile.ci]
+# Do not stop scheduling on first failure; surface full suite results in CI.
+fail-fast = false
 # JUnit output for GitHub Actions junit-report-action.
 [profile.ci.junit]
 path = "junit.xml"
