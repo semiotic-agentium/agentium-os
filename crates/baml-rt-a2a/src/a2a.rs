@@ -441,27 +441,11 @@ impl JsChunkNormalizer {
     }
 }
 
-/// Value passed to JS handler. For message.sendStream we pass parts plus
-/// contextId/taskId so JS session keys can disambiguate concurrent conversations.
+/// Value passed to JS handler. For message.sendStream we pass only the incoming
+/// message payload (`parts`) to preserve the long-standing JS handler contract.
 pub fn request_to_js_value(request: &A2aRequest) -> Result<Value> {
     match request.params.as_send_message() {
-        Some(params) => {
-            let mut obj = serde_json::Map::new();
-            obj.insert("parts".to_string(), json!(params.message.parts));
-            if let Some(ref cid) = params.message.context_id {
-                obj.insert(
-                    "contextId".to_string(),
-                    Value::String(cid.as_str().to_string()),
-                );
-            }
-            if let Some(ref tid) = params.message.task_id {
-                obj.insert(
-                    "taskId".to_string(),
-                    Value::String(tid.as_str().to_string()),
-                );
-            }
-            Ok(Value::Object(obj))
-        }
+        Some(params) => Ok(json!({ "parts": params.message.parts })),
         None => request.params.to_value(),
     }
 }

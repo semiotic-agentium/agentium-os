@@ -29,7 +29,7 @@ use crate::{
         ConversationContextSource, ProvenanceTaskStore, TaskEventRecorder, TaskRepository,
         TaskStoreBackend, TaskUpdateEvent, TaskUpdateQueue,
     },
-    a2a_types::{JSONRPCId, SendMessageRequest},
+    a2a_types::JSONRPCId,
     error_classifier::{A2aErrorClassifier, ErrorClassifier},
     events::{BroadcastEventEmitter, EventEmitter},
     handlers::{DefaultTaskHandler, TaskHandler},
