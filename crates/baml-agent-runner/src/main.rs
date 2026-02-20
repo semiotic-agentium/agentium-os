@@ -109,7 +109,7 @@ impl AgentPackage {
         agent_list_catalogue: Arc<dyn AgentLister>,
         a2a_handler: Arc<dyn A2aRequestHandler>,
     ) -> Result<ToolsRegistered> {
-        let mut runtime_manager = loaded.runtime_manager;
+        let runtime_manager = loaded.runtime_manager;
 
         let manifest_tool_names = ManifestToolNames::parse(&self.manifest.tools)?;
         register_manifest_tools(
