@@ -27,7 +27,7 @@ use crate::{
 /// Notion REST API base URL.
 pub const BASE_URL: &str = "https://api.notion.com/v1";
 /// Notion API version header value.
-pub const NOTION_VERSION: &str = "2025-09-03";
+pub const NOTION_VERSION: &str = "2022-06-28";
 const MAX_BLOCK_DEPTH: u32 = 10;
 const MAX_RATE_LIMIT_RETRIES: usize = 3;
 const RATE_LIMIT_BASE_DELAY_MS: u64 = 500;
@@ -317,11 +317,20 @@ impl NotionClient {
     }
 
     fn resolve_base_url() -> String {
-        std::env::var("NOTION_API_BASE_URL")
+        let override_url = std::env::var("NOTION_API_BASE_URL")
             .ok()
             .map(|raw| raw.trim().trim_end_matches('/').to_string())
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| BASE_URL.to_string())
+            .filter(|v| !v.is_empty());
+        if let Some(base_url) = override_url {
+            if !cfg!(test) && should_warn_on_insecure_base_url(&base_url) {
+                tracing::warn!(
+                    base_url = %base_url,
+                    "NOTION_API_BASE_URL is not https; bearer token may be sent to an insecure endpoint"
+                );
+            }
+            return base_url;
+        }
+        BASE_URL.to_string()
     }
 
     fn base_url(&self) -> &str {
@@ -767,6 +776,21 @@ impl NotionClient {
     }
 }
 
+fn should_warn_on_insecure_base_url(base_url: &str) -> bool {
+    if base_url.starts_with("https://") {
+        return false;
+    }
+    if let Ok(parsed) = reqwest::Url::parse(base_url)
+        && let Some(host) = parsed.host_str()
+    {
+        let normalized = host.to_ascii_lowercase();
+        if normalized == "localhost" || normalized == "127.0.0.1" || normalized == "::1" {
+            return false;
+        }
+    }
+    true
+}
+
 fn next_depth_for_children(depth: u32, max_depth: u32) -> Option<u32> {
     if depth >= max_depth {
         None
@@ -787,6 +811,7 @@ mod tests {
 
     use super::{
         BASE_URL, NotionClient, NotionInput, RetryAfter, backoff_delay, next_depth_for_children,
+        should_warn_on_insecure_base_url,
     };
 
     fn notion_api_base_url_test_lock() -> &'static Mutex<()> {
@@ -895,6 +920,19 @@ mod tests {
         let client = NotionClient::new();
         let _env_override = TempEnvVar::set("NOTION_API_BASE_URL", "https://mock.notion.local");
         assert_eq!(client.base_url(), BASE_URL);
+    }
+
+    #[test]
+    fn notion_insecure_base_url_warning_policy_skips_localhost() {
+        assert!(!should_warn_on_insecure_base_url(
+            "http://127.0.0.1:8080/v1"
+        ));
+        assert!(!should_warn_on_insecure_base_url(
+            "http://localhost:8080/v1"
+        ));
+        assert!(should_warn_on_insecure_base_url(
+            "http://169.254.169.254/latest"
+        ));
     }
 }
 

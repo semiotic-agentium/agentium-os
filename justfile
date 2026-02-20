@@ -22,6 +22,18 @@ notion-agent-provenance:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
     cargo run -p baml-agent-runner --features http-tools -- notion-agent.tar.gz --a2a-stdio --provenance-db {{provenance_db}}
 
+# Rebuilds coordinator + notion packages and runs coordinator-agent via a2a stdio.
+coordinator-agent:
+    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/coordinator-agent --output coordinator-agent.tar.gz
+    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
+    cargo run -p baml-agent-runner --features http-tools -- coordinator-agent.tar.gz notion-agent.tar.gz --a2a-stdio
+
+# Same as coordinator-agent, but persists provenance to provenance.db for graph_exporter.
+coordinator-agent-provenance:
+    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/coordinator-agent --output coordinator-agent.tar.gz
+    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
+    cargo run -p baml-agent-runner --features http-tools -- coordinator-agent.tar.gz notion-agent.tar.gz --a2a-stdio --provenance-db {{provenance_db}}
+
 # Runs the HTTP Notion demo script (starts runner if needed and streams one request).
 notion-demo:
     ./scripts/run-notion-demo.sh
@@ -29,6 +41,14 @@ notion-demo:
 # Stops the background runner started by notion-demo.
 notion-demo-stop:
     ./scripts/stop-notion-demo.sh
+
+# Runs coordinator + notion HTTP demo and streams one coordinated request.
+coordinator-demo:
+    ./scripts/run-coordinator-demo.sh
+
+# Stops the background runner started by coordinator-demo.
+coordinator-demo-stop:
+    ./scripts/stop-coordinator-demo.sh
 
 fmt:
     cargo fmt --all

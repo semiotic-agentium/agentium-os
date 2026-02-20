@@ -147,10 +147,13 @@ impl AgentRegistry for SingleAgentRegistry {
         key: &AgentRouteKey,
         request: Value,
     ) -> baml_rt_core::Result<baml_rt_core::bus::BusStream<Value>> {
-        if key.agent_package != self.package || key.agent_instance_id != self.instance_id {
+        if key.agent_package.as_str() != self.package
+            || key.agent_instance_id.as_str() != self.instance_id
+        {
             return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
                 "Agent {}/{} not found",
-                key.agent_package, key.agent_instance_id
+                key.agent_package.as_str(),
+                key.agent_instance_id.as_str()
             )));
         }
         self.agent.handle_a2a_stream(request).await
@@ -373,12 +376,9 @@ pub fn build_agent_dir_to_temp(
 
     let output = cmd.output().expect("build agent: run builder");
     if !output.status.success() {
-        panic!(
-            "build agent {} failed: stdout={}, stderr={}",
-            package_label,
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        panic!("build agent {package_label} failed: stdout={stdout}, stderr={stderr}");
     }
 
     let tar_gz = fs::File::open(&tar_path).expect("open built tar");

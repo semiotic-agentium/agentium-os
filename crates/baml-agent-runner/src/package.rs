@@ -1,11 +1,25 @@
 //! Package loading seam: extract tar.gz and parse manifest.
 //! Tests can use this with fixture tarballs or inject (extract_dir, manifest).
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+};
 
 use baml_rt_core::{AgentManifest, BamlRtError, Result};
 use baml_rt_observability::spans;
 use tracing::info;
+
+fn next_extract_dir() -> Result<PathBuf> {
+    static EXTRACT_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let epoch_nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| BamlRtError::InvalidArgument(e.to_string()))?
+        .as_nanos();
+    let pid = std::process::id();
+    let seq = EXTRACT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    Ok(std::env::temp_dir().join(format!("baml-agent-{epoch_nanos}-{pid}-{seq}")))
+}
 
 /// Load an agent package from a tar.gz path: extract to a temp dir and return
 /// (extract_dir, validated manifest). Caller is responsible for ensuring
@@ -14,8 +28,7 @@ pub async fn load_package(package_path: &Path) -> Result<(PathBuf, AgentManifest
     let span = spans::load_agent_package(package_path);
     let _guard = span.enter();
 
-    let unique_id = uuid::Uuid::new_v4();
-    let extract_dir = std::env::temp_dir().join(format!("baml-agent-{}", unique_id));
+    let extract_dir = next_extract_dir()?;
     std::fs::create_dir_all(&extract_dir).map_err(BamlRtError::Io)?;
 
     {
@@ -54,4 +67,16 @@ pub async fn load_package(package_path: &Path) -> Result<(PathBuf, AgentManifest
     }
 
     Ok((extract_dir, manifest))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_extract_dir;
+
+    #[test]
+    fn next_extract_dir_is_unique() {
+        let a = next_extract_dir().expect("first path");
+        let b = next_extract_dir().expect("second path");
+        assert_ne!(a, b, "extract directories must be unique");
+    }
 }

@@ -12,7 +12,9 @@ use axum::{
     http::StatusCode as AxumStatus,
     response::sse::{Event, KeepAlive, Sse},
 };
-use baml_rt_core::{AgentRouteKey, BamlRtError, collect_a2a_stream};
+use baml_rt_core::{
+    AgentInstanceId, AgentPackageName, AgentRouteKey, BamlRtError, collect_a2a_stream,
+};
 use futures_util::stream::{self, Stream};
 use http_api_problem::HttpApiProblem;
 use serde_json::Value;
@@ -78,7 +80,16 @@ pub async fn post_a2a(
     let span = spans::post_a2a(&agent_package, &agent_instance_id);
     let _guard = span.enter();
     let start = Instant::now();
-    let key = AgentRouteKey::new(agent_package.clone(), agent_instance_id.clone());
+    let package_name = AgentPackageName::parse(&agent_package)
+        .ok_or_else(|| problem(400, "Bad Request", "agent_package must match [A-Za-z0-9_-]"))?;
+    let instance_id = AgentInstanceId::parse(&agent_instance_id).ok_or_else(|| {
+        problem(
+            400,
+            "Bad Request",
+            "agent_instance_id must match [A-Za-z0-9_-]",
+        )
+    })?;
+    let key = AgentRouteKey::new(package_name, instance_id);
 
     if !body.is_object() {
         metrics::record_request("post_a2a", "error", start.elapsed());
@@ -134,7 +145,16 @@ pub async fn post_a2a_sse(
     let span = spans::post_a2a_sse(&agent_package, &agent_instance_id);
     let _guard = span.enter();
     let start = Instant::now();
-    let key = AgentRouteKey::new(agent_package.clone(), agent_instance_id.clone());
+    let package_name = AgentPackageName::parse(&agent_package)
+        .ok_or_else(|| problem(400, "Bad Request", "agent_package must match [A-Za-z0-9_-]"))?;
+    let instance_id = AgentInstanceId::parse(&agent_instance_id).ok_or_else(|| {
+        problem(
+            400,
+            "Bad Request",
+            "agent_instance_id must match [A-Za-z0-9_-]",
+        )
+    })?;
+    let key = AgentRouteKey::new(package_name, instance_id);
 
     if !body.is_object() {
         metrics::record_request("post_a2a_sse", "error", start.elapsed());
@@ -323,7 +343,7 @@ fn domain_to_problem(
     agent_instance_id: &str,
 ) -> HttpApiProblem {
     let (status, title, detail) = match e {
-        BamlRtError::InvalidArgument(msg) if msg.contains("not found") => (
+        BamlRtError::AgentNotFound(_) => (
             404u16,
             "Not Found",
             format!("Agent {agent_package}/{agent_instance_id} not found"),
