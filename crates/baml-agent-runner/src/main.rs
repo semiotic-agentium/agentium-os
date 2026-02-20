@@ -62,6 +62,22 @@ pub(crate) struct AgentPackage {
     baml_src: PathBuf,
 }
 
+/// Boot typestate: schema loaded into runtime manager.
+struct SchemaLoaded {
+    runtime_manager: BamlRuntimeManager,
+}
+
+/// Boot typestate: manifest + host system tools registered, allowlist enforced.
+struct ToolsRegistered {
+    runtime_manager: BamlRuntimeManager,
+}
+
+/// Boot typestate: A2A agent built and JS initialized.
+struct JsInitialized {
+    runtime_manager: Arc<Mutex<BamlRuntimeManager>>,
+    agent: A2aAgent,
+}
+
 impl AgentPackage {
     /// Load an agent package from a tar.gz file (inert - does not boot the agent)
     pub(crate) async fn load_from_file(package_path: &Path) -> Result<Self> {
@@ -74,36 +90,26 @@ impl AgentPackage {
         })
     }
 
-    /// Boot this package into a running A2aAgent.
-    ///
-    /// The host (runner) composes the tool catalogue at startup: tools live in crates/tools
-    /// and are registered here. The relationship between agent and tools is indirect — mediated by the host.
-    pub(crate) async fn boot(
+    async fn load_schema_phase(&self) -> Result<SchemaLoaded> {
+        let mut runtime_manager = BamlRuntimeManager::new()?;
+        let schema_span = spans::load_baml_schema(&self.baml_src);
+        let _schema_guard = schema_span.enter();
+        let baml_src_str = self.baml_src.to_str().ok_or_else(|| {
+            BamlRtError::InvalidArgument("BAML source path contains invalid UTF-8".to_string())
+        })?;
+        runtime_manager.load_schema(baml_src_str)?;
+        info!(agent = self.manifest.name, "BAML schema loaded");
+        Ok(SchemaLoaded { runtime_manager })
+    }
+
+    async fn register_tools_phase(
         &self,
-        provenance_config: &ProvenanceConfig,
-        tool_index: Option<ToolIndexConfig>,
+        loaded: SchemaLoaded,
         policy: &ToolAccessPolicy,
         agent_list_catalogue: Arc<dyn AgentLister>,
         a2a_handler: Arc<dyn A2aRequestHandler>,
-    ) -> Result<(A2aAgent, AgentId)> {
-        let span = spans::load_agent_package(&self.extract_dir);
-        let _guard = span.enter();
-
-        // Create runtime manager and load BAML schema
-        let mut runtime_manager = BamlRuntimeManager::new()?;
-        {
-            let schema_span = spans::load_baml_schema(&self.baml_src);
-            let _schema_guard = schema_span.enter();
-            let baml_src_str = self.baml_src.to_str().ok_or_else(|| {
-                BamlRtError::InvalidArgument("BAML source path contains invalid UTF-8".to_string())
-            })?;
-            runtime_manager.load_schema(baml_src_str)?;
-            info!(agent = self.manifest.name, "BAML schema loaded");
-        }
-
-        runtime_manager
-            .set_tool_allowlist(self.manifest.tools.iter().cloned().collect::<HashSet<_>>())
-            .await?;
+    ) -> Result<ToolsRegistered> {
+        let mut runtime_manager = loaded.runtime_manager;
 
         let manifest_tool_names = ManifestToolNames::parse(&self.manifest.tools)?;
         register_manifest_tools(
@@ -113,17 +119,31 @@ impl AgentPackage {
         )?;
 
         // Host composes tool catalogue: system bundle (internal_a2a, discover_agents, discover_tools)
-        let runtime_manager_arc = Arc::new(Mutex::new(runtime_manager));
-        let tool_registry = runtime_manager_arc.lock().await.tool_registry();
+        let tool_registry = runtime_manager.tool_registry();
         tool_registry.register_bundle(SystemBundle::new(
             agent_list_catalogue,
             tool_registry.clone(),
             a2a_handler,
         ))?;
 
+        // Apply allowlist after host bundle registration so system/* tools are optional
+        // unless explicitly declared in the agent manifest.
+        runtime_manager
+            .set_tool_allowlist(self.manifest.tools.iter().cloned().collect::<HashSet<_>>())
+            .await?;
+
+        Ok(ToolsRegistered { runtime_manager })
+    }
+
+    async fn build_agent_phase(
+        &self,
+        registered: ToolsRegistered,
+        provenance_config: &ProvenanceConfig,
+    ) -> Result<JsInitialized> {
+        let runtime_manager_arc = Arc::new(Mutex::new(registered.runtime_manager));
         let mut agent_builder = A2aAgent::builder()
             .with_runtime_handle(runtime_manager_arc.clone())
-            .with_baml_helpers(true) // Register BAML functions
+            .with_baml_helpers(true)
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
 
         match provenance_config {
@@ -134,8 +154,13 @@ impl AgentPackage {
         }
 
         let agent = agent_builder.build().await?;
+        Ok(JsInitialized {
+            runtime_manager: runtime_manager_arc,
+            agent,
+        })
+    }
 
-        // Load and evaluate agent JavaScript code
+    async fn initialize_js_phase(&self, built: JsInitialized) -> Result<JsInitialized> {
         let entry_point_path = self.extract_dir.join(&self.manifest.entry_point);
         if entry_point_path.exists() {
             let eval_span = spans::evaluate_agent_code(&self.manifest.entry_point);
@@ -148,7 +173,7 @@ impl AgentPackage {
                 "Loading agent JavaScript code"
             );
 
-            let bridge = agent.bridge();
+            let bridge = built.agent.bridge();
             let mut bridge_guard = bridge.lock().await;
             match bridge_guard.evaluate(None, &agent_code).await {
                 Ok(_) => info!("Agent code executed successfully"),
@@ -167,6 +192,34 @@ impl AgentPackage {
                 "Agent entry point not found, skipping JavaScript initialization"
             );
         }
+
+        Ok(built)
+    }
+
+    /// Boot this package into a running A2aAgent.
+    ///
+    /// The host (runner) composes the tool catalogue at startup: tools live in crates/tools
+    /// and are registered here. The relationship between agent and tools is indirect — mediated by the host.
+    pub(crate) async fn boot(
+        &self,
+        provenance_config: &ProvenanceConfig,
+        tool_index: Option<ToolIndexConfig>,
+        policy: &ToolAccessPolicy,
+        agent_list_catalogue: Arc<dyn AgentLister>,
+        a2a_handler: Arc<dyn A2aRequestHandler>,
+    ) -> Result<(A2aAgent, AgentId)> {
+        let span = spans::load_agent_package(&self.extract_dir);
+        let _guard = span.enter();
+        let loaded = self.load_schema_phase().await?;
+        let registered = self
+            .register_tools_phase(loaded, policy, agent_list_catalogue, a2a_handler)
+            .await?;
+        let built = self
+            .build_agent_phase(registered, provenance_config)
+            .await?;
+        let initialized = self.initialize_js_phase(built).await?;
+        let agent = initialized.agent;
+        let runtime_manager_arc = initialized.runtime_manager;
 
         if let Some(index_config) = tool_index {
             let manager = runtime_manager_arc.lock().await;
