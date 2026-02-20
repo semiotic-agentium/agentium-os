@@ -14,7 +14,8 @@ baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-quickjs = { path = "../baml-rt-quickjs" }
 baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
-baml-rt-tools-system = { path = "../tools/system" }
+baml-rt-tools-system = { package = "baml-tools-system", path = "../tools/system" }
+baml-tools-clickup = { path = "../tools/clickup", optional = true }
 baml-runtime = { workspace = true }
 baml-types = { workspace = true }
 internal-baml-core = { workspace = true }
@@ -46,6 +47,6 @@ insta = { workspace = true }
 
 [features]
 default = []
-clickup = ["baml-rt-tools/clickup"]
+clickup = ["dep:baml-tools-clickup"]
 notion = ["baml-rt-tools/notion"]
 http-tools = ["clickup", "notion"]

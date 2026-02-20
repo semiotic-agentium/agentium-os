@@ -24,6 +24,8 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     // Force link so inventory sees these metadata registrations (regen_fixtures + builder).
     let _ = support::support_calculate_metadata;
     let _ = baml_rt_tools_system::metadata::system_internal_a2a_metadata;
+    #[cfg(feature = "clickup")]
+    let _ = baml_tools_clickup::clickup_metadata;
     let tool_metadata = resolve_manifest_tools(tool_names)?;
 
     let mut output = String::new();

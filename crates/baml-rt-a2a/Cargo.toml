@@ -11,7 +11,7 @@ ignored = ["futures-util", "inventory"]
 [dependencies]
 baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-tools = { path = "../baml-rt-tools" }
-baml-rt-tools-system = { path = "../tools/system" }
+baml-rt-tools-system = { package = "baml-tools-system", path = "../tools/system" }
 inventory = { workspace = true }
 baml-rt-quickjs = { path = "../baml-rt-quickjs" }
 baml-rt-observability = { path = "../baml-rt-observability" }

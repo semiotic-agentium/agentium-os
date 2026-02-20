@@ -132,8 +132,106 @@ impl AgentPackage {
             .set_tool_allowlist(self.manifest.tools.iter().cloned().collect::<HashSet<_>>())
             .await?;
 
+<<<<<<< Updated upstream
         Ok(ToolsRegistered { runtime_manager })
     }
+=======
+        // Register tool instances for every tool declared in the manifest
+        for tool_name in &self.manifest.tools {
+            enforce_tool_access(tool_name, access_allowlist)?;
+            match tool_name.as_str() {
+                "support/calculate" => {
+                    runtime_manager
+                        .register_tool(baml_rt_tools::support::CalculatorTool)
+                        .await?;
+                }
+                "support/clickup" => {
+                    #[cfg(feature = "clickup")]
+                    {
+                        runtime_manager
+                            .register_tool(baml_tools_clickup::ClickUpTool::new())
+                            .await?;
+                    }
+                    #[cfg(not(feature = "clickup"))]
+                    {
+                        return Err(BamlRtError::InvalidArgument(
+                            "ClickUp tool not compiled: enable baml-agent-runner feature 'clickup'"
+                                .to_string(),
+                        ));
+                    }
+                }
+                "support/notion" => {
+                    #[cfg(feature = "notion")]
+                    {
+                        runtime_manager
+                            .register_tool(baml_rt_tools::notion::NotionTool::new())
+                            .await?;
+                    }
+                    #[cfg(not(feature = "notion"))]
+                    {
+                        return Err(BamlRtError::InvalidArgument(
+                            "Notion tool not compiled: enable baml-agent-runner feature 'notion'"
+                                .to_string(),
+                        ));
+                    }
+                }
+                "support/notionSearchPages" => {
+                    #[cfg(feature = "notion")]
+                    {
+                        runtime_manager
+                            .register_tool(baml_rt_tools::notion::NotionSearchPagesTool::new())
+                            .await?;
+                    }
+                    #[cfg(not(feature = "notion"))]
+                    {
+                        return Err(BamlRtError::InvalidArgument(
+                            "Notion tool not compiled: enable baml-agent-runner feature 'notion'"
+                                .to_string(),
+                        ));
+                    }
+                }
+                "support/notionGetPage" => {
+                    #[cfg(feature = "notion")]
+                    {
+                        runtime_manager
+                            .register_tool(baml_rt_tools::notion::NotionGetPageTool::new())
+                            .await?;
+                    }
+                    #[cfg(not(feature = "notion"))]
+                    {
+                        return Err(BamlRtError::InvalidArgument(
+                            "Notion tool not compiled: enable baml-agent-runner feature 'notion'"
+                                .to_string(),
+                        ));
+                    }
+                }
+                "support/notionGetPageBlocks" => {
+                    #[cfg(feature = "notion")]
+                    {
+                        runtime_manager
+                            .register_tool(baml_rt_tools::notion::NotionGetPageBlocksTool::new())
+                            .await?;
+                    }
+                    #[cfg(not(feature = "notion"))]
+                    {
+                        return Err(BamlRtError::InvalidArgument(
+                            "Notion tool not compiled: enable baml-agent-runner feature 'notion'"
+                                .to_string(),
+                        ));
+                    }
+                }
+                "system/internal_a2a" => {
+                    // Registered by A2aAgent at build time when with_a2a_session_tool(true)
+                }
+                other => {
+                    warn!(
+                        tool = other,
+                        "Unknown tool in manifest, skipping registration"
+                    );
+                }
+            }
+        }
+>>>>>>> Stashed changes
 
     async fn build_agent_phase(
         &self,
