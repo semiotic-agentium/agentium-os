@@ -50,17 +50,12 @@ type InvocationContextRegistrySlot = Arc<StdMutex<InvocationContextRegistry>>;
 type EvalResultMap = Arc<StdMutex<HashMap<InvocationToken, Option<String>>>>;
 type StreamSemaphore = Arc<Semaphore>;
 type StreamPermit = tokio::sync::OwnedSemaphorePermit;
-type YieldSenderSlot = Arc<StdMutex<Option<mpsc::UnboundedSender<Value>>>>;
-type YieldReceiver = mpsc::UnboundedReceiver<Value>;
 type InFlightCounter = Arc<AtomicU32>;
 
-/// Opaque session identifier for stream invocations.
-///
-/// Each `invoke_js_function_stream` call allocates a unique `StreamSessionId`.
-/// Session-aware native callbacks receive this as their first argument and use it
-/// to look up the owning [`StreamInvocationSession`] in `QuickJSBridge::stream_sessions`.
+/// Host-only stream session identifier. Never exposed to JS; used for yield routing and finalization.
+/// Each `invoke_js_function_stream` call allocates a unique id; session is looked up in `stream_sessions`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct StreamSessionId(pub(crate) u64);
+pub struct StreamSessionId(pub(crate) u64);
 
 impl std::fmt::Display for StreamSessionId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -72,7 +67,9 @@ impl std::fmt::Display for StreamSessionId {
 ///
 /// Held in `QuickJSBridge::stream_sessions` for the lifetime of a single stream
 /// invocation. Native callbacks clone the `Arc` to capture the session and resolve
-/// scope, correlation id, and cancellation state.
+/// scope, correlation id, and cancellation state. The permit is released when
+/// the session is removed from the map (drop). The context is exited in
+/// `finalize_a2a_stream_invocation` before removal.
 pub(crate) struct StreamInvocationSession {
     /// Retained for diagnostic tracing; not read in production paths yet.
     #[allow(dead_code)]
@@ -81,6 +78,11 @@ pub(crate) struct StreamInvocationSession {
     pub(crate) correlation_id: Option<baml_rt_core::ids::CorrelationId>,
     pub(crate) cancel: CancellationToken,
     pub(crate) closed: AtomicBool,
+    /// Held so the semaphore permit is released when this session is dropped (RAII; not read).
+    #[allow(dead_code)]
+    pub(crate) permit: Option<StreamPermit>,
+    /// LIFO context id to exit when this session is finalized.
+    pub(crate) context_id: Option<InvocationContextId>,
 }
 
 impl StreamInvocationSession {
@@ -195,19 +197,9 @@ pub struct QuickJSBridge {
     correlation_id_by_token: CorrelationMap,
     /// Token → eval result (None while pending). Strictly keyed by token.
     eval_results_by_token: EvalResultMap,
-    /// Token for the active stream (legacy); unused when tokenless.
-    current_stream_token: Option<InvocationToken>,
-    /// Active stream invocation context; exited when stream is finalized or next stream starts.
-    current_stream_context_id: Option<InvocationContextId>,
-    /// Only one stream invocation may be active at a time so invocation token state
-    /// is not overwritten by a concurrent stream. Acquired in invoke_js_function_stream, released in get_a2a_yield_buffer.
+    /// Up to N stream invocations may be active; each holds a permit in its session.
+    /// Permit is released when the session is removed in finalize_a2a_stream_invocation.
     stream_semaphore: StreamSemaphore,
-    /// Permit held while a stream is active; dropped in get_a2a_yield_buffer.
-    stream_permit: Option<StreamPermit>,
-    /// Active stream yield sink. JS host callback pushes chunks into this channel.
-    a2a_yield_tx_slot: YieldSenderSlot,
-    /// Active stream yield receiver, drained by get_a2a_yield_buffer().
-    a2a_yield_rx: Option<YieldReceiver>,
     /// Number of `__baml_invoke` / `__baml_stream` async bodies currently in-flight on tokio.
     /// Incremented synchronously on the event-loop thread when the native is called;
     /// decremented (via [`InFlightGuard`]) when the async body completes.
@@ -216,11 +208,14 @@ pub struct QuickJSBridge {
     /// drained in `finalize_a2a_stream_invocation`. Session-aware natives resolve scope
     /// from this map instead of the LIFO `invocation_context_registry`.
     stream_sessions: StreamSessionMap,
+    /// Per-session yield senders. Host-only: __baml_chat_yield_host(chunk_json) reads
+    /// current_stream_session_id_slot and sends here. Never expose session id to JS.
+    a2a_yield_tx_by_session: Arc<StdMutex<HashMap<StreamSessionId, mpsc::UnboundedSender<Value>>>>,
+    /// Host-only "current" stream session for yield routing. Set when stream starts,
+    /// cleared when it finalizes. JS never sees this; __baml_chat_yield_host uses it.
+    current_stream_session_id_slot: Arc<StdMutex<Option<StreamSessionId>>>,
     /// Monotonic counter for allocating unique `StreamSessionId` values.
     next_stream_session_id: AtomicU64,
-    /// Session id for the currently active stream invocation (at most one due to semaphore).
-    /// Used by `finalize_a2a_stream_invocation` to close and remove the session.
-    current_stream_session_id: Option<StreamSessionId>,
 }
 
 impl QuickJSBridge {
@@ -296,22 +291,20 @@ impl QuickJSBridge {
             invocation_scope_by_token: Arc::new(StdMutex::new(HashMap::new())),
             correlation_id_by_token: Arc::new(StdMutex::new(HashMap::new())),
             eval_results_by_token: Arc::new(StdMutex::new(HashMap::new())),
-            current_stream_token: None,
-            current_stream_context_id: None,
             stream_semaphore: Arc::new(Semaphore::new(1)),
-            stream_permit: None,
-            a2a_yield_tx_slot: Arc::new(StdMutex::new(None)),
-            a2a_yield_rx: None,
             in_flight_invoke_count: Arc::new(AtomicU32::new(0)),
             stream_sessions: Arc::new(StdMutex::new(HashMap::new())),
+            a2a_yield_tx_by_session: Arc::new(StdMutex::new(HashMap::new())),
+            current_stream_session_id_slot: Arc::new(StdMutex::new(None)),
             next_stream_session_id: AtomicU64::new(1),
-            current_stream_session_id: None,
         };
 
         // Initialize sandbox - remove dangerous globals and implement safe console
         // INVARIANT L1: Bridge initialization must terminate within bounded time
         // Timeout is handled in initialize_sandbox() itself
         bridge.initialize_sandbox().await?;
+
+        bridge.register_chat_yield_host().await?;
 
         Ok(bridge)
     }
@@ -1187,8 +1180,9 @@ impl QuickJSBridge {
         (token, prelude)
     }
 
-    /// Remove an invocation token so it can no longer be used for scope lookup. Call when the
-    /// invocation completes (after evaluate returns for non-stream, or in get_a2a_yield_buffer for stream).
+    /// Remove an invocation token so it can no longer be used for scope lookup. Reserved for
+    /// post-invocation cleanup of scope/correlation maps.
+    #[allow(dead_code)]
     fn remove_invocation_token(&mut self, token: &InvocationToken) {
         if let Ok(mut map) = self.invocation_scope_by_token.lock() {
             map.remove(token);

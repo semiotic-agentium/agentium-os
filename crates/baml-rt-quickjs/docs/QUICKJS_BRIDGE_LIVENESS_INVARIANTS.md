@@ -126,9 +126,9 @@ For stream requests, the promise from `onChatMessage()` is DESIGNED to never res
 
 | Layer | Mechanism |
 |-------|-----------|
-| **Type system** | `A2aYieldSession<'a, S, NonResolvingPromise>` typestate; only `invoke_js_function_stream()` is used in stream path |
+| **Type system** | `A2aYieldSessionReady` / `A2aYieldSessionComplete`; only `invoke_js_function_stream()` is used in stream path |
 | **Application** | `invoke_js_function_stream()` starts function but does NOT wait for promise resolution |
-| **Stream Protocol** | `A2aYieldSession` (with `NonResolvingPromise` marker) uses `invoke_js_function_stream()` only |
+| **Stream Protocol** | `A2aYieldSessionReady` → `invoke` → `A2aYieldSessionComplete` uses `invoke_js_function_stream()` only |
 | **Invoker boundary** | `JsInvoker::invoke_stream` encodes stream-only invocation contract |
 | **Yield Buffer** | Chunks are collected via `get_a2a_yield_buffer()` after invocation completes |
 | **Testing** | Stream tests verify chunks are collected without waiting for promise resolution |
@@ -279,7 +279,7 @@ Re-checking effects periodically must only increase the timeout, never decrease 
 
 **Fix Applied:**
 - Created `invoke_js_function_stream()` that starts the async function but does NOT wait for promise resolution
-- Updated `A2aYieldSession::invoke()` to use `invoke_js_function_stream()` instead of `invoke_js_function()`
+- Updated `A2aYieldSessionReady::invoke()` to use `invoke_js_function_stream()` instead of `invoke_js_function()`
 - Documented **INVARIANT L6** that stream promises are designed to never resolve
 - Added timeouts around critical operations (`initialize_sandbox`, `register_baml_functions`, `init_js` evaluation)
 

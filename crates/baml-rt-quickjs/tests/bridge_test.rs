@@ -373,11 +373,12 @@ async fn test_failed_stream_does_not_leak_state() {
         .setup_a2a_yield_buffer()
         .await
         .expect("setup yield buffer");
-    let err = bridge
+    let failed = bridge
         .invoke_js_function_stream(&scope, "nonExistentStreamFn", json!({}))
-        .await;
+        .await
+        .is_err();
     assert!(
-        err.is_err(),
+        failed,
         "invoke_js_function_stream with missing function should fail"
     );
 

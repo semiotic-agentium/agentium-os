@@ -31,20 +31,14 @@
 //! **CG4 (Stream Promise Non-Resolution):** The type parameter `P` encodes promise semantics;
 //! `NonResolvingPromise` ensures only stream invocation (no wait for resolution) is used.
 
-use std::{
-    marker::PhantomData,
-    time::{Duration, Instant},
-};
-
-use baml_rt_core::{
-    Result,
-    context::InvocationScope,
-    stream_completion::{StreamCompletion, StreamResult},
-};
+use crate::quickjs_bridge::{BufferDrain, QuickJSBridge, StreamSessionId};
+use baml_rt_core::Result;
+use baml_rt_core::context::InvocationScope;
+use baml_rt_core::stream_completion::{StreamCompletion, StreamResult};
 use serde_json::Value;
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::sleep;
-
-use crate::quickjs_bridge::{BufferDrain, QuickJSBridge};
 
 /// State marker: yield buffer is installed and ready for one stream invocation.
 pub struct YieldBufferReady;
@@ -57,40 +51,38 @@ pub struct InvocationComplete;
 #[derive(Debug, Clone, Copy)]
 pub struct NonResolvingPromise;
 
-/// Type-safe session for a single A2A stream request.
-///
-/// Type parameters:
-/// - `S`: phase ([`YieldBufferReady`] or [`InvocationComplete`]).
-/// - `P`: promise semantics; only [`NonResolvingPromise`] is used (stream promise never resolves).
-///
-/// The session is linear: each method consumes `self` and returns the next state (or the result).
+/// Session in ready phase: yield buffer installed; invoke not yet called.
 ///
 /// **Invariant:** The same `&mut QuickJSBridge` is held for the entire session (CG1: single writer).
-pub struct A2aYieldSession<'a, S, P = NonResolvingPromise> {
+pub struct A2aYieldSessionReady<'a> {
     pub(super) bridge: &'a mut QuickJSBridge,
-    _state: PhantomData<(S, P)>,
 }
 
-/// Begins a stream session: installs the yield buffer and returns a session in [`YieldBufferReady`] state.
-/// The session is typed with [`NonResolvingPromise`] so only stream invocation (no promise wait) is used.
+/// Session in complete phase: stream invoked; collect may be called.
 ///
-/// **Liveness (L1):** Caller must eventually call [`A2aYieldSession::invoke`] on the returned session.
+/// Holds `session_id` and `yield_rx` so invalid state (collect without invoke) is unrepresentable.
+pub struct A2aYieldSessionComplete<'a> {
+    pub(super) bridge: &'a mut QuickJSBridge,
+    pub(super) session_id: StreamSessionId,
+    pub(super) yield_rx: UnboundedReceiver<Value>,
+}
+
+/// Begins a stream session: installs the yield buffer and returns a session in ready state.
+///
+/// **Liveness (L1):** Caller must eventually call [`A2aYieldSessionReady::invoke`] on the returned session.
 #[inline]
 pub async fn begin_a2a_yield_session(
     bridge: &mut QuickJSBridge,
-) -> Result<A2aYieldSession<'_, YieldBufferReady, NonResolvingPromise>> {
+) -> Result<A2aYieldSessionReady<'_>> {
     bridge.setup_a2a_yield_buffer().await?;
-    Ok(A2aYieldSession {
-        bridge,
-        _state: PhantomData,
-    })
+    Ok(A2aYieldSessionReady { bridge })
 }
 
-impl<'a> A2aYieldSession<'a, YieldBufferReady, NonResolvingPromise> {
+impl<'a> A2aYieldSessionReady<'a> {
     /// Invokes `onChatMessage` with the given chat message payload. The JS handler must use
     /// `__baml_chat_yield(chunk)`; the return value is ignored.
     ///
-    /// **Liveness (L2):** Caller must eventually call [`collect`](A2aYieldSession::collect) on the returned session.
+    /// **Liveness (L2):** Caller must eventually call [`A2aYieldSessionComplete::collect`] on the returned session.
     ///
     /// **INVARIANT L6 / CG4:** The promise never resolves; this method uses `invoke_js_function_stream()`
     /// and does NOT wait for promise resolution. Chunks are collected via the yield buffer.
@@ -98,13 +90,15 @@ impl<'a> A2aYieldSession<'a, YieldBufferReady, NonResolvingPromise> {
         self,
         scope: &InvocationScope,
         request: Value,
-    ) -> Result<A2aYieldSession<'a, InvocationComplete, NonResolvingPromise>> {
-        self.bridge
+    ) -> Result<A2aYieldSessionComplete<'a>> {
+        let (session_id, yield_rx) = self
+            .bridge
             .invoke_js_function_stream(scope, "onChatMessage", request)
             .await?;
-        Ok(A2aYieldSession {
+        Ok(A2aYieldSessionComplete {
             bridge: self.bridge,
-            _state: PhantomData,
+            session_id,
+            yield_rx,
         })
     }
 }
@@ -154,14 +148,14 @@ fn chunk_has_input_required_state(chunk: &Value) -> bool {
     )
 }
 
-impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
+impl<'a> A2aYieldSessionComplete<'a> {
     /// Reads and clears the yield buffer. Returns chunks and an explicit completion reason.
     ///
     /// Terminates only on: (1) semantic final chunk (TASK_STATE_COMPLETED/FAILED),
     /// (2) channel closed (sender dropped), or (3) safety timeout. No quiescence heuristic.
     ///
     /// **Liveness (L3):** This method returns in finite time.
-    pub async fn collect(self) -> Result<StreamResult> {
+    pub async fn collect(mut self) -> Result<StreamResult> {
         let start = Instant::now();
         let idle_timeout = Duration::from_secs(60);
         let active_timeout = Duration::from_secs(300);
@@ -172,24 +166,19 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
         loop {
             let drain: BufferDrain = match tokio::time::timeout(
                 read_timeout,
-                self.bridge.get_a2a_yield_buffer(),
+                self.bridge.drain_yield_buffer(&mut self.yield_rx),
             )
             .await
             {
                 Ok(Ok(d)) => d,
                 Ok(Err(e)) => {
-                    // Rare today: get_a2a_yield_buffer() is effectively infallible on normal
-                    // paths. Keep this cleanup anyway so future hardening/error paths cannot
-                    // leak stream-local state.
-                    //
-                    // finalize_a2a_stream_invocation() tears down only this stream invocation
-                    // (context/permit/yield channel). It does NOT stop the QuickJS runtime,
-                    // agent process, or transport sockets.
                     tracing::error!(
                         error = ?e,
                         "a2a stream buffer read failed; finalizing stream invocation state"
                     );
-                    self.bridge.finalize_a2a_stream_invocation().await;
+                    self.bridge
+                        .finalize_a2a_stream_invocation(self.session_id)
+                        .await;
                     return Err(e);
                 }
                 Err(_) => BufferDrain {
@@ -210,14 +199,18 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
                 // Prefer suspension over final: if both INPUT_REQUIRED and COMPLETED appear
                 // (e.g. same batch or ordering), stop at INPUT_REQUIRED so the client can resume.
                 if has_input_req {
-                    self.bridge.finalize_a2a_stream_invocation().await;
+                    self.bridge
+                        .finalize_a2a_stream_invocation(self.session_id)
+                        .await;
                     return Ok(StreamResult {
                         chunks: all,
                         completion: StreamCompletion::InputRequired,
                     });
                 }
                 if has_final {
-                    self.bridge.finalize_a2a_stream_invocation().await;
+                    self.bridge
+                        .finalize_a2a_stream_invocation(self.session_id)
+                        .await;
                     return Ok(StreamResult {
                         chunks: all,
                         completion: StreamCompletion::SemanticFinal,
@@ -225,7 +218,9 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
                 }
             }
             if drain.channel_closed {
-                self.bridge.finalize_a2a_stream_invocation().await;
+                self.bridge
+                    .finalize_a2a_stream_invocation(self.session_id)
+                    .await;
                 return Ok(StreamResult {
                     chunks: all,
                     completion: StreamCompletion::ChannelClosed,
@@ -246,7 +241,9 @@ impl<'a, P> A2aYieldSession<'a, InvocationComplete, P> {
                     chunk_count = all.len(),
                     "a2a stream collector timeout reached"
                 );
-                self.bridge.finalize_a2a_stream_invocation().await;
+                self.bridge
+                    .finalize_a2a_stream_invocation(self.session_id)
+                    .await;
                 return Ok(StreamResult {
                     chunks: all,
                     completion: StreamCompletion::Timeout,
