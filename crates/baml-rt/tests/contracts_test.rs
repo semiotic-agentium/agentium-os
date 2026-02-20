@@ -30,11 +30,9 @@ impl LLMInterceptor for StubChooseCalcToolInterceptor {
     ) -> baml_rt_core::Result<InterceptorDecision> {
         if context.function_name == "ChooseCalcTool" {
             Ok(InterceptorDecision::Substitute(json!({
-                "__type": "SupportCalculateSessionPlan",
                 "steps": [
-                    { "__type": "SupportCalculateOpenStep", "op": "Open", "reason": "stub open" },
+                    { "op": "Open", "reason": "stub open" },
                     {
-                        "__type": "SupportCalculateSendStep",
                         "op": "Send",
                         "input": {
                             "expression": {
@@ -45,8 +43,8 @@ impl LLMInterceptor for StubChooseCalcToolInterceptor {
                         },
                         "reason": "stub send"
                     },
-                    { "__type": "SupportCalculateNextStep", "op": "Next", "reason": "stub next" },
-                    { "__type": "SupportCalculateFinishStep", "op": "Finish", "reason": "stub finish" }
+                    { "op": "Next", "reason": "stub next" },
+                    { "op": "Finish", "reason": "stub finish" }
                 ]
             })))
         } else {

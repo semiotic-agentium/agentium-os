@@ -413,8 +413,8 @@ async fn test_failed_stream_does_not_leak_state() {
 }
 
 #[tokio::test]
-async fn test_tool_session_plan_with_initial_input() {
-    tracing::info!("Test: ToolSessionPlan open step with initial_input");
+async fn test_tool_session_plan_requires_manifest_mapping() {
+    tracing::info!("Test: ToolSessionPlan requires manifest mapping by source function");
 
     use baml_rt::baml::BamlRuntimeManager;
     use serde_json::json;
@@ -422,9 +422,8 @@ async fn test_tool_session_plan_with_initial_input() {
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.register_tool(ScopeEchoTool).await.unwrap();
 
-    // Minimal plan: __type so tool is resolved from registry by class name (TestScope_echo).
+    // Minimal plan with only FSM operations.
     let plan = json!({
-        "__type": "TestScope_echoSessionPlan",
         "steps": [
             { "op": "open", "initial_input": {} },
             { "op": "finish" }
@@ -443,14 +442,18 @@ async fn test_tool_session_plan_with_initial_input() {
     .await;
 
     assert!(
-        result.is_ok(),
-        "Tool session plan should execute successfully: {:?}",
-        result.as_ref().err()
+        result.is_err(),
+        "Tool session plan without manifest mapping should fail: {:?}",
+        result
     );
-    let _output = result.unwrap();
-    // Plan executed under scope; output shape depends on tool/session (may be object or null).
+    let err_text = result.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        err_text.contains("Session plan tool could not be resolved"),
+        "expected manifest mapping error, got: {}",
+        err_text
+    );
 
-    tracing::info!("✅ ToolSessionPlan with initial_input executed successfully");
+    tracing::info!("✅ ToolSessionPlan enforces manifest mapping with no metadata fallback");
 }
 
 /// Operations requiring invocation scope must be called with explicit scope.

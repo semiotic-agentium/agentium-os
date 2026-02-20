@@ -12,7 +12,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, ContextId, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex as TokioMutex;
@@ -757,7 +757,7 @@ pub struct ToolSessionContext {
     pub session_id: ToolSessionId,
     pub tool_name: ToolName,
     /// Invocation scope context_id; used by internal_a2a for delegated session continuity.
-    pub context_id: String,
+    pub context_id: ContextId,
 }
 
 #[async_trait]
@@ -853,7 +853,7 @@ impl ToolSessionHandle<AwaitingInput> {
         registry: Arc<ToolRegistry>,
         name: &str,
         open_input: Value,
-        context_id: &str,
+        context_id: &ContextId,
     ) -> Result<ToolSessionHandle<AwaitingInput>> {
         let session_id = registry.open_session(name, open_input, context_id).await?;
         Ok(ToolSessionHandle {
@@ -1453,7 +1453,7 @@ impl ToolRegistry {
         &self,
         name: &str,
         open_input: Value,
-        context_id: &str,
+        context_id: &ContextId,
     ) -> Result<ToolSessionId> {
         let start = std::time::Instant::now();
         let parsed = ToolName::parse(name)?;
@@ -1481,7 +1481,7 @@ impl ToolRegistry {
         let ctx = ToolSessionContext {
             session_id: session_id.clone(),
             tool_name: metadata.name.clone(),
-            context_id: context_id.to_string(),
+            context_id: context_id.clone(),
         };
         let session = handler.open_session(ctx, open_input).await?;
         {
@@ -1601,7 +1601,7 @@ impl ToolRegistry {
     }
 
     /// Execute a tool function by name (single-shot convenience). `context_id` is the invocation scope id.
-    pub async fn execute(&self, name: &str, args: Value, context_id: &str) -> Result<Value> {
+    pub async fn execute(&self, name: &str, args: Value, context_id: &ContextId) -> Result<Value> {
         let start = std::time::Instant::now();
         let span = crate::spans::execute_tool(name);
         let _guard = span.enter();
