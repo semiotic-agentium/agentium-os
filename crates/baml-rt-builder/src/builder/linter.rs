@@ -2,9 +2,8 @@
 
 use std::fs;
 
-use baml_rt_core::{BamlRtError, Result};
-
 use crate::builder::{
+    error::{BamlBuilderError, Result},
     traits::{FileSystem, Linter},
     types::AgentDir,
 };
@@ -45,7 +44,7 @@ impl<FS: FileSystem> Linter for OxcLinter<FS> {
 
         let mut errors = Vec::new();
         for file_path in files {
-            let content = fs::read_to_string(&file_path).map_err(BamlRtError::Io)?;
+            let content = fs::read_to_string(&file_path)?;
             let file_name = file_path
                 .strip_prefix(agent_dir.as_path())
                 .unwrap_or(&file_path)
@@ -72,7 +71,7 @@ impl<FS: FileSystem> Linter for OxcLinter<FS> {
             for error in &errors {
                 println!("  {}", error);
             }
-            return Err(BamlRtError::InvalidArgument(format!(
+            return Err(BamlBuilderError::InvalidArgument(format!(
                 "Linting failed with {} error(s)",
                 errors.len()
             )));

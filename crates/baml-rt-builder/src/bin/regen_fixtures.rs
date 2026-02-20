@@ -1,19 +1,21 @@
-use std::path::{Path, PathBuf};
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+};
 
+use anyhow::{Context as _, Result, bail};
 use baml_rt_builder::builder::{BuildDir, RuntimeTypeGenerator, TypeGenerator};
-use baml_rt_core::{BamlRtError, Result};
-use baml_tools_system as _; // Force link so system tool metadata is in inventory
 
 fn agents_dir() -> Result<PathBuf> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let workspace_root = manifest_dir
         .parent()
         .and_then(|p| p.parent())
-        .ok_or_else(|| {
-            BamlRtError::InvalidArgument(format!(
+        .with_context(|| {
+            format!(
                 "Could not determine workspace root from manifest dir: {}",
                 manifest_dir.display()
-            ))
+            )
         })?;
 
     Ok(workspace_root.join("tests").join("fixtures").join("agents"))
@@ -23,12 +25,13 @@ fn copy_runtime_d_ts(build_dir: &BuildDir, dest_src: &Path) -> Result<()> {
     let d_ts_src = build_dir.join("dist").join("baml-runtime.d.ts");
     let d_ts_dest = dest_src.join("baml-runtime.d.ts");
     if !d_ts_src.exists() {
-        return Err(BamlRtError::InvalidArgument(
-            "baml-runtime.d.ts was not generated".to_string(),
-        ));
+        bail!("baml-runtime.d.ts was not generated");
     }
-    std::fs::create_dir_all(dest_src).map_err(BamlRtError::Io)?;
-    std::fs::copy(&d_ts_src, &d_ts_dest).map_err(BamlRtError::Io)?;
+    std::fs::create_dir_all(dest_src)?;
+    let data = std::fs::read(&d_ts_src)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dest_src)?;
+    tmp.write_all(&data)?;
+    tmp.persist(&d_ts_dest).map_err(|e| e.error)?;
     Ok(())
 }
 
@@ -48,8 +51,7 @@ async fn regen_fixture(root: &Path) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let dir = agents_dir()?;
-    let mut entries: Vec<_> = std::fs::read_dir(&dir)
-        .map_err(BamlRtError::Io)?
+    let mut entries: Vec<_> = std::fs::read_dir(&dir)?
         .filter_map(|e| e.ok())
         .filter(|e| e.path().join("baml_src").is_dir())
         .collect();

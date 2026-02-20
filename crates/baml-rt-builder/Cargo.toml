@@ -32,6 +32,7 @@ oxc_semantic = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 regex = { workspace = true }
+thiserror = { workspace = true }
 tracing = { workspace = true }
 clap = { workspace = true }
 inquire = "0.9"

@@ -1196,6 +1196,7 @@ dependencies = [
  "tar",
  "tempfile",
  "test-support",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "uuid",

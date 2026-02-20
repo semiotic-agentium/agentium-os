@@ -2,9 +2,7 @@
 
 use std::{fs, path::Path};
 
-use baml_rt_core::{BamlRtError, Result};
-
-use crate::builder::traits::FileSystem;
+use crate::builder::{error::Result, traits::FileSystem};
 
 /// Standard file system implementation
 #[derive(Clone, Copy)]
@@ -12,17 +10,17 @@ pub struct StdFileSystem;
 
 impl FileSystem for StdFileSystem {
     fn copy_dir_all(&self, src: &Path, dst: &Path) -> Result<()> {
-        fs::create_dir_all(dst).map_err(BamlRtError::Io)?;
+        fs::create_dir_all(dst)?;
 
-        for entry in fs::read_dir(src).map_err(BamlRtError::Io)? {
-            let entry = entry.map_err(BamlRtError::Io)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
             let path = entry.path();
             let dst_path = dst.join(entry.file_name());
 
             if path.is_dir() {
                 self.copy_dir_all(&path, &dst_path)?;
             } else {
-                fs::copy(&path, &dst_path).map_err(BamlRtError::Io)?;
+                fs::copy(&path, &dst_path)?;
             }
         }
 
@@ -34,8 +32,8 @@ impl FileSystem for StdFileSystem {
             return Ok(());
         }
 
-        for entry in fs::read_dir(dir).map_err(BamlRtError::Io)? {
-            let entry = entry.map_err(BamlRtError::Io)?;
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
             let path = entry.path();
 
             if path.is_dir() {
@@ -55,8 +53,8 @@ impl FileSystem for StdFileSystem {
             return Ok(());
         }
 
-        for entry in fs::read_dir(dir).map_err(BamlRtError::Io)? {
-            let entry = entry.map_err(BamlRtError::Io)?;
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
             let path = entry.path();
 
             if path.is_dir() {
@@ -72,16 +70,16 @@ impl FileSystem for StdFileSystem {
     }
 
     fn create_dir_all(&self, dir: &Path) -> Result<()> {
-        fs::create_dir_all(dir).map_err(BamlRtError::Io)?;
+        fs::create_dir_all(dir)?;
         Ok(())
     }
 
     fn read_to_string(&self, path: &Path) -> Result<String> {
-        fs::read_to_string(path).map_err(BamlRtError::Io)
+        Ok(fs::read_to_string(path)?)
     }
 
     fn write_string(&self, path: &Path, contents: &str) -> Result<()> {
-        fs::write(path, contents).map_err(BamlRtError::Io)?;
+        fs::write(path, contents)?;
         Ok(())
     }
 }

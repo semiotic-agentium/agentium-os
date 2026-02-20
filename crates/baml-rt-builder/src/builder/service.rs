@@ -1,8 +1,7 @@
 //! Builder service that orchestrates the agent building pipeline
 
-use baml_rt_core::Result;
-
 use crate::builder::{
+    error::Result,
     traits::{Linter, Packager, TypeGenerator, TypeScriptCompiler},
     types::{AgentDir, BuildDir},
 };

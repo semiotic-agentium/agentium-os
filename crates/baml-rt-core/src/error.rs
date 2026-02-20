@@ -3,8 +3,6 @@
 //! Provides a comprehensive error hierarchy using `thiserror` for proper error handling
 //! and error chaining throughout the codebase.
 
-use std::{path::PathBuf, time::SystemTimeError};
-
 use anyhow::Error as AnyhowError;
 use thiserror::Error;
 
@@ -45,22 +43,6 @@ pub enum BamlRtError {
     /// Requested agent was not found in the registry.
     #[error("Agent not found: {0}")]
     AgentNotFound(String),
-
-    /// Agent directory does not exist
-    #[error("Agent directory does not exist: {}", .path.display())]
-    AgentDirNotFound { path: PathBuf },
-
-    /// Required `baml_src` subdirectory not found in agent directory
-    #[error("baml_src directory not found in {}", .path.display())]
-    BamlSrcNotFound { path: PathBuf },
-
-    /// Package file does not exist
-    #[error("Package file does not exist: {}", .path.display())]
-    PackageNotFound { path: PathBuf },
-
-    /// Package file has an invalid extension (expected .tar.gz)
-    #[error("Package file must have .tar.gz extension: {}", .path.display())]
-    InvalidPackageExtension { path: PathBuf },
 
     /// Invalid argument provided to a function
     #[error("Invalid argument: {0}")]
@@ -142,21 +124,6 @@ pub enum BamlRtError {
         #[source]
         source: AnyhowError,
     },
-
-    /// Failed to extract BAML IR signatures
-    #[error("Failed to extract BAML IR signatures")]
-    IrSignatureExtraction {
-        #[source]
-        source: AnyhowError,
-    },
-
-    /// System time error
-    #[error("System time error: {0}")]
-    SystemTime(#[from] SystemTimeError),
-
-    /// Tar header path error
-    #[error("Failed to set tar header path")]
-    TarHeaderPath(#[source] std::io::Error),
 }
 
 /// Result type alias for convenience
