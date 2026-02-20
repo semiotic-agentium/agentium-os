@@ -38,6 +38,8 @@ dist/
 
 # Provenance databases (created by demo scripts / --provenance-db flag)
 provenance.db
+provenance.db-shm
+provenance.db-wal
 
 # Nix
 .direnv/

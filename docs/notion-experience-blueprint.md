@@ -50,7 +50,7 @@ Concrete changes:
   - Mermaid export viability
 - Base URL and typed-input routing invariants are explicitly tested.
 
-## Invariants (from `.cursor/skills/invariant-analysis`)
+## Invariants
 
 ### 1) Session Protocol Invariant
 
@@ -107,6 +107,3 @@ with `deny_unknown_fields` per variant.
    Show: same flow as protocol-level evidence, not just terminal output text.
 
 This is the "agent system story" in one run: **intent -> plan -> tool -> response -> proof**.
-
-Strategic naming and skill-ecosystem notes are tracked separately in
-`docs/notion-strategy-notes.md`.
