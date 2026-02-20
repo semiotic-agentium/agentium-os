@@ -1,23 +1,27 @@
 //! Tests for agent runner binary
 
+#[allow(dead_code, unused_imports)]
+mod common;
+
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     path::Path,
-    sync::{Arc, OnceLock},
+    sync::Arc,
 };
 
 use async_trait::async_trait;
 use baml_rt::{A2aRequestHandler, baml::BamlRuntimeManager, tools::BamlTool};
+use baml_rt_a2a::RegistrationMode;
 use baml_rt_core::{
+    BamlRtError,
     bus::BusWithEffects,
     context::{self, InvocationScope},
     ids::{AgentId, ContextId, UuidId},
 };
 use baml_rt_provenance::{
     AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
-    ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
-    ProvenanceWriter,
+    ProvenanceContextMessage, ProvenanceContextReader, ProvenanceWriter,
 };
 use baml_rt_tools::bundles::BundleType;
 use flate2::{Compression, write::GzEncoder};
@@ -25,10 +29,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tar::Builder;
-use tokio::{
-    sync::Semaphore,
-    time::{Duration, sleep, timeout},
-};
+use tokio::time::{Duration, sleep, timeout};
 use ts_rs::TS;
 
 // Bundle type for test tools (used as AddNumbersTool::Bundle; referenced in test_runner_tool_types_for_package_build).
@@ -74,6 +75,7 @@ impl A2aRequestHandler for EmptyA2aHandler {
     }
 }
 
+use common::{StrictProvenanceWriter, e2e_serial_gate};
 use test_support::{
     common::{
         CalculatorTool, agent_fixture, chunks_from_responses, ensure_baml_src_exists,
@@ -81,60 +83,6 @@ use test_support::{
     },
     support::cli::CliHarness,
 };
-
-fn init_test_tracing() {
-    static TRACING: OnceLock<()> = OnceLock::new();
-    TRACING.get_or_init(|| {
-        baml_rt_observability::init_tracing();
-    });
-}
-
-fn e2e_serial_gate() -> &'static Semaphore {
-    init_test_tracing();
-    static GATE: OnceLock<Semaphore> = OnceLock::new();
-    GATE.get_or_init(|| Semaphore::new(1))
-}
-
-#[derive(Clone)]
-struct StrictProvenanceWriter {
-    inner: Arc<GraphqliteProvenanceStore>,
-}
-
-#[async_trait]
-impl ProvenanceWriter for StrictProvenanceWriter {
-    async fn add_event(
-        &self,
-        event: ProvEvent,
-    ) -> std::result::Result<(), baml_rt_provenance::ProvenanceError> {
-        match self.inner.add_event(event.clone()).await {
-            Ok(()) => Ok(()),
-            Err(err) => panic!("strict provenance write failure: {err:?}; event={event:?}"),
-        }
-    }
-}
-
-#[async_trait]
-impl ProvenanceContextReader for StrictProvenanceWriter {
-    async fn context_messages(
-        &self,
-        context_id: &ContextId,
-        limit: Option<usize>,
-    ) -> std::result::Result<Vec<ProvenanceContextMessage>, baml_rt_provenance::ProvenanceError>
-    {
-        self.inner.context_messages(context_id, limit).await
-    }
-
-    async fn conversation_context(
-        &self,
-        context_id: &ContextId,
-        limit: Option<usize>,
-    ) -> std::result::Result<
-        Vec<ProvenanceConversationContextItem>,
-        baml_rt_provenance::ProvenanceError,
-    > {
-        self.inner.conversation_context(context_id, limit).await
-    }
-}
 
 /// Build fixture with baml-agent-builder, extract tar to temp dir, return path to extracted dir (has dist + baml_src).
 fn build_fixture_to_temp(fixture_name: &str) -> std::path::PathBuf {
@@ -452,6 +400,121 @@ async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
         .unwrap()
 }
 
+#[derive(Clone)]
+struct PackageTargetRouter {
+    routes: HashMap<String, baml_rt::A2aAgent>,
+}
+
+#[async_trait]
+impl A2aRequestHandler for PackageTargetRouter {
+    async fn handle_a2a_stream(
+        &self,
+        request: Value,
+    ) -> baml_rt::Result<baml_rt_core::bus::BusStream<Value>> {
+        let target_package = request
+            .get("params")
+            .and_then(|params| params.get("metadata"))
+            .and_then(|meta| meta.get("target"))
+            .and_then(|target| target.get("agent_package"))
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                BamlRtError::InvalidArgument(
+                    "system/internal_a2a missing params.metadata.target.agent_package".to_string(),
+                )
+            })?;
+
+        let agent = self.routes.get(target_package).ok_or_else(|| {
+            BamlRtError::InvalidArgument(format!(
+                "No route configured for target package '{target_package}'"
+            ))
+        })?;
+        agent.handle_a2a_stream(request).await
+    }
+}
+
+async fn setup_internal_a2a_router_agents(
+    target_package: &str,
+) -> (baml_rt::A2aAgent, baml_rt::A2aAgent) {
+    let responder_manager = BamlRuntimeManager::new().unwrap();
+    let responder_code = r#"
+globalThis.onChatMessage = async function(message) {
+  const text = message?.parts?.[0]?.text || "unknown";
+  __chat_yield({ message: { parts: [{ text: `Responder saw: ${text}` }] } });
+  __chat_yield({ final: true });
+};
+"#;
+    let responder_agent = baml_rt::A2aAgent::builder()
+        .with_runtime_manager(responder_manager)
+        .with_init_js(responder_code)
+        .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .build()
+        .await
+        .unwrap();
+
+    let router: Arc<dyn A2aRequestHandler> = Arc::new(PackageTargetRouter {
+        routes: HashMap::from([("responder-agent".to_string(), responder_agent.clone())]),
+    });
+
+    let initiator_manager = BamlRuntimeManager::new().unwrap();
+    let target_literal = serde_json::to_string(target_package).expect("serialize target package");
+    let initiator_code = r#"
+globalThis.onChatMessage = async function(message) {
+    const userText = message?.parts?.[0]?.text || "ping";
+    try {
+    const session = await openToolSession("system/internal_a2a", {
+      target: { agent_package: __TARGET_PACKAGE__, agent_instance_id: "default" }
+    });
+    await session.send({ parts: [{ text: userText }] });
+    const next = await session.continue();
+    await session.finish();
+
+    const chunks =
+      Array.isArray(next?.chunks) ? next.chunks :
+      Array.isArray(next?.output?.chunks) ? next.output.chunks :
+      [];
+    const texts = [];
+    for (const rawChunk of chunks) {
+      let chunk = rawChunk;
+      if (typeof rawChunk === "string" && rawChunk.trim().startsWith("{")) {
+        try {
+          chunk = JSON.parse(rawChunk);
+        } catch (_e) {
+          continue;
+        }
+      }
+      const t =
+        chunk?.message?.parts?.[0]?.text ??
+        chunk?.task?.status?.message?.parts?.[0]?.text ??
+        chunk?.statusUpdate?.status?.message?.parts?.[0]?.text ??
+        null;
+      if (typeof t === "string" && t.length > 0) {
+        texts.push(t);
+      }
+    }
+    __chat_yield({
+      message: { parts: [{ text: texts.join(" | ") || "No delegated text" }] }
+    });
+    __chat_yield({ final: true });
+    } catch (e) {
+      __chat_yield({ message: { parts: [{ text: `delegate_error=${String(e)}` }] } });
+      __chat_yield({ final: true });
+    }
+};
+"#
+    .replace("__TARGET_PACKAGE__", &target_literal);
+    let initiator_agent = baml_rt::A2aAgent::builder()
+        .with_runtime_manager(initiator_manager)
+        .with_init_js(initiator_code)
+        .with_a2a_session_tool(RegistrationMode::Register)
+        .with_a2a_session_router(router)
+        .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .build()
+        .await
+        .unwrap();
+
+    (initiator_agent, responder_agent)
+}
+
 async fn setup_task_lifecycle_demo_agent() -> baml_rt::A2aAgent {
     ensure_fixture_runtime_types();
     let built = build_fixture_to_temp_async("task-lifecycle-demo").await;
@@ -563,9 +626,7 @@ async fn setup_conversational_context_auto_agent()
         ))
         .await
         .expect("write AgentBooted");
-    let strict_writer = Arc::new(StrictProvenanceWriter {
-        inner: provenance.clone(),
-    });
+    let strict_writer = Arc::new(StrictProvenanceWriter::new(provenance.clone()));
     let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
         .expect("conversational-context-auto dist/index.js");
     let agent = baml_rt::A2aAgent::builder()
@@ -1170,6 +1231,76 @@ async fn test_e2e_stream_js_tool() {
     );
 
     let _ = task_id;
+}
+
+#[tokio::test]
+async fn test_internal_a2a_can_route_to_different_agent_package() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+
+    let (initiator_agent, _responder_agent) =
+        setup_internal_a2a_router_agents("responder-agent").await;
+    let request = send_message_request(
+        SendMessageRequest {
+            message: user_message("route-1", "ping cross-package", Some(ContextId::new(44, 1))),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+            extra: std::collections::HashMap::new(),
+        },
+        "corr-1-1",
+    );
+
+    let responses = collect_stream_responses(&initiator_agent, request)
+        .await
+        .expect("internal_a2a routed request");
+    let chunks = chunks_from_responses(&responses);
+    let texts = message_texts_from_chunks(&chunks);
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("Responder saw: ping cross-package")),
+        "Expected delegated response text from responder agent. Texts: {:?}. Raw: {}",
+        texts,
+        serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+    );
+    assert!(
+        !texts.iter().any(|t| t.starts_with("delegate_error=")),
+        "Expected no delegated error marker. Texts: {:?}",
+        texts
+    );
+}
+
+#[tokio::test]
+async fn test_internal_a2a_unknown_target_surfaces_error() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+
+    let (initiator_agent, _responder_agent) =
+        setup_internal_a2a_router_agents("missing-agent").await;
+    let request = send_message_request(
+        SendMessageRequest {
+            message: user_message("route-2", "ping cross-package", Some(ContextId::new(45, 1))),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+            extra: std::collections::HashMap::new(),
+        },
+        "corr-1-2",
+    );
+
+    let responses = collect_stream_responses(&initiator_agent, request)
+        .await
+        .expect("internal_a2a routed request");
+    let chunks = chunks_from_responses(&responses);
+    let texts = message_texts_from_chunks(&chunks);
+    assert!(
+        texts.iter().any(|t| {
+            t.starts_with("delegate_error=")
+                || t.contains("No route configured for target package 'missing-agent'")
+        }),
+        "Expected unknown-route error text for missing target. Texts: {:?}. Raw: {}",
+        texts,
+        serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+    );
 }
 
 /// Fixture: task-lifecycle-demo.

@@ -13,6 +13,7 @@ mod discover_session_tools;
 pub mod metadata;
 pub mod tools;
 
+pub use a2a_session::A2aSessionBundle;
 pub use bundle::{System, SystemBundle};
 pub use tools::{
     AgentCardDto, ConversationChunk, ConversationMessage, ConversationPart,

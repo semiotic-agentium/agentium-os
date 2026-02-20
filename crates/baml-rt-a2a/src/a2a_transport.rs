@@ -20,6 +20,7 @@ use baml_rt_tools::{
     ToolFailure, ToolHandler, ToolName, ToolSession, ToolSessionError, ToolTypeSpec,
     tools::{ToolFunctionMetadata, ToolSessionContext},
 };
+use baml_rt_tools_system::A2aSessionBundle;
 use serde_json::Value;
 use tokio::sync::{Mutex, broadcast};
 
@@ -219,6 +220,29 @@ impl A2aAgent {
 
         Ok(())
     }
+
+    pub async fn register_a2a_session_tool(&self) -> Result<()> {
+        let bundle = A2aSessionBundle::new(Arc::new(self.clone()));
+        let registry = {
+            let runtime = self.runtime.lock().await;
+            runtime.tool_registry()
+        };
+        registry.register_bundle(bundle)?;
+        Ok(())
+    }
+
+    pub async fn register_a2a_session_tool_with_handler(
+        &self,
+        handler: Arc<dyn A2aRequestHandler>,
+    ) -> Result<()> {
+        let bundle = A2aSessionBundle::new(handler);
+        let registry = {
+            let runtime = self.runtime.lock().await;
+            runtime.tool_registry()
+        };
+        registry.register_bundle(bundle)?;
+        Ok(())
+    }
 }
 
 /// Builder for configuring an A2A agent and its subcomponents.
@@ -231,6 +255,8 @@ pub struct A2aAgentBuilder {
     task_store: TaskStoreConfig,
     provenance_writer: ProvenanceWriterConfig,
     agent_id: AgentIdConfig,
+    register_a2a_session_tool: RegistrationMode,
+    a2a_session_route_mode: A2aSessionRouteMode,
 }
 
 pub struct A2aAgentBuilderWithEffectEmitter {
@@ -242,6 +268,8 @@ pub struct A2aAgentBuilderWithEffectEmitter {
     task_store: TaskStoreConfig,
     provenance_writer: ProvenanceWriterConfig,
     agent_id: AgentIdConfig,
+    register_a2a_session_tool: RegistrationMode,
+    a2a_session_route_mode: A2aSessionRouteMode,
     effect_emitter: Arc<dyn EffectEmitter>, // REQUIRED - enforced by typestate
 }
 
@@ -277,6 +305,30 @@ enum AgentIdConfig {
     AutoGenerate,
 }
 
+enum A2aSessionRouteMode {
+    SelfAgent,
+    ExternalRouter(Arc<dyn A2aRequestHandler>),
+}
+
+/// Explicit registration toggle for optional helpers/tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegistrationMode {
+    Register,
+    Skip,
+}
+
+impl RegistrationMode {
+    pub const fn should_register(self) -> bool {
+        matches!(self, Self::Register)
+    }
+}
+
+impl From<bool> for RegistrationMode {
+    fn from(value: bool) -> Self {
+        if value { Self::Register } else { Self::Skip }
+    }
+}
+
 impl Default for A2aAgentBuilder {
     fn default() -> Self {
         Self::new()
@@ -307,6 +359,8 @@ impl A2aAgentBuilder {
             task_store: TaskStoreConfig::Default,
             provenance_writer: ProvenanceWriterConfig::Default,
             agent_id: AgentIdConfig::AutoGenerate,
+            register_a2a_session_tool: RegistrationMode::Skip,
+            a2a_session_route_mode: A2aSessionRouteMode::SelfAgent,
         }
     }
 
@@ -368,6 +422,21 @@ impl A2aAgentBuilder {
         self
     }
 
+    pub fn with_a2a_session_tool(mut self, mode: impl Into<RegistrationMode>) -> Self {
+        self.register_a2a_session_tool = mode.into();
+        self
+    }
+
+    /// Provide an external A2A request handler for session routing.
+    ///
+    /// Automatically sets `register_a2a_session_tool` to `Register` since
+    /// providing a router implies intent to use the `system/internal_a2a` tool.
+    pub fn with_a2a_session_router(mut self, handler: Arc<dyn A2aRequestHandler>) -> Self {
+        self.a2a_session_route_mode = A2aSessionRouteMode::ExternalRouter(handler);
+        self.register_a2a_session_tool = RegistrationMode::Register;
+        self
+    }
+
     /// Provide an agent ID (overrides auto-generation).
     pub fn with_agent_id(mut self, agent_id: baml_rt_core::ids::AgentId) -> Self {
         self.agent_id = AgentIdConfig::Provided(agent_id);
@@ -391,6 +460,8 @@ impl A2aAgentBuilder {
             task_store: self.task_store,
             provenance_writer: self.provenance_writer,
             agent_id: self.agent_id,
+            register_a2a_session_tool: self.register_a2a_session_tool,
+            a2a_session_route_mode: self.a2a_session_route_mode,
             effect_emitter: emitter,
         }
     }
@@ -452,6 +523,21 @@ impl A2aAgentBuilderWithEffectEmitter {
         store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
     ) -> Self {
         self.provenance_writer = ProvenanceWriterConfig::Graphqlite(store);
+        self
+    }
+
+    pub fn with_a2a_session_tool(mut self, mode: impl Into<RegistrationMode>) -> Self {
+        self.register_a2a_session_tool = mode.into();
+        self
+    }
+
+    /// Provide an external A2A request handler for session routing.
+    ///
+    /// Automatically sets `register_a2a_session_tool` to `Register` since
+    /// providing a router implies intent to use the `system/internal_a2a` tool.
+    pub fn with_a2a_session_router(mut self, handler: Arc<dyn A2aRequestHandler>) -> Self {
+        self.a2a_session_route_mode = A2aSessionRouteMode::ExternalRouter(handler);
+        self.register_a2a_session_tool = RegistrationMode::Register;
         self
     }
 
@@ -579,7 +665,6 @@ impl A2aAgentBuilderWithEffectEmitter {
             }
         }
         tracing::debug!("A2aAgentBuilder::build: Bridge initialization complete");
-        tracing::debug!("A2aAgentBuilder::build: Bridge initialization complete");
 
         let (update_tx, _update_rx) = broadcast::channel(256);
 
@@ -702,6 +787,29 @@ impl A2aAgentBuilderWithEffectEmitter {
             update_tx,
             stream_sessions: Arc::new(Mutex::new(HashMap::new())),
         };
+
+        match (&self.a2a_session_route_mode, self.register_a2a_session_tool) {
+            (A2aSessionRouteMode::ExternalRouter(_), RegistrationMode::Skip) => {
+                tracing::debug!(
+                    "A2aAgentBuilder::build: external a2a session router configured but system/internal_a2a not requested by this agent"
+                );
+            }
+            (_, mode) if mode.should_register() => {
+                tracing::debug!("A2aAgentBuilder::build: register_a2a_session_tool start");
+                match self.a2a_session_route_mode {
+                    A2aSessionRouteMode::SelfAgent => {
+                        agent.register_a2a_session_tool().await?;
+                    }
+                    A2aSessionRouteMode::ExternalRouter(handler) => {
+                        agent
+                            .register_a2a_session_tool_with_handler(handler)
+                            .await?;
+                    }
+                }
+                tracing::debug!("A2aAgentBuilder::build: register_a2a_session_tool done");
+            }
+            _ => {}
+        }
 
         tracing::debug!("A2aAgentBuilder::build: validate_tool_allowlist_registered start");
         {

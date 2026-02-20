@@ -42,6 +42,10 @@ pub enum BamlRtError {
     #[error("Function not found: {0}")]
     FunctionNotFound(String),
 
+    /// Requested agent was not found in the registry.
+    #[error("Agent not found: {0}")]
+    AgentNotFound(String),
+
     /// Invalid argument provided to a function
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
