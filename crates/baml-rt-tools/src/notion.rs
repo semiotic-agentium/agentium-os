@@ -1477,19 +1477,19 @@ pub fn notion_get_page_blocks_metadata() -> ToolFunctionMetadata {
 }
 
 fn notion_search_pages_build() -> Result<Arc<dyn ToolHandler>> {
-    create_tool_handler(NotionSearchPagesTool).map(|(_, h)| h)
+    create_tool_handler(NotionSearchPagesTool::new()).map(|(_, h)| h)
 }
 
 fn notion_get_page_build() -> Result<Arc<dyn ToolHandler>> {
-    create_tool_handler(NotionGetPageTool).map(|(_, h)| h)
+    create_tool_handler(NotionGetPageTool::new()).map(|(_, h)| h)
 }
 
 fn notion_get_page_blocks_build() -> Result<Arc<dyn ToolHandler>> {
-    create_tool_handler(NotionGetPageBlocksTool).map(|(_, h)| h)
+    create_tool_handler(NotionGetPageBlocksTool::new()).map(|(_, h)| h)
 }
 
 fn notion_build() -> Result<Arc<dyn ToolHandler>> {
-    create_tool_handler(NotionTool).map(|(_, h)| h)
+    create_tool_handler(NotionTool::new()).map(|(_, h)| h)
 }
 
 register_tool!(notion_search_pages_metadata, notion_search_pages_build);
