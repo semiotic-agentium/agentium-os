@@ -11,7 +11,7 @@ use baml_rt_a2a::AgentRegistry;
 use baml_rt_core::A2aRequestHandler;
 use baml_rt_core::ids::ContextId;
 #[cfg(any(feature = "clickup", feature = "notion"))]
-use baml_rt_core::{AgentDiscoveryEntry, AgentRouteKey};
+use baml_rt_core::{AgentCard, AgentDiscoveryEntry, AgentLister, AgentRouteKey};
 #[cfg(any(feature = "clickup", feature = "notion"))]
 use baml_rt_provenance::{
     GraphExporter,
@@ -118,16 +118,30 @@ impl SingleAgentRegistry {
 
 #[cfg(any(feature = "clickup", feature = "notion"))]
 #[async_trait]
-impl AgentRegistry for SingleAgentRegistry {
+impl AgentLister for SingleAgentRegistry {
     fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
+        let agent_card = AgentCard {
+            name: self.name.clone(),
+            version: self.version.clone(),
+            agent_package: self.package.clone(),
+            agent_instance_id: self.instance_id.clone(),
+            tools: Vec::new(),
+            description: None,
+            capabilities: Vec::new(),
+        };
         vec![AgentDiscoveryEntry {
             agent_package: self.package.clone(),
             agent_instance_id: self.instance_id.clone(),
             name: self.name.clone(),
             version: self.version.clone(),
+            agent_card,
         }]
     }
+}
 
+#[cfg(any(feature = "clickup", feature = "notion"))]
+#[async_trait]
+impl AgentRegistry for SingleAgentRegistry {
     async fn handle_a2a_stream(
         &self,
         key: &AgentRouteKey,
@@ -382,6 +396,7 @@ pub fn build_agent_dir_to_temp(
 }
 
 #[cfg(feature = "clickup")]
+#[allow(dead_code)] // Helper is consumed by clickup integration tests when compiled as their own test target.
 pub async fn build_clickup_agent_to_temp_async() -> PathBuf {
     let clickup_agent_dir = test_support::common::workspace_root()
         .join("agents")
@@ -394,6 +409,7 @@ pub async fn build_clickup_agent_to_temp_async() -> PathBuf {
 }
 
 #[cfg(feature = "notion")]
+#[allow(dead_code)] // Helper is consumed by notion integration tests when compiled as their own test target.
 pub async fn build_notion_agent_to_temp_async() -> PathBuf {
     let notion_agent_dir = test_support::common::workspace_root()
         .join("agents")
