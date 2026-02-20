@@ -32,7 +32,6 @@ use tokio::sync::Mutex as TokioMutex;
 pub(crate) use tool_extraction::{
     ToolSessionOp, extract_tool_call, extract_tool_session_plan, normalize_plan_input,
     resolve_tool_name_from_input_with_registry, resolve_tool_name_from_plan_type_with_registry,
-    resolve_tool_name_from_session_plan_with_registry,
 };
 
 use crate::{
@@ -1200,9 +1199,9 @@ impl BamlRuntimeManager {
 
     /// Execute a tool from a BAML result: session plan (requires source_baml_function) or single tool call (resolved by input schema).
     ///
-    /// Session plans are bound to a tool by **type**. Resolution order (no reliance on prompt emitting __type when manifest is present):
-    /// 1. If we have the invoking function name and a builder-generated manifest (session_plan_functions.json), use it to get the plan type and resolve the tool from the registry.
-    /// 2. Otherwise, require __type on the plan or first step and resolve from the registry by class name.
+    /// Session plans are bound to a tool by manifest mapping (function name -> plan type).
+    /// Runtime requires the invoking function to be present in the builder-generated
+    /// `session_plan_functions.json` so tool resolution does not rely on prompt-emitted `__type`.
     pub async fn execute_tool_from_baml_result_or_value(
         &self,
         scope: &context::RuntimeScope,
@@ -1225,13 +1224,11 @@ impl BamlRuntimeManager {
             } else {
                 None
             };
-            let tool_name = tool_name
-                .or_else(|| resolve_tool_name_from_session_plan_with_registry(&self.tool_registry, &baml_result).ok())
-                .ok_or_else(|| {
-                    BamlRtError::InvalidArgument(
-                        "Session plan tool could not be resolved: no manifest entry for the invoking function and no __type on the plan or first step.".to_string(),
-                    )
-                })?;
+            let tool_name = tool_name.ok_or_else(|| {
+                BamlRtError::InvalidArgument(
+                    "Session plan tool could not be resolved: no manifest entry for the invoking function. Build the agent with the builder so session_plan_functions.json is present and up to date.".to_string(),
+                )
+            })?;
             return self.execute_tool_session_plan(scope, tool_name, plan).await;
         }
         if let Some(call) = extract_tool_call(&baml_result)? {

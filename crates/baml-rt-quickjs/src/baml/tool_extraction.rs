@@ -1,42 +1,16 @@
 //! Tool call and tool session plan extraction from JSON.
 //!
-//! Session plans are bound to a tool by **type**: the plan (or its steps) carry a
-//! `__type` that identifies the session plan class (e.g. `SupportCalculateSessionPlan`,
-//! `SystemInternal_a2aSessionPlan`). The tool name is resolved from the registry by
-//! matching that class name to `ToolFunctionMetadata::class_name`. Single tool calls
-//! still resolve by input schema when exactly one tool matches.
+//! Session plans are bound to a tool by manifest mapping (function name -> plan type),
+//! then resolved from the registry via `ToolFunctionMetadata::class_name`.
+//! Single tool calls still resolve by input schema when exactly one tool matches.
 
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_tools::ToolRegistry as ConcreteToolRegistry;
 use serde_json::Value;
 
-/// Step type suffixes emitted by the builder for session plan steps (e.g. `SupportCalculateOpenStep`).
-const STEP_TYPE_SUFFIXES: &[&str] = &[
-    "OpenStep",
-    "SendStep",
-    "NextStep",
-    "FinishStep",
-    "AbortStep",
-];
-
 /// Derive the tool class name from a session plan type string (e.g. `SupportCalculateSessionPlan` → `SupportCalculate`).
 fn class_name_from_plan_type(plan_type: &str) -> Option<&str> {
     plan_type.strip_suffix("SessionPlan")
-}
-
-/// Derive the tool class name from a step type string (e.g. `SupportCalculateOpenStep` → `SupportCalculate`).
-fn class_name_from_step_type(step_type: &str) -> Option<String> {
-    for suffix in STEP_TYPE_SUFFIXES {
-        if step_type.ends_with(suffix) {
-            return Some(
-                step_type
-                    .strip_suffix(suffix)
-                    .unwrap_or(step_type)
-                    .to_string(),
-            );
-        }
-    }
-    None
 }
 
 /// Resolve tool name from a known session plan type name (e.g. from the builder-generated manifest).
@@ -66,55 +40,6 @@ pub(crate) fn resolve_tool_name_from_plan_type_with_registry(
         ))),
         _ => Err(BamlRtError::InvalidArgument(format!(
             "Multiple tools match session plan class {:?}: {}.",
-            class_name,
-            matches.join(", ")
-        ))),
-    }
-}
-
-/// Resolve tool name from a session plan value using type information in the JSON and the registry.
-///
-/// **Primary:** Use the manifest (function name → plan type) at the call site when available so the
-/// prompt does not need to emit __type. **Fallback:** The plan may carry `__type` on the plan object
-/// or on the first step so the tool can be resolved when the manifest is missing (e.g. dynamic calls).
-pub(crate) fn resolve_tool_name_from_session_plan_with_registry(
-    registry: &ConcreteToolRegistry,
-    plan: &Value,
-) -> Result<String> {
-    let class_name = plan
-        .get("__type")
-        .and_then(|v| v.as_str())
-        .and_then(class_name_from_plan_type)
-        .map(String::from)
-        .or_else(|| {
-            plan.get("steps")
-                .and_then(|a| a.as_array())
-                .and_then(|arr| arr.first())
-                .and_then(|s| s.get("__type"))
-                .and_then(|v| v.as_str())
-                .and_then(class_name_from_step_type)
-        })
-        .ok_or_else(|| {
-            BamlRtError::InvalidArgument(
-                "Session plan tool could not be resolved: no manifest entry for the invoking function and no __type on the plan or first step. Use an agent built with the builder (emits session_plan_functions.json) or have the prompt include __type.".to_string(),
-            )
-        })?;
-
-    let matches: Vec<String> = registry
-        .all_metadata()
-        .into_iter()
-        .filter(|metadata| metadata.class_name == class_name)
-        .map(|metadata| metadata.name.to_string())
-        .collect();
-
-    match matches.len() {
-        1 => Ok(matches.into_iter().next().unwrap()),
-        0 => Err(BamlRtError::InvalidArgument(format!(
-            "No registered tool has class_name {:?}. Session plan type is derived from __type; ensure the tool is registered and its class_name matches.",
-            class_name
-        ))),
-        _ => Err(BamlRtError::InvalidArgument(format!(
-            "Multiple tools match session plan class {:?}: {}. Registry must have exactly one tool per session plan class.",
             class_name,
             matches.join(", ")
         ))),

@@ -295,22 +295,14 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
     )?;
     write_line(output, "")?;
 
-    // Generate session plan with FSM guidance and example. When the agent is built, the runtime
-    // resolves the tool from the manifest (function name → plan type); __type in JSON is only
-    // required as fallback when there is no manifest or no entry.
+    // Generate session plan with FSM guidance and example. Runtime resolves the tool from the
+    // builder-generated manifest mapping (function name -> plan type).
     write_line(output, &format!("class {} {{", plan_type_name))?;
     write_line(
         output,
         &format!(
-            "  steps {}[] @description(\"Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Optionally include __type on the plan (e.g. \\\"{}\\\") or on each step (e.g. \\\"{}OpenStep\\\") for tool resolution when the runtime has no manifest. Example: [{{\\\"__type\\\": \\\"{}OpenStep\\\", op: \\\"Open\\\"}}, {{\\\"__type\\\": \\\"{}SendStep\\\", op: \\\"Send\\\", input: {{...}}}}, {{\\\"__type\\\": \\\"{}NextStep\\\", op: \\\"Next\\\"}}, {{\\\"__type\\\": \\\"{}FinishStep\\\", op: \\\"Finish\\\"}}].{}\")",
-            step_union_name,
-            plan_type_name,
-            class_name,
-            class_name,
-            class_name,
-            class_name,
-            class_name,
-            access_note
+            "  steps {}[] @description(\"Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Runtime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Example: [{{op: \\\"Open\\\"}}, {{op: \\\"Send\\\", input: {{...}}}}, {{op: \\\"Next\\\"}}, {{op: \\\"Finish\\\"}}].{}\")",
+            step_union_name, access_note
         ),
     )?;
     write_line(output, "}")?;
