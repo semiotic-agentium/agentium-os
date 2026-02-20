@@ -101,7 +101,7 @@ class SystemDiscover_toolsAbortStep {
 type SystemDiscover_toolsSessionStep = SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsNextStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep
 
 class SystemDiscover_toolsSessionPlan {
-  steps SystemDiscover_toolsSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Optionally include __type on the plan (e.g. \"SystemDiscover_toolsSessionPlan\") or on each step (e.g. \"SystemDiscover_toolsOpenStep\") for tool resolution when the runtime has no manifest. Example: [{\"__type\": \"SystemDiscover_toolsOpenStep\", op: \"Open\"}, {\"__type\": \"SystemDiscover_toolsSendStep\", op: \"Send\", input: {...}}, {\"__type\": \"SystemDiscover_toolsNextStep\", op: \"Next\"}, {\"__type\": \"SystemDiscover_toolsFinishStep\", op: \"Finish\"}].")
+  steps SystemDiscover_toolsSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Runtime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Example: [{op: \"Open\"}, {op: \"Send\", input: {...}}, {op: \"Next\"}, {op: \"Finish\"}].")
 }
 
 class SupportCalculateOpenStep {
@@ -133,5 +133,5 @@ class SupportCalculateAbortStep {
 type SupportCalculateSessionStep = SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateNextStep | SupportCalculateFinishStep | SupportCalculateAbortStep
 
 class SupportCalculateSessionPlan {
-  steps SupportCalculateSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Optionally include __type on the plan (e.g. \"SupportCalculateSessionPlan\") or on each step (e.g. \"SupportCalculateOpenStep\") for tool resolution when the runtime has no manifest. Example: [{\"__type\": \"SupportCalculateOpenStep\", op: \"Open\"}, {\"__type\": \"SupportCalculateSendStep\", op: \"Send\", input: {...}}, {\"__type\": \"SupportCalculateNextStep\", op: \"Next\"}, {\"__type\": \"SupportCalculateFinishStep\", op: \"Finish\"}].")
+  steps SupportCalculateSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Runtime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Example: [{op: \"Open\"}, {op: \"Send\", input: {...}}, {op: \"Next\"}, {op: \"Finish\"}].")
 }

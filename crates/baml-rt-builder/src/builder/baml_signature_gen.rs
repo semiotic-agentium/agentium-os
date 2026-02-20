@@ -34,6 +34,10 @@ fn session_plan_type_name_from_generic<T>(ty: &TypeGeneric<T>) -> Option<String>
         }
         TypeGeneric::Union(union_gen, _) => match union_gen.view() {
             UnionTypeViewGeneric::Optional(inner) => session_plan_type_name_from_generic(inner),
+            UnionTypeViewGeneric::OneOf(variants)
+            | UnionTypeViewGeneric::OneOfOptional(variants) => variants
+                .iter()
+                .find_map(|variant| session_plan_type_name_from_generic(variant)),
             _ => None,
         },
         _ => None,

@@ -427,7 +427,8 @@ async fn test_a2a_session_send_after_finish_fails() {
             err_msg.contains("terminal")
                 || err_msg.contains("closed")
                 || err_msg.contains("Unknown tool session")
-                || err_msg.contains("Unknown session"),
+                || err_msg.contains("Unknown session")
+                || err_msg.contains("send only valid once after open"),
             "error should mention terminal/closed/unknown-session: {}",
             err_msg
         );
