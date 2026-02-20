@@ -164,6 +164,62 @@ pub fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Temporarily sets an environment variable for the lifetime of this guard.
+///
+/// Restores the previous value on drop.
+#[derive(Debug)]
+pub struct TempEnvVar {
+    key: String,
+    previous: Option<String>,
+}
+
+impl TempEnvVar {
+    pub fn set(key: &str, value: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        // SAFETY: test helper used in controlled test code; callers must avoid
+        // concurrent mutation of the same env key from multiple threads.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self {
+            key: key.to_string(),
+            previous,
+        }
+    }
+
+    pub fn remove(key: &str) -> Self {
+        let previous = std::env::var(key).ok();
+        // SAFETY: test helper used in controlled test code; callers must avoid
+        // concurrent mutation of the same env key from multiple threads.
+        unsafe {
+            std::env::remove_var(key);
+        }
+        Self {
+            key: key.to_string(),
+            previous,
+        }
+    }
+}
+
+impl Drop for TempEnvVar {
+    fn drop(&mut self) {
+        match &self.previous {
+            Some(value) => {
+                // SAFETY: mirrors set/remove safety note above.
+                unsafe {
+                    std::env::set_var(&self.key, value);
+                }
+            }
+            None => {
+                // SAFETY: mirrors set/remove safety note above.
+                unsafe {
+                    std::env::remove_var(&self.key);
+                }
+            }
+        }
+    }
+}
+
 /// Asserts that a tool is visible in QuickJS (either as a JS tool in `__js_tools` or as a Rust tool via `openToolSession`).
 /// Requires `scope` because the check runs an async IIFE that returns a promise; evaluate() must receive a scope to poll it.
 pub async fn assert_tool_registered_in_js(

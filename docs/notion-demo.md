@@ -68,6 +68,17 @@ The diagram should show the runtime narrative end-to-end:
 - Tool invocation/return
 - Agent response
 
+## Demo Narrative (Recommended)
+
+For team demos, run these scenes in order:
+
+1. `Search scene`: `just notion-demo`
+2. `Deterministic scene`: `NOTION_DEMO_PAGE_ID="<page-or-block-id>" just notion-demo`
+3. `Trace scene`: run `just provenance-mermaid <context_id>` from either prior run and inspect the sequence narrative
+
+This sequence highlights planning behavior, deterministic direct-ID behavior, and
+provenance-backed observability in one arc.
+
 ## Useful Environment Overrides
 
 - `NOTION_DEMO_PORT` (default `8081`)

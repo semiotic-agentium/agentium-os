@@ -4,119 +4,24 @@ mod common;
 
 use std::{fs, path::PathBuf, sync::Arc};
 
-use async_trait::async_trait;
 use baml_rt::baml::BamlRuntimeManager;
-use baml_rt_a2a::AgentRegistry;
 use baml_rt_core::{
-    A2aRequestHandler, AgentDiscoveryEntry, AgentRouteKey,
     bus::BusWithEffects,
     ids::{AgentId, ContextId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentType, GraphExporter, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
+    AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
     ProvenanceContextReader, ProvenanceConversationContextItem, ProvenanceWriter,
-    graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
 };
 use baml_rt_tools::clickup::ClickUpTool;
 use common::{
-    StrictProvenanceWriter, TempEnvVar, build_clickup_agent_to_temp_async, e2e_serial_gate,
+    RunningHttpServer, StrictProvenanceWriter, TempDirCleanup, TempEnvVar,
+    build_clickup_agent_to_temp_async, contains_kv, e2e_serial_gate, start_http_server,
+    start_runner_api_server,
 };
 use serde_json::{Value, json};
 use test_support::common::{chunks_from_responses, message_texts_from_chunks, send_stream_request};
 use tokio::time::{Duration, sleep, timeout};
-
-#[derive(Clone)]
-struct SingleAgentRegistry {
-    package: String,
-    instance_id: String,
-    name: String,
-    version: String,
-    agent: baml_rt::A2aAgent,
-}
-
-#[async_trait]
-impl AgentRegistry for SingleAgentRegistry {
-    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
-        vec![AgentDiscoveryEntry {
-            agent_package: self.package.clone(),
-            agent_instance_id: self.instance_id.clone(),
-            name: self.name.clone(),
-            version: self.version.clone(),
-        }]
-    }
-
-    async fn handle_a2a_stream(
-        &self,
-        key: &AgentRouteKey,
-        request: Value,
-    ) -> baml_rt_core::Result<baml_rt_core::bus::BusStream<Value>> {
-        if key.agent_package != self.package || key.agent_instance_id != self.instance_id {
-            return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
-                "Agent {}/{} not found",
-                key.agent_package, key.agent_instance_id
-            )));
-        }
-        self.agent.handle_a2a_stream(request).await
-    }
-}
-
-struct TestMermaidService {
-    store: Arc<GraphqliteProvenanceStore>,
-}
-
-impl TestMermaidService {
-    fn new(store: Arc<GraphqliteProvenanceStore>) -> Self {
-        Self { store }
-    }
-}
-
-#[async_trait]
-impl baml_rt_api::MermaidService for TestMermaidService {
-    async fn mermaid_for_context(
-        &self,
-        context_id: &str,
-    ) -> std::result::Result<String, baml_rt_api::MermaidError> {
-        let exporter = GraphExporter::new(self.store.clone());
-        let graph = exporter
-            .export_by_context(context_id)
-            .await
-            .map_err(|e| baml_rt_api::MermaidError::Other(Box::new(e)))?;
-        if graph.nodes.is_empty() {
-            return Err(baml_rt_api::MermaidError::NotFound);
-        }
-        let simplified = simplify_graph(&graph);
-        Ok(render_sequence_diagram(&simplified))
-    }
-
-    async fn mermaid_for_task(
-        &self,
-        task_id: &str,
-    ) -> std::result::Result<String, baml_rt_api::MermaidError> {
-        let exporter = GraphExporter::new(self.store.clone());
-        let graph = exporter
-            .export_by_task(task_id)
-            .await
-            .map_err(|e| baml_rt_api::MermaidError::Other(Box::new(e)))?;
-        if graph.nodes.is_empty() {
-            return Err(baml_rt_api::MermaidError::NotFound);
-        }
-        let simplified = simplify_graph(&graph);
-        Ok(render_sequence_diagram(&simplified))
-    }
-}
-
-struct RunningHttpServer {
-    base_url: String,
-    shutdown_tx: tokio::sync::oneshot::Sender<()>,
-    handle: tokio::task::JoinHandle<()>,
-}
-
-impl RunningHttpServer {
-    async fn stop(self) {
-        let _ = self.shutdown_tx.send(());
-        let _ = self.handle.await;
-    }
-}
 
 #[derive(Clone, Default)]
 struct MockClickUpState {
@@ -236,58 +141,9 @@ async fn start_clickup_mock_server() -> std::io::Result<(RunningHttpServer, Mock
         .route("/api/v2/task/{task_id}", get(get_task))
         .with_state(state.clone());
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let handle = tokio::spawn(async move {
-        let _ = axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = shutdown_rx.await;
-            })
-            .await;
-    });
+    let server = start_http_server(app).await?.with_base_path("/api/v2");
 
-    Ok((
-        RunningHttpServer {
-            base_url: format!("http://{addr}/api/v2"),
-            shutdown_tx,
-            handle,
-        },
-        state,
-    ))
-}
-
-async fn start_runner_api_server(
-    agent: baml_rt::A2aAgent,
-    provenance: Arc<GraphqliteProvenanceStore>,
-) -> std::io::Result<RunningHttpServer> {
-    let registry: Arc<dyn AgentRegistry> = Arc::new(SingleAgentRegistry {
-        package: "clickup-agent".to_string(),
-        instance_id: "default".to_string(),
-        name: "clickup-agent".to_string(),
-        version: "1.0.0".to_string(),
-        agent,
-    });
-    let mermaid: Option<Arc<dyn baml_rt_api::MermaidService>> =
-        Some(Arc::new(TestMermaidService::new(provenance)));
-
-    let app = baml_rt_api::api_router(registry, mermaid, None);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let addr = listener.local_addr()?;
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    let handle = tokio::spawn(async move {
-        let _ = axum::serve(listener, app)
-            .with_graceful_shutdown(async {
-                let _ = shutdown_rx.await;
-            })
-            .await;
-    });
-
-    Ok(RunningHttpServer {
-        base_url: format!("http://{addr}"),
-        shutdown_tx,
-        handle,
-    })
+    Ok((server, state))
 }
 
 async fn setup_clickup_agent_with_provenance()
@@ -341,16 +197,6 @@ fn maybe_task_status(status: &Value) -> Option<String> {
     })
 }
 
-fn contains_kv(value: &Value, key: &str, expected: &str) -> bool {
-    match value {
-        Value::Object(map) => map.iter().any(|(k, v)| {
-            (k == key && v.as_str() == Some(expected)) || contains_kv(v, key, expected)
-        }),
-        Value::Array(items) => items.iter().any(|v| contains_kv(v, key, expected)),
-        _ => false,
-    }
-}
-
 #[tokio::test]
 async fn test_e2e_clickup_real_model_with_plan_discovery() {
     if std::env::var("BAML_SKIP_LLM_TESTS").is_ok() {
@@ -379,14 +225,19 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
     let _env_clickup_base = TempEnvVar::set("CLICKUP_API_BASE_URL", &mock_server.base_url);
 
     let (agent, provenance_reader, built_dir) = setup_clickup_agent_with_provenance().await;
-    let runner_api = match start_runner_api_server(agent, provenance_reader.clone()).await {
+    let _built_dir_guard = TempDirCleanup::new(built_dir);
+    let runner_api = match start_runner_api_server(
+        "clickup-agent",
+        agent,
+        provenance_reader.clone(),
+    )
+    .await
+    {
         Ok(v) => v,
         Err(err) => {
             eprintln!(
                 "Skipping test_e2e_clickup_real_model_with_mock_server_and_mermaid_http: cannot bind runner API server: {err}"
             );
-            mock_server.stop().await;
-            fs::remove_dir_all(&built_dir).ok();
             return;
         }
     };
@@ -620,7 +471,6 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
 
     runner_api.stop().await;
     mock_server.stop().await;
-    fs::remove_dir_all(&built_dir).ok();
 }
 
 #[tokio::test]
@@ -651,14 +501,19 @@ async fn test_e2e_clickup_get_task_description_fast() {
     let _env_clickup_base = TempEnvVar::set("CLICKUP_API_BASE_URL", &mock_server.base_url);
 
     let (agent, provenance_reader, built_dir) = setup_clickup_agent_with_provenance().await;
-    let runner_api = match start_runner_api_server(agent, provenance_reader.clone()).await {
+    let _built_dir_guard = TempDirCleanup::new(built_dir);
+    let runner_api = match start_runner_api_server(
+        "clickup-agent",
+        agent,
+        provenance_reader.clone(),
+    )
+    .await
+    {
         Ok(v) => v,
         Err(err) => {
             eprintln!(
                 "Skipping test_e2e_clickup_get_task_description_fast: cannot bind runner API server: {err}"
             );
-            mock_server.stop().await;
-            fs::remove_dir_all(&built_dir).ok();
             return;
         }
     };
@@ -810,5 +665,4 @@ async fn test_e2e_clickup_get_task_description_fast() {
 
     runner_api.stop().await;
     mock_server.stop().await;
-    fs::remove_dir_all(&built_dir).ok();
 }

@@ -50,7 +50,7 @@ fi
 RUST_LOG=${RUST_LOG:-baml_rt_a2a=debug,baml_rt_quickjs=debug,baml_rt_tools=debug} \
   nohup "$RUNNER_BIN" \
     "$PACKAGE_FILE" \
-    --serve-http 127.0.0.1:"$PORT" \
+    --serve-http "127.0.0.1:${PORT}" \
     --provenance-db "$PROVENANCE_DB" \
     >"$LOG_FILE" 2>&1 &
 

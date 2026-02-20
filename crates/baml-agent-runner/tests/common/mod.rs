@@ -5,13 +5,26 @@ use std::{
 };
 
 use async_trait::async_trait;
-use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, SendMessageRequest};
-use baml_rt_core::{A2aRequestHandler, ids::ContextId};
+#[cfg(any(feature = "clickup", feature = "notion"))]
+use baml_rt_a2a::AgentRegistry;
+#[cfg(any(feature = "clickup", feature = "notion"))]
+use baml_rt_core::A2aRequestHandler;
+use baml_rt_core::ids::ContextId;
+#[cfg(any(feature = "clickup", feature = "notion"))]
+use baml_rt_core::{AgentDiscoveryEntry, AgentRouteKey};
+#[cfg(any(feature = "clickup", feature = "notion"))]
+use baml_rt_provenance::{
+    GraphExporter,
+    graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
+};
 use baml_rt_provenance::{
     GraphqliteProvenanceStore, ProvEvent, ProvenanceContextMessage, ProvenanceContextReader,
     ProvenanceConversationContextItem, ProvenanceWriter,
 };
+#[cfg(any(feature = "clickup", feature = "notion"))]
 use serde_json::Value;
+#[cfg(any(feature = "clickup", feature = "notion"))]
+pub use test_support::common::TempEnvVar;
 use tokio::sync::Semaphore;
 
 pub fn init_test_tracing() {
@@ -71,6 +84,237 @@ impl ProvenanceContextReader for StrictProvenanceWriter {
         baml_rt_provenance::ProvenanceError,
     > {
         self.inner.conversation_context(context_id, limit).await
+    }
+}
+
+#[cfg(any(feature = "clickup", feature = "notion"))]
+#[derive(Clone)]
+pub struct SingleAgentRegistry {
+    package: String,
+    instance_id: String,
+    name: String,
+    version: String,
+    agent: baml_rt::A2aAgent,
+}
+
+#[cfg(any(feature = "clickup", feature = "notion"))]
+impl SingleAgentRegistry {
+    pub fn new(
+        package: &str,
+        instance_id: &str,
+        name: &str,
+        version: &str,
+        agent: baml_rt::A2aAgent,
+    ) -> Self {
+        Self {
+            package: package.to_string(),
+            instance_id: instance_id.to_string(),
+            name: name.to_string(),
+            version: version.to_string(),
+            agent,
+        }
+    }
+}
+
+#[cfg(any(feature = "clickup", feature = "notion"))]
+#[async_trait]
+impl AgentRegistry for SingleAgentRegistry {
+    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
+        vec![AgentDiscoveryEntry {
+            agent_package: self.package.clone(),
+            agent_instance_id: self.instance_id.clone(),
+            name: self.name.clone(),
+            version: self.version.clone(),
+        }]
+    }
+
+    async fn handle_a2a_stream(
+        &self,
+        key: &AgentRouteKey,
+        request: Value,
+    ) -> baml_rt_core::Result<baml_rt_core::bus::BusStream<Value>> {
+        if key.agent_package != self.package || key.agent_instance_id != self.instance_id {
+            return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
+                "Agent {}/{} not found",
+                key.agent_package, key.agent_instance_id
+            )));
+        }
+        self.agent.handle_a2a_stream(request).await
+    }
+}
+
+#[cfg(any(feature = "clickup", feature = "notion"))]
+pub struct TestMermaidService {
+    store: Arc<GraphqliteProvenanceStore>,
+}
+
+#[cfg(any(feature = "clickup", feature = "notion"))]
+impl TestMermaidService {
+    pub fn new(store: Arc<GraphqliteProvenanceStore>) -> Self {
+        Self { store }
+    }
+}
+
+#[cfg(any(feature = "clickup", feature = "notion"))]
+#[async_trait]
+impl baml_rt_api::MermaidService for TestMermaidService {
+    async fn mermaid_for_context(
+        &self,
+        context_id: &str,
+    ) -> std::result::Result<String, baml_rt_api::MermaidError> {
+        let exporter = GraphExporter::new(self.store.clone());
+        let graph = exporter
+            .export_by_context(context_id)
+            .await
+            .map_err(|e| baml_rt_api::MermaidError::Other(Box::new(e)))?;
+        if graph.nodes.is_empty() {
+            return Err(baml_rt_api::MermaidError::NotFound);
+        }
+        let simplified = simplify_graph(&graph);
+        Ok(render_sequence_diagram(&simplified))
+    }
+
+    async fn mermaid_for_task(
+        &self,
+        task_id: &str,
+    ) -> std::result::Result<String, baml_rt_api::MermaidError> {
+        let exporter = GraphExporter::new(self.store.clone());
+        let graph = exporter
+            .export_by_task(task_id)
+            .await
+            .map_err(|e| baml_rt_api::MermaidError::Other(Box::new(e)))?;
+        if graph.nodes.is_empty() {
+            return Err(baml_rt_api::MermaidError::NotFound);
+        }
+        let simplified = simplify_graph(&graph);
+        Ok(render_sequence_diagram(&simplified))
+    }
+}
+
+#[cfg(any(feature = "clickup", feature = "notion"))]
+pub struct RunningHttpServer {
+    pub base_url: String,
+    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+#[cfg(any(feature = "clickup", feature = "notion"))]
+impl RunningHttpServer {
+    fn new(
+        base_url: String,
+        shutdown_tx: tokio::sync::oneshot::Sender<()>,
+        handle: tokio::task::JoinHandle<()>,
+    ) -> Self {
+        Self {
+            base_url,
+            shutdown_tx: Some(shutdown_tx),
+            handle: Some(handle),
+        }
+    }
+
+    pub fn with_base_path(mut self, base_path: &str) -> Self {
+        let trimmed = base_path.trim();
+        if trimmed.is_empty() || trimmed == "/" {
+            return self;
+        }
+        if trimmed.starts_with('/') {
+            self.base_url.push_str(trimmed);
+        } else {
+            self.base_url.push('/');
+            self.base_url.push_str(trimmed);
+        }
+        self
+    }
+
+    pub async fn stop(mut self) {
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            let _ = shutdown_tx.send(());
+        }
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.await;
+        }
+    }
+}
+
+#[cfg(any(feature = "clickup", feature = "notion"))]
+impl Drop for RunningHttpServer {
+    fn drop(&mut self) {
+        if let Some(shutdown_tx) = self.shutdown_tx.take() {
+            let _ = shutdown_tx.send(());
+        }
+        if let Some(handle) = self.handle.take() {
+            handle.abort();
+        }
+    }
+}
+
+#[cfg(any(feature = "clickup", feature = "notion"))]
+#[derive(Debug)]
+pub struct TempDirCleanup {
+    path: PathBuf,
+}
+
+#[cfg(any(feature = "clickup", feature = "notion"))]
+impl TempDirCleanup {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+#[cfg(any(feature = "clickup", feature = "notion"))]
+impl Drop for TempDirCleanup {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.path).ok();
+    }
+}
+
+#[cfg(any(feature = "clickup", feature = "notion"))]
+pub async fn start_http_server(app: axum::Router) -> std::io::Result<RunningHttpServer> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(async move {
+        let _ = axum::serve(listener, app)
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await;
+    });
+
+    Ok(RunningHttpServer::new(
+        format!("http://{addr}"),
+        shutdown_tx,
+        handle,
+    ))
+}
+
+#[cfg(any(feature = "clickup", feature = "notion"))]
+pub async fn start_runner_api_server(
+    agent_package: &str,
+    agent: baml_rt::A2aAgent,
+    provenance: Arc<GraphqliteProvenanceStore>,
+) -> std::io::Result<RunningHttpServer> {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(SingleAgentRegistry::new(
+        agent_package,
+        "default",
+        agent_package,
+        "1.0.0",
+        agent,
+    ));
+    let mermaid: Option<Arc<dyn baml_rt_api::MermaidService>> =
+        Some(Arc::new(TestMermaidService::new(provenance)));
+    let app = baml_rt_api::api_router(registry, mermaid, None);
+    start_http_server(app).await
+}
+
+#[cfg(any(feature = "clickup", feature = "notion"))]
+pub fn contains_kv(value: &Value, key: &str, expected: &str) -> bool {
+    match value {
+        Value::Object(map) => map.iter().any(|(k, v)| {
+            (k == key && v.as_str() == Some(expected)) || contains_kv(v, key, expected)
+        }),
+        Value::Array(items) => items.iter().any(|v| contains_kv(v, key, expected)),
+        _ => false,
     }
 }
 
@@ -137,60 +381,7 @@ pub fn build_agent_dir_to_temp(
     extract_dir
 }
 
-#[allow(dead_code)]
-pub fn jsonrpc_request(method: &str, params: serde_json::Value, id: &str) -> JSONRPCRequest {
-    JSONRPCRequest {
-        jsonrpc: "2.0".to_string(),
-        method: method.to_string(),
-        params: Some(params),
-        id: Some(JSONRPCId::String(id.to_string())),
-    }
-}
-
-#[allow(dead_code)]
-pub fn send_message_request(params: SendMessageRequest, id: &str) -> JSONRPCRequest {
-    jsonrpc_request(
-        "message.sendStream",
-        serde_json::to_value(params).expect("serialize SendMessageRequest"),
-        id,
-    )
-}
-
-#[allow(dead_code)]
-pub async fn collect_stream_responses(
-    agent: &baml_rt::A2aAgent,
-    request: JSONRPCRequest,
-) -> baml_rt::Result<Vec<Value>> {
-    let stream = agent
-        .handle_a2a_stream(serde_json::to_value(request).expect("request json"))
-        .await?;
-    Ok(baml_rt::collect_a2a_stream_until(stream, |item| {
-        let state = item
-            .get("result")
-            .and_then(|r| r.get("chunk"))
-            .and_then(|c| c.get("task"))
-            .and_then(|t| t.get("status"))
-            .and_then(|s| s.get("state"))
-            .and_then(|v| v.as_str())
-            .or_else(|| {
-                item.get("result")
-                    .and_then(|r| r.get("chunk"))
-                    .and_then(|c| c.get("statusUpdate"))
-                    .and_then(|s| s.get("status"))
-                    .and_then(|s| s.get("state"))
-                    .and_then(|v| v.as_str())
-            });
-        let is_final = item
-            .get("result")
-            .and_then(|r| r.get("final"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        is_final || matches!(state, Some("TASK_STATE_INPUT_REQUIRED"))
-    })
-    .await)
-}
-
-#[allow(dead_code)]
+#[cfg(feature = "clickup")]
 pub async fn build_clickup_agent_to_temp_async() -> PathBuf {
     let clickup_agent_dir = test_support::common::workspace_root()
         .join("agents")
@@ -202,35 +393,14 @@ pub async fn build_clickup_agent_to_temp_async() -> PathBuf {
     .expect("build clickup agent task join")
 }
 
-#[allow(dead_code)]
-pub struct TempEnvVar {
-    key: String,
-    previous: Option<String>,
-}
-
-#[allow(dead_code)]
-impl TempEnvVar {
-    pub fn set(key: &str, value: &str) -> Self {
-        let previous = std::env::var(key).ok();
-        unsafe {
-            std::env::set_var(key, value);
-        }
-        Self {
-            key: key.to_string(),
-            previous,
-        }
-    }
-}
-
-impl Drop for TempEnvVar {
-    fn drop(&mut self) {
-        match &self.previous {
-            Some(value) => unsafe {
-                std::env::set_var(&self.key, value);
-            },
-            None => unsafe {
-                std::env::remove_var(&self.key);
-            },
-        }
-    }
+#[cfg(feature = "notion")]
+pub async fn build_notion_agent_to_temp_async() -> PathBuf {
+    let notion_agent_dir = test_support::common::workspace_root()
+        .join("agents")
+        .join("notion-agent");
+    tokio::task::spawn_blocking(move || {
+        build_agent_dir_to_temp(&notion_agent_dir, "notion-agent", Some("notion"))
+    })
+    .await
+    .expect("build notion agent task join")
 }
