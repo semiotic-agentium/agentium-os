@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    A2aRequestHandler, AgentCard, AgentDiscoveryEntry, AgentLister, BusStream, Result,
+    A2aRequestHandler, AgentCard, AgentDiscoveryEntry, AgentLister, BusStream, ContextId, Result,
 };
 use baml_rt_tools::{ToolRegistry, ToolStep, support::CalculatorTool};
 use baml_rt_tools_system::SystemBundle;
@@ -74,7 +74,7 @@ async fn discover_agents_session_returns_paged_cards() {
         .unwrap();
 
     let session_id = registry
-        .open_session("system/discover_agents", json!({}), "test-context")
+        .open_session("system/discover_agents", json!({}), &ContextId::new(1, 1))
         .await
         .unwrap();
 
@@ -123,7 +123,7 @@ async fn discover_tools_session_returns_search_results() {
         .unwrap();
 
     let session_id = registry
-        .open_session("system/discover_tools", json!({}), "test-context")
+        .open_session("system/discover_tools", json!({}), &ContextId::new(1, 2))
         .await
         .unwrap();
 

@@ -236,7 +236,7 @@ impl ToolExecutionHandle {
         // Execute the tool
         let result = self
             .tool_registry
-            .execute(name, final_args, context_id.as_str())
+            .execute(name, final_args, &context_id)
             .await;
 
         // Calculate duration
@@ -310,7 +310,7 @@ impl ToolSessionExecutionHandle {
 
         let result = self
             .tool_registry
-            .open_session(tool_name, open_input, context_id.as_str())
+            .open_session(tool_name, open_input, &context_id)
             .await;
         let duration_ms = start.elapsed().as_millis() as u64;
         let completion_result: Result<Value> = match &result {
