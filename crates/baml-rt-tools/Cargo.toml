@@ -26,10 +26,11 @@ opentelemetry = { workspace = true }
 
 [features]
 default = []
-clickup = ["dep:reqwest"]
+clickup = []
 notion = ["dep:reqwest", "dep:notion-client"]
 http-tools = ["clickup", "notion"]
 
 [dev-dependencies]
 test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
+baml-tools-calculator = { path = "../tools/calculator" }

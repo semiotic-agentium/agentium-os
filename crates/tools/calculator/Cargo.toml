@@ -1,19 +1,18 @@
 [package]
-name = "baml-tools-internal-dev"
+name = "baml-tools-calculator"
 version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
 publish = false
-description = "Internal development tool bundle for BAML runtime tests"
+description = "Calculator support tool for BAML runtime"
 
 [dependencies]
 baml-rt-core = { path = "../../baml-rt-core" }
 baml-rt-tools = { path = "../../baml-rt-tools" }
-async-trait = { workspace = true }
-inventory = { workspace = true }
-schemars = { workspace = true }
+baml-derive-core = { path = "../../baml-derive-core" }
+baml-derive = { path = "../../baml-derive" }
 serde = { workspace = true }
-serde_json = { workspace = true }
+async-trait = { workspace = true }
+schemars = { workspace = true }
 ts-rs = { workspace = true }
-tokio = { workspace = true }
-tracing = { workspace = true }
+inventory = { workspace = true }

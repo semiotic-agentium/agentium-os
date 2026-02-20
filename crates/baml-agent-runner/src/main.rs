@@ -46,7 +46,10 @@ use baml_rt_quickjs::BamlRuntimeManager;
 use baml_rt_tools::{
     ManifestToolNames, ToolAccessPolicy, parse_access_allowlist, register_manifest_tools,
 };
-use baml_rt_tools_system::SystemBundle;
+use baml_tools_calculator as _;
+#[cfg(feature = "clickup")]
+use baml_tools_clickup as _;
+use baml_tools_system::SystemBundle;
 use clap::Parser;
 use serde_json::Value;
 use tokio::{

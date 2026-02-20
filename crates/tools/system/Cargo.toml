@@ -1,5 +1,5 @@
 [package]
-name = "baml-rt-tools-system"
+name = "baml-tools-system"
 version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }
@@ -21,4 +21,5 @@ uuid = { workspace = true }
 async-channel = { workspace = true }
 
 [dev-dependencies]
+baml-tools-calculator = { path = "../calculator" }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

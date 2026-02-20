@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use baml_rt_builder::builder::{BuildDir, RuntimeTypeGenerator, TypeGenerator};
 use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools_system as _; // Force link so system tool metadata is in inventory
+use baml_tools_system as _; // Force link so system tool metadata is in inventory
 
 fn agents_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
