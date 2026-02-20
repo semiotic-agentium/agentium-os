@@ -1,0 +1,8 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+expression: snapshot
+---
+{
+  "status": 200,
+  "body": "sequenceDiagram\n    autonumber\n    actor User\n    participant agent\n    User->>agent: ping"
+}

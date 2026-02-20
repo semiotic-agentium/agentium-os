@@ -37,6 +37,7 @@ serde = { workspace = true }
 ts-rs = { workspace = true }
 reqwest = { workspace = true }
 axum = { workspace = true }
+insta = { workspace = true }
 
 [features]
 default = []

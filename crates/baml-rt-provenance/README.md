@@ -2,6 +2,15 @@
 
 Provenance capture and storage for the BAML agent runtime. Events are normalized to W3C PROV and persisted in a GraphQLite-backed graph (SQLite + Cypher).
 
+## Runtime archetype (single-store DI)
+
+In GraphQLite mode, one `GraphqliteProvenanceStore` instance is the concrete persistence authority and is projected into narrow trait interfaces for runtime consumers.
+
+- A2A consumes trait boundaries (task/context/provenance facets), not provenance-internal graph query details.
+- Task/message/status/artifact writes emit provenance events against the same underlying store instance.
+- Conversation context and Mermaid export reads are graph-backed from persisted provenance data.
+- Persistent mode is explicit; unsupported in-memory fallback combinations are rejected in builder wiring.
+
 ## Vocabulary
 
 Keys, relations, and identifiers use the crate vocabulary consistently. All attribute names (e.g. `a2a:context_id`, `prov:role`), relation types (e.g. `USED`, `WAS_GENERATED_BY`), and PROV/A2A terms come from [`vocabulary`](src/vocabulary.rs) (`prov::`, `a2a::`, `prov_relations::`, `a2a_relations::`, `semantic_labels::`, etc.). The **graph node identity property** is [`vocabulary::graph::NODE_ID`](src/vocabulary.rs) (`"id"`), matching [GraphQLite’s convention](https://github.com/colliery-io/graphqlite/blob/main/bindings/rust/src/graph/nodes.rs): the high-level API (`upsert_node`, `has_node`, `get_node`) uses `id` for MERGE/MATCH. Storage-safe keys (e.g. `a2a_context_id`) are derived from vocabulary keys by replacing `:` with `_` for GraphQLite.

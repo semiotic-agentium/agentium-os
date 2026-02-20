@@ -1,0 +1,14 @@
+---
+source: crates/baml-agent-runner/tests/runner_notion_test.rs
+expression: normalized_mermaid
+---
+sequenceDiagram
+    autonumber
+    actor User
+    participant Agent
+    participant notion
+
+    User->>Agent: Pull details for this notion block 11111111111111…
+    Agent->>notion: block_id=111111111111111111111111111111…
+    notion-->>Agent: [ms]
+    Agent->>User: Notion summary:  Pages: • Agent Platform Roadmap …

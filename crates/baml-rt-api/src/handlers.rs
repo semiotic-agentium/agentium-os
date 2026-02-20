@@ -10,7 +10,10 @@ use axum::{
     Json,
     extract::State,
     http::StatusCode as AxumStatus,
-    response::sse::{Event, KeepAlive, Sse},
+    response::{
+        IntoResponse,
+        sse::{Event, KeepAlive, Sse},
+    },
 };
 use baml_rt_core::{AgentRouteKey, BamlRtError, collect_a2a_stream};
 use futures_util::stream::{self, Stream};
@@ -29,6 +32,15 @@ fn problem(status: u16, title: &str, detail: impl Into<String>) -> HttpApiProble
         .expect("400, 404, 500 are valid HTTP status codes")
         .title(title)
         .detail(detail)
+}
+
+fn result_label_for_domain_error(error: &BamlRtError) -> &'static str {
+    match error {
+        BamlRtError::InvalidArgument(msg) if msg.contains("not found") => "not_found",
+        BamlRtError::InvalidArgument(_) => "bad_request",
+        BamlRtError::FunctionNotFound(_) => "not_found",
+        _ => "internal",
+    }
 }
 
 /// List running agents (GET /agents).
@@ -81,7 +93,7 @@ pub async fn post_a2a(
     let key = AgentRouteKey::new(agent_package.clone(), agent_instance_id.clone());
 
     if !body.is_object() {
-        metrics::record_request("post_a2a", "error", start.elapsed());
+        metrics::record_request("post_a2a", "bad_request", start.elapsed());
         return Err(problem(
             400,
             "Bad Request",
@@ -96,7 +108,11 @@ pub async fn post_a2a(
             Ok(Json(responses))
         }
         Err(e) => {
-            metrics::record_request("post_a2a", "error", start.elapsed());
+            metrics::record_request(
+                "post_a2a",
+                result_label_for_domain_error(&e),
+                start.elapsed(),
+            );
             Err(domain_to_problem(&e, &agent_package, &agent_instance_id))
         }
     }
@@ -137,7 +153,7 @@ pub async fn post_a2a_sse(
     let key = AgentRouteKey::new(agent_package.clone(), agent_instance_id.clone());
 
     if !body.is_object() {
-        metrics::record_request("post_a2a_sse", "error", start.elapsed());
+        metrics::record_request("post_a2a_sse", "bad_request", start.elapsed());
         return Err(problem(
             400,
             "Bad Request",
@@ -149,7 +165,11 @@ pub async fn post_a2a_sse(
     let stream = match state.registry.handle_a2a_stream(&key, body).await {
         Ok(r) => r,
         Err(e) => {
-            metrics::record_request("post_a2a_sse", "error", start.elapsed());
+            metrics::record_request(
+                "post_a2a_sse",
+                result_label_for_domain_error(&e),
+                start.elapsed(),
+            );
             return Err(domain_to_problem(&e, &agent_package, &agent_instance_id));
         }
     };
@@ -170,7 +190,7 @@ pub async fn post_a2a_sse(
     let data_strings = match data_strings {
         Ok(d) => d,
         Err(e) => {
-            metrics::record_request("post_a2a_sse", "error", start.elapsed());
+            metrics::record_request("post_a2a_sse", "internal", start.elapsed());
             return Err(e);
         }
     };
@@ -210,7 +230,7 @@ pub async fn get_mermaid_context(
     let _guard = span.enter();
     let start = Instant::now();
     let Some(svc) = &state.mermaid else {
-        metrics::record_request("get_mermaid_context", "error", start.elapsed());
+        metrics::record_request("get_mermaid_context", "unavailable", start.elapsed());
         return Err(problem(
             501,
             "Not Implemented",
@@ -220,17 +240,17 @@ pub async fn get_mermaid_context(
     match svc.mermaid_for_context(&context_id).await {
         Ok(diagram) => {
             metrics::record_request("get_mermaid_context", "success", start.elapsed());
-            Ok(axum::response::Response::builder()
-                .status(AxumStatus::OK)
-                .header(
+            Ok((
+                [(
                     axum::http::header::CONTENT_TYPE,
                     "text/plain; charset=utf-8",
-                )
-                .body(axum::body::Body::from(diagram))
-                .expect("response builder"))
+                )],
+                diagram,
+            )
+                .into_response())
         }
         Err(MermaidError::NotFound) => {
-            metrics::record_request("get_mermaid_context", "error", start.elapsed());
+            metrics::record_request("get_mermaid_context", "not_found", start.elapsed());
             Err(problem(
                 404,
                 "Not Found",
@@ -238,7 +258,7 @@ pub async fn get_mermaid_context(
             ))
         }
         Err(MermaidError::Unavailable) => {
-            metrics::record_request("get_mermaid_context", "error", start.elapsed());
+            metrics::record_request("get_mermaid_context", "unavailable", start.elapsed());
             Err(problem(
                 501,
                 "Not Implemented",
@@ -246,7 +266,7 @@ pub async fn get_mermaid_context(
             ))
         }
         Err(MermaidError::Other(e)) => {
-            metrics::record_request("get_mermaid_context", "error", start.elapsed());
+            metrics::record_request("get_mermaid_context", "internal", start.elapsed());
             Err(problem(500, "Internal Server Error", e.to_string()))
         }
     }
@@ -275,7 +295,7 @@ pub async fn get_mermaid_task(
     let _guard = span.enter();
     let start = Instant::now();
     let Some(svc) = &state.mermaid else {
-        metrics::record_request("get_mermaid_task", "error", start.elapsed());
+        metrics::record_request("get_mermaid_task", "unavailable", start.elapsed());
         return Err(problem(
             501,
             "Not Implemented",
@@ -285,17 +305,17 @@ pub async fn get_mermaid_task(
     match svc.mermaid_for_task(&task_id).await {
         Ok(diagram) => {
             metrics::record_request("get_mermaid_task", "success", start.elapsed());
-            Ok(axum::response::Response::builder()
-                .status(AxumStatus::OK)
-                .header(
+            Ok((
+                [(
                     axum::http::header::CONTENT_TYPE,
                     "text/plain; charset=utf-8",
-                )
-                .body(axum::body::Body::from(diagram))
-                .expect("response builder"))
+                )],
+                diagram,
+            )
+                .into_response())
         }
         Err(MermaidError::NotFound) => {
-            metrics::record_request("get_mermaid_task", "error", start.elapsed());
+            metrics::record_request("get_mermaid_task", "not_found", start.elapsed());
             Err(problem(
                 404,
                 "Not Found",
@@ -303,7 +323,7 @@ pub async fn get_mermaid_task(
             ))
         }
         Err(MermaidError::Unavailable) => {
-            metrics::record_request("get_mermaid_task", "error", start.elapsed());
+            metrics::record_request("get_mermaid_task", "unavailable", start.elapsed());
             Err(problem(
                 501,
                 "Not Implemented",
@@ -311,7 +331,7 @@ pub async fn get_mermaid_task(
             ))
         }
         Err(MermaidError::Other(e)) => {
-            metrics::record_request("get_mermaid_task", "error", start.elapsed());
+            metrics::record_request("get_mermaid_task", "internal", start.elapsed());
             Err(problem(500, "Internal Server Error", e.to_string()))
         }
     }

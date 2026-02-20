@@ -15,9 +15,8 @@ use baml_rt_provenance::{
 };
 use baml_rt_tools::clickup::ClickUpTool;
 use common::{
-    RunningHttpServer, StrictProvenanceWriter, TempDirCleanup, TempEnvVar,
-    build_clickup_agent_to_temp_async, contains_kv, e2e_serial_gate, start_http_server,
-    start_runner_api_server,
+    RunningHttpServer, TempDirCleanup, TempEnvVar, build_clickup_agent_to_temp_async, contains_kv,
+    e2e_serial_gate, start_http_server, start_runner_api_server,
 };
 use serde_json::{Value, json};
 use test_support::common::{chunks_from_responses, message_texts_from_chunks, send_stream_request};
@@ -173,12 +172,11 @@ async fn setup_clickup_agent_with_provenance()
         .await
         .expect("write AgentBooted");
 
-    let strict_writer = Arc::new(StrictProvenanceWriter::new(provenance.clone()));
     let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
         .expect("clickup-agent dist/index.js");
     let agent = baml_rt::A2aAgent::builder()
         .with_agent_id(agent_id)
-        .with_provenance_writer(strict_writer)
+        .with_graphqlite_store(provenance.clone())
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
@@ -195,6 +193,21 @@ fn maybe_task_status(status: &Value) -> Option<String> {
             .and_then(Value::as_str)
             .map(ToOwned::to_owned)
     })
+}
+
+async fn fetch_mermaid_context(base_url: &str, context_id: &ContextId) -> String {
+    let http_client = reqwest::Client::new();
+    let mermaid_url = format!("{base_url}/mermaid/context/{}", context_id.as_str());
+    let mermaid_response = timeout(Duration::from_secs(20), http_client.get(mermaid_url).send())
+        .await
+        .expect("mermaid request timed out")
+        .expect("mermaid request failed");
+    assert!(
+        mermaid_response.status().is_success(),
+        "Expected 200 from /mermaid/context, got {}",
+        mermaid_response.status()
+    );
+    mermaid_response.text().await.expect("mermaid body")
 }
 
 #[tokio::test]
@@ -468,6 +481,11 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
             .any(|hit| hit == "GET /api/v2/list/list-901325431486/task"),
         "Expected mock ClickUp list-task endpoint hit. hits={mock_hits:?}"
     );
+    let mermaid = fetch_mermaid_context(&runner_api.base_url, &context_id).await;
+    assert!(
+        mermaid.contains("sequenceDiagram"),
+        "Expected Mermaid sequence diagram response, got: {mermaid}"
+    );
 
     runner_api.stop().await;
     mock_server.stop().await;
@@ -661,6 +679,11 @@ async fn test_e2e_clickup_get_task_description_fast() {
             .iter()
             .any(|hit| hit == "GET /api/v2/task/task-901"),
         "Expected mock ClickUp get-task endpoint hit. hits={mock_hits:?}"
+    );
+    let mermaid = fetch_mermaid_context(&runner_api.base_url, &context_id).await;
+    assert!(
+        mermaid.contains("sequenceDiagram"),
+        "Expected Mermaid sequence diagram response, got: {mermaid}"
     );
 
     runner_api.stop().await;

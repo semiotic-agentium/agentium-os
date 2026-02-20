@@ -15,10 +15,10 @@ use baml_rt_provenance::{
 };
 use baml_rt_tools::notion::NotionTool;
 use common::{
-    RunningHttpServer, StrictProvenanceWriter, TempDirCleanup, TempEnvVar,
-    build_notion_agent_to_temp_async, contains_kv, e2e_serial_gate, start_http_server,
-    start_runner_api_server,
+    RunningHttpServer, TempDirCleanup, TempEnvVar, build_notion_agent_to_temp_async, contains_kv,
+    e2e_serial_gate, start_http_server, start_runner_api_server,
 };
+use insta::assert_snapshot;
 use serde_json::{Value, json};
 use test_support::common::{chunks_from_responses, message_texts_from_chunks, send_stream_request};
 use tokio::time::{Duration, sleep, timeout};
@@ -27,6 +27,42 @@ const RAW_BLOCK_ID: &str = "11111111111111111111111111111111";
 const NORMALIZED_BLOCK_ID: &str = "11111111-1111-1111-1111-111111111111";
 const NORMALIZED_PAGE_ID: &str = "22222222-2222-2222-2222-222222222222";
 const NOTION_API_PREFIX: &str = "/v1";
+
+fn normalize_mermaid_snapshot(input: &str) -> String {
+    input
+        .lines()
+        .map(normalize_mermaid_line)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn normalize_mermaid_line(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut i = 0usize;
+
+    while i < chars.len() {
+        if chars[i].is_ascii_digit() {
+            let start = i;
+            while i < chars.len() && chars[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i + 1 < chars.len() && chars[i] == 'm' && chars[i + 1] == 's' {
+                out.push_str("[ms]");
+                i += 2;
+            } else {
+                for ch in &chars[start..i] {
+                    out.push(*ch);
+                }
+            }
+            continue;
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+
+    out
+}
 
 fn notion_api_path(suffix: &str) -> String {
     format!("{NOTION_API_PREFIX}{suffix}")
@@ -170,12 +206,11 @@ async fn setup_notion_agent_with_provenance()
         .await
         .expect("write AgentBooted");
 
-    let strict_writer = Arc::new(StrictProvenanceWriter::new(provenance.clone()));
     let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
         .expect("notion-agent dist/index.js");
     let agent = baml_rt::A2aAgent::builder()
         .with_agent_id(agent_id)
-        .with_provenance_writer(strict_writer)
+        .with_graphqlite_store(provenance.clone())
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
@@ -374,10 +409,8 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
         mermaid_response.status()
     );
     let mermaid = mermaid_response.text().await.expect("mermaid body");
-    assert!(
-        mermaid.contains("sequenceDiagram"),
-        "Expected Mermaid sequence diagram response, got: {mermaid}"
-    );
+    let normalized_mermaid = normalize_mermaid_snapshot(&mermaid);
+    assert_snapshot!("notion_direct_id_mermaid_context", normalized_mermaid);
 
     runner_api.stop().await;
     mock_server.stop().await;

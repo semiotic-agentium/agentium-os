@@ -1,7 +1,7 @@
 //! HTTP API tests: discovery, A2A forward, and error mapping.
 //! Uses insta snapshots with selective redaction for variant parts (IDs, instance URLs, etc.).
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use async_trait::async_trait;
 use axum::{
@@ -9,13 +9,16 @@ use axum::{
     http::{Request, StatusCode},
 };
 use baml_rt_a2a::AgentRegistry;
-use baml_rt_api::api_router;
+use baml_rt_api::{MermaidError, MermaidService, api_router};
 use baml_rt_core::{
     AgentCard, AgentDiscoveryEntry, AgentLister, AgentRouteKey, BamlRtError, BusStream, Result,
 };
 use futures_util::stream;
+use opentelemetry::{global, trace::TracerProvider as _};
+use opentelemetry_sdk::{testing::trace::InMemorySpanExporterBuilder, trace::TracerProvider};
 use serde_json::Value;
 use tower::ServiceExt;
+use tracing_subscriber::layer::SubscriberExt;
 
 /// Snapshot-friendly response: status + body with variant parts redacted.
 fn response_snapshot(status: StatusCode, body: &[u8]) -> Value {
@@ -83,6 +86,118 @@ struct MockRegistry {
     handle_err_message: Option<String>,
     /// When set, capture the route key passed to handle_a2a_stream (for routing tests).
     key_captured: Option<std::sync::Arc<std::sync::Mutex<Option<AgentRouteKey>>>>,
+}
+
+struct OtelTestFixture {
+    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    provider: TracerProvider,
+    _otel_lock: std::sync::MutexGuard<'static, ()>,
+}
+
+static OTEL_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static OTEL_STATE: OnceLock<OtelTestState> = OnceLock::new();
+
+struct OtelTestState {
+    exporter: opentelemetry_sdk::testing::trace::InMemorySpanExporter,
+    provider: TracerProvider,
+}
+
+fn otel_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    OTEL_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|err| err.into_inner())
+}
+
+fn otel_state() -> &'static OtelTestState {
+    OTEL_STATE.get_or_init(|| {
+        let exporter = InMemorySpanExporterBuilder::new().build();
+        let provider = TracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        global::set_tracer_provider(provider.clone());
+        let tracer = provider.tracer("baml_rt_api_test");
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+        tracing::subscriber::set_global_default(subscriber).expect("set global tracing subscriber");
+        OtelTestState { exporter, provider }
+    })
+}
+
+impl OtelTestFixture {
+    fn new() -> Self {
+        let _otel_lock = otel_test_lock();
+        let state = otel_state();
+        state.exporter.reset();
+        Self {
+            exporter: state.exporter.clone(),
+            provider: state.provider.clone(),
+            _otel_lock,
+        }
+    }
+
+    fn spans(&self) -> Vec<opentelemetry_sdk::export::trace::SpanData> {
+        let _ = self.provider.force_flush();
+        self.exporter.get_finished_spans().unwrap_or_default()
+    }
+}
+
+fn find_span<'a>(
+    spans: &'a [opentelemetry_sdk::export::trace::SpanData],
+    name: &str,
+) -> Option<&'a opentelemetry_sdk::export::trace::SpanData> {
+    spans.iter().find(|span| span.name.as_ref() == name)
+}
+
+fn find_span_with_attr<'a>(
+    spans: &'a [opentelemetry_sdk::export::trace::SpanData],
+    key: &str,
+    value: &str,
+) -> Option<&'a opentelemetry_sdk::export::trace::SpanData> {
+    spans
+        .iter()
+        .find(|span| attr_value(span, key).as_deref() == Some(value))
+}
+
+fn attr_value(span: &opentelemetry_sdk::export::trace::SpanData, key: &str) -> Option<String> {
+    span.attributes
+        .iter()
+        .find(|kv| kv.key.as_str() == key)
+        .and_then(|kv| match &kv.value {
+            opentelemetry::Value::String(value) => Some(value.to_string()),
+            opentelemetry::Value::Bool(value) => Some(value.to_string()),
+            opentelemetry::Value::I64(value) => Some(value.to_string()),
+            opentelemetry::Value::F64(value) => Some(value.to_string()),
+            _ => None,
+        })
+}
+
+struct MockMermaid {
+    context_body: String,
+    task_body: String,
+}
+
+impl MockMermaid {
+    fn new(context_body: &str, task_body: &str) -> Self {
+        Self {
+            context_body: context_body.to_string(),
+            task_body: task_body.to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl MermaidService for MockMermaid {
+    async fn mermaid_for_context(
+        &self,
+        _context_id: &str,
+    ) -> std::result::Result<String, MermaidError> {
+        Ok(self.context_body.clone())
+    }
+
+    async fn mermaid_for_task(&self, _task_id: &str) -> std::result::Result<String, MermaidError> {
+        Ok(self.task_body.clone())
+    }
 }
 
 impl MockRegistry {
@@ -467,5 +582,99 @@ async fn post_a2a_sse_returns_event_stream() {
     assert!(
         body_str.contains("totalSize"),
         "SSE data should contain JSON-RPC result"
+    );
+}
+
+#[tokio::test]
+async fn get_mermaid_context_returns_snapshot() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let mermaid: Arc<dyn MermaidService> = Arc::new(MockMermaid::new(
+        "sequenceDiagram\n    autonumber\n    actor User\n    participant agent\n    User->>agent: ping",
+        "sequenceDiagram\n    autonumber\n    participant agent",
+    ));
+    let app = api_router(registry, Some(mermaid), None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/mermaid/context/ctx-1-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let snapshot = response_snapshot(status, &body);
+    insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn get_mermaid_task_returns_snapshot() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let mermaid: Arc<dyn MermaidService> = Arc::new(MockMermaid::new(
+        "sequenceDiagram\n    autonumber\n    participant agent",
+        "sequenceDiagram\n    autonumber\n    participant agent\n    agent->>User: done",
+    ));
+    let app = api_router(registry, Some(mermaid), None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/mermaid/task/task-123")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let snapshot = response_snapshot(status, &body);
+    insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn get_mermaid_context_emits_http_and_handler_spans() {
+    let otel = OtelTestFixture::new();
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let mermaid: Arc<dyn MermaidService> = Arc::new(MockMermaid::new(
+        "sequenceDiagram\n    autonumber\n    actor User\n    participant agent\n    User->>agent: ping",
+        "sequenceDiagram\n    autonumber\n    participant agent",
+    ));
+    let app = api_router(registry, Some(mermaid), None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/mermaid/context/ctx-1-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let spans = otel.spans();
+    let http_span = find_span_with_attr(&spans, "http.route", "/mermaid/context/{context_id}")
+        .expect("http request span with route attribute");
+    assert_eq!(
+        attr_value(http_span, "http.route").as_deref(),
+        Some("/mermaid/context/{context_id}")
+    );
+    assert_eq!(
+        attr_value(http_span, "http.request.method").as_deref(),
+        Some("GET")
+    );
+    let handler_span =
+        find_span(&spans, "baml_rt_api.get_mermaid_context").expect("mermaid context handler span");
+    assert_eq!(
+        attr_value(handler_span, "context_id").as_deref(),
+        Some("ctx-1-1")
     );
 }
