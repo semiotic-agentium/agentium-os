@@ -362,12 +362,12 @@ impl AgentRunner {
         let span = spans::invoke_function(None, agent_name, function_name);
         let _guard = span.enter();
 
-        let agents = self.agents.read().expect("RwLock poison");
-        let agent = agents.get(agent_name).ok_or_else(|| {
-            BamlRtError::InvalidArgument(format!("Agent '{}' not found", agent_name))
-        })?;
-        let agent = agent.clone();
-        drop(agents);
+        let agent = {
+            let agents = self.agents.read().expect("RwLock poison");
+            agents.get(agent_name).cloned().ok_or_else(|| {
+                BamlRtError::InvalidArgument(format!("Agent '{}' not found", agent_name))
+            })?
+        };
         agent.invoke_function(function_name, args).await
     }
 
@@ -480,26 +480,26 @@ impl AgentRunner {
                 }
             };
 
-            let agents = self.agents.read().expect("RwLock poison");
-            let agent = match agents.get(&agent_name) {
-                Some(agent) => agent.clone(),
-                None => {
-                    drop(agents);
-                    let response = a2a::error_response(
-                        request_id,
-                        -32601,
-                        "Agent not found",
-                        Some(Value::String(agent_name)),
-                    );
-                    let serialized = serde_json::to_string(&response)
-                        .unwrap_or_else(|_| "{\"error\":\"serialization failed\"}".to_string());
-                    writer.write_all(serialized.as_bytes()).await?;
-                    writer.write_all(b"\n").await?;
-                    writer.flush().await?;
-                    continue;
-                }
+            let agent = {
+                let agents = self.agents.read().expect("RwLock poison");
+                agents.get(&agent_name).cloned()
             };
-            drop(agents);
+            let agent = if let Some(agent) = agent {
+                agent
+            } else {
+                let response = a2a::error_response(
+                    request_id,
+                    -32601,
+                    "Agent not found",
+                    Some(Value::String(agent_name)),
+                );
+                let serialized = serde_json::to_string(&response)
+                    .unwrap_or_else(|_| "{\"error\":\"serialization failed\"}".to_string());
+                writer.write_all(serialized.as_bytes()).await?;
+                writer.write_all(b"\n").await?;
+                writer.flush().await?;
+                continue;
+            };
 
             let method = request_value
                 .get("method")
@@ -587,7 +587,7 @@ impl AgentRunner {
 
         let (agent_name, method_name) = if let Some(agent_name) = agent_name {
             (agent_name, method_base)
-        } else if let Some((agent_name, method_name)) = split_agent_method(&method_base, &*agents) {
+        } else if let Some((agent_name, method_name)) = split_agent_method(&method_base, &agents) {
             (agent_name, method_name)
         } else if agents.len() == 1 {
             let agent_name = agents.keys().next().cloned().unwrap_or_default();

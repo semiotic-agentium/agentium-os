@@ -365,7 +365,7 @@ async fn collect_stream_responses(
         .await?;
     Ok(baml_rt::collect_a2a_stream_until(stream, |item| {
         let chunk = item.get("result").and_then(|r| r.get("chunk").or(Some(r)));
-        let state = chunk.and_then(|c| chunk_state(c));
+        let state = chunk.and_then(chunk_state);
         let is_final = item
             .get("result")
             .and_then(|r| r.get("final"))
@@ -427,14 +427,13 @@ async fn setup_tool_discovery_demo_agent() -> baml_rt::A2aAgent {
         .expect("register SystemBundle");
     let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
         .expect("tool-discovery-demo dist/index.js");
-    let agent = baml_rt::A2aAgent::builder()
+    baml_rt::A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
         .build()
         .await
-        .unwrap();
-    agent
+        .unwrap()
 }
 
 async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
