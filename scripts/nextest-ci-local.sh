@@ -16,7 +16,6 @@ fi
 
 # Unified feature set: one build, one run (matches rust-ci single nextest job).
 NEXTEST_FEATURES=(
-  baml-rt-tools/http-tools
   baml-rt-builder/http-tools
   baml-agent-runner/http-tools
   baml-rt/llm-tests

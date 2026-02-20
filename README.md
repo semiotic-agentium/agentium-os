@@ -193,7 +193,7 @@ For the next-stage Notion demo/UX strategy and invariants, see `docs/notion-expe
 The `test`, `test-build`, and `test-crate` recipes enable the following features to match CI:
 
 ```text
-baml-rt-tools/http-tools, baml-rt-builder/http-tools, baml-rt-provenance/falkordb-tests,
+baml-rt-builder/http-tools, baml-rt-provenance/falkordb-tests,
 baml-rt-a2a/falkordb-tests, baml-agent-runner/falkordb-tests, baml-agent-runner/http-tools,
 baml-rt/llm-tests, baml-agent-runner/llm-tests
 ```

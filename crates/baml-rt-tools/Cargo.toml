@@ -22,12 +22,6 @@ genco = { workspace = true }
 inventory = { workspace = true }
 opentelemetry = { workspace = true }
 
-[features]
-default = []
-clickup = []
-notion = []
-http-tools = ["clickup", "notion"]
-
 [dev-dependencies]
 test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
