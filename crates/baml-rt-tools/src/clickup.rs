@@ -772,7 +772,7 @@ pub fn clickup_metadata() -> ToolFunctionMetadata {
 }
 
 fn clickup_build() -> Result<Arc<dyn ToolHandler>> {
-    create_tool_handler(ClickUpTool).map(|(_, h)| h)
+    create_tool_handler(ClickUpTool::new()).map(|(_, h)| h)
 }
 
 register_tool!(clickup_metadata, clickup_build);
