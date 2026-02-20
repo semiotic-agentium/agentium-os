@@ -1,12 +1,16 @@
 //! Tool access gating: all tools (including system) must be checked against policy.
 //! No bare Option; use ToolAccessPolicy (DU) for explicit semantics.
 
-use crate::ToolName;
-use crate::tool_catalog::{InventoryCatalog, ToolCatalog};
-use crate::tools::ToolAccess;
-use baml_rt_core::{BamlRtError, Result};
 use std::collections::HashSet;
+
+use baml_rt_core::{BamlRtError, Result};
 use tracing::warn;
+
+use crate::{
+    ToolName,
+    tool_catalog::{InventoryCatalog, ToolCatalog},
+    tools::ToolAccess,
+};
 
 /// Access policy for host tools. All tools must be gated; there is no "unrestricted" path.
 #[derive(Debug, Clone)]

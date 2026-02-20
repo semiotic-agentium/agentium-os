@@ -33,21 +33,25 @@ impl BundleType for Test {
         "Test tools for unit testing"
     }
 }
+use std::sync::Arc;
+
+use baml_rt_core::{
+    context::{self, InvocationScope},
+    ids::{AgentId, UuidId},
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::sync::Arc;
-use tokio::sync::Barrier;
-use tokio::time::{Duration, timeout};
-use ts_rs::TS;
-
-use baml_rt_core::context::{self, InvocationScope};
-use baml_rt_core::ids::{AgentId, UuidId};
 use test_support::common::{
     CalculatorTool, WeatherTool, agent_fixture, assert_tool_registered_in_js,
     ensure_fixture_runtime_types, require_api_key, setup_baml_runtime_default,
     setup_baml_runtime_from_fixture, setup_bridge,
 };
+use tokio::{
+    sync::Barrier,
+    time::{Duration, timeout},
+};
+use ts_rs::TS;
 
 /// **Purpose:** Verify tool registration and direct execution from Rust (execute_tool_with_scope,
 /// list_tools) under an invocation scope; no LLM call required.

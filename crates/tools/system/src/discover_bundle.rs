@@ -1,10 +1,14 @@
 //! Bundle exposing system/discover_agents and system/discover_tools.
 
-use crate::discover_session_tools::{discover_agents_handler, discover_tools_handler};
-use crate::metadata::{system_discover_agents_metadata, system_discover_tools_metadata};
+use std::sync::Arc;
+
 use baml_rt_core::AgentLister;
 use baml_rt_tools::{ToolBundle, ToolBundleMetadata, ToolRegistry};
-use std::sync::Arc;
+
+use crate::{
+    discover_session_tools::{discover_agents_handler, discover_tools_handler},
+    metadata::{system_discover_agents_metadata, system_discover_tools_metadata},
+};
 
 /// Bundle exposing discover_agents and discover_tools (requires agent list + tool registry).
 pub struct DiscoverBundle {

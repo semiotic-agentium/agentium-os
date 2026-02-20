@@ -1,24 +1,23 @@
 //! HTTP handlers: discovery and A2A forward (POST and SSE).
 
-use axum::Json;
-use axum::extract::State;
-use axum::http::StatusCode as AxumStatus;
-use axum::response::sse::{Event, KeepAlive, Sse};
-use baml_rt_core::AgentRouteKey;
-use baml_rt_core::BamlRtError;
-use baml_rt_core::collect_a2a_stream;
+use std::{
+    convert::Infallible,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use axum::{
+    Json,
+    extract::State,
+    http::StatusCode as AxumStatus,
+    response::sse::{Event, KeepAlive, Sse},
+};
+use baml_rt_core::{AgentRouteKey, BamlRtError, collect_a2a_stream};
 use futures_util::stream::{self, Stream};
 use http_api_problem::HttpApiProblem;
 use serde_json::Value;
-use std::convert::Infallible;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-use crate::ApiState;
-use crate::mermaid::MermaidError;
-use crate::metrics;
-use crate::openapi::AgentDiscoveryEntryDto;
-use crate::spans;
+use crate::{ApiState, mermaid::MermaidError, metrics, openapi::AgentDiscoveryEntryDto, spans};
 
 /// HTTP result type for handlers that return RFC 7807 problem details on error.
 type HttpResult<T> = Result<T, HttpApiProblem>;

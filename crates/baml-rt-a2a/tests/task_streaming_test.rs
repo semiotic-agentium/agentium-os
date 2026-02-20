@@ -7,8 +7,7 @@ use baml_rt::{
     a2a_types::{JSONRPCId, JSONRPCRequest},
     baml::BamlRuntimeManager,
 };
-use baml_rt_core::context;
-use baml_rt_core::{AgentDiscoveryEntry, AgentLister};
+use baml_rt_core::{AgentDiscoveryEntry, AgentLister, context};
 use baml_rt_tools_system::SystemBundle;
 use serde_json::{Value, json};
 use test_support::common::{

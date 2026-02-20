@@ -5,22 +5,24 @@
 //! - `raw_blocks`: render mode (raw skips Notable lines / Missing info hints).
 //! - `max_depth`: limit child block expansion depth (0 disables expansion).
 
-use crate::bundles::Support;
-use crate::register_tool;
-use crate::spans;
-use crate::tools::{
-    BamlTool, ToolAccess, ToolFunctionMetadata, ToolHandler, ToolSecretRequirement,
-    create_tool_handler,
-};
+use std::{fmt, sync::Arc};
+
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
 use baml_rt_core::{BamlRtError, Result};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::fmt;
-use std::sync::Arc;
 use ts_rs::TS;
+
+use crate::{
+    bundles::Support,
+    register_tool, spans,
+    tools::{
+        BamlTool, ToolAccess, ToolFunctionMetadata, ToolHandler, ToolSecretRequirement,
+        create_tool_handler,
+    },
+};
 
 /// Notion REST API base URL.
 pub const BASE_URL: &str = "https://api.notion.com/v1";
@@ -1130,8 +1132,10 @@ pub fn notion_search_pages_metadata() -> ToolFunctionMetadata {
 }
 
 pub fn notion_metadata() -> ToolFunctionMetadata {
-    use crate::tool_schema::ts_decl;
-    use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
+    use crate::{
+        ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class,
+        tool_schema::ts_decl,
+    };
     let (name, class_name) = parse_tool_name_and_class("support/notion")
         .expect("support/notion is a compile-time constant");
     let mut extra_ts_decls = Vec::new();

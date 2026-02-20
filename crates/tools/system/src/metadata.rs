@@ -1,12 +1,12 @@
 //! Tool metadata registration for the system bundle (single mechanism: register_tool!).
 
-use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::parse_tool_name_and_class;
-use baml_rt_tools::register_tool;
-use baml_rt_tools::tools::{ToolFunctionMetadata, ToolMetadataBuilder, TypeBasedMetadataBuilder};
 use std::sync::Arc;
 
-use baml_rt_tools::ToolHandler;
+use baml_rt_core::{BamlRtError, Result};
+use baml_rt_tools::{
+    ToolHandler, parse_tool_name_and_class, register_tool,
+    tools::{ToolFunctionMetadata, ToolMetadataBuilder, TypeBasedMetadataBuilder},
+};
 
 use crate::tools::{
     DiscoverAgentsNextOutput, DiscoverAgentsOpenInput, DiscoverAgentsSendInput,

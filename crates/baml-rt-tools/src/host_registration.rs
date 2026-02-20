@@ -1,9 +1,12 @@
 //! Host registration: register manifest tools from the single tool-provider inventory.
 
-use crate::access::{ToolAccessPolicy, enforce_tool_access};
-use crate::tool_catalog::{ManifestToolNames, ToolProvider};
-use crate::tools::{ToolName, ToolRegistry};
 use baml_rt_core::{BamlRtError, Result};
+
+use crate::{
+    access::{ToolAccessPolicy, enforce_tool_access},
+    tool_catalog::{ManifestToolNames, ToolProvider},
+    tools::{ToolName, ToolRegistry},
+};
 
 /// System bundle identifier (host-registered via SystemBundle, not from inventory).
 const SYSTEM_BUNDLE: &str = "system";
