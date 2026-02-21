@@ -10,9 +10,14 @@
 
 use std::{fs, path::Path};
 
-use baml_rt_core::{AgentManifest, BamlRtError, Result, package::ManifestDiscovery};
+use baml_rt_core::{AgentManifest, package::ManifestDiscovery};
 
-use crate::builder::{compiler::RuntimeTypeGenerator, traits::TypeGenerator, types::BuildDir};
+use crate::builder::{
+    compiler::RuntimeTypeGenerator,
+    error::{BamlBuilderError, Result},
+    traits::TypeGenerator,
+    types::BuildDir,
+};
 
 /// Slug for directory/manifest: kebab-case, alphanumeric and hyphens only.
 pub fn slug_from_name(name: &str) -> String {
@@ -58,7 +63,7 @@ pub async fn run_bootstrap(
 ) -> Result<()> {
     let slug = slug_from_name(name);
     if slug.is_empty() {
-        return Err(BamlRtError::InvalidArgument(
+        return Err(BamlBuilderError::InvalidArgument(
             "Name must contain at least one alphanumeric character".to_string(),
         ));
     }
@@ -67,25 +72,25 @@ pub async fn run_bootstrap(
     let src_dir = root.join("src");
 
     if root.exists() {
-        let entries: Vec<_> = fs::read_dir(root).map_err(BamlRtError::Io)?.collect();
+        let entries: Vec<_> = fs::read_dir(root)?.collect();
         if !entries.is_empty() {
-            return Err(BamlRtError::InvalidArgument(format!(
+            return Err(BamlBuilderError::InvalidArgument(format!(
                 "Directory already exists and is non-empty: {}",
                 root.display()
             )));
         }
     } else {
-        fs::create_dir_all(root).map_err(BamlRtError::Io)?;
+        fs::create_dir_all(root)?;
     }
 
-    fs::create_dir_all(&baml_src).map_err(BamlRtError::Io)?;
-    fs::create_dir_all(&src_dir).map_err(BamlRtError::Io)?;
+    fs::create_dir_all(&baml_src)?;
+    fs::create_dir_all(&src_dir)?;
 
     let prompt_name = slug.replace('-', "_");
     let prompt_file = baml_src.join(format!("{}_prompt.baml", prompt_name));
 
     let manifest = manifest_json(&slug, description, tool_ids);
-    fs::write(root.join("manifest.json"), manifest).map_err(BamlRtError::Io)?;
+    fs::write(root.join("manifest.json"), manifest)?;
 
     let prompt_baml = if tool_ids.is_empty() {
         prompt_template_no_tools(&prompt_name)
@@ -93,10 +98,10 @@ pub async fn run_bootstrap(
         let session_plan = session_plan_type_for_tool_id(&tool_ids[0]);
         prompt_template_with_tools(&prompt_name, &session_plan)
     };
-    fs::write(&prompt_file, prompt_baml).map_err(BamlRtError::Io)?;
+    fs::write(&prompt_file, prompt_baml)?;
 
     let index_ts = index_ts_template(&prompt_name, tool_ids.is_empty());
-    fs::write(src_dir.join("index.ts"), index_ts).map_err(BamlRtError::Io)?;
+    fs::write(src_dir.join("index.ts"), index_ts)?;
 
     let build_dir = BuildDir::new()?;
     let generator = RuntimeTypeGenerator::new();
@@ -105,18 +110,18 @@ pub async fn run_bootstrap(
     let d_ts_src = build_dir.join("dist").join("baml-runtime.d.ts");
     let d_ts_dest = src_dir.join("baml-runtime.d.ts");
     if !d_ts_src.exists() {
-        return Err(BamlRtError::InvalidArgument(
+        return Err(BamlBuilderError::InvalidArgument(
             "baml-runtime.d.ts was not generated during bootstrap".to_string(),
         ));
     }
-    fs::copy(&d_ts_src, &d_ts_dest).map_err(BamlRtError::Io)?;
+    fs::copy(&d_ts_src, &d_ts_dest)?;
 
     let tsconfig = r#"{
   "compilerOptions": { "strict": true, "skipLibCheck": true },
   "include": ["src/**/*"]
 }
 "#;
-    fs::write(root.join("tsconfig.json"), tsconfig).map_err(BamlRtError::Io)?;
+    fs::write(root.join("tsconfig.json"), tsconfig)?;
 
     Ok(())
 }

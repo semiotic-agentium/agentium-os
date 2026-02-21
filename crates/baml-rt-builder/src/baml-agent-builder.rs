@@ -15,12 +15,13 @@ use std::{
     sync::Arc,
 };
 
+use anyhow::{Context as _, Result, bail};
 use baml_rt_builder::builder::{
     AgentDir, BuildDir, BuilderService, FileSystem, FunctionName, Linter, OxcLinter,
     OxcTypeScriptCompiler, PackagePath, RuntimeTypeGenerator, StdFileSystem, StdPackager,
     bootstrap::{run_bootstrap, slug_from_name},
 };
-use baml_rt_core::{BamlRtError, Result, ids::AgentId};
+use baml_rt_core::ids::AgentId;
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge};
 use baml_rt_tools::{
@@ -172,16 +173,12 @@ async fn bootstrap_agent(
             .with_default(&default_name)
             .with_help_message("Display name for the agent (used for slug in manifest)")
             .prompt()
-            .map_err(|e| {
-                BamlRtError::InvalidArgument(format!("Prompt cancelled or failed: {}", e))
-            })?;
+            .context("Prompt cancelled or failed")?;
 
         let description = inquire::Text::new("Description")
             .with_help_message("Short description of the agent")
             .prompt()
-            .map_err(|e| {
-                BamlRtError::InvalidArgument(format!("Prompt cancelled or failed: {}", e))
-            })?;
+            .context("Prompt cancelled or failed")?;
 
         let tool_options: Vec<(String, String)> = all_tool_metadata()
             .into_iter()
@@ -201,9 +198,7 @@ async fn bootstrap_agent(
             let raw = inquire::MultiSelect::new("Tools (space to select, type to filter)", choices)
                 .with_help_message("Select tools to include in the agent. You can type to search.")
                 .prompt()
-                .map_err(|e| {
-                    BamlRtError::InvalidArgument(format!("Prompt cancelled or failed: {}", e))
-                })?;
+                .context("Prompt cancelled or failed")?;
             raw.into_iter()
                 .filter_map(|label| {
                     tool_options
@@ -218,7 +213,7 @@ async fn bootstrap_agent(
 
     let out_path = if is_current_dir {
         std::env::current_dir()
-            .map_err(BamlRtError::Io)?
+            .context("Failed to resolve current directory")?
             .join(slug_from_name(name.trim()))
     } else {
         resolved
@@ -240,7 +235,8 @@ async fn lint_agent(agent_dir: &AgentDir) -> Result<()> {
 
     let filesystem = StdFileSystem;
     let linter = OxcLinter::new(filesystem);
-    linter.lint(agent_dir).await
+    linter.lint(agent_dir).await?;
+    Ok(())
 }
 
 async fn package_agent(agent_dir: &AgentDir, output: &std::path::Path, lint: bool) -> Result<()> {
@@ -295,20 +291,14 @@ async fn run_agent(
     // If function is specified, call it once
     if let Some(function_name) = function {
         let args = if let Some(args_str) = args_json {
-            serde_json::from_str(args_str).map_err(|e| BamlRtError::InvalidArgumentWithSource {
-                message: "Invalid JSON args".to_string(),
-                source: Box::new(e),
-            })?
+            serde_json::from_str(args_str).context("Invalid JSON args")?
         } else {
             // Read args from stdin
             let mut input = String::new();
-            io::stdin().read_line(&mut input).map_err(BamlRtError::Io)?;
-            serde_json::from_str(input.trim()).map_err(|e| {
-                BamlRtError::InvalidArgumentWithSource {
-                    message: "Invalid JSON from stdin".to_string(),
-                    source: Box::new(e),
-                }
-            })?
+            io::stdin()
+                .read_line(&mut input)
+                .context("Failed to read from stdin")?;
+            serde_json::from_str(input.trim()).context("Invalid JSON from stdin")?
         };
 
         let invoke_span = spans::invoke_function(None, "agent", function_name.as_str());
@@ -333,7 +323,7 @@ async fn run_agent(
     loop {
         line.clear();
         print!("> ");
-        io::stdout().flush().map_err(BamlRtError::Io)?;
+        io::stdout().flush().context("Failed to flush stdout")?;
 
         match stdin_lock.read_line(&mut line) {
             Ok(0) => break, // EOF
@@ -372,7 +362,7 @@ async fn run_agent(
                 }
             }
             Err(e) => {
-                return Err(BamlRtError::Io(e));
+                return Err(e).context("Failed to read from stdin");
             }
         }
     }
@@ -397,9 +387,9 @@ impl LoadedAgent {
         let scope =
             baml_rt_core::context::InvocationScope::synthetic_message(self.agent_id.clone());
         let mut bridge_guard = self.js_bridge.lock().await;
-        bridge_guard
+        Ok(bridge_guard
             .invoke_js_function(&scope, function_name, args)
-            .await
+            .await?)
     }
 }
 
@@ -414,28 +404,29 @@ async fn load_agent_package(
     // Extract package
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(BamlRtError::SystemTime)?;
+        .context("System clock is before UNIX epoch")?;
 
     let extract_dir = std::env::temp_dir().join(format!("baml-agent-{}", timestamp.as_secs()));
-    fs::create_dir_all(&extract_dir).map_err(BamlRtError::Io)?;
+    fs::create_dir_all(&extract_dir).context("Failed to create extraction directory")?;
 
-    let tar_gz = fs::File::open(package_path).map_err(BamlRtError::Io)?;
+    let tar_gz = fs::File::open(package_path).context("Failed to open package file")?;
     let tar = flate2::read::GzDecoder::new(tar_gz);
     let mut archive = tar::Archive::new(tar);
-    archive.unpack(&extract_dir).map_err(BamlRtError::Io)?;
+    archive
+        .unpack(&extract_dir)
+        .context("Failed to unpack archive")?;
 
     // Load manifest
     let manifest_path = extract_dir.join("manifest.json");
-    let manifest_content = fs::read_to_string(&manifest_path).map_err(BamlRtError::Io)?;
+    let manifest_content =
+        fs::read_to_string(&manifest_path).context("Failed to read manifest.json")?;
     let manifest_json: Value =
-        serde_json::from_str(&manifest_content).map_err(BamlRtError::Json)?;
+        serde_json::from_str(&manifest_content).context("Failed to parse manifest.json")?;
 
     let name = manifest_json
         .get("name")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| {
-            BamlRtError::InvalidArgument("manifest.json missing 'name' field".to_string())
-        })?
+        .context("manifest.json missing 'name' field")?
         .to_string();
 
     let entry_point = manifest_json
@@ -449,11 +440,11 @@ async fn load_agent_package(
     let runtime_manager = {
         let schema_span = spans::load_baml_schema(&baml_src);
         let _schema_guard = schema_span.enter();
-        let baml_src_str = baml_src.to_str().ok_or_else(|| {
-            BamlRtError::InvalidArgument(format!(
+        let baml_src_str = baml_src.to_str().with_context(|| {
+            format!(
                 "BAML source path contains invalid UTF-8: {}",
                 baml_src.display()
-            ))
+            )
         })?;
         let mut rm = BamlRuntimeManager::new()?;
         rm.load_schema(baml_src_str)?;
@@ -497,7 +488,9 @@ async fn load_agent_package(
     if entry_point_path.exists() {
         let eval_span = spans::evaluate_agent_code(&entry_point);
         let _eval_guard = eval_span.enter();
-        let agent_code = fs::read_to_string(&entry_point_path).map_err(BamlRtError::Io)?;
+        let agent_code = fs::read_to_string(&entry_point_path).with_context(|| {
+            format!("Failed to read entry point {}", entry_point_path.display())
+        })?;
         // Execute agent code - this should set up functions on globalThis
         if let Err(e) = js_bridge.evaluate(None, &agent_code).await {
             tracing::warn!(error = ?e, "Agent init script evaluation failed");

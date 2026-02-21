@@ -11,6 +11,7 @@ pub mod baml_gen;
 pub mod baml_signature_gen;
 pub mod bootstrap;
 pub mod compiler;
+pub mod error;
 pub mod filesystem;
 pub mod ir_to_ts;
 pub mod linter;

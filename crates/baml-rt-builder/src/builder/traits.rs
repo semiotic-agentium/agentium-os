@@ -5,9 +5,10 @@
 
 use std::path::Path;
 
-use baml_rt_core::Result;
-
-use crate::builder::types::{AgentDir, BuildDir};
+use crate::builder::{
+    error::Result,
+    types::{AgentDir, BuildDir},
+};
 
 /// Trait for linting source code
 #[async_trait::async_trait]

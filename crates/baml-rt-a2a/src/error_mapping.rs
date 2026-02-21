@@ -221,9 +221,7 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "internal",
             Retryability::Permanent,
         ),
-        BamlRtError::ParsedResultFailed { .. }
-        | BamlRtError::SystemTime(_)
-        | BamlRtError::TarHeaderPath(_) => mapping(
+        BamlRtError::ParsedResultFailed { .. } => mapping(
             error,
             -32603,
             "Internal error",

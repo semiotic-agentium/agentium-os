@@ -5,9 +5,10 @@
 
 use std::ops::Deref;
 
-use baml_rt_core::{BamlRtError, Result};
 use baml_types::ir_type::{TypeGeneric, UnionTypeViewGeneric};
 use internal_baml_core::ir::ir_hasher::IRSignature;
+
+use crate::builder::error::{BamlBuilderError, Result};
 
 /// Extract full function signatures (name, inputs, output) from a loaded BAML runtime.
 ///
@@ -16,9 +17,8 @@ use internal_baml_core::ir::ir_hasher::IRSignature;
 /// contains per-function input/output types for TS codegen.
 pub fn extract_baml_signatures(runtime: &baml_runtime::BamlRuntime) -> Result<IRSignature> {
     let ir = runtime.ir.deref();
-    IRSignature::new_from_ir(ir).map_err(|e| {
-        BamlRtError::InvalidArgument(format!("Failed to extract BAML IR signatures: {e}",))
-    })
+    IRSignature::new_from_ir(ir)
+        .map_err(|source| BamlBuilderError::IrSignatureExtraction { source })
 }
 
 /// If the type is (or wraps) a class/alias whose name ends with "SessionPlan", return that name.

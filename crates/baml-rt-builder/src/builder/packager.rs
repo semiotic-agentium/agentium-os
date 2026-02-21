@@ -2,12 +2,13 @@
 
 use std::{fs, path::Path};
 
-use baml_rt_core::{AgentManifest, BamlRtError, Result};
+use baml_rt_core::AgentManifest;
 use flate2::{Compression, write::GzEncoder};
 use tar::{Builder, Header};
 use uuid::Uuid;
 
 use crate::builder::{
+    error::{BamlBuilderError, Result},
     traits::{FileSystem, Packager},
     types::{AgentDir, BuildDir},
 };
@@ -32,50 +33,49 @@ impl<FS: FileSystem> Packager for StdPackager<FS> {
         output: &Path,
     ) -> Result<()> {
         if let Some(parent) = output.parent() {
-            fs::create_dir_all(parent).map_err(BamlRtError::Io)?;
+            fs::create_dir_all(parent)?;
         }
 
-        let tar_gz = fs::File::create(output).map_err(BamlRtError::Io)?;
+        let tar_gz = fs::File::create(output)?;
         let enc = GzEncoder::new(tar_gz, Compression::default());
         let mut tar = Builder::new(enc);
 
         // Add manifest.json (ensure signature exists; use dist/index.js as entry_point when built)
         let manifest_path = agent_dir.as_path().join("manifest.json");
         if manifest_path.exists() {
-            let content = fs::read_to_string(&manifest_path).map_err(BamlRtError::Io)?;
+            let content = fs::read_to_string(&manifest_path)?;
             let mut manifest: AgentManifest =
-                serde_json::from_str(&content).map_err(BamlRtError::Json)?;
+                serde_json::from_str(&content).map_err(BamlBuilderError::Json)?;
             if manifest.signature.is_empty() {
                 manifest.signature = Uuid::new_v4().to_string();
             }
             if build_dir.join("dist").join("index.js").exists() {
                 manifest.entry_point = "dist/index.js".to_string();
             }
-            let content = serde_json::to_string_pretty(&manifest).map_err(BamlRtError::Json)?;
+            let content =
+                serde_json::to_string_pretty(&manifest).map_err(BamlBuilderError::Json)?;
             let mut header = Header::new_gnu();
             header
                 .set_path("manifest.json")
-                .map_err(BamlRtError::TarHeaderPath)?;
+                .map_err(BamlBuilderError::TarHeaderPath)?;
             header.set_size(content.len() as u64);
             header.set_mode(0o644);
             header.set_cksum();
-            tar.append(&header, content.as_bytes())
-                .map_err(BamlRtError::Io)?;
+            tar.append(&header, content.as_bytes())?;
         }
 
         // Add package.json if it exists
         let package_json_path = agent_dir.as_path().join("package.json");
         if package_json_path.exists() {
-            let content = fs::read_to_string(&package_json_path).map_err(BamlRtError::Io)?;
+            let content = fs::read_to_string(&package_json_path)?;
             let mut header = Header::new_gnu();
             header
                 .set_path("package.json")
-                .map_err(BamlRtError::TarHeaderPath)?;
+                .map_err(BamlBuilderError::TarHeaderPath)?;
             header.set_size(content.len() as u64);
             header.set_mode(0o644);
             header.set_cksum();
-            tar.append(&header, content.as_bytes())
-                .map_err(BamlRtError::Io)?;
+            tar.append(&header, content.as_bytes())?;
         }
 
         // Add baml_src (required - runtime loads from this)
@@ -99,19 +99,18 @@ impl<FS: FileSystem> Packager for StdPackager<FS> {
         // Add session_plan_functions.json (generated from BAML IR; runtime uses it to resolve tool from function name)
         let session_plan_manifest = build_dir.join("session_plan_functions.json");
         if session_plan_manifest.exists() {
-            let content = fs::read_to_string(&session_plan_manifest).map_err(BamlRtError::Io)?;
+            let content = fs::read_to_string(&session_plan_manifest)?;
             let mut header = Header::new_gnu();
             header
                 .set_path("session_plan_functions.json")
-                .map_err(BamlRtError::TarHeaderPath)?;
+                .map_err(BamlBuilderError::TarHeaderPath)?;
             header.set_size(content.len() as u64);
             header.set_mode(0o644);
             header.set_cksum();
-            tar.append(&header, content.as_bytes())
-                .map_err(BamlRtError::Io)?;
+            tar.append(&header, content.as_bytes())?;
         }
 
-        tar.finish().map_err(BamlRtError::Io)?;
+        tar.finish()?;
         Ok(())
     }
 }
@@ -140,12 +139,12 @@ fn add_directory_to_tar<FS: FileSystem>(
     }
 
     let mut files = Vec::new();
-    collect_all_files(dir, &mut files).map_err(BamlRtError::Io)?;
+    collect_all_files(dir, &mut files)?;
 
     for file_path in files {
-        let content = fs::read_to_string(&file_path).map_err(BamlRtError::Io)?;
+        let content = fs::read_to_string(&file_path)?;
         let relative_path = file_path.strip_prefix(dir).map_err(|_| {
-            BamlRtError::InvalidArgument(format!(
+            BamlBuilderError::InvalidArgument(format!(
                 "File {} is not under directory {}",
                 file_path.display(),
                 dir.display()
@@ -156,12 +155,11 @@ fn add_directory_to_tar<FS: FileSystem>(
         let mut header = Header::new_gnu();
         header
             .set_path(&tar_path)
-            .map_err(BamlRtError::TarHeaderPath)?;
+            .map_err(BamlBuilderError::TarHeaderPath)?;
         header.set_size(content.len() as u64);
         header.set_mode(0o644);
         header.set_cksum();
-        tar.append(&header, content.as_bytes())
-            .map_err(BamlRtError::Io)?;
+        tar.append(&header, content.as_bytes())?;
     }
 
     Ok(())
