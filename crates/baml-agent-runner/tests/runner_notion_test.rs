@@ -2,7 +2,12 @@
 
 mod common;
 
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{
+    fs,
+    path::PathBuf,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt_core::{
@@ -191,9 +196,7 @@ async fn setup_notion_agent_with_provenance()
         .await
         .expect("register notion tool");
 
-    let provenance = GraphqliteStoreBuilder::in_memory()
-        .build()
-        .expect("build GraphQLite store");
+    let provenance = build_graphqlite_test_store();
     let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
     provenance
         .add_event(ProvEvent::agent_booted(
@@ -414,6 +417,20 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
 
     runner_api.stop().await;
     mock_server.stop().await;
+}
+
+fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "baml-rt-runner-notion-{pid}-{unique}.db",
+        pid = std::process::id(),
+    ));
+    GraphqliteStoreBuilder::file(path)
+        .build()
+        .expect("build isolated GraphQLite store")
 }
 
 #[cfg(feature = "llm-tests")]

@@ -5,6 +5,7 @@ use std::{
     fs,
     path::Path,
     sync::{Arc, OnceLock},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -16,8 +17,7 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
-    ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
-    ProvenanceWriter,
+    ProvenanceContextMessage, ProvenanceContextReader, ProvenanceWriter,
 };
 use baml_rt_tools::bundles::BundleType;
 use flate2::{Compression, write::GzEncoder};
@@ -93,47 +93,6 @@ fn e2e_serial_gate() -> &'static Semaphore {
     init_test_tracing();
     static GATE: OnceLock<Semaphore> = OnceLock::new();
     GATE.get_or_init(|| Semaphore::new(1))
-}
-
-#[derive(Clone)]
-struct StrictProvenanceWriter {
-    inner: Arc<GraphqliteProvenanceStore>,
-}
-
-#[async_trait]
-impl ProvenanceWriter for StrictProvenanceWriter {
-    async fn add_event(
-        &self,
-        event: ProvEvent,
-    ) -> std::result::Result<(), baml_rt_provenance::ProvenanceError> {
-        match self.inner.add_event(event.clone()).await {
-            Ok(()) => Ok(()),
-            Err(err) => panic!("strict provenance write failure: {err:?}; event={event:?}"),
-        }
-    }
-}
-
-#[async_trait]
-impl ProvenanceContextReader for StrictProvenanceWriter {
-    async fn context_messages(
-        &self,
-        context_id: &ContextId,
-        limit: Option<usize>,
-    ) -> std::result::Result<Vec<ProvenanceContextMessage>, baml_rt_provenance::ProvenanceError>
-    {
-        self.inner.context_messages(context_id, limit).await
-    }
-
-    async fn conversation_context(
-        &self,
-        context_id: &ContextId,
-        limit: Option<usize>,
-    ) -> std::result::Result<
-        Vec<ProvenanceConversationContextItem>,
-        baml_rt_provenance::ProvenanceError,
-    > {
-        self.inner.conversation_context(context_id, limit).await
-    }
 }
 
 /// Build fixture with baml-agent-builder, extract tar to temp dir, return path to extracted dir (has dist + baml_src).
@@ -549,9 +508,7 @@ async fn setup_conversational_context_auto_agent()
     let mut manager = BamlRuntimeManager::new().unwrap();
     manager.load_schema(built.to_str().unwrap()).unwrap();
     manager.register_tool(CalculatorTool).await.unwrap();
-    let provenance = GraphqliteStoreBuilder::in_memory()
-        .build()
-        .expect("build GraphQLite store");
+    let provenance = build_graphqlite_test_store();
     let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
     provenance
         .add_event(ProvEvent::agent_booted(
@@ -563,14 +520,11 @@ async fn setup_conversational_context_auto_agent()
         ))
         .await
         .expect("write AgentBooted");
-    let strict_writer = Arc::new(StrictProvenanceWriter {
-        inner: provenance.clone(),
-    });
     let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
         .expect("conversational-context-auto dist/index.js");
     let agent = baml_rt::A2aAgent::builder()
         .with_agent_id(agent_id)
-        .with_provenance_writer(strict_writer)
+        .with_graphqlite_store(provenance.clone())
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
@@ -578,6 +532,20 @@ async fn setup_conversational_context_auto_agent()
         .await
         .unwrap();
     (agent, provenance)
+}
+
+fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system time")
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "baml-rt-runner-test-{pid}-{unique}.db",
+        pid = std::process::id(),
+    ));
+    GraphqliteStoreBuilder::file(path)
+        .build()
+        .expect("build isolated GraphQLite store")
 }
 
 #[tokio::test]

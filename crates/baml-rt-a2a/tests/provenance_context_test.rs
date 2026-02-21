@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt_core::ids::ContextId;
-use baml_rt_provenance::{GraphqliteProvenanceStore, GraphqliteStoreBuilder};
+use baml_rt_provenance::GraphqliteProvenanceStore;
 use serde_json::Value;
 use test_support::{common::send_stream_request, support::a2a::A2aInMemoryClient};
 use tokio::time::Duration;
@@ -56,12 +56,8 @@ fn expect_context_id(responses: Vec<Value>) -> String {
 
 #[tokio::test]
 async fn test_context_id_propagates_across_agents() {
-    let writer1 = GraphqliteStoreBuilder::in_memory()
-        .build()
-        .expect("build store 1");
-    let writer2 = GraphqliteStoreBuilder::in_memory()
-        .build()
-        .expect("build store 2");
+    let writer1 = common::provenance::build_graphqlite_test_store();
+    let writer2 = common::provenance::build_graphqlite_test_store();
     let agent1 = setup_agent(writer1).await;
     let agent2 = setup_agent(writer2.clone()).await;
 
@@ -91,9 +87,7 @@ async fn test_context_id_propagates_across_agents() {
 /// verifies that each response carries the context_id from its request.
 #[tokio::test]
 async fn test_context_id_preserved_per_request() {
-    let writer = GraphqliteStoreBuilder::in_memory()
-        .build()
-        .expect("build store");
+    let writer = common::provenance::build_graphqlite_test_store();
     let agent = setup_agent(writer).await;
 
     let context_ids: Vec<ContextId> = (0..4).map(|i| ContextId::new(10, i as u64)).collect();
