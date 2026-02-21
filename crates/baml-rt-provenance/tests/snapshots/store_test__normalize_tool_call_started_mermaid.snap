@@ -1,9 +1,0 @@
----
-source: crates/baml-rt-provenance/tests/store_test.rs
-expression: mermaid
----
-sequenceDiagram
-    autonumber
-    participant Agent
-
-    Note over Agent: :

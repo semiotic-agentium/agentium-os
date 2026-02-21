@@ -71,6 +71,8 @@ fn emit_node(out: &mut String, node: &ExportedNode, graph: &ExportedGraph, agent
         Some(GraphNodeLabel::Message) => emit_message(out, node, agent),
         Some(GraphNodeLabel::LlmCall) => emit_llm_call(out, node, agent),
         Some(GraphNodeLabel::ToolCall) => emit_tool_call(out, node, graph, agent),
+        Some(GraphNodeLabel::TaskState) => emit_task_state(out, node, agent),
+        Some(GraphNodeLabel::Artifact) => emit_artifact(out, node, agent),
         // MessageProcessing, TaskExecution, etc. are structural — skip.
         _ => {}
     }
@@ -173,6 +175,37 @@ fn emit_tool_call(out: &mut String, node: &ExportedNode, graph: &ExportedGraph, 
         out,
         "    {tool_participant}-->>{agent}: {}",
         escape_sequence_text(&response)
+    );
+}
+
+/// Emit a `Note over Agent` for a task state transition/status update.
+fn emit_task_state(out: &mut String, node: &ExportedNode, agent: &str) {
+    let current = prop_str(node, a2a::TASK_STATE).unwrap_or_else(|| "unknown".to_string());
+    let note = match prop_str(node, a2a::OLD_STATUS) {
+        Some(previous) if !previous.is_empty() => format!("status {previous} -> {current}"),
+        _ => format!("status {current}"),
+    };
+    let _ = writeln!(
+        out,
+        "    Note over {agent}: {}",
+        escape_sequence_text(&note)
+    );
+}
+
+/// Emit a `Note over Agent` for an artifact generated during task execution.
+fn emit_artifact(out: &mut String, node: &ExportedNode, agent: &str) {
+    let artifact_id = prop_str(node, a2a::ARTIFACT_ID);
+    let artifact_type = prop_str(node, a2a::ARTIFACT_TYPE);
+    let note = match (artifact_type, artifact_id) {
+        (Some(kind), Some(id)) => format!("Artifact {kind} ({id})"),
+        (Some(kind), None) => format!("Artifact {kind}"),
+        (None, Some(id)) => format!("Artifact ({id})"),
+        (None, None) => "Artifact generated".to_string(),
+    };
+    let _ = writeln!(
+        out,
+        "    Note over {agent}: {}",
+        escape_sequence_text(&note)
     );
 }
 

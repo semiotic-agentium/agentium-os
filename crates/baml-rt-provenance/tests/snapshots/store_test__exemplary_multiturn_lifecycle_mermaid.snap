@@ -1,0 +1,24 @@
+---
+source: crates/baml-rt-provenance/tests/store_test.rs
+expression: mermaid
+---
+sequenceDiagram
+    autonumber
+    actor User
+    participant clickup_agent
+    participant notion
+
+    User->>clickup_agent: Draft a weekly status update
+    Note over clickup_agent: status submitted
+    clickup_agent->>User: Need project scope before I can proceed.
+    Note over clickup_agent: status submitted -› input-required
+    Note over clickup_agent: status submitted
+    User->>clickup_agent: Use the platform project context.
+    Note over clickup_agent: status input-required -› working
+    Note over clickup_agent: status input-required
+    clickup_agent->>notion: action=CreatePage title=Weekly Status
+    notion-->>clickup_agent: 145ms
+    Note over clickup_agent: Artifact application/markdown (artifact-weekly-status)
+    clickup_agent->>User: Draft is ready and attached.
+    Note over clickup_agent: status working -› completed
+    Note over clickup_agent: status working

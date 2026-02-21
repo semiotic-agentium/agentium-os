@@ -1,0 +1,12 @@
+---
+source: crates/baml-rt-provenance/tests/store_test.rs
+expression: mermaid
+---
+sequenceDiagram
+    autonumber
+    participant clickup_agent
+    participant clickup
+
+    Note over clickup_agent: LLM openai-generic (7475ms)
+    clickup_agent->>clickup: action=ListTeams
+    clickup-->>clickup_agent: 976ms
