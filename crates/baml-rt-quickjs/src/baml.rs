@@ -1289,6 +1289,11 @@ impl BamlRuntimeManager {
             ));
         }
 
+        // Auto-insert Next between Send and Finish/Abort when the LLM omits it.
+        // The FSM requires Next after Send to retrieve the tool output; without it
+        // the session would close before the result is fetched.
+        let steps = insert_implicit_next_steps(steps);
+
         let mut session_id: Option<ToolSessionId> = None;
         let mut last_output: Option<Value> = None;
         let mut streaming_outputs: Vec<Value> = Vec::new();
@@ -1456,6 +1461,42 @@ impl BamlRuntimeManager {
 
         Ok(last_output.unwrap_or(Value::Null))
     }
+}
+
+/// Insert implicit Next steps where the LLM omitted them.
+///
+/// When the plan has a Send followed by Finish or Abort (without an intervening Next),
+/// the tool output would never be retrieved. This helper inserts a `Next` before
+/// the Finish/Abort so the FSM always fetches the result after sending.
+fn insert_implicit_next_steps(steps: Vec<ToolSessionOp>) -> Vec<ToolSessionOp> {
+    let mut result = Vec::with_capacity(steps.len() + 2);
+    let mut needs_next = false;
+    for step in steps {
+        match &step {
+            ToolSessionOp::Send { .. } => {
+                result.push(step);
+                needs_next = true;
+            }
+            ToolSessionOp::Next { .. } => {
+                result.push(step);
+                needs_next = false;
+            }
+            ToolSessionOp::Finish { .. } | ToolSessionOp::Abort { .. } => {
+                if needs_next {
+                    tracing::debug!("FSM: inserting implicit Next before Finish/Abort");
+                    result.push(ToolSessionOp::Next {
+                        reason: Some("auto-inserted: Send must be followed by Next".to_string()),
+                    });
+                    needs_next = false;
+                }
+                result.push(step);
+            }
+            _ => {
+                result.push(step);
+            }
+        }
+    }
+    result
 }
 
 // Implement traits for better abstraction

@@ -74,14 +74,42 @@ pub fn session_plan_functions_map(ir: &IRSignature) -> std::collections::HashMap
             map.insert(name.clone(), plan_type);
             continue;
         }
-        // Fallback: the output type may be an inlined type alias. Compare its canonical
-        // representation against known SessionPlan alias expansions.
-        let output_key = canonical_type_key(&func_sig.output);
-        if let Some(alias_name) = plan_alias_lookup.get(&output_key) {
-            map.insert(name.clone(), alias_name.clone());
+        // Fallback: the output type may be an inlined type alias. Search the type tree
+        // (including inside union variants) for a sub-type whose canonical key matches
+        // a known SessionPlan alias expansion.
+        if let Some(alias_name) = find_plan_alias_in_type(&func_sig.output, &plan_alias_lookup) {
+            map.insert(name.clone(), alias_name);
         }
     }
     map
+}
+
+/// Search a type tree for a sub-type whose canonical key matches a known SessionPlan alias.
+///
+/// Recurses into union variants and optionals so that return types like
+/// `FinalResponse | SupportClickupSessionPlan` (which the IR inlines to
+/// `Union(Class("FinalResponse"), List(Union(...)))`) can still be matched.
+fn find_plan_alias_in_type<T>(
+    ty: &TypeGeneric<T>,
+    plan_alias_lookup: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let key = canonical_type_key(ty);
+    if let Some(alias_name) = plan_alias_lookup.get(&key) {
+        return Some(alias_name.clone());
+    }
+    match ty {
+        TypeGeneric::Union(union_gen, _) => match union_gen.view() {
+            UnionTypeViewGeneric::Optional(inner) => {
+                find_plan_alias_in_type(inner, plan_alias_lookup)
+            }
+            UnionTypeViewGeneric::OneOf(variants)
+            | UnionTypeViewGeneric::OneOfOptional(variants) => variants
+                .iter()
+                .find_map(|variant| find_plan_alias_in_type(variant, plan_alias_lookup)),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Metadata-ignoring canonical representation of a type for structural comparison.
