@@ -22,7 +22,8 @@ pub struct TaskSubgraphUpdateNode {
 #[async_trait]
 pub trait A2aGraphStore: Send + Sync {
     async fn max_task_ord(&self) -> A2aGraphStoreResult<i64>;
-    async fn max_seq_for_label(&self, label: &str, task_id: &str) -> A2aGraphStoreResult<i64>;
+    async fn max_message_seq(&self, task_id: &str) -> A2aGraphStoreResult<i64>;
+    async fn max_update_seq(&self, task_id: &str) -> A2aGraphStoreResult<i64>;
     async fn get_task_node(&self, id: &str) -> A2aGraphStoreResult<Option<TaskSubgraphNode>>;
     async fn list_task_nodes(
         &self,

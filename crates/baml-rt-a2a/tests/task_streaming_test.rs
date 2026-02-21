@@ -8,6 +8,7 @@ use baml_rt::{
     baml::BamlRuntimeManager,
 };
 use baml_rt_core::{AgentDiscoveryEntry, AgentLister, context};
+use baml_rt_provenance::GraphqliteStoreBuilder;
 use baml_rt_tools_system::SystemBundle;
 use serde_json::{Value, json};
 use test_support::common::{
@@ -37,6 +38,10 @@ fn fixture_js_code() -> String {
             });
             __chat_yield({
                 statusUpdate: { status: { state: "TASK_STATE_WORKING" } }
+            });
+            // Emit a terminal state so the stream collector can complete deterministically.
+            __chat_yield({
+                statusUpdate: { status: { state: "TASK_STATE_COMPLETED" } }
             });
             return;
         }
@@ -89,8 +94,12 @@ async fn acquire_test_permit() -> tokio::sync::OwnedSemaphorePermit {
 
 async fn setup_agent() -> A2aAgent {
     let manager = BamlRuntimeManager::new().unwrap();
+    let store = GraphqliteStoreBuilder::in_memory()
+        .build()
+        .expect("build graphqlite store");
     A2aAgent::builder()
         .with_runtime_manager(manager)
+        .with_graphqlite_store(store)
         .with_init_js(fixture_js_code())
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
@@ -104,8 +113,12 @@ const SYSTEM_A2A_TOOL: &str = "system/internal_a2a";
 /// Agent with system/internal_a2a tool registered (for session FSM tests).
 async fn setup_agent_with_a2a_session_tool() -> A2aAgent {
     let manager = BamlRuntimeManager::new().unwrap();
+    let store = GraphqliteStoreBuilder::in_memory()
+        .build()
+        .expect("build graphqlite store");
     let agent = A2aAgent::builder()
         .with_runtime_manager(manager)
+        .with_graphqlite_store(store)
         .with_init_js(fixture_js_code())
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
@@ -134,7 +147,13 @@ async fn test_message_send_deterministic_task() {
         Some(baml_rt_core::ids::ContextId::new(1, 1)),
     );
 
-    let responses = collect_responses(&agent, request).await.unwrap();
+    let responses = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        collect_responses(&agent, request),
+    )
+    .await
+    .expect("stream request timed out")
+    .unwrap();
     let result = responses[0].get("result").cloned().unwrap_or(Value::Null);
     let content = result.get("chunk").cloned().unwrap_or(result);
     let task_id = content

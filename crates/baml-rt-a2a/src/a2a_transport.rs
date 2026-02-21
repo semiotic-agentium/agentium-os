@@ -13,7 +13,7 @@ use baml_rt_core::{
 };
 use baml_rt_observability::{metrics, spans};
 use baml_rt_provenance::{
-    ProvEvent, ProvenanceContextMessage, ProvenanceContextReader,
+    A2aGraphStore, ProvEvent, ProvenanceContextMessage, ProvenanceContextReader,
     ProvenanceConversationContextItem, ProvenanceInterceptor, ProvenanceWriter,
 };
 use baml_rt_quickjs::{
@@ -51,10 +51,13 @@ struct GraphqliteRuntimeStore {
 
 impl GraphqliteRuntimeStore {
     fn new(provenance: Arc<baml_rt_provenance::GraphqliteProvenanceStore>) -> Arc<Self> {
+        let graph: Arc<dyn A2aGraphStore> = provenance.clone();
+        let context_reader: Arc<dyn ProvenanceContextReader> = provenance.clone();
         Arc::new(Self {
             task_store: Arc::new(
                 crate::graphqlite_task_subgraph_store::GraphqliteTaskSubgraphStore::new(
-                    provenance.clone(),
+                    graph,
+                    context_reader,
                 ),
             ),
             provenance,
@@ -407,13 +410,13 @@ enum BridgeConfig {
     AutoCreate,
 }
 
-/// Task store configuration: either provided or default (InMemory).
+/// Task store configuration: either provided or default (must pair with GraphQLite writer).
 enum TaskStoreConfig {
     Provided(Arc<dyn TaskStoreBackend>),
     Default,
 }
 
-/// Provenance writer configuration: either provided, default (InMemory), or GraphQLite (task + provenance in same DB).
+/// Provenance writer configuration: either provided or GraphQLite (task + provenance in same DB).
 enum ProvenanceWriterConfig {
     Provided(Arc<dyn ProvenanceWriter>),
     /// Task state and provenance in the same GraphQLite DB; build() creates [ProvenanceTaskStore] over [crate::graphqlite_task_subgraph_store::GraphqliteTaskSubgraphStore].
@@ -742,32 +745,40 @@ impl A2aAgentBuilderWithEffectEmitter {
                 // Task store provided but no writer
                 (task_store, None)
             }
-            (TaskStoreConfig::Default, ProvenanceWriterConfig::Provided(writer)) => {
-                // Writer provided but no task store - create task store with writer
-                let store: Arc<dyn TaskStoreBackend> = Arc::new(ProvenanceTaskStore::new(
-                    Some(writer.clone()),
-                    agent_id.clone(),
+            (TaskStoreConfig::Default, ProvenanceWriterConfig::Provided(_writer)) => {
+                return Err(BamlRtError::InvalidArgument(
+                    "Persistent mode requires explicit task store when using a provided provenance writer".to_string(),
                 ));
-                (store, Some(writer))
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Default) => {
-                // Both default - task store without provenance writer
-                let store: Arc<dyn TaskStoreBackend> =
-                    Arc::new(ProvenanceTaskStore::new(None, agent_id.clone()));
-                (store, None)
+                return Err(BamlRtError::InvalidArgument(
+                    "Persistent mode requires with_graphqlite_store(...) or explicit task store + provenance writer".to_string(),
+                ));
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Graphqlite(store)) => {
                 // Single underlying concrete type exposed via both traits.
+                // Wrap backend with ProvenanceTaskStore so graph-native provenance events
+                // are emitted for message/task/status/artifact writes.
                 let runtime_store = GraphqliteRuntimeStore::new(store);
-                let task_store: Arc<dyn TaskStoreBackend> = runtime_store.clone();
-                let provenance_writer: Arc<dyn ProvenanceWriter> = runtime_store;
+                let provenance_writer: Arc<dyn ProvenanceWriter> = runtime_store.clone();
+                let task_store: Arc<dyn TaskStoreBackend> =
+                    Arc::new(ProvenanceTaskStore::with_backend(
+                        runtime_store,
+                        Some(provenance_writer.clone()),
+                        agent_id.clone(),
+                    ));
                 (task_store, Some(provenance_writer))
             }
             (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Graphqlite(store)) => {
                 // Provided task store is overridden by the single GraphQLite runtime store.
                 let runtime_store = GraphqliteRuntimeStore::new(store);
-                let task_store: Arc<dyn TaskStoreBackend> = runtime_store.clone();
-                let provenance_writer: Arc<dyn ProvenanceWriter> = runtime_store;
+                let provenance_writer: Arc<dyn ProvenanceWriter> = runtime_store.clone();
+                let task_store: Arc<dyn TaskStoreBackend> =
+                    Arc::new(ProvenanceTaskStore::with_backend(
+                        runtime_store,
+                        Some(provenance_writer.clone()),
+                        agent_id.clone(),
+                    ));
                 (task_store, Some(provenance_writer))
             }
         };
@@ -1118,16 +1129,7 @@ impl A2aAgent {
             let invocation_scope = InvocationScope::new(scope.clone());
             context::with_scope(scope, async move {
                 if let a2a::A2aParams::MessageSendStream(params) = &parsed_request.params {
-                    // When the inbound message carries a task_id (e.g.
-                    // client-assigned on first turn), ensure the parent
-                    // task row exists before persisting the message.
-                    // This must be insert-if-missing semantics so existing
-                    // task metadata/artifacts are never overwritten.
-                    if let Some(task_id) = params.message.task_id.clone() {
-                        self.task_store
-                            .ensure_task_exists(&task_id, params.message.context_id.as_ref())
-                            .await?;
-                    }
+                    // Persist inbound message independently of task-row materialization timing.
                     self.task_store.insert_message(&params.message).await?;
                 }
                 let route_span = spans::a2a_route(

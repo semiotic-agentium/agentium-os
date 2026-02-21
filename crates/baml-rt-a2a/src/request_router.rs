@@ -226,6 +226,17 @@ impl RequestRouter for MethodBasedRouter {
                 }
                 .await;
 
+                if let Err(err) = &result {
+                    tracing::warn!(
+                        method = %request.method().as_str(),
+                        context_id = %context_id.as_str(),
+                        task_id = ?scope.task_id_opt().map(|id| id.as_str().to_string()),
+                        invocation = ?request.invocation,
+                        error = ?err,
+                        "a2a route failed at js/storage boundary"
+                    );
+                }
+
                 let duration = start.elapsed();
                 let duration_ms = duration.as_millis() as u64;
                 let outcome = Outcome::from(result.is_ok());

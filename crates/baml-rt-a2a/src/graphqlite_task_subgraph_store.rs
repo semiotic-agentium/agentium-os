@@ -8,8 +8,7 @@ use baml_rt_core::{
     ids::{ContextId, ExternalId, TaskId},
 };
 use baml_rt_provenance::{
-    A2aGraphStore, GraphqliteProvenanceStore, ProvenanceContextReader,
-    ProvenanceConversationContextItem, TaskSubgraphNode,
+    A2aGraphStore, ProvenanceContextReader, ProvenanceConversationContextItem, TaskSubgraphNode,
 };
 
 use crate::{
@@ -90,9 +89,10 @@ pub struct GraphqliteTaskSubgraphStore {
 }
 
 impl GraphqliteTaskSubgraphStore {
-    pub fn new(store: Arc<GraphqliteProvenanceStore>) -> Self {
-        let context_reader = store.clone() as Arc<dyn ProvenanceContextReader>;
-        let graph = store as Arc<dyn A2aGraphStore>;
+    pub fn new(
+        graph: Arc<dyn A2aGraphStore>,
+        context_reader: Arc<dyn ProvenanceContextReader>,
+    ) -> Self {
         Self {
             graph,
             context_reader,
@@ -308,7 +308,7 @@ impl TaskRepository for GraphqliteTaskSubgraphStore {
         };
         let seq = self
             .graph
-            .max_seq_for_label("A2ATaskMessageSubgraph", &task_id)
+            .max_message_seq(&task_id)
             .await
             .map_err(map_store_err)?
             + 1;
@@ -363,7 +363,7 @@ impl TaskEventRecorder for GraphqliteTaskSubgraphStore {
             .map_err(map_store_err)?;
         let seq = self
             .graph
-            .max_seq_for_label("A2ATaskUpdateSubgraph", task_id.as_str())
+            .max_update_seq(task_id.as_str())
             .await
             .map_err(map_store_err)?
             + 1;
@@ -401,7 +401,7 @@ impl TaskEventRecorder for GraphqliteTaskSubgraphStore {
         };
         let seq = self
             .graph
-            .max_seq_for_label("A2ATaskUpdateSubgraph", task_id.as_str())
+            .max_update_seq(task_id.as_str())
             .await
             .map_err(map_store_err)?
             + 1;

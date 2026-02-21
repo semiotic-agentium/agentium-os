@@ -45,6 +45,25 @@ fn decode_update_node(row: &GraphRow) -> Option<TaskSubgraphUpdateNode> {
     })
 }
 
+async fn max_seq_for_label(
+    store: &GraphqliteProvenanceStore,
+    label: &str,
+    task_id: &str,
+) -> A2aGraphStoreResult<i64> {
+    let query = format!(
+        "MATCH (n:{label}) WHERE n.task_id = $task_id RETURN coalesce(max(n.seq), 0) AS max_seq"
+    );
+    let rows = store
+        .run_cypher_read(&query, &qparams([qp("task_id", task_id)]))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .iter()
+        .next()
+        .and_then(|row| row.get::<i64>("max_seq").ok())
+        .unwrap_or(0))
+}
+
 #[async_trait]
 impl A2aGraphStore for GraphqliteProvenanceStore {
     async fn max_task_ord(&self) -> A2aGraphStoreResult<i64> {
@@ -62,19 +81,12 @@ impl A2aGraphStore for GraphqliteProvenanceStore {
             .unwrap_or(0))
     }
 
-    async fn max_seq_for_label(&self, label: &str, task_id: &str) -> A2aGraphStoreResult<i64> {
-        let query = format!(
-            "MATCH (n:{label}) WHERE n.task_id = $task_id RETURN coalesce(max(n.seq), 0) AS max_seq"
-        );
-        let rows = self
-            .run_cypher_read(&query, &qparams([qp("task_id", task_id)]))
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(rows
-            .iter()
-            .next()
-            .and_then(|row| row.get::<i64>("max_seq").ok())
-            .unwrap_or(0))
+    async fn max_message_seq(&self, task_id: &str) -> A2aGraphStoreResult<i64> {
+        max_seq_for_label(self, TASK_MESSAGE_NODE_LABEL, task_id).await
+    }
+
+    async fn max_update_seq(&self, task_id: &str) -> A2aGraphStoreResult<i64> {
+        max_seq_for_label(self, TASK_UPDATE_NODE_LABEL, task_id).await
     }
 
     async fn get_task_node(&self, id: &str) -> A2aGraphStoreResult<Option<TaskSubgraphNode>> {

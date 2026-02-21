@@ -133,27 +133,27 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
                 Retryability::Retryable,
             )
         }
-        BamlRtError::Io(_) => mapping(
+        BamlRtError::Io(io_err) => mapping(
             error,
             -32603,
             "Internal error",
-            None,
+            Some(serde_json::json!({ "details": io_err.to_string(), "layer": "io" })),
             "io",
             Retryability::Retryable,
         ),
-        BamlRtError::ExecutionFailed { .. } => mapping(
+        BamlRtError::ExecutionFailed { source } => mapping(
             error,
             -32603,
             "Internal error",
-            None,
+            Some(serde_json::json!({ "details": source.to_string(), "layer": "execution" })),
             "execution_failed",
             Retryability::Retryable,
         ),
-        BamlRtError::RequestBuildFailed(_) => mapping(
+        BamlRtError::RequestBuildFailed(message) => mapping(
             error,
             -32603,
             "Internal error",
-            None,
+            Some(serde_json::json!({ "details": message, "layer": "request_build" })),
             "request_build_failed",
             Retryability::Retryable,
         ),

@@ -35,17 +35,17 @@ pub mod provenance {
 
     use baml_rt::QuickJSConfig;
     use baml_rt_a2a::A2aAgent;
-    use baml_rt_provenance::ProvenanceWriter;
+    use baml_rt_provenance::GraphqliteProvenanceStore;
 
     /// Builds an A2aAgent with a provenance writer (e.g. GraphQLite in-memory).
     /// Used by provenance_context_test and provenance_property_test (other test binaries).
     #[allow(dead_code)]
     pub async fn build_provenance_agent(
-        writer: Arc<dyn ProvenanceWriter>,
+        store: Arc<GraphqliteProvenanceStore>,
         init_js: &str,
     ) -> A2aAgent {
         A2aAgent::builder()
-            .with_provenance_writer(writer)
+            .with_graphqlite_store(store)
             .with_init_js(init_js)
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
             .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))

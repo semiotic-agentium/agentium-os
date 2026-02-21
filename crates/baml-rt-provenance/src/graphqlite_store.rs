@@ -164,6 +164,44 @@ struct ToolCallRow {
     success: Option<bool>,
 }
 
+fn parse_bool_string(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "t" | "1" | "yes" | "y" => Some(true),
+        "false" | "f" | "0" | "no" | "n" => Some(false),
+        _ => None,
+    }
+}
+
+fn decode_optional_bool(row: &Row, primary_col: &str, alt_col: &str) -> Option<bool> {
+    if let Ok(v) = row
+        .get::<bool>(primary_col)
+        .or_else(|_| row.get::<bool>(alt_col))
+    {
+        return Some(v);
+    }
+    if let Ok(v) = row
+        .get::<i64>(primary_col)
+        .or_else(|_| row.get::<i64>(alt_col))
+    {
+        return Some(v != 0);
+    }
+    if let Ok(raw) = row
+        .get::<String>(primary_col)
+        .or_else(|_| row.get::<String>(alt_col))
+    {
+        if let Some(parsed) = parse_bool_string(&raw) {
+            return Some(parsed);
+        }
+        tracing::debug!(
+            column = %primary_col,
+            alt_column = %alt_col,
+            value = %raw,
+            "unable to parse optional bool field from string"
+        );
+    }
+    None
+}
+
 impl ToolCallRow {
     fn from_row(row: &Row) -> std::result::Result<Self, graphqlite::Error> {
         let event_id: String = row
@@ -182,22 +220,13 @@ impl ToolCallRow {
         let args = serde_json::from_str(&args_str).unwrap_or(Value::String(args_str));
         let role: String = row
             .get(TOOL_COL_ROLE)
-            .or_else(|_| row.get(TOOL_COL_ROLE_ALT))?;
+            .or_else(|_| row.get(TOOL_COL_ROLE_ALT))
+            .unwrap_or_default();
         let target_type: String = row
             .get(TOOL_COL_TARGET_TYPE)
-            .or_else(|_| row.get(TOOL_COL_TARGET_TYPE_ALT))?;
-        // GraphQLite stores booleans natively (not as integers), so try
-        // bool first, then fall back to i64 for compatibility.
-        let success: Option<bool> = row
-            .get::<bool>(TOOL_COL_SUCCESS)
-            .or_else(|_| row.get::<bool>(TOOL_COL_SUCCESS_ALT))
-            .ok()
-            .or_else(|| {
-                row.get::<i64>(TOOL_COL_SUCCESS)
-                    .or_else(|_| row.get::<i64>(TOOL_COL_SUCCESS_ALT))
-                    .ok()
-                    .map(|v| v != 0)
-            });
+            .or_else(|_| row.get(TOOL_COL_TARGET_TYPE_ALT))
+            .unwrap_or_default();
+        let success = decode_optional_bool(row, TOOL_COL_SUCCESS, TOOL_COL_SUCCESS_ALT);
         Ok(Self {
             event_id,
             tool_name,
@@ -214,8 +243,12 @@ impl ToolCallRow {
     }
 
     fn contract_holds(&self) -> bool {
-        self.role == TOOL_CALL_ARGS_EDGE.role_value
-            && self.target_type == TOOL_CALL_ARGS_EDGE.target_type_value
+        // If explicit edge/type properties are missing, infer contract from the
+        // matched topology: ToolCall -[:WAS_USED_BY]-> ToolArgs.
+        let role_ok = self.role.is_empty() || self.role == TOOL_CALL_ARGS_EDGE.role_value;
+        let type_ok = self.target_type.is_empty()
+            || self.target_type == TOOL_CALL_ARGS_EDGE.target_type_value;
+        role_ok && type_ok
     }
 }
 
