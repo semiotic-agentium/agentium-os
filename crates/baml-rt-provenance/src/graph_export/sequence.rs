@@ -71,7 +71,7 @@ fn emit_node(out: &mut String, node: &ExportedNode, graph: &ExportedGraph, agent
         Some(GraphNodeLabel::Message) => emit_message(out, node, agent),
         Some(GraphNodeLabel::LlmCall) => emit_llm_call(out, node, agent),
         Some(GraphNodeLabel::ToolCall) => emit_tool_call(out, node, graph, agent),
-        Some(GraphNodeLabel::TaskState) => emit_task_state(out, node, agent),
+        Some(GraphNodeLabel::TaskState) => emit_task_state(out, node, graph, agent),
         Some(GraphNodeLabel::Artifact) => emit_artifact(out, node, agent),
         // MessageProcessing, TaskExecution, etc. are structural — skip.
         _ => {}
@@ -179,7 +179,11 @@ fn emit_tool_call(out: &mut String, node: &ExportedNode, graph: &ExportedGraph, 
 }
 
 /// Emit a `Note over Agent` for a task state transition/status update.
-fn emit_task_state(out: &mut String, node: &ExportedNode, agent: &str) {
+fn emit_task_state(out: &mut String, node: &ExportedNode, graph: &ExportedGraph, agent: &str) {
+    if is_previous_task_state(node) || is_transition_previous_companion(node, graph) {
+        return;
+    }
+
     let current = prop_str(node, a2a::TASK_STATE).unwrap_or_else(|| "unknown".to_string());
     let note = match prop_str(node, a2a::OLD_STATUS) {
         Some(previous) if !previous.is_empty() => format!("status {previous} -> {current}"),
@@ -319,6 +323,44 @@ fn is_failure(value: Option<&serde_json::Value>) -> bool {
         Some(serde_json::Value::String(s)) => s == "false",
         _ => false,
     }
+}
+
+/// Check whether a TaskState node is marked as a synthetic previous-state node.
+fn is_previous_task_state(node: &ExportedNode) -> bool {
+    match node.properties.get(a2a::IS_PREVIOUS) {
+        Some(serde_json::Value::Bool(true)) => true,
+        Some(serde_json::Value::String(s)) => s == "true",
+        _ => false,
+    }
+}
+
+/// Heuristic: skip the synthetic "previous" status companion that shares the
+/// same timestamp as a transition node and echoes that transition's old status.
+fn is_transition_previous_companion(node: &ExportedNode, graph: &ExportedGraph) -> bool {
+    if GraphNodeLabel::parse(&node.label) != Some(GraphNodeLabel::TaskState) {
+        return false;
+    }
+
+    // Transition nodes carry old_status; companion previous-state nodes do not.
+    if node.properties.contains_key(a2a::OLD_STATUS) {
+        return false;
+    }
+
+    let status = match prop_str(node, a2a::TASK_STATE) {
+        Some(v) if !v.is_empty() => v,
+        _ => return false,
+    };
+    let state_time = match prop_str(node, a2a::TASK_STATE_TIME) {
+        Some(v) if !v.is_empty() => v,
+        _ => return false,
+    };
+
+    graph.nodes.iter().any(|candidate| {
+        candidate.id != node.id
+            && GraphNodeLabel::parse(&candidate.label) == Some(GraphNodeLabel::TaskState)
+            && prop_str(candidate, a2a::TASK_STATE_TIME).as_deref() == Some(state_time.as_str())
+            && prop_str(candidate, a2a::OLD_STATUS).as_deref() == Some(status.as_str())
+    })
 }
 
 /// Strip known tool name prefixes for brevity.

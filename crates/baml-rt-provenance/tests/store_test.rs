@@ -297,6 +297,11 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
     let mermaid = render_sequence_diagram(&simplified);
 
     assert!(
+        mermaid.contains("Draft a weekly status update")
+            && mermaid.contains("Use the platform project context."),
+        "expected both user turns in mermaid: {mermaid}"
+    );
+    assert!(
         mermaid.contains("status submitted")
             && mermaid.contains("input-required")
             && mermaid.contains("status working"),
