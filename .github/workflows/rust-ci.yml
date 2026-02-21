@@ -74,7 +74,7 @@ jobs:
       - name: Run nextest
         run: |
           cargo nextest run --workspace --locked --profile ci \
-            --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-rt/llm-tests,baml-agent-runner/llm-tests
+            --features baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-rt/llm-tests,baml-agent-runner/llm-tests
         env:
           RUSTUP_TOOLCHAIN: stable
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=bfd"

@@ -38,13 +38,13 @@ const MAX_BLOCK_PAGES: usize = 10;
 mod spans {
     #[inline]
     pub fn notion_request(url: &str) -> tracing::Span {
-        tracing::debug_span!("baml_rt_tools.notion_request", url = url)
+        tracing::debug_span!("baml_tools_notion.notion_request", url = url)
     }
 
     #[inline]
     pub fn notion_search_pages(query_len: Option<usize>, page_size: Option<u32>) -> tracing::Span {
         tracing::debug_span!(
-            "baml_rt_tools.notion_search_pages",
+            "baml_tools_notion.notion_search_pages",
             query_len = query_len,
             page_size = page_size
         )
@@ -52,23 +52,29 @@ mod spans {
 
     #[inline]
     pub fn notion_get_page(page_id: &str) -> tracing::Span {
-        tracing::debug_span!("baml_rt_tools.notion_get_page", page_id = page_id)
+        tracing::debug_span!("baml_tools_notion.notion_get_page", page_id = page_id)
     }
 
     #[inline]
     pub fn notion_get_page_blocks(block_id: &str) -> tracing::Span {
-        tracing::debug_span!("baml_rt_tools.notion_get_page_blocks", block_id = block_id)
+        tracing::debug_span!(
+            "baml_tools_notion.notion_get_page_blocks",
+            block_id = block_id
+        )
     }
 
     #[inline]
     pub fn notion_fetch_page_summary(page_id: &str) -> tracing::Span {
-        tracing::debug_span!("baml_rt_tools.notion_fetch_page_summary", page_id = page_id)
+        tracing::debug_span!(
+            "baml_tools_notion.notion_fetch_page_summary",
+            page_id = page_id
+        )
     }
 
     #[inline]
     pub fn notion_fetch_child_blocks(parent_id: &str) -> tracing::Span {
         tracing::debug_span!(
-            "baml_rt_tools.notion_fetch_child_blocks",
+            "baml_tools_notion.notion_fetch_child_blocks",
             parent_id = parent_id
         )
     }
