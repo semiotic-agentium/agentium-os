@@ -11,6 +11,6 @@
   ],
   "discovery": {
     "description": "Agent that interacts with ClickUp tasks and spaces",
-    "capabilities": []
+    "capabilities": ["clickup:list-tasks", "clickup:get-task", "clickup:list-spaces", "clickup:create-task", "project-management:task-tracking", "project-management:sprint-status"]
   }
 }

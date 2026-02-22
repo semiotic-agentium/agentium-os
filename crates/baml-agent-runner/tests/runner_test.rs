@@ -255,6 +255,206 @@ impl BamlTool for AddNumbersTool {
     }
 }
 
+struct SystemTestBundle;
+
+impl BundleType for SystemTestBundle {
+    const NAME: &'static str = "system";
+    fn description() -> &'static str {
+        "System test tools"
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct StubAgentCard {
+    name: String,
+    version: String,
+    agent_package: String,
+    agent_instance_id: String,
+    tools: Vec<String>,
+    description: Option<String>,
+    capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct StubDiscoverAgentsOpenInput {
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct StubDiscoverAgentsInput {
+    query: Option<String>,
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct StubDiscoverAgentsOutput {
+    agents: Vec<StubAgentCard>,
+    done: bool,
+}
+
+struct StubDiscoverAgentsTool {
+    agents: Vec<StubAgentCard>,
+}
+
+#[async_trait]
+impl BamlTool for StubDiscoverAgentsTool {
+    type Bundle = SystemTestBundle;
+    const LOCAL_NAME: &'static str = "discover_agents";
+    type OpenInput = StubDiscoverAgentsOpenInput;
+    type Input = StubDiscoverAgentsInput;
+    type Output = StubDiscoverAgentsOutput;
+
+    fn description(&self) -> &'static str {
+        "Stub discover_agents for coordinator routing tests"
+    }
+
+    async fn execute(&self, args: Self::Input) -> baml_rt::Result<Self::Output> {
+        let offset = args.offset.unwrap_or(0);
+        let limit = args.limit.unwrap_or(self.agents.len().max(1));
+        let agents = self
+            .agents
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .cloned()
+            .collect::<Vec<_>>();
+        Ok(StubDiscoverAgentsOutput { agents, done: true })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct StubToolRecord {
+    name: String,
+    bundle: String,
+    description: String,
+    tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct StubDiscoverToolsOpenInput {
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct StubDiscoverToolsInput {
+    query: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct StubDiscoverToolsOutput {
+    tools: Vec<StubToolRecord>,
+    done: bool,
+}
+
+struct StubDiscoverToolsTool {
+    tools: Vec<StubToolRecord>,
+}
+
+#[async_trait]
+impl BamlTool for StubDiscoverToolsTool {
+    type Bundle = SystemTestBundle;
+    const LOCAL_NAME: &'static str = "discover_tools";
+    type OpenInput = StubDiscoverToolsOpenInput;
+    type Input = StubDiscoverToolsInput;
+    type Output = StubDiscoverToolsOutput;
+
+    fn description(&self) -> &'static str {
+        "Stub discover_tools for coordinator routing tests"
+    }
+
+    async fn execute(&self, args: Self::Input) -> baml_rt::Result<Self::Output> {
+        let limit = args.limit.unwrap_or(self.tools.len().max(1));
+        let tools = self.tools.iter().take(limit).cloned().collect::<Vec<_>>();
+        Ok(StubDiscoverToolsOutput { tools, done: true })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct StubInternalA2aTarget {
+    agent_package: String,
+    agent_instance_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct StubInternalA2aOpenInput {
+    target: StubInternalA2aTarget,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct StubInternalA2aInputPart {
+    text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct StubInternalA2aInput {
+    parts: Vec<StubInternalA2aInputPart>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct StubInternalA2aOutputPart {
+    text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct StubInternalA2aOutputMessage {
+    parts: Vec<StubInternalA2aOutputPart>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct StubInternalA2aOutputChunk {
+    message: StubInternalA2aOutputMessage,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct StubInternalA2aOutput {
+    chunks: Vec<StubInternalA2aOutputChunk>,
+}
+
+struct StubInternalA2aTool;
+
+#[async_trait]
+impl BamlTool for StubInternalA2aTool {
+    type Bundle = SystemTestBundle;
+    const LOCAL_NAME: &'static str = "internal_a2a";
+    type OpenInput = StubInternalA2aOpenInput;
+    type Input = StubInternalA2aInput;
+    type Output = StubInternalA2aOutput;
+
+    fn description(&self) -> &'static str {
+        "Stub internal_a2a for coordinator routing tests"
+    }
+
+    async fn execute(&self, _args: Self::Input) -> baml_rt::Result<Self::Output> {
+        Ok(StubInternalA2aOutput {
+            chunks: vec![StubInternalA2aOutputChunk {
+                message: StubInternalA2aOutputMessage {
+                    parts: vec![StubInternalA2aOutputPart {
+                        text: Some("Delegated evidence contained no source links.".to_string()),
+                    }],
+                },
+            }],
+        })
+    }
+}
+
 /// References Test and AddNumbersTool so they are not reported dead (used for package build / impls).
 #[test]
 fn test_runner_tool_types_for_package_build() {
@@ -513,6 +713,102 @@ globalThis.onChatMessage = async function(message) {
         .unwrap();
 
     (initiator_agent, responder_agent)
+}
+
+async fn setup_coordinator_agent_with_stub_system_tools() -> baml_rt::A2aAgent {
+    let coordinator_agent_dir = workspace_root().join("agents").join("coordinator-agent");
+    let built = tokio::task::spawn_blocking(move || {
+        common::build_agent_dir_to_temp(
+            &coordinator_agent_dir,
+            "coordinator-agent",
+            Some("http-tools"),
+        )
+    })
+    .await
+    .expect("build coordinator agent task join");
+
+    let mut manager = BamlRuntimeManager::new().expect("create runtime manager");
+    manager
+        .load_schema(built.to_str().expect("built path to string"))
+        .expect("load coordinator schema");
+
+    manager
+        .register_tool(StubDiscoverAgentsTool {
+            agents: vec![
+                StubAgentCard {
+                    name: "coordinator-agent".to_string(),
+                    version: "1.0.0".to_string(),
+                    agent_package: "coordinator-agent".to_string(),
+                    agent_instance_id: "default".to_string(),
+                    tools: vec![
+                        "system/discover_agents".to_string(),
+                        "system/discover_tools".to_string(),
+                        "system/internal_a2a".to_string(),
+                    ],
+                    description: Some("Coordinator".to_string()),
+                    capabilities: vec!["routing".to_string()],
+                },
+                StubAgentCard {
+                    name: "notion-agent".to_string(),
+                    version: "1.0.0".to_string(),
+                    agent_package: "notion-agent".to_string(),
+                    agent_instance_id: "default".to_string(),
+                    tools: vec!["support/notion".to_string()],
+                    description: Some("Notion specialist".to_string()),
+                    capabilities: vec!["notion-read".to_string()],
+                },
+            ],
+        })
+        .await
+        .expect("register discover_agents stub tool");
+
+    manager
+        .register_tool(StubDiscoverToolsTool {
+            tools: vec![
+                StubToolRecord {
+                    name: "support/notion".to_string(),
+                    bundle: "support".to_string(),
+                    description: "Notion access".to_string(),
+                    tags: vec!["notion".to_string()],
+                },
+                StubToolRecord {
+                    name: "system/discover_agents".to_string(),
+                    bundle: "system".to_string(),
+                    description: "Agent discovery".to_string(),
+                    tags: vec!["discovery".to_string()],
+                },
+                StubToolRecord {
+                    name: "system/discover_tools".to_string(),
+                    bundle: "system".to_string(),
+                    description: "Tool discovery".to_string(),
+                    tags: vec!["discovery".to_string()],
+                },
+                StubToolRecord {
+                    name: "system/internal_a2a".to_string(),
+                    bundle: "system".to_string(),
+                    description: "Delegated messaging".to_string(),
+                    tags: vec!["delegation".to_string()],
+                },
+            ],
+        })
+        .await
+        .expect("register discover_tools stub tool");
+
+    manager
+        .register_tool(StubInternalA2aTool)
+        .await
+        .expect("register internal_a2a stub tool");
+
+    let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
+        .expect("coordinator-agent dist/index.js");
+
+    baml_rt::A2aAgent::builder()
+        .with_runtime_manager(manager)
+        .with_init_js(agent_code)
+        .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .build()
+        .await
+        .expect("build coordinator agent")
 }
 
 async fn setup_task_lifecycle_demo_agent() -> baml_rt::A2aAgent {
@@ -1300,6 +1596,46 @@ async fn test_internal_a2a_unknown_target_surfaces_error() {
         "Expected unknown-route error text for missing target. Texts: {:?}. Raw: {}",
         texts,
         serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+    );
+}
+
+#[tokio::test]
+async fn test_coordinator_keyword_domain_falls_back_to_single_loaded_domain() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+    let agent = setup_coordinator_agent_with_stub_system_tools().await;
+
+    let request = send_message_request(
+        SendMessageRequest {
+            message: user_message(
+                "coord-1",
+                "show me task status and assignees for current sprint",
+                Some(ContextId::new(81, 1)),
+            ),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+            extra: std::collections::HashMap::new(),
+        },
+        "corr-1771642432-1",
+    );
+
+    let responses = collect_stream_responses(&agent, request)
+        .await
+        .expect("coordinator request");
+    let chunks = chunks_from_responses(&responses);
+    let texts = message_texts_from_chunks(&chunks);
+    let combined = texts.join("\n");
+
+    assert!(
+        combined.contains("I routed to Notion"),
+        "Expected coordinator fallback to the only loaded domain specialist (Notion). Texts: {:?}. Raw: {}",
+        texts,
+        serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+    );
+    assert!(
+        !combined.contains("no eligible specialist agent matched"),
+        "Coordinator should not hard-fail routing when one specialist domain is loaded. Texts: {:?}",
+        texts
     );
 }
 
