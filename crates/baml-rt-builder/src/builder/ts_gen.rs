@@ -6,7 +6,9 @@ use internal_baml_core::ir::ir_hasher::IRSignature;
 
 use crate::builder::{
     error::{BamlBuilderError, Result},
-    ir_to_ts::{collect_type_decl_deps, emit_type_declarations_tokens, re_alias_frag, type_to_ts_expr},
+    ir_to_ts::{
+        collect_type_decl_deps, emit_type_declarations_tokens, re_alias_frag, type_to_ts_expr,
+    },
 };
 
 /// Wrapper so genco fmt errors can be used as [`std::error::Error`] source.
