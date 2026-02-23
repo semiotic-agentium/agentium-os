@@ -1,14 +1,16 @@
-# Coordinator Demo (Notion Delegation Path)
+# Coordinator Demo (Dynamic Delegation Path)
 
-This demo shows a host-level coordinator agent that delegates to `notion-agent`
-through `system/internal_a2a`, then synthesizes a user-facing answer with
+This demo shows a host-level coordinator agent that discovers available tools/agents,
+routes to the best specialist (Notion or ClickUp), delegates through
+`system/internal_a2a`, then synthesizes a user-facing answer with
 confidence and gaps.
 
 ## What this demonstrates
 
-- Delegation-first orchestration (`coordinator-agent -> notion-agent`)
+- Delegation-first orchestration (`coordinator-agent -> specialist-agent`)
+- Routing plan from `system/discover_agents` + `system/discover_tools`
 - Bounded autonomy (max 5 coordinator planning steps)
-- High-agency behavior (auto-drills into a page when search results are only a listing)
+- High-agency behavior (auto-drills into a Notion page when search results are only a listing)
 - Auditable output contract (`answer`, `actionable goals`, `sources`, `confidence`, `gaps`, optional clarification)
 
 ## Prerequisites
@@ -22,6 +24,12 @@ confidence and gaps.
 
 ```bash
 just coordinator-demo
+```
+
+To include ClickUp specialist routing in the same runner:
+
+```bash
+COORDINATOR_DEMO_INCLUDE_CLICKUP=1 just coordinator-demo
 ```
 
 This command:
@@ -52,9 +60,11 @@ Then in the chat UI:
 2. Select `coordinator-agent` in the agent dropdown
 3. Ask:
    - `Can you tell me what the research team are up to and what actionable goals they have?`
+   - `Use ClickUp and summarize actionable goals for this sprint.` (works when a `clickup-agent` package is loaded in the same runner)
 
-The coordinator will delegate to Notion, synthesize, and format output differently
-when owner/date metadata is present vs missing.
+The coordinator will discover capabilities, choose a specialist route, and either:
+- Delegate and synthesize results, or
+- Ask a focused clarification when routing is ambiguous.
 
 ## Provenance replay
 
@@ -75,5 +85,7 @@ just provenance-mermaid <context_id>
 - `COORDINATOR_DEMO_PACKAGE` (default `/tmp/coordinator-agent.tar.gz`)
 - `COORDINATOR_DEMO_NOTION_PACKAGE` (default `/tmp/notion-agent.tar.gz`)
 - `COORDINATOR_DEMO_RUNNER_BIN` (default `target/debug/baml-agent-runner`)
+- `COORDINATOR_DEMO_INCLUDE_CLICKUP` (`1` to also package/load `clickup-agent`)
+- `COORDINATOR_DEMO_CLICKUP_PACKAGE` (default `/tmp/clickup-agent.tar.gz`)
 - `COORDINATOR_DEMO_TEXT` (override prompt text)
 - `COORDINATOR_DEMO_NO_STREAM` (`1` to start backend only)

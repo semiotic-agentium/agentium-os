@@ -11,6 +11,6 @@
   ],
   "discovery": {
     "description": "Agent that reads Notion pages and blocks",
-    "capabilities": []
+    "capabilities": ["notion:search-pages", "notion:read-page", "notion:read-blocks", "documents:summarize", "knowledge-base:query"]
   }
 }
