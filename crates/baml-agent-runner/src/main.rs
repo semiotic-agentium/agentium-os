@@ -1136,7 +1136,7 @@ mod tests {
         let store = GraphqliteStoreBuilder::in_memory()
             .build()
             .expect("in-memory provenance store for test");
-        ProvenanceConfig::Graphqlite(Arc::new(store))
+        ProvenanceConfig::Graphqlite(store)
     }
 
     async fn build_test_agent() -> A2aAgent {
