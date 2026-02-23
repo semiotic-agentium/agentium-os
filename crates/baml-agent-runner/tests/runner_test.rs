@@ -22,7 +22,7 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
-    ProvenanceContextMessage,
+    ProvenanceContextMessage, ProvenanceContextReader, ProvenanceWriter,
 };
 use baml_rt_tools::bundles::BundleType;
 use flate2::{Compression, write::GzEncoder};
