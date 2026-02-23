@@ -151,11 +151,8 @@ impl AgentPackage {
             .with_baml_helpers(true)
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
 
-        match provenance_config {
-            ProvenanceConfig::Graphqlite(store) => {
-                agent_builder = agent_builder.with_graphqlite_store(store.clone());
-            }
-        }
+        let ProvenanceConfig::Graphqlite(store) = provenance_config;
+        agent_builder = agent_builder.with_graphqlite_store(store.clone());
 
         let agent = agent_builder.build().await?;
         Ok(JsInitialized {
@@ -238,11 +235,9 @@ impl AgentPackage {
         // Get agent_id from the agent (generated during A2aAgent::build())
         let agent_id = agent.agent_id().clone();
 
-        // Emit AgentBooted provenance event
-        let writer: Arc<dyn ProvenanceWriter> = match provenance_config {
-            ProvenanceConfig::Graphqlite(store) => store.clone() as Arc<dyn ProvenanceWriter>,
-        };
-        // Use stable archive identity from manifest signature
+        // Emit AgentBooted provenance event (provenance store is always present).
+        let ProvenanceConfig::Graphqlite(store) = provenance_config;
+        let writer = store.clone() as Arc<dyn ProvenanceWriter>;
         let archive_path = self.manifest.signature.clone();
         let context_id = context::generate_context_id();
         let agent_type_parsed = AgentType::new(self.manifest.name.clone()).ok_or_else(|| {
@@ -952,7 +947,7 @@ impl Cli {
     }
 }
 
-/// Provenance configuration: none, writer only, or GraphQLite (store required).
+/// Provenance configuration: GraphQLite store
 pub(crate) enum ProvenanceConfig {
     Graphqlite(Arc<baml_rt_provenance::GraphqliteProvenanceStore>),
 }
@@ -1137,6 +1132,13 @@ mod tests {
 
     use super::*;
 
+    fn test_provenance_config() -> ProvenanceConfig {
+        let store = GraphqliteStoreBuilder::in_memory()
+            .build()
+            .expect("in-memory provenance store for test");
+        ProvenanceConfig::Graphqlite(Arc::new(store))
+    }
+
     async fn build_test_agent() -> A2aAgent {
         let manager = BamlRuntimeManager::new().expect("create runtime manager");
         let code = r#"
@@ -1157,7 +1159,7 @@ globalThis.onChatMessage = async function(_message) {
     #[tokio::test]
     async fn internal_a2a_router_rejects_self_routing_by_route_key() {
         let runner = Arc::new(AgentRunner::new(
-            ProvenanceConfig::None,
+            test_provenance_config(),
             None,
             ToolAccessPolicy::default(),
         ));
@@ -1196,7 +1198,7 @@ globalThis.onChatMessage = async function(_message) {
 
     #[tokio::test]
     async fn handle_a2a_by_key_respects_instance_id() {
-        let runner = AgentRunner::new(ProvenanceConfig::None, None, ToolAccessPolicy::default());
+        let runner = AgentRunner::new(test_provenance_config(), None, ToolAccessPolicy::default());
         let package_name = AgentPackageName::parse("demo-agent").expect("valid package");
         let default_key = AgentRouteKey::new(package_name.clone(), AgentInstanceId::default());
         let staging_key = AgentRouteKey::new(

@@ -22,7 +22,7 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
-    ProvenanceContextMessage, ProvenanceContextReader, ProvenanceWriter,
+    ProvenanceContextMessage,
 };
 use baml_rt_tools::bundles::BundleType;
 use flate2::{Compression, write::GzEncoder};
@@ -76,7 +76,7 @@ impl A2aRequestHandler for EmptyA2aHandler {
     }
 }
 
-use common::{StrictProvenanceWriter, e2e_serial_gate};
+use common::e2e_serial_gate;
 use test_support::{
     common::{
         CalculatorTool, agent_fixture, chunks_from_responses, ensure_baml_src_exists,
@@ -625,7 +625,6 @@ async fn setup_conversational_context_auto_agent()
         ))
         .await
         .expect("write AgentBooted");
-    let _strict_writer = Arc::new(StrictProvenanceWriter::new(provenance.clone()));
     let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
         .expect("conversational-context-auto dist/index.js");
     let agent = baml_rt::A2aAgent::builder()
