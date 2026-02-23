@@ -4,15 +4,15 @@ use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
 use baml_rt_core::Result;
+use baml_rt_tools::{
+    ToolMetadataBuilder, TypeBasedMetadataBuilder,
+    bundles::Support,
+    parse_tool_name_and_class, register_tool,
+    tools::{BamlTool, ToolFunctionMetadata, ToolHandler, create_tool_handler},
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-
-use crate::{
-    bundles::Support,
-    register_tool,
-    tools::{BamlTool, ToolFunctionMetadata, ToolHandler, create_tool_handler},
-};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
@@ -54,7 +54,6 @@ pub struct CalculatorOutput {
 }
 
 pub fn support_calculate_metadata() -> ToolFunctionMetadata {
-    use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
     // This is a compile-time constant, so parsing cannot fail
     let (name, class_name) = parse_tool_name_and_class("support/calculate")
         .expect("support/calculate is a compile-time constant and must be valid");

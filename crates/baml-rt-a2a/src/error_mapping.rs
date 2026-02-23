@@ -58,6 +58,14 @@ fn mapping(
 /// Maps a BamlRtError to code, message, optional data, classifier, and retryable.
 pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
     match error {
+        BamlRtError::AgentNotFound(message) => mapping(
+            error,
+            -32601,
+            "Agent not found",
+            Some(serde_json::json!({ "details": message })),
+            "agent_not_found",
+            Retryability::Permanent,
+        ),
         BamlRtError::InvalidArgument(message) => mapping(
             error,
             -32600,
@@ -213,9 +221,7 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "internal",
             Retryability::Permanent,
         ),
-        BamlRtError::ParsedResultFailed { .. }
-        | BamlRtError::SystemTime(_)
-        | BamlRtError::TarHeaderPath(_) => mapping(
+        BamlRtError::ParsedResultFailed { .. } => mapping(
             error,
             -32603,
             "Internal error",

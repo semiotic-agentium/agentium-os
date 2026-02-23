@@ -28,8 +28,8 @@ use baml_rt_a2a::{
     },
 };
 use baml_rt_core::{
-    AgentCard, AgentDiscoveryEntry, AgentLister, AgentManifest, AgentRouteKey, BamlRtError,
-    ContextId, Result,
+    AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentLister, AgentManifest, AgentPackageName,
+    AgentRouteKey, BamlRtError, ContextId, Result,
     bus::BusStream,
     collect_a2a_stream,
     context::{self, InvocationScope},
@@ -46,7 +46,12 @@ use baml_rt_quickjs::BamlRuntimeManager;
 use baml_rt_tools::{
     ManifestToolNames, ToolAccessPolicy, parse_access_allowlist, register_manifest_tools,
 };
-use baml_rt_tools_system::SystemBundle;
+use baml_tools_calculator as _;
+#[cfg(feature = "clickup")]
+use baml_tools_clickup as _;
+#[cfg(feature = "notion")]
+use baml_tools_notion as _;
+use baml_tools_system::SystemBundle;
 use clap::Parser;
 use serde_json::Value;
 use tokio::{
@@ -310,6 +315,8 @@ pub(crate) struct AgentRunner {
     provenance_config: ProvenanceConfig,
     tool_index: Option<ToolIndexConfig>,
     access_policy: ToolAccessPolicy,
+    routed_agents: std::sync::RwLock<HashMap<AgentRouteKey, A2aAgent>>,
+    internal_a2a_router: Arc<InternalA2aRouter>,
 }
 
 impl AgentRunner {
@@ -318,11 +325,15 @@ impl AgentRunner {
         tool_index: Option<ToolIndexConfig>,
         access_policy: ToolAccessPolicy,
     ) -> Self {
+        let routed_agents = std::sync::RwLock::new(HashMap::new());
+        let internal_a2a_router = Arc::new(InternalA2aRouter::new());
         Self {
             agents: RwLock::new(HashMap::new()),
             provenance_config,
             tool_index,
             access_policy,
+            routed_agents,
+            internal_a2a_router,
         }
     }
 
@@ -338,8 +349,17 @@ impl AgentRunner {
         &self.access_policy
     }
 
+    /// Get the internal A2A router (used by builder to create scoped routers).
+    pub(crate) fn internal_a2a_router(&self) -> &Arc<InternalA2aRouter> {
+        &self.internal_a2a_router
+    }
+
     /// Insert a booted agent (used by builder during load phase).
-    pub(crate) fn insert_agent(&self, name: String, booted: BootedAgent) {
+    pub(crate) fn insert_agent(&self, name: String, route_key: AgentRouteKey, booted: BootedAgent) {
+        {
+            let mut routed = self.routed_agents.write().expect("RwLock poison");
+            routed.insert(route_key, booted.agent.clone());
+        }
         let mut guard = self.agents.write().expect("RwLock poison");
         guard.insert(name.clone(), booted);
         let count = guard.len();
@@ -360,7 +380,7 @@ impl AgentRunner {
         let agent = {
             let agents = self.agents.read().expect("RwLock poison");
             agents.get(agent_name).cloned().ok_or_else(|| {
-                BamlRtError::InvalidArgument(format!("Agent '{}' not found", agent_name))
+                BamlRtError::AgentNotFound(format!("Agent '{agent_name}' not found"))
             })?
         };
         agent.invoke_function(function_name, args).await
@@ -389,7 +409,7 @@ impl AgentRunner {
                     name: m.name.clone(),
                     version: version.clone(),
                     agent_package: pkg.clone(),
-                    agent_instance_id: "default".to_string(),
+                    agent_instance_id: AgentInstanceId::DEFAULT.to_string(),
                     tools: m.tools.clone(),
                     description: m.discovery.as_ref().and_then(|d| d.description.clone()),
                     capabilities: m
@@ -400,7 +420,7 @@ impl AgentRunner {
                 };
                 AgentDiscoveryEntry {
                     agent_package: pkg.clone(),
-                    agent_instance_id: "default".to_string(),
+                    agent_instance_id: AgentInstanceId::DEFAULT.to_string(),
                     name: m.name.clone(),
                     version,
                     agent_card,
@@ -415,27 +435,19 @@ impl AgentRunner {
         key: &AgentRouteKey,
         request: Value,
     ) -> Result<BusStream<Value>> {
-        info!(
-            agent_package = %key.agent_package,
-            agent_instance_id = %key.agent_instance_id,
-            "A2A request: dispatching to agent"
-        );
-        let booted = self
-            .agents
-            .read()
-            .expect("RwLock poison")
-            .get(&key.agent_package)
-            .cloned()
-            .ok_or_else(|| {
-                BamlRtError::InvalidArgument(format!(
-                    "Agent {}/{} not found",
-                    key.agent_package, key.agent_instance_id
+        let routed_agent = {
+            let routed_agents = self.routed_agents.read().expect("RwLock poison");
+            routed_agents.get(key).cloned().ok_or_else(|| {
+                BamlRtError::AgentNotFound(format!(
+                    "Agent {agent_package}/{agent_instance_id} not found",
+                    agent_package = key.agent_package.as_str(),
+                    agent_instance_id = key.agent_instance_id.as_str()
                 ))
-            })?;
-        let scope = InvocationScope::synthetic_message(booted.agent.agent_id().clone());
-        let agent = booted.agent.clone();
+            })?
+        };
+        let scope = InvocationScope::synthetic_message(routed_agent.agent_id().clone());
         context::with_scope(scope.as_scope().clone(), async move {
-            agent.handle_a2a_stream(request).await
+            routed_agent.handle_a2a_stream(request).await
         })
         .await
     }
@@ -653,6 +665,115 @@ impl A2aRequestHandler for RunnerRegistry {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct InternalA2aRouter {
+    /// Shared view of routed agents — populated at startup, read-only during serving.
+    /// Uses the runner's own `routed_agents` lock via a reference.
+    runner: std::sync::OnceLock<Arc<AgentRunner>>,
+}
+
+impl InternalA2aRouter {
+    fn new() -> Self {
+        Self {
+            runner: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Wire to the runner after construction (called once by the builder).
+    pub(crate) fn set_runner(&self, runner: Arc<AgentRunner>) {
+        if self.runner.set(runner).is_err() {
+            tracing::warn!(
+                "InternalA2aRouter::set_runner called after runner already set; duplicate wiring ignored"
+            );
+        }
+    }
+
+    async fn route_from(&self, caller: &AgentRouteKey, request: Value) -> Result<BusStream<Value>> {
+        let runner = self
+            .runner
+            .get()
+            .expect("InternalA2aRouter: runner not set");
+
+        // Trust model: in-process agents are trusted peers, so any loaded package may route
+        // to any other loaded package via system/internal_a2a.
+        let key = extract_internal_a2a_target(&request)
+            .or_else(|| {
+                a2a::extract_agent_name(&request).and_then(|agent_package| {
+                    AgentPackageName::parse(agent_package)
+                        .map(|pkg| AgentRouteKey::new(pkg, AgentInstanceId::default()))
+                })
+            })
+            .ok_or_else(|| {
+                BamlRtError::InvalidArgument(
+                    "system/internal_a2a missing params.metadata.target.agent_package".to_string(),
+                )
+            })?;
+
+        if key.agent_instance_id.as_str() != AgentInstanceId::DEFAULT {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "system/internal_a2a only supports agent_instance_id=default, got '{agent_instance_id}'",
+                agent_instance_id = key.agent_instance_id.as_str()
+            )));
+        }
+
+        if key == *caller {
+            return Err(BamlRtError::InvalidArgument(
+                "system/internal_a2a self-routing is not allowed".to_string(),
+            ));
+        }
+
+        let routed_agent = {
+            let agents = runner.routed_agents.read().expect("RwLock poison");
+            agents.get(&key).cloned().ok_or_else(|| {
+                BamlRtError::AgentNotFound(format!(
+                    "Agent {agent_package}/{agent_instance_id} not found",
+                    agent_package = key.agent_package.as_str(),
+                    agent_instance_id = key.agent_instance_id.as_str()
+                ))
+            })?
+        };
+
+        let scope = InvocationScope::synthetic_message(routed_agent.agent_id().clone());
+        context::with_scope(scope.as_scope().clone(), async move {
+            routed_agent.handle_a2a_stream(request).await
+        })
+        .await
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct ScopedInternalA2aRouter {
+    caller: AgentRouteKey,
+    router: Arc<InternalA2aRouter>,
+}
+
+impl ScopedInternalA2aRouter {
+    pub(crate) fn new(caller: AgentRouteKey, router: Arc<InternalA2aRouter>) -> Self {
+        Self { caller, router }
+    }
+}
+
+fn extract_internal_a2a_target(request: &Value) -> Option<AgentRouteKey> {
+    let params = request.get("params")?.as_object()?;
+    let metadata = params.get("metadata")?.as_object()?;
+    let target = metadata.get("target")?.as_object()?;
+    let agent_package = AgentPackageName::parse(target.get("agent_package")?.as_str()?)?;
+    let agent_instance_id = AgentInstanceId::parse(
+        target
+            .get("agent_instance_id")
+            .and_then(Value::as_str)
+            .unwrap_or(AgentInstanceId::DEFAULT),
+    )?;
+    Some(AgentRouteKey::new(agent_package, agent_instance_id))
+}
+
+#[async_trait]
+impl A2aRequestHandler for ScopedInternalA2aRouter {
+    async fn handle_a2a_stream(&self, request: Value) -> Result<BusStream<Value>> {
+        self.router.route_from(&self.caller, request).await
+    }
+}
+
 fn strip_stream_suffix(method: &str) -> (String, bool) {
     for suffix in ["/stream", ".stream", ":stream"] {
         if let Some(stripped) = method.strip_suffix(suffix) {
@@ -682,6 +803,9 @@ fn is_a2a_method(method: &str) -> bool {
 
 fn map_a2a_error(id: Option<JSONRPCId>, err: BamlRtError) -> Value {
     match err {
+        BamlRtError::AgentNotFound(message) => {
+            a2a::error_response(id, -32601, "Agent not found", Some(Value::String(message)))
+        }
         BamlRtError::InvalidArgument(message) => {
             a2a::error_response(id, -32602, "Invalid params", Some(Value::String(message)))
         }
@@ -701,35 +825,30 @@ fn map_a2a_error(id: Option<JSONRPCId>, err: BamlRtError) -> Value {
 }
 
 static MESSAGE_COUNTER: AtomicU64 = AtomicU64::new(1);
-static CONTEXT_COUNTER: AtomicU64 = AtomicU64::new(1);
 static STDIO_CONTEXT_ID: std::sync::OnceLock<ContextId> = std::sync::OnceLock::new();
 static STDIO_TASK_ID: std::sync::OnceLock<TaskId> = std::sync::OnceLock::new();
 
 fn stdio_context_id() -> ContextId {
     STDIO_CONTEXT_ID
-        .get_or_init(|| {
-            let _ = CONTEXT_COUNTER.fetch_add(1, Ordering::Relaxed);
-            context::generate_context_id()
-        })
+        .get_or_init(context::generate_context_id)
         .clone()
 }
 
 fn stdio_task_id() -> TaskId {
     STDIO_TASK_ID
         .get_or_init(|| {
+            let context_id = stdio_context_id();
             TaskId::from_external(ExternalId::new(format!(
-                "cli-task-{}",
-                stdio_context_id().as_str()
+                "cli-task-{context_id}",
+                context_id = context_id.as_str()
             )))
         })
         .clone()
 }
 
 fn wrap_plaintext_message(text: &str) -> Value {
-    let message_id = A2aMessageId::outgoing(DerivedId::new(format!(
-        "cli-msg-{}",
-        MESSAGE_COUNTER.fetch_add(1, Ordering::Relaxed)
-    )));
+    let seq = MESSAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let message_id = A2aMessageId::outgoing(DerivedId::new(format!("cli-msg-{seq}")));
     let message = Message {
         message_id,
         role: MessageRole::String(ROLE_USER.to_string()),
@@ -1012,11 +1131,117 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use baml_rt_core::route_key_from_request;
+    use baml_rt::baml::BamlRuntimeManager;
+    use baml_rt_core::{bus::BusWithEffects, route_key_from_request};
+    use serde_json::json;
+
+    use super::*;
+
+    async fn build_test_agent() -> A2aAgent {
+        let manager = BamlRuntimeManager::new().expect("create runtime manager");
+        let code = r#"
+globalThis.onChatMessage = async function(_message) {
+  __chat_yield({ message: { parts: [{ text: "ok" }] } });
+  __chat_yield({ final: true });
+};
+"#;
+        A2aAgent::builder()
+            .with_runtime_manager(manager)
+            .with_init_js(code)
+            .with_effect_emitter(Arc::new(BusWithEffects::new()))
+            .build()
+            .await
+            .expect("build test agent")
+    }
+
+    #[tokio::test]
+    async fn internal_a2a_router_rejects_self_routing_by_route_key() {
+        let runner = Arc::new(AgentRunner::new(
+            ProvenanceConfig::None,
+            None,
+            ToolAccessPolicy::default(),
+        ));
+        runner.internal_a2a_router().set_runner(runner.clone());
+        let caller = AgentRouteKey::new(
+            AgentPackageName::parse("coordinator-agent").expect("valid caller package"),
+            AgentInstanceId::default(),
+        );
+        let request = json!({
+            "jsonrpc": "2.0",
+            "method": "message.sendStream",
+            "params": {
+                "metadata": {
+                    "target": {
+                        "agent_package": "coordinator-agent",
+                        "agent_instance_id": "default"
+                    }
+                }
+            },
+            "id": null
+        });
+
+        let err = match runner
+            .internal_a2a_router()
+            .route_from(&caller, request)
+            .await
+        {
+            Ok(_) => panic!("self-route must be rejected"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("self-routing"),
+            "expected self-routing guard error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn handle_a2a_by_key_respects_instance_id() {
+        let runner = AgentRunner::new(ProvenanceConfig::None, None, ToolAccessPolicy::default());
+        let package_name = AgentPackageName::parse("demo-agent").expect("valid package");
+        let default_key = AgentRouteKey::new(package_name.clone(), AgentInstanceId::default());
+        let staging_key = AgentRouteKey::new(
+            package_name.clone(),
+            AgentInstanceId::parse("staging").expect("valid instance"),
+        );
+
+        let agent = build_test_agent().await;
+        let manifest = AgentManifest {
+            name: package_name.as_str().to_string(),
+            version: "1.0.0".to_string(),
+            entry_point: "dist/index.js".to_string(),
+            signature: "demo-agent@1.0.0".to_string(),
+            tools: vec![],
+            discovery: None,
+        };
+        runner.insert_agent(
+            package_name.as_str().to_string(),
+            default_key,
+            BootedAgent { agent, manifest },
+        );
+
+        let err = match runner
+            .handle_a2a_by_key(
+                &staging_key,
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "message.sendStream",
+                    "params": {"message": {"parts": [{"text": "ping"}]}}
+                }),
+            )
+            .await
+        {
+            Ok(_) => panic!("non-default instance should not route to default agent"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("demo-agent/staging not found"),
+            "expected instance-specific not found error, got: {err}"
+        );
+    }
 
     #[test]
     fn route_key_from_request_extracts_key() {
-        let request = serde_json::json!({
+        let request = json!({
             "jsonrpc": "2.0",
             "method": "message.sendStream",
             "params": {
@@ -1030,13 +1255,13 @@ mod tests {
             "id": 1
         });
         let key = route_key_from_request(&request).unwrap();
-        assert_eq!(key.agent_package, "my-pkg");
-        assert_eq!(key.agent_instance_id, "inst-1");
+        assert_eq!(key.agent_package.as_str(), "my-pkg");
+        assert_eq!(key.agent_instance_id.as_str(), "inst-1");
     }
 
     #[test]
     fn route_key_from_request_default_instance_id() {
-        let request = serde_json::json!({
+        let request = json!({
             "params": {
                 "metadata": {
                     "target": {
@@ -1046,13 +1271,13 @@ mod tests {
             }
         });
         let key = route_key_from_request(&request).unwrap();
-        assert_eq!(key.agent_package, "solo");
-        assert_eq!(key.agent_instance_id, "default");
+        assert_eq!(key.agent_package.as_str(), "solo");
+        assert_eq!(key.agent_instance_id.as_str(), "default");
     }
 
     #[test]
     fn route_key_from_request_missing_target_err() {
-        let request = serde_json::json!({
+        let request = json!({
             "params": { "metadata": {} }
         });
         assert!(route_key_from_request(&request).is_err());

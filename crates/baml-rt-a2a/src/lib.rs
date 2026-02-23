@@ -22,6 +22,6 @@ pub mod result_processor;
 pub(crate) mod wire;
 
 pub use a2a::{A2aMethod, A2aOutcome, A2aRequest};
-pub use a2a_transport::{A2aAgent, A2aAgentBuilder};
+pub use a2a_transport::{A2aAgent, A2aAgentBuilder, RegistrationMode};
 pub use agent_registry::AgentRegistry;
 pub use baml_rt_core::A2aRequestHandler;

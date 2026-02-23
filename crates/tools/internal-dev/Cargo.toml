@@ -1,5 +1,5 @@
 [package]
-name = "baml-rt-tools-internal-dev"
+name = "baml-tools-internal-dev"
 version = { workspace = true }
 edition = { workspace = true }
 authors = { workspace = true }

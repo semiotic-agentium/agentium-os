@@ -13,7 +13,10 @@ members = [
   "crates/baml-rt-quickjs",
   "crates/baml-rt-tools",
   "crates/test-support",
+  "crates/tools/calculator",
   "crates/tools/internal-dev",
+  "crates/tools/clickup",
+  "crates/tools/notion",
   "crates/tools/system",
 ]
 default-members = [

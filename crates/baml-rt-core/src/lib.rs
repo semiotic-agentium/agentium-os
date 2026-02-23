@@ -16,8 +16,8 @@ pub mod types;
 
 pub use a2a_handler::{A2aRequestHandler, collect_a2a_stream, collect_a2a_stream_until};
 pub use agent_routing::{
-    AgentCard, AgentDiscoveryEntry, AgentListCatalogueHolder, AgentLister, AgentRouteKey,
-    route_key_from_request,
+    AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentListCatalogueHolder, AgentLister,
+    AgentPackageName, AgentRouteKey, route_key_from_request,
 };
 pub use bus::{
     A2aEffectMetadata, A2aKind, Bus, BusApi, BusStream, BusWithEffects, Command, DomainEvent,

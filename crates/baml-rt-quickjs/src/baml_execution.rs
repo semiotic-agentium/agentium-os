@@ -626,19 +626,23 @@ mod tests {
         registry.register(EchoTool).unwrap();
         let agent_id =
             AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000040").unwrap());
-        let _scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id);
+        let invocation_scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id);
 
         let result = json!({
             "tool_name": "test/echo_tool",
             "message": "hello"
         });
 
-        let scope = baml_rt_core::context::current_scope().unwrap();
-        let context_id = scope.context_id();
-        let tool_result = maybe_execute_tool_from_result(&registry, &result, context_id)
-            .await
-            .unwrap()
-            .expect("expected tool execution");
+        let tool_result =
+            baml_rt_core::context::with_scope(invocation_scope.as_scope().clone(), async {
+                let scope = baml_rt_core::context::current_scope().unwrap();
+                let context_id = scope.context_id();
+                maybe_execute_tool_from_result(&registry, &result, context_id)
+                    .await
+                    .unwrap()
+                    .expect("expected tool execution")
+            })
+            .await;
 
         assert_eq!(tool_result["echo"]["message"], "hello");
     }
@@ -649,13 +653,17 @@ mod tests {
         let registry = Arc::new(ToolRegistry::new());
         let agent_id =
             AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000041").unwrap());
-        let _scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id);
+        let invocation_scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id);
         let result = json!({ "value": "not a tool" });
-        let scope = baml_rt_core::context::current_scope().unwrap();
-        let context_id = scope.context_id();
-        let tool_result = maybe_execute_tool_from_result(&registry, &result, context_id)
-            .await
-            .unwrap();
+        let tool_result =
+            baml_rt_core::context::with_scope(invocation_scope.as_scope().clone(), async {
+                let scope = baml_rt_core::context::current_scope().unwrap();
+                let context_id = scope.context_id();
+                maybe_execute_tool_from_result(&registry, &result, context_id)
+                    .await
+                    .unwrap()
+            })
+            .await;
 
         assert!(tool_result.is_none());
     }

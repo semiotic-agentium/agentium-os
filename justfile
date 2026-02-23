@@ -22,6 +22,18 @@ notion-agent-provenance:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
     cargo run -p baml-agent-runner --features http-tools -- notion-agent.tar.gz --a2a-stdio --provenance-db {{provenance_db}}
 
+# Rebuilds coordinator + notion packages and runs coordinator-agent via a2a stdio.
+coordinator-agent:
+    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/coordinator-agent --output coordinator-agent.tar.gz
+    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
+    cargo run -p baml-agent-runner --features http-tools -- coordinator-agent.tar.gz notion-agent.tar.gz --a2a-stdio
+
+# Same as coordinator-agent, but persists provenance to provenance.db for graph_exporter.
+coordinator-agent-provenance:
+    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/coordinator-agent --output coordinator-agent.tar.gz
+    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
+    cargo run -p baml-agent-runner --features http-tools -- coordinator-agent.tar.gz notion-agent.tar.gz --a2a-stdio --provenance-db {{provenance_db}}
+
 # Runs the HTTP Notion demo script (starts runner if needed and streams one request).
 notion-demo:
     ./scripts/run-notion-demo.sh
@@ -30,10 +42,18 @@ notion-demo:
 notion-demo-stop:
     ./scripts/stop-notion-demo.sh
 
+# Runs coordinator + notion HTTP demo and streams one coordinated request.
+coordinator-demo:
+    ./scripts/run-coordinator-demo.sh
+
+# Stops the background runner started by coordinator-demo.
+coordinator-demo-stop:
+    ./scripts/stop-coordinator-demo.sh
+
 fmt:
     cargo fmt --all
 
-ci_features := "baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests,baml-agent-runner/http-tools,baml-rt/llm-tests,baml-agent-runner/llm-tests"
+ci_features := "baml-rt-builder/http-tools,baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests,baml-agent-runner/http-tools,baml-rt/llm-tests,baml-agent-runner/llm-tests"
 
 # CI parity: run the full nextest suite (mirrors rust-ci.yml "nextest" job).
 # Requires: cargo-nextest, a running FalkorDB on localhost:6379,
@@ -51,7 +71,7 @@ test-crate crate:
 
 # Run tests that don't need FalkorDB or API keys (unit tests only).
 test-unit:
-    cargo nextest run --workspace --features baml-rt-tools/http-tools,baml-rt-builder/http-tools
+    cargo nextest run --workspace --features baml-rt-builder/http-tools,baml-agent-runner/http-tools
 
 # Export a Mermaid sequence diagram for a given context-id.
 # Usage: just provenance-mermaid ctx-1771426017780-2

@@ -3,8 +3,6 @@
 //! Provides a comprehensive error hierarchy using `thiserror` for proper error handling
 //! and error chaining throughout the codebase.
 
-use std::time::SystemTimeError;
-
 use anyhow::Error as AnyhowError;
 use thiserror::Error;
 
@@ -41,6 +39,10 @@ pub enum BamlRtError {
     /// Function not found in registry
     #[error("Function not found: {0}")]
     FunctionNotFound(String),
+
+    /// Requested agent was not found in the registry.
+    #[error("Agent not found: {0}")]
+    AgentNotFound(String),
 
     /// Invalid argument provided to a function
     #[error("Invalid argument: {0}")]
@@ -122,14 +124,6 @@ pub enum BamlRtError {
         #[source]
         source: AnyhowError,
     },
-
-    /// System time error
-    #[error("System time error: {0}")]
-    SystemTime(#[from] SystemTimeError),
-
-    /// Tar header path error
-    #[error("Failed to set tar header path")]
-    TarHeaderPath(#[source] std::io::Error),
 }
 
 /// Result type alias for convenience

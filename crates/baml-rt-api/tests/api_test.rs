@@ -249,9 +249,9 @@ impl AgentRegistry for MockRegistry {
             return Ok(Box::pin(stream::iter(ok.clone())));
         }
         if let Some(ref msg) = self.handle_err_message {
-            return Err(BamlRtError::InvalidArgument(msg.clone()));
+            return Err(BamlRtError::AgentNotFound(msg.clone()));
         }
-        Err(BamlRtError::InvalidArgument(
+        Err(BamlRtError::AgentNotFound(
             "Agent pkg/inst not found".to_string(),
         ))
     }

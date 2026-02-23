@@ -15,20 +15,14 @@ pub struct AgentDir(PathBuf);
 
 impl AgentDir {
     /// Create a new AgentDir, validating that it exists and contains baml_src
-    pub fn new(path: PathBuf) -> baml_rt_core::Result<Self> {
+    pub fn new(path: PathBuf) -> crate::builder::error::Result<Self> {
         if !path.exists() {
-            return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
-                "Agent directory does not exist: {}",
-                path.display()
-            )));
+            return Err(crate::builder::error::BamlBuilderError::AgentDirNotFound { path });
         }
 
         let baml_src = path.join("baml_src");
         if !baml_src.exists() {
-            return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
-                "baml_src directory not found in {}",
-                path.display()
-            )));
+            return Err(crate::builder::error::BamlBuilderError::BamlSrcNotFound { path });
         }
 
         Ok(Self(path))
@@ -62,19 +56,13 @@ pub struct PackagePath(PathBuf);
 
 impl PackagePath {
     /// Create a new PackagePath, validating it exists and has .tar.gz extension
-    pub fn new(path: PathBuf) -> baml_rt_core::Result<Self> {
+    pub fn new(path: PathBuf) -> crate::builder::error::Result<Self> {
         if !path.exists() {
-            return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
-                "Package file does not exist: {}",
-                path.display()
-            )));
+            return Err(crate::builder::error::BamlBuilderError::PackageNotFound { path });
         }
 
         if path.extension().and_then(|s| s.to_str()) != Some("gz") {
-            return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
-                "Package file must have .tar.gz extension: {}",
-                path.display()
-            )));
+            return Err(crate::builder::error::BamlBuilderError::InvalidPackageExtension { path });
         }
 
         Ok(Self(path))
@@ -98,9 +86,9 @@ pub struct FunctionName(String);
 
 impl FunctionName {
     /// Create a new FunctionName, validating it's non-empty
-    pub fn new(name: String) -> baml_rt_core::Result<Self> {
+    pub fn new(name: String) -> crate::builder::error::Result<Self> {
         if name.is_empty() {
-            return Err(baml_rt_core::BamlRtError::InvalidArgument(
+            return Err(crate::builder::error::BamlBuilderError::InvalidArgument(
                 "Function name cannot be empty".to_string(),
             ));
         }
@@ -132,11 +120,11 @@ pub struct BuildDir(PathBuf);
 
 impl BuildDir {
     /// Create a new temporary build directory
-    pub fn new() -> baml_rt_core::Result<Self> {
+    pub fn new() -> crate::builder::error::Result<Self> {
         static BUILD_COUNTER: AtomicU64 = AtomicU64::new(0);
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(baml_rt_core::BamlRtError::SystemTime)?;
+            .map_err(crate::builder::error::BamlBuilderError::SystemTime)?;
 
         let counter = BUILD_COUNTER.fetch_add(1, Ordering::Relaxed);
         let build_dir = std::env::temp_dir().join(format!(
@@ -145,7 +133,7 @@ impl BuildDir {
             timestamp.subsec_nanos(),
             counter
         ));
-        std::fs::create_dir_all(&build_dir).map_err(baml_rt_core::BamlRtError::Io)?;
+        std::fs::create_dir_all(&build_dir)?;
 
         Ok(Self(build_dir))
     }

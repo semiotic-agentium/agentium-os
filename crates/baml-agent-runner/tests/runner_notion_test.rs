@@ -18,7 +18,7 @@ use baml_rt_provenance::{
     AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
     ProvenanceContextReader, ProvenanceConversationContextItem, ProvenanceWriter,
 };
-use baml_rt_tools::notion::NotionTool;
+use baml_tools_notion::NotionTool;
 use common::{
     RunningHttpServer, TempDirCleanup, TempEnvVar, build_notion_agent_to_temp_async, contains_kv,
     e2e_serial_gate, start_http_server, start_runner_api_server,
@@ -89,9 +89,11 @@ impl MockNotionState {
 }
 
 async fn start_notion_mock_server() -> std::io::Result<(RunningHttpServer, MockNotionState)> {
+    use std::collections::HashMap;
+
     use axum::{
         Json, Router,
-        extract::{Path as AxumPath, State as AxumState},
+        extract::{Path as AxumPath, Query as AxumQuery, State as AxumState},
         routing::{get, post},
     };
 
@@ -144,27 +146,51 @@ async fn start_notion_mock_server() -> std::io::Result<(RunningHttpServer, MockN
     async fn get_blocks(
         AxumState(state): AxumState<MockNotionState>,
         AxumPath(block_id): AxumPath<String>,
+        AxumQuery(query): AxumQuery<HashMap<String, String>>,
     ) -> Json<Value> {
+        let start_cursor = query.get("start_cursor").cloned();
         state
-            .push_hit(format!(
-                "GET {NOTION_API_PREFIX}/blocks/{block_id}/children"
-            ))
+            .push_hit(match start_cursor.as_deref() {
+                Some(cursor) => format!(
+                    "GET {NOTION_API_PREFIX}/blocks/{block_id}/children?start_cursor={cursor}"
+                ),
+                None => format!("GET {NOTION_API_PREFIX}/blocks/{block_id}/children"),
+            })
             .await;
-        Json(json!({
-            "object": "list",
-            "results": [
-                {
-                    "object": "block",
-                    "id": block_id,
-                    "type": "heading_2",
-                    "heading_2": { "rich_text": [] },
-                    "has_children": false,
-                    "parent": { "type": "page_id", "page_id": NORMALIZED_PAGE_ID }
-                }
-            ],
-            "next_cursor": null,
-            "has_more": false
-        }))
+        let page = if start_cursor.is_none() {
+            json!({
+                "object": "list",
+                "results": [
+                    {
+                        "object": "block",
+                        "id": block_id,
+                        "type": "heading_2",
+                        "heading_2": { "rich_text": [] },
+                        "has_children": false,
+                        "parent": { "type": "page_id", "page_id": NORMALIZED_PAGE_ID }
+                    }
+                ],
+                "next_cursor": "cursor-2",
+                "has_more": true
+            })
+        } else {
+            json!({
+                "object": "list",
+                "results": [
+                    {
+                        "object": "block",
+                        "id": "33333333-3333-3333-3333-333333333333",
+                        "type": "bulleted_list_item",
+                        "bulleted_list_item": { "rich_text": [] },
+                        "has_children": false,
+                        "parent": { "type": "page_id", "page_id": NORMALIZED_PAGE_ID }
+                    }
+                ],
+                "next_cursor": null,
+                "has_more": false
+            })
+        };
+        Json(page)
     }
 
     let state = MockNotionState::default();
@@ -389,6 +415,11 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
             .iter()
             .any(|hit| hit == &format!("GET /v1/blocks/{NORMALIZED_BLOCK_ID}/children")),
         "Expected mock Notion block-children endpoint hit. hits={mock_hits:?}"
+    );
+    assert!(
+        mock_hits.iter().any(|hit| hit
+            == &format!("GET /v1/blocks/{NORMALIZED_BLOCK_ID}/children?start_cursor=cursor-2")),
+        "Expected mock Notion pagination follow-up hit. hits={mock_hits:?}"
     );
     assert!(
         mock_hits

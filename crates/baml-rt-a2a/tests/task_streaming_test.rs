@@ -9,7 +9,7 @@ use baml_rt::{
 };
 use baml_rt_core::{AgentDiscoveryEntry, AgentLister, context};
 use baml_rt_provenance::GraphqliteStoreBuilder;
-use baml_rt_tools_system::SystemBundle;
+use baml_tools_system::SystemBundle;
 use serde_json::{Value, json};
 use test_support::common::{
     AddNumbersTool, CalculatorTool, first_message_text_from_stream, first_task_id_from_stream,

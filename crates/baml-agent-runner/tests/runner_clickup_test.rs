@@ -18,7 +18,7 @@ use baml_rt_provenance::{
     AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
     ProvenanceContextReader, ProvenanceConversationContextItem, ProvenanceWriter,
 };
-use baml_rt_tools::clickup::ClickUpTool;
+use baml_tools_clickup::ClickUpTool;
 use common::{
     RunningHttpServer, TempDirCleanup, TempEnvVar, build_clickup_agent_to_temp_async, contains_kv,
     e2e_serial_gate, start_http_server, start_runner_api_server,

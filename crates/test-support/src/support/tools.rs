@@ -2,10 +2,8 @@
 
 use async_trait::async_trait;
 use baml_rt::{Result, tools::BamlTool};
-use baml_rt_tools::{
-    bundles::Support,
-    support::{CalculatorInput, CalculatorOutput, MathOperation},
-};
+use baml_rt_tools::bundles::Support;
+use baml_tools_calculator::{CalculatorInput, CalculatorOutput, MathOperation};
 
 /// Example calculator tool
 pub struct CalculatorTool;

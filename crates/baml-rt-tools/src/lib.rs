@@ -2,14 +2,9 @@
 
 pub mod access;
 pub mod bundles;
-#[cfg(feature = "clickup")]
-pub mod clickup;
 pub mod host_registration;
 mod metrics;
-#[cfg(feature = "notion")]
-pub mod notion;
 mod spans;
-pub mod support;
 pub mod tool_catalog;
 pub mod tool_discovery;
 pub mod tool_fsm;

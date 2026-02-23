@@ -20,7 +20,7 @@ This project uses a split CI matrix to keep memory usage and compile times under
 3. **HTTP tools (serial)**
    - Purpose: exercise Notion/ClickUp tools with HTTP dependencies.
    - Command:
-     - `cargo test -p baml-rt-tools -p baml-agent-runner -p baml-rt-builder -j 1 --features baml-rt-tools/http-tools,baml-agent-runner/http-tools,baml-rt-builder/http-tools`
+     - `cargo test -p baml-agent-runner -p baml-rt-builder -j 1 --features baml-agent-runner/http-tools,baml-rt-builder/http-tools`
 
 4. **LLM smoke tests (scheduled)**
    - Purpose: validate OpenRouter integration without blocking PRs.
@@ -30,9 +30,8 @@ This project uses a split CI matrix to keep memory usage and compile times under
 
 ## Feature Flags
 
-- `baml-rt-tools/http-tools`: enables Notion + ClickUp (reqwest + notion-client).
-- `baml-agent-runner/http-tools`: compiles runner with HTTP tools.
-- `baml-rt-builder/http-tools`: compiles builder with HTTP tools.
+- `baml-agent-runner/http-tools`: compiles runner with ClickUp + Notion tool crates.
+- `baml-rt-builder/http-tools`: compiles builder with ClickUp + Notion tool crates.
 - `llm-tests`: enables tests that call OpenRouter.
 
 ## Notes

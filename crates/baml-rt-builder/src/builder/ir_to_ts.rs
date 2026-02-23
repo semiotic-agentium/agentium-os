@@ -5,10 +5,11 @@
 
 use std::collections::HashSet;
 
-use baml_rt_core::{BamlRtError, Result};
 use baml_types::ir_type::{LiteralValue, TypeNonStreaming, TypeValue, UnionTypeViewGeneric};
 use genco::{lang::js, prelude::*};
 use internal_baml_core::ir::ir_hasher::IRSignature;
+
+use crate::builder::error::{BamlBuilderError, Result};
 
 /// Result of mapping one IR type: TS type expression and any type names that must be declared.
 #[derive(Debug, Clone)]
@@ -67,7 +68,7 @@ fn type_to_ts_inner(ty: &TypeNonStreaming, deps: &mut Vec<String>) -> Result<Str
             format!("[{}]", parts.join(", "))
         }
         T::Arrow(..) => {
-            return Err(BamlRtError::InvalidArgument(
+            return Err(BamlBuilderError::InvalidArgument(
                 "Arrow types are not supported in generated TypeScript".to_string(),
             ));
         }
@@ -93,7 +94,7 @@ fn type_to_ts_inner(ty: &TypeNonStreaming, deps: &mut Vec<String>) -> Result<Str
             }
         },
         T::Top(_) => {
-            return Err(BamlRtError::InvalidArgument(
+            return Err(BamlBuilderError::InvalidArgument(
                 "Top/any type should not appear in TS generation".to_string(),
             ));
         }

@@ -8,6 +8,7 @@ publish = false
 [dependencies]
 baml-rt = { path = "../baml-rt" }
 baml-rt-tools = { path = "../baml-rt-tools" }
+baml-tools-calculator = { path = "../tools/calculator" }
 baml-rt-core = { path = "../baml-rt-core" }
 async-trait = { workspace = true }
 schemars = { workspace = true }

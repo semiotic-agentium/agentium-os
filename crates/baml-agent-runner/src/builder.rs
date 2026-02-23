@@ -7,11 +7,16 @@
 use std::{path::Path, sync::Arc};
 
 use baml_rt_a2a::A2aRequestHandler;
-use baml_rt_core::{AgentLister, Result};
+use baml_rt_core::{
+    AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey, BamlRtError, Result,
+};
 use baml_rt_provenance::ToolIndexConfig;
 use serde_json::Value;
 
-use crate::{AgentPackage, BootedAgent, ProvenanceConfig, RunnerRegistry, ToolAccessPolicy};
+use crate::{
+    AgentPackage, BootedAgent, ProvenanceConfig, RunnerRegistry, ScopedInternalA2aRouter,
+    ToolAccessPolicy,
+};
 
 /// Builder state: loading agent packages. No execution entrypoints yet.
 pub struct Loading;
@@ -39,6 +44,8 @@ impl RunnerBuilder<Loading> {
             tool_index,
             access_policy,
         ));
+        // Wire the internal A2A router to the runner for cross-agent dispatch.
+        runner.internal_a2a_router().set_runner(Arc::clone(&runner));
         let registry = Arc::new(RunnerRegistry(Arc::clone(&runner)));
         Self {
             runner,
@@ -51,15 +58,24 @@ impl RunnerBuilder<Loading> {
     pub async fn load_agent(self, package_path: &Path) -> Result<RunnerBuilder<Loading>> {
         let package = AgentPackage::load_from_file(package_path).await?;
         let name = package.name().to_string();
+        let package_name = AgentPackageName::parse(&name).ok_or_else(|| {
+            BamlRtError::InvalidArgument(format!(
+                "Agent package name '{name}' is invalid; allowed characters: [A-Za-z0-9_-]"
+            ))
+        })?;
+        let route_key = AgentRouteKey::new(package_name.clone(), AgentInstanceId::default());
+        let scoped_router: Arc<dyn A2aRequestHandler> = Arc::new(ScopedInternalA2aRouter::new(
+            route_key.clone(),
+            self.runner.internal_a2a_router().clone(),
+        ));
         let catalogue = self.registry.clone() as Arc<dyn AgentLister>;
-        let a2a_handler = self.registry.clone() as Arc<dyn A2aRequestHandler>;
         let (agent, _agent_id) = package
             .boot(
                 self.runner.provenance_config(),
                 self.runner.tool_index().clone(),
                 self.runner.access_policy(),
                 catalogue,
-                a2a_handler,
+                scoped_router,
             )
             .await?;
         let manifest = package.manifest().clone();
@@ -68,7 +84,7 @@ impl RunnerBuilder<Loading> {
             manifest: manifest.clone(),
         };
         tracing::info!(agent = %name, "Agent loaded and booted successfully");
-        self.runner.insert_agent(name.clone(), booted);
+        self.runner.insert_agent(name.clone(), route_key, booted);
         Ok(self)
     }
 

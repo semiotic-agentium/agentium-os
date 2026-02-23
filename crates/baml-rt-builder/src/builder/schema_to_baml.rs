@@ -2,13 +2,11 @@
 //!
 //! Converts JSON Schema definitions into BAML type definitions (classes, enums, etc.)
 
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::Write,
-};
+use std::collections::{HashMap, HashSet};
 
-use baml_rt_core::{BamlRtError, Result};
 use serde_json::Value;
+
+use crate::builder::error::{BamlBuilderError, Result, write_line};
 
 fn escape_baml_string(value: &str) -> String {
     value.chars().flat_map(|c| c.escape_default()).collect()
@@ -113,7 +111,7 @@ fn generate_baml_type(
     generated.insert(type_name.to_string());
 
     let schema_obj = schema.as_object().ok_or_else(|| {
-        BamlRtError::InvalidArgument(format!("Schema for {} must be an object", type_name))
+        BamlBuilderError::InvalidArgument(format!("Schema for {} must be an object", type_name))
     })?;
 
     // Check if it's an enum (oneOf with const values or enum field)
@@ -242,7 +240,7 @@ fn generate_baml_type(
         return Ok(());
     }
 
-    Err(BamlRtError::InvalidArgument(format!(
+    Err(BamlBuilderError::InvalidArgument(format!(
         "Cannot generate BAML type for {}: unsupported schema format",
         type_name
     )))
@@ -333,7 +331,7 @@ fn generate_baml_class(
         .get("properties")
         .and_then(|v| v.as_object())
         .ok_or_else(|| {
-            BamlRtError::InvalidArgument(format!("Class {} must have properties", class_name))
+            BamlBuilderError::InvalidArgument(format!("Class {} must have properties", class_name))
         })?;
 
     let required = schema_obj
@@ -389,7 +387,7 @@ fn json_schema_to_baml_type(
 ) -> Result<String> {
     let schema_obj = schema
         .as_object()
-        .ok_or_else(|| BamlRtError::InvalidArgument("Schema must be an object".to_string()))?;
+        .ok_or_else(|| BamlBuilderError::InvalidArgument("Schema must be an object".to_string()))?;
 
     // Handle $ref - extract nested types from definitions
     if let Some(Value::String(ref_path)) = schema_obj.get("$ref") {
@@ -548,9 +546,4 @@ fn to_pascal_case(s: &str) -> String {
     }
 
     result
-}
-
-fn write_line(output: &mut String, line: &str) -> Result<()> {
-    writeln!(output, "{}", line)
-        .map_err(|e| BamlRtError::InvalidArgument(format!("Format error: {}", e)))
 }

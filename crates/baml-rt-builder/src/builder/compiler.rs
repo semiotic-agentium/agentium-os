@@ -2,12 +2,11 @@
 
 use std::{ffi::OsStr, fs, path::Path};
 
-use baml_rt_core::{BamlRtError, Result};
-
 use crate::builder::{
     a2a_shim_gen::render_a2a_shim,
     baml_gen::render_baml_tool_interfaces,
     baml_signature_gen::{extract_baml_signatures, session_plan_functions_map},
+    error::{BamlBuilderError, Result},
     traits::{FileSystem, TypeGenerator, TypeScriptCompiler},
     ts_gen::{load_manifest_tools, render_ts_declarations},
     types::BuildDir,
@@ -58,7 +57,7 @@ impl<FS: FileSystem> TypeScriptCompiler for OxcTypeScriptCompiler<FS> {
                     .iter()
                     .map(|e| format!("{:?}", e))
                     .collect();
-                return Err(BamlRtError::InvalidArgument(format!(
+                return Err(BamlBuilderError::InvalidArgument(format!(
                     "Parse error in {}: {}",
                     file_path.display(),
                     errors.join(", ")
@@ -76,7 +75,7 @@ impl<FS: FileSystem> TypeScriptCompiler for OxcTypeScriptCompiler<FS> {
                     .iter()
                     .map(|e| format!("{:?}", e))
                     .collect();
-                return Err(BamlRtError::InvalidArgument(format!(
+                return Err(BamlBuilderError::InvalidArgument(format!(
                     "Semantic error in {}: {}",
                     file_path.display(),
                     errors.join(", ")
@@ -94,7 +93,7 @@ impl<FS: FileSystem> TypeScriptCompiler for OxcTypeScriptCompiler<FS> {
                     .iter()
                     .map(|e| format!("{:?}", e))
                     .collect();
-                return Err(BamlRtError::InvalidArgument(format!(
+                return Err(BamlBuilderError::InvalidArgument(format!(
                     "Transform error in {}: {}",
                     file_path.display(),
                     errors.join(", ")
@@ -118,7 +117,7 @@ impl<FS: FileSystem> TypeScriptCompiler for OxcTypeScriptCompiler<FS> {
                     .to_string();
             }
             let relative_path = file_path.strip_prefix(src_dir).map_err(|_| {
-                BamlRtError::InvalidArgument(format!(
+                BamlBuilderError::InvalidArgument(format!(
                     "File {} is not under src directory",
                     file_path.display()
                 ))
@@ -178,7 +177,7 @@ impl TypeGenerator for RuntimeTypeGenerator {
         let feature_flags = internal_baml_core::feature_flags::FeatureFlags::default();
 
         let runtime = BamlRuntime::from_directory(baml_src, env_vars, feature_flags)
-            .map_err(|e| BamlRtError::RuntimeLoadFailed { source: e })?;
+            .map_err(|e| BamlBuilderError::RuntimeLoadFailed { source: e })?;
 
         // Typed signatures from IR (no BAML source parsing); TS emitter gets IR + tool names so
         // it emits typed BAML function declarations and preserves tool type generation.
@@ -186,7 +185,7 @@ impl TypeGenerator for RuntimeTypeGenerator {
         let declarations = render_ts_declarations(&ir_signature, &tool_names)?;
         let ts_output_path = build_dir.join("dist").join("baml-runtime.d.ts");
         if let Some(parent) = ts_output_path.parent() {
-            fs::create_dir_all(parent).map_err(BamlRtError::Io)?;
+            fs::create_dir_all(parent)?;
         }
         atomic_write(&ts_output_path, declarations.as_bytes())?;
 
@@ -196,7 +195,7 @@ impl TypeGenerator for RuntimeTypeGenerator {
         if !session_plan_map.is_empty() {
             let manifest_path = build_dir.join("session_plan_functions.json");
             let json =
-                serde_json::to_string_pretty(&session_plan_map).map_err(BamlRtError::Json)?;
+                serde_json::to_string_pretty(&session_plan_map).map_err(BamlBuilderError::Json)?;
             atomic_write(&manifest_path, json.as_bytes())?;
         }
 
@@ -211,8 +210,9 @@ fn atomic_write(dest: &Path, data: &[u8]) -> Result<()> {
     use std::io::Write;
 
     let parent = dest.parent().unwrap_or(Path::new("."));
-    let mut tmp = tempfile::NamedTempFile::new_in(parent).map_err(BamlRtError::Io)?;
-    tmp.write_all(data).map_err(BamlRtError::Io)?;
-    tmp.persist(dest).map_err(|e| BamlRtError::Io(e.error))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    tmp.write_all(data)?;
+    tmp.persist(dest)
+        .map_err(|e| BamlBuilderError::Io(e.error))?;
     Ok(())
 }

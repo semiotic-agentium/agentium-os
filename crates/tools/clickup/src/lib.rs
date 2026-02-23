@@ -9,17 +9,17 @@ use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
 use baml_rt_core::{BamlRtError, Result};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-use ts_rs::TS;
-
-use crate::{
+use baml_rt_tools::{
+    ToolMetadataBuilder, TypeBasedMetadataBuilder,
     bundles::Support,
-    register_tool,
+    parse_tool_name_and_class, register_tool,
     tools::{
         BamlTool, ToolFunctionMetadata, ToolHandler, ToolSecretRequirement, create_tool_handler,
     },
 };
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 /// ClickUp v2 REST API base URL.
 pub const BASE_URL: &str = "https://api.clickup.com/api/v2";
@@ -735,7 +735,6 @@ impl BamlTool for ClickUpTool {
 }
 
 pub fn clickup_metadata() -> ToolFunctionMetadata {
-    use crate::{ToolMetadataBuilder, TypeBasedMetadataBuilder, parse_tool_name_and_class};
     let (name, class_name) = parse_tool_name_and_class("support/clickup")
         .expect("support/clickup is a compile-time constant");
 

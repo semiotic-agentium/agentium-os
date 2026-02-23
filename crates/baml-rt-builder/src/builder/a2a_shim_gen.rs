@@ -6,8 +6,9 @@
 
 use std::fmt;
 
-use baml_rt_core::{BamlRtError, Result};
 use genco::{fmt::Error as GencoFmtError, lang::js, prelude::*};
+
+use crate::builder::error::{BamlBuilderError, Result};
 
 /// Wrapper so genco fmt errors can be used as [`std::error::Error`] source.
 /// genco's fmt::Error does not implement Error; this preserves the chain in BamlRtError.
@@ -185,7 +186,7 @@ pub fn render_a2a_shim() -> Result<String> {
     }
     tokens
         .to_file_string()
-        .map_err(|e| BamlRtError::InvalidArgumentWithSource {
+        .map_err(|e| BamlBuilderError::InvalidArgumentWithSource {
             message: "A2A shim render error".into(),
             source: Box::new(GencoRenderError(e)),
         })
