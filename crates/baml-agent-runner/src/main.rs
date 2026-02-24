@@ -1141,6 +1141,9 @@ mod tests {
 
     async fn build_test_agent() -> A2aAgent {
         let manager = BamlRuntimeManager::new().expect("create runtime manager");
+        let store = GraphqliteStoreBuilder::in_memory()
+            .build()
+            .expect("in-memory store for test agent");
         let code = r#"
 globalThis.onChatMessage = async function(_message) {
   __chat_yield({ message: { parts: [{ text: "ok" }] } });
@@ -1151,6 +1154,7 @@ globalThis.onChatMessage = async function(_message) {
             .with_runtime_manager(manager)
             .with_init_js(code)
             .with_effect_emitter(Arc::new(BusWithEffects::new()))
+            .with_graphqlite_store(store)
             .build()
             .await
             .expect("build test agent")
