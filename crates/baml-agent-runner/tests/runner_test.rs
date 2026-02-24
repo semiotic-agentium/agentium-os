@@ -647,6 +647,64 @@ async fn setup_conversational_context_auto_agent()
     (agent, provenance)
 }
 
+/// Build coordinator-agent from workspace agents/coordinator-agent and return an A2aAgent.
+/// Uses GraphQLite store so persistent mode is satisfied. Call only when agents/coordinator-agent exists.
+#[cfg(feature = "llm-tests")]
+async fn setup_coordinator_agent() -> baml_rt::A2aAgent {
+    ensure_fixture_runtime_types();
+    let agent_dir = workspace_root().join("agents").join("coordinator-agent");
+    if !agent_dir.exists() || !agent_dir.join("baml_src").exists() {
+        panic!(
+            "coordinator-agent dir missing or invalid: {}",
+            agent_dir.display()
+        );
+    }
+    let extract_dir = tokio::task::spawn_blocking({
+        let agent_dir = agent_dir.clone();
+        move || common::build_agent_dir_to_temp(&agent_dir, "coordinator-agent", Some("http-tools"))
+    })
+    .await
+    .expect("build coordinator agent task join");
+
+    let mut manager = BamlRuntimeManager::new().expect("runtime manager");
+    manager
+        .load_schema(extract_dir.to_str().expect("utf8 path"))
+        .expect("load coordinator schema");
+    let allowlist: HashSet<String> = ["system/internal_a2a"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+    manager
+        .set_tool_allowlist(allowlist)
+        .await
+        .expect("set allowlist");
+    let policy = parse_access_allowlist();
+    let manifest_tools = ManifestToolNames::parse(&["system/internal_a2a".to_string()])
+        .expect("parse manifest tools");
+    let registry = manager.tool_registry();
+    register_manifest_tools(registry.as_ref(), &manifest_tools, &policy).expect("register tools");
+    registry
+        .register_bundle(SystemBundle::new(
+            Arc::new(EmptyAgentList),
+            registry.clone(),
+            Arc::new(EmptyA2aHandler),
+        ))
+        .expect("register SystemBundle");
+
+    let entry_js = fs::read_to_string(extract_dir.join("dist").join("index.js"))
+        .expect("coordinator-agent dist/index.js");
+    // Persistent mode requires a store; omit and A2aAgent::build() returns InvalidArgument.
+    let store = build_graphqlite_test_store();
+    baml_rt::A2aAgent::builder()
+        .with_runtime_manager(manager)
+        .with_init_js(entry_js)
+        .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_graphqlite_store(store)
+        .build()
+        .await
+        .expect("build coordinator agent")
+}
+
 fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -695,6 +753,46 @@ async fn test_manifest_allowlist_blocks_undeclared_tool() {
     })
     .await;
     assert!(session.is_ok(), "Expected allowlisted tool to open");
+}
+
+/// With only coordinator-agent loaded, a request (e.g. by keyword/domain) falls back to that single agent.
+#[cfg(feature = "llm-tests")]
+#[tokio::test]
+async fn test_coordinator_keyword_domain_falls_back_to_single_loaded_domain() {
+    let agent_dir = workspace_root().join("agents").join("coordinator-agent");
+    if !agent_dir.exists() || !agent_dir.join("baml_src").exists() {
+        eprintln!("Skipping: agents/coordinator-agent not found");
+        return;
+    }
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+    let _ = dotenvy::dotenv();
+
+    let agent = setup_coordinator_agent().await;
+    let request = send_message_request(
+        SendMessageRequest {
+            message: user_message(
+                "coord-single-1",
+                "What are the research team's goals?",
+                Some(ContextId::new(1, 1)),
+            ),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+            extra: std::collections::HashMap::new(),
+        },
+        "corr-coord-single-1",
+    );
+    let outcome = timeout(
+        Duration::from_secs(120),
+        collect_stream_responses(&agent, request),
+    )
+    .await
+    .expect("coordinator stream timed out");
+    let responses = outcome.expect("coordinator stream failed");
+    assert!(
+        !responses.is_empty(),
+        "stream must return at least one chunk"
+    );
 }
 
 #[tokio::test]
