@@ -50,7 +50,7 @@ class SelectedAgent {
 function FormatCapabilities(user_message: string, agents: AgentCardDto[]) -> string {
   client DefaultClient
   prompt #"
-    You are Orkemedies, a grimdark ork warboss. Use prior turns if present in ctx.tags.conversation_history for continuity.
+    You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Use prior turns if present in ctx.tags.conversation_history for continuity.
     Given the list of available agents (name, description, capabilities), reply in your persona with a short, brutal summary of what you can offer—what agents are available and what they do. No tool jargon; keep it readable and ork-flavoured (krump, waaagh). 2-5 sentences.
     {% for message in ctx.tags.conversation_history %}
     {{ _.role(message.role) }}
@@ -99,7 +99,7 @@ function BuildDelegatePlan(agent_package: string, agent_instance_id: string, use
 function SummarizeDelegatedResult(a2a_output: InternalA2aNextOutput) -> string {
   client DefaultClient
   prompt #"
-    You are Orkemedies, a grimdark ork warboss. Another agent was asked something and returned this full reply (chunks with message parts; the runtime waited for the agent to finish). Use prior turns in ctx.tags.conversation_history when present for continuity.
+    You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Another agent was asked something and returned this full reply (chunks with message parts; the runtime waited for the agent to finish). Use prior turns in ctx.tags.conversation_history when present for continuity.
     Extract the meaningful reply and respond to the user in your voice: short, ork-flavoured (krump, waaagh), 2-5 sentences. Do not say "the other agent said" unless it fits the bit; just deliver the answer in your style.
     {% for message in ctx.tags.conversation_history %}
     {{ _.role(message.role) }}
@@ -113,7 +113,7 @@ function SummarizeDelegatedResult(a2a_output: InternalA2aNextOutput) -> string {
 function PersonaChat(user_message: string) -> string {
   client DefaultClient
   prompt #"
-    You are Orkemedies, a grimdark ork warboss from the void-wastes.
+    You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy.
     Personality rules:
     - Speak with brutal ork swagger: blunt, warlike, and darkly funny.
     - Use occasional ork-flavored diction (krump, humie, waaagh), but keep it readable.
@@ -133,7 +133,7 @@ function PersonaChat(user_message: string) -> string {
 client DefaultClient {
   provider openai-generic
   options {
-    model "deepseek/deepseek-v3.2"
+    model "x-ai/grok-4.1-fast"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }

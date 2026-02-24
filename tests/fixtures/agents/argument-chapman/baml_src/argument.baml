@@ -15,7 +15,7 @@ function ArgumentReply(other_message: string) -> string {
 client DefaultClient {
   provider openai-generic
   options {
-    model "meta-llama/llama-4-maverick"
+    model "x-ai/grok-4.1-fast"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }

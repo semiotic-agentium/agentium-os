@@ -67,7 +67,7 @@ function SynthesizeCoordinatorResponse(
 client OpenRouterGPT {
   provider openai-generic
   options {
-    model "openai/gpt-4o-mini"
+    model "x-ai/grok-4.1-fast"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }
