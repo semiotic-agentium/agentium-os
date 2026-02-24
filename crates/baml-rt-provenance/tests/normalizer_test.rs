@@ -2,7 +2,9 @@ use baml_rt_core::{
     Outcome,
     ids::{ContextId, ExternalId, TaskId},
 };
-use baml_rt_provenance::{A2aRelationType, ProvEvent, normalize_event, vocabulary::a2a_roles};
+use baml_rt_provenance::{
+    A2aRelationType, LlmUsage, ProvEvent, normalize_event, vocabulary::a2a_roles,
+};
 
 #[test]
 fn normalize_status_change_includes_derived_relation() {
@@ -45,5 +47,35 @@ fn normalize_tool_call_completed_keeps_args_role_contract() {
     assert!(
         has_args_role,
         "normalized tool call must include USED relation with role a2a:args"
+    );
+}
+
+#[test]
+fn normalize_task_scoped_call_with_metadata_message_id_attaches_message_context() {
+    let event = ProvEvent::llm_call_completed_task(
+        ContextId::new(9, 1),
+        TaskId::from_external(ExternalId::new("task-msg-link")),
+        "default-client".to_string(),
+        "model-x".to_string(),
+        "ChooseAction".to_string(),
+        serde_json::json!({"messages": []}),
+        serde_json::json!({"message_id": "cli-msg-1"}),
+        LlmUsage::Known {
+            prompt_tokens: 1,
+            completion_tokens: 2,
+            total_tokens: 3,
+        },
+        12,
+        Outcome::Success,
+    );
+    let normalized = normalize_event(&event).expect("normalize task-scoped llm call");
+
+    let has_message_call_relation = normalized.derived_relations.iter().any(|rel| {
+        matches!(rel.relation, A2aRelationType::MessageCall)
+            && rel.from.id().starts_with("message_processing:cli-msg-1")
+    });
+    assert!(
+        has_message_call_relation,
+        "task-scoped call with metadata.message_id must emit MessageCall derived relation"
     );
 }

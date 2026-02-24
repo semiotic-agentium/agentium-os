@@ -1143,9 +1143,6 @@ impl baml_rt_api::ContextMetricsService for ContextMetricsServiceImpl {
             value_as_u64(session.and_then(|row| row.get("llm_duration_ms_total")));
 
         let user_prompts_total = turns.iter().map(|turn| turn.user_prompt_count).sum();
-        if turns.is_empty() && session_llm_calls == 0 {
-            return Err(baml_rt_api::ContextMetricsError::NotFound);
-        }
         let turns_total = turns.len() as u64;
 
         Ok(baml_rt_api::ContextMetricsResponseDto {
@@ -1250,7 +1247,9 @@ async fn main() -> anyhow::Result<()> {
         println!("  - {}", agent_name);
     }
 
-    if let Some(bind) = &config.serve_http {
+    // Spawn the HTTP server as a background task when requested, so it can
+    // run concurrently with other modes (e.g. a2a-stdio).
+    let http_handle = if let Some(bind) = &config.serve_http {
         let (mermaid, context_metrics) = match ready.runner().provenance_config() {
             ProvenanceConfig::Graphqlite(store) => (
                 Some(Arc::new(MermaidServiceImpl::new(store.clone()))
@@ -1260,16 +1259,31 @@ async fn main() -> anyhow::Result<()> {
             ),
         };
         let registry_impl = ready.registry();
-        let web_dir = config.web_dir.as_deref();
-        info!(bind = %bind, web_dir = ?web_dir, "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a, GET /mermaid/..., GET /context/.../metrics, GET /openapi.json)");
-        baml_rt_api::serve_with_services(registry_impl, bind, mermaid, context_metrics, web_dir)
+        let web_dir = config.web_dir.clone();
+        let bind = bind.clone();
+        info!(bind = %bind, web_dir = ?web_dir, "HTTP API: exposing GET /agents, POST /agents/.../a2a, GET /mermaid/..., GET /context/.../metrics, GET /openapi.json");
+        Some(tokio::spawn(async move {
+            baml_rt_api::serve_with_services(
+                registry_impl,
+                &bind,
+                mermaid,
+                context_metrics,
+                web_dir.as_deref(),
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))?;
-        return Ok(());
-    }
+            .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))
+        }))
+    } else {
+        None
+    };
 
     if config.a2a_stdio {
         ready.run_a2a_stdio().await?;
+    } else if http_handle.is_some() {
+        // HTTP-only mode: wait for the server to finish (or fail).
+        if let Some(handle) = http_handle {
+            handle.await??;
+        }
         return Ok(());
     }
 
