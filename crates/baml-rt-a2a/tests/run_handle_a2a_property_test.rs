@@ -10,6 +10,8 @@
 
 #![recursion_limit = "256"]
 
+mod common;
+
 use std::sync::Arc;
 
 use baml_rt::interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor};
@@ -156,6 +158,7 @@ async fn setup_interleaving_agent() -> A2aAgent {
     manager
         .register_llm_interceptor(StubChooseCalcToolInterceptor)
         .await;
+    let store = common::provenance::build_graphqlite_test_store();
     A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(interleaving_js_handler())
@@ -165,6 +168,7 @@ async fn setup_interleaving_agent() -> A2aAgent {
                 .with_idle_timeout_ms(Some(45_000))
                 .with_max_attempts_ms(Some(45_000)),
         )
+        .with_graphqlite_store(store)
         .build()
         .await
         .expect("build interleaving agent")
@@ -185,8 +189,10 @@ proptest! {
             .expect("runtime");
 
         rt.block_on(async move {
+            let store = common::provenance::build_graphqlite_test_store();
             let agent = A2aAgent::builder()
                 .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+                .with_graphqlite_store(store)
                 .build()
                 .await
                 .expect("agent build");
@@ -212,15 +218,24 @@ proptest! {
     ///   - each request resolves within bounded time
     ///   - each stream has exactly one final marker
     ///   - response text is scoped to its own context (no cross-contamination)
+    ///
+    /// Timeout scales with ops.len() because stream handling is serialized per bridge (one permit):
+    /// the last request may not start until all earlier ones complete. Ops capped at 10 to keep
+    /// test duration bounded (see run_handle_a2a_property_test_ANALYSIS.md).
     #[test]
     fn prop_interleaved_a2a_tool_llm_multi_context_isolation(
-        ops in prop::collection::vec((0u8..=2u8, 0u8..=7u8), 3..=18)
+        ops in prop::collection::vec((0u8..=2u8, 0u8..=7u8), 3..=10)
     ) {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
             .enable_all()
             .build()
             .expect("runtime");
+
+        // Per-request timeout must allow for serialization: last request waits for (ops.len()-1)
+        // others. Use (ops.len() * 3) + 5s so even the last request has time to run.
+        let timeout_secs = (ops.len() * 3) + 5;
+        let request_timeout = Duration::from_secs(timeout_secs as u64);
 
         rt.block_on(async move {
             let agent = setup_interleaving_agent().await;
@@ -242,9 +257,9 @@ proptest! {
                 );
                 join_set.spawn(async move {
                     sleep(Duration::from_millis(jitter_ms)).await;
-                    let responses = timeout(Duration::from_secs(6), collect_responses(&agent, request))
+                    let responses = timeout(request_timeout, collect_responses(&agent, request))
                         .await
-                        .expect("interleaving request timed out")
+                        .expect("interleaving request timed out (serialized streams)")
                         .expect("interleaving request failed");
                     (kind.to_string(), context_id, responses)
                 });

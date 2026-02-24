@@ -23,6 +23,15 @@ use crate::{
     vocabulary::{a2a, message_directions},
 };
 
+fn single_param(key: &str, value: &str) -> serde_json::Map<String, serde_json::Value> {
+    let mut params = serde_json::Map::new();
+    params.insert(
+        key.to_string(),
+        serde_json::Value::String(value.to_string()),
+    );
+    params
+}
+
 // ── Core types ──────────────────────────────────────────────────────────────
 
 /// A node in the exported provenance graph.
@@ -98,7 +107,7 @@ impl GraphExporter {
                    type(r) AS rel_type, toString(properties(r)) AS rel_props, \
                    b.id AS tgt_id, labels(b)[0] AS tgt_label, toString(properties(b)) AS tgt_props \
             ORDER BY a.a2a_event_id, type(r), b.a2a_event_id";
-        let params = serde_json::json!({ "context": context_id });
+        let params = single_param("context", context_id);
         let result = self.store.run_cypher_read(QUERY, &params).await?;
         let graph =
             parse_graphqlite_export_result(&result, ExportScope::Context(context_id.to_string()))?;
@@ -114,7 +123,7 @@ impl GraphExporter {
                    type(r) AS rel_type, toString(properties(r)) AS rel_props, \
                    b.id AS tgt_id, labels(b)[0] AS tgt_label, toString(properties(b)) AS tgt_props \
             ORDER BY a.a2a_event_id, type(r), b.a2a_event_id";
-        let params = serde_json::json!({ "task": task_id });
+        let params = single_param("task", task_id);
         let result = self.store.run_cypher_read(QUERY, &params).await?;
         let graph =
             parse_graphqlite_export_result(&result, ExportScope::Task(task_id.to_string()))?;

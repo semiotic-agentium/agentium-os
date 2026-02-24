@@ -22,6 +22,11 @@ genco = { workspace = true }
 inventory = { workspace = true }
 opentelemetry = { workspace = true }
 
+[features]
+default = []
+# No-op for CI/workspace feature parity; runner and builder enable clickup/notion via their own deps.
+http-tools = []
+
 [dev-dependencies]
 test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }

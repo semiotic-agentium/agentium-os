@@ -611,3 +611,101 @@ async fn graphqlite_conversation_context_includes_failed_tool_results() {
         "failed result should carry metadata.error"
     );
 }
+
+#[tokio::test]
+async fn graphqlite_tool_call_writes_enforce_args_edge_role_and_type() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.keep().join("provenance_tool_contract.db");
+    let store = GraphqliteStoreBuilder::file(path)
+        .build()
+        .expect("build store");
+
+    let context_id = ContextId::new(77, 9);
+    let task_id = TaskId::from_external(ExternalId::new("task-contract-1"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000097").unwrap());
+
+    store
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(300),
+            context_id: context_id.clone(),
+            timestamp_ms: 1_700_000_100_000,
+            data: ProvEventData::AgentBooted {
+                agent_id: agent_id.clone(),
+                agent_type: AgentType::new("test").expect("agent_type"),
+                agent_version: "1.0.0".to_string(),
+                archive_path: "test@1.0.0".to_string(),
+            },
+        }))
+        .await
+        .expect("AgentBooted");
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(301),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_100_001,
+            data: ProvEventData::TaskCreated {
+                task_id: task_id.clone(),
+                agent_id: agent_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskCreated");
+
+    let args = serde_json::json!({ "task_id": "task-901" });
+    let metadata = serde_json::json!({
+        "message_id": "msg-contract-1",
+        "task_id": "task-contract-1",
+        "agent_id": "00000000-0000-0000-0000-000000000097",
+        "phase": "send",
+        "result": { "tasks": [] }
+    });
+    store
+        .add_event(ProvEvent::tool_call_completed_task(
+            context_id.clone(),
+            task_id,
+            "support/clickup".to_string(),
+            None,
+            args,
+            metadata,
+            12,
+            baml_rt_core::Outcome::Success,
+        ))
+        .await
+        .expect("ToolCallCompleted");
+
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "context".to_string(),
+        serde_json::Value::String(context_id.as_str().to_string()),
+    );
+    let rows = store
+        .run_cypher_read(
+            "MATCH (t:ToolCall)-[used:WAS_USED_BY]->(args:ToolArgs) \
+             WHERE t.a2a_context_id = $context \
+             RETURN toString(properties(used)) AS rel_props, used.prov_base_type AS rel_base_type, \
+                    used.prov_role AS role, args.prov_type AS target_type \
+             ORDER BY t.a2a_event_id LIMIT 1",
+            &params,
+        )
+        .await
+        .expect("query args-edge contract row");
+    let row = rows
+        .iter()
+        .next()
+        .expect("at least one ToolCall->ToolArgs edge");
+    let edge_role: Option<String> = row.get("role").ok();
+    let rel_props: Option<String> = row.get("rel_props").ok();
+    let rel_base_type: Option<String> = row.get("rel_base_type").ok();
+    assert!(
+        edge_role.as_deref() == Some("a2a:args") || edge_role.as_deref() == Some(""),
+        "unexpected role value for ToolCall->ToolArgs edge: {edge_role:?}; rel_base_type={rel_base_type:?} rel_props={rel_props:?}"
+    );
+    let node_type: Option<String> = row.get("target_type").ok();
+    assert_eq!(
+        node_type.as_deref(),
+        Some("a2a:ToolArgs"),
+        "ToolArgs node must carry prov:type=a2a:ToolArgs"
+    );
+}

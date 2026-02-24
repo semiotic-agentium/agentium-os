@@ -30,12 +30,38 @@ fn request_histogram() -> &'static Histogram<f64> {
     })
 }
 
-/// Record completion of an HTTP API request (route and result for low cardinality).
-pub(crate) fn record_request(route: &str, result: &str, duration: Duration) {
-    let attrs = &[
+fn request_attributes(route: &str, result: &str) -> [KeyValue; 2] {
+    [
         KeyValue::new("route", route.to_string()),
         KeyValue::new("result", result.to_string()),
-    ];
-    request_counter().add(1, attrs);
-    request_histogram().record(duration.as_secs_f64() * 1000.0, attrs);
+    ]
+}
+
+/// Record completion of an HTTP API request (route and result for low cardinality).
+pub(crate) fn record_request(route: &str, result: &str, duration: Duration) {
+    let attrs = request_attributes(route, result);
+    request_counter().add(1, &attrs);
+    request_histogram().record(duration.as_secs_f64() * 1000.0, &attrs);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::request_attributes;
+
+    #[test]
+    fn request_attributes_use_consistent_schema() {
+        let attrs = request_attributes("get_mermaid_context", "success");
+        let mut got = attrs
+            .iter()
+            .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
+            .collect::<Vec<_>>();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("result".to_string(), "success".to_string()),
+                ("route".to_string(), "get_mermaid_context".to_string()),
+            ]
+        );
+    }
 }

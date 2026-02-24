@@ -1,5 +1,5 @@
 // Simple test prompt for BAML compilation.
-// OpenRouterGPT (gpt-4o-mini) used for all e2e; former DeepSeek provider was unreliable (empty responses).
+// OpenRouter client using x-ai/grok-4.1-fast for e2e tests.
 function SimpleGreeting(name: string) -> string {
   client OpenRouterGPT
   prompt #"
@@ -11,7 +11,7 @@ function SimpleGreeting(name: string) -> string {
 client OpenRouterGPT {
   provider openai-generic
   options {
-    model "openai/gpt-4o-mini"
+    model "x-ai/grok-4.1-fast"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }

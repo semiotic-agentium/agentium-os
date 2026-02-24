@@ -9,8 +9,10 @@ use test_support::support;
 
 #[tokio::test]
 async fn test_direct_tool_execution_rust_and_js() {
+    let store = test_support::common::test_graphqlite_store();
     let agent = A2aAgent::builder()
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_graphqlite_store(store)
         .build()
         .await
         .expect("agent build");

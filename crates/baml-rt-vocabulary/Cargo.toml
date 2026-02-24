@@ -1,0 +1,14 @@
+[package]
+name = "baml-rt-vocabulary"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+
+[lib]
+name = "baml_rt_vocabulary"
+path = "src/lib.rs"
+
+[dependencies]
+async-trait = { workspace = true }
+serde_json = { workspace = true }

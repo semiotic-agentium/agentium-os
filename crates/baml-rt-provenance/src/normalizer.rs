@@ -1243,26 +1243,22 @@ fn runner_runtime_instance_id() -> ProvAgentId {
 }
 
 /// Look up an agent runtime instance in the document.
-/// Missing instances are treated as invalid provenance state.
+/// If the instance is not in the document, add it to agent_labels so the graph build can create it
+/// (either from agent_registry / AgentBooted, or on first reference e.g. task store operations).
 fn get_agent_runtime_instance(
     doc: &ProvDocument,
     agent_id: &AgentId,
-    agent_registry: &std::collections::HashSet<String>,
+    _agent_registry: &std::collections::HashSet<String>,
     agent_labels: &mut HashMap<String, String>,
 ) -> Result<ProvAgentId> {
     let instance_id = agent_runtime_instance_id(agent_id);
     if doc.agent(&instance_id).is_some() {
         Ok(instance_id)
-    } else if agent_registry.contains(agent_id.as_str()) {
+    } else {
         agent_labels
             .entry(instance_id.as_str().to_string())
             .or_insert_with(|| "AgentRuntimeInstance".to_string());
         Ok(instance_id)
-    } else {
-        Err(ProvenanceError::MissingLabel {
-            node_id: instance_id.as_str().to_string(),
-            kind: "agent_runtime_instance".to_string(),
-        })
     }
 }
 

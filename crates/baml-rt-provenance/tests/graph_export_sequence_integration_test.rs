@@ -6,6 +6,7 @@ use baml_rt_provenance::{
     AgentType, GraphExporter, GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvenanceWriter,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
 };
+use insta::assert_snapshot;
 use tempfile::tempdir;
 
 /// End-to-end check for file-backed provenance export:
@@ -155,4 +156,6 @@ async fn file_backed_export_renders_expected_sequence_flow() {
         user_pos < llm_pos && llm_pos < tool_pos && tool_pos < final_pos,
         "expected user -> llm -> tool -> final response ordering, got:\n{mermaid}"
     );
+
+    assert_snapshot!("file_backed_exemplary_agent_flow_mermaid", mermaid);
 }

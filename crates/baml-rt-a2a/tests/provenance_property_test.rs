@@ -6,7 +6,6 @@ mod common;
 
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt_core::ids::{ContextId, CorrelationId};
-use baml_rt_provenance::GraphqliteStoreBuilder;
 use test_support::common::send_stream_request;
 use tokio::time::Duration;
 
@@ -19,9 +18,7 @@ async fn collect_responses(
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_scope_attribution_without_cross_contamination() {
-    let writer = GraphqliteStoreBuilder::in_memory()
-        .build()
-        .expect("build store");
+    let writer = common::provenance::build_graphqlite_test_store();
     let js = r#"
         globalThis.onChatMessage = async function(message) {
             const text = message?.parts?.[0]?.text || "";

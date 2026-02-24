@@ -102,7 +102,7 @@ function ChooseClickUpAction(
 client DefaultClient {
   provider openai-generic
   options {
-    model "deepseek/deepseek-v3.2"
+    model "x-ai/grok-4.1-fast"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }

@@ -2,9 +2,12 @@
 
 use std::{path::Path, sync::Arc};
 
-use axum::Router;
+use axum::{Router, extract::MatchedPath, http::Request};
 use baml_rt_a2a::AgentRegistry;
-use tower_http::services::{ServeDir, ServeFile};
+use tower_http::{
+    services::{ServeDir, ServeFile},
+    trace::TraceLayer,
+};
 use utoipa::openapi::OpenApi as OpenApiSpec;
 use utoipa_axum::router::OpenApiRouter;
 
@@ -32,6 +35,22 @@ pub fn api_router(
     mermaid: Option<Arc<dyn MermaidService>>,
     web_dir: Option<&Path>,
 ) -> Router {
+    // Route-level tracing layer to capture HTTP semantic fields (including matched route template).
+    let http_trace_layer = TraceLayer::new_for_http().make_span_with(|req: &Request<_>| {
+        let route = req
+            .extensions()
+            .get::<MatchedPath>()
+            .map(MatchedPath::as_str)
+            .unwrap_or("<unmatched>");
+        tracing::info_span!(
+            "baml_rt_api.http.request",
+            http.request.method = %req.method(),
+            http.route = %route,
+            url.path = %req.uri().path(),
+            span.kind = %"server",
+        )
+    });
+
     let (api_router, openapi) = OpenApiRouter::new()
         .routes(utoipa_axum::routes!(handlers::list_agents))
         .routes(utoipa_axum::routes!(handlers::post_a2a))
@@ -57,6 +76,7 @@ pub fn api_router(
 
     let mut router = api_router
         .route("/openapi.json", axum::routing::get(serve_openapi_json))
+        .route_layer(http_trace_layer)
         .with_state(state);
 
     if let Some(dir) = web_dir {

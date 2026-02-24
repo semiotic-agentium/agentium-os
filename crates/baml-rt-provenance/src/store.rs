@@ -27,7 +27,7 @@
 //!   methods if they need to see those events.
 
 use async_trait::async_trait;
-use baml_rt_core::ids::ContextId;
+use baml_rt_core::ids::{ContextId, EventId, MessageId};
 use serde_json::Value;
 
 use crate::{error::Result, events::ProvEvent};
@@ -52,7 +52,7 @@ pub trait ProvenanceWriter: ProvenanceContextReader + Send + Sync {
 
 #[derive(Debug, Clone)]
 pub struct ProvenanceContextMessage {
-    pub message_id: String,
+    pub message_id: MessageId,
     pub timestamp_ms: u64,
     pub role: String,
     pub content: Vec<String>,
@@ -61,7 +61,7 @@ pub struct ProvenanceContextMessage {
 #[derive(Debug, Clone)]
 pub struct ProvenanceConversationContextItem {
     pub timestamp_ms: u64,
-    pub event_id: String,
+    pub event_id: EventId,
     pub role: String,
     pub content: Value,
     pub source: String,

@@ -151,12 +151,8 @@ impl AgentPackage {
             .with_baml_helpers(true)
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
 
-        match provenance_config {
-            ProvenanceConfig::Graphqlite(store) => {
-                agent_builder = agent_builder.with_graphqlite_store(store.clone());
-            }
-            ProvenanceConfig::None => {}
-        }
+        let ProvenanceConfig::Graphqlite(store) = provenance_config;
+        agent_builder = agent_builder.with_graphqlite_store(store.clone());
 
         let agent = agent_builder.build().await?;
         Ok(JsInitialized {
@@ -239,31 +235,25 @@ impl AgentPackage {
         // Get agent_id from the agent (generated during A2aAgent::build())
         let agent_id = agent.agent_id().clone();
 
-        // Emit AgentBooted provenance event
-        let writer: Option<Arc<dyn ProvenanceWriter>> = match provenance_config {
-            ProvenanceConfig::Graphqlite(store) => Some(store.clone() as Arc<dyn ProvenanceWriter>),
-            ProvenanceConfig::None => None,
-        };
-        if let Some(writer) = writer {
-            // Use stable archive identity from manifest signature
-            let archive_path = self.manifest.signature.clone();
-            let context_id = context::generate_context_id();
-            let agent_type_parsed =
-                AgentType::new(self.manifest.name.clone()).ok_or_else(|| {
-                    BamlRtError::InvalidArgument("agent_type cannot be empty".to_string())
-                })?;
-            let boot_event = ProvEvent::agent_booted(
-                context_id,
-                agent_id.clone(),
-                agent_type_parsed,
-                self.version().to_string(),
-                archive_path,
-            );
-            if let Err(e) = writer.add_event(boot_event).await {
-                error!(error = ?e, agent_id = %agent_id, "Failed to write AgentBooted event to provenance store");
-            } else {
-                info!(agent_id = %agent_id, "AgentBooted event written to provenance store");
-            }
+        // Emit AgentBooted provenance event (provenance store is always present).
+        let ProvenanceConfig::Graphqlite(store) = provenance_config;
+        let writer = store.clone() as Arc<dyn ProvenanceWriter>;
+        let archive_path = self.manifest.signature.clone();
+        let context_id = context::generate_context_id();
+        let agent_type_parsed = AgentType::new(self.manifest.name.clone()).ok_or_else(|| {
+            BamlRtError::InvalidArgument("agent_type cannot be empty".to_string())
+        })?;
+        let boot_event = ProvEvent::agent_booted(
+            context_id,
+            agent_id.clone(),
+            agent_type_parsed,
+            self.version().to_string(),
+            archive_path,
+        );
+        if let Err(e) = writer.add_event(boot_event).await {
+            error!(error = ?e, agent_id = %agent_id, "Failed to write AgentBooted event to provenance store");
+        } else {
+            info!(agent_id = %agent_id, "AgentBooted event written to provenance store");
         }
 
         Ok((agent, agent_id))
@@ -957,30 +947,26 @@ impl Cli {
     }
 }
 
-/// Provenance configuration: none, writer only, or GraphQLite (store required).
+/// Provenance configuration: GraphQLite store
 pub(crate) enum ProvenanceConfig {
-    None,
     Graphqlite(Arc<baml_rt_provenance::GraphqliteProvenanceStore>),
 }
 
-fn build_provenance_config(db: &ProvenanceDb) -> ProvenanceConfig {
+fn build_provenance_config(db: &ProvenanceDb) -> Result<ProvenanceConfig> {
     let arc = match db {
-        ProvenanceDb::InMemory => match GraphqliteStoreBuilder::in_memory().build() {
-            Ok(a) => a,
-            Err(e) => {
-                tracing::warn!(error = %e, "Provenance in-memory store failed to build");
-                return ProvenanceConfig::None;
-            }
-        },
-        ProvenanceDb::File(path) => match GraphqliteStoreBuilder::file(path).build() {
-            Ok(a) => a,
-            Err(e) => {
-                tracing::warn!(path = %path.display(), error = %e, "Provenance file store failed to build");
-                return ProvenanceConfig::None;
-            }
-        },
+        ProvenanceDb::InMemory => GraphqliteStoreBuilder::in_memory().build().map_err(|e| {
+            BamlRtError::InvalidArgument(
+                format!("Provenance in-memory store failed to build: {e}",),
+            )
+        })?,
+        ProvenanceDb::File(path) => GraphqliteStoreBuilder::file(path).build().map_err(|e| {
+            BamlRtError::InvalidArgument(format!(
+                "Provenance file store failed to build at {path}: {e}",
+                path = path.display(),
+            ))
+        })?,
     };
-    ProvenanceConfig::Graphqlite(arc)
+    Ok(ProvenanceConfig::Graphqlite(arc))
 }
 
 /// Mermaid diagram service backed by GraphQLite provenance. Exported when runner serves HTTP with GraphQLite.
@@ -1052,7 +1038,8 @@ async fn main() -> anyhow::Result<()> {
             info!(path = %path.display(), "Provenance backend: sqlite file")
         }
     }
-    let provenance_config = build_provenance_config(&config.provenance_db);
+    let provenance_config = build_provenance_config(&config.provenance_db)
+        .context("Failed to initialize provenance storage")?;
     let access_allowlist = parse_access_allowlist();
     let tool_index = match &config.provenance_db {
         ProvenanceDb::InMemory => Some(ToolIndexConfig::in_memory()),
@@ -1118,7 +1105,6 @@ async fn main() -> anyhow::Result<()> {
                 Some(Arc::new(MermaidServiceImpl::new(store.clone()))
                     as Arc<dyn baml_rt_api::MermaidService>)
             }
-            _ => None,
         };
         let registry_impl = ready.registry();
         let web_dir = config.web_dir.as_deref();
@@ -1146,8 +1132,18 @@ mod tests {
 
     use super::*;
 
+    fn test_provenance_config() -> ProvenanceConfig {
+        let store = GraphqliteStoreBuilder::in_memory()
+            .build()
+            .expect("in-memory provenance store for test");
+        ProvenanceConfig::Graphqlite(store)
+    }
+
     async fn build_test_agent() -> A2aAgent {
         let manager = BamlRuntimeManager::new().expect("create runtime manager");
+        let store = GraphqliteStoreBuilder::in_memory()
+            .build()
+            .expect("in-memory store for test agent");
         let code = r#"
 globalThis.onChatMessage = async function(_message) {
   __chat_yield({ message: { parts: [{ text: "ok" }] } });
@@ -1158,6 +1154,7 @@ globalThis.onChatMessage = async function(_message) {
             .with_runtime_manager(manager)
             .with_init_js(code)
             .with_effect_emitter(Arc::new(BusWithEffects::new()))
+            .with_graphqlite_store(store)
             .build()
             .await
             .expect("build test agent")
@@ -1166,7 +1163,7 @@ globalThis.onChatMessage = async function(_message) {
     #[tokio::test]
     async fn internal_a2a_router_rejects_self_routing_by_route_key() {
         let runner = Arc::new(AgentRunner::new(
-            ProvenanceConfig::None,
+            test_provenance_config(),
             None,
             ToolAccessPolicy::default(),
         ));
@@ -1205,7 +1202,7 @@ globalThis.onChatMessage = async function(_message) {
 
     #[tokio::test]
     async fn handle_a2a_by_key_respects_instance_id() {
-        let runner = AgentRunner::new(ProvenanceConfig::None, None, ToolAccessPolicy::default());
+        let runner = AgentRunner::new(test_provenance_config(), None, ToolAccessPolicy::default());
         let package_name = AgentPackageName::parse("demo-agent").expect("valid package");
         let default_key = AgentRouteKey::new(package_name.clone(), AgentInstanceId::default());
         let staging_key = AgentRouteKey::new(

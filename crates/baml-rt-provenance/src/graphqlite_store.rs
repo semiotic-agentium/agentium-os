@@ -1,9 +1,9 @@
 //! GraphQLite-backed provenance store.
 //!
 //! One logical graph per DB (one file path or one `:memory:` connection). The
-//! GraphQLite [Connection] wraps a SQLite connection with the Cypher extension
-//! loaded; it is not `Sync`, so we use a dedicated worker thread that owns the
-//! connection and runs Cypher. The store is `Send + Sync` via a channel to that
+//! GraphQLite [Graph] is the persistence interface for this module; it is not
+//! `Sync`, so we use a dedicated worker thread that owns the graph and runs Cypher.
+//! The store is `Send + Sync` via a channel to that
 //! worker. Read path uses strong-typed row extraction via GraphQLite's `Row::get`.
 //!
 //! ## Concurrency caveats (GraphQLite extension, not SQLite)
@@ -18,8 +18,7 @@
 //! so only one Cypher request (read or write) is in flight at a time. The caller
 //! holds the lock (await) for the duration of send + reply; the actual Cypher run
 //! happens in a **dedicated worker thread** that owns the [Connection]. We do not
-//! block the async runtime with Cypher execution. SQL (ExecuteSql, QuerySql) is
-//! not serialized by this mutex and goes through the same worker in order.
+//! block the async runtime with Cypher execution.
 //!
 //! **Upstream fix required:** This should be fixed in GraphQLite by making the
 //! scanner reentrant (Flex `%option reentrant` and per-call state) so that
@@ -32,7 +31,7 @@
 //! - **In-memory shared:** first build creates one connection and one worker;
 //!   subsequent builds return a clone. Same serialized access.
 //!
-//! [Connection]: graphqlite::Connection
+//! [Graph]: graphqlite::Graph
 
 use std::{
     collections::HashMap,
@@ -43,16 +42,15 @@ use std::{
 };
 
 use async_trait::async_trait;
-use baml_rt_core::ids::ContextId;
-use graphqlite::{Connection, CypherResult, Row};
-use rusqlite::types::Value as RusqliteValue;
-use serde_json::Value;
+use baml_rt_core::ids::{ContextId, EventId, MessageId};
+use graphqlite::{Connection, CypherResult, Graph, Row};
+use serde_json::{Map, Value};
 use tokio::sync::{Mutex as TokioMutex, oneshot};
 
 use crate::{
     cypher_build::{self, KeyStyle},
     error::{ProvenanceError, Result},
-    graph_model::ConversationReadModel,
+    graph_model::{ConversationReadModel, TOOL_CALL_ARGS_EDGE},
     graphqlite_config::GraphqliteStoreConfig,
     normalizer::{DefaultProvNormalizer, ProvNormalizer, validate_event},
     spans,
@@ -84,40 +82,32 @@ const TOOL_COL_EVENT_ID_ALT: &str = "t.`a2a:event_id`";
 const TOOL_COL_TOOL_NAME_ALT: &str = "t.`a2a:tool_name`";
 const TOOL_COL_METADATA_ALT: &str = "toString(t.`a2a:metadata`)";
 const TOOL_COL_ARGS_ALT: &str = "toString(args.`a2a:args`)";
+const TOOL_COL_ROLE: &str = "used.prov_role";
+const TOOL_COL_ROLE_ALT: &str = "used.`prov:role`";
+const TOOL_COL_TARGET_TYPE: &str = "args.prov_type";
+const TOOL_COL_TARGET_TYPE_ALT: &str = "args.`prov:type`";
 const TOOL_COL_SUCCESS_ALT: &str = "t.`a2a:success`";
 
-/// Result of a SQL query: one map per row, column name -> value (JSON).
-pub type SqlRow = HashMap<String, Value>;
+/// Public alias so downstream crates can avoid a direct graphqlite dependency.
+pub type GraphCypherResult = CypherResult;
+/// Public alias so downstream crates can decode typed rows without graphqlite in Cargo.toml.
+pub type GraphRow = Row;
+/// Typed parameter map for Graph query_builder execution.
+pub type GraphQueryParams = Map<String, Value>;
+type QueryParams = GraphQueryParams;
 
 enum WorkerRequest {
     ReadWithParams(
         String,
-        Value,
+        QueryParams,
         oneshot::Sender<std::result::Result<CypherResult, graphqlite::Error>>,
     ),
     Write(
         String,
-        Value,
+        QueryParams,
         oneshot::Sender<std::result::Result<(), graphqlite::Error>>,
     ),
-    /// Execute a single SQL statement (DDL or DML). Params are positional (?1, ?2, ...).
-    ExecuteSql(
-        String,
-        Vec<Value>,
-        oneshot::Sender<std::result::Result<(), SqlError>>,
-    ),
-    /// Run a SELECT and return rows as Vec<HashMap<String, Value>>. Params are positional.
-    QuerySql(
-        String,
-        Vec<Value>,
-        oneshot::Sender<std::result::Result<Vec<SqlRow>, SqlError>>,
-    ),
 }
-
-/// Error from SQL execution (worker thread).
-#[derive(Debug, thiserror::Error)]
-#[error("SQL error: {0}")]
-pub struct SqlError(pub String);
 
 /// Provenance-only store backed by GraphQLite (SQLite + Cypher).
 /// A worker thread owns the connection; the store is Send + Sync via channel.
@@ -169,7 +159,47 @@ struct ToolCallRow {
     tool_name: String,
     metadata: Value,
     args: Value,
+    role: String,
+    target_type: String,
     success: Option<bool>,
+}
+
+fn parse_bool_string(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "t" | "1" | "yes" | "y" => Some(true),
+        "false" | "f" | "0" | "no" | "n" => Some(false),
+        _ => None,
+    }
+}
+
+fn decode_optional_bool(row: &Row, primary_col: &str, alt_col: &str) -> Option<bool> {
+    if let Ok(v) = row
+        .get::<bool>(primary_col)
+        .or_else(|_| row.get::<bool>(alt_col))
+    {
+        return Some(v);
+    }
+    if let Ok(v) = row
+        .get::<i64>(primary_col)
+        .or_else(|_| row.get::<i64>(alt_col))
+    {
+        return Some(v != 0);
+    }
+    if let Ok(raw) = row
+        .get::<String>(primary_col)
+        .or_else(|_| row.get::<String>(alt_col))
+    {
+        if let Some(parsed) = parse_bool_string(&raw) {
+            return Some(parsed);
+        }
+        tracing::debug!(
+            column = %primary_col,
+            alt_column = %alt_col,
+            value = %raw,
+            "unable to parse optional bool field from string"
+        );
+    }
+    None
 }
 
 impl ToolCallRow {
@@ -188,29 +218,37 @@ impl ToolCallRow {
             .or_else(|_| row.get(TOOL_COL_ARGS_ALT))?;
         let metadata = serde_json::from_str(&metadata_str).unwrap_or(Value::String(metadata_str));
         let args = serde_json::from_str(&args_str).unwrap_or(Value::String(args_str));
-        // GraphQLite stores booleans natively (not as integers), so try
-        // bool first, then fall back to i64 for compatibility.
-        let success: Option<bool> = row
-            .get::<bool>(TOOL_COL_SUCCESS)
-            .or_else(|_| row.get::<bool>(TOOL_COL_SUCCESS_ALT))
-            .ok()
-            .or_else(|| {
-                row.get::<i64>(TOOL_COL_SUCCESS)
-                    .or_else(|_| row.get::<i64>(TOOL_COL_SUCCESS_ALT))
-                    .ok()
-                    .map(|v| v != 0)
-            });
+        let role: String = row
+            .get(TOOL_COL_ROLE)
+            .or_else(|_| row.get(TOOL_COL_ROLE_ALT))
+            .unwrap_or_default();
+        let target_type: String = row
+            .get(TOOL_COL_TARGET_TYPE)
+            .or_else(|_| row.get(TOOL_COL_TARGET_TYPE_ALT))
+            .unwrap_or_default();
+        let success = decode_optional_bool(row, TOOL_COL_SUCCESS, TOOL_COL_SUCCESS_ALT);
         Ok(Self {
             event_id,
             tool_name,
             metadata,
             args,
+            role,
+            target_type,
             success,
         })
     }
 
     fn is_completed(&self) -> bool {
         self.success.is_some()
+    }
+
+    fn contract_holds(&self) -> bool {
+        // If explicit edge/type properties are missing, infer contract from the
+        // matched topology: ToolCall -[:WAS_USED_BY]-> ToolArgs.
+        let role_ok = self.role.is_empty() || self.role == TOOL_CALL_ARGS_EDGE.role_value;
+        let type_ok = self.target_type.is_empty()
+            || self.target_type == TOOL_CALL_ARGS_EDGE.target_type_value;
+        role_ok && type_ok
     }
 }
 
@@ -263,96 +301,31 @@ fn map_graphqlite_error(e: graphqlite::Error) -> ProvenanceError {
     ProvenanceError::Storage(Box::new(e))
 }
 
-fn json_to_rusqlite(v: &Value) -> std::result::Result<RusqliteValue, SqlError> {
-    match v {
-        Value::Null => Ok(RusqliteValue::Null),
-        Value::Bool(b) => Ok(RusqliteValue::Integer(if *b { 1 } else { 0 })),
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(RusqliteValue::Integer(i))
-            } else if let Some(f) = n.as_f64() {
-                Ok(RusqliteValue::Real(f))
-            } else {
-                Ok(RusqliteValue::Text(n.to_string()))
-            }
-        }
-        Value::String(s) => Ok(RusqliteValue::Text(s.clone())),
-        Value::Array(_) | Value::Object(_) => Ok(RusqliteValue::Text(
-            serde_json::to_string(v).map_err(|e| SqlError(e.to_string()))?,
-        )),
+fn run_query_builder_with_params(
+    graph: &Graph,
+    query: &str,
+    params: &QueryParams,
+) -> std::result::Result<CypherResult, graphqlite::Error> {
+    let mut builder = graph.query_builder(query);
+    for (key, value) in params {
+        builder = builder.param(key, value.clone());
     }
+    builder.run()
 }
 
-fn rusqlite_to_json(v: &RusqliteValue) -> Value {
-    match v {
-        RusqliteValue::Null => Value::Null,
-        RusqliteValue::Integer(i) => Value::Number(serde_json::Number::from(*i)),
-        RusqliteValue::Real(f) => serde_json::Number::from_f64(*f)
-            .map(Value::Number)
-            .unwrap_or(Value::Null),
-        RusqliteValue::Text(s) => {
-            serde_json::from_str(s).unwrap_or_else(|_| Value::String(s.clone()))
-        }
-        RusqliteValue::Blob(b) => Value::Array(
-            b.iter()
-                .map(|&x| Value::Number(serde_json::Number::from(x)))
-                .collect(),
-        ),
+fn require_object_params(params: &Value) -> Result<QueryParams> {
+    match params {
+        Value::Object(map) => Ok(map.clone()),
+        _ => Err(ProvenanceError::Storage(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "cypher params must be an object map",
+        )))),
     }
-}
-
-fn execute_sql_worker(
-    conn: &rusqlite::Connection,
-    sql: &str,
-    params: &[Value],
-) -> std::result::Result<(), SqlError> {
-    let rv: Vec<RusqliteValue> = params
-        .iter()
-        .map(json_to_rusqlite)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let refs: Vec<&dyn rusqlite::ToSql> = rv.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-    conn.execute(sql, refs.as_slice())
-        .map_err(|e| SqlError(e.to_string()))?;
-    Ok(())
-}
-
-fn query_sql_worker(
-    conn: &rusqlite::Connection,
-    sql: &str,
-    params: &[Value],
-) -> std::result::Result<Vec<SqlRow>, SqlError> {
-    let rv: Vec<RusqliteValue> = params
-        .iter()
-        .map(json_to_rusqlite)
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    let refs: Vec<&dyn rusqlite::ToSql> = rv.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-    let mut stmt = conn.prepare(sql).map_err(|e| SqlError(e.to_string()))?;
-    let column_count = stmt.column_count();
-    let column_names: Vec<String> = (0..column_count)
-        .map(|i| stmt.column_name(i).unwrap_or("").to_string())
-        .collect();
-    let rows = stmt
-        .query(refs.as_slice())
-        .map_err(|e| SqlError(e.to_string()))?
-        .mapped(|row| {
-            let mut map = HashMap::new();
-            for (i, name) in column_names.iter().enumerate() {
-                let v: RusqliteValue = row.get(i)?;
-                map.insert(name.clone(), rusqlite_to_json(&v));
-            }
-            Ok::<_, rusqlite::Error>(map)
-        });
-    let out: Vec<SqlRow> = rows
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| SqlError(e.to_string()))?;
-    Ok(out)
 }
 
 impl GraphqliteProvenanceStore {
-    /// Open a connection from config and enable WAL if requested.
-    fn open_connection(
-        config: &GraphqliteStoreConfig,
-    ) -> std::result::Result<Connection, graphqlite::Error> {
+    /// Open a graph from config and enable WAL if requested.
+    fn open_graph(config: &GraphqliteStoreConfig) -> std::result::Result<Graph, graphqlite::Error> {
         let conn = match &config.path {
             crate::graphqlite_config::StorePath::InMemory => Connection::open_in_memory()?,
             crate::graphqlite_config::StorePath::File(path) => Connection::open(path.as_path())?,
@@ -362,7 +335,7 @@ impl GraphqliteProvenanceStore {
                 .execute_batch("PRAGMA journal_mode=WAL")
                 .map_err(|e| graphqlite::Error::Cypher(e.to_string()))?;
         }
-        Ok(conn)
+        Ok(Graph::from_connection(conn))
     }
 }
 
@@ -455,24 +428,24 @@ fn get_or_init_shared_in_memory_store() -> Result<Arc<GraphqliteProvenanceStore>
 fn build_store_from_config(
     config: &GraphqliteStoreConfig,
 ) -> Result<Arc<GraphqliteProvenanceStore>> {
-    let conn = {
+    let graph = {
         let _guard = EXTENSION_LOAD_SERIAL.lock().map_err(|e| {
             ProvenanceError::Storage(Box::new(std::io::Error::other(format!(
                 "extension load mutex poisoned: {e:?}",
             ))))
         })?;
-        GraphqliteProvenanceStore::open_connection(config).map_err(map_graphqlite_error)?
+        GraphqliteProvenanceStore::open_graph(config).map_err(map_graphqlite_error)?
     };
     let (request_tx, request_rx) = mpsc::sync_channel::<WorkerRequest>(256);
     thread::spawn(move || {
-        let conn = conn;
+        let graph = graph;
         while let Ok(req) = request_rx.recv() {
             match req {
                 WorkerRequest::ReadWithParams(query, params, reply) => {
-                    let span = spans::cypher_execute(&query, &params);
+                    let span = spans::cypher_execute(&query, &Value::Object(params.clone()));
                     let _guard = span.enter();
                     tracing::debug!(query_text = %query, params = ?params, "cypher execute");
-                    let result = conn.cypher_builder(&query).params(&params).run();
+                    let result = run_query_builder_with_params(&graph, &query, &params);
                     if reply.send(result).is_err() {
                         tracing::debug!(
                             "worker reply dropped (caller likely timed out or dropped)"
@@ -480,30 +453,10 @@ fn build_store_from_config(
                     }
                 }
                 WorkerRequest::Write(query, params, reply) => {
-                    let span = spans::cypher_execute(&query, &params);
+                    let span = spans::cypher_execute(&query, &Value::Object(params.clone()));
                     let _guard = span.enter();
                     tracing::debug!(query_text = %query, params = ?params, "cypher execute");
-                    let result = conn
-                        .cypher_builder(&query)
-                        .params(&params)
-                        .run()
-                        .map(|_| ());
-                    if reply.send(result).is_err() {
-                        tracing::debug!(
-                            "worker reply dropped (caller likely timed out or dropped)"
-                        );
-                    }
-                }
-                WorkerRequest::ExecuteSql(sql, params, reply) => {
-                    let result = execute_sql_worker(conn.sqlite_connection(), &sql, &params);
-                    if reply.send(result).is_err() {
-                        tracing::debug!(
-                            "worker reply dropped (caller likely timed out or dropped)"
-                        );
-                    }
-                }
-                WorkerRequest::QuerySql(sql, params, reply) => {
-                    let result = query_sql_worker(conn.sqlite_connection(), &sql, &params);
+                    let result = run_query_builder_with_params(&graph, &query, &params).map(|_| ());
                     if reply.send(result).is_err() {
                         tracing::debug!(
                             "worker reply dropped (caller likely timed out or dropped)"
@@ -523,7 +476,11 @@ fn build_store_from_config(
 impl GraphqliteProvenanceStore {
     /// Run a parameterized read Cypher query (no manual escaping).
     /// Serialized process-wide via CYPHER_REQUEST_SERIAL so only one Cypher runs at a time.
-    async fn run_cypher_with_params(&self, query: &str, params: &Value) -> Result<CypherResult> {
+    async fn run_cypher_with_params(
+        &self,
+        query: &str,
+        params: &QueryParams,
+    ) -> Result<CypherResult> {
         let serial = CYPHER_REQUEST_SERIAL.get_or_init(|| TokioMutex::new(()));
         let _guard = serial.lock().await;
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -541,7 +498,7 @@ impl GraphqliteProvenanceStore {
     }
 
     /// Run a read-only Cypher query. Used by graph export (Mermaid, etc.).
-    pub async fn run_cypher_read(&self, query: &str, params: &Value) -> Result<CypherResult> {
+    pub async fn run_cypher_read(&self, query: &str, params: &QueryParams) -> Result<CypherResult> {
         self.run_cypher_with_params(query, params).await
     }
 
@@ -550,14 +507,14 @@ impl GraphqliteProvenanceStore {
     pub(crate) async fn run_cypher_for_test_with_params(
         &self,
         query: &str,
-        params: &Value,
+        params: &QueryParams,
     ) -> Result<CypherResult> {
         self.run_cypher_with_params(query, params).await
     }
 
     /// Run a parameterized write Cypher query via the worker thread (no manual escaping).
     /// Serialized process-wide via CYPHER_REQUEST_SERIAL so only one Cypher runs at a time.
-    async fn run_cypher_write(&self, query: &str, params: &Value) -> Result<()> {
+    async fn run_cypher_write(&self, query: &str, params: &QueryParams) -> Result<()> {
         let serial = CYPHER_REQUEST_SERIAL.get_or_init(|| TokioMutex::new(()));
         let _guard = serial.lock().await;
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -574,37 +531,9 @@ impl GraphqliteProvenanceStore {
         result.map_err(map_graphqlite_error)
     }
 
-    /// Execute a single SQL statement (DDL or DML). Params are positional (?1, ?2, ...).
-    /// Used by the unified task store for task/message/update tables in the same DB.
-    pub async fn run_sql_execute(&self, sql: &str, params: &[Value]) -> Result<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.request_tx
-            .send(WorkerRequest::ExecuteSql(
-                sql.to_string(),
-                params.to_vec(),
-                reply_tx,
-            ))
-            .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
-        let result = reply_rx
-            .await
-            .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
-        result.map_err(|e| ProvenanceError::Storage(Box::new(e)))
-    }
-
-    /// Run a SELECT and return rows as Vec<HashMap<String, Value>>. Params are positional (?1, ?2, ...).
-    pub async fn run_sql_query(&self, sql: &str, params: &[Value]) -> Result<Vec<SqlRow>> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.request_tx
-            .send(WorkerRequest::QuerySql(
-                sql.to_string(),
-                params.to_vec(),
-                reply_tx,
-            ))
-            .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
-        let result = reply_rx
-            .await
-            .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
-        result.map_err(|e| ProvenanceError::Storage(Box::new(e)))
+    /// Run a write Cypher query through the Graph worker.
+    pub async fn run_cypher_execute(&self, query: &str, params: &QueryParams) -> Result<()> {
+        self.run_cypher_write(query, params).await
     }
 }
 
@@ -619,7 +548,8 @@ impl ProvenanceWriter for GraphqliteProvenanceStore {
             KeyStyle::StorageSafeUnderscore,
         );
         for stmt in &statements {
-            self.run_cypher_write(&stmt.query, &stmt.params).await?;
+            let params = require_object_params(&stmt.params)?;
+            self.run_cypher_write(&stmt.query, &params).await?;
         }
         Ok(())
     }
@@ -634,6 +564,7 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
     ) -> Result<Vec<ProvenanceContextMessage>> {
         let context = context_id.as_str();
         let (query, params) = ConversationReadModel::message_query_storage_safe_params(context);
+        let params = require_object_params(&params)?;
         let results = self.run_cypher_with_params(query, &params).await?;
         let mut messages: Vec<ProvenanceContextMessage> = Vec::new();
         for row in results.iter() {
@@ -651,7 +582,7 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
                 continue;
             }
             messages.push(ProvenanceContextMessage {
-                message_id: msg.message_id,
+                message_id: MessageId::from(msg.message_id.as_str()),
                 timestamp_ms: event_id_to_timestamp_ms(&msg.event_id),
                 role,
                 content: vec![content],
@@ -680,6 +611,8 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
             ConversationReadModel::message_query_storage_safe_params(context);
         let (tool_query, tool_params) =
             ConversationReadModel::tool_query_storage_safe_params(context);
+        let message_params = require_object_params(&message_params)?;
+        let tool_params = require_object_params(&tool_params)?;
 
         let message_results = self
             .run_cypher_with_params(message_query, &message_params)
@@ -706,7 +639,7 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
             }
             items.push(ProvenanceConversationContextItem {
                 timestamp_ms: event_id_to_timestamp_ms(&msg.event_id),
-                event_id: msg.event_id,
+                event_id: EventId::from(msg.event_id.as_str()),
                 role,
                 content: Value::String(content),
                 source: "message".to_string(),
@@ -718,6 +651,9 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
                 Ok(t) => t,
                 Err(_) => continue,
             };
+            if !tool.contract_holds() {
+                continue;
+            }
             if !tool.is_completed() {
                 continue;
             }
@@ -737,7 +673,7 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
             if include_call {
                 items.push(ProvenanceConversationContextItem {
                     timestamp_ms: event_id_to_timestamp_ms(&tool.event_id),
-                    event_id: tool.event_id.clone(),
+                    event_id: EventId::from(tool.event_id.as_str()),
                     role: "assistant".to_string(),
                     content: serde_json::json!({
                         "tool_call": {
@@ -765,7 +701,7 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
                 }
                 items.push(ProvenanceConversationContextItem {
                     timestamp_ms: event_id_to_timestamp_ms(&tool.event_id),
-                    event_id: tool.event_id,
+                    event_id: EventId::from(tool.event_id.as_str()),
                     role: "tool".to_string(),
                     content: Value::Object(content),
                     source: "tool_result".to_string(),
@@ -776,7 +712,7 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
         items.sort_by_key(|i| {
             (
                 i.timestamp_ms,
-                event_id_to_timestamp_ms(&i.event_id),
+                event_id_to_timestamp_ms(i.event_id.as_str()),
                 i.source.clone(),
             )
         });
@@ -925,6 +861,10 @@ mod tests {
 
         let (query, params) =
             ConversationReadModel::message_query_storage_safe_params(context_id.as_str());
+        let params = match params {
+            Value::Object(map) => map,
+            _ => panic!("expected object params"),
+        };
         let results = store
             .run_cypher_for_test_with_params(query, &params)
             .await

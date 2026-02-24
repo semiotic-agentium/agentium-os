@@ -3,6 +3,7 @@
 //! This crate provides event types and interceptors for provenance recording,
 //! along with a pluggable storage interface and GraphQLite-backed implementation.
 
+pub mod a2a_graph_store;
 pub mod builders;
 pub mod bus_subscriber;
 pub mod cypher_build;
@@ -13,6 +14,7 @@ pub mod error;
 pub mod events;
 pub mod graph_export;
 pub mod graph_model;
+pub mod graph_store;
 pub mod graphqlite_config;
 pub mod graphqlite_store;
 pub mod id_semantics;
@@ -24,6 +26,7 @@ pub mod tool_index;
 pub mod types;
 pub mod vocabulary;
 
+pub use baml_rt_vocabulary::{A2aGraphStore, TaskSubgraphNode, TaskSubgraphUpdateNode};
 pub use bus_subscriber::ProvenanceBusSubscriber;
 pub use effect_subscriber::ProvenanceEffectSubscriber;
 pub use error::ProvenanceError;
@@ -40,7 +43,8 @@ pub use graph_model::{
 };
 pub use graphqlite_config::{GraphqliteStoreConfig, StorePath};
 pub use graphqlite_store::{
-    GraphqliteBackend, GraphqliteProvenanceStore, GraphqliteStoreBuilder, SqlError, SqlRow,
+    GraphCypherResult, GraphQueryParams, GraphRow, GraphqliteBackend, GraphqliteProvenanceStore,
+    GraphqliteStoreBuilder,
 };
 pub use interceptors::ProvenanceInterceptor;
 pub use normalizer::{

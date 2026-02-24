@@ -1,25 +1,70 @@
 # baml-rt-provenance
 
-Provenance capture and storage for the BAML agent runtime. Events are normalized to W3C PROV and persisted in a GraphQLite-backed graph (SQLite + Cypher).
+`baml-rt-provenance` is the provenance subsystem for the runtime. It records runtime events, normalizes them into a PROV/A2A graph model, persists them in GraphQLite, and serves graph-backed reads for agent context and API/export consumers.
 
-## Vocabulary
+## Core model
 
-Keys, relations, and identifiers use the crate vocabulary consistently. All attribute names (e.g. `a2a:context_id`, `prov:role`), relation types (e.g. `USED`, `WAS_GENERATED_BY`), and PROV/A2A terms come from [`vocabulary`](src/vocabulary.rs) (`prov::`, `a2a::`, `prov_relations::`, `a2a_relations::`, `semantic_labels::`, etc.). The **graph node identity property** is [`vocabulary::graph::NODE_ID`](src/vocabulary.rs) (`"id"`), matching [GraphQLite’s convention](https://github.com/colliery-io/graphqlite/blob/main/bindings/rust/src/graph/nodes.rs): the high-level API (`upsert_node`, `has_node`, `get_node`) uses `id` for MERGE/MATCH. Storage-safe keys (e.g. `a2a_context_id`) are derived from vocabulary keys by replacing `:` with `_` for GraphQLite.
+- **Event input**: typed runtime events (`ProvEvent`, `ProvEventData`) for LLM calls, tool calls, task lifecycle, messages, and artifacts.
+- **Normalization**: `normalize_event()` maps each event into a PROV document shape (entities, activities, agents, and typed relations).
+- **Vocabulary**: all keys and semantic labels come from `baml-rt-vocabulary` (`a2a:*`, `prov:*`, and relation constants), with storage-safe key mapping for GraphQLite properties.
+- **Graph identities**: stable derived IDs are used for graph nodes/activities to keep causality and linkage deterministic.
 
-## Parameterized Cypher (no manual escaping)
+## Storage architecture
 
-**All Cypher that embeds runtime values uses parameterized queries.** Values are bound by the GraphQLite driver via `cypher_with_params(query, &params)`, which prevents injection and eliminates the need for manual escaping.
+- **Concrete store**: `GraphqliteProvenanceStore` is the GraphQLite-backed implementation.
+- **Builder**: `GraphqliteStoreBuilder` supports:
+  - `file(path)` for file-backed per-build connections
+  - `in_memory()` for shared in-memory execution
+  - `backend(...)` for explicit backend selection
+- **Write path**: events are persisted through parameterized Cypher (`cypher_with_params`) produced by `cypher_build`.
+- **Read path**: context/tool queries are also parameterized Cypher and return typed runtime structures.
 
-- **Tool index** ([`tool_index.rs`](src/tool_index.rs)): `MERGE` for `ToolFunction` nodes uses a `params` object (e.g. `$name`, `$description`, …) and `conn.cypher_with_params(&query, &params)`.
-- **Provenance write path** ([`cypher_build.rs`](src/cypher_build.rs), [`graphqlite_store.rs`](src/graphqlite_store.rs)): `build_query_with_key_style_params()` returns `(query_string, params)`. The store worker runs `conn.cypher_with_params(&query, &params)` for each write. No `cypher_string_literal` or ad-hoc escaping of user/content strings.
-- **Provenance read path** ([`graph_model.rs`](src/graph_model.rs), [`graphqlite_store.rs`](src/graphqlite_store.rs)): `message_query_storage_safe_params(context)` and `tool_query_storage_safe_params(context)` return `(query, params)` with `$context`; the store uses `run_cypher_with_params(&query, &params)` for `context_messages` and `conversation_context`.
+## Runtime interfaces
 
-Example pattern:
+The store is consumed through narrow traits:
+
+- `ProvenanceWriter`: append provenance events (`add_event`, `add_events`)
+- `ProvenanceContextReader`: read context-construction data for runtime use
+  - `context_messages(...)`
+  - `conversation_context(...)`
+- `ProvenanceQueryApi`: API-facing query surface with the same payload shapes
+- `A2aGraphStore` (re-exported from `baml-rt-vocabulary`): task-subgraph operations used by A2A task/message/update persistence flows
+
+`ProvenanceContextReader` is the strict context path for agent/runtime reads; `ProvenanceQueryApi` is the API query surface.
+
+## Graph export and rendering
+
+`graph_export` reads persisted graph subgraphs and emits `ExportedGraph`:
+
+- export scopes:
+  - `export_by_context(context_id)`
+  - `export_by_task(task_id)`
+- renderers:
+  - Mermaid sequence (`graph_export::sequence`)
+  - Graphviz DOT (`graph_export::dot`)
+  - JSON (`graph_export::json`)
+- simplification:
+  - `graph_export::simplify` removes structural noise and keeps sequence-relevant flow
+
+Sequence rendering expresses conversation and execution flow directly:
+
+- user/agent message arrows
+- LLM reasoning notes
+- tool request/response arrows
+- task status transition notes
+- artifact generation notes
+
+## Interceptors and subscribers
+
+- `ProvenanceInterceptor` emits provenance around LLM and tool execution.
+- Bus/effect subscribers translate runtime bus/effect events into provenance events.
+- Tool indexing (`tool_index`) writes tool metadata into the graph for discovery/context usage.
+
+## Typical construction
 
 ```rust
-let params = json!({"name": "Alice", "age": 30});
-let query = "CREATE (n:Person {name: $name, age: $age})";
-conn.cypher_with_params(query, &params)?;
-```
+use baml_rt_provenance::{GraphqliteStoreBuilder, ProvenanceWriter};
 
-When adding new Cypher that embeds values, use this pattern everywhere and document it here.
+let store = GraphqliteStoreBuilder::file("provenance.db").build()?;
+store.add_event(event).await?;
+```

@@ -109,7 +109,7 @@ utoipa = { version = "5", features = ["axum_extras"] }
 utoipa-axum = "0.2"
 http-api-problem = { version = "0.60", features = ["axum"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6", features = ["fs"] }
+tower-http = { version = "0.6", features = ["fs", "trace"] }
 # BAML (fork with minimal-runtime; branch for softer semver)
 baml-runtime = { git = "https://github.com/ryan-s-roberts/baml", branch = "canary", default-features = false, features = [
   "minimal-runtime",

@@ -14,10 +14,17 @@ the `baml-rt` facade crate, which re-exports feature-gated subcrates.
 - `baml-rt-observability`: Tracing setup, spans, and metrics helpers.
 - `baml-rt-quickjs`: QuickJS runtime host, schema loading, JS bridge, and async stream execution.
 - `baml-rt-a2a`: Agent-to-agent protocol types, stream-first transport, and cross-turn request handling.
+- `baml-rt-provenance`: Graph-native provenance normalization, persistence, and export (GraphQLite-backed).
 - `baml-rt-builder`: Agent build pipeline and `baml-agent-builder` CLI.
 - `baml-agent-runner`: Binary that loads packaged agents and serves A2A requests.
 - `baml-rt`: Facade crate that re-exports the above via feature flags.
 - `test-support`: Shared fixtures and helper utilities for tests.
+
+### Provenance Architecture (Corrected)
+
+- In GraphQLite mode, runtime wiring uses a **single concrete provenance store** projected into narrow trait interfaces for A2A/task/context/provenance needs.
+- Task/message/status/artifact writes and provenance events share the same underlying persistence instance (no split concrete stores).
+- Conversation context and Mermaid sequence exports are graph-backed reads from persisted provenance data.
 
 ### Runtime Flow (QuickJS + BAML)
 

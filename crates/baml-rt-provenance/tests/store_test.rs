@@ -1,8 +1,14 @@
-use std::collections::BTreeMap;
-
-use baml_rt_core::ids::{ContextId, ExternalId, MessageId};
-use baml_rt_provenance::{ProvEvent, normalize_event};
-use serde_json::{Value, json};
+use baml_rt_core::{
+    Outcome,
+    ids::{AgentId, ArtifactId, ContextId, ExternalId, MessageId, TaskId, UuidId},
+};
+use baml_rt_provenance::{
+    AgentType, GraphExporter, GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvenanceWriter,
+    graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
+    normalize_event,
+};
+use insta::assert_snapshot;
+use serde_json::json;
 
 #[tokio::test]
 async fn test_normalize_event_snapshot_for_tool_call_started() {
@@ -18,213 +24,293 @@ async fn test_normalize_event_snapshot_for_tool_call_started() {
     assert_eq!(event.context_id(), &ContextId::new(1, 1));
 
     let normalized = normalize_event(&event).expect("normalize event");
-    let snapshot = snapshot_value(&normalized);
-    let expected = json!({
-        "activities": {
-            format!("tool_call:{}", event.id().as_str()): {
-                "a2a:context_id": "ctx-1-1",
-                "a2a:event_id": event.id().as_str(),
-                "a2a:metadata": {
-                    "message_id": "msg-1",
-                    "agent_id": "00000000-0000-0000-0000-000000000010"
-                },
-                "a2a:tool_name": "tool",
-                "prov:startTime": event.timestamp_ms(),
-                "prov:type": "a2a:ToolCall"
-            },
-            "message_processing:msg-1": {
-                "a2a:context_id": "ctx-1-1",
-                "a2a:message_id": "msg-1",
-                "prov:type": "a2a:A2AMessageProcessing"
-            }
-        },
-        "entities": {
-            "message:msg-1": {
-                "a2a:context_id": "ctx-1-1",
-                "a2a:event_id": event.id().as_str(),
-                "a2a:message_id": "msg-1",
-                "prov:type": "a2a:Message"
-            },
-            format!("tool_args:{}", event.id().as_str()): {
-                "a2a:args": {"input":"value"},
-                "a2a:context_id": "ctx-1-1",
-                "a2a:event_id": event.id().as_str(),
-                "prov:type": "a2a:ToolArgs"
-            }
-        },
-        "agents": {},
-        "used": [
-            {
-                "activity": format!("tool_call:{}", event.id().as_str()),
-                "entity": "message:msg-1",
-                "role": "input_message"
-            },
-            {
-                "activity": format!("tool_call:{}", event.id().as_str()),
-                "entity": format!("tool_args:{}", event.id().as_str()),
-                "role": "a2a:args"
-            }
-        ],
-        "was_generated_by": [],
-        "qualified_generation": [],
-        "was_associated_with": [],
-        "was_derived_from": [],
-        "a2a_relations": [
-            {
-                "relation": "A2A_MESSAGE_CALL",
-                "from": "message_processing:msg-1",
-                "to": format!("tool_call:{}", event.id().as_str()),
-                "attributes": {
-                    "a2a:context_id": "ctx-1-1",
-                    "a2a:timestamp_ms": event.timestamp_ms()
+    let has_args_used = normalized
+        .document
+        .used()
+        .any(|(_, used)| used.role.as_deref() == Some("a2a:args"));
+    assert!(
+        has_args_used,
+        "normalized tool call must include USED relation with role a2a:args"
+    );
+
+    let store = GraphqliteStoreBuilder::in_memory()
+        .build()
+        .expect("build store");
+    store.add_event(event).await.expect("persist event");
+}
+
+#[tokio::test]
+async fn test_snapshot_exemplary_mermaid_agent_flow() {
+    let store = GraphqliteStoreBuilder::in_memory()
+        .build()
+        .expect("build store");
+
+    let context_id = ContextId::new(1_771_470_000_000, 1);
+    let task_id = TaskId::from_external(ExternalId::new("task-sequence-1"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000077").unwrap());
+
+    store
+        .add_event(ProvEvent::agent_booted(
+            context_id.clone(),
+            agent_id.clone(),
+            AgentType::new("clickup_agent").expect("agent_type"),
+            "1.0.0".to_string(),
+            "clickup@1.0.0".to_string(),
+        ))
+        .await
+        .expect("agent_booted");
+    store
+        .add_event(ProvEvent::task_created(
+            context_id.clone(),
+            task_id.clone(),
+            agent_id,
+        ))
+        .await
+        .expect("task_created");
+    store
+        .add_event(ProvEvent::message_received_task(
+            context_id.clone(),
+            task_id.clone(),
+            MessageId::from_external(ExternalId::new("msg-user-1")),
+            "user".to_string(),
+            vec!["how many tasks are in to do?".to_string()],
+            None,
+            1_771_470_000_001,
+        ))
+        .await
+        .expect("message_received");
+    store
+        .add_event(ProvEvent::llm_call_completed_task(
+            context_id.clone(),
+            task_id.clone(),
+            "DefaultClient".to_string(),
+            "openai-generic".to_string(),
+            "ChooseClickUpAction".to_string(),
+            serde_json::json!({"messages": [{"role": "system", "content": "test"}]}),
+            serde_json::json!({
+                "selected": true,
+                "agent_id": "00000000-0000-0000-0000-000000000077",
+                "task_id": "task-sequence-1",
+                "message_id": "msg-user-1"
+            }),
+            LlmUsage::Unknown,
+            7475,
+            Outcome::Success,
+        ))
+        .await
+        .expect("llm_call_completed");
+    store
+        .add_event(ProvEvent::tool_call_completed_task(
+            context_id.clone(),
+            task_id.clone(),
+            "support/clickup".to_string(),
+            None,
+            serde_json::json!({"action": "ListTeams"}),
+            serde_json::json!({
+                "phase": "send",
+                "agent_id": "00000000-0000-0000-0000-000000000077",
+                "task_id": "task-sequence-1",
+                "message_id": "msg-user-1",
+                "result": {
+                    "items": [{"id": "9013491519", "name": "Workspace", "kind": "team"}],
+                    "tasks": [],
+                    "message": "Found 1 team(s)"
                 }
-            }
-        ]
-    });
-    assert_eq!(sort_value(snapshot), sort_value(expected));
+            }),
+            976,
+            Outcome::Success,
+        ))
+        .await
+        .expect("tool_call_completed");
+    store
+        .add_event(ProvEvent::message_sent_task(
+            context_id.clone(),
+            task_id,
+            MessageId::from_external(ExternalId::new("msg-agent-1")),
+            "ROLE_AGENT".to_string(),
+            vec!["Found 1 team(s)".to_string()],
+            None,
+            1_771_470_000_010,
+        ))
+        .await
+        .expect("message_sent");
+
+    let exported = GraphExporter::new(store)
+        .export_by_context(context_id.as_str())
+        .await
+        .expect("export graph by context");
+    let simplified = simplify_graph(&exported);
+    let mermaid = render_sequence_diagram(&simplified);
+
+    assert_snapshot!("exemplary_agent_flow_mermaid", mermaid);
 }
 
-fn snapshot_value(normalized: &baml_rt_provenance::NormalizedProv) -> Value {
-    let mut activities = BTreeMap::new();
-    for (id, activity) in normalized.document.activities() {
-        let mut map = BTreeMap::new();
-        if let Some(start_time_ms) = activity.start_time_ms {
-            map.insert(
-                "prov:startTime".to_string(),
-                Value::Number(start_time_ms.into()),
-            );
-        }
-        if let Some(end_time_ms) = activity.end_time_ms {
-            map.insert(
-                "prov:endTime".to_string(),
-                Value::Number(end_time_ms.into()),
-            );
-        }
-        if let Some(prov_type) = &activity.prov_type {
-            map.insert("prov:type".to_string(), Value::String(prov_type.clone()));
-        }
-        for (key, value) in &activity.attributes {
-            map.insert(key.clone(), value.clone());
-        }
-        activities.insert(
-            id.as_str().to_string(),
-            Value::Object(map.into_iter().collect()),
-        );
-    }
+#[tokio::test]
+async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
+    let store = GraphqliteStoreBuilder::in_memory()
+        .build()
+        .expect("build store");
 
-    let mut entities = BTreeMap::new();
-    for (id, entity) in normalized.document.entities() {
-        let mut map = BTreeMap::new();
-        if let Some(prov_type) = &entity.prov_type {
-            map.insert("prov:type".to_string(), Value::String(prov_type.clone()));
-        }
-        for (key, value) in &entity.attributes {
-            map.insert(key.clone(), value.clone());
-        }
-        entities.insert(
-            id.as_str().to_string(),
-            Value::Object(map.into_iter().collect()),
-        );
-    }
+    let context_id = ContextId::new(1_771_470_111_000, 1);
+    let task_id = TaskId::from_external(ExternalId::new("task-lifecycle-1"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000078").unwrap());
 
-    let mut agents = BTreeMap::new();
-    for (id, agent) in normalized.document.agents() {
-        let mut map = BTreeMap::new();
-        if let Some(prov_type) = &agent.prov_type {
-            map.insert("prov:type".to_string(), Value::String(prov_type.clone()));
-        }
-        for (key, value) in &agent.attributes {
-            map.insert(key.clone(), value.clone());
-        }
-        agents.insert(
-            id.as_str().to_string(),
-            Value::Object(map.into_iter().collect()),
-        );
-    }
+    store
+        .add_event(ProvEvent::agent_booted(
+            context_id.clone(),
+            agent_id.clone(),
+            AgentType::new("clickup_agent").expect("agent_type"),
+            "1.0.0".to_string(),
+            "clickup@1.0.0".to_string(),
+        ))
+        .await
+        .expect("agent_booted");
+    store
+        .add_event(ProvEvent::task_created(
+            context_id.clone(),
+            task_id.clone(),
+            agent_id,
+        ))
+        .await
+        .expect("task_created");
+    store
+        .add_event(ProvEvent::message_received_task(
+            context_id.clone(),
+            task_id.clone(),
+            MessageId::from_external(ExternalId::new("msg-user-1")),
+            "user".to_string(),
+            vec!["Draft a weekly status update".to_string()],
+            None,
+            1_771_470_111_001,
+        ))
+        .await
+        .expect("message_received_1");
+    store
+        .add_event(ProvEvent::task_status_changed(
+            context_id.clone(),
+            task_id.clone(),
+            None,
+            Some("submitted".to_string()),
+        ))
+        .await
+        .expect("status_submitted");
+    store
+        .add_event(ProvEvent::message_sent_task(
+            context_id.clone(),
+            task_id.clone(),
+            MessageId::from_external(ExternalId::new("msg-agent-1")),
+            "ROLE_AGENT".to_string(),
+            vec!["Need project scope before I can proceed.".to_string()],
+            None,
+            1_771_470_111_003,
+        ))
+        .await
+        .expect("message_sent_1");
+    store
+        .add_event(ProvEvent::task_status_changed(
+            context_id.clone(),
+            task_id.clone(),
+            Some("submitted".to_string()),
+            Some("input-required".to_string()),
+        ))
+        .await
+        .expect("status_input_required");
+    store
+        .add_event(ProvEvent::message_received_task(
+            context_id.clone(),
+            task_id.clone(),
+            MessageId::from_external(ExternalId::new("msg-user-2")),
+            "user".to_string(),
+            vec!["Use the platform project context.".to_string()],
+            None,
+            1_771_470_111_005,
+        ))
+        .await
+        .expect("message_received_2");
+    store
+        .add_event(ProvEvent::task_status_changed(
+            context_id.clone(),
+            task_id.clone(),
+            Some("input-required".to_string()),
+            Some("working".to_string()),
+        ))
+        .await
+        .expect("status_working");
+    store
+        .add_event(ProvEvent::tool_call_completed_task(
+            context_id.clone(),
+            task_id.clone(),
+            "support/notion".to_string(),
+            None,
+            serde_json::json!({"action":"CreatePage","title":"Weekly Status"}),
+            serde_json::json!({
+                "phase":"send",
+                "agent_id":"00000000-0000-0000-0000-000000000078",
+                "task_id":"task-lifecycle-1",
+                "result":{"items":[{"id":"page-1"}]}
+            }),
+            145,
+            Outcome::Success,
+        ))
+        .await
+        .expect("tool_call_completed");
+    store
+        .add_event(ProvEvent::task_artifact_generated(
+            context_id.clone(),
+            task_id.clone(),
+            Some(ArtifactId::from_external(ExternalId::new(
+                "artifact-weekly-status",
+            ))),
+            Some("application/markdown".to_string()),
+        ))
+        .await
+        .expect("artifact_generated");
+    store
+        .add_event(ProvEvent::message_sent_task(
+            context_id.clone(),
+            task_id.clone(),
+            MessageId::from_external(ExternalId::new("msg-agent-2")),
+            "ROLE_AGENT".to_string(),
+            vec!["Draft is ready and attached.".to_string()],
+            None,
+            1_771_470_111_010,
+        ))
+        .await
+        .expect("message_sent_2");
+    store
+        .add_event(ProvEvent::task_status_changed(
+            context_id.clone(),
+            task_id,
+            Some("working".to_string()),
+            Some("completed".to_string()),
+        ))
+        .await
+        .expect("status_completed");
 
-    let mut used = Vec::new();
-    for (_, used_rel) in normalized.document.used() {
-        used.push(json!({
-            "activity": used_rel.activity.as_str(),
-            "entity": used_rel.entity.as_str(),
-            "role": used_rel.role
-        }));
-    }
+    let exported = GraphExporter::new(store)
+        .export_by_context(context_id.as_str())
+        .await
+        .expect("export graph by context");
+    let simplified = simplify_graph(&exported);
+    let mermaid = render_sequence_diagram(&simplified);
 
-    let mut was_generated_by = Vec::new();
-    for (_, rel) in normalized.document.was_generated_by() {
-        was_generated_by.push(json!({
-            "entity": rel.entity.id(),
-            "activity": rel.activity.as_str(),
-            "time_ms": rel.time_ms
-        }));
-    }
+    assert!(
+        mermaid.contains("Draft a weekly status update")
+            && mermaid.contains("Use the platform project context."),
+        "expected both user turns in mermaid: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("status submitted")
+            && mermaid.contains("input-required")
+            && mermaid.contains("status working"),
+        "expected status lifecycle notes in mermaid: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("Artifact application/markdown"),
+        "expected artifact note in mermaid: {mermaid}"
+    );
 
-    let mut qualified_generation = Vec::new();
-    for (_, rel) in normalized.document.qualified_generation() {
-        qualified_generation.push(json!({
-            "entity": rel.entity.id(),
-            "activity": rel.activity.as_str(),
-            "time_ms": rel.time_ms
-        }));
-    }
-
-    let mut was_associated_with = Vec::new();
-    for (_, rel) in normalized.document.was_associated_with() {
-        was_associated_with.push(json!({
-            "activity": rel.activity.as_str(),
-            "agent": rel.agent.as_str(),
-            "role": rel.role
-        }));
-    }
-
-    let mut was_derived_from = Vec::new();
-    for (_, rel) in normalized.document.was_derived_from() {
-        was_derived_from.push(json!({
-            "generated_entity": rel.generated_entity.as_str(),
-            "used_entity": rel.used_entity.as_str(),
-            "activity": rel.activity.as_ref().map(|id| id.as_str().to_string()),
-            "prov_type": rel.prov_type
-        }));
-    }
-
-    let mut a2a_relations = Vec::new();
-    for rel in &normalized.derived_relations {
-        a2a_relations.push(json!({
-            "relation": rel.relation.as_str(),
-            "from": rel.from.id(),
-            "to": rel.to.id(),
-            "attributes": rel.attributes
-        }));
-    }
-
-    json!({
-        "activities": activities,
-        "entities": entities,
-        "agents": agents,
-        "used": used,
-        "was_generated_by": was_generated_by,
-        "qualified_generation": qualified_generation,
-        "was_associated_with": was_associated_with,
-        "was_derived_from": was_derived_from,
-        "a2a_relations": a2a_relations
-    })
-}
-
-fn sort_value(value: Value) -> Value {
-    match value {
-        Value::Array(values) => {
-            let mut sorted: Vec<Value> = values.into_iter().map(sort_value).collect();
-            sorted.sort_by_key(|value| value.to_string());
-            Value::Array(sorted)
-        }
-        Value::Object(map) => {
-            let mut sorted = BTreeMap::new();
-            for (key, value) in map {
-                sorted.insert(key, sort_value(value));
-            }
-            Value::Object(sorted.into_iter().collect())
-        }
-        other => other,
-    }
+    assert_snapshot!("exemplary_multiturn_lifecycle_mermaid", mermaid);
 }

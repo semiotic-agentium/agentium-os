@@ -361,9 +361,9 @@ async fn test_blocking_interception_integration() {
     let baml_manager = setup_baml_runtime_manager_default();
 
     // Register blocking interceptor first so it can block; stub runs after (substitutes if not blocked).
-    // Block model containing "openai" so SimpleGreeting (OpenRouterGPT / openai/gpt-4o-mini) gets blocked.
+    // Block model containing "grok" so SimpleGreeting (x-ai/grok-4.1-fast) gets blocked.
     baml_manager
-        .register_llm_interceptor(BlockingInterceptor::new(vec!["openai".to_string()]))
+        .register_llm_interceptor(BlockingInterceptor::new(vec!["grok".to_string()]))
         .await;
     baml_manager
         .register_llm_interceptor(StubSimpleGreetingInterceptor)
@@ -386,7 +386,7 @@ async fn test_blocking_interception_integration() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // If blocking worked, we should get an error containing "blocked"
-    // The blocking interceptor checks if model contains "openai"; SimpleGreeting uses openai/gpt-4o-mini.
+    // The blocking interceptor checks if model contains "grok"; SimpleGreeting uses x-ai/grok-4.1-fast.
     match result {
         Ok(_) => {
             // If we get here, blocking didn't work - the model pattern might not have matched

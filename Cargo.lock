@@ -941,6 +941,7 @@ dependencies = [
  "dotenvy",
  "flate2",
  "futures-util",
+ "insta",
  "reqwest",
  "schemars 1.2.1",
  "serde",
@@ -1087,6 +1088,7 @@ dependencies = [
  "baml-rt-core",
  "baml-rt-interceptor",
  "baml-rt-observability",
+ "baml-rt-provenance",
  "baml-rt-quickjs",
  "baml-rt-tools",
  "clap",
@@ -1151,12 +1153,15 @@ dependencies = [
  "http-api-problem",
  "insta",
  "opentelemetry",
+ "opentelemetry_sdk",
  "serde",
  "serde_json",
  "tokio",
  "tower",
  "tower-http",
  "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
  "utoipa",
  "utoipa-axum",
 ]
@@ -1261,10 +1266,10 @@ dependencies = [
  "baml-rt-interceptor",
  "baml-rt-observability",
  "baml-rt-tools",
+ "baml-rt-vocabulary",
  "clap",
  "graphqlite",
  "insta",
- "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -1328,6 +1333,14 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+]
+
+[[package]]
+name = "baml-rt-vocabulary"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde_json",
 ]
 
 [[package]]
@@ -7669,6 +7682,7 @@ dependencies = [
  "async-trait",
  "baml-rt",
  "baml-rt-core",
+ "baml-rt-provenance",
  "baml-rt-tools",
  "baml-tools-calculator",
  "dotenvy",

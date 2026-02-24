@@ -15,3 +15,12 @@ CLI for loading and executing packaged agents.
 Agents are written against the A2A DSL (see **task-lifecycle-demo** in
 `tests/fixtures/agents/task-lifecycle-demo/` for the reference conversation
 handling example).
+
+## Provenance architecture
+
+- In GraphQLite mode, the runner wires a single concrete provenance store and
+  projects it into narrow trait interfaces used by A2A/runtime components.
+- Task/message/status/artifact writes and provenance events share the same
+  underlying store instance (single causality graph).
+- When HTTP serving is enabled, Mermaid endpoints can render graph-backed
+  sequence diagrams for context/task provenance views.

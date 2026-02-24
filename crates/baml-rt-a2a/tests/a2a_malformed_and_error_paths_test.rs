@@ -13,6 +13,8 @@
 
 #![recursion_limit = "256"]
 
+mod common;
+
 use std::{collections::HashMap, sync::Arc};
 
 use baml_rt::{
@@ -180,6 +182,7 @@ impl BamlTool for FailingTool {
 async fn test_streaming_tool_failure_mid_stream() {
     let mut runtime = BamlRuntimeManager::new().unwrap();
     runtime.register_tool(FailingTool).await.unwrap();
+    let store = common::provenance::build_graphqlite_test_store();
     let agent = A2aAgent::builder()
         .with_runtime_manager(runtime)
         .with_init_js(r#"
@@ -198,6 +201,7 @@ async fn test_streaming_tool_failure_mid_stream() {
         "#)
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
+        .with_graphqlite_store(store)
         .build()
         .await
         .unwrap();
@@ -239,6 +243,7 @@ async fn test_allowlist_violation_during_stream() {
     allowlist.insert("test/add_numbers".to_string());
     runtime.set_tool_allowlist(allowlist).await.unwrap();
 
+    let store = common::provenance::build_graphqlite_test_store();
     let agent = A2aAgent::builder()
         .with_runtime_manager(runtime)
         .with_init_js(
@@ -257,6 +262,7 @@ async fn test_allowlist_violation_during_stream() {
             };
         "#,
         )
+        .with_graphqlite_store(store)
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .build()

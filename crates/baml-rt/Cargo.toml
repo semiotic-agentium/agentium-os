@@ -62,3 +62,4 @@ test-support = { path = "../test-support" }
 schemars = { workspace = true }
 ts-rs = { workspace = true }
 uuid = { workspace = true }
+baml-rt-provenance = { path = "../baml-rt-provenance" }

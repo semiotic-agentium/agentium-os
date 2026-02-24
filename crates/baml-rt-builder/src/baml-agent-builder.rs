@@ -15,7 +15,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use baml_rt_builder::builder::{
     AgentDir, BuildDir, BuilderService, FileSystem, FunctionName, Linter, OxcLinter,
     OxcTypeScriptCompiler, PackagePath, RuntimeTypeGenerator, StdFileSystem, StdPackager,

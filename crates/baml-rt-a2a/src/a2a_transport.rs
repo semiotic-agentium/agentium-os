@@ -12,7 +12,10 @@ use baml_rt_core::{
     stream_completion::StreamCompletion,
 };
 use baml_rt_observability::{metrics, spans};
-use baml_rt_provenance::{ProvenanceInterceptor, ProvenanceWriter};
+use baml_rt_provenance::{
+    A2aGraphStore, ProvEvent, ProvenanceContextMessage, ProvenanceContextReader,
+    ProvenanceConversationContextItem, ProvenanceInterceptor, ProvenanceWriter,
+};
 use baml_rt_quickjs::{
     BamlRuntimeManager, QuickJSBridge, QuickJSConfig, baml_execution::ConversationContextProvider,
 };
@@ -27,10 +30,10 @@ use tokio::sync::{Mutex, broadcast};
 use crate::{
     a2a,
     a2a_store::{
-        ConversationContextSource, ProvenanceTaskStore, TaskEventRecorder, TaskRepository,
-        TaskStoreBackend, TaskUpdateEvent, TaskUpdateQueue,
+        ConversationContextSource, ProvenanceTaskStore, TaskChunkApplier, TaskEventRecorder,
+        TaskRepository, TaskStoreBackend, TaskUpdateEvent, TaskUpdateQueue,
     },
-    a2a_types::JSONRPCId,
+    a2a_types::{JSONRPCId, TaskArtifactUpdateEvent, TaskStatusUpdateEvent},
     error_classifier::{A2aErrorClassifier, ErrorClassifier},
     events::{BroadcastEventEmitter, EventEmitter},
     handlers::{DefaultTaskHandler, TaskHandler},
@@ -39,6 +42,156 @@ use crate::{
     result_deduplicator::{DeduplicatingPipeline, HashResultDeduplicator, ResultDeduplicator},
     result_pipeline::{A2aResultPipeline, ResultStoragePipeline},
 };
+
+/// Single concrete backing store for GraphQLite mode.
+/// Exposed as both TaskStoreBackend and ProvenanceWriter from the same Arc.
+struct GraphqliteRuntimeStore {
+    task_store: Arc<crate::graphqlite_task_subgraph_store::GraphqliteTaskSubgraphStore>,
+    provenance: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+}
+
+impl GraphqliteRuntimeStore {
+    fn new(provenance: Arc<baml_rt_provenance::GraphqliteProvenanceStore>) -> Arc<Self> {
+        let graph: Arc<dyn A2aGraphStore> = provenance.clone();
+        let context_reader: Arc<dyn ProvenanceContextReader> = provenance.clone();
+        Arc::new(Self {
+            task_store: Arc::new(
+                crate::graphqlite_task_subgraph_store::GraphqliteTaskSubgraphStore::new(
+                    graph,
+                    context_reader,
+                ),
+            ),
+            provenance,
+        })
+    }
+}
+
+#[async_trait]
+impl TaskRepository for GraphqliteRuntimeStore {
+    async fn upsert(&self, task: crate::a2a_types::Task) -> Result<Option<crate::a2a_types::Task>> {
+        self.task_store.upsert(task).await
+    }
+    async fn ensure_task_exists(
+        &self,
+        task_id: &baml_rt_core::ids::TaskId,
+        context_id: Option<&baml_rt_core::ids::ContextId>,
+    ) -> Result<()> {
+        self.task_store
+            .ensure_task_exists(task_id, context_id)
+            .await
+    }
+    async fn get(&self, id: &str, history_length: Option<usize>) -> Option<crate::a2a_types::Task> {
+        self.task_store.get(id, history_length).await
+    }
+    async fn list(
+        &self,
+        request: &crate::a2a_types::ListTasksRequest,
+    ) -> crate::a2a_types::ListTasksResponse {
+        self.task_store.list(request).await
+    }
+    async fn cancel(&self, id: &str) -> Option<crate::a2a_types::Task> {
+        self.task_store.cancel(id).await
+    }
+    async fn insert_message(&self, message: &crate::a2a_types::Message) -> Result<()> {
+        self.task_store.insert_message(message).await
+    }
+}
+
+#[async_trait]
+impl TaskEventRecorder for GraphqliteRuntimeStore {
+    async fn record_status_update(
+        &self,
+        task_id: Option<baml_rt_core::ids::TaskId>,
+        context_id: Option<baml_rt_core::ids::ContextId>,
+        status: crate::a2a_types::TaskStatus,
+    ) -> Result<Option<TaskUpdateEvent>> {
+        self.task_store
+            .record_status_update(task_id, context_id, status)
+            .await
+    }
+    async fn record_artifact_update(
+        &self,
+        task_id: Option<baml_rt_core::ids::TaskId>,
+        context_id: Option<baml_rt_core::ids::ContextId>,
+        artifact: crate::a2a_types::Artifact,
+        append: Option<bool>,
+        last_chunk: Option<bool>,
+    ) -> Result<Option<TaskUpdateEvent>> {
+        self.task_store
+            .record_artifact_update(task_id, context_id, artifact, append, last_chunk)
+            .await
+    }
+}
+
+#[async_trait]
+impl TaskUpdateQueue for GraphqliteRuntimeStore {
+    async fn drain_updates(&self, task_id: &str) -> Vec<TaskUpdateEvent> {
+        self.task_store.drain_updates(task_id).await
+    }
+}
+
+#[async_trait]
+impl TaskChunkApplier for GraphqliteRuntimeStore {
+    async fn apply_task_delta(
+        &self,
+        task: Option<crate::a2a_types::Task>,
+        message: Option<crate::a2a_types::Message>,
+        status_update: Option<TaskStatusUpdateEvent>,
+        artifact_update: Option<TaskArtifactUpdateEvent>,
+    ) -> Result<Vec<TaskUpdateEvent>> {
+        self.task_store
+            .apply_task_delta(task, message, status_update, artifact_update)
+            .await
+    }
+}
+
+#[async_trait]
+impl ConversationContextSource for GraphqliteRuntimeStore {
+    async fn conversation_context(
+        &self,
+        context_id: &baml_rt_core::ids::ContextId,
+        limit: Option<usize>,
+    ) -> Result<Vec<ProvenanceConversationContextItem>> {
+        self.task_store
+            .conversation_context(context_id, limit)
+            .await
+    }
+}
+
+#[async_trait]
+impl ProvenanceContextReader for GraphqliteRuntimeStore {
+    async fn context_messages(
+        &self,
+        context_id: &baml_rt_core::ids::ContextId,
+        limit: Option<usize>,
+    ) -> std::result::Result<Vec<ProvenanceContextMessage>, baml_rt_provenance::ProvenanceError>
+    {
+        self.provenance.context_messages(context_id, limit).await
+    }
+
+    async fn conversation_context(
+        &self,
+        context_id: &baml_rt_core::ids::ContextId,
+        limit: Option<usize>,
+    ) -> std::result::Result<
+        Vec<ProvenanceConversationContextItem>,
+        baml_rt_provenance::ProvenanceError,
+    > {
+        self.provenance
+            .conversation_context(context_id, limit)
+            .await
+    }
+}
+
+#[async_trait]
+impl ProvenanceWriter for GraphqliteRuntimeStore {
+    async fn add_event(
+        &self,
+        event: ProvEvent,
+    ) -> std::result::Result<(), baml_rt_provenance::ProvenanceError> {
+        self.provenance.add_event(event).await
+    }
+}
 
 /// Conversation context from the unified task store (single source of truth).
 /// No separate provenance read path; store view and provenance write are one concept.
@@ -285,16 +438,16 @@ enum BridgeConfig {
     AutoCreate,
 }
 
-/// Task store configuration: either provided or default (InMemory).
+/// Task store configuration: either provided or default (must pair with GraphQLite writer).
 enum TaskStoreConfig {
     Provided(Arc<dyn TaskStoreBackend>),
     Default,
 }
 
-/// Provenance writer configuration: either provided, default (InMemory), or GraphQLite (task + provenance in same DB).
+/// Provenance writer configuration: either provided or GraphQLite (task + provenance in same DB).
 enum ProvenanceWriterConfig {
     Provided(Arc<dyn ProvenanceWriter>),
-    /// Task state and provenance in the same GraphQLite DB; build() creates [ProvenanceTaskStore] over [crate::graphqlite_unified_store::GraphqliteUnifiedStore].
+    /// Task state and provenance in the same GraphQLite DB; build() creates [ProvenanceTaskStore] over [crate::graphqlite_task_subgraph_store::GraphqliteTaskSubgraphStore].
     Graphqlite(Arc<baml_rt_provenance::GraphqliteProvenanceStore>),
     Default,
 }
@@ -677,45 +830,41 @@ impl A2aAgentBuilderWithEffectEmitter {
                 // Task store provided but no writer
                 (task_store, None)
             }
-            (TaskStoreConfig::Default, ProvenanceWriterConfig::Provided(writer)) => {
-                // Writer provided but no task store - create task store with writer
-                let store: Arc<dyn TaskStoreBackend> = Arc::new(ProvenanceTaskStore::new(
-                    Some(writer.clone()),
-                    agent_id.clone(),
+            (TaskStoreConfig::Default, ProvenanceWriterConfig::Provided(_writer)) => {
+                return Err(BamlRtError::InvalidArgument(
+                    "Persistent mode requires explicit task store when using a provided provenance writer".to_string(),
                 ));
-                (store, Some(writer))
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Default) => {
-                // Both default - task store without provenance writer
-                let store: Arc<dyn TaskStoreBackend> =
-                    Arc::new(ProvenanceTaskStore::new(None, agent_id.clone()));
-                (store, None)
+                return Err(BamlRtError::InvalidArgument(
+                    "Persistent mode requires with_graphqlite_store(...) or explicit task store + provenance writer".to_string(),
+                ));
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Graphqlite(store)) => {
-                // Unified: task state and provenance in same GraphQLite DB
-                let backend = Arc::new(
-                    crate::graphqlite_unified_store::GraphqliteUnifiedStore::new(store.clone()),
-                );
+                // Single underlying concrete type exposed via both traits.
+                // Wrap backend with ProvenanceTaskStore so graph-native provenance events
+                // are emitted for message/task/status/artifact writes.
+                let runtime_store = GraphqliteRuntimeStore::new(store);
+                let provenance_writer: Arc<dyn ProvenanceWriter> = runtime_store.clone();
                 let task_store: Arc<dyn TaskStoreBackend> =
                     Arc::new(ProvenanceTaskStore::with_backend(
-                        backend,
-                        Some(store.clone()),
+                        runtime_store,
+                        Some(provenance_writer.clone()),
                         agent_id.clone(),
                     ));
-                (task_store, Some(store as Arc<dyn ProvenanceWriter>))
+                (task_store, Some(provenance_writer))
             }
             (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Graphqlite(store)) => {
-                // GraphQLite unified overrides provided task store
-                let backend = Arc::new(
-                    crate::graphqlite_unified_store::GraphqliteUnifiedStore::new(store.clone()),
-                );
+                // Provided task store is overridden by the single GraphQLite runtime store.
+                let runtime_store = GraphqliteRuntimeStore::new(store);
+                let provenance_writer: Arc<dyn ProvenanceWriter> = runtime_store.clone();
                 let task_store: Arc<dyn TaskStoreBackend> =
                     Arc::new(ProvenanceTaskStore::with_backend(
-                        backend,
-                        Some(store.clone()),
+                        runtime_store,
+                        Some(provenance_writer.clone()),
                         agent_id.clone(),
                     ));
-                (task_store, Some(store as Arc<dyn ProvenanceWriter>))
+                (task_store, Some(provenance_writer))
             }
         };
 
@@ -1088,16 +1237,7 @@ impl A2aAgent {
             let invocation_scope = InvocationScope::new(scope.clone());
             context::with_scope(scope, async move {
                 if let a2a::A2aParams::MessageSendStream(params) = &parsed_request.params {
-                    // When the inbound message carries a task_id (e.g.
-                    // client-assigned on first turn), ensure the parent
-                    // task row exists before persisting the message.
-                    // This must be insert-if-missing semantics so existing
-                    // task metadata/artifacts are never overwritten.
-                    if let Some(task_id) = params.message.task_id.clone() {
-                        self.task_store
-                            .ensure_task_exists(&task_id, params.message.context_id.as_ref())
-                            .await?;
-                    }
+                    // Persist inbound message independently of task-row materialization timing.
                     self.task_store.insert_message(&params.message).await?;
                 }
                 let route_span = spans::a2a_route(
@@ -1256,8 +1396,12 @@ mod tests {
 
     #[tokio::test]
     async fn js_tool_can_be_called_via_baml_tool_registry() {
+        let store = baml_rt_provenance::GraphqliteStoreBuilder::in_memory()
+            .build()
+            .expect("test store");
         let agent = A2aAgent::builder()
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+            .with_graphqlite_store(store)
             .build()
             .await
             .expect("agent build");

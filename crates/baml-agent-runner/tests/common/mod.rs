@@ -9,17 +9,13 @@ use async_trait::async_trait;
 use baml_rt_a2a::AgentRegistry;
 #[cfg(any(feature = "clickup", feature = "notion"))]
 use baml_rt_core::A2aRequestHandler;
-use baml_rt_core::ids::ContextId;
 #[cfg(any(feature = "clickup", feature = "notion"))]
 use baml_rt_core::{AgentCard, AgentDiscoveryEntry, AgentLister, AgentRouteKey};
+use baml_rt_provenance::GraphqliteProvenanceStore;
 #[cfg(any(feature = "clickup", feature = "notion"))]
 use baml_rt_provenance::{
     GraphExporter,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
-};
-use baml_rt_provenance::{
-    GraphqliteProvenanceStore, ProvEvent, ProvenanceContextMessage, ProvenanceContextReader,
-    ProvenanceConversationContextItem, ProvenanceWriter,
 };
 #[cfg(any(feature = "clickup", feature = "notion"))]
 use serde_json::Value;
@@ -38,53 +34,6 @@ pub fn e2e_serial_gate() -> &'static Semaphore {
     init_test_tracing();
     static GATE: OnceLock<Semaphore> = OnceLock::new();
     GATE.get_or_init(|| Semaphore::new(1))
-}
-
-#[derive(Clone)]
-pub struct StrictProvenanceWriter {
-    inner: Arc<GraphqliteProvenanceStore>,
-}
-
-impl StrictProvenanceWriter {
-    pub fn new(inner: Arc<GraphqliteProvenanceStore>) -> Self {
-        Self { inner }
-    }
-}
-
-#[async_trait]
-impl ProvenanceWriter for StrictProvenanceWriter {
-    async fn add_event(
-        &self,
-        event: ProvEvent,
-    ) -> std::result::Result<(), baml_rt_provenance::ProvenanceError> {
-        match self.inner.add_event(event.clone()).await {
-            Ok(()) => Ok(()),
-            Err(err) => panic!("strict provenance write failure: {err:?}; event={event:?}"),
-        }
-    }
-}
-
-#[async_trait]
-impl ProvenanceContextReader for StrictProvenanceWriter {
-    async fn context_messages(
-        &self,
-        context_id: &ContextId,
-        limit: Option<usize>,
-    ) -> std::result::Result<Vec<ProvenanceContextMessage>, baml_rt_provenance::ProvenanceError>
-    {
-        self.inner.context_messages(context_id, limit).await
-    }
-
-    async fn conversation_context(
-        &self,
-        context_id: &ContextId,
-        limit: Option<usize>,
-    ) -> std::result::Result<
-        Vec<ProvenanceConversationContextItem>,
-        baml_rt_provenance::ProvenanceError,
-    > {
-        self.inner.conversation_context(context_id, limit).await
-    }
 }
 
 #[cfg(any(feature = "clickup", feature = "notion"))]
