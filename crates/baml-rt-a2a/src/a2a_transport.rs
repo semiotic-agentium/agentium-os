@@ -1396,8 +1396,12 @@ mod tests {
 
     #[tokio::test]
     async fn js_tool_can_be_called_via_baml_tool_registry() {
+        let store = baml_rt_provenance::GraphqliteStoreBuilder::in_memory()
+            .build()
+            .expect("test store");
         let agent = A2aAgent::builder()
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+            .with_graphqlite_store(store)
             .build()
             .await
             .expect("agent build");

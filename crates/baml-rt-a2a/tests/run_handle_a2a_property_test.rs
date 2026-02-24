@@ -10,6 +10,8 @@
 
 #![recursion_limit = "256"]
 
+mod common;
+
 use std::sync::Arc;
 
 use baml_rt::interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor};
@@ -156,6 +158,7 @@ async fn setup_interleaving_agent() -> A2aAgent {
     manager
         .register_llm_interceptor(StubChooseCalcToolInterceptor)
         .await;
+    let store = common::provenance::build_graphqlite_test_store();
     A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(interleaving_js_handler())
@@ -165,6 +168,7 @@ async fn setup_interleaving_agent() -> A2aAgent {
                 .with_idle_timeout_ms(Some(45_000))
                 .with_max_attempts_ms(Some(45_000)),
         )
+        .with_graphqlite_store(store)
         .build()
         .await
         .expect("build interleaving agent")
@@ -185,8 +189,10 @@ proptest! {
             .expect("runtime");
 
         rt.block_on(async move {
+            let store = common::provenance::build_graphqlite_test_store();
             let agent = A2aAgent::builder()
                 .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+                .with_graphqlite_store(store)
                 .build()
                 .await
                 .expect("agent build");

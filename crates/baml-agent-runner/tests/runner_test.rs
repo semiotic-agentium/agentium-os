@@ -338,6 +338,7 @@ async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_graphqlite_store(build_graphqlite_test_store())
         .build()
         .await
         .unwrap()
@@ -380,6 +381,7 @@ async fn setup_tool_discovery_demo_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_graphqlite_store(build_graphqlite_test_store())
         .build()
         .await
         .unwrap()
@@ -396,6 +398,7 @@ async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_graphqlite_store(build_graphqlite_test_store())
         .build()
         .await
         .unwrap()
@@ -448,6 +451,7 @@ globalThis.onChatMessage = async function(message) {
         .with_runtime_manager(responder_manager)
         .with_init_js(responder_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_graphqlite_store(build_graphqlite_test_store())
         .build()
         .await
         .unwrap();
@@ -509,6 +513,7 @@ globalThis.onChatMessage = async function(message) {
         .with_a2a_session_tool(RegistrationMode::Register)
         .with_a2a_session_router(router)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_graphqlite_store(build_graphqlite_test_store())
         .build()
         .await
         .unwrap();
@@ -527,6 +532,7 @@ async fn setup_task_lifecycle_demo_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_graphqlite_store(build_graphqlite_test_store())
         .build()
         .await
         .unwrap()
@@ -544,6 +550,7 @@ async fn setup_argument_fixture_agent(fixture: &str) -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_graphqlite_store(build_graphqlite_test_store())
         .build()
         .await
         .unwrap()
@@ -599,6 +606,7 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
         .with_runtime_manager(manager)
         .with_init_js(entry_js)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_graphqlite_store(build_graphqlite_test_store())
         .build()
         .await
         .expect("build packaged A2A agent");

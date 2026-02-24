@@ -7,7 +7,7 @@ use std::{
 use async_trait::async_trait;
 use baml_rt_core::{
     BamlRtError, Result,
-    ids::{AgentId, ContextId, TaskId},
+    ids::{AgentId, ContextId, EventId, TaskId},
 };
 use baml_rt_observability::metrics;
 use baml_rt_provenance::{ProvEvent, ProvenanceConversationContextItem, ProvenanceWriter};
@@ -495,7 +495,7 @@ fn message_to_context_item(
     );
     ProvenanceConversationContextItem {
         timestamp_ms,
-        event_id: message.message_id.as_message_id().as_str().to_string(),
+        event_id: EventId::from(message.message_id.as_message_id().as_str()),
         role,
         content,
         source: "message".to_string(),

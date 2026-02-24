@@ -9,7 +9,7 @@ use baml_rt_core::{
     ids::{AgentId, ArtifactId, ContextId, EventId, MessageId, TaskId},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, Value as JsonValue};
 
 // Process-local monotonic counter for provenance event IDs.
 //
@@ -97,7 +97,7 @@ pub enum ProvEventData {
         model: String,
         function_name: String,
         prompt: Value,
-        metadata: Value,
+        metadata: JsonValue,
     },
     LlmCallCompleted {
         scope: CallScope,
@@ -105,7 +105,7 @@ pub enum ProvEventData {
         model: String,
         function_name: String,
         prompt: Value,
-        metadata: Value,
+        metadata: JsonValue,
         usage: LlmUsage,
         duration_ms: u64,
         outcome: Outcome,
@@ -115,14 +115,14 @@ pub enum ProvEventData {
         tool_name: String,
         function_name: Option<String>,
         args: Value,
-        metadata: Value,
+        metadata: JsonValue,
     },
     ToolCallCompleted {
         scope: CallScope,
         tool_name: String,
         function_name: Option<String>,
         args: Value,
-        metadata: Value,
+        metadata: JsonValue,
         duration_ms: u64,
         outcome: Outcome,
     },
@@ -226,7 +226,7 @@ impl ProvEvent {
         model: String,
         function_name: String,
         prompt: Value,
-        metadata: Value,
+        metadata: JsonValue,
     ) -> Self {
         ProvEvent::Global(GlobalEvent {
             id: next_event_id(),
@@ -250,7 +250,7 @@ impl ProvEvent {
         model: String,
         function_name: String,
         prompt: Value,
-        metadata: Value,
+        metadata: JsonValue,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
             id: next_event_id(),
@@ -276,7 +276,7 @@ impl ProvEvent {
         model: String,
         function_name: String,
         prompt: Value,
-        metadata: Value,
+        metadata: JsonValue,
         usage: LlmUsage,
         duration_ms: u64,
         outcome: Outcome,
@@ -307,7 +307,7 @@ impl ProvEvent {
         model: String,
         function_name: String,
         prompt: Value,
-        metadata: Value,
+        metadata: JsonValue,
         usage: LlmUsage,
         duration_ms: u64,
         outcome: Outcome,
@@ -337,7 +337,7 @@ impl ProvEvent {
         tool_name: String,
         function_name: Option<String>,
         args: Value,
-        metadata: Value,
+        metadata: JsonValue,
     ) -> Self {
         ProvEvent::Global(GlobalEvent {
             id: next_event_id(),
@@ -359,7 +359,7 @@ impl ProvEvent {
         tool_name: String,
         function_name: Option<String>,
         args: Value,
-        metadata: Value,
+        metadata: JsonValue,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
             id: next_event_id(),
@@ -383,7 +383,7 @@ impl ProvEvent {
         tool_name: String,
         function_name: Option<String>,
         args: Value,
-        metadata: Value,
+        metadata: JsonValue,
         duration_ms: u64,
         outcome: Outcome,
     ) -> Self {
@@ -410,7 +410,7 @@ impl ProvEvent {
         tool_name: String,
         function_name: Option<String>,
         args: Value,
-        metadata: Value,
+        metadata: JsonValue,
         duration_ms: u64,
         outcome: Outcome,
     ) -> Self {

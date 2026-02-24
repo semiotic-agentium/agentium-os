@@ -16,8 +16,16 @@ use baml_rt_core::{
     bus::{BusWithEffects, EffectEmitter, EffectLiveness},
     context::{self, InvocationScope},
 };
+use baml_rt_provenance::GraphqliteStoreBuilder;
 use serde_json::json;
 use test_support::common::{CalculatorTool, agent_fixture, ensure_fixture_runtime_types};
+
+/// In-memory GraphQLite store for contract tests (persistent mode required).
+fn test_graphqlite_store() -> Arc<baml_rt_provenance::GraphqliteProvenanceStore> {
+    GraphqliteStoreBuilder::in_memory()
+        .build()
+        .expect("in-memory provenance store for contract test")
+}
 
 /// Stub interceptor: returns a canned session plan for ChooseCalcTool so tests avoid real LLM calls.
 struct StubChooseCalcToolInterceptor;
@@ -96,6 +104,7 @@ async fn test_baml_function_returns_actual_result() {
         .with_runtime_manager(baml_manager)
         .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(test_quickjs_config())
+        .with_graphqlite_store(test_graphqlite_store())
         .build()
         .await
         .unwrap();
@@ -175,6 +184,7 @@ async fn test_js_function_invocation_returns_actual_result() {
         .with_init_js(agent_code)
         .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(test_quickjs_config())
+        .with_graphqlite_store(test_graphqlite_store())
         .build()
         .await
         .unwrap();
@@ -250,6 +260,7 @@ async fn test_invoke_function_api_contract() {
         .with_init_js(agent_code)
         .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(test_quickjs_config())
+        .with_graphqlite_store(test_graphqlite_store())
         .build()
         .await
         .unwrap();
@@ -339,6 +350,7 @@ async fn test_loaded_agent_invoke_function_contract() {
         .with_init_js(agent_code)
         .with_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>)
         .with_quickjs_config(test_quickjs_config())
+        .with_graphqlite_store(test_graphqlite_store())
         .build()
         .await
         .unwrap();

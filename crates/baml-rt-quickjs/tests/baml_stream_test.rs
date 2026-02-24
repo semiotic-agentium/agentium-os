@@ -59,10 +59,12 @@ async fn test_js_stream_baml_function() {
         .register_llm_interceptor(StubChooseCalcToolStreamInterceptor)
         .await;
 
+    let store = test_support::common::test_graphqlite_store();
     let agent = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(45_000)))
+        .with_graphqlite_store(store)
         .build()
         .await
         .unwrap();

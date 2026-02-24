@@ -42,7 +42,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use baml_rt_core::ids::ContextId;
+use baml_rt_core::ids::{ContextId, EventId, MessageId};
 use graphqlite::{Connection, CypherResult, Graph, Row};
 use serde_json::{Map, Value};
 use tokio::sync::{Mutex as TokioMutex, oneshot};
@@ -582,7 +582,7 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
                 continue;
             }
             messages.push(ProvenanceContextMessage {
-                message_id: msg.message_id,
+                message_id: MessageId::from(msg.message_id.as_str()),
                 timestamp_ms: event_id_to_timestamp_ms(&msg.event_id),
                 role,
                 content: vec![content],
@@ -639,7 +639,7 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
             }
             items.push(ProvenanceConversationContextItem {
                 timestamp_ms: event_id_to_timestamp_ms(&msg.event_id),
-                event_id: msg.event_id,
+                event_id: EventId::from(msg.event_id.as_str()),
                 role,
                 content: Value::String(content),
                 source: "message".to_string(),
@@ -673,7 +673,7 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
             if include_call {
                 items.push(ProvenanceConversationContextItem {
                     timestamp_ms: event_id_to_timestamp_ms(&tool.event_id),
-                    event_id: tool.event_id.clone(),
+                    event_id: EventId::from(tool.event_id.as_str()),
                     role: "assistant".to_string(),
                     content: serde_json::json!({
                         "tool_call": {
@@ -701,7 +701,7 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
                 }
                 items.push(ProvenanceConversationContextItem {
                     timestamp_ms: event_id_to_timestamp_ms(&tool.event_id),
-                    event_id: tool.event_id,
+                    event_id: EventId::from(tool.event_id.as_str()),
                     role: "tool".to_string(),
                     content: Value::Object(content),
                     source: "tool_result".to_string(),
@@ -712,7 +712,7 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
         items.sort_by_key(|i| {
             (
                 i.timestamp_ms,
-                event_id_to_timestamp_ms(&i.event_id),
+                event_id_to_timestamp_ms(i.event_id.as_str()),
                 i.source.clone(),
             )
         });

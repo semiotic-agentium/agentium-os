@@ -12,6 +12,7 @@ mod test_tools;
 use std::{path::PathBuf, sync::Arc};
 
 use baml_rt::{A2aAgent, QuickJSConfig, baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
+use baml_rt_provenance::GraphqliteStoreBuilder;
 pub use test_tools::{
     AddNumbersInput, AddNumbersOutput, AddNumbersTool, DelayedResponseTool, UppercaseTool,
     WeatherTool,
@@ -276,6 +277,13 @@ pub async fn assert_tool_registered_in_js(
     );
 }
 
+/// In-memory GraphQLite store for tests that build A2aAgent (persistent mode required).
+pub fn test_graphqlite_store() -> std::sync::Arc<baml_rt_provenance::GraphqliteProvenanceStore> {
+    GraphqliteStoreBuilder::in_memory()
+        .build()
+        .expect("in-memory provenance store for test")
+}
+
 /// Builds a minimal A2aAgent for malformed/error-path A2A tests: no BAML schema or tools.
 /// Uses BusWithEffects and QuickJSConfig with max_attempts_ms(15_000).
 pub async fn build_minimal_a2a_agent(init_js: &str) -> A2aAgent {
@@ -283,6 +291,7 @@ pub async fn build_minimal_a2a_agent(init_js: &str) -> A2aAgent {
         .with_init_js(init_js)
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
+        .with_graphqlite_store(test_graphqlite_store())
         .build()
         .await
         .expect("build minimal a2a agent")
@@ -305,7 +314,8 @@ pub async fn setup_stream_baml_tool_agent_for_contract(init_js: Option<&str>) ->
     let mut builder = A2aAgent::builder()
         .with_runtime_manager(baml_manager)
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
-        .with_quickjs_config(config);
+        .with_quickjs_config(config)
+        .with_graphqlite_store(test_graphqlite_store());
     if let Some(js) = init_js {
         builder = builder.with_init_js(js);
     }

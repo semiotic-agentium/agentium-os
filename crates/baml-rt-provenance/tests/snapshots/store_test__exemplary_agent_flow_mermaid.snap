@@ -4,9 +4,12 @@ expression: mermaid
 ---
 sequenceDiagram
     autonumber
+    actor User
     participant clickup_agent
     participant clickup
 
+    User->>clickup_agent: how many tasks are in to do?
     Note over clickup_agent: LLM openai-generic (7475ms)
     clickup_agent->>clickup: action=ListTeams
     clickup-->>clickup_agent: 976ms
+    clickup_agent->>User: Found 1 team(s)
