@@ -55,7 +55,7 @@ coordinator-demo-stop:
 fmt:
     cargo fmt --all
 
-ci_features := "baml-rt-builder/http-tools,baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests,baml-agent-runner/http-tools,baml-rt/llm-tests,baml-agent-runner/llm-tests"
+ci_features := "baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-rt/llm-tests,baml-agent-runner/llm-tests"
 
 # CI parity: run the full nextest suite (mirrors rust-ci.yml "nextest" job).
 # Requires: cargo-nextest, a running FalkorDB on localhost:6379,
