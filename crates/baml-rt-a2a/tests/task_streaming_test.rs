@@ -250,17 +250,12 @@ async fn test_tasks_subscribe_streams_incremental_updates() {
     let mut saw_status_update = false;
     let mut saw_task_status_snapshot = false;
     let mut saw_artifact = false;
-    let mut saw_task_not_found_error = false;
     for response in responses {
-        if response
-            .get("error")
-            .and_then(|err| err.get("data"))
-            .and_then(|data| data.get("details"))
-            .and_then(Value::as_str)
-            == Some("Task not found")
-        {
-            saw_task_not_found_error = true;
-        }
+        assert!(
+            response.get("error").is_none(),
+            "tasks.subscribe should not error after task creation: {}",
+            serde_json::to_string_pretty(&response).unwrap_or_default()
+        );
         if let Some(chunk) = response
             .get("result")
             .and_then(|result| result.get("chunk"))
@@ -283,8 +278,8 @@ async fn test_tasks_subscribe_streams_incremental_updates() {
 
     let saw_any_status = saw_status_update || saw_task_status_snapshot;
     assert!(
-        saw_any_status || saw_artifact || saw_task_not_found_error,
-        "expected status/artifact progress updates or explicit task-not-found error; responses={responses_debug}"
+        saw_any_status || saw_artifact,
+        "expected status/artifact progress updates; responses={responses_debug}"
     );
 }
 

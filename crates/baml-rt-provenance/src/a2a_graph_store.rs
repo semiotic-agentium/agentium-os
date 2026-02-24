@@ -26,6 +26,10 @@ fn empty_params() -> GraphQueryParams {
     GraphQueryParams::new()
 }
 
+fn escape_cypher_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
 fn decode_task_node(row: &GraphRow) -> Option<TaskSubgraphNode> {
     Some(TaskSubgraphNode {
         id: row.get::<String>("id").ok()?,
@@ -69,7 +73,7 @@ impl A2aGraphStore for GraphqliteProvenanceStore {
     async fn max_task_ord(&self) -> A2aGraphStoreResult<i64> {
         let rows = self
             .run_cypher_read(
-                &format!("MATCH (t:{TASK_NODE_LABEL}) RETURN coalesce(max(t.ord), 0) AS max_ord"),
+                &format!("MATCH (n:{TASK_NODE_LABEL}) RETURN coalesce(max(n.ord), 0) AS max_ord"),
                 &empty_params(),
             )
             .await
@@ -90,14 +94,15 @@ impl A2aGraphStore for GraphqliteProvenanceStore {
     }
 
     async fn get_task_node(&self, id: &str) -> A2aGraphStoreResult<Option<TaskSubgraphNode>> {
+        let id_lit = escape_cypher_string(id);
         let rows = self
             .run_cypher_read(
                 &format!(
-                    "MATCH (t:{TASK_NODE_LABEL}) WHERE t.id = $id \
-                     RETURN t.id AS id, t.context_id AS context_id, t.status_json AS status_json, \
-                            t.metadata_json AS metadata_json, t.extra_json AS extra_json, t.artifacts_json AS artifacts_json"
+                    "MATCH (n:{TASK_NODE_LABEL}) WHERE n.id = '{id_lit}' \
+                     RETURN n.id AS id, n.context_id AS context_id, n.status_json AS status_json, \
+                            n.metadata_json AS metadata_json, n.extra_json AS extra_json, n.artifacts_json AS artifacts_json"
                 ),
-                &qparams([qp("id", id)]),
+                &empty_params(),
             )
             .await
             .map_err(|e| e.to_string())?;
@@ -111,20 +116,20 @@ impl A2aGraphStore for GraphqliteProvenanceStore {
         let (query, params) = if let Some(cid) = context_id {
             (
                 format!(
-                    "MATCH (t:{TASK_NODE_LABEL}) WHERE t.context_id = $context_id \
-                     RETURN t.id AS id, t.context_id AS context_id, t.status_json AS status_json, \
-                            t.metadata_json AS metadata_json, t.extra_json AS extra_json, t.artifacts_json AS artifacts_json \
-                     ORDER BY t.ord"
+                    "MATCH (n:{TASK_NODE_LABEL}) WHERE n.context_id = $context_id \
+                     RETURN n.id AS id, n.context_id AS context_id, n.status_json AS status_json, \
+                            n.metadata_json AS metadata_json, n.extra_json AS extra_json, n.artifacts_json AS artifacts_json \
+                     ORDER BY n.ord"
                 ),
                 qparams([qp("context_id", cid)]),
             )
         } else {
             (
                 format!(
-                    "MATCH (t:{TASK_NODE_LABEL}) \
-                     RETURN t.id AS id, t.context_id AS context_id, t.status_json AS status_json, \
-                            t.metadata_json AS metadata_json, t.extra_json AS extra_json, t.artifacts_json AS artifacts_json \
-                     ORDER BY t.ord"
+                    "MATCH (n:{TASK_NODE_LABEL}) \
+                     RETURN n.id AS id, n.context_id AS context_id, n.status_json AS status_json, \
+                            n.metadata_json AS metadata_json, n.extra_json AS extra_json, n.artifacts_json AS artifacts_json \
+                     ORDER BY n.ord"
                 ),
                 empty_params(),
             )
@@ -141,19 +146,27 @@ impl A2aGraphStore for GraphqliteProvenanceStore {
         node: &TaskSubgraphNode,
         ord_if_create: i64,
     ) -> A2aGraphStoreResult<()> {
+        // GraphQLite may not bind $id in MERGE patterns; inline the id literal for stable matching.
+        let id_lit = escape_cypher_string(&node.id);
         self.run_cypher_execute(
             &format!(
-                "MERGE (t:{TASK_NODE_LABEL} {{id: $id}}) \
-                 ON CREATE SET t.ord = $ord \
-                 SET t.context_id = $context_id, \
-                     t.status_json = $status_json, \
-                     t.metadata_json = $metadata_json, \
-                     t.extra_json = $extra_json, \
-                     t.artifacts_json = $artifacts_json"
+                "MERGE (n:{TASK_NODE_LABEL} {{id: '{id_lit}'}}) \
+                 ON CREATE SET n.ord = $ord"
+            ),
+            &qparams([qp("ord", ord_if_create)]),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        self.run_cypher_execute(
+            &format!(
+                "MATCH (n:{TASK_NODE_LABEL}) WHERE n.id = '{id_lit}' \
+                 SET n.context_id = $context_id, \
+                     n.status_json = $status_json, \
+                     n.metadata_json = $metadata_json, \
+                     n.extra_json = $extra_json, \
+                     n.artifacts_json = $artifacts_json"
             ),
             &qparams([
-                qp("id", node.id.clone()),
-                qp("ord", ord_if_create),
                 qp("context_id", node.context_id.clone()),
                 qp("status_json", node.status_json.clone()),
                 qp("metadata_json", node.metadata_json.clone()),
@@ -171,12 +184,13 @@ impl A2aGraphStore for GraphqliteProvenanceStore {
         context_id: &str,
         ord_if_create: i64,
     ) -> A2aGraphStoreResult<()> {
+        let id_lit = escape_cypher_string(id);
         self.run_cypher_execute(
             &format!(
-                "MERGE (t:{TASK_NODE_LABEL} {{id: $id}}) \
-                 ON CREATE SET t.context_id = $context_id, t.status_json = '', t.metadata_json = '{{}}', t.extra_json = '{{}}', t.artifacts_json = '[]', t.ord = $ord"
+                "MERGE (n:{TASK_NODE_LABEL} {{id: '{id_lit}'}}) \
+                 ON CREATE SET n.context_id = $context_id, n.status_json = '', n.metadata_json = '{{}}', n.extra_json = '{{}}', n.artifacts_json = '[]', n.ord = $ord"
             ),
-            &qparams([qp("id", id), qp("context_id", context_id), qp("ord", ord_if_create)]),
+            &qparams([qp("context_id", context_id), qp("ord", ord_if_create)]),
         )
         .await
         .map_err(|e| e.to_string())
@@ -189,13 +203,13 @@ impl A2aGraphStore for GraphqliteProvenanceStore {
         seq: i64,
         message_json: &str,
     ) -> A2aGraphStoreResult<()> {
+        let id_lit = escape_cypher_string(id);
         self.run_cypher_execute(
             &format!(
-                "MERGE (m:{TASK_MESSAGE_NODE_LABEL} {{id: $id}}) \
-                 SET m.task_id = $task_id, m.seq = $seq, m.message_json = $message_json"
+                "MERGE (n:{TASK_MESSAGE_NODE_LABEL} {{id: '{id_lit}'}}) \
+                 SET n.task_id = $task_id, n.seq = $seq, n.message_json = $message_json"
             ),
             &qparams([
-                qp("id", id),
                 qp("task_id", task_id),
                 qp("seq", seq),
                 qp("message_json", message_json),
@@ -223,9 +237,10 @@ impl A2aGraphStore for GraphqliteProvenanceStore {
     }
 
     async fn set_task_status_json(&self, id: &str, status_json: &str) -> A2aGraphStoreResult<()> {
+        let id_lit = escape_cypher_string(id);
         self.run_cypher_execute(
-            &format!("MATCH (t:{TASK_NODE_LABEL} {{id: $id}}) SET t.status_json = $status_json"),
-            &qparams([qp("id", id), qp("status_json", status_json)]),
+            &format!("MATCH (n:{TASK_NODE_LABEL}) WHERE n.id = '{id_lit}' SET n.status_json = $status_json"),
+            &qparams([qp("status_json", status_json)]),
         )
         .await
         .map_err(|e| e.to_string())
@@ -239,13 +254,13 @@ impl A2aGraphStore for GraphqliteProvenanceStore {
         kind: &str,
         payload_json: &str,
     ) -> A2aGraphStoreResult<()> {
+        let id_lit = escape_cypher_string(id);
         self.run_cypher_execute(
             &format!(
-                "MERGE (u:{TASK_UPDATE_NODE_LABEL} {{id: $id}}) \
-                 SET u.task_id = $task_id, u.seq = $seq, u.kind = $kind, u.payload_json = $payload_json"
+                "MERGE (n:{TASK_UPDATE_NODE_LABEL} {{id: '{id_lit}'}}) \
+                 SET n.task_id = $task_id, n.seq = $seq, n.kind = $kind, n.payload_json = $payload_json"
             ),
             &qparams([
-                qp("id", id),
                 qp("task_id", task_id),
                 qp("seq", seq),
                 qp("kind", kind),
@@ -263,9 +278,9 @@ impl A2aGraphStore for GraphqliteProvenanceStore {
         let rows = self
             .run_cypher_read(
                 &format!(
-                    "MATCH (u:{TASK_UPDATE_NODE_LABEL}) WHERE u.task_id = $task_id \
-                     RETURN u.id AS id, u.kind AS kind, u.payload_json AS payload_json \
-                     ORDER BY u.seq"
+                    "MATCH (n:{TASK_UPDATE_NODE_LABEL}) WHERE n.task_id = $task_id \
+                     RETURN n.id AS id, n.kind AS kind, n.payload_json AS payload_json \
+                     ORDER BY n.seq"
                 ),
                 &qparams([qp("task_id", task_id)]),
             )
@@ -275,9 +290,10 @@ impl A2aGraphStore for GraphqliteProvenanceStore {
     }
 
     async fn delete_update_node(&self, id: &str) -> A2aGraphStoreResult<()> {
+        let id_lit = escape_cypher_string(id);
         self.run_cypher_execute(
-            &format!("MATCH (u:{TASK_UPDATE_NODE_LABEL} {{id: $id}}) DELETE u"),
-            &qparams([qp("id", id)]),
+            &format!("MATCH (n:{TASK_UPDATE_NODE_LABEL}) WHERE n.id = '{id_lit}' DELETE n"),
+            &empty_params(),
         )
         .await
         .map_err(|e| e.to_string())

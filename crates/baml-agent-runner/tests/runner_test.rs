@@ -1609,17 +1609,9 @@ async fn test_e2e_stream_js_tool() {
             .map(|chunk| chunk.get("task").is_some())
             .unwrap_or(false)
     });
-    let task_not_found = responses.iter().any(|response| {
-        response
-            .get("error")
-            .and_then(|e| e.get("data"))
-            .and_then(|d| d.get("details"))
-            .and_then(|v| v.as_str())
-            == Some("Task not found")
-    });
     assert!(
-        has_task_snapshot || task_not_found,
-        "Expected task snapshot in subscribe stream or Task not found (live-stream persistence gap); got {} response(s)",
+        has_task_snapshot,
+        "Expected task snapshot in subscribe stream; got {} response(s)",
         responses.len()
     );
 

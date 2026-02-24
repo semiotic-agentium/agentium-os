@@ -10,6 +10,7 @@ use baml_rt_core::{
 use baml_rt_provenance::{
     A2aGraphStore, ProvenanceContextReader, ProvenanceConversationContextItem, TaskSubgraphNode,
 };
+use tokio::sync::Mutex as TokioMutex;
 
 use crate::{
     a2a_store::{
@@ -86,6 +87,7 @@ fn map_store_err(e: String) -> BamlRtError {
 pub struct GraphqliteTaskSubgraphStore {
     graph: Arc<dyn A2aGraphStore>,
     context_reader: Arc<dyn ProvenanceContextReader>,
+    mutation_lock: TokioMutex<()>,
 }
 
 impl GraphqliteTaskSubgraphStore {
@@ -96,6 +98,7 @@ impl GraphqliteTaskSubgraphStore {
         Self {
             graph,
             context_reader,
+            mutation_lock: TokioMutex::new(()),
         }
     }
 }
@@ -143,6 +146,7 @@ impl TaskRepository for GraphqliteTaskSubgraphStore {
             artifacts_json: serde_json::to_string(&task.artifacts)
                 .map_err(|e| BamlRtError::InvalidArgument(format!("serialize artifacts: {e}")))?,
         };
+        let _guard = self.mutation_lock.lock().await;
         let ord = self.graph.max_task_ord().await.map_err(map_store_err)? + 1;
         self.graph
             .upsert_task_node(&node, ord)
@@ -158,6 +162,7 @@ impl TaskRepository for GraphqliteTaskSubgraphStore {
         task_id: &TaskId,
         context_id: Option<&ContextId>,
     ) -> Result<()> {
+        let _guard = self.mutation_lock.lock().await;
         let ord = self.graph.max_task_ord().await.map_err(map_store_err)?;
         self.graph
             .ensure_task_node(
@@ -306,6 +311,7 @@ impl TaskRepository for GraphqliteTaskSubgraphStore {
         let Some(task_id) = message.task_id.as_ref().map(|t| t.as_str().to_string()) else {
             return Ok(());
         };
+        let _guard = self.mutation_lock.lock().await;
         let seq = self
             .graph
             .max_message_seq(&task_id)
@@ -334,6 +340,15 @@ impl TaskEventRecorder for GraphqliteTaskSubgraphStore {
             Some(t) => t,
             None => return Ok(None),
         };
+        let _guard = self.mutation_lock.lock().await;
+        self.graph
+            .ensure_task_node(
+                task_id.as_str(),
+                context_id.as_ref().map(|c| c.as_str()).unwrap_or_default(),
+                self.graph.max_task_ord().await.map_err(map_store_err)? + 1,
+            )
+            .await
+            .map_err(map_store_err)?;
         let new_state = match status_to_string(&status) {
             Some(s) => s,
             None => return Ok(None),
@@ -399,6 +414,15 @@ impl TaskEventRecorder for GraphqliteTaskSubgraphStore {
             Some(t) => t,
             None => return Ok(None),
         };
+        let _guard = self.mutation_lock.lock().await;
+        self.graph
+            .ensure_task_node(
+                task_id.as_str(),
+                context_id.as_ref().map(|c| c.as_str()).unwrap_or_default(),
+                self.graph.max_task_ord().await.map_err(map_store_err)? + 1,
+            )
+            .await
+            .map_err(map_store_err)?;
         let seq = self
             .graph
             .max_update_seq(task_id.as_str())
@@ -549,5 +573,119 @@ impl ConversationContextSource for GraphqliteTaskSubgraphStore {
             .map_err(|e| BamlRtError::ProvenanceContextRead {
                 source: Box::new(e),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
+    use baml_rt_provenance::GraphqliteStoreBuilder;
+
+    use super::*;
+
+    fn test_store() -> (
+        GraphqliteTaskSubgraphStore,
+        Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+    ) {
+        let prov = GraphqliteStoreBuilder::in_memory()
+            .build()
+            .expect("build graphqlite store");
+        let graph: Arc<dyn A2aGraphStore> = prov.clone();
+        let context_reader: Arc<dyn ProvenanceContextReader> = prov.clone();
+        (
+            GraphqliteTaskSubgraphStore::new(graph, context_reader),
+            prov,
+        )
+    }
+
+    #[tokio::test]
+    async fn upsert_then_get_round_trips_task_node() {
+        let (store, _prov) = test_store();
+        let task = Task {
+            id: Some(TaskId::from_external(ExternalId::new(
+                "task-upsert-roundtrip",
+            ))),
+            context_id: Some(ContextId::new(1, 1)),
+            artifacts: Vec::new(),
+            history: Vec::new(),
+            status: None,
+            metadata: None,
+            extra: HashMap::new(),
+        };
+        store.upsert(task).await.expect("upsert task");
+
+        let raw = store
+            .graph
+            .get_task_node("task-upsert-roundtrip")
+            .await
+            .expect("raw graph get");
+        assert!(raw.is_some(), "expected raw task node in graph");
+
+        let got = store.get("task-upsert-roundtrip", None).await;
+        assert!(
+            got.is_some(),
+            "expected task node to be visible immediately"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_task_delta_with_task_status_creates_readable_task() {
+        let (store, _prov) = test_store();
+        let task = Task {
+            id: Some(TaskId::from_external(ExternalId::new("task-apply-delta"))),
+            context_id: Some(ContextId::new(2, 1)),
+            artifacts: Vec::new(),
+            history: Vec::new(),
+            status: Some(TaskStatus {
+                state: Some(TaskState::String(S_SUBMITTED.to_string())),
+                message: None,
+                timestamp: None,
+                extra: HashMap::new(),
+            }),
+            metadata: None,
+            extra: HashMap::new(),
+        };
+        let events = store
+            .apply_task_delta(Some(task), None, None, None)
+            .await
+            .expect("apply delta");
+        assert!(
+            !events.is_empty(),
+            "expected status event from apply_task_delta with submitted status"
+        );
+
+        let got = store.get("task-apply-delta", None).await;
+        assert!(got.is_some(), "expected task after apply_task_delta");
+    }
+
+    #[tokio::test]
+    async fn record_status_update_creates_task_with_context_id() {
+        let (store, _prov) = test_store();
+        let task_id = TaskId::from_external(ExternalId::new("task-status-create"));
+        let context_id = ContextId::new(3, 1);
+        let status = TaskStatus {
+            state: Some(TaskState::String(S_SUBMITTED.to_string())),
+            message: None,
+            timestamp: None,
+            extra: HashMap::new(),
+        };
+
+        let out = store
+            .record_status_update(Some(task_id.clone()), Some(context_id.clone()), status)
+            .await
+            .expect("record status");
+        assert!(out.is_some(), "expected accepted status update");
+
+        let task = store
+            .get(task_id.as_str(), None)
+            .await
+            .expect("task should exist after status update");
+        assert_eq!(
+            task.context_id.as_ref().map(|id| id.as_str()),
+            Some(context_id.as_str()),
+            "ensure_task_node should preserve context_id for subscribe/get paths"
+        );
     }
 }
