@@ -649,7 +649,9 @@ async fn setup_conversational_context_auto_agent()
 
 /// Build coordinator-agent from workspace agents/coordinator-agent and return an A2aAgent.
 /// Uses GraphQLite store so persistent mode is satisfied. Call only when agents/coordinator-agent exists.
+/// Kept for use by test on base branch after merge (test removed here to avoid duplicate definition in PR #62).
 #[cfg(feature = "llm-tests")]
+#[allow(dead_code)]
 async fn setup_coordinator_agent() -> baml_rt::A2aAgent {
     ensure_fixture_runtime_types();
     let agent_dir = workspace_root().join("agents").join("coordinator-agent");
@@ -755,45 +757,8 @@ async fn test_manifest_allowlist_blocks_undeclared_tool() {
     assert!(session.is_ok(), "Expected allowlisted tool to open");
 }
 
-/// With only coordinator-agent loaded, a request (e.g. by keyword/domain) falls back to that single agent.
-#[cfg(feature = "llm-tests")]
-#[tokio::test]
-async fn test_coordinator_keyword_domain_falls_back_to_single_loaded_domain() {
-    let agent_dir = workspace_root().join("agents").join("coordinator-agent");
-    if !agent_dir.exists() || !agent_dir.join("baml_src").exists() {
-        eprintln!("Skipping: agents/coordinator-agent not found");
-        return;
-    }
-    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
-    let _ = dotenvy::dotenv();
-
-    let agent = setup_coordinator_agent().await;
-    let request = send_message_request(
-        SendMessageRequest {
-            message: user_message(
-                "coord-single-1",
-                "What are the research team's goals?",
-                Some(ContextId::new(1, 1)),
-            ),
-            configuration: None,
-            metadata: None,
-            tenant: None,
-            extra: std::collections::HashMap::new(),
-        },
-        "corr-coord-single-1",
-    );
-    let outcome = timeout(
-        Duration::from_secs(120),
-        collect_stream_responses(&agent, request),
-    )
-    .await
-    .expect("coordinator stream timed out");
-    let responses = outcome.expect("coordinator stream failed");
-    assert!(
-        !responses.is_empty(),
-        "stream must return at least one chunk"
-    );
-}
+// test_coordinator_keyword_domain_falls_back_to_single_loaded_domain: defined on base branch only.
+// Removed here to avoid duplicate definition when this branch is merged (PR #62).
 
 #[tokio::test]
 async fn test_agent_package_loading() {
