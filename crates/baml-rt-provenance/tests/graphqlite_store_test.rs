@@ -613,6 +613,110 @@ async fn graphqlite_conversation_context_includes_failed_tool_results() {
 }
 
 #[tokio::test]
+async fn graphqlite_conversation_context_preserves_large_tool_result_payload() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.keep().join("provenance_tool_large.db");
+    let store = GraphqliteStoreBuilder::file(path)
+        .build()
+        .expect("build store");
+
+    let context_id = ContextId::new(55, 1);
+    let task_id = TaskId::from_external(ExternalId::new("task-tool-large"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000096").unwrap());
+
+    store
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(240),
+            context_id: context_id.clone(),
+            timestamp_ms: 1_700_000_000_200,
+            data: ProvEventData::AgentBooted {
+                agent_id: agent_id.clone(),
+                agent_type: AgentType::new("test").expect("agent_type"),
+                agent_version: "1.0.0".to_string(),
+                archive_path: "test@1.0.0".to_string(),
+            },
+        }))
+        .await
+        .expect("AgentBooted");
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(241),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_000_201,
+            data: ProvEventData::TaskCreated {
+                task_id: task_id.clone(),
+                agent_id: agent_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskCreated");
+
+    let tool_args = serde_json::json!({"list_id":"901325431486"});
+    let very_large_description = "d".repeat(12_000);
+    let completed_metadata = serde_json::json!({
+        "message_id": "msg-large",
+        "task_id": "task-tool-large",
+        "agent_id": "00000000-0000-0000-0000-000000000096",
+        "phase": "send",
+        "result": {
+            "tasks": [{
+                "id": "86afp6yhu",
+                "name": "Task30",
+                "status": "to do",
+                "description": very_large_description,
+                "url": "https://app.clickup.com/t/86afp6yhu"
+            }],
+            "items": [],
+            "message": "Found 1 task(s)"
+        }
+    });
+    store
+        .add_event(ProvEvent::tool_call_completed_task(
+            context_id.clone(),
+            task_id,
+            "support/clickup".to_string(),
+            None,
+            tool_args,
+            completed_metadata,
+            99,
+            baml_rt_core::Outcome::Success,
+        ))
+        .await
+        .expect("ToolCallCompleted");
+
+    let items = store
+        .conversation_context(&context_id, None)
+        .await
+        .expect("conversation_context");
+    let sources: Vec<_> = items.iter().map(|i| i.source.clone()).collect();
+    assert!(
+        sources.iter().any(|s| s == "tool_result"),
+        "expected tool_result in conversation_context; sources={sources:?}"
+    );
+    let tool_result_item = items
+        .iter()
+        .find(|i| i.source == "tool_result")
+        .expect("tool_result item");
+    let description = tool_result_item
+        .content
+        .get("result")
+        .and_then(|v| v.get("tasks"))
+        .and_then(|v| v.as_array())
+        .and_then(|tasks| tasks.first())
+        .and_then(|task| task.get("description"))
+        .and_then(|v| v.as_str())
+        .expect("task description");
+
+    assert_eq!(
+        description.len(),
+        12_000,
+        "tool result description should not be truncated"
+    );
+}
+
+#[tokio::test]
 async fn graphqlite_tool_call_writes_enforce_args_edge_role_and_type() {
     let dir = tempdir().expect("tempdir");
     let path = dir.keep().join("provenance_tool_contract.db");
