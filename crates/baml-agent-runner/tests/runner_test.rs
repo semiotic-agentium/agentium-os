@@ -802,10 +802,14 @@ async fn setup_coordinator_agent_with_stub_system_tools() -> baml_rt::A2aAgent {
     let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
         .expect("coordinator-agent dist/index.js");
 
+    let store = GraphqliteStoreBuilder::in_memory()
+        .build()
+        .expect("in-memory store for coordinator test");
     baml_rt::A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_graphqlite_store(store)
         .build()
         .await
         .expect("build coordinator agent")
