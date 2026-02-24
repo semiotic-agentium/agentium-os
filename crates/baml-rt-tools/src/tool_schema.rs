@@ -10,7 +10,7 @@ impl<T> ToolType for T where T: JsonSchema + TS + Send + Sync + 'static {}
 
 pub fn json_schema_value<T: JsonSchema>() -> Value {
     let schema = schemars::schema_for!(T);
-    serde_json::to_value(&schema).unwrap_or_else(|_| Value::Null)
+    serde_json::to_value(&schema).unwrap_or(Value::Null)
 }
 
 pub fn ts_decl<T: TS>() -> Option<String> {

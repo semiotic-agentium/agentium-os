@@ -7,7 +7,10 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::Path,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -1008,17 +1011,29 @@ async fn setup_coordinator_agent() -> baml_rt::A2aAgent {
 }
 
 fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time")
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "baml-rt-runner-test-{pid}-{unique}.db",
-        pid = std::process::id(),
-    ));
-    GraphqliteStoreBuilder::file(path)
-        .build()
-        .expect("build isolated GraphQLite store")
+    static NEXT_TEST_DB_ID: AtomicU64 = AtomicU64::new(1);
+
+    let tmp_root = std::env::temp_dir().join(format!("baml-rt-runner-test-{}", std::process::id()));
+    let _ = fs::create_dir_all(&tmp_root);
+
+    let mut last_err = None;
+    for _ in 0..4 {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        let seq = NEXT_TEST_DB_ID.fetch_add(1, Ordering::Relaxed);
+        let path = tmp_root.join(format!("{nanos}-{seq}-{}.db", uuid::Uuid::new_v4()));
+        match GraphqliteStoreBuilder::file(path).build() {
+            Ok(store) => return store,
+            Err(err) => last_err = Some(err),
+        }
+    }
+
+    panic!(
+        "build isolated GraphQLite store after retries: {:?}",
+        last_err
+    );
 }
 
 #[tokio::test]
@@ -1609,17 +1624,9 @@ async fn test_e2e_stream_js_tool() {
             .map(|chunk| chunk.get("task").is_some())
             .unwrap_or(false)
     });
-    let task_not_found = responses.iter().any(|response| {
-        response
-            .get("error")
-            .and_then(|e| e.get("data"))
-            .and_then(|d| d.get("details"))
-            .and_then(|v| v.as_str())
-            == Some("Task not found")
-    });
     assert!(
-        has_task_snapshot || task_not_found,
-        "Expected task snapshot in subscribe stream or Task not found (live-stream persistence gap); got {} response(s)",
+        has_task_snapshot,
+        "Expected task snapshot in subscribe stream; got {} response(s)",
         responses.len()
     );
 

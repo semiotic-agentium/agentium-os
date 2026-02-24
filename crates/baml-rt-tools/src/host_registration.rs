@@ -5,7 +5,7 @@ use baml_rt_core::{BamlRtError, Result};
 use crate::{
     access::{ToolAccessPolicy, enforce_tool_access},
     tool_catalog::{ManifestToolNames, ToolProvider},
-    tools::{ToolName, ToolRegistry},
+    tools::{ToolName, ToolOrigin, ToolRegistry},
 };
 
 /// System bundle identifier (host-registered via SystemBundle, not from inventory).
@@ -39,6 +39,13 @@ pub fn register_manifest_tools(
         enforce_tool_access(&name.to_string(), policy)?;
 
         if is_system_host_tool(name) {
+            continue;
+        }
+        if let Some(existing) = registry.get_metadata(&name.to_string())
+            && existing.origin == ToolOrigin::Host
+        {
+            // Host bundles may pre-register manifest-declared tools (e.g. system/*, memory/*).
+            // In that case, skip inventory build/registration to avoid duplicate handlers.
             continue;
         }
 

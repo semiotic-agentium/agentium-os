@@ -669,7 +669,19 @@ async fn get_mermaid_context_emits_http_and_handler_spans() {
         attr_value(handler_span, "context_id").as_deref(),
         Some("ctx-1-1")
     );
-    if let Some(http_span) = find_span(&spans, "baml_rt_api.http.request")
+    if let Some(http_span) = spans
+        .iter()
+        .find(|span| {
+            span.name.as_ref() == "baml_rt_api.http.request"
+                && attr_value(span, "http.route").as_deref()
+                    == Some("/mermaid/context/{context_id}")
+        })
+        .or_else(|| {
+            spans.iter().find(|span| {
+                span.name.as_ref() == "baml_rt_api.http.request"
+                    && attr_value(span, "url.path").as_deref() == Some("/mermaid/context/ctx-1-1")
+            })
+        })
         .or_else(|| find_span_with_attr(&spans, "http.route", "/mermaid/context/{context_id}"))
         .or_else(|| find_span_with_attr(&spans, "url.path", "/mermaid/context/ctx-1-1"))
     {

@@ -18,6 +18,7 @@ fi
 NEXTEST_FEATURES=(
   baml-rt-builder/http-tools
   baml-agent-runner/http-tools
+  baml-agent-runner/memory
   baml-rt/llm-tests
   baml-agent-runner/llm-tests
 )

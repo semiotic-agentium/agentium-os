@@ -55,11 +55,10 @@ coordinator-demo-stop:
 fmt:
     cargo fmt --all
 
-ci_features := "baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-rt/llm-tests,baml-agent-runner/llm-tests"
+ci_features := "baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests"
 
 # CI parity: run the full nextest suite (mirrors rust-ci.yml "nextest" job).
-# Requires: cargo-nextest, a running FalkorDB on localhost:6379,
-# and OPENROUTER_API_KEY for LLM tests.
+# Requires: cargo-nextest and OPENROUTER_API_KEY for LLM tests.
 test:
     cargo nextest run --workspace --features {{ci_features}}
 
@@ -73,7 +72,7 @@ test-crate crate:
 
 # Run tests that don't need FalkorDB or API keys (unit tests only).
 test-unit:
-    cargo nextest run --workspace --features baml-rt-builder/http-tools,baml-agent-runner/http-tools
+    cargo nextest run --workspace --features baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory
 
 # Export a Mermaid sequence diagram for a given context-id.
 # Usage: just provenance-mermaid ctx-1771426017780-2
