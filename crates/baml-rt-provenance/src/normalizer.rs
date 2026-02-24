@@ -725,7 +725,7 @@ fn normalize_event_with_registry(
             content,
             metadata,
         } => {
-            let message_id = message_entity_id(id);
+            let message_id = message_entity_id(event.context_id(), id);
             let mut message_attrs = base_attrs(event);
             message_attrs.insert(
                 a2a::MESSAGE_ID.to_string(),
@@ -759,7 +759,7 @@ fn normalize_event_with_registry(
                 },
             );
 
-            let processing_id = message_processing_activity_id(id);
+            let processing_id = message_processing_activity_id(event.context_id(), id);
             let mut processing_attrs = base_attrs(event);
             processing_attrs.insert(
                 a2a::MESSAGE_ID.to_string(),
@@ -1281,14 +1281,21 @@ fn ensure_runner_runtime_instance(doc: &mut ProvDocument) {
     }
 }
 
-/// Message entity id: derived from `MessageId`.
-fn message_entity_id(message_id: &MessageId) -> ProvEntityId {
-    ProvEntityId::derived::<MessageEntityId>(MessageEntityInput { message_id })
+/// Message entity id: derived from `(ContextId, MessageId)`.
+fn message_entity_id(context_id: &ContextId, message_id: &MessageId) -> ProvEntityId {
+    ProvEntityId::derived::<MessageEntityId>(MessageEntityInput {
+        context_id,
+        message_id,
+    })
 }
 
-/// Message processing activity id: derived from `MessageId`.
-fn message_processing_activity_id(message_id: &MessageId) -> ProvActivityId {
+/// Message processing activity id: derived from `(ContextId, MessageId)`.
+fn message_processing_activity_id(
+    context_id: &ContextId,
+    message_id: &MessageId,
+) -> ProvActivityId {
     ProvActivityId::derived::<MessageProcessingActivityId>(MessageProcessingActivityInput {
+        context_id,
         message_id,
     })
 }
@@ -1298,7 +1305,7 @@ fn ensure_message_processing_activity(
     context_id: &ContextId,
     message_id: &MessageId,
 ) -> ProvActivityId {
-    let id = message_processing_activity_id(message_id);
+    let id = message_processing_activity_id(context_id, message_id);
     let mut attrs = doc
         .activity(&id)
         .map(|activity| activity.attributes.clone())
@@ -1330,7 +1337,7 @@ fn attach_message_context(
     message_id: &MessageId,
     derived_relations: &mut Vec<A2aDerivedRelation>,
 ) {
-    let message_entity_id = message_entity_id(message_id);
+    let message_entity_id = message_entity_id(event.context_id(), message_id);
     let mut message_attrs = base_attrs(event);
     message_attrs.insert(
         a2a::MESSAGE_ID.to_string(),
