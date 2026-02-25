@@ -32,6 +32,9 @@ export function useA2aClient() {
   let contextId: string | undefined;
   let taskId: string | undefined;
 
+  // Provenance diagram source (raw mermaid text fetched after each response)
+  const provenanceDiagram = ref<string>("");
+
   async function fetchAgents(): Promise<void> {
     const res = await fetch("/agents");
     agents.value = await res.json();
@@ -45,6 +48,7 @@ export function useA2aClient() {
     messages.value = [];
     contextId = undefined;
     taskId = undefined;
+    provenanceDiagram.value = "";
   }
 
   async function sendMessage(text: string): Promise<void> {
@@ -101,6 +105,7 @@ export function useA2aClient() {
       }
 
       await readSSEStream(response.body, agentMsgId);
+      await fetchProvenanceDiagram();
     } catch (err) {
       updateMessage(messages, agentMsgId, (msg) => {
         msg.text = `Error: ${err}`;
@@ -201,11 +206,22 @@ export function useA2aClient() {
     return message?.parts?.[0]?.text ?? undefined;
   }
 
+  async function fetchProvenanceDiagram(): Promise<void> {
+    if (!contextId) return;
+    try {
+      const res = await fetch(`/mermaid/context/${contextId}`);
+      if (res.ok) provenanceDiagram.value = await res.text();
+    } catch {
+      // provenance endpoint not available; leave existing diagram
+    }
+  }
+
   return {
     agents,
     selectedAgent,
     messages,
     isLoading,
+    provenanceDiagram,
     fetchAgents,
     selectAgent,
     sendMessage,

@@ -1,13 +1,33 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { computed, onMounted } from "vue";
 import AgentSelector from "./components/AgentSelector.vue";
 import ChatWindow from "./components/ChatWindow.vue";
+import ReasoningPane from "./components/ReasoningPane.vue";
 import { useA2aClient } from "./composables/useA2aClient";
 import { useTheme } from "./composables/useTheme";
+import { parseMermaidBlocks } from "./utils/parseMermaid";
 
-const { agents, selectedAgent, messages, isLoading, fetchAgents, selectAgent, sendMessage } =
-  useA2aClient();
+const {
+  agents,
+  selectedAgent,
+  messages,
+  isLoading,
+  provenanceDiagram,
+  fetchAgents,
+  selectAgent,
+  sendMessage,
+} = useA2aClient();
 const { theme, toggle: toggleTheme } = useTheme();
+
+// Diagrams: provenance sequence diagram first, then any mermaid blocks embedded in agent messages.
+const diagrams = computed(() => {
+  const inline = messages.value.flatMap((m) =>
+    m.role === "agent" ? parseMermaidBlocks(m.text) : [],
+  );
+  return provenanceDiagram.value
+    ? [provenanceDiagram.value, ...inline]
+    : inline;
+});
 
 onMounted(() => fetchAgents());
 </script>
@@ -38,11 +58,15 @@ onMounted(() => fetchAgents());
         </button>
       </div>
     </header>
-    <ChatWindow
-      :messages="messages"
-      :is-loading="isLoading"
-      :disabled="!selectedAgent"
-      @send="sendMessage"
-    />
+
+    <div class="app-body">
+      <ReasoningPane :diagrams="diagrams" />
+      <ChatWindow
+        :messages="messages"
+        :is-loading="isLoading"
+        :disabled="!selectedAgent"
+        @send="sendMessage"
+      />
+    </div>
   </div>
 </template>
