@@ -35,7 +35,7 @@ onMounted(() => fetchAgents());
 <template>
   <div class="app">
     <header class="app-header">
-      <h1>Agent Chat</h1>
+      <h1>Agentium Chat</h1>
       <div class="header-controls">
         <AgentSelector :agents="agents" :selected="selectedAgent" @select="selectAgent" />
         <button class="theme-toggle" @click="toggleTheme" :title="theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'">
