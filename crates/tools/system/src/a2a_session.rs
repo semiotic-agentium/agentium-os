@@ -126,17 +126,26 @@ fn parse_send_input(input: Value) -> std::result::Result<Vec<ConversationPart>, 
     }
 }
 
-fn build_send_stream_request(parts: Vec<ConversationPart>, target: &InternalA2aTarget) -> Value {
+fn build_send_stream_request(
+    parts: Vec<ConversationPart>,
+    target: &InternalA2aTarget,
+    context_id: Option<&str>,
+) -> Value {
+    let mut message = serde_json::json!({
+        "messageId": format!("system-a2a-{}", uuid::Uuid::new_v4()),
+        "role": "ROLE_USER",
+        "parts": parts
+    });
+    if let Some(context_id) = context_id {
+        message["contextId"] = Value::String(context_id.to_string());
+    }
+
     serde_json::json!({
         "jsonrpc": "2.0",
         "method": "message.sendStream",
         "id": serde_json::Value::Null,
         "params": {
-            "message": {
-                "messageId": format!("system-a2a-{}", uuid::Uuid::new_v4()),
-                "role": "ROLE_USER",
-                "parts": parts
-            },
+            "message": message,
             "metadata": {
                 "target": {
                     "agent_package": target.agent_package,
@@ -274,7 +283,8 @@ impl ToolSession for A2aSession {
                 "system/internal_a2a session: send only valid once after open".to_string(),
             )));
         }
-        let request = build_send_stream_request(parts, &self.target);
+        let request =
+            build_send_stream_request(parts, &self.target, Some(self.ctx.context_id.as_str()));
         let handler = self.handler.clone();
         let (tx, rx) = async_channel::unbounded::<InternalA2aNextOutput>();
         self.output_rx = Some(rx);
