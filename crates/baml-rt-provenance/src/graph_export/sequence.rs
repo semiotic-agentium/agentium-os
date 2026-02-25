@@ -8,14 +8,11 @@
 //! relationships, this renderer is inherently temporal: participants line up
 //! across the top and messages flow downward in causal order.
 
-use std::{
-    collections::{HashMap, HashSet},
-    fmt::Write,
-};
+use std::{collections::HashSet, fmt::Write};
 
 use super::{ExportedGraph, ExportedNode};
 use crate::{
-    graph_model::{EDGE_WAS_EMITTED_BY, EDGE_WAS_SPAWNED_BY, GraphNodeLabel},
+    graph_model::GraphNodeLabel,
     vocabulary::{a2a, agent_types, message_directions},
 };
 
@@ -109,10 +106,6 @@ fn emit_message(out: &mut String, node: &ExportedNode, agent: &str, semantics: &
             // Delegated prompts are internal orchestration noise in the
             // top-level user sequence. Skip rendering them.
         }
-        MessageClassification::DelegatedAssistantResponse => {
-            // Delegated assistant responses are internal orchestration noise in
-            // the top-level user sequence. Skip rendering them.
-        }
         MessageClassification::Unknown(other) => {
             let _ = writeln!(out, "    Note over {agent}: {other}: {escaped}");
         }
@@ -122,37 +115,11 @@ fn emit_message(out: &mut String, node: &ExportedNode, agent: &str, semantics: &
 #[derive(Debug, Clone)]
 struct MessageSemantics {
     delegated_prompt_node_ids: HashSet<String>,
-    root_task_node_ids: HashSet<String>,
-    non_root_task_node_ids: HashSet<String>,
-    emitted_task_node_ids_by_message_id: HashMap<String, HashSet<String>>,
-    task_node_ids_by_message_id: HashMap<String, HashSet<String>>,
 }
 
 impl MessageSemantics {
     fn is_delegated_prompt(&self, message_node_id: &str) -> bool {
         self.delegated_prompt_node_ids.contains(message_node_id)
-    }
-
-    fn is_user_facing_assistant_message(&self, message_node_id: &str) -> bool {
-        self.emitted_task_node_ids_by_message_id
-            .get(message_node_id)
-            .or_else(|| self.task_node_ids_by_message_id.get(message_node_id))
-            .is_some_and(|task_ids| {
-                task_ids
-                    .iter()
-                    .any(|task_id| self.root_task_node_ids.contains(task_id))
-            })
-    }
-
-    fn is_non_root_assistant_message(&self, message_node_id: &str) -> bool {
-        self.emitted_task_node_ids_by_message_id
-            .get(message_node_id)
-            .or_else(|| self.task_node_ids_by_message_id.get(message_node_id))
-            .is_some_and(|task_ids| {
-                task_ids
-                    .iter()
-                    .any(|task_id| self.non_root_task_node_ids.contains(task_id))
-            })
     }
 }
 
@@ -164,8 +131,6 @@ enum MessageClassification {
     DelegatedUserPrompt,
     /// Assistant/agent message intended for the end-user.
     UserFacingAssistant,
-    /// Assistant/agent message emitted inside delegated/internal orchestration.
-    DelegatedAssistantResponse,
     /// Any role shape we cannot map confidently.
     Unknown(String),
 }
@@ -173,57 +138,8 @@ enum MessageClassification {
 /// Precompute message semantics from provenance edges/properties.
 ///
 /// Semantics extracted:
-/// - Message -> Task ownership split by relation:
-///   - `WAS_SPAWNED_BY`: task was spawned by the message.
-///   - `WAS_EMITTED_BY`: task emitted the message.
 /// - Delegated internal prompts (`ROLE_USER`, received, `system-a2a-*` message IDs).
-/// - Root task IDs (tasks spawned by external root user prompts).
-/// - Non-root task IDs (task-message tasks not rooted in a user prompt).
 fn build_message_semantics(graph: &ExportedGraph) -> MessageSemantics {
-    let node_label_by_id: HashMap<&str, GraphNodeLabel> = graph
-        .nodes
-        .iter()
-        .filter_map(|node| {
-            GraphNodeLabel::parse(&node.label).map(|label| (node.id.as_str(), label))
-        })
-        .collect();
-
-    let mut spawned_task_node_ids_by_message_id: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut emitted_task_node_ids_by_message_id: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut task_node_ids_by_message_id: HashMap<String, HashSet<String>> = HashMap::new();
-    let mut all_task_node_ids_with_messages: HashSet<String> = HashSet::new();
-
-    for edge in &graph.edges {
-        let from_label = node_label_by_id.get(edge.from.as_str());
-        let to_label = node_label_by_id.get(edge.to.as_str());
-
-        if matches!(from_label, Some(GraphNodeLabel::Task))
-            && matches!(to_label, Some(GraphNodeLabel::Message))
-        {
-            all_task_node_ids_with_messages.insert(edge.from.clone());
-            task_node_ids_by_message_id
-                .entry(edge.to.clone())
-                .or_default()
-                .insert(edge.from.clone());
-
-            match edge.relation.as_str() {
-                EDGE_WAS_SPAWNED_BY => {
-                    spawned_task_node_ids_by_message_id
-                        .entry(edge.to.clone())
-                        .or_default()
-                        .insert(edge.from.clone());
-                }
-                EDGE_WAS_EMITTED_BY => {
-                    emitted_task_node_ids_by_message_id
-                        .entry(edge.to.clone())
-                        .or_default()
-                        .insert(edge.from.clone());
-                }
-                _ => {}
-            }
-        }
-    }
-
     let delegated_prompt_node_ids: HashSet<String> = graph
         .nodes
         .iter()
@@ -232,38 +148,8 @@ fn build_message_semantics(graph: &ExportedGraph) -> MessageSemantics {
         .map(|node| node.id.clone())
         .collect();
 
-    // Root user prompts are user+received messages that are not delegated.
-    let root_user_prompt_node_ids: HashSet<String> = graph
-        .nodes
-        .iter()
-        .filter(|node| GraphNodeLabel::parse(&node.label) == Some(GraphNodeLabel::Message))
-        .filter(|node| {
-            !delegated_prompt_node_ids.contains(&node.id) && is_root_user_prompt_candidate(node)
-        })
-        .map(|node| node.id.clone())
-        .collect();
-
-    let mut root_task_node_ids: HashSet<String> = HashSet::new();
-    for message_node_id in &root_user_prompt_node_ids {
-        if let Some(task_node_ids) = spawned_task_node_ids_by_message_id.get(message_node_id) {
-            root_task_node_ids.extend(task_node_ids.iter().cloned());
-        } else if let Some(task_node_ids) = task_node_ids_by_message_id.get(message_node_id) {
-            // Fallback for older exports that may not carry semantic edge labels.
-            root_task_node_ids.extend(task_node_ids.iter().cloned());
-        }
-    }
-
-    let non_root_task_node_ids: HashSet<String> = all_task_node_ids_with_messages
-        .difference(&root_task_node_ids)
-        .cloned()
-        .collect();
-
     MessageSemantics {
         delegated_prompt_node_ids,
-        root_task_node_ids,
-        non_root_task_node_ids,
-        emitted_task_node_ids_by_message_id,
-        task_node_ids_by_message_id,
     }
 }
 
@@ -281,33 +167,8 @@ fn classify_message(node: &ExportedNode, semantics: &MessageSemantics) -> Messag
 
     match normalized.as_str() {
         "user" => MessageClassification::RootUserPrompt,
-        "assistant" | "agent" => {
-            if semantics.is_user_facing_assistant_message(&node.id) {
-                MessageClassification::UserFacingAssistant
-            } else if semantics.is_non_root_assistant_message(&node.id) {
-                MessageClassification::DelegatedAssistantResponse
-            } else {
-                // If task linkage is absent, keep assistant messages visible.
-                MessageClassification::UserFacingAssistant
-            }
-        }
+        "assistant" | "agent" => MessageClassification::UserFacingAssistant,
         other => MessageClassification::Unknown(other.to_string()),
-    }
-}
-
-fn is_root_user_prompt_candidate(node: &ExportedNode) -> bool {
-    let role = node
-        .properties
-        .get(a2a::ROLE)
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-    if normalize_role(role) != "user" {
-        return false;
-    }
-
-    match prop_str(node, a2a::DIRECTION) {
-        Some(direction) => direction == message_directions::RECEIVED,
-        None => true,
     }
 }
 
