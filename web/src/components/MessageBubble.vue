@@ -1,7 +1,16 @@
 <script setup lang="ts">
+import { computed } from "vue";
+import { marked } from "marked";
 import type { ChatMessage } from "../types/a2a";
 
 const props = defineProps<{ message: ChatMessage }>();
+
+marked.setOptions({
+  breaks: true,
+  gfm: true,
+});
+
+const renderedHtml = computed(() => marked.parse(props.message.text ?? "") as string);
 
 function formatTime(date: Date): string {
   return new Date(date).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -30,9 +39,8 @@ function formatTime(date: Date): string {
               <span /><span /><span />
             </span>
           </template>
-          <template v-else>
-            {{ message.text }}
-          </template>
+          <div v-else-if="message.role === 'agent'" v-html="renderedHtml" class="markdown-body" />
+          <template v-else>{{ message.text }}</template>
         </div>
       </div>
       <span class="message-time">{{ formatTime(props.message.timestamp) }}</span>
