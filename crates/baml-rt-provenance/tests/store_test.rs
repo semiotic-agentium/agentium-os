@@ -1,14 +1,29 @@
+use std::sync::Arc;
+
 use baml_rt_core::{
     Outcome,
     ids::{AgentId, ArtifactId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentType, GraphExporter, GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvenanceWriter,
+    AgentType, GraphExporter, GraphqliteProvenanceStore, GraphqliteStoreBuilder, LlmUsage,
+    ProvEvent, ProvenanceWriter,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
     normalize_event,
 };
 use insta::assert_snapshot;
 use serde_json::json;
+use tempfile::TempDir;
+
+/// Use a unique file-backed store per test. `in_memory()` is a shared singleton and causes
+/// cross-test contamination when this test file runs in parallel.
+fn build_isolated_store() -> (Arc<GraphqliteProvenanceStore>, TempDir) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("provenance.db");
+    let store = GraphqliteStoreBuilder::file(path)
+        .build()
+        .expect("build store");
+    (store, dir)
+}
 
 #[tokio::test]
 async fn test_normalize_event_snapshot_for_tool_call_started() {
@@ -33,17 +48,13 @@ async fn test_normalize_event_snapshot_for_tool_call_started() {
         "normalized tool call must include USED relation with role a2a:args"
     );
 
-    let store = GraphqliteStoreBuilder::in_memory()
-        .build()
-        .expect("build store");
+    let (store, _tmp_dir) = build_isolated_store();
     store.add_event(event).await.expect("persist event");
 }
 
 #[tokio::test]
 async fn test_snapshot_exemplary_mermaid_agent_flow() {
-    let store = GraphqliteStoreBuilder::in_memory()
-        .build()
-        .expect("build store");
+    let (store, _tmp_dir) = build_isolated_store();
 
     let context_id = ContextId::new(1_771_470_000_000, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-sequence-1"));
@@ -148,9 +159,7 @@ async fn test_snapshot_exemplary_mermaid_agent_flow() {
 
 #[tokio::test]
 async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
-    let store = GraphqliteStoreBuilder::in_memory()
-        .build()
-        .expect("build store");
+    let (store, _tmp_dir) = build_isolated_store();
 
     let context_id = ContextId::new(1_771_470_111_000, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-lifecycle-1"));

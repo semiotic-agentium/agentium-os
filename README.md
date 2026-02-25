@@ -175,7 +175,7 @@ The project uses [just](https://github.com/casey/just) as a command runner. A `.
 | Recipe | Usage | Description |
 |---|---|---|
 | `just fmt` | `just fmt` | Run `cargo fmt --all` to format the entire workspace. |
-| `just test` | `just test` | Full nextest suite with CI-parity feature flags. Requires `cargo-nextest`, a running FalkorDB on `localhost:6379`, and `OPENROUTER_API_KEY` for LLM tests. |
+| `just test` | `just test` | Full nextest suite with CI-parity feature flags. Requires `cargo-nextest` and `OPENROUTER_API_KEY` for LLM tests. |
 | `just test-build` | `just test-build` | Compile-only (no execution) — useful as a quick pre-push sanity check. |
 | `just test-crate <crate>` | `just test-crate baml-rt-provenance` | Run tests for a single crate with the same CI feature flags. |
 | `just test-unit` | `just test-unit` | Run only unit tests that need neither FalkorDB nor API keys. |
@@ -200,8 +200,7 @@ For the next-stage Notion demo/UX strategy and invariants, see `docs/notion-expe
 The `test`, `test-build`, and `test-crate` recipes enable the following features to match CI:
 
 ```text
-baml-rt-builder/http-tools, baml-rt-provenance/falkordb-tests,
-baml-rt-a2a/falkordb-tests, baml-agent-runner/falkordb-tests, baml-agent-runner/http-tools,
+baml-rt-builder/http-tools, baml-agent-runner/http-tools, baml-agent-runner/memory,
 baml-rt/llm-tests, baml-agent-runner/llm-tests
 ```
 

@@ -50,6 +50,8 @@ use baml_rt_tools::{
 use baml_tools_calculator as _;
 #[cfg(feature = "clickup")]
 use baml_tools_clickup as _;
+#[cfg(feature = "memory")]
+use baml_tools_memory as _;
 #[cfg(feature = "notion")]
 use baml_tools_notion as _;
 use baml_tools_system::SystemBundle;
@@ -117,13 +119,6 @@ impl AgentPackage {
     ) -> Result<ToolsRegistered> {
         let runtime_manager = loaded.runtime_manager;
 
-        let manifest_tool_names = ManifestToolNames::parse(&self.manifest.tools)?;
-        register_manifest_tools(
-            runtime_manager.tool_registry().as_ref(),
-            &manifest_tool_names,
-            policy,
-        )?;
-
         // Host composes tool catalogue: system bundle (internal_a2a, discover_agents, discover_tools)
         let tool_registry = runtime_manager.tool_registry();
         tool_registry.register_bundle(SystemBundle::new(
@@ -131,6 +126,15 @@ impl AgentPackage {
             tool_registry.clone(),
             a2a_handler,
         ))?;
+
+        #[cfg(feature = "memory")]
+        if self.manifest.tools.iter().any(|t| t.starts_with("memory/")) {
+            let memory_bundle = baml_tools_memory::MemoryBundle::new(&self.manifest.name)?;
+            tool_registry.register_bundle(memory_bundle)?;
+        }
+
+        let manifest_tool_names = ManifestToolNames::parse(&self.manifest.tools)?;
+        register_manifest_tools(tool_registry.as_ref(), &manifest_tool_names, policy)?;
 
         // Apply allowlist after host bundle registration so system/* tools are optional
         // unless explicitly declared in the agent manifest.
@@ -464,8 +468,8 @@ impl AgentRunner {
 
             let mut request_value: Value = match serde_json::from_str::<Value>(line) {
                 Ok(value) if value.is_object() => value,
-                Ok(_) => wrap_plaintext_message(line),
-                Err(_) => wrap_plaintext_message(line),
+                Ok(_) => wrap_plaintext_message(line)?,
+                Err(_) => wrap_plaintext_message(line)?,
             };
 
             let request_id = a2a::extract_jsonrpc_id(&request_value);
@@ -842,7 +846,7 @@ fn stdio_task_id() -> TaskId {
         .clone()
 }
 
-fn wrap_plaintext_message(text: &str) -> Value {
+fn wrap_plaintext_message(text: &str) -> Result<Value> {
     let seq = MESSAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let message_id = A2aMessageId::outgoing(DerivedId::new(format!("cli-msg-{seq}")));
     let message = Message {
@@ -872,10 +876,10 @@ fn wrap_plaintext_message(text: &str) -> Value {
     let request = JSONRPCRequest {
         jsonrpc: "2.0".to_string(),
         method: "message.sendStream".to_string(),
-        params: Some(serde_json::to_value(params).unwrap_or(Value::Null)),
+        params: Some(serde_json::to_value(params)?),
         id: Some(JSONRPCId::Null),
     };
-    serde_json::to_value(request).unwrap_or(Value::Null)
+    serde_json::to_value(request).map_err(Into::into)
 }
 
 /// Provenance DB: in-memory (default) or file-backed SQLite. No FalkorDB.
@@ -1293,9 +1297,17 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex as StdMutex, OnceLock};
+
     use baml_rt::baml::BamlRuntimeManager;
+    #[cfg(feature = "memory")]
+    use baml_rt_core::{AgentDiscoveryEntry, AgentLister};
     use baml_rt_core::{bus::BusWithEffects, route_key_from_request};
+    #[cfg(feature = "memory")]
+    use baml_rt_tools::tool_fsm::ToolStep;
     use serde_json::json;
+    #[cfg(feature = "memory")]
+    use test_support::common::TempEnvVar;
 
     use super::*;
 
@@ -1325,6 +1337,45 @@ globalThis.onChatMessage = async function(_message) {
             .build()
             .await
             .expect("build test agent")
+    }
+
+    #[cfg(feature = "memory")]
+    fn env_test_lock() -> &'static StdMutex<()> {
+        static LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| StdMutex::new(()))
+    }
+
+    #[cfg(feature = "memory")]
+    fn fresh_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{prefix}-{}-{}", std::process::id(), unique));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("create temp dir");
+        path
+    }
+
+    #[cfg(feature = "memory")]
+    struct EmptyAgentList;
+
+    #[cfg(feature = "memory")]
+    impl AgentLister for EmptyAgentList {
+        fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
+            Vec::new()
+        }
+    }
+
+    #[cfg(feature = "memory")]
+    struct EmptyA2a;
+
+    #[cfg(feature = "memory")]
+    #[async_trait::async_trait]
+    impl A2aRequestHandler for EmptyA2a {
+        async fn handle_a2a_stream(&self, _request: serde_json::Value) -> Result<BusStream<Value>> {
+            Ok(Box::pin(futures_util::stream::empty::<Value>()))
+        }
     }
 
     #[tokio::test]
@@ -1454,5 +1505,128 @@ globalThis.onChatMessage = async function(_message) {
             "params": { "metadata": {} }
         });
         assert!(route_key_from_request(&request).is_err());
+    }
+
+    #[cfg(feature = "memory")]
+    #[tokio::test]
+    async fn register_tools_phase_loads_memory_bundle_and_executes_tool() {
+        let _env_guard = env_test_lock().lock().expect("env test lock");
+        let brain_dir = fresh_temp_dir("memory-bundle-brain");
+        let brain_dir_str = brain_dir.display().to_string();
+        let _brain_env = TempEnvVar::set("BRAIN_DIR", &brain_dir_str);
+        let extract_dir = fresh_temp_dir("memory-bundle-agent");
+        let baml_src = extract_dir.join("baml_src");
+        std::fs::create_dir_all(&baml_src).expect("create baml_src dir");
+
+        let package = AgentPackage {
+            manifest: AgentManifest {
+                name: "memory-test-agent".to_string(),
+                version: "1.0.0".to_string(),
+                entry_point: "dist/index.js".to_string(),
+                signature: "memory-test-agent@1.0.0".to_string(),
+                tools: vec!["memory/add".to_string(), "memory/stats".to_string()],
+                discovery: None,
+            },
+            extract_dir: extract_dir.clone(),
+            baml_src,
+        };
+
+        let loaded = SchemaLoaded {
+            runtime_manager: BamlRuntimeManager::new().expect("runtime manager"),
+        };
+        let registered = package
+            .register_tools_phase(
+                loaded,
+                &ToolAccessPolicy::default(),
+                Arc::new(EmptyAgentList),
+                Arc::new(EmptyA2a),
+            )
+            .await
+            .expect("register tools with memory bundle");
+        let registry = registered.runtime_manager.tool_registry();
+        let ctx = ContextId::new(1, 1);
+
+        let add_session = registry
+            .open_session("memory/add", json!({}), &ctx)
+            .await
+            .expect("open memory/add session");
+        registry
+            .session_send(
+                &add_session,
+                json!({
+                    "events": [{
+                        "eventType": "fact",
+                        "content": "The user prefers Rust.",
+                        "sessionId": 1,
+                        "confidence": 0.95
+                    }]
+                }),
+            )
+            .await
+            .expect("send memory/add");
+        let add_step = registry
+            .session_next(&add_session)
+            .await
+            .expect("next memory/add");
+        match add_step {
+            ToolStep::Done {
+                output: Some(output),
+            } => {
+                let node_ids = output
+                    .get("nodeIds")
+                    .and_then(|v| v.as_array())
+                    .expect("nodeIds array");
+                assert_eq!(node_ids.len(), 1, "memory/add should create one node");
+            }
+            other => panic!("unexpected memory/add step: {other:?}"),
+        }
+        registry
+            .session_finish(&add_session)
+            .await
+            .expect("finish memory/add");
+
+        let stats_session = registry
+            .open_session("memory/stats", json!({}), &ctx)
+            .await
+            .expect("open memory/stats session");
+        registry
+            .session_send(&stats_session, json!({}))
+            .await
+            .expect("send memory/stats");
+        let stats_step = registry
+            .session_next(&stats_session)
+            .await
+            .expect("next memory/stats");
+        match stats_step {
+            ToolStep::Done {
+                output: Some(output),
+            } => {
+                assert_eq!(
+                    output.get("nodeCount").and_then(|v| v.as_u64()),
+                    Some(1),
+                    "memory/stats should report persisted node"
+                );
+                let file_path = output
+                    .get("filePath")
+                    .and_then(|v| v.as_str())
+                    .expect("stats filePath");
+                assert!(
+                    std::path::Path::new(file_path).exists(),
+                    "memory file should exist on disk: {file_path}"
+                );
+                assert!(
+                    file_path.starts_with(brain_dir.to_str().expect("tempdir utf8")),
+                    "memory file should live under BRAIN_DIR override: {file_path}"
+                );
+            }
+            other => panic!("unexpected memory/stats step: {other:?}"),
+        }
+        registry
+            .session_finish(&stats_session)
+            .await
+            .expect("finish memory/stats");
+
+        let _ = std::fs::remove_dir_all(extract_dir);
+        let _ = std::fs::remove_dir_all(brain_dir);
     }
 }
