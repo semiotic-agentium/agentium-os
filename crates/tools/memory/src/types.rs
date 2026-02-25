@@ -1,8 +1,8 @@
 //! Tool-facing types for the memory bundle.
 //!
-//! All types use String for enum-like fields (event types, edge types, direction)
-//! and parse them in handlers with clear error messages. This avoids coupling
-//! the tool schema to agentic-memory's internal enum discriminants.
+//! Enum-like fields use explicit tool enums (not raw strings) so the generated
+//! schema/TypeScript bindings are self-documenting and invalid values are
+//! rejected at deserialization time.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -12,12 +12,55 @@ use ts_rs::TS;
 // memory/add
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryEventType {
+    Fact,
+    Decision,
+    Inference,
+    Correction,
+    Skill,
+    Episode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryEdgeType {
+    CausedBy,
+    Supports,
+    Contradicts,
+    Supersedes,
+    RelatedTo,
+    PartOf,
+    TemporalNext,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryTraversalDirection {
+    Forward,
+    Backward,
+    Both,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryHealthStatus {
+    Pass,
+    Warn,
+    Fail,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryEventInput {
-    /// Event type: "fact", "decision", "inference", "correction", "skill", "episode".
-    pub event_type: String,
+    /// Event type.
+    pub event_type: MemoryEventType,
     /// The content of this cognitive event.
     pub content: String,
     /// Session identifier (groups related events).
@@ -36,9 +79,8 @@ pub struct MemoryEdgeInput {
     pub source: u64,
     /// Target node ID.
     pub target: u64,
-    /// Edge type: "caused_by", "supports", "contradicts", "supersedes",
-    /// "related_to", "part_of", "temporal_next".
-    pub edge_type: String,
+    /// Edge type.
+    pub edge_type: MemoryEdgeType,
     /// Edge weight (0.0 to 1.0, default 1.0).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub weight: Option<f32>,
@@ -96,7 +138,7 @@ pub struct MemorySearchSendInput {
     pub query: String,
     /// Filter by event types.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub types: Option<Vec<String>>,
+    pub types: Option<Vec<MemoryEventType>>,
     /// Filter by session IDs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sessions: Option<Vec<u32>>,
@@ -112,7 +154,7 @@ pub struct MemorySearchMatch {
     pub id: u64,
     pub score: f32,
     pub content: String,
-    pub event_type: String,
+    pub event_type: MemoryEventType,
     /// Session ID when present; omitted if the node was written without session attribution.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<u32>,
@@ -147,10 +189,10 @@ pub struct MemoryTraverseSendInput {
     pub start_id: u64,
     /// Edge types to follow (default: all).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub edge_types: Option<Vec<String>>,
-    /// Traversal direction: "forward", "backward", "both" (default: "forward").
+    pub edge_types: Option<Vec<MemoryEdgeType>>,
+    /// Traversal direction (default: `forward`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub direction: Option<String>,
+    pub direction: Option<MemoryTraversalDirection>,
     /// Maximum traversal depth (default: 3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub depth: Option<u32>,
@@ -162,7 +204,7 @@ pub struct MemoryTraverseSendInput {
 pub struct TraversalNode {
     pub id: u64,
     pub content: String,
-    pub event_type: String,
+    pub event_type: MemoryEventType,
     pub confidence: f32,
     pub depth: u32,
 }
@@ -173,7 +215,7 @@ pub struct TraversalNode {
 pub struct TraversalEdge {
     pub source: u64,
     pub target: u64,
-    pub edge_type: String,
+    pub edge_type: MemoryEdgeType,
     pub weight: f32,
 }
 
@@ -212,7 +254,7 @@ pub struct MemoryResolveSendInput {
 pub struct MemoryResolveNextOutput {
     pub id: u64,
     pub content: String,
-    pub event_type: String,
+    pub event_type: MemoryEventType,
     pub confidence: f32,
     /// True if the original node was superseded (resolved to a different node).
     pub was_superseded: bool,
@@ -302,8 +344,8 @@ pub struct MemoryStatsSendInput {}
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryStatsNextOutput {
-    /// Overall health: "pass", "warn", or "fail".
-    pub status: String,
+    /// Overall health.
+    pub status: MemoryHealthStatus,
     pub node_count: usize,
     pub edge_count: usize,
     pub contradiction_edges: usize,

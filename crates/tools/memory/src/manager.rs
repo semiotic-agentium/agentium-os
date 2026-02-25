@@ -26,16 +26,6 @@ pub enum MemoryError {
         "invalid agent name for memory file path: {0} (expected ASCII [a-zA-Z0-9_-], no whitespace)"
     )]
     InvalidAgentName(String),
-    #[error(
-        "unknown event type: {0} (expected: fact, decision, inference, correction, skill, episode)"
-    )]
-    UnknownEventType(String),
-    #[error(
-        "unknown edge type: {0} (expected: caused_by, supports, contradicts, supersedes, related_to, part_of, temporal_next)"
-    )]
-    UnknownEdgeType(String),
-    #[error("unknown direction: {0} (expected: forward, backward, both)")]
-    UnknownDirection(String),
     #[error("agentic-memory error: {0}")]
     Amem(#[from] agentic_memory::AmemError),
     #[error("I/O error: {0}")]
@@ -51,6 +41,8 @@ pub enum MemoryError {
         expected: Vec<u64>,
         actual: Vec<u64>,
     },
+    #[error("unknown memory health status from agentic-memory: {0}")]
+    UnknownStatsStatus(String),
 }
 
 #[derive(Debug)]
@@ -199,8 +191,8 @@ impl MemoryManager {
             .events
             .into_iter()
             .map(|e| {
-                let event_type = parse_event_type(&e.event_type)?;
-                let mut builder = CognitiveEventBuilder::new(event_type, &e.content);
+                let mut builder =
+                    CognitiveEventBuilder::new(to_agentic_event_type(e.event_type), &e.content);
                 if let Some(sid) = e.session_id {
                     builder = builder.session_id(sid);
                 }
@@ -215,11 +207,10 @@ impl MemoryManager {
             Some(edge_inputs) => edge_inputs
                 .into_iter()
                 .map(|e| {
-                    let edge_type = parse_edge_type(&e.edge_type)?;
                     Ok(Edge::new(
                         e.source,
                         e.target,
-                        edge_type,
+                        to_agentic_edge_type(e.edge_type),
                         e.weight.unwrap_or(1.0),
                     ))
                 })
@@ -263,7 +254,7 @@ impl MemoryManager {
 
     /// BM25 text search.
     pub async fn search(&self, input: MemorySearchSendInput) -> Result<MemorySearchNextOutput> {
-        let event_types = parse_event_types_opt(input.types.as_deref())?;
+        let event_types = parse_event_types_opt(input.types.as_deref());
         let session_ids = input.sessions.unwrap_or_default();
         let max_results = input.max.unwrap_or(10);
 
@@ -289,7 +280,7 @@ impl MemoryManager {
                     id: node.id,
                     score: m.score,
                     content: node.content.clone(),
-                    event_type: node.event_type.name().to_string(),
+                    event_type: from_agentic_event_type(node.event_type),
                     session_id: (node.session_id != 0).then_some(node.session_id),
                     confidence: node.confidence,
                 })
@@ -307,12 +298,10 @@ impl MemoryManager {
         &self,
         input: MemoryTraverseSendInput,
     ) -> Result<MemoryTraverseNextOutput> {
-        let edge_types = parse_edge_types_opt(input.edge_types.as_deref())?;
+        let edge_types = parse_edge_types_opt(input.edge_types.as_deref());
         let direction = input
             .direction
-            .as_deref()
-            .map(parse_direction)
-            .transpose()?
+            .map(to_agentic_direction)
             .unwrap_or(TraversalDirection::Forward);
         let max_depth = input.depth.unwrap_or(3);
 
@@ -334,7 +323,7 @@ impl MemoryManager {
                 graph.get_node(id).map(|node| TraversalNode {
                     id: node.id,
                     content: node.content.clone(),
-                    event_type: node.event_type.name().to_string(),
+                    event_type: from_agentic_event_type(node.event_type),
                     confidence: node.confidence,
                     depth: result.depths.get(&id).copied().unwrap_or(0),
                 })
@@ -347,7 +336,7 @@ impl MemoryManager {
             .map(|e| TraversalEdge {
                 source: e.source_id,
                 target: e.target_id,
-                edge_type: e.edge_type.name().to_string(),
+                edge_type: from_agentic_edge_type(e.edge_type),
                 weight: e.weight,
             })
             .collect();
@@ -368,7 +357,7 @@ impl MemoryManager {
         Ok(MemoryResolveNextOutput {
             id: resolved.id,
             content: resolved.content.clone(),
-            event_type: resolved.event_type.name().to_string(),
+            event_type: from_agentic_event_type(resolved.event_type),
             confidence: resolved.confidence,
             was_superseded,
             done: true,
@@ -400,11 +389,10 @@ impl MemoryManager {
             .edges
             .into_iter()
             .map(|e| {
-                let edge_type = parse_edge_type(&e.edge_type)?;
                 Ok(Edge::new(
                     e.source,
                     e.target,
-                    edge_type,
+                    to_agentic_edge_type(e.edge_type),
                     e.weight.unwrap_or(1.0),
                 ))
             })
@@ -441,7 +429,7 @@ impl MemoryManager {
             .memory_quality(&graph, MemoryQualityParams::default())?;
 
         Ok(MemoryStatsNextOutput {
-            status: report.status,
+            status: parse_health_status(&report.status)?,
             node_count: report.node_count,
             edge_count: report.edge_count,
             contradiction_edges: report.contradiction_edges,
@@ -513,37 +501,83 @@ fn replace_file_portable(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Parsing helpers
+// Type conversions (tool schema enums <-> agentic-memory enums)
 // ---------------------------------------------------------------------------
 
-fn parse_event_type(s: &str) -> Result<EventType> {
-    EventType::from_name(s).ok_or_else(|| MemoryError::UnknownEventType(s.to_string()))
-}
-
-fn parse_edge_type(s: &str) -> Result<EdgeType> {
-    EdgeType::from_name(s).ok_or_else(|| MemoryError::UnknownEdgeType(s.to_string()))
-}
-
-fn parse_direction(s: &str) -> Result<TraversalDirection> {
-    match s.to_lowercase().as_str() {
-        "forward" => Ok(TraversalDirection::Forward),
-        "backward" => Ok(TraversalDirection::Backward),
-        "both" => Ok(TraversalDirection::Both),
-        _ => Err(MemoryError::UnknownDirection(s.to_string())),
+fn to_agentic_event_type(value: MemoryEventType) -> EventType {
+    match value {
+        MemoryEventType::Fact => EventType::Fact,
+        MemoryEventType::Decision => EventType::Decision,
+        MemoryEventType::Inference => EventType::Inference,
+        MemoryEventType::Correction => EventType::Correction,
+        MemoryEventType::Skill => EventType::Skill,
+        MemoryEventType::Episode => EventType::Episode,
     }
 }
 
-fn parse_event_types_opt(types: Option<&[String]>) -> Result<Vec<EventType>> {
-    match types {
-        Some(ts) => ts.iter().map(|s| parse_event_type(s)).collect(),
-        None => Ok(Vec::new()),
+fn from_agentic_event_type(value: EventType) -> MemoryEventType {
+    match value {
+        EventType::Fact => MemoryEventType::Fact,
+        EventType::Decision => MemoryEventType::Decision,
+        EventType::Inference => MemoryEventType::Inference,
+        EventType::Correction => MemoryEventType::Correction,
+        EventType::Skill => MemoryEventType::Skill,
+        EventType::Episode => MemoryEventType::Episode,
     }
 }
 
-fn parse_edge_types_opt(types: Option<&[String]>) -> Result<Vec<EdgeType>> {
+fn to_agentic_edge_type(value: MemoryEdgeType) -> EdgeType {
+    match value {
+        MemoryEdgeType::CausedBy => EdgeType::CausedBy,
+        MemoryEdgeType::Supports => EdgeType::Supports,
+        MemoryEdgeType::Contradicts => EdgeType::Contradicts,
+        MemoryEdgeType::Supersedes => EdgeType::Supersedes,
+        MemoryEdgeType::RelatedTo => EdgeType::RelatedTo,
+        MemoryEdgeType::PartOf => EdgeType::PartOf,
+        MemoryEdgeType::TemporalNext => EdgeType::TemporalNext,
+    }
+}
+
+fn from_agentic_edge_type(value: EdgeType) -> MemoryEdgeType {
+    match value {
+        EdgeType::CausedBy => MemoryEdgeType::CausedBy,
+        EdgeType::Supports => MemoryEdgeType::Supports,
+        EdgeType::Contradicts => MemoryEdgeType::Contradicts,
+        EdgeType::Supersedes => MemoryEdgeType::Supersedes,
+        EdgeType::RelatedTo => MemoryEdgeType::RelatedTo,
+        EdgeType::PartOf => MemoryEdgeType::PartOf,
+        EdgeType::TemporalNext => MemoryEdgeType::TemporalNext,
+    }
+}
+
+fn to_agentic_direction(value: MemoryTraversalDirection) -> TraversalDirection {
+    match value {
+        MemoryTraversalDirection::Forward => TraversalDirection::Forward,
+        MemoryTraversalDirection::Backward => TraversalDirection::Backward,
+        MemoryTraversalDirection::Both => TraversalDirection::Both,
+    }
+}
+
+fn parse_health_status(value: &str) -> Result<MemoryHealthStatus> {
+    match value {
+        "pass" => Ok(MemoryHealthStatus::Pass),
+        "warn" => Ok(MemoryHealthStatus::Warn),
+        "fail" => Ok(MemoryHealthStatus::Fail),
+        other => Err(MemoryError::UnknownStatsStatus(other.to_string())),
+    }
+}
+
+fn parse_event_types_opt(types: Option<&[MemoryEventType]>) -> Vec<EventType> {
     match types {
-        Some(ts) => ts.iter().map(|s| parse_edge_type(s)).collect(),
-        None => Ok(vec![
+        Some(ts) => ts.iter().copied().map(to_agentic_event_type).collect(),
+        None => Vec::new(),
+    }
+}
+
+fn parse_edge_types_opt(types: Option<&[MemoryEdgeType]>) -> Vec<EdgeType> {
+    match types {
+        Some(ts) => ts.iter().copied().map(to_agentic_edge_type).collect(),
+        None => vec![
             EdgeType::CausedBy,
             EdgeType::Supports,
             EdgeType::Contradicts,
@@ -551,7 +585,7 @@ fn parse_edge_types_opt(types: Option<&[String]>) -> Result<Vec<EdgeType>> {
             EdgeType::RelatedTo,
             EdgeType::PartOf,
             EdgeType::TemporalNext,
-        ]),
+        ],
     }
 }
 
@@ -654,7 +688,7 @@ mod tests {
         let add_result = mgr
             .add(MemoryAddSendInput {
                 events: vec![MemoryEventInput {
-                    event_type: "fact".to_string(),
+                    event_type: MemoryEventType::Fact,
                     content: "The sky is blue on clear days".to_string(),
                     session_id: Some(1),
                     confidence: Some(0.95),
@@ -678,7 +712,7 @@ mod tests {
             .unwrap();
 
         assert!(!search_result.matches.is_empty());
-        assert_eq!(search_result.matches[0].event_type, "fact");
+        assert_eq!(search_result.matches[0].event_type, MemoryEventType::Fact);
         assert!(search_result.done);
 
         let stats = mgr.stats().await.unwrap();
@@ -696,13 +730,13 @@ mod tests {
             .add(MemoryAddSendInput {
                 events: vec![
                     MemoryEventInput {
-                        event_type: "fact".to_string(),
+                        event_type: MemoryEventType::Fact,
                         content: "Users prefer dark mode".to_string(),
                         session_id: Some(1),
                         confidence: Some(0.8),
                     },
                     MemoryEventInput {
-                        event_type: "decision".to_string(),
+                        event_type: MemoryEventType::Decision,
                         content: "Default to dark mode theme".to_string(),
                         session_id: Some(1),
                         confidence: Some(0.9),
@@ -720,7 +754,7 @@ mod tests {
             edges: vec![MemoryEdgeInput {
                 source: decision_id,
                 target: fact_id,
-                edge_type: "caused_by".to_string(),
+                edge_type: MemoryEdgeType::CausedBy,
                 weight: Some(1.0),
             }],
         })
@@ -731,7 +765,7 @@ mod tests {
             .traverse(MemoryTraverseSendInput {
                 start_id: decision_id,
                 edge_types: None,
-                direction: Some("forward".to_string()),
+                direction: Some(MemoryTraversalDirection::Forward),
                 depth: Some(2),
             })
             .await
@@ -756,7 +790,7 @@ mod tests {
         let err = mgr
             .add(MemoryAddSendInput {
                 events: vec![MemoryEventInput {
-                    event_type: "fact".to_string(),
+                    event_type: MemoryEventType::Fact,
                     content: "Transient fact".to_string(),
                     session_id: Some(1),
                     confidence: Some(0.9),
@@ -764,7 +798,7 @@ mod tests {
                 edges: Some(vec![MemoryEdgeInput {
                     source: 0,
                     target: 999_999,
-                    edge_type: "supports".to_string(),
+                    edge_type: MemoryEdgeType::Supports,
                     weight: Some(1.0),
                 }]),
             })
@@ -796,13 +830,13 @@ mod tests {
             .add(MemoryAddSendInput {
                 events: vec![
                     MemoryEventInput {
-                        event_type: "fact".to_string(),
+                        event_type: MemoryEventType::Fact,
                         content: "A".to_string(),
                         session_id: None,
                         confidence: Some(0.8),
                     },
                     MemoryEventInput {
-                        event_type: "decision".to_string(),
+                        event_type: MemoryEventType::Decision,
                         content: "B".to_string(),
                         session_id: None,
                         confidence: Some(0.9),
@@ -812,7 +846,7 @@ mod tests {
                 edges: Some(vec![MemoryEdgeInput {
                     source: 1,
                     target: 0,
-                    edge_type: "caused_by".to_string(),
+                    edge_type: MemoryEdgeType::CausedBy,
                     weight: Some(1.0),
                 }]),
             })
@@ -831,13 +865,13 @@ mod tests {
             .add(MemoryAddSendInput {
                 events: vec![
                     MemoryEventInput {
-                        event_type: "fact".to_string(),
+                        event_type: MemoryEventType::Fact,
                         content: "A".to_string(),
                         session_id: Some(1),
                         confidence: Some(1.0),
                     },
                     MemoryEventInput {
-                        event_type: "fact".to_string(),
+                        event_type: MemoryEventType::Fact,
                         content: "B".to_string(),
                         session_id: Some(1),
                         confidence: Some(1.0),
@@ -856,13 +890,13 @@ mod tests {
                     MemoryEdgeInput {
                         source: a,
                         target: b,
-                        edge_type: "supports".to_string(),
+                        edge_type: MemoryEdgeType::Supports,
                         weight: Some(1.0),
                     },
                     MemoryEdgeInput {
                         source: a,
                         target: 999_999,
-                        edge_type: "supports".to_string(),
+                        edge_type: MemoryEdgeType::Supports,
                         weight: Some(1.0),
                     },
                 ],
@@ -888,7 +922,7 @@ mod tests {
 
         mgr.add(MemoryAddSendInput {
             events: vec![MemoryEventInput {
-                event_type: "fact".to_string(),
+                event_type: MemoryEventType::Fact,
                 content: "Unscoped memory".to_string(),
                 session_id: None,
                 confidence: Some(1.0),

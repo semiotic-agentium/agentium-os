@@ -14,16 +14,14 @@ use crate::{manager::MemoryManager, types::*};
 fn map_err(e: crate::manager::MemoryError) -> baml_rt_core::BamlRtError {
     match e {
         crate::manager::MemoryError::InvalidAgentName(_)
-        | crate::manager::MemoryError::UnknownEventType(_)
-        | crate::manager::MemoryError::UnknownEdgeType(_)
-        | crate::manager::MemoryError::UnknownDirection(_)
         | crate::manager::MemoryError::UnexpectedIngestNodeIds { .. } => {
             baml_rt_core::BamlRtError::InvalidArgument(e.to_string())
         }
         crate::manager::MemoryError::Io(io) => baml_rt_core::BamlRtError::Io(io),
         crate::manager::MemoryError::LockBusy(_)
         | crate::manager::MemoryError::RegistryPoisoned
-        | crate::manager::MemoryError::Amem(_) => {
+        | crate::manager::MemoryError::Amem(_)
+        | crate::manager::MemoryError::UnknownStatsStatus(_) => {
             baml_rt_core::BamlRtError::ToolExecution(e.to_string())
         }
     }
