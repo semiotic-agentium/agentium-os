@@ -67,7 +67,7 @@ graphqlite = "0.3"
 rusqlite = "0.32"
 testcontainers = "0.23"
 insta = "1.46.3"
-uuid = { version = "1.10", features = ["v4", "serde"] }
+uuid = { version = "1.10", features = ["v4", "v7", "serde"] }
 schemars = "1.1.0"
 ts-rs = "11.1.0"
 genco = "0.19.0"

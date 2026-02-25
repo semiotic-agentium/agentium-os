@@ -283,7 +283,6 @@ fn metadata_value_as_string(
 pub struct JsChunkNormalizer {
     context_id: ContextId,
     task_id: TaskId,
-    message_counter: u64,
 }
 
 impl JsChunkNormalizer {
@@ -297,7 +296,6 @@ impl JsChunkNormalizer {
         Self {
             context_id: scope.context_id().clone(),
             task_id,
-            message_counter: 0,
         }
     }
 
@@ -357,12 +355,11 @@ impl JsChunkNormalizer {
         Ok(value)
     }
 
-    fn next_message_id(&mut self) -> String {
-        self.message_counter += 1;
+    fn next_message_id(&self) -> String {
         let derived = DerivedId::new(format!(
-            "js-msg-{context_id}-{counter}",
+            "js-msg-{context_id}-{uuid}",
             context_id = self.context_id.as_str(),
-            counter = self.message_counter
+            uuid = Uuid::now_v7()
         ));
         A2aMessageId::outgoing(derived)
             .as_message_id()
