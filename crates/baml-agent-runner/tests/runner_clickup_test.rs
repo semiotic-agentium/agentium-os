@@ -213,6 +213,84 @@ async fn fetch_mermaid_context(base_url: &str, context_id: &ContextId) -> String
     mermaid_response.text().await.expect("mermaid body")
 }
 
+fn assert_mermaid_contains_clickup_core_flow(mermaid: &str, expected_user_prompt_fragment: &str) {
+    assert!(
+        mermaid.contains("sequenceDiagram"),
+        "Expected Mermaid sequence diagram response, got: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("actor User"),
+        "Expected User participant in Mermaid, got: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("participant Agent"),
+        "Expected Agent participant in Mermaid, got: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("participant clickup"),
+        "Expected clickup participant in Mermaid, got: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("User->>Agent:"),
+        "Expected user prompt arrow in Mermaid, got: {mermaid}"
+    );
+    assert!(
+        mermaid.contains(expected_user_prompt_fragment),
+        "Expected user prompt fragment '{expected_user_prompt_fragment}' in Mermaid, got: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("Note over Agent: LLM"),
+        "Expected LLM note in Mermaid, got: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("Agent->>clickup:"),
+        "Expected tool call arrow in Mermaid, got: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("clickup-->>Agent:"),
+        "Expected tool response arrow in Mermaid, got: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("Agent->>User:"),
+        "Expected agent response arrow in Mermaid, got: {mermaid}"
+    );
+
+    let has_token_usage = mermaid
+        .lines()
+        .filter(|line| line.contains("Note over Agent: LLM"))
+        .any(|line| line.contains("in:") && line.contains("out:") && line.contains("total:"));
+    assert!(
+        has_token_usage,
+        "Expected at least one tokenized LLM note (in/out/total), got: {mermaid}"
+    );
+
+    let user_idx = mermaid.find("User->>Agent:");
+    let llm_idx = mermaid.find("Note over Agent: LLM");
+    let call_idx = mermaid.find("Agent->>clickup:");
+    let tool_return_idx = mermaid.find("clickup-->>Agent:");
+    let agent_response_idx = mermaid.find("Agent->>User:");
+    assert!(
+        user_idx.is_some()
+            && llm_idx.is_some()
+            && call_idx.is_some()
+            && tool_return_idx.is_some()
+            && agent_response_idx.is_some(),
+        "Expected Mermaid flow markers for ordering check, got: {mermaid}"
+    );
+    let user_idx = user_idx.expect("checked");
+    let llm_idx = llm_idx.expect("checked");
+    let call_idx = call_idx.expect("checked");
+    let tool_return_idx = tool_return_idx.expect("checked");
+    let agent_response_idx = agent_response_idx.expect("checked");
+    assert!(
+        user_idx < llm_idx
+            && llm_idx < call_idx
+            && call_idx < tool_return_idx
+            && tool_return_idx < agent_response_idx,
+        "Expected Mermaid ordering User->LLM->tool->tool_return->AgentResponse, got: {mermaid}"
+    );
+}
+
 fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -499,9 +577,18 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
         "Expected mock ClickUp list-task endpoint hit. hits={mock_hits:?}"
     );
     let mermaid = fetch_mermaid_context(&runner_api.base_url, &context_id).await;
+    assert_mermaid_contains_clickup_core_flow(&mermaid, "How many tasks are in progress?");
     assert!(
-        mermaid.contains("sequenceDiagram"),
-        "Expected Mermaid sequence diagram response, got: {mermaid}"
+        mermaid.contains("team_id=9013491519"),
+        "Expected team discovery args in Mermaid, got: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("space_id=space-9001"),
+        "Expected space discovery args in Mermaid, got: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("list_id=list-901325431486"),
+        "Expected list discovery args in Mermaid, got: {mermaid}"
     );
 
     runner_api.stop().await;
@@ -698,9 +785,10 @@ async fn test_e2e_clickup_get_task_description_fast() {
         "Expected mock ClickUp get-task endpoint hit. hits={mock_hits:?}"
     );
     let mermaid = fetch_mermaid_context(&runner_api.base_url, &context_id).await;
+    assert_mermaid_contains_clickup_core_flow(&mermaid, "Get the description for task_id=task-901");
     assert!(
-        mermaid.contains("sequenceDiagram"),
-        "Expected Mermaid sequence diagram response, got: {mermaid}"
+        mermaid.contains("task_id=task-901"),
+        "Expected task_id argument in Mermaid tool call summary, got: {mermaid}"
     );
 
     runner_api.stop().await;

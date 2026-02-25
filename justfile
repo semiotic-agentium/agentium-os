@@ -1,38 +1,40 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 set dotenv-load
 provenance_db := "provenance.db"
+runner_http_bind := "127.0.0.1:8080"
 
 # Rebuilds clickup-agent package and runs it via a2a stdio.
 clickup-agent:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- clickup-agent.tar.gz --a2a-stdio
+    cargo run -p baml-agent-runner --features http-tools -- clickup-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}}
 
 # Same as clickup-agent, but persists provenance to provenance.db for graph_exporter.
+# Also starts the HTTP API on runner_http_bind for mermaid/metrics endpoints.
 clickup-agent-provenance:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- clickup-agent.tar.gz --a2a-stdio --provenance-db {{provenance_db}}
+    cargo run -p baml-agent-runner --features http-tools -- clickup-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
 
 # Rebuilds notion-agent package and runs it via a2a stdio.
 notion-agent:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- notion-agent.tar.gz --a2a-stdio
+    cargo run -p baml-agent-runner --features http-tools -- notion-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}}
 
 # Same as notion-agent, but persists provenance to provenance.db for graph_exporter.
 notion-agent-provenance:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- notion-agent.tar.gz --a2a-stdio --provenance-db {{provenance_db}}
+    cargo run -p baml-agent-runner --features http-tools -- notion-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
 
 # Rebuilds coordinator + notion packages and runs coordinator-agent via a2a stdio.
 coordinator-agent:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/coordinator-agent --output coordinator-agent.tar.gz
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- coordinator-agent.tar.gz notion-agent.tar.gz --a2a-stdio
+    cargo run -p baml-agent-runner --features http-tools -- coordinator-agent.tar.gz notion-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}}
 
 # Same as coordinator-agent, but persists provenance to provenance.db for graph_exporter.
 coordinator-agent-provenance:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/coordinator-agent --output coordinator-agent.tar.gz
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- coordinator-agent.tar.gz notion-agent.tar.gz --a2a-stdio --provenance-db {{provenance_db}}
+    cargo run -p baml-agent-runner --features http-tools -- coordinator-agent.tar.gz notion-agent.tar.gz --a2a-stdio --provenance-db {{provenance_db}} --serve-http {{runner_http_bind}}
 
 # Runs the HTTP Notion demo script (starts runner if needed and streams one request).
 notion-demo:
@@ -53,7 +55,7 @@ coordinator-demo-stop:
 fmt:
     cargo fmt --all
 
-ci_features := "baml-rt-builder/http-tools,baml-rt-provenance/falkordb-tests,baml-rt-a2a/falkordb-tests,baml-agent-runner/falkordb-tests,baml-agent-runner/http-tools,baml-rt/llm-tests,baml-agent-runner/llm-tests"
+ci_features := "baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-rt/llm-tests,baml-agent-runner/llm-tests"
 
 # CI parity: run the full nextest suite (mirrors rust-ci.yml "nextest" job).
 # Requires: cargo-nextest, a running FalkorDB on localhost:6379,

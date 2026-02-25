@@ -110,9 +110,13 @@ fn emit_message(out: &mut String, node: &ExportedNode, agent: &str) {
 fn emit_llm_call(out: &mut String, node: &ExportedNode, agent: &str) {
     let model = prop_str(node, a2a::MODEL).unwrap_or_else(|| "unknown".to_string());
     let mut note = format!("LLM {model}");
+    let usage_summary = llm_usage_summary(node);
 
     if let Some(dur) = prop_str(node, a2a::DURATION_MS) {
         note.push_str(&format!(" ({dur}ms"));
+        if let Some(usage) = usage_summary.as_deref() {
+            note.push_str(&format!(", {usage}"));
+        }
         if is_success(node.properties.get(a2a::SUCCESS)) {
             note.push_str(" ✓");
         } else if is_failure(node.properties.get(a2a::SUCCESS)) {
@@ -122,6 +126,8 @@ fn emit_llm_call(out: &mut String, node: &ExportedNode, agent: &str) {
             }
         }
         note.push(')');
+    } else if let Some(usage) = usage_summary {
+        note.push_str(&format!(" ({usage})"));
     }
     let _ = writeln!(
         out,
@@ -305,6 +311,20 @@ fn prop_str(node: &ExportedNode, key: &str) -> Option<String> {
         serde_json::Value::Bool(b) => Some(b.to_string()),
         _ => None,
     })
+}
+
+/// Build a compact usage summary from LLM token properties when present.
+fn llm_usage_summary(node: &ExportedNode) -> Option<String> {
+    let prompt = prop_str(node, a2a::USAGE_PROMPT_TOKENS);
+    let completion = prop_str(node, a2a::USAGE_COMPLETION_TOKENS);
+    let total = prop_str(node, a2a::USAGE_TOTAL_TOKENS);
+    match (prompt, completion, total) {
+        (Some(input), Some(output), Some(total)) => {
+            Some(format!("in:{input}, out:{output}, total:{total}"))
+        }
+        (Some(input), Some(output), None) => Some(format!("in:{input}, out:{output}")),
+        _ => None,
+    }
 }
 
 /// Check if a JSON value represents a success (bool `true` or string `"true"`).

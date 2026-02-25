@@ -1,5 +1,6 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
+assertion_line: 537
 expression: snapshot
 ---
 {
@@ -157,6 +158,48 @@ expression: snapshot
           }
         }
       },
+      "/context/{context_id}/metrics": {
+        "get": {
+          "tags": [
+            "provenance"
+          ],
+          "summary": "Context metrics by context_id",
+          "description": "Returns turn-level and session-level token/call/duration metrics for the given A2A context ID. Available when GraphQLite-backed provenance is configured.",
+          "operationId": "get_context_metrics",
+          "parameters": [
+            {
+              "name": "context_id",
+              "in": "path",
+              "description": "A2A context ID",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Context metrics",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ContextMetricsResponseDto"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "No metrics found for context"
+            },
+            "500": {
+              "description": "Internal error"
+            },
+            "501": {
+              "description": "Metrics service not available (provenance not configured)"
+            }
+          }
+        }
+      },
       "/mermaid/context/{context_id}": {
         "get": {
           "tags": [
@@ -308,6 +351,125 @@ expression: snapshot
               "type": "string"
             }
           }
+        },
+        "ContextMetricsResponseDto": {
+          "type": "object",
+          "description": "API response for `GET /context/{context_id}/metrics`.",
+          "required": [
+            "context_id",
+            "turns",
+            "session"
+          ],
+          "properties": {
+            "context_id": {
+              "type": "string"
+            },
+            "session": {
+              "$ref": "#/components/schemas/ContextSessionMetricsDto"
+            },
+            "turns": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ContextTurnMetricsDto"
+              }
+            }
+          }
+        },
+        "ContextSessionMetricsDto": {
+          "type": "object",
+          "description": "Session-level aggregate metrics for one context id.",
+          "required": [
+            "turns_total",
+            "user_prompts_total",
+            "llm_calls_total",
+            "llm_duration_ms_total",
+            "tokens_total"
+          ],
+          "properties": {
+            "llm_calls_total": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "llm_duration_ms_total": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "tokens_total": {
+              "$ref": "#/components/schemas/TokenUsageDto"
+            },
+            "turns_total": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "user_prompts_total": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        },
+        "ContextTurnMetricsDto": {
+          "type": "object",
+          "description": "Turn-level metrics scoped by `(context_id, message_id)`.",
+          "required": [
+            "message_id",
+            "user_prompt_count",
+            "llm_call_count",
+            "llm_duration_ms_total",
+            "tokens"
+          ],
+          "properties": {
+            "llm_call_count": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "llm_duration_ms_total": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "message_id": {
+              "type": "string"
+            },
+            "tokens": {
+              "$ref": "#/components/schemas/TokenUsageDto"
+            },
+            "user_prompt_count": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        },
+        "TokenUsageDto": {
+          "type": "object",
+          "description": "Token totals for a turn or session.",
+          "required": [
+            "in",
+            "out",
+            "total"
+          ],
+          "properties": {
+            "in": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "out": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "total": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
         }
       }
     },
@@ -319,6 +481,10 @@ expression: snapshot
       {
         "name": "mermaid",
         "description": "Provenance graph as Mermaid sequence diagrams (when GraphQLite is enabled)"
+      },
+      {
+        "name": "provenance",
+        "description": "Provenance-backed context metrics (when GraphQLite is enabled)"
       }
     ]
   }

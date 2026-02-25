@@ -22,7 +22,14 @@ use futures_util::stream::{self, Stream};
 use http_api_problem::HttpApiProblem;
 use serde_json::Value;
 
-use crate::{ApiState, mermaid::MermaidError, metrics, openapi::AgentDiscoveryEntryDto, spans};
+use crate::{
+    ApiState,
+    context_metrics::{ContextMetricsError, ContextMetricsResponseDto},
+    mermaid::MermaidError,
+    metrics,
+    openapi::AgentDiscoveryEntryDto,
+    spans,
+};
 
 /// HTTP result type for handlers that return RFC 7807 problem details on error.
 type HttpResult<T> = Result<T, HttpApiProblem>;
@@ -352,6 +359,64 @@ pub async fn get_mermaid_task(
         }
         Err(MermaidError::Other(e)) => {
             metrics::record_request("get_mermaid_task", "internal", start.elapsed());
+            Err(problem(500, "Internal Server Error", e.to_string()))
+        }
+    }
+}
+
+/// Get context token/call metrics aggregated from provenance graph data.
+#[utoipa::path(
+    get,
+    path = "/context/{context_id}/metrics",
+    tag = "provenance",
+    summary = "Context metrics by context_id",
+    description = "Returns turn-level and session-level token/call/duration metrics for the given A2A context ID. Available when GraphQLite-backed provenance is configured.",
+    params(("context_id" = String, Path, description = "A2A context ID")),
+    responses(
+        (status = 200, description = "Context metrics", body = ContextMetricsResponseDto),
+        (status = 404, description = "No metrics found for context"),
+        (status = 501, description = "Metrics service not available (provenance not configured)"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_context_metrics(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(context_id): axum::extract::Path<String>,
+) -> HttpResult<Json<ContextMetricsResponseDto>> {
+    let span = spans::get_context_metrics(&context_id);
+    let _guard = span.enter();
+    let start = Instant::now();
+    let Some(svc) = &state.context_metrics else {
+        metrics::record_request("get_context_metrics", "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Context metrics service not configured",
+        ));
+    };
+    match svc.metrics_for_context(&context_id).await {
+        Ok(report) => {
+            metrics::record_request("get_context_metrics", "success", start.elapsed());
+            Ok(Json(report))
+        }
+        Err(ContextMetricsError::NotFound) => {
+            metrics::record_request("get_context_metrics", "not_found", start.elapsed());
+            Err(problem(
+                404,
+                "Not Found",
+                format!("no metrics for context {context_id}"),
+            ))
+        }
+        Err(ContextMetricsError::Unavailable) => {
+            metrics::record_request("get_context_metrics", "unavailable", start.elapsed());
+            Err(problem(
+                501,
+                "Not Implemented",
+                "Context metrics service unavailable",
+            ))
+        }
+        Err(ContextMetricsError::Other(e)) => {
+            metrics::record_request("get_context_metrics", "internal", start.elapsed());
             Err(problem(500, "Internal Server Error", e.to_string()))
         }
     }

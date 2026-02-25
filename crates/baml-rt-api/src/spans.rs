@@ -48,3 +48,9 @@ pub(crate) fn get_mermaid_context(context_id: &str) -> Span {
 pub(crate) fn get_mermaid_task(task_id: &str) -> Span {
     tracing::debug_span!("baml_rt_api.get_mermaid_task", task_id = %task_id)
 }
+
+/// Create span for GET /context/{context_id}/metrics.
+#[inline]
+pub(crate) fn get_context_metrics(context_id: &str) -> Span {
+    tracing::debug_span!("baml_rt_api.get_context_metrics", context_id = %context_id)
+}

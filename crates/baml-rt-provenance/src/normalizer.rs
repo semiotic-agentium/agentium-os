@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use baml_rt_core::ids::{
-    AgentId, ArtifactId, ContextId, EventId, MessageId, ProvVocabularyType, TaskId, UuidId,
+    AgentId, ArtifactId, ContextId, EventId, ExternalId, MessageId, ProvVocabularyType, TaskId,
+    UuidId,
 };
 use serde_json::Value;
 
@@ -154,12 +155,12 @@ fn normalize_event_with_registry(
                 prompt_id,
                 Some(a2a_roles::PROMPT.to_string()),
             );
-            if let CallScope::Message { message_id } = scope {
+            if let Some(message_id) = scoped_message_id(scope, metadata) {
                 attach_message_context(
                     &mut doc,
                     event,
                     &activity_id,
-                    message_id,
+                    &message_id,
                     &mut derived_relations,
                 );
             }
@@ -245,12 +246,12 @@ fn normalize_event_with_registry(
                 prompt_id,
                 Some(a2a_roles::PROMPT.to_string()),
             );
-            if let CallScope::Message { message_id } = scope {
+            if let Some(message_id) = scoped_message_id(scope, metadata) {
                 attach_message_context(
                     &mut doc,
                     event,
                     &activity_id,
-                    message_id,
+                    &message_id,
                     &mut derived_relations,
                 );
             }
@@ -308,12 +309,12 @@ fn normalize_event_with_registry(
                 args_id,
                 Some(a2a_roles::ARGS.to_string()),
             );
-            if let CallScope::Message { message_id } = scope {
+            if let Some(message_id) = scoped_message_id(scope, metadata) {
                 attach_message_context(
                     &mut doc,
                     event,
                     &activity_id,
-                    message_id,
+                    &message_id,
                     &mut derived_relations,
                 );
             }
@@ -377,12 +378,12 @@ fn normalize_event_with_registry(
                 args_id,
                 Some(a2a_roles::ARGS.to_string()),
             );
-            if let CallScope::Message { message_id } = scope {
+            if let Some(message_id) = scoped_message_id(scope, metadata) {
                 attach_message_context(
                     &mut doc,
                     event,
                     &activity_id,
-                    message_id,
+                    &message_id,
                     &mut derived_relations,
                 );
             }
@@ -724,7 +725,7 @@ fn normalize_event_with_registry(
             content,
             metadata,
         } => {
-            let message_id = message_entity_id(id);
+            let message_id = message_entity_id(event.context_id(), id);
             let mut message_attrs = base_attrs(event);
             message_attrs.insert(
                 a2a::MESSAGE_ID.to_string(),
@@ -758,7 +759,7 @@ fn normalize_event_with_registry(
                 },
             );
 
-            let processing_id = message_processing_activity_id(id);
+            let processing_id = message_processing_activity_id(event.context_id(), id);
             let mut processing_attrs = base_attrs(event);
             processing_attrs.insert(
                 a2a::MESSAGE_ID.to_string(),
@@ -1280,14 +1281,21 @@ fn ensure_runner_runtime_instance(doc: &mut ProvDocument) {
     }
 }
 
-/// Message entity id: derived from `MessageId`.
-fn message_entity_id(message_id: &MessageId) -> ProvEntityId {
-    ProvEntityId::derived::<MessageEntityId>(MessageEntityInput { message_id })
+/// Message entity id: derived from `(ContextId, MessageId)`.
+fn message_entity_id(context_id: &ContextId, message_id: &MessageId) -> ProvEntityId {
+    ProvEntityId::derived::<MessageEntityId>(MessageEntityInput {
+        context_id,
+        message_id,
+    })
 }
 
-/// Message processing activity id: derived from `MessageId`.
-fn message_processing_activity_id(message_id: &MessageId) -> ProvActivityId {
+/// Message processing activity id: derived from `(ContextId, MessageId)`.
+fn message_processing_activity_id(
+    context_id: &ContextId,
+    message_id: &MessageId,
+) -> ProvActivityId {
     ProvActivityId::derived::<MessageProcessingActivityId>(MessageProcessingActivityInput {
+        context_id,
         message_id,
     })
 }
@@ -1297,7 +1305,7 @@ fn ensure_message_processing_activity(
     context_id: &ContextId,
     message_id: &MessageId,
 ) -> ProvActivityId {
-    let id = message_processing_activity_id(message_id);
+    let id = message_processing_activity_id(context_id, message_id);
     let mut attrs = doc
         .activity(&id)
         .map(|activity| activity.attributes.clone())
@@ -1329,7 +1337,7 @@ fn attach_message_context(
     message_id: &MessageId,
     derived_relations: &mut Vec<A2aDerivedRelation>,
 ) {
-    let message_entity_id = message_entity_id(message_id);
+    let message_entity_id = message_entity_id(event.context_id(), message_id);
     let mut message_attrs = base_attrs(event);
     message_attrs.insert(
         a2a::MESSAGE_ID.to_string(),
@@ -1355,6 +1363,19 @@ fn attach_message_context(
         to: ProvNodeRef::Activity(activity_id.clone()),
         attributes: derived_attrs(event),
     });
+}
+
+fn scoped_message_id(scope: &CallScope, metadata: &Value) -> Option<MessageId> {
+    match scope {
+        CallScope::Message { message_id } => Some(message_id.clone()),
+        CallScope::Task { .. } => metadata
+            .get("message_id")
+            .or_else(|| metadata.get(a2a::MESSAGE_ID))
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| MessageId::from_external(ExternalId::new(value.to_string()))),
+    }
 }
 
 fn attach_task_call_context(
