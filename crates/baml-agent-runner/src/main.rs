@@ -61,7 +61,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
     sync::Mutex,
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Inert agent package - just holds package data
 pub(crate) struct AgentPackage {
@@ -562,8 +562,7 @@ impl AgentRunner {
             if let Some(agent_name) = agent_name {
                 return Ok((agent_name, request.clone()));
             }
-            if agents.len() == 1 {
-                let agent_name = agents.keys().next().cloned().unwrap_or_default();
+            if let Some(agent_name) = select_implicit_stdio_agent(&agents) {
                 return Ok((agent_name, request.clone()));
             }
             return Err(BamlRtError::InvalidArgument(
@@ -596,8 +595,7 @@ impl AgentRunner {
             (agent_name, method_base)
         } else if let Some((agent_name, method_name)) = split_agent_method(&method_base, &agents) {
             (agent_name, method_name)
-        } else if agents.len() == 1 {
-            let agent_name = agents.keys().next().cloned().unwrap_or_default();
+        } else if let Some(agent_name) = select_implicit_stdio_agent(&agents) {
             (agent_name, method_base)
         } else {
             return Err(BamlRtError::InvalidArgument(
@@ -794,6 +792,21 @@ fn split_agent_method(
             return Some((prefix.to_string(), suffix.to_string()));
         }
     }
+    None
+}
+
+fn select_implicit_stdio_agent(agents: &HashMap<String, BootedAgent>) -> Option<String> {
+    if agents.len() == 1 {
+        return agents.keys().next().cloned();
+    }
+
+    // TODO: As a follow-up we can enhance this
+    // by adding a special coordinator flag to agent
+    // manifest file
+    if agents.contains_key("coordinator-agent") {
+        return Some("coordinator-agent".to_string());
+    }
+
     None
 }
 
@@ -1236,6 +1249,7 @@ async fn main() -> anyhow::Result<()> {
             .invoke(&agent_name, &function_name, args_value)
             .await
             .context("Function invocation failed")?;
+        debug!("{}", serde_json::to_string_pretty(&result)?);
         println!("{}", serde_json::to_string_pretty(&result)?);
         return Ok(());
     }
@@ -1281,14 +1295,57 @@ async fn main() -> anyhow::Result<()> {
         None
     };
 
-    if config.a2a_stdio {
-        ready.run_a2a_stdio().await?;
-    } else if http_handle.is_some() {
-        // HTTP-only mode: wait for the server to finish (or fail).
-        if let Some(handle) = http_handle {
-            handle.await??;
+    match (config.a2a_stdio, http_handle) {
+        (true, Some(mut handle)) => {
+            // When both stdio and HTTP are enabled, supervise both tasks:
+            // - if stdio completes first, stop HTTP explicitly before exiting
+            // - if HTTP exits first, log and keep stdio running for the active session
+            let stdio_fut = ready.run_a2a_stdio();
+            tokio::pin!(stdio_fut);
+            let mut http_exited = false;
+
+            loop {
+                tokio::select! {
+                    stdio_result = &mut stdio_fut => {
+                        if !http_exited {
+                            if !handle.is_finished() {
+                                info!("A2A stdio loop ended; stopping HTTP API server task");
+                                handle.abort();
+                            }
+                        }
+
+                        stdio_result?;
+                        break;
+                    }
+                    http_result = &mut handle, if !http_exited => {
+                        match http_result {
+                            Ok(Ok(())) => {
+                                warn!("HTTP API server exited; continuing A2A stdio loop");
+                            }
+                            Ok(Err(err)) => {
+                                warn!(error = %err, "HTTP API server exited with error; continuing A2A stdio loop");
+                            }
+                            Err(join_err) if join_err.is_cancelled() => {
+                                info!("HTTP API server task was cancelled; continuing A2A stdio loop");
+                            }
+                            Err(join_err) => {
+                                warn!("HTTP API server task join error: {join_err}; continuing A2A stdio loop");
+                            }
+                        }
+                        http_exited = true;
+                    }
+                }
+            }
         }
-        return Ok(());
+        (true, None) => {
+            ready.run_a2a_stdio().await?;
+        }
+        (false, Some(handle)) => {
+            // HTTP-only mode: wait for the server to finish (or fail).
+            handle.await??;
+            return Ok(());
+        }
+        (false, None) => {}
     }
 
     info!("Agent Runner completed successfully");
@@ -1297,6 +1354,7 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "memory")]
     use std::sync::{Mutex as StdMutex, OnceLock};
 
     use baml_rt::baml::BamlRuntimeManager;
@@ -1378,6 +1436,84 @@ globalThis.onChatMessage = async function(_message) {
         }
     }
 
+    fn test_manifest(name: &str) -> AgentManifest {
+        AgentManifest {
+            name: name.to_string(),
+            version: "1.0.0".to_string(),
+            entry_point: "dist/index.js".to_string(),
+            signature: format!("{name}@1.0.0"),
+            tools: vec![],
+            discovery: None,
+        }
+    }
+
+    async fn insert_test_agent(runner: &AgentRunner, package_name: &str) {
+        let route_key = AgentRouteKey::new(
+            AgentPackageName::parse(package_name).expect("valid package"),
+            AgentInstanceId::default(),
+        );
+        let agent = build_test_agent().await;
+        runner.insert_agent(
+            package_name.to_string(),
+            route_key,
+            BootedAgent {
+                agent,
+                manifest: test_manifest(package_name),
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_a2a_request_defaults_to_coordinator_for_plaintext_with_multiple_agents() {
+        let runner = AgentRunner::new(test_provenance_config(), None, ToolAccessPolicy::default());
+        insert_test_agent(&runner, "coordinator-agent").await;
+        insert_test_agent(&runner, "notion-agent").await;
+        insert_test_agent(&runner, "clickup-agent").await;
+
+        let mut request =
+            wrap_plaintext_message("in clickup agent, what are my tasks in progress?")
+                .expect("wrap plaintext request");
+        let (agent_name, prepared) = runner
+            .prepare_a2a_request(&mut request)
+            .expect("coordinator implicit routing");
+
+        assert_eq!(agent_name, "coordinator-agent");
+        assert_eq!(
+            prepared
+                .get("method")
+                .and_then(Value::as_str)
+                .expect("method"),
+            "message.sendStream"
+        );
+        assert_eq!(
+            prepared
+                .get("params")
+                .and_then(|params| params.get("message"))
+                .and_then(|message| message.get("metadata"))
+                .and_then(|metadata| metadata.get("agent"))
+                .and_then(Value::as_str)
+                .expect("message metadata agent"),
+            "coordinator-agent"
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_a2a_request_still_errors_without_coordinator_when_multiple_agents_loaded() {
+        let runner = AgentRunner::new(test_provenance_config(), None, ToolAccessPolicy::default());
+        insert_test_agent(&runner, "notion-agent").await;
+        insert_test_agent(&runner, "clickup-agent").await;
+
+        let mut request = wrap_plaintext_message("list tasks").expect("wrap plaintext request");
+        let err = runner
+            .prepare_a2a_request(&mut request)
+            .expect_err("missing explicit agent should still fail");
+
+        assert!(
+            err.to_string().contains("A2A request missing agent"),
+            "expected missing-agent error, got: {err}"
+        );
+    }
+
     #[tokio::test]
     async fn internal_a2a_router_rejects_self_routing_by_route_key() {
         let runner = Arc::new(AgentRunner::new(
@@ -1429,14 +1565,7 @@ globalThis.onChatMessage = async function(_message) {
         );
 
         let agent = build_test_agent().await;
-        let manifest = AgentManifest {
-            name: package_name.as_str().to_string(),
-            version: "1.0.0".to_string(),
-            entry_point: "dist/index.js".to_string(),
-            signature: "demo-agent@1.0.0".to_string(),
-            tools: vec![],
-            discovery: None,
-        };
+        let manifest = test_manifest(package_name.as_str());
         runner.insert_agent(
             package_name.as_str().to_string(),
             default_key,
