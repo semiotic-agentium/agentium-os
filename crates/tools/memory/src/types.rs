@@ -338,7 +338,13 @@ pub struct MemoryStatsOpenInput {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
-pub struct MemoryStatsSendInput {}
+pub struct MemoryStatsSendInput {
+    /// Reserved optional field: the BAML schema generator currently rejects
+    /// empty classes, so this keeps the wire input effectively `{}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(skip)]
+    pub reserved: Option<bool>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]

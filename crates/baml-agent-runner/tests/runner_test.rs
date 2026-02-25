@@ -48,8 +48,10 @@ impl BundleType for Test {
 use baml_rt::a2a_types::{JSONRPCId, JSONRPCRequest, SendMessageRequest};
 #[cfg(feature = "llm-tests")]
 use baml_rt_core::{AgentDiscoveryEntry, AgentLister};
-#[cfg(feature = "llm-tests")]
+#[cfg(any(feature = "llm-tests", feature = "memory"))]
 use baml_rt_tools::{ManifestToolNames, parse_access_allowlist, register_manifest_tools};
+#[cfg(feature = "memory")]
+use baml_tools_memory::MemoryBundle;
 #[cfg(feature = "llm-tests")]
 use baml_tools_system::SystemBundle;
 
@@ -80,6 +82,8 @@ impl A2aRequestHandler for EmptyA2aHandler {
 }
 
 use common::e2e_serial_gate;
+#[cfg(feature = "memory")]
+use test_support::common::TempEnvVar;
 use test_support::{
     common::{
         CalculatorTool, agent_fixture, chunks_from_responses, ensure_baml_src_exists,
@@ -90,6 +94,13 @@ use test_support::{
 
 /// Build fixture with baml-agent-builder, extract tar to temp dir, return path to extracted dir (has dist + baml_src).
 fn build_fixture_to_temp(fixture_name: &str) -> std::path::PathBuf {
+    build_fixture_to_temp_with_builder_features(fixture_name, None)
+}
+
+fn build_fixture_to_temp_with_builder_features(
+    fixture_name: &str,
+    builder_features: Option<&str>,
+) -> std::path::PathBuf {
     let agent_dir = agent_fixture(fixture_name);
     if !agent_dir.exists() || !agent_dir.join("baml_src").exists() {
         panic!("Fixture {} not found or missing baml_src", fixture_name);
@@ -105,7 +116,23 @@ fn build_fixture_to_temp(fixture_name: &str) -> std::path::PathBuf {
     let _ = fs::remove_dir_all(&extract_dir);
     fs::create_dir_all(&extract_dir).expect("create extract dir");
 
-    let mut cmd = CliHarness::new().builder_command();
+    let mut cmd = if let Some(features) = builder_features {
+        let mut command = std::process::Command::new("cargo");
+        command
+            .current_dir(workspace_root())
+            .arg("run")
+            .arg("--quiet")
+            .arg("-p")
+            .arg("baml-rt-builder")
+            .arg("--features")
+            .arg(features)
+            .arg("--bin")
+            .arg("baml-agent-builder")
+            .arg("--");
+        command
+    } else {
+        CliHarness::new().builder_command()
+    };
     cmd.arg("package")
         .arg("--agent-dir")
         .arg(&agent_dir)
@@ -141,6 +168,16 @@ async fn build_fixture_to_temp_async(fixture_name: &str) -> std::path::PathBuf {
     tokio::task::spawn_blocking(move || build_fixture_to_temp(&fixture))
         .await
         .expect("build fixture task join")
+}
+
+#[cfg(feature = "memory")]
+async fn build_memory_fixture_to_temp_async(fixture_name: &str) -> std::path::PathBuf {
+    let fixture = fixture_name.to_string();
+    tokio::task::spawn_blocking(move || {
+        build_fixture_to_temp_with_builder_features(&fixture, Some("memory"))
+    })
+    .await
+    .expect("build memory fixture task join")
 }
 
 /// Create a test agent package from a fixture agent
@@ -597,6 +634,67 @@ async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
     manager.load_schema(built.to_str().unwrap()).unwrap();
     let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
         .expect("stream-js-tool dist/index.js");
+    baml_rt::A2aAgent::builder()
+        .with_runtime_manager(manager)
+        .with_init_js(agent_code)
+        .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_graphqlite_store(build_graphqlite_test_store())
+        .build()
+        .await
+        .unwrap()
+}
+
+#[cfg(feature = "memory")]
+async fn setup_memory_smoke_tool_agent() -> baml_rt::A2aAgent {
+    ensure_fixture_runtime_types();
+    let built = build_memory_fixture_to_temp_async("memory-smoke-tool").await;
+    let mut manager = BamlRuntimeManager::new().unwrap();
+    manager.load_schema(built.to_str().unwrap()).unwrap();
+
+    // Allowlist must include the full bundle because MemoryBundle registers all memory/*
+    // tools at once, while the manifest registration below stays scoped to the fixture subset.
+    let memory_bundle_tools: Vec<String> = [
+        "memory/add",
+        "memory/impact",
+        "memory/link",
+        "memory/resolve",
+        "memory/search",
+        "memory/traverse",
+        "memory/stats",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    let allowlist: HashSet<String> = memory_bundle_tools.iter().cloned().collect();
+    manager.set_tool_allowlist(allowlist).await.unwrap();
+
+    let policy = parse_access_allowlist();
+    let manifest_memory_tools = vec![
+        "memory/add".to_string(),
+        "memory/search".to_string(),
+        "memory/link".to_string(),
+        "memory/traverse".to_string(),
+        "memory/stats".to_string(),
+    ];
+    let manifest_tools =
+        ManifestToolNames::parse(&manifest_memory_tools).expect("parse memory tools");
+    let registry = manager.tool_registry();
+
+    let brain_dir = std::env::temp_dir().join(format!(
+        "runner-test-memory-smoke-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    fs::create_dir_all(&brain_dir).expect("create memory smoke BRAIN_DIR");
+    let _brain_env = TempEnvVar::set("BRAIN_DIR", &brain_dir.display().to_string());
+
+    registry
+        .register_bundle(MemoryBundle::new("memory-smoke-tool").expect("MemoryBundle::new"))
+        .expect("register MemoryBundle");
+    register_manifest_tools(registry.as_ref(), &manifest_tools, &policy).expect("register tools");
+
+    let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
+        .expect("memory-smoke-tool dist/index.js");
     baml_rt::A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
@@ -1631,6 +1729,51 @@ async fn test_e2e_stream_js_tool() {
     );
 
     let _ = task_id;
+}
+
+/// Fixture: memory-smoke-tool. Verifies memory/* tools via a packaged agent flow.
+#[cfg(feature = "memory")]
+#[tokio::test]
+async fn test_e2e_memory_smoke_tool() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+    let agent = setup_memory_smoke_tool_agent().await;
+
+    let request = send_message_request(
+        SendMessageRequest {
+            message: user_message("mem-1", "memory-smoke", Some(ContextId::new(46, 1))),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+            extra: std::collections::HashMap::new(),
+        },
+        "corr-1-99",
+    );
+    let responses = collect_stream_responses(&agent, request)
+        .await
+        .expect("memory smoke request");
+    let chunks = chunks_from_responses(&responses);
+    let texts = message_texts_from_chunks(&chunks);
+    let combined = texts.join("\n");
+
+    assert!(
+        combined.contains("MEMORY_SMOKE_OK"),
+        "Expected memory smoke success marker. Texts: {:?}. Raw: {}",
+        texts,
+        serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+    );
+    for expected in [
+        "searchType=fact",
+        "traverseEdgeType=caused_by",
+        "statsStatus=",
+        "addNodes=2",
+        "linkEdges=1",
+    ] {
+        assert!(
+            combined.contains(expected),
+            "Expected `{expected}` in memory smoke output. Texts: {:?}",
+            texts
+        );
+    }
 }
 
 #[tokio::test]
