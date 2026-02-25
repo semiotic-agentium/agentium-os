@@ -28,13 +28,15 @@ notion-agent-provenance:
 coordinator-agent:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/coordinator-agent --output coordinator-agent.tar.gz
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- coordinator-agent.tar.gz notion-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}}
+    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
+    cargo run -p baml-agent-runner --features http-tools -- coordinator-agent.tar.gz notion-agent.tar.gz clickup-agent.tar.gz  --a2a-stdio --serve-http {{runner_http_bind}}
 
 # Same as coordinator-agent, but persists provenance to provenance.db for graph_exporter.
 coordinator-agent-provenance:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/coordinator-agent --output coordinator-agent.tar.gz
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- coordinator-agent.tar.gz notion-agent.tar.gz --a2a-stdio --provenance-db {{provenance_db}} --serve-http {{runner_http_bind}}
+    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
+    cargo run -p baml-agent-runner --features http-tools -- coordinator-agent.tar.gz notion-agent.tar.gz clickup-agent.tar.gz --a2a-stdio --provenance-db {{provenance_db}} --serve-http {{runner_http_bind}}
 
 # Runs the HTTP Notion demo script (starts runner if needed and streams one request).
 notion-demo:
