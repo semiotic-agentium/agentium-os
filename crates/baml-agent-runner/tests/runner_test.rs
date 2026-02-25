@@ -24,8 +24,9 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
-    ProvenanceContextMessage, ProvenanceContextReader, ProvenanceWriter,
+    AgentType, GraphExporter, GraphStore, GraphqliteProvenanceStore, GraphqliteStoreBuilder,
+    ProvEvent, ProvenanceContextMessage, ProvenanceContextReader, ProvenanceWriter,
+    graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
 };
 use baml_rt_tools::bundles::BundleType;
 use flate2::{Compression, write::GzEncoder};
@@ -520,6 +521,26 @@ fn send_message_request(params: SendMessageRequest, id: &str) -> JSONRPCRequest 
     )
 }
 
+fn metrics_query_params(context_id: &str) -> serde_json::Map<String, Value> {
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "context_id".to_string(),
+        Value::String(context_id.to_string()),
+    );
+    params
+}
+
+fn value_as_u64(value: Option<&Value>) -> u64 {
+    match value {
+        Some(Value::Number(number)) => number
+            .as_u64()
+            .or_else(|| number.as_i64().map(|v| v.max(0) as u64))
+            .unwrap_or(0),
+        Some(Value::String(text)) => text.parse::<u64>().unwrap_or(0),
+        _ => 0,
+    }
+}
+
 /// Extracts task state from a chunk. Handles both object and stringified task/statusUpdate.
 fn chunk_state(chunk: &Value) -> Option<String> {
     fn state_from(val: &Value) -> Option<String> {
@@ -820,6 +841,70 @@ globalThis.onChatMessage = async function(message) {
         .unwrap();
 
     (initiator_agent, responder_agent)
+}
+
+async fn setup_internal_a2a_context_propagation_agents(
+    target_package: &str,
+) -> (
+    baml_rt::A2aAgent,
+    baml_rt::A2aAgent,
+    Arc<GraphqliteProvenanceStore>,
+) {
+    let shared_store = build_graphqlite_test_store();
+
+    let responder_manager = BamlRuntimeManager::new().unwrap();
+    let responder_code = r#"
+globalThis.onChatMessage = async function(_message) {
+  __chat_yield({ message: { parts: [{ text: "CALLEE_ONLY_MARKER_CTX" }] } });
+  __chat_yield({ final: true });
+};
+"#;
+    let responder_agent = baml_rt::A2aAgent::builder()
+        .with_runtime_manager(responder_manager)
+        .with_init_js(responder_code)
+        .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_graphqlite_store(shared_store.clone())
+        .build()
+        .await
+        .unwrap();
+
+    let router: Arc<dyn A2aRequestHandler> = Arc::new(PackageTargetRouter {
+        routes: HashMap::from([("responder-agent".to_string(), responder_agent.clone())]),
+    });
+
+    let initiator_manager = BamlRuntimeManager::new().unwrap();
+    let target_literal = serde_json::to_string(target_package).expect("serialize target package");
+    let initiator_code = r#"
+globalThis.onChatMessage = async function(message) {
+  const userText = message?.parts?.[0]?.text || "ping";
+  try {
+    const session = await openToolSession("system/internal_a2a", {
+      target: { agent_package: __TARGET_PACKAGE__, agent_instance_id: "default" }
+    });
+    await session.send({ parts: [{ text: userText }] });
+    await session.continue();
+    await session.finish();
+    __chat_yield({ message: { parts: [{ text: "delegated complete" }] } });
+    __chat_yield({ final: true });
+  } catch (e) {
+    __chat_yield({ message: { parts: [{ text: `delegate_error=${String(e)}` }] } });
+    __chat_yield({ final: true });
+  }
+};
+"#
+    .replace("__TARGET_PACKAGE__", &target_literal);
+    let initiator_agent = baml_rt::A2aAgent::builder()
+        .with_runtime_manager(initiator_manager)
+        .with_init_js(initiator_code)
+        .with_a2a_session_tool(RegistrationMode::Register)
+        .with_a2a_session_router(router)
+        .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_graphqlite_store(shared_store.clone())
+        .build()
+        .await
+        .unwrap();
+
+    (initiator_agent, responder_agent, shared_store)
 }
 
 async fn setup_coordinator_agent_with_stub_system_tools() -> baml_rt::A2aAgent {
@@ -1843,6 +1928,160 @@ async fn test_internal_a2a_unknown_target_surfaces_error() {
         "Expected unknown-route error text for missing target. Texts: {:?}. Raw: {}",
         texts,
         serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+    );
+}
+
+#[tokio::test]
+async fn test_internal_a2a_propagates_context_id_and_context_views_include_delegated_path() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+
+    let (initiator_agent, _responder_agent, shared_store) =
+        setup_internal_a2a_context_propagation_agents("responder-agent").await;
+    let caller_context_id = ContextId::new(46, 2);
+    let request = send_message_request(
+        SendMessageRequest {
+            message: user_message(
+                "route-ctx-1",
+                "ping for context propagation",
+                Some(caller_context_id.clone()),
+            ),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+            extra: std::collections::HashMap::new(),
+        },
+        "corr-46-2",
+    );
+
+    let responses = collect_stream_responses(&initiator_agent, request)
+        .await
+        .expect("internal_a2a routed request");
+    let chunks = chunks_from_responses(&responses);
+    let texts = message_texts_from_chunks(&chunks);
+    assert!(
+        texts.iter().any(|t| t == "delegated complete"),
+        "Expected initiator completion marker. Texts: {:?}. Raw: {}",
+        texts,
+        serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("delegate_error=")),
+        "Expected no delegated error marker. Texts: {:?}",
+        texts
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("CALLEE_ONLY_MARKER_CTX")),
+        "Initiator response should not directly echo callee marker; expected marker only in delegated internals. Texts: {:?}",
+        texts
+    );
+
+    let prompt_params = metrics_query_params(caller_context_id.as_str());
+    let mut prompt_rows = Vec::new();
+    let poll_attempts = 80;
+    for _ in 0..poll_attempts {
+        prompt_rows = shared_store
+            .query(
+                baml_rt_provenance::context_metrics_queries::USER_PROMPTS_BY_CONTEXT,
+                &prompt_params,
+            )
+            .await
+            .unwrap_or_default();
+        let caller_prompt_count = prompt_rows
+            .iter()
+            .find(|row| {
+                row.get("message_id")
+                    .and_then(Value::as_str)
+                    .map(|id| id == "route-ctx-1")
+                    .unwrap_or(false)
+            })
+            .map(|row| value_as_u64(row.get("user_prompt_count")))
+            .unwrap_or(0);
+        if caller_prompt_count >= 2 {
+            break;
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+
+    let caller_prompt_count = prompt_rows
+        .iter()
+        .find(|row| {
+            row.get("message_id")
+                .and_then(Value::as_str)
+                .map(|id| id == "route-ctx-1")
+                .unwrap_or(false)
+        })
+        .map(|row| value_as_u64(row.get("user_prompt_count")))
+        .unwrap_or(0);
+    assert!(
+        caller_prompt_count >= 2,
+        "Expected caller context metrics row to aggregate both top-level and delegated prompts under the same message id. rows={prompt_rows:?}"
+    );
+    let user_prompts_total: u64 = prompt_rows
+        .iter()
+        .map(|row| value_as_u64(row.get("user_prompt_count")))
+        .sum();
+    assert!(
+        user_prompts_total >= 2,
+        "Expected caller context metrics to include both top-level and delegated prompts. total={user_prompts_total}, rows={prompt_rows:?}"
+    );
+
+    let mut delegated_context_rows = Vec::new();
+    for _ in 0..poll_attempts {
+        delegated_context_rows = shared_store
+            .query(
+                "MATCH (m:Message) \
+                 WHERE m.a2a_content CONTAINS 'CALLEE_ONLY_MARKER_CTX' \
+                 RETURN DISTINCT m.a2a_context_id AS context_id \
+                 ORDER BY context_id",
+                &serde_json::Map::new(),
+            )
+            .await
+            .unwrap_or_default();
+        if !delegated_context_rows.is_empty() {
+            break;
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+    let delegated_context_ids: Vec<String> = delegated_context_rows
+        .iter()
+        .filter_map(|row| {
+            row.get("context_id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .collect();
+    assert_eq!(
+        delegated_context_ids,
+        vec![caller_context_id.as_str().to_string()],
+        "Callee-only delegated message should stay on exactly one context (caller context). Rows: {:?}",
+        delegated_context_rows
+    );
+
+    let exporter = GraphExporter::new(shared_store.clone());
+    let mut mermaid = String::new();
+    for _ in 0..poll_attempts {
+        let graph = exporter
+            .export_by_context(caller_context_id.as_str())
+            .await
+            .expect("export caller context graph");
+        if graph.nodes.is_empty() {
+            sleep(Duration::from_millis(250)).await;
+            continue;
+        }
+        let simplified = simplify_graph(&graph);
+        mermaid = render_sequence_diagram(&simplified);
+        if mermaid.contains("CALLEE_ONLY_MARKER_CTX") {
+            break;
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+    assert!(
+        mermaid.contains("sequenceDiagram"),
+        "Expected Mermaid sequence output for caller context. Mermaid: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("CALLEE_ONLY_MARKER_CTX"),
+        "Expected caller context Mermaid export to include callee-only delegated internals. Mermaid: {mermaid}"
     );
 }
 
