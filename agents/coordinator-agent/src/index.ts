@@ -694,15 +694,21 @@ async function collectEvidence(
 
   evidence.push(joined);
 
-  const enriched = await assessAndDrillEvidence(
-    userText,
-    target,
-    joined,
-    agentCapabilities,
-  );
-  if (enriched !== joined) {
-    return [enriched];
-  }
+  // TEMPORARILY DISABLED (passthrough mode):
+  // The evidence-assessment/drill path can overwrite valid ClickUp answers when
+  // delegated output differs from the expected keyword/source evidence patterns.
+  // This caused cases where a correct delegated answer was replaced by the
+  // coordinator fallback "I routed to ClickUp..." response.
+  //
+  // const enriched = await assessAndDrillEvidence(
+  //   userText,
+  //   target,
+  //   joined,
+  //   agentCapabilities,
+  // );
+  // if (enriched !== joined) {
+  //   return [enriched];
+  // }
 
   return evidence;
 }
@@ -866,13 +872,24 @@ async function collectLlmTargetEvidence(
     (domain === RoutingIntent.Notion || domain === RoutingIntent.ClickUp) &&
     !hasSourceBackedEvidence
   ) {
+    // TEMPORARILY DISABLED (passthrough mode):
+    // Source-backed evidence gating is too strict for valid ClickUp responses
+    // that do not match expected keyword/source evidence heuristics.
+    //
+    // return {
+    //   key: routeTargetKey(target),
+    //   domain,
+    //   // Keep fan-out synthesis transcripts free of candidate URLs from fallback UX.
+    //   snippets: [renderNoSourceBackedTargetSummary(domain)],
+    //   hasSourceBackedEvidence: false,
+    //   noEvidenceMessage: renderNoEvidenceResponse(domain, notionRecoveryUrls),
+    // };
     return {
       key: routeTargetKey(target),
       domain,
-      // Keep fan-out synthesis transcripts free of candidate URLs from fallback UX.
-      snippets: [renderNoSourceBackedTargetSummary(domain)],
-      hasSourceBackedEvidence: false,
-      noEvidenceMessage: renderNoEvidenceResponse(domain, notionRecoveryUrls),
+      snippets,
+      hasSourceBackedEvidence,
+      noEvidenceMessage: null,
     };
   }
 
@@ -977,12 +994,17 @@ async function runLlmCoordinator(ctx: RunContext): Promise<SessionResult> {
       };
     }
 
-    if (!anySourceBackedEvidence) {
-      return { message: renderNoSourceBackedFanOutResponse() };
-    }
-
     const transcript = evidenceParts.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
-    return { message: await synthesize(userText, transcript, conversationSummary) };
+    // TEMPORARILY DISABLED (passthrough mode):
+    // Confidence/source-gated synthesis is causing false negatives with valid
+    // delegated evidence and can replace correct answers with fallback text.
+    //
+    // if (!anySourceBackedEvidence) {
+    //   return { message: renderNoSourceBackedFanOutResponse() };
+    // }
+    //
+    // return { message: await synthesize(userText, transcript, conversationSummary) };
+    return { message: transcript };
   }
 
   // Single delegation (Delegate action or FanOut with one target)
@@ -1000,17 +1022,23 @@ async function runLlmCoordinator(ctx: RunContext): Promise<SessionResult> {
     };
   }
 
-  if (!collected.hasSourceBackedEvidence) {
-    return {
-      message:
-        collected.noEvidenceMessage ||
-        collected.snippets[0] ||
-        "I delegated successfully, but did not receive source-backed evidence I can trust yet.",
-    };
-  }
-
   const transcript = collected.snippets.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
-  return { message: await synthesize(userText, transcript, conversationSummary) };
+  // TEMPORARILY DISABLED (passthrough mode):
+  // Source-backed evidence fallback + synthesis can incorrectly override a valid
+  // specialist answer (e.g. ClickUp result) when it does not include expected
+  // keyword/source evidence patterns.
+  //
+  // if (!collected.hasSourceBackedEvidence) {
+  //   return {
+  //     message:
+  //       collected.noEvidenceMessage ||
+  //       collected.snippets[0] ||
+  //       "I delegated successfully, but did not receive source-backed evidence I can trust yet.",
+  //   };
+  // }
+  //
+  // return { message: await synthesize(userText, transcript, conversationSummary) };
+  return { message: transcript };
 }
 
 // ===========================================================================
