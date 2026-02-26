@@ -40,7 +40,14 @@ async fn collect_responses(
     agent: &A2aAgent,
     request: serde_json::Value,
 ) -> baml_rt::Result<Vec<serde_json::Value>> {
-    Ok(baml_rt_core::collect_a2a_stream(agent.handle_a2a_stream(request).await?).await)
+    let stream = agent
+        .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(request))
+        .await?;
+    let chunks = baml_rt_core::collect_a2a_stream(stream).await;
+    Ok(chunks
+        .into_iter()
+        .map(baml_rt_core::A2aStreamChunk::into_inner)
+        .collect())
 }
 
 fn response_has_input_required(response: &serde_json::Value) -> bool {
@@ -99,6 +106,7 @@ impl LLMInterceptor for StubChooseCalcToolInterceptor {
 fn interleaving_js_handler() -> String {
     r#"
     globalThis.onChatMessage = async function(message) {
+        const tag = (chunk) => (message?.__session !== undefined ? Object.assign({}, chunk, { __session: message.__session }) : chunk);
         const text = message?.parts?.[0]?.text || "";
         const [kind, hopsRaw, contextToken] = text.split(":");
         const contextId = contextToken || "no-context";
@@ -107,22 +115,22 @@ fn interleaving_js_handler() -> String {
             await Promise.resolve();
         }
         if (kind === "a2a") {
-            __chat_yield({ message: { parts: [{ text: `A2A:${contextId}` }] } });
-            __chat_yield({ final: true });
+            __chat_yield(tag({ message: { parts: [{ text: `A2A:${contextId}` }] } }));
+            __chat_yield(tag({ final: true }));
             return;
         }
         if (kind === "input-ask") {
-            __chat_yield({
+            __chat_yield(tag({
                 task: {
                     status: { state: "TASK_STATE_INPUT_REQUIRED" },
                     metadata: { prompt: "Need additional input" }
                 }
-            });
+            }));
             return;
         }
         if (kind === "input-answer") {
-            __chat_yield({ message: { parts: [{ text: `INPUT:${contextId}` }] } });
-            __chat_yield({ final: true });
+            __chat_yield(tag({ message: { parts: [{ text: `INPUT:${contextId}` }] } }));
+            __chat_yield(tag({ final: true }));
             return;
         }
         if (kind === "tool") {
@@ -130,15 +138,15 @@ fn interleaving_js_handler() -> String {
             await session.send({ expression: { left: 2, operation: "Add", right: 3 } });
             const step = await session.continue();
             const result = step?.output?.result ?? 5;
-            __chat_yield({ message: { parts: [{ text: `TOOL:${contextId}:${result}` }] } });
-            __chat_yield({ final: true });
+            __chat_yield(tag({ message: { parts: [{ text: `TOOL:${contextId}:${result}` }] } }));
+            __chat_yield(tag({ final: true }));
             return;
         }
         // kind === "llm" (or fallback)
         const plan = await ChooseCalcTool({ user_message: "compute 2+3" });
         const stepCount = Array.isArray(plan?.steps) ? plan.steps.length : 0;
-        __chat_yield({ message: { parts: [{ text: `LLM:${contextId}:${stepCount}` }] } });
-        __chat_yield({ final: true });
+        __chat_yield(tag({ message: { parts: [{ text: `LLM:${contextId}:${stepCount}` }] } }));
+        __chat_yield(tag({ final: true }));
     };
     "#
     .to_string()
@@ -172,6 +180,97 @@ async fn setup_interleaving_agent() -> A2aAgent {
         .build()
         .await
         .expect("build interleaving agent")
+}
+
+/// Single-context run of the INPUT_REQUIRED resume flow (no proptest).
+/// Verifies fixture and expectations; use to debug prop_input_required_resume_positive_and_no_auto_final.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_input_required_resume_single_context() {
+    let agent = setup_interleaving_agent().await;
+    let context_id = ContextId::new(901, 1);
+    let jitter_ms = 0u64;
+
+    // Turn 1: ask for input, stop collection once INPUT_REQUIRED appears.
+    let ask_req = send_stream_request(
+        "msg-ir-ask-0",
+        &format!("input-ask:{jitter_ms}:{}", context_id.as_str()),
+        "corr-1700000000300-1",
+        Some(context_id.clone()),
+    );
+    let ask_stream = agent
+        .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(ask_req))
+        .await
+        .expect("open input-required stream");
+    let ask_responses: Vec<baml_rt_core::A2aStreamChunk> = timeout(
+        Duration::from_secs(10),
+        baml_rt_core::collect_a2a_stream_until(ask_stream, |c| {
+            response_has_input_required(c.as_ref())
+        }),
+    )
+    .await
+    .expect("input-required stream timed out");
+    assert!(
+        ask_responses
+            .iter()
+            .any(|c| response_has_input_required(c.as_ref())),
+        "first turn must emit TASK_STATE_INPUT_REQUIRED"
+    );
+    let ask_final_count = ask_responses
+        .iter()
+        .filter(|chunk| {
+            chunk
+                .as_ref()
+                .get("result")
+                .and_then(|result| result.get("final"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        })
+        .count();
+    assert_eq!(
+        ask_final_count, 0,
+        "input-required turn must not auto-finalize"
+    );
+
+    tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
+
+    // Turn 2: resume same context and expect terminal completion.
+    let answer_req = send_stream_request(
+        "msg-ir-answer-0",
+        &format!("input-answer:{jitter_ms}:{}", context_id.as_str()),
+        "corr-1700000000400-1",
+        Some(context_id.clone()),
+    );
+    let answer_responses = timeout(
+        Duration::from_secs(10),
+        collect_responses(&agent, answer_req),
+    )
+    .await
+    .expect("resumed stream timed out")
+    .expect("resumed stream failed");
+    let answer_final_count = answer_responses
+        .iter()
+        .filter(|value| {
+            value
+                .get("result")
+                .and_then(|result| result.get("final"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false)
+        })
+        .count();
+    assert_eq!(
+        answer_final_count, 1,
+        "resumed turn must include exactly one final chunk"
+    );
+    let text = first_message_text_from_stream(&answer_responses);
+    assert!(
+        text.starts_with("INPUT:"),
+        "resumed turn should emit INPUT:* message, got: {text}"
+    );
+    assert!(
+        text.contains(context_id.as_str()),
+        "resumed turn must keep context attribution: expected {}, got {text}",
+        context_id.as_str()
+    );
 }
 
 proptest! {
@@ -306,6 +405,8 @@ proptest! {
     /// ∀ contexts c:
     ///   - first turn `input-ask` yields INPUT_REQUIRED and does NOT auto-finalize
     ///   - second turn `input-answer` in same context resumes and reaches exactly one final chunk
+    ///
+    /// Single-context scenario is also validated by `test_input_required_resume_single_context`.
     #[test]
     fn prop_input_required_resume_positive_and_no_auto_final(
         jitters in prop::collection::vec(0u8..=7u8, 1..=8)
@@ -332,23 +433,24 @@ proptest! {
                         Some(context_id.clone()),
                     );
                     let ask_stream = agent
-                        .handle_a2a_stream(ask_req)
+                        .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(ask_req))
                         .await
                         .expect("open input-required stream");
-                    let ask_responses = timeout(
+                    let ask_responses: Vec<baml_rt_core::A2aStreamChunk> = timeout(
                         Duration::from_secs(6),
-                        baml_rt_core::collect_a2a_stream_until(ask_stream, response_has_input_required),
+                        baml_rt_core::collect_a2a_stream_until(ask_stream, |c| response_has_input_required(c.as_ref())),
                     )
                     .await
                     .expect("input-required stream timed out");
                     assert!(
-                        ask_responses.iter().any(response_has_input_required),
+                        ask_responses.iter().any(|c| response_has_input_required(c.as_ref())),
                         "first turn must emit TASK_STATE_INPUT_REQUIRED"
                     );
                     let ask_final_count = ask_responses
                         .iter()
-                        .filter(|value| {
-                            value
+                        .filter(|chunk| {
+                            chunk
+                                .as_ref()
                                 .get("result")
                                 .and_then(|result| result.get("final"))
                                 .and_then(serde_json::Value::as_bool)

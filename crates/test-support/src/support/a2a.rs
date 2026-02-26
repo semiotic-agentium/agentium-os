@@ -22,7 +22,15 @@ impl A2aInMemoryClient {
     }
 
     pub async fn send(&self, request: Value) -> Result<Vec<Value>> {
-        Ok(baml_rt_core::collect_a2a_stream(self.target.handle_a2a_stream(request).await?).await)
+        let stream = self
+            .target
+            .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(request))
+            .await?;
+        let chunks = baml_rt_core::collect_a2a_stream(stream).await;
+        Ok(chunks
+            .into_iter()
+            .map(baml_rt_core::A2aStreamChunk::into_inner)
+            .collect())
     }
 }
 

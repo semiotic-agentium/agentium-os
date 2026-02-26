@@ -1306,6 +1306,7 @@ name = "baml-rt-quickjs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel 2.5.0",
  "async-trait",
  "baml-rt",
  "baml-rt-core",
@@ -7849,14 +7850,17 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "baml-rt",
+ "baml-rt-builder",
  "baml-rt-core",
  "baml-rt-provenance",
  "baml-rt-tools",
  "baml-tools-calculator",
  "dotenvy",
+ "flate2",
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "tar",
  "tokio",
  "tracing",
  "ts-rs",

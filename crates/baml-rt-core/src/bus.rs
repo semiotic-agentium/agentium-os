@@ -143,6 +143,8 @@ pub enum EffectEvent {
         duration_ms: u64,
         outcome: Outcome,
     },
+    /// Tool stream chunk (Streaming/Suspended step). Relay to HTTP A2A session immediately so the UI sees it; PROV is already recorded via the tool interceptor.
+    ToolStreamChunk { context_id: ContextId, chunk: Value },
 }
 
 #[derive(Debug, Clone)]
@@ -158,7 +160,9 @@ pub enum LlmUsage {
 impl EffectEvent {
     pub fn kind(&self) -> EffectKind {
         match self {
-            EffectEvent::ToolStarted { .. } | EffectEvent::ToolCompleted { .. } => EffectKind::Tool,
+            EffectEvent::ToolStarted { .. }
+            | EffectEvent::ToolCompleted { .. }
+            | EffectEvent::ToolStreamChunk { .. } => EffectKind::Tool,
             EffectEvent::LlmStarted { .. } | EffectEvent::LlmCompleted { .. } => EffectKind::Llm,
             EffectEvent::A2aStarted { .. } | EffectEvent::A2aCompleted { .. } => EffectKind::A2a,
         }
@@ -167,7 +171,8 @@ impl EffectEvent {
     pub fn context_id(&self) -> &ContextId {
         match self {
             EffectEvent::ToolStarted { context_id, .. }
-            | EffectEvent::ToolCompleted { context_id, .. } => context_id,
+            | EffectEvent::ToolCompleted { context_id, .. }
+            | EffectEvent::ToolStreamChunk { context_id, .. } => context_id,
             EffectEvent::LlmStarted { context_id, .. }
             | EffectEvent::LlmCompleted { context_id, .. } => context_id,
             EffectEvent::A2aStarted { context_id, .. }
@@ -300,6 +305,9 @@ impl EffectStartToken<A2aKind> {
 #[async_trait]
 pub trait EffectEmitter: EffectLiveness + Send + Sync {
     async fn emit(&self, event: EffectEvent) -> crate::Result<()>;
+
+    /// Register an effect subscriber. Default: no-op. BusWithEffects overrides to fan out.
+    async fn subscribe_effect_subscriber(&self, _subscriber: Arc<dyn EffectSubscriber>) {}
 
     async fn start_tool(
         &self,
@@ -496,7 +504,9 @@ impl BusApi for Bus {
 
         let streams = self.streams.read().await.clone();
         for tx in streams {
-            let _ = tx.send(envelope.clone()).await;
+            if tx.send(envelope.clone()).await.is_err() {
+                tracing::debug!("bus envelope send failed (receiver dropped)");
+            }
         }
         let mut stream_guard = self.streams.write().await;
         stream_guard.retain(|tx| !tx.is_closed());
@@ -594,6 +604,7 @@ impl BusWithEffects {
                         entry.a2a = entry.a2a.saturating_sub(1);
                     }
                 },
+                EffectEvent::ToolStreamChunk { .. } => {}
             }
             if !entry.any() {
                 counts.remove(&context_id);
@@ -638,6 +649,11 @@ impl EffectEmitter for BusWithEffects {
         self.bus
             .emit(Envelope::now(None, Payload::Effect(event)))
             .await
+    }
+
+    async fn subscribe_effect_subscriber(&self, subscriber: Arc<dyn EffectSubscriber>) {
+        let mut subs = self.effect_subscribers.write().await;
+        subs.push(subscriber);
     }
 }
 

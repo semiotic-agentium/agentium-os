@@ -274,6 +274,8 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
             EffectEvent::A2aStarted { .. } | EffectEvent::A2aCompleted { .. } => {
                 return Ok(());
             }
+            // Tool stream chunks are relay-only; tools are already recorded via the tool interceptor
+            EffectEvent::ToolStreamChunk { .. } => return Ok(()),
         };
 
         self.writer

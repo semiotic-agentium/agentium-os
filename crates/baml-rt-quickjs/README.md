@@ -1,91 +1,101 @@
 # baml-rt-quickjs
 
-QuickJS-backed runtime host for BAML execution, with host-managed
-context propagation for concurrent tool and A2A flows.
+QuickJS-backed runtime host for BAML execution with host-authoritative context,
+strict stream/session routing, and resumable A2A stream handling.
 
 ## Responsibilities
 
 - `BamlRuntimeManager` orchestration for schema loading and function execution.
 - `QuickJSBridge` integration to expose BAML functions and tools to JavaScript.
-- Host-side scope/context propagation and JS value conversion utilities.
+- Host-managed context/session attribution across concurrent tool and A2A flows.
 
-## Architecture at a Glance
+## Runtime Model
 
-- **QuickJSBridge** owns the runtime and registers JS helpers (`__baml_invoke`,
-  `__tool_invoke`, `__baml_stream`, tool-session helpers).
-- **Invocation context frames** are entered per eval/invoke and stored in a
-  host-managed active stack.
-- **Native callbacks** resolve scope from the active host context; JS never supplies raw
-  context for authoritative attribution.
+- QuickJS code and native callbacks execute on a worker-thread event loop.
+- Tokio task-local scope is not visible inside worker-thread native callbacks.
+- Authoritative attribution therefore lives in host-managed structures:
+  - invocation context registry,
+  - stream session maps,
+  - token-to-scope mappings.
 
-## Context Propagation (Critical Design)
+## Canonical Architecture
 
-QuickJS executes JS and native callbacks on a **worker-thread event loop**.
-Tokio task-local context is not visible there, so the host must supply
-request-scoped context explicitly.
+### Bridge Core
 
-### Invariants
+- `QuickJSBridge` owns runtime setup, helper registration, and stream/session maps.
+- Per-eval invocation context is entered/exited through host registry frames.
+- Native callbacks resolve scope from host state; they do not trust JS-provided
+  context identifiers.
 
-- **No shared global state for attribution.** JS globals are shared and unsafe
-  under concurrency.
-- **Host context is the source of truth.** All native callbacks resolve
-  `RuntimeScope` from the active invocation context.
-- **Tool sessions keep scope until close.** Session scope stays in the host map
-  until finish/abort (or send error).
+### Stream Handover
 
-### Host-Managed Context Flow
+- Production stream path:
+  - `spawn_stream_handover(...)`
+  - `run_stream_on_js_thread(...)`
+  - `collect_into_channel_owned(...)`
+- Stream handover is dispatched through a single typed lane queue
+  (`StreamHandoverRequest`) rather than ad hoc closures.
+- Collector is completion-driven (`SemanticFinal`, `InputRequired`,
+  `ChannelClosed`, `Timeout`), not promise-resolution-driven.
 
-1. Host enters an invocation context frame for each eval/invoke.
-2. Native helpers resolve scope from the current active host context frame.
-3. JS calls helpers directly (e.g. `openToolSession(toolName)`), without
-   passing invocation tokens.
-4. Native callbacks run with resolved scope attribution in
-   `context::with_scope(scope, ...)`.
+### Resume Path
 
-See `docs/QUICKJS_THREADING_AND_SCOPE.md` and
-`docs/CONTEXT_CONCURRENCY_INVARIANTS.md` for detailed guarantees.
+- Resume delivery path:
+  - `deliver_resume_input(...)`
+  - `prepare_brief_poll_eval(...)`
+  - `run_prepared_brief_poll_eval(...)`
+  - bounded poll for settle signal
+- Resume wait is bounded; stream completion remains governed by stream outputs
+  and terminal states.
+
+## Invariant Set (Current)
+
+### Context and Attribution
+
+- Host-only context authority; no JS global mutable state for attribution.
+- No fallback routing from ambient mutable state.
+- Missing/invalid routing metadata is handled deterministically; no heuristic
+  reroute.
+- Tool session scope retention: scope captured at open and reused for send/next.
+
+### Stream and Session
+
+- Single production handover path.
+- Per-session chunk isolation by `StreamSessionId`.
+- Bounded collector loop and single terminalization.
+- No global JS helper mutation on stream finalization.
+- Stream routing is host-authoritative (`__session` + host session map).
+
+### Liveness and Deadlock Discipline
+
+- Bridge lock is not held across awaited resume poll operations.
+- Promise polling is effect-gated with monotonic timeout behavior.
+- Poll loop drives pending jobs before waiting, so worker continuations can run.
+- Blocking operations are bounded by explicit caps/timeouts.
+
+## A2A Shim Resume Semantics
+
+- Shim registers `session(message)` and `__chat_register(...)`.
+- `awaitInput(prompt)` stores pending resolver aliases for both task and context
+  session identities, so resume turn routing remains stable.
+- Resume message resolves pending input for the same logical session, then
+  execution continues in the same stream conversation lifecycle.
 
 ## Tool Session Contract
 
-Host tools are invoked from BAML via `ToolSessionPlan` steps. The runtime
-executes the session FSM in Rust and returns the final result to JS. JS tools
-remain callable via `invokeTool`.
+- Host tools are invoked from BAML via `ToolSessionPlan` FSM steps.
+- Runtime executes tool session FSM in Rust and returns final result to JS.
+- JS tools remain callable via `invokeTool`.
 
-### openToolSession
+## QuickJS Config Tuning
 
-`openToolSession(toolName)` resolves scope from active host context and does
-not require invocation token arguments in JS.
-
-## Streaming (A2A)
-
-- The host invokes `onChatMessage(message)` for each inbound message. The A2A
-  shim (injected by the builder) provides `session(message)` and
-  `__chat_register({ run })` so agent code uses a single `run(ctx)` entrypoint
-  or `session(message).run(...)` with `ctx.emit` / `emit` for messages,
-  artifacts, and `awaitInput`.
-- A2A streaming uses `__chat_yield` (shim) and a host-set yield buffer; chunks
-  are read via `get_a2a_yield_buffer`. The stream handler typically does not
-  terminate; chunks drive task state (WORKING, INPUT_REQUIRED, COMPLETED, etc.).
-- A **stream semaphore** (one permit per bridge) ensures only one stream
-  invocation is active at a time, so token/scope state is not overwritten by
-  concurrent streams.
-
-**Promise polling:** For non-stream evals that return a promise, the host uses
-effect-gated timeout with deterministic sampling: the first timeout sample is taken
-after one run of pending jobs; effect state is re-checked every 10 attempts for the
-first 500ms, then every 100. Long timeout when effects are in-flight, short idle
-timeout otherwise. See `docs/HOST_QUICKJS_STREAM_INVARIANTS.md` and
-`src/quickjs_bridge/promise_polling.rs`.
-
-## QuickJS optimization settings
-
-`QuickJSConfig` (and `quickjs_runtime::builder::QuickJsRuntimeBuilder`) expose the following; all are optional and default to the upstream runtime behaviour when unset.
+`QuickJSConfig` (and `quickjs_runtime::builder::QuickJsRuntimeBuilder`) expose:
 
 | Option | Effect | Tuning |
 |--------|--------|--------|
-| **memory_limit** (bytes) | Hard cap on runtime heap. | Set in production to avoid OOM; leave `None` in tests if acceptable. |
-| **max_stack_size** (bytes) | Max JS stack size. | Increase only if you hit stack overflow on deep recursion; larger values use more memory per runtime. |
-| **gc_threshold** (allocations) | Run GC after this many allocations. | **Higher** = fewer GC runs, better throughput, more memory. **Lower** = more frequent GC, lower peak memory, possible extra latency. For CPU-heavy or long evals, raising the threshold can reduce pause frequency. |
-| **gc_interval** (duration) | Timer thread triggers a full GC every interval. | `None` (default) = GC only by threshold. Setting an interval can smooth pause distribution but adds a background thread. Disable (or use a long interval) when optimizing for throughput. |
+| `memory_limit` | Hard cap on runtime heap | Set in production to avoid OOM |
+| `max_stack_size` | Max JS stack size | Raise only for deep recursion needs |
+| `gc_threshold` | Allocation-based GC trigger | Higher = throughput, lower = lower peak memory |
+| `gc_interval` | Timer-based full GC | Optional; use carefully for pause/throughput tradeoff |
 
-QuickJS is interpreted (no JIT in the standard build). The main runtime levers are GC policy and memory/stack limits. For faster test runs, use `cargo test --release`; the host and bridge code benefit from release optimizations.
+QuickJS has no JIT in the standard build; main levers are memory and GC policy.

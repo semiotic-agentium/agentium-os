@@ -7,7 +7,7 @@ use baml_rt_core::ids::{ContextId, TaskId};
 
 /// Builds a minimal Task for testing (TaskStore / apply_task_delta).
 /// Used by apply_task_delta_concurrent_test and task_fsm_property_test (other test binaries).
-#[allow(dead_code)]
+#[allow(dead_code)] // shared test helper; used by other test binaries
 pub fn minimal_task(task_id: &TaskId, context_id: &ContextId, status: Option<TaskStatus>) -> Task {
     Task {
         id: Some(task_id.clone()),
@@ -22,7 +22,7 @@ pub fn minimal_task(task_id: &TaskId, context_id: &ContextId, status: Option<Tas
 
 /// Builds a TaskStatus with the given state string.
 /// Used by apply_task_delta_concurrent_test and task_fsm_property_test (other test binaries).
-#[allow(dead_code)]
+#[allow(dead_code)] // shared test helper; used by other test binaries
 pub fn task_status(state: &str) -> TaskStatus {
     TaskStatus {
         state: Some(TaskState::String(state.to_string())),
@@ -42,7 +42,7 @@ pub mod provenance {
 
     /// Builds an A2aAgent with a provenance writer (e.g. GraphQLite in-memory).
     /// Used by provenance_context_test and provenance_property_test (other test binaries).
-    #[allow(dead_code)]
+    #[allow(dead_code)] // shared test helper; used by other test binaries
     pub async fn build_provenance_agent(
         store: Arc<GraphqliteProvenanceStore>,
         init_js: &str,
@@ -59,7 +59,12 @@ pub mod provenance {
 
     /// Build an isolated file-backed GraphQLite store for integration tests.
     /// Avoids shared global in-memory state across test binaries.
-    #[allow(dead_code)]
+    ///
+    /// When one store is passed to a single agent, the same store (and connection) is used for
+    /// both create-stream writes (live_result_pipeline.store_result) and subscribe read
+    /// (repository.get); create-stream vs subscribe failures are then due to A2A messaging
+    /// (task id on write path vs id in tasks.subscribe params), not connection scope.
+    #[allow(dead_code)] // shared test helper; used by other test binaries
     pub fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -72,5 +77,13 @@ pub mod provenance {
         GraphqliteStoreBuilder::file(path)
             .build()
             .expect("build isolated graphqlite store")
+    }
+
+    /// Build in-memory shared GraphQLite store. Used to isolate file-backend vs in-memory behavior.
+    #[allow(dead_code)] // shared test helper; used by other test binaries
+    pub fn build_graphqlite_in_memory_store() -> Arc<GraphqliteProvenanceStore> {
+        GraphqliteStoreBuilder::in_memory()
+            .build()
+            .expect("build in-memory graphqlite store")
     }
 }

@@ -2,12 +2,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    BamlRtError, InvocationKind, Result,
-    stream_completion::{StreamCompletion, StreamResult},
-    to_json_value,
+    BamlRtError, InvocationKind, Result, stream_completion::StreamCompletion, to_json_value,
 };
 use baml_rt_quickjs::QuickJSBridge;
-use tokio::sync::Mutex;
+use serde_json::Value;
+use tokio::sync::{Mutex, mpsc};
 
 use crate::{
     a2a,
@@ -97,11 +96,16 @@ impl TaskHandler for DefaultTaskHandler {
         request: SubscribeToTaskRequest,
         invocation: InvocationKind,
     ) -> Result<a2a::A2aOutcome> {
-        let task = self
-            .repository
-            .get(request.id.as_str(), None)
-            .await
-            .ok_or_else(|| BamlRtError::InvalidArgument(TASK_NOT_FOUND_MSG.to_string()))?;
+        let task_id_str = request.id.as_str();
+        let task = self.repository.get(task_id_str, None).await;
+        if task.is_none() {
+            tracing::debug!(
+                task_id = task_id_str,
+                "tasks.subscribe: task not found in repository"
+            );
+        }
+        let task =
+            task.ok_or_else(|| BamlRtError::InvalidArgument(TASK_NOT_FOUND_MSG.to_string()))?;
         let value = to_json_value(&task)?;
 
         if invocation.is_stream() {
@@ -119,9 +123,24 @@ impl TaskHandler for DefaultTaskHandler {
                 responses.push(to_json_value(&chunk)?);
             }
 
-            Ok(a2a::A2aOutcome::Stream(StreamResult {
-                chunks: responses,
-                completion: StreamCompletion::SemanticFinal,
+            let n = responses.len();
+            let (tx, rx) = mpsc::channel(64);
+            for (i, chunk) in responses.into_iter().enumerate() {
+                if tx.send((chunk, i, None)).await.is_err() {
+                    tracing::debug!("stream chunk send failed (receiver dropped)");
+                }
+            }
+            if tx
+                .send((Value::Null, n, Some(StreamCompletion::SemanticFinal)))
+                .await
+                .is_err()
+            {
+                tracing::debug!("stream final send failed (receiver dropped)");
+            }
+            drop(tx);
+            Ok(a2a::A2aOutcome::Stream(a2a::StreamHandle {
+                receiver: rx,
+                resume_tx: None,
             }))
         } else {
             Ok(a2a::A2aOutcome::Response(value))

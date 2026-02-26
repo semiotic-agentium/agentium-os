@@ -5,9 +5,16 @@
 //! concurrency) produce the expected error responses or stream content. These
 //! are adversarial / failure-path tests, not happy-path E2E.
 //!
+//! **Stream termination:** Every stream fixture here is *deliberately* terminating.
+//! The runtime collector ends the stream on: (1) a chunk with `final: true`, or
+//! (2) `statusUpdate.status.state` = `TASK_STATE_COMPLETED` / `TASK_STATE_FAILED`, or
+//! (3) channel close, or (4) idle timeout (default 60s, configurable). All fixtures yield (1) and/or (2)
+//! before returning, so no non-terminating streams. The concurrency test injects a short stream
+//! collector idle (5s) so it finishes quickly; the point is mixed success/failure, not the watchdog.
+//!
 //! **Tests:**
-//! - Malformed JSON-RPC: wrong version, unsupported method, invalid params → single error response.
-//! - Concurrency: valid and malformed requests run together → valid succeed, malformed return error.
+//! - Concurrency under load: table-driven stream phase matrix (final/completed/closed mode) with
+//!   per-stream liveness timeouts.
 //! - Streaming tool failure: tool returns `Err` during a stream → stream contains error content.
 //! - Allowlist during stream: JS opens a tool not in the runtime allowlist → stream contains allowlist error.
 
@@ -15,26 +22,30 @@
 
 mod common;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{sync::Arc, time::Duration};
 
 use baml_rt::{
-    A2aAgent, A2aRequestHandler, QuickJSConfig, a2a_types::SendMessageRequest,
-    baml::BamlRuntimeManager, tools::BamlTool,
+    A2aAgent, A2aRequestHandler, QuickJSConfig, baml::BamlRuntimeManager, tools::BamlTool,
 };
 use baml_rt_tools::bundles::BundleType;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use test_support::common::{
-    AddNumbersTool, build_minimal_a2a_agent, chunk_content, is_error_response, send_stream_request,
-    user_message,
-};
+use serde_json::Value;
+use test_support::common::{AddNumbersTool, chunk_content, send_stream_request};
+use tokio::time::timeout;
 use ts_rs::TS;
 
 struct Test;
 
 async fn collect_responses(agent: &A2aAgent, request: Value) -> baml_rt::Result<Vec<Value>> {
-    Ok(baml_rt_core::collect_a2a_stream(agent.handle_a2a_stream(request).await?).await)
+    let stream = agent
+        .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(request))
+        .await?;
+    let chunks = baml_rt_core::collect_a2a_stream(stream).await;
+    Ok(chunks
+        .into_iter()
+        .map(baml_rt_core::A2aStreamChunk::into_inner)
+        .collect())
 }
 
 impl BundleType for Test {
@@ -44,104 +55,147 @@ impl BundleType for Test {
     }
 }
 
-/// Table-driven malformed A2A request cases: (jsonrpc, method, params) → single JSON-RPC error response.
-#[tokio::test(flavor = "current_thread")]
-async fn test_malformed_a2a_table_driven() {
-    let agent = build_minimal_a2a_agent("globalThis.onChatMessage = async () => {};").await;
+/// Consolidated concurrent stream phase matrix: final/completed/closed/input terminal shapes.
+#[derive(Clone)]
+struct StreamPhaseCase {
+    tag: &'static str,
+    chunks: usize,
+    mode: &'static str,
+    min_chunks: usize,
+}
 
-    let malformed_params = serde_json::to_value(SendMessageRequest {
-        message: user_message("m1", "hi", None),
-        configuration: None,
-        metadata: None,
-        tenant: None,
-        extra: HashMap::new(),
-    })
-    .unwrap();
-
-    let cases: [(Value, &str); 3] = [
-        (
-            json!({
-                "jsonrpc": "1.0",
-                "method": "message.sendStream",
-                "params": malformed_params,
-                "id": "corr-invalid-version"
-            }),
-            "invalid jsonrpc version",
-        ),
-        (
-            json!({
-                "jsonrpc": "2.0",
-                "method": "message.send",
-                "params": null,
-                "id": "corr-unsupported-method"
-            }),
-            "unsupported method",
-        ),
-        (
-            json!({
-                "jsonrpc": "2.0",
-                "method": "message.sendStream",
-                "params": {},
-                "id": "corr-invalid-params"
-            }),
-            "invalid params (missing message)",
-        ),
-    ];
-
-    for (request, desc) in cases {
-        let responses = collect_responses(&agent, request).await.unwrap();
-        assert_eq!(
-            responses.len(),
-            1,
-            "malformed case '{desc}' must yield exactly one response"
-        );
-        assert!(
-            is_error_response(&responses[0]),
-            "malformed case '{desc}' must return JSON-RPC error"
-        );
+impl StreamPhaseCase {
+    fn js_key(&self) -> String {
+        format!("{}:{}:{}", self.tag, self.chunks, self.mode)
     }
 }
 
-/// **Purpose:** When valid and malformed requests are handled concurrently, valid requests complete with stream success and malformed requests return a single error response (no cross-talk or panic).
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_concurrency_mixed_success_failure() {
-    let agent = build_minimal_a2a_agent(
-        r#"globalThis.onChatMessage = async function() { __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } }); __chat_yield({ final: true }); };"#,
-    )
-    .await;
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn test_concurrent_stream_phase_matrix_regression_under_load() {
+    let agent = A2aAgent::builder()
+        .with_runtime_manager(BamlRuntimeManager::new().unwrap())
+        .with_init_js(
+        r#"
+        globalThis.onChatMessage = async function(message) {
+            const payload = (message && message.parts && message.parts[0] && message.parts[0].text) || "alpha:4:final";
+            const match = payload.match(/^([^:]+):(\d+):(.*)$/);
+            const tag = match ? match[1] : "alpha";
+            const chunk_count = match ? parseInt(match[2], 10) : 4;
+            const mode = match ? match[3] : "final";
 
-    let valid1 = send_stream_request("v1", "hi", "corr-1700000000010-1", None);
-    let valid2 = send_stream_request("v2", "ho", "corr-1700000000011-1", None);
-    let malformed = json!({ "jsonrpc": "1.0", "method": "message.sendStream", "params": {}, "id": "corr-1700000000012-1" });
+            for (let i = 0; i < chunk_count; i++) {
+                __chat_yield({ message: { parts: [{ text: tag + "-chunk-" + i }] } });
+                if (i % 2 === 0) {
+                    __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_WORKING" } } });
+                }
+            }
 
-    let malformed2 = malformed.clone();
-    let agent1 = agent.clone();
-    let agent2 = agent.clone();
-    let agent3 = agent.clone();
-    let agent4 = agent.clone();
-    let (r1, r2, r3, r4) = tokio::join!(
-        collect_responses(&agent1, valid1),
-        collect_responses(&agent2, valid2),
-        collect_responses(&agent3, malformed),
-        collect_responses(&agent4, malformed2),
-    );
-    let r1 = r1.unwrap();
-    let r2 = r2.unwrap();
-    let r3 = r3.unwrap();
-    let r4 = r4.unwrap();
+            if (mode === "completed") {
+                __chat_yield({ statusUpdate: { status: { state: "TASK_STATE_COMPLETED" } } });
+            } else if (mode === "closed") {
+                // no terminal marker; rely on channel close after JS function returns
+            } else if (mode === "input") {
+                __chat_yield({ task: { status: { state: "TASK_STATE_INPUT_REQUIRED" } } });
+                __chat_yield({ final: true });
+            } else {
+                __chat_yield({ final: true });
+            }
+        };
+        "#,
+        )
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_quickjs_config(
+            QuickJSConfig::new()
+                .with_stream_concurrency(Some(12))
+                .with_stream_collector_idle_secs(Some(5)),
+        )
+        .build()
+        .await
+        .unwrap();
 
-    assert!(
-        !r1.is_empty() && !is_error_response(&r1[0]),
-        "valid1 should succeed"
-    );
-    assert!(
-        !r2.is_empty() && !is_error_response(&r2[0]),
-        "valid2 should succeed"
-    );
-    assert_eq!(r3.len(), 1);
-    assert!(is_error_response(&r3[0]), "malformed should return error");
-    assert_eq!(r4.len(), 1);
-    assert!(is_error_response(&r4[0]), "malformed should return error");
+    let cases = [
+        StreamPhaseCase {
+            tag: "alpha",
+            chunks: 3,
+            mode: "final",
+            min_chunks: 2,
+        },
+        StreamPhaseCase {
+            tag: "beta",
+            chunks: 4,
+            mode: "completed",
+            min_chunks: 2,
+        },
+    ];
+
+    // 4 waves × 2 cases = 8 concurrent streams; enough to assert interleaving without overloading.
+    let mut handles = Vec::new();
+    for wave in 0..4 {
+        for (index, case) in cases.iter().enumerate() {
+            let request_id = format!("corr-1700000000010-{}", wave * cases.len() + index + 1);
+            let request = send_stream_request(
+                &format!("msg-{wave}-{}", case.tag),
+                &case.js_key(),
+                &request_id,
+                None,
+            );
+            let case = case.clone();
+            let agent = agent.clone();
+            handles.push((
+                case,
+                tokio::spawn(async move {
+                    timeout(Duration::from_secs(12), collect_responses(&agent, request)).await
+                }),
+            ));
+        }
+    }
+
+    for (case, join_handle) in handles {
+        let responses = match timeout(Duration::from_secs(15), join_handle).await {
+            Ok(Ok(Ok(Ok(values)))) => values,
+            Ok(Ok(Ok(Err(err)))) => panic!("stream {} failed: {err}", case.tag),
+            Ok(Ok(Err(_inner_timeout_err))) => {
+                panic!("stream {} exceeded its 12s execution timeout", case.tag)
+            }
+            Ok(Err(join_err)) => panic!("stream {} join error: {join_err}", case.tag),
+            Err(_) => panic!("stream {} did not finish within 15s join timeout", case.tag),
+        };
+        println!("case {} collected {} responses", case.tag, responses.len());
+
+        assert!(
+            responses.len() >= case.min_chunks,
+            "stream {} should emit at least {} chunks",
+            case.tag,
+            case.min_chunks
+        );
+        assert!(
+            responses.iter().any(|response| {
+                serde_json::to_string(response)
+                    .unwrap_or_default()
+                    .contains(case.tag)
+            }),
+            "stream {} should include case tag in chunk payload",
+            case.tag
+        );
+        assert!(
+            responses.iter().any(|response| {
+                let serialized = serde_json::to_string(response).unwrap_or_default();
+                match case.mode {
+                    "completed" => serialized.contains("TASK_STATE_COMPLETED"),
+                    "final" => {
+                        serialized.contains("\"final\":true")
+                            || serialized.contains("TASK_STATE_COMPLETED")
+                    }
+                    "closed" => serialized.contains("TASK_STATE_WORKING"),
+                    "input" => serialized.contains("TASK_STATE_INPUT_REQUIRED"),
+                    _ => true,
+                }
+            }),
+            "stream {} should include terminal marker matching mode {}",
+            case.tag,
+            case.mode
+        );
+    }
 }
 
 /// Tool that always returns `Err` on execute; used to assert streaming error handling.

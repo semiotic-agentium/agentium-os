@@ -15,7 +15,14 @@ async fn collect_responses(
     agent: &A2aAgent,
     request: serde_json::Value,
 ) -> baml_rt::Result<Vec<serde_json::Value>> {
-    Ok(baml_rt_core::collect_a2a_stream(agent.handle_a2a_stream(request).await?).await)
+    let stream = agent
+        .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(request))
+        .await?;
+    let chunks = baml_rt_core::collect_a2a_stream(stream).await;
+    Ok(chunks
+        .into_iter()
+        .map(baml_rt_core::A2aStreamChunk::into_inner)
+        .collect())
 }
 
 /// Minimal agent that yields one chunk and signals completion so the host's collect()

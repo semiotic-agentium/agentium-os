@@ -325,3 +325,25 @@ pub fn session_runtime_worker() -> Span {
 pub fn provenance_write(event_kind: &str) -> Span {
     tracing::debug_span!("baml_rt.provenance_write", event_kind = event_kind,)
 }
+
+// Live stream session (message.sendStream path)
+
+/// Create span for draining the live stream and applying chunks to the store.
+///
+/// Parent: a2a_stream (or equivalent). Use when entering the stream drain loop in run_live_stream_session.
+#[inline]
+pub fn live_stream_drain(context_id: &str) -> Span {
+    tracing::debug_span!("baml_rt.live_stream_drain", context_id = context_id,)
+}
+
+/// Create span for applying one stream chunk via the result pipeline (store_result).
+///
+/// Parent: live_stream_drain. Enter before calling store_result; record `store_result_ok` after.
+#[inline]
+pub fn live_stream_store_result(index: usize, chunk_has_task: bool) -> Span {
+    tracing::debug_span!(
+        "baml_rt.live_stream_store_result",
+        index = index,
+        chunk_has_task = chunk_has_task,
+    )
+}

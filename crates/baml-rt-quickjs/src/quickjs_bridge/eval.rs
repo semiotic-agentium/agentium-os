@@ -1,6 +1,63 @@
+//! Eval lifecycle helpers and effect-gated timeout policy.
+//!
+//! Shared direct-code wrapper and code normalization so `evaluate()` and
+//! `prepare_brief_poll_eval` use the same token/slot/notify pattern.
+
 use std::sync::Arc;
 
 use baml_rt_core::{bus::EffectLiveness, ids::ContextId};
+
+// ---------- Shared eval wrapper (direct code + token) ----------
+
+/// Normalize user code to an expression body: trim and wrap in IIFE if not already wrapped.
+pub(crate) fn normalize_code_to_expr_body(code: &str) -> String {
+    let code_trimmed = code.trim_start();
+    let is_arrow_iife = code_trimmed.starts_with("(()") || code_trimmed.starts_with("(async ()");
+    let already_wrapped = code_trimmed.starts_with("(function()")
+        || code_trimmed.starts_with("(async function()")
+        || is_arrow_iife;
+    if already_wrapped {
+        code_trimmed.to_string()
+    } else {
+        format!("(function() {{ {} }})()", code)
+    }
+}
+
+/// Build the direct eval JS that runs `code_expr_body` and either returns a sync string
+/// or installs __set_eval_result(token, ...) for promises and returns "__EVAL_PROMISE_PENDING__".
+pub(crate) fn build_eval_direct_code(code_expr_body: &str, token_literal: &str) -> String {
+    format!(
+        r#"(function() {{
+var __r = {code};
+if (__r && typeof __r.then === 'function') {{
+  Promise.resolve(__r).then(function(__v) {{
+    var __json;
+    if (typeof __v === 'string') {{
+      __json = __v;
+    }} else if (typeof __v === 'undefined') {{
+      __json = "{{}}";
+    }} else {{
+      __json = JSON.stringify(__v);
+      if (typeof __json === 'undefined') {{
+        __json = "{{}}";
+      }}
+    }}
+    __set_eval_result("{token}", __json);
+  }}).catch(function(__e) {{
+    __set_eval_result("{token}", JSON.stringify({{ error: (__e && __e.toString ? __e.toString() : String(__e)) }}));
+  }});
+  return "__EVAL_PROMISE_PENDING__";
+}}
+if (typeof __r === 'string') {{ return __r; }}
+if (typeof __r === 'undefined') {{ return "{{}}"; }}
+var __sync_json = JSON.stringify(__r);
+if (typeof __sync_json === 'undefined') {{ return "{{}}"; }}
+return __sync_json;
+}})()"#,
+        code = code_expr_body,
+        token = token_literal,
+    )
+}
 
 /// Encapsulates effect-gated timeout logic for promise polling.
 ///
