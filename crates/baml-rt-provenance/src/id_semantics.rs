@@ -1,4 +1,4 @@
-use baml_rt_core::ids::{AgentId, ArtifactId, ContextId, EventId, MessageId, TaskId};
+use baml_rt_core::ids::{AgentId, ArtifactId, EventId, MessageId, TaskId};
 use baml_rt_id::{
     ConstantConstructible, ConstantId, DerivedConstructible, DerivedId, ProvActivitySemantics,
     ProvAgentSemantics, ProvConstantAgentSemantics, ProvConstantIdTemplate,
@@ -415,7 +415,6 @@ impl ProvVocabularyType for MessageEntityId {
 }
 
 pub struct MessageEntityInput<'a> {
-    pub context_id: &'a ContextId,
     pub message_id: &'a MessageId,
 }
 
@@ -423,10 +422,7 @@ impl ProvDerivedIdTemplate for MessageEntityId {
     type Input<'a> = MessageEntityInput<'a>;
 
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
-        DerivedId::from_parts(
-            "message",
-            [input.context_id.as_str(), input.message_id.as_str()],
-        )
+        DerivedId::from_parts("message", [input.message_id.as_str()])
     }
 }
 
@@ -443,7 +439,6 @@ impl ProvVocabularyType for MessageProcessingActivityId {
 }
 
 pub struct MessageProcessingActivityInput<'a> {
-    pub context_id: &'a ContextId,
     pub message_id: &'a MessageId,
 }
 
@@ -451,10 +446,6 @@ impl ProvDerivedIdTemplate for MessageProcessingActivityId {
     type Input<'a> = MessageProcessingActivityInput<'a>;
 
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
-        DerivedId::new(format!(
-            "message_processing:{}:{}",
-            input.context_id.as_str(),
-            input.message_id.as_str()
-        ))
+        DerivedId::new(format!("message_processing:{}", input.message_id.as_str()))
     }
 }

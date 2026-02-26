@@ -1290,7 +1290,6 @@ dependencies = [
  "clap",
  "graphqlite",
  "insta",
- "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

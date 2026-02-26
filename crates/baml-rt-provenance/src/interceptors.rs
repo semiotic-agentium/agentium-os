@@ -7,10 +7,7 @@ use baml_rt_interceptor::{
 };
 use serde_json::Value;
 
-use crate::{
-    events::{LlmUsage, ProvEvent},
-    store::ProvenanceWriter,
-};
+use crate::{events::ProvEvent, store::ProvenanceWriter};
 
 pub struct ProvenanceInterceptor {
     writer: Arc<dyn ProvenanceWriter>,
@@ -80,7 +77,6 @@ impl LLMInterceptor for ProvenanceInterceptor {
         let metadata = metadata_with_runtime_scope(&context.metadata, &context.runtime_scope);
         let prompt = normalized_prompt(&context.prompt);
         let message_id = message_id_from_scope(&context.runtime_scope);
-        let usage = extract_usage_from_metadata(&context.metadata);
         if task_id.is_none() && message_id.is_none() {
             tracing::error!("LLM call completion missing metadata.message_id");
             return;
@@ -94,7 +90,7 @@ impl LLMInterceptor for ProvenanceInterceptor {
                 context.function_name.clone(),
                 prompt.clone(),
                 metadata.clone(),
-                usage,
+                crate::events::LlmUsage::Unknown,
                 duration_ms,
                 outcome,
             )
@@ -114,7 +110,7 @@ impl LLMInterceptor for ProvenanceInterceptor {
                 context.function_name.clone(),
                 prompt.clone(),
                 metadata.clone(),
-                usage,
+                crate::events::LlmUsage::Unknown,
                 duration_ms,
                 outcome,
             )
@@ -272,156 +268,5 @@ fn normalized_prompt(prompt: &Value) -> Value {
         Value::Object(serde_json::Map::new())
     } else {
         prompt.clone()
-    }
-}
-
-/// Extract LLM token usage from interceptor call metadata.
-///
-/// `BamlLLMCollector::extract_context_from_llm_call` places the BAML trace
-/// `call.usage` value under `metadata["usage"]`. This function attempts to
-/// parse that JSON into `LlmUsage::Known`; if the field is absent or
-/// malformed, it falls back to `LlmUsage::Unknown`.
-fn extract_usage_from_metadata(metadata: &Value) -> LlmUsage {
-    let usage = match metadata.get("usage") {
-        Some(v) if !v.is_null() => v,
-        // usage key absent or null — provider did not report usage.
-        _ => return LlmUsage::Unknown,
-    };
-
-    // Accept both naming styles:
-    // - prompt/completion (OpenAI-style)
-    // - input/output (BAML collector Usage style)
-    let prompt_tokens = usage
-        .get("prompt_tokens")
-        .and_then(parse_u64_value)
-        .or_else(|| usage.get("input_tokens").and_then(parse_u64_value));
-    let completion_tokens = usage
-        .get("completion_tokens")
-        .and_then(parse_u64_value)
-        .or_else(|| usage.get("output_tokens").and_then(parse_u64_value));
-    let total_tokens = usage.get("total_tokens").and_then(parse_u64_value);
-
-    match (prompt_tokens, completion_tokens, total_tokens) {
-        (Some(prompt), Some(completion), Some(total)) => LlmUsage::Known {
-            prompt_tokens: prompt,
-            completion_tokens: completion,
-            total_tokens: total,
-        },
-        (Some(prompt), Some(completion), None) => LlmUsage::Known {
-            prompt_tokens: prompt,
-            completion_tokens: completion,
-            total_tokens: prompt.saturating_add(completion),
-        },
-        _ => {
-            tracing::debug!(
-                usage = ?usage,
-                "LLM usage metadata present but missing expected token fields"
-            );
-            LlmUsage::Unknown
-        }
-    }
-}
-
-fn parse_u64_value(value: &Value) -> Option<u64> {
-    value
-        .as_u64()
-        .or_else(|| value.as_i64().and_then(|v| u64::try_from(v).ok()))
-        .or_else(|| value.as_str().and_then(|s| s.parse::<u64>().ok()))
-}
-
-#[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::*;
-
-    #[test]
-    fn extracts_known_usage_from_valid_metadata() {
-        let metadata = json!({
-            "usage": {
-                "prompt_tokens": 1500,
-                "completion_tokens": 200,
-                "total_tokens": 1700
-            },
-            "agent_id": "a1",
-            "message_id": "m1"
-        });
-
-        let usage = extract_usage_from_metadata(&metadata);
-        assert_eq!(
-            usage,
-            LlmUsage::Known {
-                prompt_tokens: 1500,
-                completion_tokens: 200,
-                total_tokens: 1700,
-            }
-        );
-    }
-
-    #[test]
-    fn computes_total_when_missing() {
-        let metadata = json!({
-            "usage": {
-                "prompt_tokens": 100,
-                "completion_tokens": 50
-            }
-        });
-
-        let usage = extract_usage_from_metadata(&metadata);
-        assert_eq!(
-            usage,
-            LlmUsage::Known {
-                prompt_tokens: 100,
-                completion_tokens: 50,
-                total_tokens: 150,
-            }
-        );
-    }
-
-    #[test]
-    fn extracts_known_usage_from_input_output_shape() {
-        let metadata = json!({
-            "usage": {
-                "input_tokens": 1200,
-                "output_tokens": 240,
-                "total_tokens": 1440
-            }
-        });
-
-        let usage = extract_usage_from_metadata(&metadata);
-        assert_eq!(
-            usage,
-            LlmUsage::Known {
-                prompt_tokens: 1200,
-                completion_tokens: 240,
-                total_tokens: 1440,
-            }
-        );
-    }
-
-    #[test]
-    fn computes_total_from_input_output_when_total_missing() {
-        let metadata = json!({
-            "usage": {
-                "input_tokens": 80,
-                "output_tokens": 20
-            }
-        });
-
-        let usage = extract_usage_from_metadata(&metadata);
-        assert_eq!(
-            usage,
-            LlmUsage::Known {
-                prompt_tokens: 80,
-                completion_tokens: 20,
-                total_tokens: 100,
-            }
-        );
-    }
-
-    #[test]
-    fn returns_unknown_when_usage_absent() {
-        let metadata = json!({ "agent_id": "a1" });
-        assert_eq!(extract_usage_from_metadata(&metadata), LlmUsage::Unknown);
     }
 }

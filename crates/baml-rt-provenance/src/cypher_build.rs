@@ -75,7 +75,9 @@ impl ParamCollector {
     }
 
     /// Add a param; complex values (array/object) are serialized to JSON strings so the
-    /// GraphQLite extension can set them as node/edge properties.
+    /// driver receives only primitives. GraphQLite binds params to SQL (no Cypher string
+    /// substitution), so string values may contain any character; see executor_helpers.c
+    /// bind_params_from_json and colliery-io/graphqlite docs.
     fn add(&mut self, value: Value) -> String {
         let key = format!("p{}", self.next);
         self.next += 1;

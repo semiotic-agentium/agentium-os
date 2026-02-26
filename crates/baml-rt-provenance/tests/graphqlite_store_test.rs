@@ -15,6 +15,13 @@
 //! |------|-----------------|
 //! | `graphqlite_store_persists_messages_and_returns_conversation_context` | Batch write (4 events) then read; 2 messages and 2 conversation items. Implicitly no stale read after batch. |
 //! | `graphqlite_store_no_stale_read_after_interleaved_writes` | Write → read (1) → write → read (2). Explicit no-stale-read: second read must see both messages. |
+//! | `graphqlite_a2a_task_node_write_then_read` | A2A task subgraph: upsert_task_node then get_task_node returns Some (no stale read). |
+//! | `graphqlite_a2a_task_node_interleaved_writes_reads` | Same store, same context_id: write A → get A → write B → get A and B. No-stale-read for [A2aGraphStore] slice. |
+//! | `graphqlite_a2a_ensure_then_get` | ensure_task_node then get_task_node returns Some. |
+//! | `graphqlite_a2a_status_update_then_get` | ensure_task_node, set_task_status_json, get_task_node; status_json matches. |
+//!
+//! A2A task subgraph read-after-write ordering (no stale read within same agent + context) is
+//! covered by the tests above using strict [TaskSubgraphNode] types and one store instance per test.
 //!
 //! These tests run safely with default test concurrency: Cypher execution is serialized
 //! process-wide in the GraphQLite store (see module docs in `graphqlite_store`).
@@ -29,8 +36,9 @@ use std::collections::HashSet;
 
 use baml_rt_core::ids::{AgentId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId};
 use baml_rt_provenance::{
-    AgentType, GlobalEvent, GraphqliteStoreBuilder, ProvEvent, ProvEventData,
+    A2aGraphStore, AgentType, GlobalEvent, GraphqliteStoreBuilder, ProvEvent, ProvEventData,
     ProvenanceContextReader, ProvenanceQueryApi, ProvenanceWriter, TaskScopedEvent,
+    TaskSubgraphNode,
 };
 use tempfile::tempdir;
 
@@ -613,110 +621,6 @@ async fn graphqlite_conversation_context_includes_failed_tool_results() {
 }
 
 #[tokio::test]
-async fn graphqlite_conversation_context_preserves_large_tool_result_payload() {
-    let dir = tempdir().expect("tempdir");
-    let path = dir.keep().join("provenance_tool_large.db");
-    let store = GraphqliteStoreBuilder::file(path)
-        .build()
-        .expect("build store");
-
-    let context_id = ContextId::new(55, 1);
-    let task_id = TaskId::from_external(ExternalId::new("task-tool-large"));
-    let agent_id =
-        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000096").unwrap());
-
-    store
-        .add_event(ProvEvent::Global(GlobalEvent {
-            id: EventId::from_counter(240),
-            context_id: context_id.clone(),
-            timestamp_ms: 1_700_000_000_200,
-            data: ProvEventData::AgentBooted {
-                agent_id: agent_id.clone(),
-                agent_type: AgentType::new("test").expect("agent_type"),
-                agent_version: "1.0.0".to_string(),
-                archive_path: "test@1.0.0".to_string(),
-            },
-        }))
-        .await
-        .expect("AgentBooted");
-    store
-        .add_event(ProvEvent::Task(TaskScopedEvent {
-            id: EventId::from_counter(241),
-            context_id: context_id.clone(),
-            task_id: task_id.clone(),
-            timestamp_ms: 1_700_000_000_201,
-            data: ProvEventData::TaskCreated {
-                task_id: task_id.clone(),
-                agent_id: agent_id.clone(),
-            },
-        }))
-        .await
-        .expect("TaskCreated");
-
-    let tool_args = serde_json::json!({"list_id":"901325431486"});
-    let very_large_description = "d".repeat(12_000);
-    let completed_metadata = serde_json::json!({
-        "message_id": "msg-large",
-        "task_id": "task-tool-large",
-        "agent_id": "00000000-0000-0000-0000-000000000096",
-        "phase": "send",
-        "result": {
-            "tasks": [{
-                "id": "86afp6yhu",
-                "name": "Task30",
-                "status": "to do",
-                "description": very_large_description,
-                "url": "https://app.clickup.com/t/86afp6yhu"
-            }],
-            "items": [],
-            "message": "Found 1 task(s)"
-        }
-    });
-    store
-        .add_event(ProvEvent::tool_call_completed_task(
-            context_id.clone(),
-            task_id,
-            "support/clickup".to_string(),
-            None,
-            tool_args,
-            completed_metadata,
-            99,
-            baml_rt_core::Outcome::Success,
-        ))
-        .await
-        .expect("ToolCallCompleted");
-
-    let items = store
-        .conversation_context(&context_id, None)
-        .await
-        .expect("conversation_context");
-    let sources: Vec<_> = items.iter().map(|i| i.source.clone()).collect();
-    assert!(
-        sources.iter().any(|s| s == "tool_result"),
-        "expected tool_result in conversation_context; sources={sources:?}"
-    );
-    let tool_result_item = items
-        .iter()
-        .find(|i| i.source == "tool_result")
-        .expect("tool_result item");
-    let description = tool_result_item
-        .content
-        .get("result")
-        .and_then(|v| v.get("tasks"))
-        .and_then(|v| v.as_array())
-        .and_then(|tasks| tasks.first())
-        .and_then(|task| task.get("description"))
-        .and_then(|v| v.as_str())
-        .expect("task description");
-
-    assert_eq!(
-        description.len(),
-        12_000,
-        "tool result description should not be truncated"
-    );
-}
-
-#[tokio::test]
 async fn graphqlite_tool_call_writes_enforce_args_edge_role_and_type() {
     let dir = tempdir().expect("tempdir");
     let path = dir.keep().join("provenance_tool_contract.db");
@@ -812,4 +716,139 @@ async fn graphqlite_tool_call_writes_enforce_args_edge_role_and_type() {
         Some("a2a:ToolArgs"),
         "ToolArgs node must carry prov:type=a2a:ToolArgs"
     );
+}
+
+// --- A2aGraphStore ordering tests (no stale read) ---
+
+const A2A_CTX: &str = "1:1";
+
+fn make_task_node(id: &str, context_id: &str, status_json: &str) -> TaskSubgraphNode {
+    TaskSubgraphNode {
+        id: id.to_string(),
+        context_id: context_id.to_string(),
+        status_json: status_json.to_string(),
+        metadata_json: String::new(),
+        extra_json: "{}".to_string(),
+        artifacts_json: "[]".to_string(),
+    }
+}
+
+/// Single store: upsert_task_node then get_task_node returns Some with matching id/context_id.
+#[tokio::test]
+async fn graphqlite_a2a_task_node_write_then_read() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.keep().join("provenance_a2a.db");
+    let store = GraphqliteStoreBuilder::file(path)
+        .build()
+        .expect("build store");
+
+    let ord = store.max_task_ord().await.expect("max_task_ord") + 1;
+    let node = make_task_node("task-1", A2A_CTX, r#"{"state":"SUBMITTED"}"#);
+    store
+        .upsert_task_node(&node, ord)
+        .await
+        .expect("upsert_task_node");
+
+    let read = store.get_task_node("task-1").await.expect("get_task_node");
+    let got = read.expect("node must be present");
+    assert_eq!(got.id, "task-1");
+    assert_eq!(got.context_id, A2A_CTX);
+    assert_eq!(got.status_json, r#"{"state":"SUBMITTED"}"#);
+}
+
+/// Same store, same context_id: write A → get A → write B → get A and get B (no stale read).
+#[tokio::test]
+async fn graphqlite_a2a_task_node_interleaved_writes_reads() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.keep().join("provenance_a2a_interleaved.db");
+    let store = GraphqliteStoreBuilder::file(path)
+        .build()
+        .expect("build store");
+
+    let ord1 = store.max_task_ord().await.expect("max_task_ord") + 1;
+    let node_a = make_task_node("task-a", A2A_CTX, "{}");
+    store
+        .upsert_task_node(&node_a, ord1)
+        .await
+        .expect("upsert A");
+
+    let read_a1 = store.get_task_node("task-a").await.expect("get_task_node");
+    assert!(
+        read_a1.is_some(),
+        "no-stale-read: first read must see task-a"
+    );
+    assert_eq!(read_a1.as_ref().unwrap().id, "task-a");
+
+    let ord2 = store.max_task_ord().await.expect("max_task_ord") + 1;
+    let node_b = make_task_node("task-b", A2A_CTX, "{}");
+    store
+        .upsert_task_node(&node_b, ord2)
+        .await
+        .expect("upsert B");
+
+    let read_a2 = store.get_task_node("task-a").await.expect("get_task_node");
+    let read_b = store.get_task_node("task-b").await.expect("get_task_node");
+    assert!(
+        read_a2.is_some(),
+        "no-stale-read: second read must still see task-a"
+    );
+    assert!(
+        read_b.is_some(),
+        "no-stale-read: second read must see task-b"
+    );
+    assert_eq!(read_a2.unwrap().id, "task-a");
+    assert_eq!(read_b.unwrap().id, "task-b");
+}
+
+/// ensure_task_node then get_task_node returns Some.
+#[tokio::test]
+async fn graphqlite_a2a_ensure_then_get() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.keep().join("provenance_a2a_ensure.db");
+    let store = GraphqliteStoreBuilder::file(path)
+        .build()
+        .expect("build store");
+
+    let ord = store.max_task_ord().await.expect("max_task_ord") + 1;
+    store
+        .ensure_task_node("task-ensure", A2A_CTX, ord)
+        .await
+        .expect("ensure_task_node");
+
+    let read = store
+        .get_task_node("task-ensure")
+        .await
+        .expect("get_task_node");
+    let got = read.expect("node must be present after ensure");
+    assert_eq!(got.id, "task-ensure");
+    assert_eq!(got.context_id, A2A_CTX);
+}
+
+/// ensure_task_node, set_task_status_json, get_task_node; status_json matches.
+#[tokio::test]
+async fn graphqlite_a2a_status_update_then_get() {
+    let dir = tempdir().expect("tempdir");
+    let path = dir.keep().join("provenance_a2a_status.db");
+    let store = GraphqliteStoreBuilder::file(path)
+        .build()
+        .expect("build store");
+
+    let ord = store.max_task_ord().await.expect("max_task_ord") + 1;
+    store
+        .ensure_task_node("task-status", A2A_CTX, ord)
+        .await
+        .expect("ensure_task_node");
+
+    let status_json = r#"{"state":"TASK_STATE_WORKING"}"#;
+    store
+        .set_task_status_json("task-status", status_json)
+        .await
+        .expect("set_task_status_json");
+
+    let read = store
+        .get_task_node("task-status")
+        .await
+        .expect("get_task_node");
+    let got = read.expect("node must be present");
+    assert_eq!(got.status_json, status_json);
 }

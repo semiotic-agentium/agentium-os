@@ -28,7 +28,7 @@ The store is consumed through narrow traits:
   - `context_messages(...)`
   - `conversation_context(...)`
 - `ProvenanceQueryApi`: API-facing query surface with the same payload shapes
-- `A2aGraphStore` (re-exported from `baml-rt-vocabulary`): task-subgraph operations used by A2A task/message/update persistence flows
+- `A2aGraphStore` (re-exported from `baml-rt-vocabulary`): task-subgraph operations used by A2A task/message/update persistence flows. **This is the boundary:** callers pass [TaskSubgraphNode], string ids, and JSON payloads; no wire types.
 
 `ProvenanceContextReader` is the strict context path for agent/runtime reads; `ProvenanceQueryApi` is the API query surface.
 
