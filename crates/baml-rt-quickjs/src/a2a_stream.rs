@@ -598,7 +598,8 @@ pub async fn collect_into_channel_owned(
         idle_timeout_secs,
         last_yield_at: start,
         all: Vec::new(),
-        interval: Duration::from_millis(50),
+        // Lower collector cadence improves perceived stream latency under light load.
+        interval: Duration::from_millis(20),
         finalized: false,
     };
     let mut phase_generation: u64 = 0;

@@ -13,6 +13,7 @@ use std::{
 
 use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, ContextId, Result};
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex as TokioMutex;
@@ -781,13 +782,13 @@ pub trait ToolBundle: Send + Sync {
 /// Registry for dynamically registered tool functions
 pub struct ToolRegistry {
     inner: StdMutex<ToolRegistryInner>,
+    sessions: DashMap<ToolSessionId, Arc<TokioMutex<Box<dyn ToolSession>>>>,
 }
 
 struct ToolRegistryInner {
     tools: HashMap<ToolName, (ToolFunctionMetadata, Arc<dyn ToolHandler>)>,
     bundles: HashMap<BundleName, ToolBundleMetadata>,
     allowlist: Option<HashSet<ToolName>>,
-    sessions: HashMap<ToolSessionId, Arc<TokioMutex<Box<dyn ToolSession>>>>,
 }
 
 fn map_session_error(error: ToolSessionError) -> BamlRtError {
@@ -1153,8 +1154,8 @@ impl ToolRegistry {
                 tools: HashMap::new(),
                 bundles: HashMap::new(),
                 allowlist: None,
-                sessions: HashMap::new(),
             }),
+            sessions: DashMap::new(),
         }
     }
 
@@ -1485,12 +1486,8 @@ impl ToolRegistry {
             context_id: context_id.clone(),
         };
         let session = handler.open_session(ctx, open_input).await?;
-        {
-            let mut inner = self.inner.lock().unwrap();
-            inner
-                .sessions
-                .insert(session_id.clone(), Arc::new(TokioMutex::new(session)));
-        }
+        self.sessions
+            .insert(session_id.clone(), Arc::new(TokioMutex::new(session)));
 
         let duration = start.elapsed();
         crate::metrics::record_session_open(&parsed.to_string());
@@ -1504,17 +1501,16 @@ impl ToolRegistry {
         let span = crate::spans::session_send(session_id);
         let _guard = span.enter();
 
-        let session = {
-            let inner = self.inner.lock().unwrap();
-            inner.sessions.get(session_id).cloned()
-        };
+        let session = self
+            .sessions
+            .get(session_id)
+            .map(|entry| entry.value().clone());
         let session = session.ok_or_else(|| {
             if tool_registry_trace_enabled() {
-                let inner = self.inner.lock().unwrap();
                 tool_registry_trace(&format!(
                     "session_send missing: session_id={}, known_sessions={}",
                     session_id,
-                    inner.sessions.len()
+                    self.sessions.len()
                 ));
             }
             BamlRtError::InvalidArgument(format!("Unknown session {}", session_id))
@@ -1533,17 +1529,16 @@ impl ToolRegistry {
         let span = crate::spans::session_next(session_id);
         let _guard = span.enter();
 
-        let session = {
-            let inner = self.inner.lock().unwrap();
-            inner.sessions.get(session_id).cloned()
-        };
+        let session = self
+            .sessions
+            .get(session_id)
+            .map(|entry| entry.value().clone());
         let session = session.ok_or_else(|| {
             if tool_registry_trace_enabled() {
-                let inner = self.inner.lock().unwrap();
                 tool_registry_trace(&format!(
                     "session_next missing: session_id={}, known_sessions={}",
                     session_id,
-                    inner.sessions.len()
+                    self.sessions.len()
                 ));
             }
             BamlRtError::InvalidArgument(format!("Unknown session {}", session_id))
@@ -1562,10 +1557,7 @@ impl ToolRegistry {
         let span = crate::spans::session_finish(session_id);
         let _guard = span.enter();
 
-        let session = {
-            let mut inner = self.inner.lock().unwrap();
-            inner.sessions.remove(session_id)
-        };
+        let session = self.sessions.remove(session_id).map(|(_, session)| session);
         if let Some(session) = session {
             let mut guard = session.lock().await;
             guard.finish().await.map_err(map_session_error)?;
@@ -1586,10 +1578,7 @@ impl ToolRegistry {
         let span = crate::spans::session_abort(session_id, reason.as_deref());
         let _guard = span.enter();
 
-        let session = {
-            let mut inner = self.inner.lock().unwrap();
-            inner.sessions.remove(session_id)
-        };
+        let session = self.sessions.remove(session_id).map(|(_, session)| session);
         if let Some(session) = session {
             let mut guard = session.lock().await;
             guard.abort(reason).await.map_err(map_session_error)?;

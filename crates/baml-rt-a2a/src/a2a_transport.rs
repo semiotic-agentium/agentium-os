@@ -1230,7 +1230,8 @@ impl A2aAgent {
                         },
                     };
 
-                    let (resume_tx, resume_rx) = mpsc::channel(4);
+                    // Allow short resume bursts without stalling the turn pump.
+                    let (resume_tx, resume_rx) = mpsc::channel(16);
                     let resume_channel = Some((resume_tx, resume_rx));
                     let relay_rx = {
                         let mut sessions = self.stream_sessions.lock().await;

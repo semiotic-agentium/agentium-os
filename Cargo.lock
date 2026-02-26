@@ -1344,6 +1344,7 @@ dependencies = [
  "baml-rt",
  "baml-rt-core",
  "baml-tools-calculator",
+ "dashmap 6.1.0",
  "genco",
  "inventory",
  "opentelemetry",
