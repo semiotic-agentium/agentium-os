@@ -55,6 +55,63 @@ impl<T> InvocationContext for Scoped<'_, T> {
     }
 }
 
+/// Request-level scope (no agent_id). Built from parsed A2A request; used to construct
+/// RuntimeScope once agent_id is known. Makes message-scoped vs task-scoped explicit.
+///
+/// Resume must use `RequestScope::TaskScoped`; `RuntimeScope::from_request_scope(resolved_scope, agent_id)`
+/// is the single source for BAML and conversation history in that turn.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestScope {
+    MessageScoped {
+        context_id: ContextId,
+        message_id: MessageId,
+    },
+    TaskScoped {
+        context_id: ContextId,
+        message_id: MessageId,
+        task_id: TaskId,
+    },
+}
+
+impl RequestScope {
+    pub fn context_id(&self) -> &ContextId {
+        match self {
+            Self::MessageScoped { context_id, .. } | Self::TaskScoped { context_id, .. } => {
+                context_id
+            }
+        }
+    }
+
+    pub fn message_id(&self) -> &MessageId {
+        match self {
+            Self::MessageScoped { message_id, .. } | Self::TaskScoped { message_id, .. } => {
+                message_id
+            }
+        }
+    }
+
+    pub fn task_id_opt(&self) -> Option<&TaskId> {
+        match self {
+            Self::MessageScoped { .. } => None,
+            Self::TaskScoped { task_id, .. } => Some(task_id),
+        }
+    }
+}
+
+/// How this A2A outcome request is being invoked. Drives scope resolution without Option.
+#[derive(Debug, Clone)]
+pub enum OutcomeInvocationContext {
+    /// Request not from a live stream session; use parsed request's resolved_scope only.
+    Standalone,
+    /// Live session, first turn: context_id from session; task_id derived so SUBMITTED is emitted and drain can set session_task_id.
+    LiveSessionFirstTurn { context_id: ContextId },
+    /// Live session, resume: context_id and task_id from previous drain.
+    LiveSessionResume {
+        context_id: ContextId,
+        task_id: TaskId,
+    },
+}
+
 /// Discriminated union for invocation scope: message-level or task-level.
 /// No standalone variant; context kind is explicit in the type.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -124,6 +181,20 @@ impl RuntimeScope {
         match self {
             Self::MessageScope { .. } => None,
             Self::TaskScope { task_id, .. } => Some(task_id),
+        }
+    }
+
+    /// Build RuntimeScope from request-level scope and agent_id (set at transport).
+    pub fn from_request_scope(scope: &RequestScope, agent_id: AgentId) -> Self {
+        let context_id = scope.context_id().clone();
+        let message_id = scope.message_id().clone();
+        match scope {
+            RequestScope::MessageScoped { .. } => {
+                Self::message_scope(context_id, agent_id, message_id)
+            }
+            RequestScope::TaskScoped { task_id, .. } => {
+                Self::task_scope(context_id, agent_id, message_id, task_id.clone())
+            }
         }
     }
 }

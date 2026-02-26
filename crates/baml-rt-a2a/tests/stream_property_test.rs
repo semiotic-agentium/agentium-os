@@ -10,6 +10,7 @@ mod common;
 
 use baml_rt::BamlRuntimeManager;
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
+use baml_rt_core::A2aWireRequest;
 use futures_util::StreamExt;
 use serde_json::Value;
 use test_support::common::send_stream_request;
@@ -56,56 +57,64 @@ async fn run_stream_test(k: u32) -> Vec<Value> {
         None,
     );
     let mut stream = agent
-        .handle_a2a_stream(request)
+        .handle_a2a_stream(A2aWireRequest::from(request))
         .await
         .expect("handle_a2a_stream");
     let mut out = Vec::new();
     while let Some(item) = stream.next().await {
-        out.push(item);
+        out.push(item.into_inner());
     }
     out
 }
 
+/// Content chunks are those with result.chunk.index (agent yields). The stream may also
+/// include injected SUBMITTED and a terminal ChannelClosed; we assert only on content chunks.
 fn assert_stream_chunk_order_and_finality(responses: &[Value], k: u32) {
+    let content_responses: Vec<_> = responses
+        .iter()
+        .filter(|r| {
+            r.get("result")
+                .and_then(|res| res.get("chunk"))
+                .and_then(|c| c.get("index"))
+                .is_some()
+        })
+        .collect();
     let k_usize = k as usize;
     assert_eq!(
-        responses.len(),
+        content_responses.len(),
         k_usize,
-        "expected {} stream responses, got {}",
+        "expected {} content (agent-yield) stream responses, got {}; total responses={}",
         k_usize,
+        content_responses.len(),
         responses.len()
     );
-    let mut final_count = 0u32;
-    for (i, response) in responses.iter().enumerate() {
+    for (i, response) in content_responses.iter().enumerate() {
         let result = response
             .get("result")
             .and_then(|r| r.as_object())
             .expect("result");
-        let index = result
-            .get("index")
-            .and_then(Value::as_u64)
-            .unwrap_or(i as u64);
-        assert_eq!(
-            index, i as u64,
-            "chunk order: index {} should be {}",
-            i, index
-        );
         let chunk = result.get("chunk").cloned().unwrap_or(Value::Null);
         if let Some(chunk_index) = chunk.get("index").and_then(Value::as_u64) {
-            assert_eq!(chunk_index, i as u64, "chunk content index");
-        }
-        if result
-            .get("final")
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-        {
-            final_count += 1;
+            assert_eq!(
+                chunk_index, i as u64,
+                "chunk order: content index {} should be {}",
+                i, chunk_index
+            );
         }
     }
+    let total_final = responses
+        .iter()
+        .filter(|r| {
+            r.get("result")
+                .and_then(|res| res.get("final"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        })
+        .count();
     assert_eq!(
-        final_count, 1,
-        "exactly one chunk must be final, got {}",
-        final_count
+        total_final, 1,
+        "exactly one stream response must be final, got {}",
+        total_final
     );
 }
 

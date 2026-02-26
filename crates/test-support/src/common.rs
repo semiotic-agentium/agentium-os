@@ -5,11 +5,11 @@ mod a2a_test_helpers;
 pub use a2a_test_helpers::{
     chunk_content, chunks_from_responses, first_message_text_from_stream,
     first_task_id_from_stream, is_error_response, message_texts_from_chunks, send_stream_request,
-    user_message,
+    send_stream_request_with_task, user_message, user_message_with_task,
 };
 mod test_tools;
 // Fixture helpers
-use std::{path::PathBuf, sync::Arc};
+use std::{fs, path::PathBuf, sync::Arc};
 
 use baml_rt::{A2aAgent, QuickJSConfig, baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
 use baml_rt_provenance::GraphqliteStoreBuilder;
@@ -28,6 +28,93 @@ pub fn fixture_path(relative_path: &str) -> PathBuf {
 
 pub fn agent_fixture(name: &str) -> PathBuf {
     fixture_path(&format!("agents/{}", name))
+}
+
+/// Builds a fixture agent using the builder crate (no subprocess), unpacks to temp dir, returns path.
+/// The extracted dir contains `dist/index.js` and `baml_src/`. Use this to load a real agent
+/// (QuickJS runs the compiled TS) for A2A streaming tests. Call from tests that need full stack.
+pub async fn build_fixture_package_to_temp(fixture_name: &str) -> PathBuf {
+    use flate2::read::GzDecoder;
+    use tar::Archive;
+
+    let agent_dir = agent_fixture(fixture_name);
+    if !agent_dir.exists() || !agent_dir.join("baml_src").exists() {
+        panic!(
+            "Fixture {} not found or missing baml_src at {}",
+            fixture_name,
+            agent_dir.display()
+        );
+    }
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let tar_path =
+        std::env::temp_dir().join(format!("a2a-test-{}-{}.tar.gz", fixture_name, unique));
+    let extract_dir =
+        std::env::temp_dir().join(format!("a2a-test-{}-extract-{}", fixture_name, unique));
+    let _ = fs::remove_dir_all(&extract_dir);
+    fs::create_dir_all(&extract_dir).expect("create extract dir");
+
+    baml_rt_builder::build_agent_package(&agent_dir, &tar_path, false)
+        .await
+        .unwrap_or_else(|e| panic!("build fixture {fixture_name} failed: {e}"));
+
+    let tar_gz = fs::File::open(&tar_path).expect("open built tar");
+    let tar_dec = GzDecoder::new(tar_gz);
+    let mut archive = Archive::new(tar_dec);
+    archive.unpack(&extract_dir).expect("unpack built tar");
+    let _ = fs::remove_file(&tar_path);
+
+    let dist_index = extract_dir.join("dist").join("index.js");
+    assert!(
+        dist_index.exists(),
+        "Built package must contain dist/index.js at {}",
+        dist_index.display()
+    );
+    extract_dir
+}
+
+/// Builds an agent at the given path using the builder crate (no subprocess), unpacks to temp dir, returns path.
+/// Use this instead of spawning `cargo run -p baml-rt-builder` to avoid Cargo lock deadlock.
+pub async fn build_agent_package_to_temp(agent_dir: PathBuf, package_label: &str) -> PathBuf {
+    use flate2::read::GzDecoder;
+    use tar::Archive;
+
+    if !agent_dir.exists() || !agent_dir.join("baml_src").exists() {
+        panic!(
+            "Agent dir {} missing or invalid (no baml_src)",
+            agent_dir.display()
+        );
+    }
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let tar_path =
+        std::env::temp_dir().join(format!("runner-test-{package_label}-{unique}.tar.gz"));
+    let extract_dir =
+        std::env::temp_dir().join(format!("runner-test-{package_label}-extract-{unique}"));
+    let _ = fs::remove_dir_all(&extract_dir);
+    fs::create_dir_all(&extract_dir).expect("create extract dir");
+
+    baml_rt_builder::build_agent_package(&agent_dir, &tar_path, false)
+        .await
+        .unwrap_or_else(|e| panic!("build agent {package_label} failed: {e}"));
+
+    let tar_gz = fs::File::open(&tar_path).expect("open built tar");
+    let tar_dec = GzDecoder::new(tar_gz);
+    let mut archive = Archive::new(tar_dec);
+    archive.unpack(&extract_dir).expect("unpack built tar");
+    let _ = fs::remove_file(&tar_path);
+
+    let dist_index = extract_dir.join("dist").join("index.js");
+    assert!(
+        dist_index.exists(),
+        "Built package must contain dist/index.js at {}",
+        dist_index.display()
+    );
+    extract_dir
 }
 
 /// Assert that fixture TypeScript runtime declarations exist.
@@ -292,6 +379,24 @@ pub async fn build_minimal_a2a_agent(init_js: &str) -> A2aAgent {
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
         .with_graphqlite_store(test_graphqlite_store())
+        .build()
+        .await
+        .expect("build minimal a2a agent")
+}
+
+/// Same as build_minimal_a2a_agent but with a short stream collector idle (secs) so tests finish quickly.
+pub async fn build_minimal_a2a_agent_with_stream_idle_secs(
+    init_js: &str,
+    stream_idle_secs: u64,
+) -> A2aAgent {
+    A2aAgent::builder()
+        .with_init_js(init_js)
+        .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
+        .with_quickjs_config(
+            QuickJSConfig::new()
+                .with_max_attempts_ms(Some(15_000))
+                .with_stream_collector_idle_secs(Some(stream_idle_secs)),
+        )
         .build()
         .await
         .expect("build minimal a2a agent")

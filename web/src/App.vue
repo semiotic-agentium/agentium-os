@@ -13,6 +13,8 @@ const {
   messages,
   isLoading,
   provenanceDiagram,
+  awaitingInput,
+  inputRequiredPrompt,
   fetchAgents,
   selectAgent,
   sendMessage,
@@ -65,6 +67,8 @@ onMounted(() => fetchAgents());
         :messages="messages"
         :is-loading="isLoading"
         :disabled="!selectedAgent"
+        :awaiting-input="awaitingInput"
+        :input-required-prompt="inputRequiredPrompt"
         @send="sendMessage"
       />
     </div>

@@ -1,17 +1,13 @@
-//! Integration tests for baml-agent-builder CLI
+//! Integration tests for baml-agent-builder
 //!
-//! These tests spawn the actual baml-agent-builder binary and verify
-//! that all CLI subcommands work correctly end-to-end.
+//! These tests use the builder library to package agents and verify
+//! the package structure and execution flow.
 
 use tempfile::TempDir;
-use test_support::{
-    common::{agent_fixture, ensure_fixture_runtime_types, workspace_root},
-    support::cli::CliHarness,
-};
+use test_support::common::{agent_fixture, ensure_fixture_runtime_types, workspace_root};
 
-#[test]
-fn test_cli_package_agent() {
-    let harness = CliHarness::new();
+#[tokio::test]
+async fn test_cli_package_agent() {
     // Use the example agent for packaging
     let agent_dir = workspace_root().join("examples").join("agent-example");
 
@@ -23,25 +19,9 @@ fn test_cli_package_agent() {
     let output_dir = TempDir::new().unwrap();
     let output_path = output_dir.path().join("test-agent.tar.gz");
 
-    let mut cmd = harness.builder_command();
-    cmd.arg("package")
-        .arg("--agent-dir")
-        .arg(&agent_dir)
-        .arg("--output")
-        .arg(&output_path)
-        .arg("--skip-lint"); // Skip linting for faster test
-
-    let output = cmd.output().expect("Failed to execute package command");
-
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    let stderr = String::from_utf8(output.stderr).unwrap();
-
-    if !output.status.success() {
-        eprintln!("Stdout: {}", stdout);
-        eprintln!("Stderr: {}", stderr);
-    }
-
-    assert!(output.status.success(), "Packaging should succeed");
+    baml_rt_builder::build_agent_package(&agent_dir, &output_path, false)
+        .await
+        .expect("Packaging should succeed");
     assert!(output_path.exists(), "Package file should be created");
     assert!(
         output_path.metadata().unwrap().len() > 0,
@@ -88,7 +68,6 @@ fn test_cli_package_creates_manifest_if_missing() {
 
 #[tokio::test]
 async fn test_full_integration_package_load_execute() {
-    let harness = CliHarness::new();
     // FULL INTEGRATION TEST: Package agent -> Load package -> Execute JavaScript function
     // This verifies the complete flow from TypeScript compilation to function execution
 
@@ -96,7 +75,7 @@ async fn test_full_integration_package_load_execute() {
 
     use baml_rt::{baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
     use baml_rt_core::ids::{AgentId, UuidId};
-    use baml_rt_quickjs::begin_a2a_yield_session;
+    use baml_rt_quickjs::collect_into_channel_owned;
     use serde_json::json;
     use tokio::sync::Mutex;
 
@@ -113,21 +92,9 @@ async fn test_full_integration_package_load_execute() {
     let package_dir = TempDir::new().unwrap();
     let package_path = package_dir.path().join("stream-baml-tool.tar.gz");
 
-    let mut package_cmd = harness.builder_command();
-    package_cmd
-        .arg("package")
-        .arg("--agent-dir")
-        .arg(&agent_dir)
-        .arg("--output")
-        .arg(&package_path)
-        .arg("--skip-lint");
-
-    let package_output = package_cmd.output().expect("Failed to package agent");
-
-    if !package_output.status.success() {
-        let stderr = String::from_utf8(package_output.stderr).unwrap();
-        panic!("Packaging failed: {}", stderr);
-    }
+    baml_rt_builder::build_agent_package(&agent_dir, &package_path, false)
+        .await
+        .expect("Packaging failed");
 
     assert!(package_path.exists(), "Package file should be created");
 
@@ -157,14 +124,21 @@ async fn test_full_integration_package_load_execute() {
     // Create QuickJS bridge
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000015").unwrap());
-    let mut bridge = QuickJSBridge::new(baml_manager.clone(), agent_id.clone())
+    let bridge = QuickJSBridge::new(baml_manager.clone(), agent_id.clone())
         .await
         .unwrap();
-    bridge.register_baml_functions().await.unwrap();
+    let bridge = Arc::new(Mutex::new(bridge));
+    {
+        let mut guard = bridge.lock().await;
+        guard.register_baml_functions().await.unwrap();
+    }
 
     // Load agent's compiled JavaScript code (this is what load_agent_package does)
     let agent_code = fs::read_to_string(&dist_index).unwrap();
-    let agent_eval_result = bridge.evaluate(None, &agent_code).await;
+    let agent_eval_result = {
+        let mut guard = bridge.lock().await;
+        guard.evaluate(None, &agent_code).await
+    };
 
     if let Err(e) = agent_eval_result {
         panic!("Agent code failed to execute: {}", e);
@@ -179,7 +153,10 @@ async fn test_full_integration_package_load_execute() {
         })()
     "#;
 
-    let check_result = bridge.evaluate(None, check_code).await.unwrap();
+    let check_result = {
+        let mut guard = bridge.lock().await;
+        guard.evaluate(None, check_code).await.unwrap()
+    };
     let check_obj = check_result.as_object().expect("Expected object");
     let exists_global = check_obj
         .get("existsGlobal")
@@ -206,29 +183,50 @@ async fn test_full_integration_package_load_execute() {
     });
 
     let scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id.clone());
-    let session = begin_a2a_yield_session(&mut bridge)
-        .await
-        .expect("setup A2A yield buffer");
-    let responses = session
-        .invoke(&scope, args)
-        .await
-        .expect("invoke onChatMessage")
-        .collect()
+    let (session_id, yield_rx) = {
+        let mut guard = bridge.lock().await;
+        guard
+            .invoke_js_function_stream(&scope, function_name, args)
+            .await
+            .expect("invoke onChatMessage")
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    collect_into_channel_owned(bridge.clone(), session_id, yield_rx, tx, None, None)
         .await
         .expect("collect yielded chunks");
+    let mut chunks = Vec::new();
+    let mut completion = None;
+    while let Some(output) = rx.recv().await {
+        match output {
+            baml_rt_quickjs::StreamOutput::Chunk(chunk) => {
+                if chunk != serde_json::Value::Null {
+                    chunks.push(chunk);
+                }
+            }
+            baml_rt_quickjs::StreamOutput::RelayChunk(chunk) => {
+                if chunk != serde_json::Value::Null {
+                    chunks.push(chunk);
+                }
+            }
+            baml_rt_quickjs::StreamOutput::Terminal(_, c) => {
+                completion = Some(c);
+                break;
+            }
+        }
+    }
 
     assert!(
-        !responses.chunks.is_empty(),
-        "Expected onChatMessage to yield at least one chunk. Raw: {responses:?}"
+        !chunks.is_empty(),
+        "Expected onChatMessage to yield at least one chunk. Raw: {chunks:?}"
     );
     assert!(
-        responses.is_semantically_final(),
+        completion == Some(baml_rt_core::stream_completion::StreamCompletion::SemanticFinal),
         "Expected semantic-final completion for onChatMessage, got {:?}",
-        responses.completion
+        completion
     );
     println!(
         "Function '{function_name}' yielded {} chunk(s) with completion {:?}",
-        responses.chunks.len(),
-        responses.completion
+        chunks.len(),
+        completion
     );
 }

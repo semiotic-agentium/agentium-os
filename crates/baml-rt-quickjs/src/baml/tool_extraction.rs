@@ -183,8 +183,16 @@ pub enum ToolSessionOp {
     },
 }
 
-/// Extract and convert JSON tool session plan into typed operations.
-pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<Vec<ToolSessionOp>>> {
+/// Plan-level result of extracting a tool session plan (steps + optional reason).
+#[derive(Debug, Clone)]
+pub(crate) struct ToolSessionPlan {
+    pub steps: Vec<ToolSessionOp>,
+    /// Optional plan-level intent or rationale. Logged when plan is rejected (e.g. empty steps).
+    pub reason: Option<String>,
+}
+
+/// Extract and convert JSON tool session plan into typed operations and optional plan-level reason.
+pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSessionPlan>> {
     let obj = match result.as_object() {
         Some(obj) => obj,
         None => return Ok(None),
@@ -196,6 +204,11 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<Vec<Too
     let steps_array = steps_value.as_array().ok_or_else(|| {
         BamlRtError::InvalidArgument("ToolSessionPlan.steps must be an array".to_string())
     })?;
+
+    let plan_reason = obj
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     let mut steps = Vec::new();
     for step_value in steps_array {
@@ -267,7 +280,10 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<Vec<Too
         steps.push(op);
     }
 
-    Ok(Some(steps))
+    Ok(Some(ToolSessionPlan {
+        steps,
+        reason: plan_reason,
+    }))
 }
 
 /// Normalize plan input (string JSON → parsed Value).
@@ -379,10 +395,10 @@ mod tests {
         /// Invariant: Extracted plan steps have valid op and no tool_name in payload.
         #[test]
         fn prop_extract_plan_steps_valid(v in valid_steps_array()) {
-            let steps = extract_tool_session_plan(&v).unwrap().expect("steps");
-            assert!(!steps.is_empty());
+            let plan = extract_tool_session_plan(&v).unwrap().expect("plan");
+            assert!(!plan.steps.is_empty());
             // All steps were parsed; type system enforces ToolSessionOp variants (no tool_name).
-            assert_eq!(steps.len(), v.get("steps").and_then(|a| a.as_array()).map(|a| a.len()).unwrap_or(0));
+            assert_eq!(plan.steps.len(), v.get("steps").and_then(|a| a.as_array()).map(|a| a.len()).unwrap_or(0));
         }
     }
 }

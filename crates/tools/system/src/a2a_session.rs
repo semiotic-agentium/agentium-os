@@ -3,7 +3,7 @@
 use std::{collections::VecDeque, sync::Arc};
 
 use async_trait::async_trait;
-use baml_rt_core::{A2aRequestHandler, Result};
+use baml_rt_core::{A2aRequestHandler, A2aWireRequest, Result};
 use baml_rt_tools::{
     BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
     ToolSession, ToolSessionError, ToolStep,
@@ -126,7 +126,11 @@ fn parse_send_input(input: Value) -> std::result::Result<Vec<ConversationPart>, 
     }
 }
 
-fn build_send_stream_request(parts: Vec<ConversationPart>, target: &InternalA2aTarget) -> Value {
+fn build_send_stream_request(
+    parts: Vec<ConversationPart>,
+    target: &InternalA2aTarget,
+    context_id: &baml_rt_core::ids::ContextId,
+) -> Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "method": "message.sendStream",
@@ -135,7 +139,8 @@ fn build_send_stream_request(parts: Vec<ConversationPart>, target: &InternalA2aT
             "message": {
                 "messageId": format!("system-a2a-{}", uuid::Uuid::new_v4()),
                 "role": "ROLE_USER",
-                "parts": parts
+                "parts": parts,
+                "contextId": context_id.as_str()
             },
             "metadata": {
                 "target": {
@@ -274,19 +279,23 @@ impl ToolSession for A2aSession {
                 "system/internal_a2a session: send only valid once after open".to_string(),
             )));
         }
-        let request = build_send_stream_request(parts, &self.target);
+        let request = build_send_stream_request(parts, &self.target, &self.ctx.context_id);
         let handler = self.handler.clone();
         let (tx, rx) = async_channel::unbounded::<InternalA2aNextOutput>();
         self.output_rx = Some(rx);
         let handle = tokio::spawn(async move {
-            match handler.handle_a2a_stream(request).await {
+            match handler
+                .handle_a2a_stream(A2aWireRequest::from(request))
+                .await
+            {
                 Ok(stream) => {
                     futures_util::pin_mut!(stream);
                     while let Some(response) = stream.next().await {
-                        let chunk = extract_chunk_value(response.clone());
+                        let value = response.into_inner();
+                        let chunk = extract_chunk_value(value.clone());
                         let input_required = chunk_value_has_input_required(&chunk);
                         let out = InternalA2aNextOutput {
-                            chunks: vec![to_conversation_chunk(response)],
+                            chunks: vec![to_conversation_chunk(value)],
                             completion: if input_required {
                                 Some(InternalA2aCompletion::InputRequired)
                             } else {

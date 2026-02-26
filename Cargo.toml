@@ -14,6 +14,7 @@ members = [
   "crates/baml-rt-tools",
   "crates/test-support",
   "crates/tools/calculator",
+  "crates/tools/claude",
   "crates/tools/internal-dev",
   "crates/tools/clickup",
   "crates/tools/notion",

@@ -6,6 +6,13 @@ use crate::{a2a, a2a::StreamFinality, a2a_types::JSONRPCId, error_mapping};
 pub trait ResponseFormatter: Send + Sync {
     fn format_success(&self, id: Option<JSONRPCId>, result: Value) -> Value;
     fn format_stream(&self, id: Option<JSONRPCId>, result: &StreamResult) -> Vec<Value>;
+    fn format_stream_chunk(
+        &self,
+        id: Option<JSONRPCId>,
+        chunk: Value,
+        index: usize,
+        is_final: bool,
+    ) -> Value;
     fn format_error(&self, id: Option<JSONRPCId>, error: &BamlRtError) -> Value;
 }
 
@@ -39,6 +46,21 @@ impl ResponseFormatter for JsonRpcResponseFormatter {
             responses.push(a2a::stream_chunk_response(id.clone(), chunk, idx, finality));
         }
         responses
+    }
+
+    fn format_stream_chunk(
+        &self,
+        id: Option<JSONRPCId>,
+        chunk: Value,
+        index: usize,
+        is_final: bool,
+    ) -> Value {
+        let finality = if is_final {
+            StreamFinality::Final
+        } else {
+            StreamFinality::NotFinal
+        };
+        a2a::stream_chunk_response(id, chunk, index, finality)
     }
 
     fn format_error(&self, id: Option<JSONRPCId>, error: &BamlRtError) -> Value {

@@ -3,10 +3,21 @@
 //! When JS returns a promise, the host runs pending jobs and checks
 //! `__eval_result` in a loop until the promise resolves or timeout.
 //! Effect-gated timeout (L5–L6) distinguishes "waiting on effect" from
-//! "will never yield". See docs/HOST_QUICKJS_STREAM_INVARIANTS.md.
+//! "will never yield". See this crate's `README.md` for current liveness architecture.
+//!
+//! **Deadlock avoidance:** (1) The poll loop must not hold the bridge lock across awaits.
+//! (2) `exe_rt_task_in_event_loop` is synchronous so we run it in `spawn_blocking`.
+//! **Ordering:** When `result_notify` is set (resume path), we wait on it so we observe the
+//! result only after __set_eval_result has run; no reliance on event-loop task ordering.
+//!
+//! **L4-Resume:** We drive the QuickJS worker at the start of each loop iteration.
+//! BAML completion posts the resolve via `add_rt_task_to_event_loop_void`; the continuation
+//! (`.then(__set_eval_result)`) only runs when we call `run_pending_jobs_if_any()`
+//! on the same QuickJS runtime (single worker).
 
 use std::{
     collections::HashMap,
+    pin::Pin,
     sync::{Arc, Mutex as StdMutex},
 };
 
@@ -23,6 +34,11 @@ use crate::quickjs_bridge::eval::EffectGatedTimeoutPolicy;
 type EvalResultMap = Arc<StdMutex<HashMap<InvocationToken, Option<String>>>>;
 type InvocationScopeMap = Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>>;
 
+/// When set, the poll loop uses this each iteration instead of `runtime` so the bridge
+/// lock is held only briefly (lock → run pending jobs → unlock) and never across an await.
+pub(crate) type RunPendingJobsBrief =
+    Arc<dyn Fn() -> Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync>;
+
 /// Re-check effect-gated timeout every N attempts after the initial phase.
 const EFFECT_CHECK_INTERVAL: u32 = 100;
 /// For the first EFFECT_EARLY_CHECK_WINDOW attempts, re-check every N so we see effects soon.
@@ -31,10 +47,20 @@ const EFFECT_EARLY_CHECK_WINDOW: u32 = 500;
 /// For the first N attempts, never use the short idle timeout so the promise executor has time
 /// to run and emit effects on slow CI (where run_pending_jobs may be scheduled late).
 const EFFECT_WARMUP_ATTEMPTS: u32 = 2000;
+/// Absolute cap on polling attempts (~30 s at 1 ms/sleep). Prevents unbounded spin when
+/// effect-gated policy keeps extending. Also surfaces deadlock when deliver_resume_input
+/// calls invoke_js_function → evaluate() → poll: the bridge lock is held across the poll
+/// so the LLM completion task cannot acquire it to resolve the promise (ctx-1-2 stall).
+const ABSOLUTE_CAP_ATTEMPTS: u32 = 30_000;
 
 /// Parameters for promise resolution polling (keeps `poll_promise_until_result` under clippy's arg limit).
+///
+/// Use `runtime: Some(arc)` so the poll loop runs pending jobs without holding the bridge lock.
+/// When `result_notify` is Some (resume path), the loop waits on it so the result is observed
+/// only after __set_eval_result has run (strict ordering; no event-loop race).
 pub(crate) struct PollPromiseParams<'a> {
-    pub runtime: &'a QuickJsRuntimeFacade,
+    /// When Some, used each iteration to run pending jobs without holding bridge lock.
+    pub runtime: Option<Arc<QuickJsRuntimeFacade>>,
     pub eval_results_by_token: &'a EvalResultMap,
     pub eval_token: &'a InvocationToken,
     pub token_to_remove: Option<&'a InvocationToken>,
@@ -43,6 +69,10 @@ pub(crate) struct PollPromiseParams<'a> {
     pub effect_liveness: Option<Arc<dyn EffectLiveness>>,
     pub idle_timeout_ms: u64,
     pub max_attempts_ms: u64,
+    /// When Some, used each iteration instead of `runtime` (legacy brief-lock path).
+    pub run_pending_jobs_brief: Option<RunPendingJobsBrief>,
+    /// When Some, poll loop waits on this before checking result so we observe only after __set_eval_result (no ordering race).
+    pub result_notify: Option<Arc<tokio::sync::Notify>>,
 }
 
 /// Poll until `__eval_result` is set for the given token or timeout.
@@ -64,6 +94,8 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
         effect_liveness,
         idle_timeout_ms,
         max_attempts_ms,
+        run_pending_jobs_brief,
+        result_notify,
     } = params;
 
     let poller = effect_liveness.map(|liveness| {
@@ -74,19 +106,71 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
             max_attempts_ms,
         )
     });
-    // Sample timeout only after the first run of pending jobs so the promise executor has had
-    // one chance to run and emit effects; then re-check frequently early so we see effects
-    // as soon as they appear (deterministic policy, no magic iteration count).
     let mut timeout_attempts: Option<u32> = None;
     let mut attempts = 0u32;
+    let is_resume_poll = result_notify.is_some();
 
     let _poll_guard = tracing::trace_span!("baml_rt.poll_promise_resolution").entered();
+    tracing::debug!(
+        token = %eval_token.0,
+        context_id = %scope.context_id(),
+        resume_poll = is_resume_poll,
+        "poll_promise: start"
+    );
+
+    /// Run pending jobs (spawn_blocking or run_brief) so the worker can make progress.
+    async fn run_pending_jobs_once(
+        runtime: &Option<Arc<QuickJsRuntimeFacade>>,
+        run_pending_jobs_brief: &Option<RunPendingJobsBrief>,
+    ) -> Result<()> {
+        if let Some(run_brief) = run_pending_jobs_brief {
+            run_brief().await;
+        } else if let Some(rt) = runtime {
+            let rt_clone = rt.clone();
+            tokio::task::spawn_blocking(move || {
+                rt_clone.exe_rt_task_in_event_loop(|r| r.run_pending_jobs_if_any());
+            })
+            .await
+            .map_err(|e| BamlRtError::QuickJs(format!("spawn_blocking join: {}", e)))?;
+        } else {
+            return Err(BamlRtError::QuickJs(
+                "poll_promise_until_result: either runtime or run_pending_jobs_brief must be set"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    const TICK_SLEEP_MS: u64 = 20;
 
     loop {
-        runtime.exe_rt_task_in_event_loop(|rt| {
-            rt.run_pending_jobs_if_any();
-        });
+        // Drive the worker first so the continuation (__set_eval_result) can run before we wait.
+        // With a single QuickJS runtime, the resolve is posted to this worker; we must run
+        // run_pending_jobs_if_any() for it (and the .then callback) to run.
+        run_pending_jobs_once(&runtime, &run_pending_jobs_brief).await?;
         tokio::task::yield_now().await;
+
+        if let Some(notify) = result_notify.as_ref() {
+            if attempts > 0 && attempts.is_multiple_of(500) {
+                tracing::debug!(token = %eval_token.0, attempts, "poll: still waiting for result_notify or drain");
+            }
+            tokio::select! {
+                biased;
+                _ = notify.notified() => {
+                    tracing::debug!(token = %eval_token.0, "poll: notify fired");
+                }
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(TICK_SLEEP_MS)) => {}
+            }
+        }
+        if attempts > 0 && attempts.is_multiple_of(250) {
+            tracing::trace!(
+                token = %eval_token.0,
+                attempts,
+                timeout_attempts = ?timeout_attempts,
+                resume_poll = is_resume_poll,
+                "poll_promise: interleaving checkpoint"
+            );
+        }
 
         let result_str = {
             let mut guard = eval_results_by_token
@@ -144,7 +228,15 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
         if attempts < EFFECT_WARMUP_ATTEMPTS {
             limit = limit.max(max_attempts_ms as u32);
         }
+        // Hard cap so we never spin unbounded (e.g. promise never resolves for stream/nested ctx).
+        limit = limit.min(ABSOLUTE_CAP_ATTEMPTS);
         if attempts >= limit {
+            tracing::warn!(
+                attempts,
+                context_id = %scope.context_id(),
+                limit,
+                "Promise did not resolve within cap; possible deadlock or unresolved stream/nested eval"
+            );
             if let Some(t) = token_to_remove
                 && let Ok(mut map) = invocation_scope_by_token.lock()
             {

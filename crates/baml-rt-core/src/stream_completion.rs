@@ -18,6 +18,18 @@ pub enum StreamCompletion {
     Timeout,
 }
 
+impl StreamCompletion {
+    /// True iff the client should receive `final: true` for this completion (stream ended for wire).
+    pub fn is_wire_final(self) -> bool {
+        matches!(
+            self,
+            StreamCompletion::SemanticFinal
+                | StreamCompletion::ChannelClosed
+                | StreamCompletion::Timeout
+        )
+    }
+}
+
 /// Result of stream collection with explicit completion semantics.
 #[derive(Debug, Clone)]
 pub struct StreamResult {

@@ -451,7 +451,7 @@ async function llmRoute(
       action: "DirectAnswer",
       targets: [],
       direct_message: "I could not determine the best routing. Please rephrase your request.",
-      reasoning: "LLM routing returned an unparseable response",
+      reasoning: "LLM routing returned an unparsable response",
     };
   }
   return parsed;

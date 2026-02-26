@@ -29,9 +29,9 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "agentic-memory"
-version = "0.2.6"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c68c28c86d485627c58f91029f7ee8af5f2fa249a0fb96710e98c2bd257a5ec0"
+checksum = "081019a210f82baf4dd55e166951ece10257f151db2264c67a4c93be03761423"
 dependencies = [
  "chrono",
  "clap",
@@ -951,6 +951,7 @@ dependencies = [
  "baml-rt-provenance",
  "baml-rt-quickjs",
  "baml-rt-tools",
+ "baml-rt-tools-claude",
  "baml-tools-calculator",
  "baml-tools-clickup",
  "baml-tools-memory",
@@ -1196,6 +1197,7 @@ dependencies = [
  "baml-rt-observability",
  "baml-rt-quickjs",
  "baml-rt-tools",
+ "baml-rt-tools-claude",
  "baml-runtime",
  "baml-tools-calculator",
  "baml-tools-clickup",
@@ -1290,7 +1292,6 @@ dependencies = [
  "clap",
  "graphqlite",
  "insta",
- "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -1306,6 +1307,7 @@ name = "baml-rt-quickjs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-channel 2.5.0",
  "async-trait",
  "baml-rt",
  "baml-rt-core",
@@ -1342,6 +1344,7 @@ dependencies = [
  "baml-rt",
  "baml-rt-core",
  "baml-tools-calculator",
+ "dashmap 6.1.0",
  "genco",
  "inventory",
  "opentelemetry",
@@ -1354,6 +1357,26 @@ dependencies = [
  "tracing",
  "ts-rs",
  "uuid",
+]
+
+[[package]]
+name = "baml-rt-tools-claude"
+version = "0.1.0"
+dependencies = [
+ "async-channel 2.5.0",
+ "async-trait",
+ "baml-rt-core",
+ "baml-rt-tools",
+ "claude-agent-sdk-rs",
+ "futures-util",
+ "inventory",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "ts-rs",
 ]
 
 [[package]]
@@ -1394,7 +1417,7 @@ dependencies = [
  "chrono",
  "colored",
  "cowstr",
- "dashmap",
+ "dashmap 5.5.3",
  "derive-new",
  "derive_more 0.99.20",
  "dunce",
@@ -1993,6 +2016,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a822ea5bc7590f9d40f1ba12c0dc3c2760f3482c6984db1573ad11031420831"
 
 [[package]]
+name = "claude-agent-sdk-rs"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b07aee643e9d8f0837ffdb0141e7a902fbc1ea1b40f6ce68bf530f4135b4fc81"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "dashmap 6.1.0",
+ "flume 0.12.0",
+ "futures",
+ "paste",
+ "path-absolutize",
+ "pin-project",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "typed-builder",
+ "uuid",
+]
+
+[[package]]
 name = "clipboard-win"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2363,6 +2410,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dashmap"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
+dependencies = [
+ "cfg-if",
+ "crossbeam-utils",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
+]
+
+[[package]]
 name = "data-encoding"
 version = "2.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2706,6 +2767,9 @@ name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
+dependencies = [
+ "getrandom 0.2.17",
+]
 
 [[package]]
 name = "fd-lock"
@@ -2760,6 +2824,18 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "nanorand",
+ "spin",
+]
+
+[[package]]
+name = "flume"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e139bc46ca777eb5efaf62df0ab8cc5fd400866427e56c68b22e414e53bd3be"
+dependencies = [
+ "fastrand",
+ "futures-core",
+ "futures-sink",
  "spin",
 ]
 
@@ -5058,6 +5134,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
+name = "path-absolutize"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4af381fe79fa195b4909485d99f73a80792331df0625188e707854f0b3383f5"
+dependencies = [
+ "path-dedot",
+]
+
+[[package]]
 name = "path-clean"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5068,6 +5153,15 @@ name = "path-clean"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "17359afc20d7ab31fdb42bb844c8b3bb1dabd7dcf7e68428492da7f16966fcef"
+
+[[package]]
+name = "path-dedot"
+version = "3.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "07ba0ad7e047712414213ff67533e6dd477af0a4e1d14fb52343e53d30ea9397"
+dependencies = [
+ "once_cell",
+]
 
 [[package]]
 name = "pathdiff"
@@ -5363,7 +5457,7 @@ checksum = "b8e82699979593636125cbeeedaf538d11f3dc4645287bbd594041404ad4a88a"
 dependencies = [
  "anyhow",
  "browserslist-rs",
- "dashmap",
+ "dashmap 5.5.3",
  "from_variant",
  "once_cell",
  "rustc-hash 2.1.1",
@@ -5481,7 +5575,7 @@ dependencies = [
  "anyhow",
  "backtrace",
  "either",
- "flume",
+ "flume 0.11.1",
  "futures",
  "hirofa-quickjs-sys",
  "hirofa_utils",
@@ -6659,7 +6753,7 @@ dependencies = [
  "anyhow",
  "base64",
  "bytes-str",
- "dashmap",
+ "dashmap 5.5.3",
  "either",
  "indexmap 2.13.0",
  "jsonc-parser",
@@ -6759,7 +6853,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7133338c3bef796430deced151b0eaa5430710a90e38da19e8e3045e8e36eeb"
 dependencies = [
  "anyhow",
- "dashmap",
+ "dashmap 5.5.3",
  "once_cell",
  "regex",
  "rustc-hash 2.1.1",
@@ -6829,7 +6923,7 @@ checksum = "72e90b52ee734ded867104612218101722ad87ff4cf74fe30383bd244a533f97"
 dependencies = [
  "anyhow",
  "bytes-str",
- "dashmap",
+ "dashmap 5.5.3",
  "globset",
  "indexmap 2.13.0",
  "once_cell",
@@ -7157,7 +7251,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "80afc984b0863fdd058e2c1723530b43ea236001cd1a197cda888a241b801fbc"
 dependencies = [
  "auto_impl",
- "dashmap",
+ "dashmap 5.5.3",
  "par-core",
  "parking_lot",
  "regex",
@@ -7178,7 +7272,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c675d14700c92f12585049b22b02356f1e142f4b0c32a4d0eb4b7a968a4c0c1e"
 dependencies = [
  "anyhow",
- "dashmap",
+ "dashmap 5.5.3",
  "lru 0.10.1",
  "normpath",
  "once_cell",
@@ -7400,7 +7494,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "03594f8ddc69865b0835e2a8ff017bdc0becf6ef22e120f22eff7f52ddb849a0"
 dependencies = [
  "bytes-str",
- "dashmap",
+ "dashmap 5.5.3",
  "indexmap 2.13.0",
  "once_cell",
  "par-core",
@@ -7635,7 +7729,7 @@ version = "14.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6bf07db306bc7e19b8fc46702e8298419d12f587bd4724858bc9889fef8f3e72"
 dependencies = [
- "dashmap",
+ "dashmap 5.5.3",
  "rustc-hash 2.1.1",
  "swc_atoms",
  "swc_common",
@@ -7849,14 +7943,17 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "baml-rt",
+ "baml-rt-builder",
  "baml-rt-core",
  "baml-rt-provenance",
  "baml-rt-tools",
  "baml-tools-calculator",
  "dotenvy",
+ "flate2",
  "schemars 1.2.1",
  "serde",
  "serde_json",
+ "tar",
  "tokio",
  "tracing",
  "ts-rs",
@@ -8327,6 +8424,26 @@ name = "typed-arena"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6af6ae20167a9ece4bcb41af5b80f8a1f1df981f6391189ce00fd257af04126a"
+
+[[package]]
+name = "typed-builder"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31aa81521b70f94402501d848ccc0ecaa8f93c8eb6999eb9747e72287757ffda"
+dependencies = [
+ "typed-builder-macro",
+]
+
+[[package]]
+name = "typed-builder-macro"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "076a02dc54dd46795c2e9c8282ed40bcfb1e22747e955de9389a1de28190fb26"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "typenum"

@@ -17,7 +17,7 @@ use std::{
 use async_trait::async_trait;
 use baml_rt_core::{
     BamlRtError, Outcome, Result,
-    bus::{EffectEmitter, ToolEffectMetadata},
+    bus::{EffectEmitter, EffectEvent, EffectStartToken, ToolEffectMetadata, ToolKind},
     context,
     correlation::current_correlation_id,
     types::FunctionSignature,
@@ -27,11 +27,13 @@ use baml_rt_observability::metrics;
 use baml_rt_tools::{
     ToolFunctionMetadataExport, ToolRegistry as ConcreteToolRegistry, ToolSessionId, ToolStep,
 };
+use baml_types::BamlValue;
 use serde_json::Value;
 use tokio::sync::Mutex as TokioMutex;
 pub(crate) use tool_extraction::{
-    ToolSessionOp, extract_tool_call, extract_tool_session_plan, normalize_plan_input,
-    resolve_tool_name_from_input_with_registry, resolve_tool_name_from_plan_type_with_registry,
+    ToolSessionOp, ToolSessionPlan, extract_tool_call, extract_tool_session_plan,
+    normalize_plan_input, resolve_tool_name_from_input_with_registry,
+    resolve_tool_name_from_plan_type_with_registry,
 };
 
 use crate::{
@@ -89,7 +91,7 @@ fn tool_session_trace_enabled() -> bool {
 
 fn tool_session_trace(message: &str) {
     if tool_session_trace_enabled() {
-        eprintln!("[tool-session-trace] {}", message);
+        tracing::trace!(message = %message, "[tool-session-trace]");
     }
 }
 
@@ -107,6 +109,8 @@ pub struct BamlRuntimeManager {
     interceptor_registry: Arc<TokioMutex<InterceptorRegistry>>,
     tool_session_scopes: Arc<TokioMutex<HashMap<ToolSessionId, ToolSessionScope>>>,
     tool_session_states: Arc<TokioMutex<HashMap<ToolSessionId, ToolCallSessionState>>>,
+    /// Tokens for ToolStarted emitted in tool_session_send; completed in tool_session_next/finish/abort. Shared across handle() calls.
+    tool_session_effect_tokens: Arc<TokioMutex<HashMap<ToolSessionId, EffectStartToken<ToolKind>>>>,
     effect_emitter: Option<Arc<dyn EffectEmitter>>,
     conversation_context_provider: Option<Arc<dyn ConversationContextProvider>>,
     pending_parse_retry_policy: Option<ParseRetryPolicy>,
@@ -138,11 +142,7 @@ impl ToolExecutionHandle {
         name: &str,
         args: Value,
     ) -> Result<Value> {
-        context::with_scope(
-            scope.clone(),
-            self.execute_tool_inner(scope.clone(), name, args),
-        )
-        .await
+        self.execute_tool_inner(scope.clone(), name, args).await
     }
 
     pub(crate) async fn execute_tool_from_baml_result(
@@ -233,7 +233,7 @@ impl ToolExecutionHandle {
         // If we get here, the decision is Allow (blocking would have returned Err)
         let final_args = args;
 
-        // Execute the tool
+        // Execute the tool (context_id required)
         let result = self
             .tool_registry
             .execute(name, final_args, &context_id)
@@ -274,6 +274,9 @@ pub struct ToolSessionExecutionHandle {
     interceptor_registry: Arc<TokioMutex<InterceptorRegistry>>,
     tool_session_scopes: Arc<TokioMutex<HashMap<ToolSessionId, ToolSessionScope>>>,
     tool_session_states: Arc<TokioMutex<HashMap<ToolSessionId, ToolCallSessionState>>>,
+    effect_emitter: Option<Arc<dyn EffectEmitter>>,
+    /// Token for ToolStarted emitted in tool_session_send; completed in tool_session_next (or on error in send).
+    tool_session_effect_tokens: Arc<TokioMutex<HashMap<ToolSessionId, EffectStartToken<ToolKind>>>>,
 }
 
 impl ToolSessionExecutionHandle {
@@ -364,6 +367,39 @@ impl ToolSessionExecutionHandle {
         Ok(session_id)
     }
 
+    /// Find an existing open session for this context and tool, if any.
+    /// Used when the coordinator returns a continuation plan (e.g. [Send, Next]) so we reuse
+    /// the same session instead of auto-inserting Open and creating a new one.
+    async fn find_existing_session_for_scope_and_tool(
+        &self,
+        scope: &context::RuntimeScope,
+        tool_name: &str,
+    ) -> Option<ToolSessionId> {
+        let context_id = scope.context_id();
+        let scopes = self.tool_session_scopes.lock().await;
+        for (sid, session_scope) in scopes.iter() {
+            if session_scope.tool_name == tool_name
+                && session_scope.scope.context_id() == context_id
+            {
+                return Some(sid.clone());
+            }
+        }
+        None
+    }
+
+    /// Collect all session IDs whose scope matches this context_id (for teardown).
+    pub async fn collect_session_ids_for_context(
+        &self,
+        context_id: &baml_rt_core::ids::ContextId,
+    ) -> Vec<ToolSessionId> {
+        let scopes = self.tool_session_scopes.lock().await;
+        scopes
+            .iter()
+            .filter(|(_, s)| s.scope.context_id() == context_id)
+            .map(|(sid, _)| sid.clone())
+            .collect()
+    }
+
     pub async fn tool_session_send(&self, session_id: &ToolSessionId, input: Value) -> Result<()> {
         use baml_rt_interceptor::InterceptorDecision;
 
@@ -422,6 +458,23 @@ impl ToolSessionExecutionHandle {
                 interceptor_registry.intercept_tool_call(&context).await?;
             drop(interceptor_registry);
 
+            // Emit ToolStarted so relay can send TASK_STATE_WORKING (session path does not use execute_tool).
+            if let Some(emitter) = self.effect_emitter.as_ref() {
+                let effect_metadata = ToolEffectMetadata {
+                    tool_name: session_scope.tool_name.clone(),
+                    function_name: None,
+                    args: input.clone(),
+                    metadata: context.metadata.clone(),
+                };
+                if let Ok(token) = emitter
+                    .start_tool(session_scope.scope.context_id().clone(), effect_metadata)
+                    .await
+                {
+                    let mut tokens = self.tool_session_effect_tokens.lock().await;
+                    tokens.insert(session_id.clone(), token);
+                }
+            }
+
             {
                 let mut states = self.tool_session_states.lock().await;
                 states.insert(
@@ -436,11 +489,22 @@ impl ToolSessionExecutionHandle {
             let result = self.tool_registry.session_send(session_id, input).await;
 
             if result.is_err() {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                if let Some(token) = self
+                    .tool_session_effect_tokens
+                    .lock()
+                    .await
+                    .remove(session_id)
+                    && let Some(emitter) = self.effect_emitter.as_ref()
+                {
+                    let _ = token
+                        .complete(emitter.as_ref(), duration_ms, Outcome::Failure)
+                        .await;
+                }
                 let completion_result: Result<Value> = match &result {
                     Ok(_) => Ok(Value::Null),
                     Err(err) => Err(BamlRtError::InvalidArgument(err.to_string())),
                 };
-                let duration_ms = start.elapsed().as_millis() as u64;
                 let interceptor_registry = self.interceptor_registry.lock().await;
                 interceptor_registry
                     .notify_tool_call_complete(&context, &completion_result, duration_ms)
@@ -455,7 +519,7 @@ impl ToolSessionExecutionHandle {
             result
         };
 
-        let result = context::with_scope(session_scope.scope.clone(), run()).await;
+        let result = run().await;
         if let Err(ref e) = result {
             tracing::warn!(
                 session_id = %session_id,
@@ -503,6 +567,20 @@ impl ToolSessionExecutionHandle {
             {
                 // Do not remove scopes here; Finish/Abort is responsible for cleanup.
                 let duration_ms = state.start.elapsed().as_millis() as u64;
+                if let Some(token) = self
+                    .tool_session_effect_tokens
+                    .lock()
+                    .await
+                    .remove(session_id)
+                    && let Some(emitter) = self.effect_emitter.as_ref()
+                {
+                    let outcome = if completion_result.is_ok() {
+                        Outcome::Success
+                    } else {
+                        Outcome::Failure
+                    };
+                    let _ = token.complete(emitter.as_ref(), duration_ms, outcome).await;
+                }
                 let interceptor_registry = self.interceptor_registry.lock().await;
                 interceptor_registry
                     .notify_tool_call_complete(&state.context, &completion_result, duration_ms)
@@ -523,7 +601,7 @@ impl ToolSessionExecutionHandle {
             result
         };
 
-        let scope = session_scope
+        let _scope = session_scope
             .ok_or_else(|| {
                 if tool_session_trace_enabled() {
                     if let Ok(scopes) = self.tool_session_scopes.try_lock() {
@@ -545,7 +623,7 @@ impl ToolSessionExecutionHandle {
                 BamlRtError::InvalidArgument(format!("Unknown tool session {}", session_id))
             })?
             .scope;
-        let result = context::with_scope(scope, run()).await;
+        let result = run().await;
         if let Ok(ref step) = result {
             tracing::info!(
                 session_id = %session_id,
@@ -572,9 +650,21 @@ impl ToolSessionExecutionHandle {
                 let mut states = self.tool_session_states.lock().await;
                 states.remove(session_id)
             } {
-                let mut scopes = self.tool_session_scopes.lock().await;
-                scopes.remove(session_id);
                 let duration_ms = state.start.elapsed().as_millis() as u64;
+                if let Some(token) = self
+                    .tool_session_effect_tokens
+                    .lock()
+                    .await
+                    .remove(session_id)
+                    && let Some(emitter) = self.effect_emitter.as_ref()
+                {
+                    let outcome = if result.is_ok() {
+                        Outcome::Success
+                    } else {
+                        Outcome::Failure
+                    };
+                    let _ = token.complete(emitter.as_ref(), duration_ms, outcome).await;
+                }
                 let completion_result: Result<Value> = match &result {
                     Ok(_) => Ok(Value::Null),
                     Err(err) => Err(BamlRtError::InvalidArgument(err.to_string())),
@@ -596,10 +686,15 @@ impl ToolSessionExecutionHandle {
                 );
             }
 
+            // Always remove from scopes so teardown (close_sessions_for_context) does not leak
+            // sessions that were only opened and never had send/next (no state).
+            let mut scopes = self.tool_session_scopes.lock().await;
+            scopes.remove(session_id);
+
             result
         };
 
-        let scope = session_scope
+        let _scope = session_scope
             .ok_or_else(|| {
                 if tool_session_trace_enabled() {
                     if let Ok(scopes) = self.tool_session_scopes.try_lock() {
@@ -621,7 +716,7 @@ impl ToolSessionExecutionHandle {
                 BamlRtError::InvalidArgument(format!("Unknown tool session {}", session_id))
             })?
             .scope;
-        let result = context::with_scope(scope, run()).await;
+        let result = run().await;
         if let Err(ref e) = result {
             tracing::warn!(session_id = %session_id, error = ?e, "Tool session finish: error");
         } else {
@@ -641,7 +736,7 @@ impl ToolSessionExecutionHandle {
         };
 
         let run = || async {
-            tracing::info!(session_id = %session_id, "Tool session abort: start");
+            tracing::info!(session_id = %session_id, reason = ?reason, "Tool session abort: start");
             let result = self
                 .tool_registry
                 .session_abort(session_id, reason.clone())
@@ -651,9 +746,20 @@ impl ToolSessionExecutionHandle {
                 let mut states = self.tool_session_states.lock().await;
                 states.remove(session_id)
             } {
+                let duration_ms = state.start.elapsed().as_millis() as u64;
+                if let Some(token) = self
+                    .tool_session_effect_tokens
+                    .lock()
+                    .await
+                    .remove(session_id)
+                    && let Some(emitter) = self.effect_emitter.as_ref()
+                {
+                    let _ = token
+                        .complete(emitter.as_ref(), duration_ms, Outcome::Failure)
+                        .await;
+                }
                 let mut scopes = self.tool_session_scopes.lock().await;
                 scopes.remove(session_id);
-                let duration_ms = state.start.elapsed().as_millis() as u64;
                 let completion_result = Err(BamlRtError::InvalidArgument(
                     reason.unwrap_or_else(|| "Tool session aborted".to_string()),
                 ));
@@ -672,7 +778,7 @@ impl ToolSessionExecutionHandle {
             result
         };
 
-        let scope = session_scope
+        let _scope = session_scope
             .ok_or_else(|| {
                 if tool_session_trace_enabled() {
                     if let Ok(scopes) = self.tool_session_scopes.try_lock() {
@@ -694,7 +800,7 @@ impl ToolSessionExecutionHandle {
                 BamlRtError::InvalidArgument(format!("Unknown tool session {}", session_id))
             })?
             .scope;
-        let result = context::with_scope(scope, run()).await;
+        let result = run().await;
         if let Err(ref e) = result {
             tracing::warn!(session_id = %session_id, error = ?e, "Tool session abort: error");
         } else {
@@ -717,6 +823,7 @@ impl BamlRuntimeManager {
             interceptor_registry: Arc::new(TokioMutex::new(InterceptorRegistry::new())),
             tool_session_scopes: Arc::new(TokioMutex::new(HashMap::new())),
             tool_session_states: Arc::new(TokioMutex::new(HashMap::new())),
+            tool_session_effect_tokens: Arc::new(TokioMutex::new(HashMap::new())),
             effect_emitter: None,
             conversation_context_provider: None,
             pending_parse_retry_policy: None,
@@ -767,6 +874,8 @@ impl BamlRuntimeManager {
             interceptor_registry: self.interceptor_registry.clone(),
             tool_session_scopes: self.tool_session_scopes.clone(),
             tool_session_states: self.tool_session_states.clone(),
+            effect_emitter: self.effect_emitter.clone(),
+            tool_session_effect_tokens: self.tool_session_effect_tokens.clone(),
         }
     }
 
@@ -917,16 +1026,23 @@ impl BamlRuntimeManager {
 
     /// Invoke a BAML function with streaming support
     ///
-    /// Returns a stream that yields incremental results as the function executes.
+    /// Returns a stream and the context manager. Caller must pass the same ctx_manager to
+    /// `stream.run(..., ctx_manager, ...)`. Pass `context_tags` (e.g. from
+    /// `build_conversation_context_tags`) for resume so BAML sees prior turns.
     pub fn invoke_function_stream(
         &self,
         scope: &context::RuntimeScope,
         function_name: &str,
         args: serde_json::Value,
-    ) -> Result<baml_runtime::FunctionResultStream> {
+        context_tags: Option<HashMap<String, BamlValue>>,
+    ) -> Result<(
+        baml_runtime::FunctionResultStream,
+        baml_runtime::RuntimeContextManager,
+    )> {
         tracing::debug!(
             function = function_name,
             args = ?args,
+            has_context_tags = context_tags.as_ref().map_or(0, |m| m.len()) > 0,
             "Invoking BAML function with streaming"
         );
 
@@ -942,7 +1058,19 @@ impl BamlRuntimeManager {
             .as_ref()
             .ok_or_else(|| BamlRtError::BamlRuntime("BAML runtime not loaded".to_string()))?;
 
-        executor.execute_function_stream(scope, function_name, args)
+        executor.execute_function_stream(scope, function_name, args, context_tags)
+    }
+
+    /// Build conversation context tags for the given scope (for stream path resume).
+    /// Call from async context (e.g. bridge start_stream_session) then pass result to invoke_function_stream.
+    pub async fn build_conversation_context_tags(
+        &self,
+        scope: &context::RuntimeScope,
+    ) -> Result<Option<HashMap<String, BamlValue>>> {
+        match &self.executor {
+            Some(exec) => exec.build_conversation_context_tags(scope).await,
+            None => Ok(None),
+        }
     }
 
     /// List all available BAML functions
@@ -1103,6 +1231,47 @@ impl BamlRuntimeManager {
             .await
     }
 
+    /// Number of open tool sessions for this context. Used by tests to assert no leak after teardown.
+    pub async fn open_session_count_for_context(
+        &self,
+        context_id: &baml_rt_core::ids::ContextId,
+    ) -> usize {
+        self.tool_session_handle()
+            .collect_session_ids_for_context(context_id)
+            .await
+            .len()
+    }
+
+    /// Close all tool sessions for this context (teardown). Call when an invocation ends
+    /// so sessions are not leaked. Best-effort: logs but does not fail on individual finish errors.
+    pub async fn close_sessions_for_context(
+        &self,
+        context_id: &baml_rt_core::ids::ContextId,
+    ) -> Result<()> {
+        let to_close = self
+            .tool_session_handle()
+            .collect_session_ids_for_context(context_id)
+            .await;
+        for id in &to_close {
+            if let Err(e) = self.tool_session_finish(id).await {
+                tracing::warn!(
+                    session_id = %id,
+                    context_id = %context_id,
+                    error = %e,
+                    "Teardown: tool session finish failed",
+                );
+            }
+        }
+        if !to_close.is_empty() {
+            tracing::debug!(
+                context_id = %context_id,
+                count = to_close.len(),
+                "Teardown: closed tool sessions for context",
+            );
+        }
+        Ok(())
+    }
+
     /// Get tool metadata (export-safe shape)
     pub async fn get_tool_metadata(&self, name: &str) -> Option<ToolFunctionMetadataExport> {
         self.tool_registry
@@ -1252,21 +1421,37 @@ impl BamlRuntimeManager {
         &self,
         scope: &context::RuntimeScope,
         tool_name: String,
-        steps: Vec<ToolSessionOp>,
+        plan: ToolSessionPlan,
     ) -> Result<Value> {
         let plan_scope = scope.clone();
-        let mut steps = steps;
+        let mut steps = plan.steps;
+        // When the coordinator returns a continuation plan ([Send, Next] without Open), reuse the
+        // existing session for this context/tool so conversation history is preserved. Only
+        // insert Open when no such session exists (e.g. first plan was malformed or edge case).
+        let mut session_id: Option<ToolSessionId> = None;
         if let Some(first) = steps.first()
             && !matches!(first, ToolSessionOp::Open { .. })
         {
-            // Be lenient: if plan starts with Send/Next, implicitly open with empty input.
-            steps.insert(
-                0,
-                ToolSessionOp::Open {
-                    initial_input: None,
-                    reason: Some("auto-open for plan missing explicit Open".to_string()),
-                },
-            );
+            if let Some(existing) = self
+                .tool_session_handle()
+                .find_existing_session_for_scope_and_tool(&plan_scope, &tool_name)
+                .await
+            {
+                tracing::debug!(
+                    tool_name = %tool_name,
+                    session_id = %existing,
+                    "Reusing existing session for continuation plan (no Open step)",
+                );
+                session_id = Some(existing);
+            } else {
+                steps.insert(
+                    0,
+                    ToolSessionOp::Open {
+                        initial_input: None,
+                        reason: Some("auto-open for plan missing explicit Open".to_string()),
+                    },
+                );
+            }
         }
         // Validate FSM: no Send before first Open
         let first_open = steps
@@ -1284,19 +1469,25 @@ impl BamlRuntimeManager {
             )));
         }
         if steps.is_empty() {
+            if let Some(ref reason) = plan.reason {
+                tracing::warn!(
+                    tool_name = %tool_name,
+                    plan_reason = %reason,
+                    "ToolSessionPlan rejected: empty steps. Plan-level reason from coordinator logged for debugging.",
+                );
+            }
             return Err(BamlRtError::InvalidArgument(
-                "ToolSessionPlan must have at least one step".to_string(),
+                "ToolSessionPlan must have at least one step. The coordinator may have returned prose before the JSON or an empty plan; ask it to respond with only a single JSON object.".to_string(),
             ));
         }
 
-        let mut session_id: Option<ToolSessionId> = None;
         let mut last_output: Option<Value> = None;
         let mut streaming_outputs: Vec<Value> = Vec::new();
         let mut suspended = false;
 
         let total_steps = steps.len();
         for (index, step) in steps.into_iter().enumerate() {
-            let has_remaining_steps = index + 1 < total_steps;
+            let _has_remaining_steps = index + 1 < total_steps;
             match step {
                 ToolSessionOp::Open {
                     initial_input,
@@ -1348,9 +1539,39 @@ impl BamlRuntimeManager {
                     loop {
                         match self.tool_session_next(session).await? {
                             ToolStep::Streaming { output } => {
+                                let decorated =
+                                    crate::quickjs_bridge::stream_yield::decorate_tool_chunk(
+                                        &tool_name, &output,
+                                    );
+                                crate::quickjs_bridge::stream_yield::send_tool_stream_chunk(
+                                    &decorated,
+                                );
+                                if let Some(emitter) = self.effect_emitter.as_ref() {
+                                    let _ = emitter
+                                        .emit(EffectEvent::ToolStreamChunk {
+                                            context_id: plan_scope.context_id().clone(),
+                                            chunk: decorated,
+                                        })
+                                        .await;
+                                }
                                 streaming_outputs.push(output);
                             }
                             ToolStep::Suspended { output } => {
+                                let decorated =
+                                    crate::quickjs_bridge::stream_yield::decorate_tool_chunk(
+                                        &tool_name, &output,
+                                    );
+                                crate::quickjs_bridge::stream_yield::send_tool_stream_chunk(
+                                    &decorated,
+                                );
+                                if let Some(emitter) = self.effect_emitter.as_ref() {
+                                    let _ = emitter
+                                        .emit(EffectEvent::ToolStreamChunk {
+                                            context_id: plan_scope.context_id().clone(),
+                                            chunk: decorated,
+                                        })
+                                        .await;
+                                }
                                 streaming_outputs.push(output);
                                 suspended = true;
                                 tracing::debug!(
@@ -1361,10 +1582,10 @@ impl BamlRuntimeManager {
                             }
                             ToolStep::Done { output } => {
                                 last_output = output;
-                                if !has_remaining_steps {
-                                    self.tool_session_finish(session).await?;
-                                    session_id = None;
-                                }
+                                // Do not close the session here: the coordinator may return another
+                                // plan (e.g. [Send, Next]) for the same session. Only explicit
+                                // Finish or Abort steps close the session.
+                                session_id = None;
                                 break;
                             }
                             ToolStep::Error { error } => {
@@ -1418,9 +1639,33 @@ impl BamlRuntimeManager {
             loop {
                 match self.tool_session_next(session).await? {
                     ToolStep::Streaming { output } => {
+                        let decorated = crate::quickjs_bridge::stream_yield::decorate_tool_chunk(
+                            &tool_name, &output,
+                        );
+                        crate::quickjs_bridge::stream_yield::send_tool_stream_chunk(&decorated);
+                        if let Some(emitter) = self.effect_emitter.as_ref() {
+                            let _ = emitter
+                                .emit(EffectEvent::ToolStreamChunk {
+                                    context_id: plan_scope.context_id().clone(),
+                                    chunk: decorated,
+                                })
+                                .await;
+                        }
                         streaming_outputs.push(output);
                     }
                     ToolStep::Suspended { output } => {
+                        let decorated = crate::quickjs_bridge::stream_yield::decorate_tool_chunk(
+                            &tool_name, &output,
+                        );
+                        crate::quickjs_bridge::stream_yield::send_tool_stream_chunk(&decorated);
+                        if let Some(emitter) = self.effect_emitter.as_ref() {
+                            let _ = emitter
+                                .emit(EffectEvent::ToolStreamChunk {
+                                    context_id: plan_scope.context_id().clone(),
+                                    chunk: decorated,
+                                })
+                                .await;
+                        }
                         streaming_outputs.push(output);
                         tracing::debug!(
                             tool = %tool_name,
@@ -1430,7 +1675,7 @@ impl BamlRuntimeManager {
                     }
                     ToolStep::Done { output } => {
                         last_output = output;
-                        self.tool_session_finish(session).await?;
+                        // Leave session open for coordinator continuation; only Finish step closes.
                         break;
                     }
                     ToolStep::Error { error } => {
@@ -1446,11 +1691,20 @@ impl BamlRuntimeManager {
         }
 
         if !streaming_outputs.is_empty() {
-            if let Some(done) = last_output {
-                streaming_outputs.push(done);
+            if let Some(ref done) = last_output {
+                let decorated =
+                    crate::quickjs_bridge::stream_yield::decorate_tool_chunk(&tool_name, done);
+                crate::quickjs_bridge::stream_yield::send_tool_stream_chunk(&decorated);
+                if let Some(emitter) = self.effect_emitter.as_ref() {
+                    let _ = emitter
+                        .emit(EffectEvent::ToolStreamChunk {
+                            context_id: plan_scope.context_id().clone(),
+                            chunk: decorated,
+                        })
+                        .await;
+                }
+                streaming_outputs.push(done.clone());
             }
-            // Emit each chunk into the __baml_stream channel when set (argument-sketch / A2A tool sessions).
-            crate::quickjs_bridge::stream_yield::send_tool_stream_chunks(&streaming_outputs);
             return Ok(Value::Array(streaming_outputs));
         }
 
@@ -1495,6 +1749,7 @@ impl Default for BamlRuntimeManager {
             interceptor_registry: Arc::new(TokioMutex::new(InterceptorRegistry::new())),
             tool_session_scopes: Arc::new(TokioMutex::new(HashMap::new())),
             tool_session_states: Arc::new(TokioMutex::new(HashMap::new())),
+            tool_session_effect_tokens: Arc::new(TokioMutex::new(HashMap::new())),
             effect_emitter: None,
             conversation_context_provider: None,
             pending_parse_retry_policy: None,

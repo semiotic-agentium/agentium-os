@@ -176,7 +176,11 @@ async fn test_quickjs_concurrent_scope_propagation() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_quickjs_concurrent_stream_scope_propagation() {
-    let manager = BamlRuntimeManager::new().unwrap();
+    let mut manager = BamlRuntimeManager::new().unwrap();
+    manager
+        .register_tool(ScopeEchoTool)
+        .await
+        .expect("register tool");
     let manager = Arc::new(Mutex::new(manager));
     let effect_bus = Arc::new(BusWithEffects::new());
     {
@@ -192,18 +196,17 @@ async fn test_quickjs_concurrent_stream_scope_propagation() {
         .await
         .expect("register helpers");
 
+    // Single-chunk "stream" via tool session (same as non-stream test): no BAML stream function required.
     bridge
-        .evaluate(
-            None,
-            r#"
-            globalThis.js_scope_stream = async function(args) {
-                const results = await __baml_stream(
-                    "scope_probe",
-                    JSON.stringify({ __scope_probe: true })
-                );
-                return results;
-            };
-            "#,
+        .register_js_tool(
+            "js/scope_stream",
+            r#"async function(args) {
+                const session = await openToolSession("test/scope_echo");
+                await session.send(args || {});
+                const step = await session.continue();
+                const result = step && step.output ? step.output : {};
+                return [result];
+            }"#,
         )
         .await
         .expect("register js stream tool");
@@ -235,10 +238,21 @@ async fn test_quickjs_concurrent_stream_scope_propagation() {
                     );
                     let invocation_scope = InvocationScope::new(scope.clone());
 
+                    let context_id_for_js = context_id.clone();
+                    let message_id_for_js = message_id.clone();
+                    let task_id_for_js = task_id.clone();
                     let result = context::with_scope(scope, async move {
                         let mut bridge = bridge.lock().await;
                         bridge
-                            .invoke_js_function(&invocation_scope, "js_scope_stream", json!({}))
+                            .invoke_js_tool(
+                                &invocation_scope,
+                                "js/scope_stream",
+                                json!({
+                                    "context_id": context_id_for_js.as_str(),
+                                    "message_id": message_id_for_js.as_str(),
+                                    "task_id": task_id_for_js.as_str(),
+                                }),
+                            )
                             .await
                     })
                     .await
@@ -328,7 +342,7 @@ impl BamlTool for ScopeEchoTool {
 ///
 /// Sequence:
 /// 1. Force failure: `invoke_js_function_stream("nonExistentStreamFn", ...)` → Err
-/// 2. Immediately start a valid stream via `begin_a2a_yield_session` → invoke → collect
+/// 2. Immediately start a valid stream via `invoke_js_function_stream` + `collect_into_channel_owned`
 /// 3. Assert the second stream succeeds (no leaked permit/session/globals)
 #[tokio::test]
 async fn test_failed_stream_does_not_leak_state() {
@@ -341,18 +355,25 @@ async fn test_failed_stream_does_not_leak_state() {
     }
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000040").unwrap());
-    let mut bridge = QuickJSBridge::new(manager, agent_id).await.unwrap();
-    bridge.set_effect_liveness(effect_bus as Arc<dyn EffectLiveness>);
-    bridge
-        .register_baml_functions()
-        .await
-        .expect("register helpers");
+    let bridge = Arc::new(Mutex::new(
+        QuickJSBridge::new(manager, agent_id).await.unwrap(),
+    ));
+    {
+        let mut guard = bridge.lock().await;
+        guard.set_effect_liveness(effect_bus as Arc<dyn EffectLiveness>);
+        guard
+            .register_baml_functions()
+            .await
+            .expect("register helpers");
+    }
 
     // Register a valid onChatMessage that yields one chunk with a final state.
-    bridge
-        .evaluate(
-            None,
-            r#"
+    {
+        let mut guard = bridge.lock().await;
+        guard
+            .evaluate(
+                None,
+                r#"
             globalThis.onChatMessage = async function(args) {
                 __chat_yield({
                     task: { status: { state: "TASK_STATE_COMPLETED" } },
@@ -360,55 +381,196 @@ async fn test_failed_stream_does_not_leak_state() {
                 });
             };
             "#,
-        )
-        .await
-        .expect("register onChatMessage");
+            )
+            .await
+            .expect("register onChatMessage");
+    }
 
     let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
         UuidId::parse_str("00000000-0000-0000-0000-000000000041").unwrap(),
     ));
 
     // --- Step 1: Force stream failure with a nonexistent function ---
-    bridge
-        .setup_a2a_yield_buffer()
-        .await
-        .expect("setup yield buffer");
-    let failed = bridge
-        .invoke_js_function_stream(&scope, "nonExistentStreamFn", json!({}))
-        .await
-        .is_err();
+    let failed = {
+        let mut guard = bridge.lock().await;
+        guard
+            .invoke_js_function_stream(&scope, "nonExistentStreamFn", json!({}))
+            .await
+            .is_err()
+    };
     assert!(
         failed,
         "invoke_js_function_stream with missing function should fail"
     );
 
     // --- Step 2: Start a valid stream; should NOT deadlock or fail ---
-    let session = baml_rt_quickjs::begin_a2a_yield_session(&mut bridge)
-        .await
-        .expect("begin_a2a_yield_session after failed stream should succeed");
-    let session = context::with_scope(scope.as_scope().clone(), async {
-        session.invoke(&scope, json!({ "message": "hello" })).await
-    })
+    let (session_id, yield_rx) = {
+        let mut guard = bridge.lock().await;
+        guard
+            .invoke_js_function_stream(&scope, "onChatMessage", json!({ "message": "hello" }))
+            .await
+            .expect("invoke after failed stream should succeed")
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    baml_rt_quickjs::collect_into_channel_owned(
+        bridge.clone(),
+        session_id,
+        yield_rx,
+        tx,
+        None,
+        None,
+    )
     .await
-    .expect("invoke after failed stream should succeed");
-    let result = session
-        .collect()
-        .await
-        .expect("collect after failed stream should succeed");
+    .expect("collect after failed stream should succeed");
+    let mut result_chunks = Vec::new();
+    while let Some(output) = rx.recv().await {
+        match output {
+            baml_rt_quickjs::StreamOutput::Chunk(chunk) => {
+                if chunk != Value::Null {
+                    result_chunks.push(chunk);
+                }
+            }
+            baml_rt_quickjs::StreamOutput::RelayChunk(_) => {}
+            baml_rt_quickjs::StreamOutput::Terminal(_, _) => break,
+        }
+    }
 
     // --- Step 3: Verify we got the expected chunk ---
     assert!(
-        !result.chunks.is_empty(),
+        !result_chunks.is_empty(),
         "second stream should have produced at least one chunk"
     );
     assert!(
-        result.chunks.iter().any(|c| c
+        result_chunks.iter().any(|c| c
             .get("task")
             .and_then(|t| t.get("status"))
             .and_then(|s| s.get("state"))
             .and_then(Value::as_str)
             == Some("TASK_STATE_COMPLETED")),
         "second stream should contain the TASK_STATE_COMPLETED chunk"
+    );
+}
+
+/// Unit-level: close_sessions_for_context clears all sessions for that context.
+#[tokio::test]
+async fn test_close_sessions_for_context_clears_sessions() {
+    let mut manager = BamlRuntimeManager::new().unwrap();
+    manager.register_tool(ScopeEchoTool).await.unwrap();
+    let manager = Arc::new(Mutex::new(manager));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000051").unwrap());
+    let scope = InvocationScope::synthetic_message(agent_id);
+    let context_id = scope.as_scope().context_id().clone();
+
+    let _session_id = context::with_scope(scope.as_scope().clone(), async {
+        manager
+            .lock()
+            .await
+            .open_tool_session(scope.as_scope(), "test/scope_echo", json!({}))
+            .await
+            .expect("open")
+    })
+    .await;
+
+    assert_eq!(
+        manager
+            .lock()
+            .await
+            .open_session_count_for_context(&context_id)
+            .await,
+        1,
+        "one session open before teardown"
+    );
+
+    manager
+        .lock()
+        .await
+        .close_sessions_for_context(&context_id)
+        .await
+        .expect("teardown");
+
+    assert_eq!(
+        manager
+            .lock()
+            .await
+            .open_session_count_for_context(&context_id)
+            .await,
+        0,
+        "no sessions after close_sessions_for_context (no leak)"
+    );
+}
+
+/// Teardown: when a stream invocation is finalized (collect_into_channel_owned completes),
+/// tool sessions for that context must be closed so we don't leak.
+#[tokio::test]
+async fn test_stream_finalize_closes_tool_sessions_no_leak() {
+    let mut manager = BamlRuntimeManager::new().unwrap();
+    manager.register_tool(ScopeEchoTool).await.unwrap();
+    let manager = Arc::new(Mutex::new(manager));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000050").unwrap());
+    let bridge = Arc::new(Mutex::new(
+        QuickJSBridge::new(manager.clone(), agent_id.clone())
+            .await
+            .unwrap(),
+    ));
+    {
+        let mut guard = bridge.lock().await;
+        guard
+            .register_baml_functions()
+            .await
+            .expect("register helpers");
+
+        // onChatMessage opens a tool session then yields a terminal chunk so collector finalizes.
+        guard
+            .evaluate(
+                None,
+                r#"
+            globalThis.onChatMessage = async function(args) {
+                await __tool_session_open('test/scope_echo', '{}');
+                __chat_yield({
+                    task: { status: { state: "TASK_STATE_COMPLETED" } },
+                    payload: "done"
+                });
+            };
+            "#,
+            )
+            .await
+            .expect("register onChatMessage");
+    }
+
+    let scope = InvocationScope::synthetic_message(agent_id);
+    let context_id = scope.as_scope().context_id().clone();
+
+    let (session_id, yield_rx) = {
+        let mut guard = bridge.lock().await;
+        guard
+            .invoke_js_function_stream(&scope, "onChatMessage", json!({ "message": "hi" }))
+            .await
+            .expect("invoke stream")
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    baml_rt_quickjs::collect_into_channel_owned(bridge, session_id, yield_rx, tx, None, None)
+        .await
+        .expect("collect");
+
+    // Drain until terminal
+    while let Some(output) = rx.recv().await {
+        if matches!(output, baml_rt_quickjs::StreamOutput::Terminal(_, _)) {
+            break;
+        }
+    }
+
+    // Finalize has run; no sessions must remain for this context.
+    let count = manager
+        .lock()
+        .await
+        .open_session_count_for_context(&context_id)
+        .await;
+    assert_eq!(
+        count, 0,
+        "after stream finalize there must be no open sessions for this context (no leak)"
     );
 }
 

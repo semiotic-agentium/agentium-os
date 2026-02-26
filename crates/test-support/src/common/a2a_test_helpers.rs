@@ -4,10 +4,20 @@ use baml_rt::a2a_types::{
     A2aMessageId, JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER,
     SendMessageRequest,
 };
-use baml_rt_core::ids::{ContextId, ExternalId};
+use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
 use serde_json::Value;
 
 pub fn user_message(message_id: &str, text: &str, context_id: Option<ContextId>) -> Message {
+    user_message_with_task(message_id, text, context_id, None)
+}
+
+/// Like user_message but allows setting message.task_id (used so scope has task_id and relay sends WORKING).
+pub fn user_message_with_task(
+    message_id: &str,
+    text: &str,
+    context_id: Option<ContextId>,
+    task_id: Option<TaskId>,
+) -> Message {
     Message {
         message_id: A2aMessageId::incoming(ExternalId::new(message_id)),
         role: MessageRole::String(ROLE_USER.to_string()),
@@ -16,7 +26,7 @@ pub fn user_message(message_id: &str, text: &str, context_id: Option<ContextId>)
             ..Part::default()
         }],
         context_id,
-        task_id: None,
+        task_id,
         reference_task_ids: Vec::new(),
         extensions: Vec::new(),
         metadata: None,
@@ -30,8 +40,19 @@ pub fn send_stream_request(
     request_id: &str,
     context_id: Option<ContextId>,
 ) -> Value {
+    send_stream_request_with_task(message_id, text, request_id, context_id, None)
+}
+
+/// Like send_stream_request but sets message.task_id so the scope has a task and the relay can send WORKING with task_id.
+pub fn send_stream_request_with_task(
+    message_id: &str,
+    text: &str,
+    request_id: &str,
+    context_id: Option<ContextId>,
+    task_id: Option<TaskId>,
+) -> Value {
     let params = SendMessageRequest {
-        message: user_message(message_id, text, context_id),
+        message: user_message_with_task(message_id, text, context_id, task_id),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -100,12 +121,20 @@ pub fn first_message_text_from_stream(responses: &[Value]) -> String {
 }
 
 pub fn first_task_id_from_stream(responses: &[Value]) -> Option<String> {
-    responses.iter().find_map(|response| {
-        let content = chunk_content(response)?;
-        content
-            .get("task")
-            .and_then(|task| task.get("id"))
+    fn task_id_from_val(task: &Value) -> Option<String> {
+        task.get("id")
             .and_then(Value::as_str)
             .map(ToOwned::to_owned)
+            .or_else(|| {
+                task.as_str().and_then(|s| {
+                    serde_json::from_str::<Value>(s)
+                        .ok()
+                        .and_then(|v| task_id_from_val(&v))
+                })
+            })
+    }
+    responses.iter().find_map(|response| {
+        let content = chunk_content(response)?;
+        content.get("task").and_then(task_id_from_val)
     })
 }

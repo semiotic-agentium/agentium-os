@@ -21,7 +21,7 @@ use baml_rt_provenance::{
 use baml_tools_notion::NotionTool;
 use common::{
     RunningHttpServer, TempDirCleanup, TempEnvVar, build_notion_agent_to_temp_async, contains_kv,
-    e2e_serial_gate, start_http_server, start_runner_api_server,
+    e2e_serial_gate, post_a2a_sse_collect, start_http_server, start_runner_api_server,
 };
 use insta::assert_snapshot;
 use serde_json::{Value, json};
@@ -53,7 +53,7 @@ fn normalize_mermaid_line(line: &str) -> String {
                 i += 1;
             }
             if i + 1 < chars.len() && chars[i] == 'm' && chars[i + 1] == 's' {
-                out.push_str("[ms]");
+                out.push_str("0ms");
                 i += 2;
             } else {
                 for ch in &chars[start..i] {
@@ -285,26 +285,20 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
     );
 
     let http_client = reqwest::Client::new();
-    let a2a_url = format!("{}/agents/notion-agent/default/a2a", runner_api.base_url);
-    let response = timeout(
+    let a2a_url = format!(
+        "{}/agents/notion-agent/default/a2a/sse",
+        runner_api.base_url
+    );
+    let responses: Vec<Value> = timeout(
         Duration::from_secs(90),
-        http_client.post(&a2a_url).json(&request_body).send(),
+        post_a2a_sse_collect(&http_client, &a2a_url, &request_body),
     )
     .await
-    .expect("a2a HTTP request timed out")
-    .expect("a2a HTTP request failed");
-    assert!(
-        response.status().is_success(),
-        "Expected 2xx from /a2a, got {}",
-        response.status()
-    );
-    let responses: Vec<Value> = response
-        .json()
-        .await
-        .expect("parse /a2a response body as JSON");
+    .expect("a2a SSE request timed out")
+    .expect("a2a SSE request failed");
     assert!(
         !responses.is_empty(),
-        "Expected non-empty JSON-RPC response array from /a2a"
+        "Expected non-empty JSON-RPC response array from /a2a/sse"
     );
 
     let chunks = chunks_from_responses(&responses);
@@ -509,26 +503,20 @@ async fn test_e2e_notion_real_model_search_with_mock_server() {
     );
 
     let http_client = reqwest::Client::new();
-    let a2a_url = format!("{}/agents/notion-agent/default/a2a", runner_api.base_url);
-    let response = timeout(
+    let a2a_url = format!(
+        "{}/agents/notion-agent/default/a2a/sse",
+        runner_api.base_url
+    );
+    let responses: Vec<Value> = timeout(
         Duration::from_secs(180),
-        http_client.post(&a2a_url).json(&request_body).send(),
+        post_a2a_sse_collect(&http_client, &a2a_url, &request_body),
     )
     .await
-    .expect("a2a HTTP request timed out")
-    .expect("a2a HTTP request failed");
-    assert!(
-        response.status().is_success(),
-        "Expected 2xx from /a2a, got {}",
-        response.status()
-    );
-    let responses: Vec<Value> = response
-        .json()
-        .await
-        .expect("parse /a2a response body as JSON");
+    .expect("a2a SSE request timed out")
+    .expect("a2a SSE request failed");
     assert!(
         !responses.is_empty(),
-        "Expected non-empty JSON-RPC response array from /a2a"
+        "Expected non-empty JSON-RPC response array from /a2a/sse"
     );
 
     let chunks = chunks_from_responses(&responses);

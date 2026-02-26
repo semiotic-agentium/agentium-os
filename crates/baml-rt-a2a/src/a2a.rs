@@ -4,12 +4,13 @@
 
 use baml_rt_core::{
     BamlRtError, InvocationKind, Result, context,
-    context::InvocationScope,
+    context::{InvocationScope, RequestScope},
     ids::{ContextId, DerivedId, ExternalId, MessageId, TaskId},
-    stream_completion::StreamResult,
+    stream_completion::StreamCompletion,
     to_json_value,
 };
 use serde_json::{Map, Value, json};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
@@ -47,9 +48,8 @@ pub struct A2aRequest {
     pub id: Option<JSONRPCId>,
     pub params: A2aParams,
     pub invocation: InvocationKind,
-    pub context_id: Option<ContextId>,
-    pub message_id: Option<MessageId>,
-    pub task_id: Option<TaskId>,
+    /// Request-level scope (message vs task); agent_id is added at transport.
+    pub resolved_scope: RequestScope,
 }
 
 impl A2aRequest {
@@ -64,39 +64,77 @@ impl A2aRequest {
         let request = A2aWireRequest::try_from_raw(raw)?;
 
         let id = request.id;
-        let mut context_id = None;
-        let mut message_id = None;
-        let mut task_id = None;
-        let (params, invocation) = match request.method {
+        let (params, invocation, resolved_scope) = match request.method {
             A2aWireMethod::MessageSendStream { params } => {
                 let mut params = *params;
                 if params.message.context_id.is_none() {
                     params.message.context_id = Some(context::generate_context_id());
                 }
-                context_id = params.message.context_id.clone();
-                message_id = Some(params.message.message_id.as_message_id().clone());
-                task_id = params.message.task_id.clone();
+                let context_id = params.message.context_id.clone().expect("set above");
+                let message_id = params.message.message_id.as_message_id().clone();
+                let scope = match params.message.task_id.clone() {
+                    Some(task_id) => RequestScope::TaskScoped {
+                        context_id: context_id.clone(),
+                        message_id: message_id.clone(),
+                        task_id,
+                    },
+                    None => RequestScope::MessageScoped {
+                        context_id,
+                        message_id,
+                    },
+                };
                 (
                     A2aParams::MessageSendStream(Box::new(params)),
                     InvocationKind::Stream,
+                    scope,
                 )
             }
             A2aWireMethod::TasksGet { params } => {
-                task_id = Some(params.id.clone());
-                (A2aParams::TasksGet(params), InvocationKind::Invoke)
+                let task_id = params.id.clone();
+                let context_id = context::generate_context_id();
+                let message_id = MessageId::from_external(ExternalId::new(format!(
+                    "tasks.get-{}",
+                    task_id.as_str()
+                )));
+                let scope = RequestScope::TaskScoped {
+                    context_id,
+                    message_id,
+                    task_id,
+                };
+                (A2aParams::TasksGet(params), InvocationKind::Invoke, scope)
             }
             A2aWireMethod::TasksList { params } => {
                 let params: ListTasksRequest = params.into();
-                context_id = params.context_id.clone();
-                (A2aParams::TasksList(params), InvocationKind::Invoke)
+                let context_id = params
+                    .context_id
+                    .clone()
+                    .unwrap_or_else(context::generate_context_id);
+                let message_id =
+                    MessageId::from_external(ExternalId::new("tasks.list".to_string()));
+                let scope = RequestScope::MessageScoped {
+                    context_id,
+                    message_id,
+                };
+                (A2aParams::TasksList(params), InvocationKind::Invoke, scope)
             }
             A2aWireMethod::TasksSubscribe { params } => {
                 let stream_flag = params.stream.unwrap_or(false);
                 let request: SubscribeToTaskRequest = params.into();
-                task_id = Some(request.id.clone());
+                let task_id = request.id.clone();
+                let context_id = context::generate_context_id();
+                let message_id = MessageId::from_external(ExternalId::new(format!(
+                    "tasks.subscribe-{}",
+                    task_id.as_str()
+                )));
+                let scope = RequestScope::TaskScoped {
+                    context_id,
+                    message_id,
+                    task_id,
+                };
                 (
                     A2aParams::TasksSubscribe(request),
                     InvocationKind::from(stream_flag),
+                    scope,
                 )
             }
         };
@@ -105,14 +143,25 @@ impl A2aRequest {
             id,
             params,
             invocation,
-            context_id,
-            message_id,
-            task_id,
+            resolved_scope,
         })
     }
 
     pub fn correlation_id(&self) -> Option<String> {
         self.id.as_ref().map(id_to_string)
+    }
+
+    pub fn context_id(&self) -> &ContextId {
+        self.resolved_scope.context_id()
+    }
+
+    pub fn message_id(&self) -> &MessageId {
+        self.resolved_scope.message_id()
+    }
+
+    /// Task id when request is task-scoped (resume, tasks.get, tasks.subscribe).
+    pub fn task_id_opt(&self) -> Option<&TaskId> {
+        self.resolved_scope.task_id_opt()
     }
 
     pub fn method(&self) -> A2aMethod {
@@ -124,10 +173,23 @@ impl A2aRequest {
     }
 }
 
+/// Receiver for incremental stream chunks: (normalized_chunk, index, completion).
+pub type StreamReceiver = mpsc::Receiver<(Value, usize, Option<StreamCompletion>)>;
+
+/// Handle for a stream outcome: receiver for chunks and optional resume sender for true resume
+/// (live sessions that suspend on InputRequired). When present, transport sends the next turn
+/// request on `resume_tx` instead of starting a new invocation.
+#[derive(Debug)]
+pub struct StreamHandle {
+    pub receiver: StreamReceiver,
+    /// When present, next message for same context_id is sent here to resume the same JS run.
+    pub resume_tx: Option<mpsc::Sender<Value>>,
+}
+
 #[derive(Debug)]
 pub enum A2aOutcome {
     Response(Value),
-    Stream(StreamResult),
+    Stream(StreamHandle),
 }
 
 #[derive(Debug, Clone)]
@@ -443,10 +505,23 @@ impl JsChunkNormalizer {
 
 /// Value passed to JS handler. For message.sendStream we pass parts and routing
 /// identifiers so JS session keys can resume the correct conversation.
+/// Includes messageId so agents can emit task ids that align with the request (e.g. task-{messageId})
+/// and tasks.subscribe can resolve the same task.
 pub fn request_to_js_value(request: &A2aRequest) -> Result<Value> {
     match request.params.as_send_message() {
         Some(params) => {
             let mut obj = serde_json::Map::new();
+            obj.insert(
+                "messageId".to_string(),
+                Value::String(
+                    params
+                        .message
+                        .message_id
+                        .as_message_id()
+                        .as_str()
+                        .to_string(),
+                ),
+            );
             obj.insert("parts".to_string(), json!(params.message.parts));
             if let Some(ref cid) = params.message.context_id {
                 obj.insert(
@@ -638,8 +713,33 @@ mod tests {
         result.get("chunk").cloned().unwrap_or(result)
     }
 
+    /// From a stream of responses, return the first chunk that contains a message (result.chunk.message).
+    /// Streams may include status updates (SUBMITTED, WORKING) before message chunks; this test
+    /// asserts the assistant's first message content (e.g. "hi Ada").
+    fn expect_first_message_chunk(responses: Vec<Value>) -> Value {
+        let response = responses
+            .into_iter()
+            .find(|r| {
+                r.get("error").is_none()
+                    && r.get("result")
+                        .and_then(|res| res.get("chunk").or(Some(res)))
+                        .and_then(|c| c.get("message"))
+                        .is_some()
+            })
+            .expect("stream should include a chunk with message");
+        let result = response.get("result").cloned().expect("missing result");
+        result.get("chunk").cloned().unwrap_or(result)
+    }
+
     async fn collect_responses(agent: &A2aAgent, request: Value) -> Result<Vec<Value>> {
-        Ok(baml_rt_core::collect_a2a_stream(agent.handle_a2a_stream(request).await?).await)
+        let stream = agent
+            .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(request))
+            .await?;
+        let chunks = baml_rt_core::collect_a2a_stream(stream).await;
+        Ok(chunks
+            .into_iter()
+            .map(baml_rt_core::A2aStreamChunk::into_inner)
+            .collect())
     }
 
     fn user_message(message_id: &str, text: &str) -> Message {
@@ -693,7 +793,7 @@ mod tests {
         let responses = collect_responses(&agent, request_value)
             .await
             .expect("a2a handle");
-        let result = expect_success_result(responses);
+        let result = expect_first_message_chunk(responses);
         let message = result
             .get("message")
             .and_then(Value::as_object)
@@ -911,7 +1011,7 @@ mod tests {
         assert!(any_final, "stream should include a final chunk");
     }
 
-    /// Tasks.get/list after message.sendStream: task must be persisted when agent yields a task chunk.
+    /// tasks.get and tasks.list must see a task created by message.sendStream (live path).
     #[tokio::test]
     async fn test_tasks_get_list_cancel() {
         timeout(
@@ -993,7 +1093,7 @@ mod tests {
         );
     }
 
-    /// tasks.subscribe stream must include a final chunk after task creation.
+    /// tasks.subscribe stream must include a final chunk; task must be persisted after message.sendStream.
     #[tokio::test]
     async fn test_tasks_subscribe_stream() {
         timeout(
@@ -1107,7 +1207,7 @@ mod tests {
             obj.contains_key("parts"),
             "JS payload should always include 'parts'"
         );
-        let allowed = ["parts", "contextId", "taskId"];
+        let allowed = ["parts", "contextId", "taskId", "messageId"];
         assert!(obj.keys().all(|k| allowed.contains(&k.as_str())));
     }
 
@@ -1136,11 +1236,8 @@ mod tests {
         let parsed = A2aRequest::from_value(request_json).expect("parse request");
         assert_eq!(parsed.method(), A2aMethod::MessageSendStream);
         assert_eq!(parsed.invocation, InvocationKind::Stream);
-        assert_eq!(
-            parsed.context_id.as_ref().map(|c| c.as_str()),
-            Some("ctx-42"),
-        );
-        assert!(parsed.message_id.is_some());
+        assert_eq!(parsed.context_id().as_str(), "ctx-42");
+        assert!(!parsed.message_id().as_str().is_empty());
     }
 
     #[test]

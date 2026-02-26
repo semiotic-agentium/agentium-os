@@ -35,8 +35,12 @@ pub fn render_a2a_shim() -> Result<String> {
  * Defaults: missing text part yields ""; rejected promise is treated as { error: err.message }.
  */
 (function () {
+  var __chat_yield_host = globalThis.__chat_yield;
   globalThis.__chat_yield = function (chunk) {
-    if (globalThis.__chat_yield_buffer) globalThis.__chat_yield_buffer.push(chunk);
+    if (typeof __chat_yield_host !== "function") {
+      throw new Error("__chat_yield host sink is not installed");
+    }
+    __chat_yield_host(chunk);
   };
 
   function newMessage(text) {
@@ -74,13 +78,18 @@ pub fn render_a2a_shim() -> Result<String> {
     globalThis.__chat_yield({ artifactUpdate: { artifact: artifact, append: !!append, lastChunk: !!lastChunk } });
   }
 
-  function sessionKey(message) {
+  function sessionKeys(message) {
+    var keys = [];
     if (message && typeof message === 'object') {
-      if (typeof message.taskId === 'string' && message.taskId.length > 0) return "task:" + message.taskId;
-      if (message.task && typeof message.task.id === 'string' && message.task.id.length > 0) return "task:" + message.task.id;
-      if (typeof message.contextId === 'string' && message.contextId.length > 0) return "ctx:" + message.contextId;
+      if (typeof message.taskId === 'string' && message.taskId.length > 0) keys.push("task:" + message.taskId);
+      if (message.task && typeof message.task.id === 'string' && message.task.id.length > 0) {
+        var taskKey = "task:" + message.task.id;
+        if (keys.indexOf(taskKey) < 0) keys.push(taskKey);
+      }
+      if (typeof message.contextId === 'string' && message.contextId.length > 0) keys.push("ctx:" + message.contextId);
     }
-    return "__default__";
+    if (keys.length === 0) keys.push("__default__");
+    return keys;
   }
 
   var pendingInputResolvers = new Map();
@@ -101,13 +110,20 @@ pub fn render_a2a_shim() -> Result<String> {
   }
 
   function session(message) {
-    var key = sessionKey(message);
+    var keys = sessionKeys(message);
     var routedToPendingInput = false;
-    if (pendingInputResolvers.has(key)) {
-      var resolvePending = pendingInputResolvers.get(key);
-      pendingInputResolvers.delete(key);
-      resolvePending(messageWithText(message));
-      routedToPendingInput = true;
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      if (pendingInputResolvers.has(key)) {
+        var resolvePending = pendingInputResolvers.get(key);
+        // Delete all aliases for this session so future turns do not double-resolve.
+        for (var j = 0; j < keys.length; j++) {
+          pendingInputResolvers.delete(keys[j]);
+        }
+        resolvePending(messageWithText(message));
+        routedToPendingInput = true;
+        break;
+      }
     }
     var onCompletedCb = null;
     var onFailedCb = null;
@@ -124,7 +140,9 @@ pub fn render_a2a_shim() -> Result<String> {
           awaitInput: function (prompt) {
             emitInputRequired(prompt);
             return new Promise(function (resolve) {
-              pendingInputResolvers.set(key, resolve);
+              for (var i = 0; i < keys.length; i++) {
+                pendingInputResolvers.set(keys[i], resolve);
+              }
             });
           }
         };

@@ -7,6 +7,7 @@
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
 export interface SystemDiscover_toolsSessionPlan { steps: SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsNextStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep[];
+reason: string | null;
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */

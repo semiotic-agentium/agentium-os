@@ -77,7 +77,7 @@ impl QuickJSBridge {
 
         // Register a JS-callable wrapper per tool so each tool name is available as a function
         tracing::debug!("register_tool_functions: baml_manager lock start");
-        let tool_names = timeout(Duration::from_secs(10), async {
+        let tool_names = timeout(Duration::from_secs(15), async {
             let manager = self.baml_manager.lock().await;
             manager.list_tools().await
         })
@@ -115,7 +115,7 @@ impl QuickJSBridge {
         );
 
         let script = Script::new("register_tool.js", &js_code);
-        timeout(Duration::from_secs(5), self.runtime.eval(None, script))
+        timeout(Duration::from_secs(15), self.runtime.eval(None, script))
             .await
             .map_err(|_| {
                 BamlRtError::QuickJs(

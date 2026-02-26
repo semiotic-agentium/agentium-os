@@ -2,6 +2,8 @@
 
 use std::{ffi::OsStr, fs, path::Path};
 
+use baml_rt_tools::get_session_coordination_baml_for_tools;
+
 use crate::builder::{
     a2a_shim_gen::render_a2a_shim,
     baml_gen::render_baml_tool_interfaces,
@@ -162,21 +164,34 @@ impl TypeGenerator for RuntimeTypeGenerator {
 
         use baml_runtime::BamlRuntime;
 
-        // Generate BAML tool interfaces (committed in repo; regen_fixtures runs periodically to match manifest).
-        // Uses atomic write (write tmp + rename) so concurrent nextest processes never
-        // read a half-written file.
+        // Generate BAML tool interfaces into build_dir/baml_src so the packaged baml_src
+        // contains them (packager adds build_dir/baml_src to the tar).
+        // When build_dir/baml_src does not exist (e.g. bootstrap), copy source baml_src so the runtime can load it.
+        let baml_src_build = build_dir.join("baml_src");
+        if !baml_src_build.exists() {
+            copy_dir_all_impl(baml_src, &baml_src_build)?;
+        }
         let tool_names = load_manifest_tools(baml_src)?;
         if !tool_names.is_empty() {
             let baml_interfaces = render_baml_tool_interfaces(&tool_names)?;
-            let baml_output_path = baml_src.join("generated_tools.baml");
+            let baml_output_path = baml_src_build.join("generated_tools.baml");
+            if let Some(parent) = baml_output_path.parent() {
+                fs::create_dir_all(parent).map_err(BamlBuilderError::Io)?;
+            }
             atomic_write(&baml_output_path, baml_interfaces.as_bytes())?;
+
+            // Emit session coordination BAML from tool crates that registered a provider (e.g. claude/dev).
+            if let Some(coord_baml) = get_session_coordination_baml_for_tools(&tool_names)? {
+                let coord_path = baml_src_build.join("generated_session_coordination.baml");
+                atomic_write(&coord_path, coord_baml.as_bytes())?;
+            }
         }
 
-        // Load BAML runtime to discover functions (after generating BAML interfaces)
+        // Load BAML runtime from build_dir/baml_src (has generated_tools.baml, and optionally generated_session_coordination.baml) to discover functions
         let env_vars: HashMap<String, String> = HashMap::new();
         let feature_flags = internal_baml_core::feature_flags::FeatureFlags::default();
 
-        let runtime = BamlRuntime::from_directory(baml_src, env_vars, feature_flags)
+        let runtime = BamlRuntime::from_directory(&baml_src_build, env_vars, feature_flags)
             .map_err(|e| BamlBuilderError::RuntimeLoadFailed { source: e })?;
 
         // Typed signatures from IR (no BAML source parsing); TS emitter gets IR + tool names so
@@ -201,6 +216,21 @@ impl TypeGenerator for RuntimeTypeGenerator {
 
         Ok(())
     }
+}
+
+fn copy_dir_all_impl(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst).map_err(BamlBuilderError::Io)?;
+    for entry in fs::read_dir(src).map_err(BamlBuilderError::Io)? {
+        let entry = entry.map_err(BamlBuilderError::Io)?;
+        let path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if path.is_dir() {
+            copy_dir_all_impl(&path, &dst_path)?;
+        } else {
+            fs::copy(&path, &dst_path).map_err(BamlBuilderError::Io)?;
+        }
+    }
+    Ok(())
 }
 
 /// Write `data` to a temporary file in the same directory, then atomically rename

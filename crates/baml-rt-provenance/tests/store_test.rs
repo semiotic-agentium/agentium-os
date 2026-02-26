@@ -1,28 +1,26 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use baml_rt_core::{
     Outcome,
     ids::{AgentId, ArtifactId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentType, GraphExporter, GraphqliteProvenanceStore, GraphqliteStoreBuilder, LlmUsage,
-    ProvEvent, ProvenanceWriter,
+    AgentType, GraphExporter, GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvenanceWriter,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
     normalize_event,
 };
 use insta::assert_snapshot;
 use serde_json::json;
-use tempfile::TempDir;
 
-/// Use a unique file-backed store per test. `in_memory()` is a shared singleton and causes
-/// cross-test contamination when this test file runs in parallel.
-fn build_isolated_store() -> (Arc<GraphqliteProvenanceStore>, TempDir) {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("provenance.db");
-    let store = GraphqliteStoreBuilder::file(path)
+fn build_isolated_store(test_name: &str) -> Arc<baml_rt_provenance::GraphqliteProvenanceStore> {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after epoch")
+        .as_nanos();
+    let db_path: PathBuf = std::env::temp_dir().join(format!("prov-{test_name}-{unique}.db"));
+    GraphqliteStoreBuilder::file(&db_path)
         .build()
-        .expect("build store");
-    (store, dir)
+        .expect("build isolated file-backed store")
 }
 
 #[tokio::test]
@@ -48,13 +46,13 @@ async fn test_normalize_event_snapshot_for_tool_call_started() {
         "normalized tool call must include USED relation with role a2a:args"
     );
 
-    let (store, _tmp_dir) = build_isolated_store();
+    let store = build_isolated_store("normalize-event");
     store.add_event(event).await.expect("persist event");
 }
 
 #[tokio::test]
 async fn test_snapshot_exemplary_mermaid_agent_flow() {
-    let (store, _tmp_dir) = build_isolated_store();
+    let store = build_isolated_store("exemplary-agent-flow");
 
     let context_id = ContextId::new(1_771_470_000_000, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-sequence-1"));
@@ -159,7 +157,7 @@ async fn test_snapshot_exemplary_mermaid_agent_flow() {
 
 #[tokio::test]
 async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
-    let (store, _tmp_dir) = build_isolated_store();
+    let store = build_isolated_store("multiturn-lifecycle");
 
     let context_id = ContextId::new(1_771_470_111_000, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-lifecycle-1"));

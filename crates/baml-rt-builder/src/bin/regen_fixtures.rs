@@ -5,6 +5,8 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use baml_rt_builder::builder::{BuildDir, RuntimeTypeGenerator, TypeGenerator};
+use baml_rt_tools_claude as _; // Force link so claude tool metadata is in inventory
+use baml_tools_system as _; // Force link so system tool metadata is in inventory
 
 fn agents_dir() -> Result<PathBuf> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

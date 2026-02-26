@@ -18,11 +18,10 @@ use crate::builder::{
 pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     // Force link so inventory sees these metadata registrations (regen_fixtures + builder).
     let _ = baml_tools_calculator::support_calculate_metadata;
+    let _ = baml_rt_tools_claude::metadata::claude_dev_metadata;
     let _ = baml_tools_system::metadata::system_internal_a2a_metadata;
     #[cfg(feature = "clickup")]
     let _ = baml_tools_clickup::clickup_metadata;
-    #[cfg(feature = "memory")]
-    let _ = baml_tools_memory::metadata::memory_add_metadata;
     #[cfg(feature = "notion")]
     let _ = baml_tools_notion::notion_metadata;
     let tool_metadata = resolve_manifest_tools(tool_names)?;
@@ -305,6 +304,10 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
             "  steps {}[] @description(\"Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Runtime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Example: [{{op: \\\"Open\\\"}}, {{op: \\\"Send\\\", input: {{...}}}}, {{op: \\\"Next\\\"}}, {{op: \\\"Finish\\\"}}].{}\")",
             step_union_name, access_note
         ),
+    )?;
+    write_line(
+        output,
+        "  reason string? @description(\"Optional plan-level intent or rationale. Logged when plan is rejected (e.g. empty steps).\")",
     )?;
     write_line(output, "}")?;
 

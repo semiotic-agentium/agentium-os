@@ -1,8 +1,7 @@
 //! Stream invocation and yield buffer for A2A.
 //!
-//! **Invariants:** See `docs/HOST_QUICKJS_STREAM_INVARIANTS.md` for the full invariant analysis,
-//! including single-active-stream (S1), host-only session identity (S2), per-session channel (S3–S4),
-//! and coordination via globalThis only (S5).
+//! **Invariants:** See `README.md` in this crate for the canonical stream architecture and
+//! host-authoritative routing invariants.
 
 use std::sync::{
     Arc,
@@ -17,7 +16,10 @@ use serde_json::Value;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio_util::sync::CancellationToken;
 
-use super::{QuickJSBridge, StreamInvocationSession, StreamSessionId, scope::ClearPolicy};
+use super::{
+    QuickJSBridge, StreamInvocationSession, StreamSessionId,
+    scope::{ClearPolicy, resolve_scope_from_active_context},
+};
 
 /// What a single drain of the yield channel observed. Bridge exposes; collector interprets.
 #[derive(Debug)]
@@ -29,16 +31,19 @@ pub struct BufferDrain {
 
 impl QuickJSBridge {
     /// Current number of in-flight `__baml_invoke` / `__baml_stream` async bodies.
+    /// Reserved for diagnostics and future effect-gated behaviour (e.g. optional backpressure).
+    #[allow(dead_code)] // reserved for diagnostics; not yet used in production path
     pub(crate) fn in_flight_invoke_count(&self) -> u32 {
         self.in_flight_invoke_count.load(Ordering::Acquire)
     }
 
-    /// Register the host `__baml_chat_yield_host(chunk_json)`. Session is resolved in the host
-    /// from `current_stream_session_id_slot`; no host state (e.g. session id) is passed from JS.
+    /// Register the host `__baml_chat_yield_host(chunk_json)`.
+    /// Session is resolved from the active QuickJS invocation context.
     /// Called once from `new_with_config`.
     pub(crate) async fn register_chat_yield_host(&mut self) -> Result<()> {
-        let current_slot = self.current_stream_session_id_slot.clone();
         let tx_by_session = self.a2a_yield_tx_by_session.clone();
+        let stream_sessions = self.stream_sessions.clone();
+        let invocation_context_registry = self.invocation_context_registry.clone();
         self.runtime
             .set_function(
                 &[],
@@ -55,25 +60,77 @@ impl QuickJSBridge {
                         ));
                     }
                     let chunk_json = args[0].get_str().to_string();
-                    let value: Value = serde_json::from_str(&chunk_json).map_err(|e| {
-                        quickjs_runtime::jsutils::JsError::new_str(&format!(
-                            "Invalid yield JSON: {}",
-                            e
-                        ))
+                    let mut value: Value = serde_json::from_str(&chunk_json).map_err(|e| {
+                        quickjs_runtime::jsutils::JsError::new_str(&format!("Invalid yield JSON: {}", e))
                     })?;
-                    let session_id = current_slot.lock().ok().and_then(|g| *g);
-                    if let Some(sid) = session_id {
+
+                    // Resolve routing from host-owned state only: explicit __session tag first,
+                    // then active invocation scope + stream session map.
+                    let context_session_id = value
+                        .get("__session")
+                        .and_then(|v| v.as_u64())
+                        .map(StreamSessionId)
+                        .or_else(|| {
+                            resolve_scope_from_active_context(&invocation_context_registry)
+                                .ok()
+                                .and_then(|scope| {
+                                    stream_sessions.lock().ok().and_then(|guard| {
+                                        guard.iter().find_map(|(sid, session)| {
+                                            (!session.is_terminated() && session.scope == scope)
+                                                .then_some(*sid)
+                                        })
+                                    })
+                                })
+                        });
+
+                    if value.get("__session").is_some()
+                        && let Some(obj) = value.as_object_mut()
+                    {
+                        obj.remove("__session");
+                    }
+
+                    tracing::trace!(chunk_json = %chunk_json, "yield raw");
+
+                    if let Some(sid) = context_session_id {
+                        if std::env::var("BAML_STREAM_DEBUG").is_ok() {
+                            eprintln!("stream_yield_route: routed session={sid}");
+                        }
                         let guard = tx_by_session.lock().map_err(|_| {
                             quickjs_runtime::jsutils::JsError::new_str(
                                 "a2a_yield_tx_by_session lock poisoned",
                             )
                         })?;
-                        if let Some(tx) = guard.get(&sid) && tx.send(value).is_err() {
-                            tracing::debug!(
+                        if let Some(tx) = guard.get(&sid) {
+                            if tx.send(value).is_err() {
+                                tracing::debug!(
+                                    %sid,
+                                    "Yield channel receiver dropped; stream consumer likely closed"
+                                );
+                            }
+                        } else {
+                            tracing::warn!(
                                 %sid,
-                                "Yield channel receiver dropped; stream consumer likely closed"
+                                "yield host: session not found in active route map"
                             );
                         }
+                    } else {
+                        if std::env::var("BAML_STREAM_DEBUG").is_ok() {
+                            let scope = resolve_scope_from_active_context(&invocation_context_registry)
+                                .ok()
+                                .map(|scope| format!("{:?}", scope));
+                            let in_flight_sessions = stream_sessions
+                                .lock()
+                                .ok()
+                                .map(|guard| guard.len())
+                                .unwrap_or(0);
+                            eprintln!(
+                                "stream_yield_route: no active session; scope={scope:?}; in_flight={in_flight_sessions}; chunk={chunk_json}"
+                            );
+                        }
+                        tracing::warn!(
+                            chunk_json = %chunk_json,
+                            "yield host: no active session for routing"
+                        );
                     }
                     Ok(JsValueFacade::Undefined)
                 },
@@ -82,30 +139,32 @@ impl QuickJSBridge {
                 context: "Failed to register __baml_chat_yield_host".to_string(),
                 source: Box::new(e),
             })?;
-        Ok(())
-    }
 
-    /// Set up for stream requests. With per-session yield channels, this is a no-op;
-    /// each stream creates its own channel in `start_stream_session`.
-    ///
-    /// **Liveness:** □(this returns Ok → ◇(invoke then collect/finalize for that stream)).
-    /// Use [`a2a_stream::begin_a2a_yield_session`] for a type-safe sequence.
-    pub async fn setup_a2a_yield_buffer(&mut self) -> Result<()> {
+        let install_code = Script::new(
+            "install_chat_yield.js",
+            r#"(function() {
+                globalThis.__chat_yield = function(chunk) {
+                    __baml_chat_yield_host(JSON.stringify(chunk));
+                };
+            })()"#,
+        );
+        self.runtime.eval(None, install_code).await.map_err(|e| {
+            BamlRtError::QuickJsWithSource {
+                context: "Failed to install __chat_yield bridge".to_string(),
+                source: Box::new(e),
+            }
+        })?;
         Ok(())
     }
 
     /// Drain the yield buffer for one stream. Call in a loop from the collector.
     ///
-    /// **INVARIANT (stream progress):** Before every drain, we run pending JS jobs once
-    /// so async stream continuations can produce chunks.
+    /// **INVARIANT (stream progress):** Callers are responsible for running pending JS jobs
+    /// at the same phase boundary before each drain so lock ownership stays minimal.
     pub async fn drain_yield_buffer(
         &mut self,
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<Value>,
     ) -> Result<BufferDrain> {
-        self.runtime.exe_rt_task_in_event_loop(|rt| {
-            rt.run_pending_jobs_if_any();
-        });
-
         let mut chunks = Vec::new();
         let mut channel_closed = false;
         loop {
@@ -125,12 +184,43 @@ impl QuickJSBridge {
         })
     }
 
+    /// Advance QuickJS pending work without draining the yield receiver.
+    ///
+    /// Keep this separated from [`drain_yield_buffer`] to allow callers to control lock scope.
+    #[inline]
+    pub(crate) fn advance_pending_jobs(&self) {
+        self.runtime.exe_rt_task_in_event_loop(|rt| {
+            rt.run_pending_jobs_if_any();
+        });
+    }
+
     /// Finalize a stream invocation after chunk collection completes.
     ///
-    /// **Lifecycle:** Close session, exit its LIFO context, remove session (drops permit)
-    /// and its yield sender. Restore global JS helpers only when no streams remain.
+    /// **Lifecycle:** Close session, teardown tool sessions for this context, exit its LIFO
+    /// context, remove session (drops permit) and its yield sender. Restore global JS helpers
+    /// only when no streams remain.
     pub(crate) async fn finalize_a2a_stream_invocation(&mut self, session_id: StreamSessionId) {
-        // --- 1. Close + cancel session ---
+        // --- 1. Resolve runtime context_id for teardown (read-only; don't close session yet) ---
+        let invocation_context_id = self
+            .stream_sessions
+            .lock()
+            .ok()
+            .and_then(|g| g.get(&session_id).and_then(|s| s.context_id.clone()));
+        let runtime_context_id = invocation_context_id.as_ref().and_then(|id| {
+            self.invocation_context_registry
+                .lock()
+                .ok()
+                .and_then(|reg| reg.get_context_id(id))
+        });
+
+        // --- 2. Drain event-loop pending jobs so any __baml_invoke (and other) continuations
+        // run while the context and session are still valid. Context is non-nullable; we must
+        // not close or exit until the runtime has processed queued work for this stream.
+        // Run on current thread; runtime is not necessarily Arc in all builds.
+        self.runtime
+            .exe_rt_task_in_event_loop(|r| r.run_pending_jobs_if_any());
+
+        // --- 3. Close + cancel session (only after drain so natives see valid session) ---
         if let Ok(guard) = self.stream_sessions.lock()
             && let Some(session) = guard.get(&session_id)
         {
@@ -138,26 +228,27 @@ impl QuickJSBridge {
             session.cancel.cancel();
         }
 
-        // --- 2. Exit this session's LIFO context (before removing session) ---
-        let context_id = self
-            .stream_sessions
-            .lock()
-            .ok()
-            .and_then(|g| g.get(&session_id).and_then(|s| s.context_id.clone()));
-        if let Some(ref id) = context_id
+        // --- 4. Close all tool sessions for this context (deterministic teardown, no leak) ---
+        if let Some(ref cid) = runtime_context_id {
+            let mgr = self.baml_manager.lock().await;
+            if let Err(e) = mgr.close_sessions_for_context(cid).await {
+                tracing::warn!(
+                    error = %e,
+                    %session_id,
+                    context_id = %cid,
+                    "finalize_a2a_stream_invocation: close_sessions_for_context failed, continuing teardown"
+                );
+            }
+        }
+
+        // --- 5. Exit this session's LIFO context (before removing session) ---
+        if let Some(ref id) = invocation_context_id
             && let Ok(mut reg) = self.invocation_context_registry.lock()
         {
             reg.exit(id);
         }
 
-        // --- 3. Clear host-only current stream slot so no further yields route here ---
-        if let Ok(mut slot) = self.current_stream_session_id_slot.lock()
-            && *slot == Some(session_id)
-        {
-            *slot = None;
-        }
-
-        // --- 4. Remove session (drops permit) and yield sender ---
+        // --- 6. Remove session (drops permit) and yield sender ---
         if let Ok(mut guard) = self.stream_sessions.lock() {
             guard.remove(&session_id);
         }
@@ -166,68 +257,9 @@ impl QuickJSBridge {
         }
         tracing::debug!(%session_id, "finalize_a2a_stream_invocation: session closed and removed");
 
-        // --- 5. Restore global JS helpers only when no streams remain ---
-        let should_restore = self
-            .stream_sessions
-            .lock()
-            .map(|g| g.is_empty())
-            .unwrap_or(false);
-        if should_restore {
-            let restore_code = r#"
-                (function() {
-                    if (typeof __orig_baml_invoke !== 'undefined') {
-                        globalThis.__baml_invoke = __orig_baml_invoke;
-                        globalThis.__baml_stream = __orig_baml_stream;
-                        globalThis.__tool_invoke = __orig_tool_invoke;
-                        globalThis.__tool_from_baml_result = __orig_tool_from_baml_result;
-                        globalThis.__tool_session_open = __orig_tool_session_open;
-                        globalThis.__tool_session_send = __orig_tool_session_send;
-                        globalThis.__tool_session_next = __orig_tool_session_next;
-                        globalThis.__tool_session_finish = __orig_tool_session_finish;
-                        globalThis.__tool_session_abort = __orig_tool_session_abort;
-                        delete globalThis.__orig_baml_invoke;
-                        delete globalThis.__orig_baml_stream;
-                        delete globalThis.__orig_tool_invoke;
-                        delete globalThis.__orig_tool_from_baml_result;
-                        delete globalThis.__orig_tool_session_open;
-                        delete globalThis.__orig_tool_session_send;
-                        delete globalThis.__orig_tool_session_next;
-                        delete globalThis.__orig_tool_session_finish;
-                        delete globalThis.__orig_tool_session_abort;
-                    }
-                })()
-            "#;
-            let script = Script::new("restore_globals.js", restore_code);
-            if let Err(e) = self.runtime.eval(None, script).await {
-                tracing::error!(
-                    error = ?e,
-                    "finalize_a2a_stream_invocation: primary JS global restore failed, \
-                     attempting minimal fallback"
-                );
-                let fallback = r#"
-                    (function() {
-                        try {
-                            delete globalThis.__orig_baml_invoke;
-                            delete globalThis.__orig_baml_stream;
-                            delete globalThis.__orig_tool_invoke;
-                            delete globalThis.__orig_tool_from_baml_result;
-                            delete globalThis.__orig_tool_session_open;
-                            delete globalThis.__orig_tool_session_send;
-                            delete globalThis.__orig_tool_session_next;
-                            delete globalThis.__orig_tool_session_finish;
-                            delete globalThis.__orig_tool_session_abort;
-                        } catch(e) { /* best effort */ }
-                    })()
-                "#;
-                let fallback_script = Script::new("restore_globals_fallback.js", fallback);
-                if let Err(e2) = self.runtime.eval(None, fallback_script).await {
-                    tracing::error!(
-                        error = ?e2,
-                        "finalize_a2a_stream_invocation: fallback JS cleanup also failed"
-                    );
-                }
-            }
-        }
+        // Do NOT restore or remove global JS helpers (__baml_invoke, __baml_stream, etc.).
+        // Multiple agents share the same QuickJS engine; globals are process-wide and must
+        // not be touched when one stream finalizes.
     }
 
     /// Invoke a JavaScript function for streaming (yield-based) requests.
@@ -282,8 +314,8 @@ impl QuickJSBridge {
     /// Fallible body of [`invoke_js_function_stream`]: allocates the session, enters
     /// the LIFO context, overrides JS globals, and kicks off the stream function.
     ///
-    /// On success the stream is running and the caller collects chunks via
-    /// `get_a2a_yield_buffer`. On error the caller must call
+    /// On success the stream is running and the caller drains yielded chunks via
+    /// `collect_into_channel_owned`. On error the caller must call
     /// `finalize_a2a_stream_invocation` to roll back partial state.
     async fn start_stream_session(
         &mut self,
@@ -304,6 +336,16 @@ impl QuickJSBridge {
             guard.enter(scope.as_scope().clone(), correlation_id.clone())
         };
 
+        // Pre-build conversation context tags for resume (stream path). Hold lock only for the async call.
+        let context_tags = self
+            .baml_manager
+            .lock()
+            .await
+            .build_conversation_context_tags(scope.as_scope())
+            .await
+            .ok()
+            .flatten();
+
         let session = Arc::new(StreamInvocationSession {
             id: session_id,
             scope: scope.as_scope().clone(),
@@ -312,6 +354,7 @@ impl QuickJSBridge {
             closed: AtomicBool::new(false),
             permit: Some(permit),
             context_id: Some(context_id),
+            context_tags,
         });
         {
             let mut guard = self.stream_sessions.lock().map_err(|_| {
@@ -329,9 +372,6 @@ impl QuickJSBridge {
                 "a2a_yield_tx_by_session lock poisoned".to_string(),
             ));
         }
-        if let Ok(mut slot) = self.current_stream_session_id_slot.lock() {
-            *slot = Some(session_id);
-        }
         tracing::debug!(
             context_id = %scope.context_id(),
             %session_id,
@@ -340,19 +380,31 @@ impl QuickJSBridge {
         );
 
         let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
+        let session_id_num = session_id.0;
 
-        // Coordination via globalThis only: wire __chat_yield to host. No host state in JS.
         let js_code = format!(
             r#"
             (function() {{
+                const sid = {session_id_num};
                 try {{
-                    globalThis.__chat_yield = function(chunk) {{ __baml_chat_yield_host(JSON.stringify(chunk)); }};
                     const args = {args_json};
+                    if (Array.isArray(args) && args[0] && typeof args[0] === 'object') {{
+                        args[0] = Object.assign({{}}, args[0], {{ __session: sid }});
+                    }} else if (args && typeof args === 'object' && !Array.isArray(args)) {{
+                        Object.assign(args, {{ __session: sid }});
+                    }}
                     const func = globalThis["{function_name}"];
                     if (func === undefined || typeof func !== 'function') {{
                         throw new Error("JS function not found: {function_name}");
                     }}
-                    func(args).catch(function(e) {{
+                    function wrapSession(p) {{
+                        if (!p || typeof p.then !== 'function') return p;
+                        return p.then(
+                            function(v) {{ return wrapSession(v); }},
+                            function(e) {{ throw e; }}
+                        );
+                    }}
+                    const p = func(args).catch(function(e) {{
                         var msg = String(e);
                         if (msg.indexOf('invocation context') >= 0 ||
                             msg.indexOf('cancelled') >= 0 ||
@@ -361,12 +413,16 @@ impl QuickJSBridge {
                             throw e;
                         }}
                     }});
-                    return JSON.stringify({{ success: true }});
+                    return wrapSession(p).then(
+                        function() {{ return JSON.stringify({{ success: true }}); }},
+                        function(e) {{ return JSON.stringify({{ error: e.message || String(e) }}); }}
+                    );
                 }} catch (error) {{
                     return JSON.stringify({{ error: error.message || String(error) }});
                 }}
             }})()
             "#,
+            session_id_num = session_id_num,
             args_json = args_json,
             function_name = function_name,
         );

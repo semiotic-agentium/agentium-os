@@ -47,6 +47,10 @@ pub trait ConversationContextProvider: Send + Sync {
     /// Return conversation-history payload for the current runtime scope.
     ///
     /// The payload is injected as `ctx.tags.conversation_history` in BAML templates.
+    /// Provider is called with the runtime scope of the current invocation. For resume,
+    /// scope must be TaskScoped with the session's `context_id` so history includes
+    /// prior turns. Used in both stream and non-stream paths when conversation context
+    /// is injected.
     async fn conversation_history_json(
         &self,
         scope: &context::RuntimeScope,
@@ -358,24 +362,25 @@ impl BamlExecutor {
 
     /// Execute a BAML function with streaming support
     ///
-    /// Returns a stream of incremental results as the function executes.
+    /// Returns a stream and the context manager used to create it. Caller must pass the same
+    /// ctx_manager to `stream.run(..., ctx_manager, ...)` so the stream can complete.
+    /// Pass `context_tags` (e.g. from `build_conversation_context_tags`) for resume so BAML sees prior turns.
     pub fn execute_function_stream(
         &self,
         scope: &context::RuntimeScope,
         function_name: &str,
         args: Value,
-    ) -> Result<FunctionResultStream> {
+        context_tags: Option<HashMap<String, BamlValue>>,
+    ) -> Result<(FunctionResultStream, RuntimeContextManager)> {
         tracing::debug!(
             function = function_name,
             args = ?args,
+            has_context_tags = context_tags.as_ref().map_or(0, |m| m.len()) > 0,
             "Starting streaming execution of BAML function"
         );
 
         // Convert JSON args to BamlValue map
         let params = self.json_to_baml_map(&args)?;
-        // Streaming path remains unchanged for now; conversation history is injected for
-        // non-streaming BAML invocations used by the fixture agent/e2e flow.
-        let context_tags = None;
         let ctx_manager = self.create_ctx_manager_for_scope(scope, context_tags)?;
 
         // Create stream function call
@@ -407,7 +412,7 @@ impl BamlExecutor {
             )
             .map_err(|e| BamlRtError::BamlRuntime(format!("Failed to create stream: {}", e)))?;
 
-        Ok(stream)
+        Ok((stream, ctx_manager))
     }
 
     /// Create a context manager tied to an explicit runtime scope.
@@ -429,7 +434,9 @@ impl BamlExecutor {
         Ok(ctx_manager)
     }
 
-    async fn build_conversation_context_tags(
+    /// Build conversation-history tags for the given scope (used by stream path for resume).
+    /// Returns None if no provider is set or provider returns empty.
+    pub async fn build_conversation_context_tags(
         &self,
         scope: &context::RuntimeScope,
     ) -> Result<Option<HashMap<String, BamlValue>>> {
@@ -626,25 +633,24 @@ mod tests {
         registry.register(EchoTool).unwrap();
         let agent_id =
             AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000040").unwrap());
-        let invocation_scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id);
+        let scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id);
 
         let result = json!({
             "tool_name": "test/echo_tool",
             "message": "hello"
         });
 
-        let tool_result =
-            baml_rt_core::context::with_scope(invocation_scope.as_scope().clone(), async {
-                let scope = baml_rt_core::context::current_scope().unwrap();
-                let context_id = scope.context_id();
-                maybe_execute_tool_from_result(&registry, &result, context_id)
-                    .await
-                    .unwrap()
-                    .expect("expected tool execution")
-            })
-            .await;
+        baml_rt_core::context::with_scope(scope.as_scope().clone(), async move {
+            let current = baml_rt_core::context::current_scope().unwrap();
+            let context_id = current.context_id();
+            let tool_result = maybe_execute_tool_from_result(&registry, &result, context_id)
+                .await
+                .unwrap()
+                .expect("expected tool execution");
 
-        assert_eq!(tool_result["echo"]["message"], "hello");
+            assert_eq!(tool_result["echo"]["message"], "hello");
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -653,18 +659,18 @@ mod tests {
         let registry = Arc::new(ToolRegistry::new());
         let agent_id =
             AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000041").unwrap());
-        let invocation_scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id);
+        let scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id);
         let result = json!({ "value": "not a tool" });
-        let tool_result =
-            baml_rt_core::context::with_scope(invocation_scope.as_scope().clone(), async {
-                let scope = baml_rt_core::context::current_scope().unwrap();
-                let context_id = scope.context_id();
-                maybe_execute_tool_from_result(&registry, &result, context_id)
-                    .await
-                    .unwrap()
-            })
-            .await;
 
-        assert!(tool_result.is_none());
+        baml_rt_core::context::with_scope(scope.as_scope().clone(), async move {
+            let current = baml_rt_core::context::current_scope().unwrap();
+            let context_id = current.context_id();
+            let tool_result = maybe_execute_tool_from_result(&registry, &result, context_id)
+                .await
+                .unwrap();
+
+            assert!(tool_result.is_none());
+        })
+        .await;
     }
 }

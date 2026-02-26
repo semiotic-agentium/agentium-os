@@ -21,6 +21,7 @@ thiserror = { workspace = true }
 genco = { workspace = true }
 inventory = { workspace = true }
 opentelemetry = { workspace = true }
+dashmap = "6.1.0"
 
 [features]
 default = []
