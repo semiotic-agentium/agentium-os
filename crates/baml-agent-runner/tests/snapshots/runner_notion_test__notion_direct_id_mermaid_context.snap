@@ -8,7 +8,13 @@ sequenceDiagram
     participant Agent
     participant notion
 
-    User->>Agent: Pull details for this notion block 11111111111111…
+    Note over Agent: :
     Agent->>notion: block_id=111111111111111111111111111111…
-    notion-->>Agent: [ms]
+    notion-->>Agent: 0ms
+    Note over Agent: status TASK_STATE_SUBMITTED
+    Note over Agent: status TASK_STATE_SUBMITTED
+    Note over Agent: status TASK_STATE_WORKING
     Agent->>User: Notion summary:  Pages: • Agent Platform Roadmap …
+    Note over Agent: status TASK_STATE_COMPLETED
+    Note over Agent: status TASK_STATE_WORKING
+    Note over Agent: status TASK_STATE_COMPLETED

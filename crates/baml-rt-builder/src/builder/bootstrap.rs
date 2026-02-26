@@ -107,6 +107,19 @@ pub async fn run_bootstrap(
     let generator = RuntimeTypeGenerator::new();
     generator.generate(&baml_src, &build_dir).await?;
 
+    // Copy generated BAML (e.g. generated_tools.baml, generated_session_coordination.baml) from build_dir/baml_src into the bootstrapped agent's baml_src.
+    let baml_src_build = build_dir.join("baml_src");
+    if baml_src_build.exists() {
+        for entry in fs::read_dir(&baml_src_build).map_err(BamlBuilderError::Io)? {
+            let entry = entry.map_err(BamlBuilderError::Io)?;
+            let path = entry.path();
+            if path.is_file() {
+                let dest = baml_src.join(entry.file_name());
+                fs::copy(&path, &dest).map_err(BamlBuilderError::Io)?;
+            }
+        }
+    }
+
     let d_ts_src = build_dir.join("dist").join("baml-runtime.d.ts");
     let d_ts_dest = src_dir.join("baml-runtime.d.ts");
     if !d_ts_src.exists() {
@@ -149,7 +162,7 @@ fn manifest_json(name: &str, description: &str, tools: &[String]) -> String {
 fn prompt_template_no_tools(prompt_name: &str) -> String {
     let fn_name = capitalize_first(&prompt_name.replace('_', " ")).replace(' ', "");
     format!(
-        r##"// Agent prompt — edit as needed
+        r##"// Agent prompt
 function {fn_name}(input: string) -> string {{
   client DefaultClient
   prompt #"
@@ -176,7 +189,7 @@ fn prompt_template_with_tools(prompt_name: &str, session_plan_type: &str) -> Str
         capitalize_first(&prompt_name.replace('_', " ")).replace(' ', "")
     );
     format!(
-        r##"// Agent prompt with tool choice — edit as needed
+        r##"// Agent prompt with tool choice
 // (generated_tools.baml is loaded from the same directory by the runtime)
 
 function {fn_name}(user_message: string) -> {session_plan_type} {{

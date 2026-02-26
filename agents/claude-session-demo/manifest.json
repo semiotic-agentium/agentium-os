@@ -1,0 +1,11 @@
+{
+  "version": "1.0.0",
+  "name": "claude-session-demo",
+  "entry_point": "src/index.ts",
+  "signature": "claude-session-demo@1.0.0",
+  "tools": ["claude/dev"],
+  "discovery": {
+    "description": "Demo: Archmagos requirements-to-implementation session via claude/dev",
+    "capabilities": []
+  }
+}

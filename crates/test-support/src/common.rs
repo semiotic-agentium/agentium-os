@@ -19,30 +19,6 @@ pub use test_tools::{
 };
 use tokio::sync::Mutex;
 
-async fn build_agent_package(
-    agent_dir: &PathBuf,
-    tar_path: &PathBuf,
-) -> baml_rt_builder::builder::error::Result<()> {
-    use baml_rt_builder::{
-        AgentDir, BuildDir, BuilderService, FileSystem, OxcLinter, OxcTypeScriptCompiler,
-        RuntimeTypeGenerator, StdFileSystem, StdPackager,
-    };
-
-    let agent_dir = AgentDir::new(agent_dir.clone())?;
-    let build_dir = BuildDir::new()?;
-    let filesystem = StdFileSystem;
-    filesystem.copy_dir_all(&agent_dir.baml_src(), &build_dir.join("baml_src"))?;
-
-    let linter = OxcLinter::new(filesystem);
-    let ts_compiler = OxcTypeScriptCompiler::new(filesystem);
-    let type_generator = RuntimeTypeGenerator::new();
-    let packager = StdPackager::new(filesystem);
-    let builder_service = BuilderService::new(linter, ts_compiler, type_generator, packager);
-    builder_service
-        .build_package(&agent_dir, &build_dir, tar_path, false)
-        .await
-}
-
 pub fn fixture_path(relative_path: &str) -> PathBuf {
     workspace_root()
         .join("tests")
@@ -80,7 +56,7 @@ pub async fn build_fixture_package_to_temp(fixture_name: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&extract_dir);
     fs::create_dir_all(&extract_dir).expect("create extract dir");
 
-    build_agent_package(&agent_dir, &tar_path)
+    baml_rt_builder::build_agent_package(&agent_dir, &tar_path, false)
         .await
         .unwrap_or_else(|e| panic!("build fixture {fixture_name} failed: {e}"));
 
@@ -122,7 +98,7 @@ pub async fn build_agent_package_to_temp(agent_dir: PathBuf, package_label: &str
     let _ = fs::remove_dir_all(&extract_dir);
     fs::create_dir_all(&extract_dir).expect("create extract dir");
 
-    build_agent_package(&agent_dir, &tar_path)
+    baml_rt_builder::build_agent_package(&agent_dir, &tar_path, false)
         .await
         .unwrap_or_else(|e| panic!("build agent {package_label} failed: {e}"));
 

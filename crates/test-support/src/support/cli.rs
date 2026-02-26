@@ -21,6 +21,8 @@ impl CliHarness {
         }
     }
 
+    /// Returns a Command that runs the baml-agent-builder binary via `cargo run`.
+    /// Prefer [`baml_rt_builder::build_agent_package`] for tests to avoid Cargo lock deadlock.
     pub fn builder_command(&self) -> Command {
         let mut command = Command::new("cargo");
         command

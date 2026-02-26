@@ -4,20 +4,24 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    A2aRequestHandler, AgentCard, AgentDiscoveryEntry, AgentLister, BusStream, ContextId, Result,
+    A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister,
+    BusStream, ContextId, Result,
 };
 use baml_rt_tools::{ToolRegistry, ToolStep};
 use baml_tools_calculator::CalculatorTool;
 use baml_tools_system::SystemBundle;
 use futures_util::stream;
-use serde_json::{Value, json};
+use serde_json::json;
 
 struct MockA2aHandler;
 
 #[async_trait]
 impl A2aRequestHandler for MockA2aHandler {
-    async fn handle_a2a_stream(&self, _request: Value) -> Result<BusStream<Value>> {
-        Ok(Box::pin(stream::empty()))
+    async fn handle_a2a_stream(
+        &self,
+        _request: A2aWireRequest,
+    ) -> Result<BusStream<A2aStreamChunk>> {
+        Ok(Box::pin(stream::empty::<A2aStreamChunk>()))
     }
 }
 
@@ -148,7 +152,7 @@ async fn discover_tools_session_returns_search_results() {
                 .filter_map(|t| t.get("name").and_then(|v| v.as_str()))
                 .collect();
             assert!(
-                names.iter().any(|n| *n == "support/calculate"),
+                names.contains(&"support/calculate"),
                 "expected support/calculate in {:?}",
                 names
             );

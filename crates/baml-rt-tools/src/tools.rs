@@ -1095,6 +1095,7 @@ impl<T: BamlTool> ToolHandler for ToolWrapper<T> {
 struct MultiSendSession {
     /// Reserved for session-scoped tracing/abort; not yet used. In production, allow(dead_code) is a smell—revisit when adding session-scoped ops.
     #[allow(dead_code)]
+    // ctx reserved for executor/session-scoped ops; not read by this type yet
     ctx: ToolSessionContext,
     executor: Box<dyn ToolExecutor>,
     pending: Option<Value>,

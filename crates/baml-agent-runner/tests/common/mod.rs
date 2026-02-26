@@ -1,6 +1,6 @@
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     sync::{Arc, OnceLock},
 };
 
@@ -10,7 +10,9 @@ use baml_rt_a2a::AgentRegistry;
 #[cfg(any(feature = "clickup", feature = "notion"))]
 use baml_rt_core::A2aRequestHandler;
 #[cfg(any(feature = "clickup", feature = "notion"))]
-use baml_rt_core::{AgentCard, AgentDiscoveryEntry, AgentLister, AgentRouteKey};
+use baml_rt_core::{
+    A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister, AgentRouteKey,
+};
 use baml_rt_provenance::GraphqliteProvenanceStore;
 #[cfg(any(feature = "clickup", feature = "notion"))]
 use baml_rt_provenance::{
@@ -94,8 +96,8 @@ impl AgentRegistry for SingleAgentRegistry {
     async fn handle_a2a_stream(
         &self,
         key: &AgentRouteKey,
-        request: Value,
-    ) -> baml_rt_core::Result<baml_rt_core::bus::BusStream<Value>> {
+        request: A2aWireRequest,
+    ) -> baml_rt_core::Result<baml_rt_core::bus::BusStream<A2aStreamChunk>> {
         if key.agent_package.as_str() != self.package
             || key.agent_instance_id.as_str() != self.instance_id
         {
@@ -284,64 +286,9 @@ pub fn contains_kv(value: &Value, key: &str, expected: &str) -> bool {
     }
 }
 
-pub fn build_agent_dir_to_temp(
-    agent_dir: &Path,
-    package_label: &str,
-    builder_features: Option<&str>,
-) -> PathBuf {
-    if !agent_dir.exists() || !agent_dir.join("baml_src").exists() {
-        panic!("Agent directory {} missing or invalid", agent_dir.display());
-    }
-
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let tar_path =
-        std::env::temp_dir().join(format!("runner-test-{package_label}-{unique}.tar.gz"));
-    let extract_dir =
-        std::env::temp_dir().join(format!("runner-test-{package_label}-extract-{unique}"));
-    let _ = fs::remove_dir_all(&extract_dir);
-    fs::create_dir_all(&extract_dir).expect("create extract dir");
-
-    let mut cmd = std::process::Command::new("cargo");
-    cmd.current_dir(test_support::common::workspace_root())
-        .arg("run")
-        .arg("--quiet")
-        .arg("-p")
-        .arg("baml-rt-builder");
-    if let Some(features) = builder_features {
-        cmd.arg("--features").arg(features);
-    }
-    cmd.arg("--bin")
-        .arg("baml-agent-builder")
-        .arg("--")
-        .arg("package")
-        .arg("--agent-dir")
-        .arg(agent_dir)
-        .arg("--output")
-        .arg(&tar_path)
-        .arg("--skip-lint");
-
-    let output = cmd.output().expect("build agent: run builder");
-    if !output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        panic!("build agent {package_label} failed: stdout={stdout}, stderr={stderr}");
-    }
-
-    let tar_gz = fs::File::open(&tar_path).expect("open built tar");
-    let tar_dec = flate2::read::GzDecoder::new(tar_gz);
-    let mut archive = tar::Archive::new(tar_dec);
-    archive.unpack(&extract_dir).expect("unpack built tar");
-    let _ = fs::remove_file(&tar_path);
-
-    let dist_index = extract_dir.join("dist").join("index.js");
-    assert!(
-        dist_index.exists(),
-        "Built package must contain dist/index.js"
-    );
-    extract_dir
+/// Builds an agent at the given path using the builder crate (in-process, no cargo subprocess).
+pub async fn build_agent_dir_to_temp_async(agent_dir: PathBuf, package_label: &str) -> PathBuf {
+    test_support::common::build_agent_package_to_temp(agent_dir, package_label).await
 }
 
 #[cfg(feature = "clickup")]
@@ -350,11 +297,7 @@ pub async fn build_clickup_agent_to_temp_async() -> PathBuf {
     let clickup_agent_dir = test_support::common::workspace_root()
         .join("agents")
         .join("clickup-agent");
-    tokio::task::spawn_blocking(move || {
-        build_agent_dir_to_temp(&clickup_agent_dir, "clickup-agent", Some("clickup"))
-    })
-    .await
-    .expect("build clickup agent task join")
+    build_agent_dir_to_temp_async(clickup_agent_dir, "clickup-agent").await
 }
 
 #[cfg(feature = "notion")]
@@ -363,9 +306,40 @@ pub async fn build_notion_agent_to_temp_async() -> PathBuf {
     let notion_agent_dir = test_support::common::workspace_root()
         .join("agents")
         .join("notion-agent");
-    tokio::task::spawn_blocking(move || {
-        build_agent_dir_to_temp(&notion_agent_dir, "notion-agent", Some("notion"))
-    })
-    .await
-    .expect("build notion agent task join")
+    build_agent_dir_to_temp_async(notion_agent_dir, "notion-agent").await
+}
+
+/// POST to /a2a/sse and collect all JSON-RPC responses from the SSE stream.
+#[cfg(any(feature = "clickup", feature = "notion"))]
+pub async fn post_a2a_sse_collect(
+    client: &reqwest::Client,
+    url: &str,
+    body: &Value,
+) -> Result<Vec<Value>, Box<dyn std::error::Error + Send + Sync>> {
+    let response = client
+        .post(url)
+        .header("Accept", "text/event-stream")
+        .json(body)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        return Err(format!("HTTP {}: {}", status, text).into());
+    }
+    let text = response.text().await?;
+    let mut responses = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with("data:") {
+            let json_str = line.strip_prefix("data:").unwrap_or(line).trim();
+            if json_str.is_empty() {
+                continue;
+            }
+            if let Ok(v) = serde_json::from_str::<Value>(json_str) {
+                responses.push(v);
+            }
+        }
+    }
+    Ok(responses)
 }

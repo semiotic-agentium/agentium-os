@@ -14,11 +14,11 @@ members = [
   "crates/baml-rt-tools",
   "crates/test-support",
   "crates/tools/calculator",
+  "crates/tools/claude",
   "crates/tools/internal-dev",
   "crates/tools/clickup",
   "crates/tools/notion",
   "crates/tools/system",
-  "crates/tools/memory",
 ]
 default-members = [
   "crates/baml-rt-core",
@@ -95,8 +95,6 @@ oxc_codegen = "0"
 oxc_transformer = "0"
 oxc_semantic = "0"
 quickjs_runtime = "0.15"
-# Agent memory
-agentic-memory = "0.2.6"
 axum = "0.8"
 # Testing / dev
 tokio-test = "0.4"

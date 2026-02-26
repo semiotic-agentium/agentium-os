@@ -28,8 +28,8 @@ use baml_rt_a2a::{
     },
 };
 use baml_rt_core::{
-    AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentLister, AgentManifest, AgentPackageName,
-    AgentRouteKey, BamlRtError, ContextId, Result,
+    A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentLister,
+    AgentManifest, AgentPackageName, AgentRouteKey, BamlRtError, ContextId, Result,
     bus::BusStream,
     collect_a2a_stream,
     context::{self, InvocationScope},
@@ -38,8 +38,7 @@ use baml_rt_core::{
 };
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_provenance::{
-    AgentType, GraphExporter, GraphQueryParams, GraphStore, GraphqliteStoreBuilder, ProvEvent,
-    ProvenanceWriter, ToolIndexConfig, context_metrics_queries,
+    AgentType, GraphExporter, GraphqliteStoreBuilder, ProvEvent, ProvenanceWriter, ToolIndexConfig,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
     index_tools,
 };
@@ -47,21 +46,20 @@ use baml_rt_quickjs::BamlRuntimeManager;
 use baml_rt_tools::{
     ManifestToolNames, ToolAccessPolicy, parse_access_allowlist, register_manifest_tools,
 };
+use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
 use baml_tools_calculator as _;
 #[cfg(feature = "clickup")]
 use baml_tools_clickup as _;
-#[cfg(feature = "memory")]
-use baml_tools_memory as _;
 #[cfg(feature = "notion")]
 use baml_tools_notion as _;
 use baml_tools_system::SystemBundle;
 use clap::Parser;
-use serde_json::{Map, Value};
+use serde_json::Value;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
     sync::Mutex,
 };
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 
 /// Inert agent package - just holds package data
 pub(crate) struct AgentPackage {
@@ -118,23 +116,56 @@ impl AgentPackage {
         a2a_handler: Arc<dyn A2aRequestHandler>,
     ) -> Result<ToolsRegistered> {
         let runtime_manager = loaded.runtime_manager;
+        let manifest_tool_names = ManifestToolNames::parse(&self.manifest.tools)?;
 
-        // Host composes tool catalogue: system bundle (internal_a2a, discover_agents, discover_tools)
+        // Host composes tool catalogue:
+        // - system bundle (internal_a2a, discover_agents, discover_tools)
+        // - claude bundle (claude/dev host-managed stream session)
         let tool_registry = runtime_manager.tool_registry();
         tool_registry.register_bundle(SystemBundle::new(
             agent_list_catalogue,
             tool_registry.clone(),
             a2a_handler,
         ))?;
+        // Claude workspace root: where claude/dev session cwd lives (agent_id/workspace_name subdirs).
+        // Set BAML_CLAUDE_WORKSPACES_BASE to a persistent dir so tmp isn't wiped and Claude can write.
+        let claude_workspace_root = match std::env::var("BAML_CLAUDE_WORKSPACES_BASE") {
+            Ok(ref base) if !base.trim().is_empty() => {
+                let path = PathBuf::from(base.trim());
+                let absolute = if path.is_absolute() {
+                    path
+                } else {
+                    std::env::current_dir()
+                        .unwrap_or_else(|_| PathBuf::from("."))
+                        .join(path)
+                };
+                std::fs::create_dir_all(&absolute).map_err(BamlRtError::Io)?;
+                let canonical = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+                info!(
+                    env = base.trim(),
+                    base = %canonical.display(),
+                    "Claude workspaces root from BAML_CLAUDE_WORKSPACES_BASE (persistent)",
+                );
+                canonical
+            }
+            _ => {
+                let fallback = self.extract_dir.join(".claude-workspaces");
+                info!(
+                    base = %fallback.display(),
+                    "Claude workspaces root under extract dir (BAML_CLAUDE_WORKSPACES_BASE unset or empty). Set BAML_CLAUDE_WORKSPACES_BASE (e.g. in .env in current working directory) to use a persistent workspace root.",
+                );
+                fallback
+            }
+        };
+        tool_registry.register_bundle(ClaudeSessionBundle::new(Arc::new(
+            AgentWorkspaceRegistry::new(claude_workspace_root),
+        )))?;
 
-        #[cfg(feature = "memory")]
-        if self.manifest.tools.iter().any(|t| t.starts_with("memory/")) {
-            let memory_bundle = baml_tools_memory::MemoryBundle::new(&self.manifest.name)?;
-            tool_registry.register_bundle(memory_bundle)?;
-        }
-
-        let manifest_tool_names = ManifestToolNames::parse(&self.manifest.tools)?;
-        register_manifest_tools(tool_registry.as_ref(), &manifest_tool_names, policy)?;
+        register_manifest_tools(
+            runtime_manager.tool_registry().as_ref(),
+            &manifest_tool_names,
+            policy,
+        )?;
 
         // Apply allowlist after host bundle registration so system/* tools are optional
         // unless explicitly declared in the agent manifest.
@@ -149,10 +180,15 @@ impl AgentPackage {
         &self,
         registered: ToolsRegistered,
         provenance_config: &ProvenanceConfig,
+        stream_idle_secs: Option<u64>,
     ) -> Result<JsInitialized> {
+        use baml_rt_quickjs::QuickJSConfig;
+
         let runtime_manager_arc = Arc::new(Mutex::new(registered.runtime_manager));
+        let quickjs_config = QuickJSConfig::new().with_stream_collector_idle_secs(stream_idle_secs);
         let mut agent_builder = A2aAgent::builder()
             .with_runtime_handle(runtime_manager_arc.clone())
+            .with_quickjs_config(quickjs_config)
             .with_baml_helpers(true)
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
 
@@ -213,6 +249,7 @@ impl AgentPackage {
         policy: &ToolAccessPolicy,
         agent_list_catalogue: Arc<dyn AgentLister>,
         a2a_handler: Arc<dyn A2aRequestHandler>,
+        stream_idle_secs: Option<u64>,
     ) -> Result<(A2aAgent, AgentId)> {
         let span = spans::load_agent_package(&self.extract_dir);
         let _guard = span.enter();
@@ -221,7 +258,7 @@ impl AgentPackage {
             .register_tools_phase(loaded, policy, agent_list_catalogue, a2a_handler)
             .await?;
         let built = self
-            .build_agent_phase(registered, provenance_config)
+            .build_agent_phase(registered, provenance_config, stream_idle_secs)
             .await?;
         let initialized = self.initialize_js_phase(built).await?;
         let agent = initialized.agent;
@@ -302,7 +339,10 @@ impl BootedAgent {
             .await
     }
 
-    async fn handle_a2a_stream(&self, request: Value) -> Result<BusStream<Value>> {
+    async fn handle_a2a_stream(
+        &self,
+        request: A2aWireRequest,
+    ) -> Result<BusStream<A2aStreamChunk>> {
         self.agent.handle_a2a_stream(request).await
     }
 }
@@ -317,6 +357,7 @@ pub(crate) struct AgentRunner {
     access_policy: ToolAccessPolicy,
     routed_agents: std::sync::RwLock<HashMap<AgentRouteKey, A2aAgent>>,
     internal_a2a_router: Arc<InternalA2aRouter>,
+    stream_idle_secs: Option<u64>,
 }
 
 impl AgentRunner {
@@ -324,6 +365,7 @@ impl AgentRunner {
         provenance_config: ProvenanceConfig,
         tool_index: Option<ToolIndexConfig>,
         access_policy: ToolAccessPolicy,
+        stream_idle_secs: Option<u64>,
     ) -> Self {
         let routed_agents = std::sync::RwLock::new(HashMap::new());
         let internal_a2a_router = Arc::new(InternalA2aRouter::new());
@@ -334,6 +376,7 @@ impl AgentRunner {
             access_policy,
             routed_agents,
             internal_a2a_router,
+            stream_idle_secs,
         }
     }
 
@@ -347,6 +390,10 @@ impl AgentRunner {
 
     pub(crate) fn access_policy(&self) -> &ToolAccessPolicy {
         &self.access_policy
+    }
+
+    pub(crate) fn stream_idle_secs(&self) -> Option<u64> {
+        self.stream_idle_secs
     }
 
     /// Get the internal A2A router (used by builder to create scoped routers).
@@ -433,8 +480,8 @@ impl AgentRunner {
     pub(crate) async fn handle_a2a_by_key(
         &self,
         key: &AgentRouteKey,
-        request: Value,
-    ) -> Result<BusStream<Value>> {
+        request: A2aWireRequest,
+    ) -> Result<BusStream<A2aStreamChunk>> {
         let routed_agent = {
             let routed_agents = self.routed_agents.read().expect("RwLock poison");
             routed_agents.get(key).cloned().ok_or_else(|| {
@@ -468,8 +515,8 @@ impl AgentRunner {
 
             let mut request_value: Value = match serde_json::from_str::<Value>(line) {
                 Ok(value) if value.is_object() => value,
-                Ok(_) => wrap_plaintext_message(line)?,
-                Err(_) => wrap_plaintext_message(line)?,
+                Ok(_) => wrap_plaintext_message(line),
+                Err(_) => wrap_plaintext_message(line),
             };
 
             let request_id = a2a::extract_jsonrpc_id(&request_value);
@@ -519,8 +566,15 @@ impl AgentRunner {
             let span = spans::a2a_stdio_request(&agent_name, method, &correlation_id);
             let _guard = span.enter();
 
-            let responses = match agent.handle_a2a_stream(prepared_request).await {
-                Ok(stream) => collect_a2a_stream(stream).await,
+            let responses: Vec<Value> = match agent
+                .handle_a2a_stream(A2aWireRequest::from(prepared_request))
+                .await
+            {
+                Ok(stream) => collect_a2a_stream(stream)
+                    .await
+                    .into_iter()
+                    .map(A2aStreamChunk::into_inner)
+                    .collect(),
                 Err(err) => vec![map_a2a_error(request_id, err)],
             };
             for response in responses {
@@ -562,7 +616,8 @@ impl AgentRunner {
             if let Some(agent_name) = agent_name {
                 return Ok((agent_name, request.clone()));
             }
-            if let Some(agent_name) = select_implicit_stdio_agent(&agents) {
+            if agents.len() == 1 {
+                let agent_name = agents.keys().next().cloned().unwrap_or_default();
                 return Ok((agent_name, request.clone()));
             }
             return Err(BamlRtError::InvalidArgument(
@@ -595,7 +650,8 @@ impl AgentRunner {
             (agent_name, method_base)
         } else if let Some((agent_name, method_name)) = split_agent_method(&method_base, &agents) {
             (agent_name, method_name)
-        } else if let Some(agent_name) = select_implicit_stdio_agent(&agents) {
+        } else if agents.len() == 1 {
+            let agent_name = agents.keys().next().cloned().unwrap_or_default();
             (agent_name, method_base)
         } else {
             return Err(BamlRtError::InvalidArgument(
@@ -649,15 +705,18 @@ impl AgentRegistry for RunnerRegistry {
     async fn handle_a2a_stream(
         &self,
         key: &AgentRouteKey,
-        request: Value,
-    ) -> Result<BusStream<Value>> {
+        request: A2aWireRequest,
+    ) -> Result<BusStream<A2aStreamChunk>> {
         self.0.handle_a2a_by_key(key, request).await
     }
 }
 
 #[async_trait]
 impl A2aRequestHandler for RunnerRegistry {
-    async fn handle_a2a_stream(&self, request: Value) -> Result<BusStream<Value>> {
+    async fn handle_a2a_stream(
+        &self,
+        request: A2aWireRequest,
+    ) -> Result<BusStream<A2aStreamChunk>> {
         let key = route_key_from_request(&request)?;
         self.0.handle_a2a_by_key(&key, request).await
     }
@@ -686,7 +745,11 @@ impl InternalA2aRouter {
         }
     }
 
-    async fn route_from(&self, caller: &AgentRouteKey, request: Value) -> Result<BusStream<Value>> {
+    async fn route_from(
+        &self,
+        caller: &AgentRouteKey,
+        request: A2aWireRequest,
+    ) -> Result<BusStream<A2aStreamChunk>> {
         let runner = self
             .runner
             .get()
@@ -694,9 +757,9 @@ impl InternalA2aRouter {
 
         // Trust model: in-process agents are trusted peers, so any loaded package may route
         // to any other loaded package via system/internal_a2a.
-        let key = extract_internal_a2a_target(&request)
+        let key = extract_internal_a2a_target(request.as_ref())
             .or_else(|| {
-                a2a::extract_agent_name(&request).and_then(|agent_package| {
+                a2a::extract_agent_name(request.as_ref()).and_then(|agent_package| {
                     AgentPackageName::parse(agent_package)
                         .map(|pkg| AgentRouteKey::new(pkg, AgentInstanceId::default()))
                 })
@@ -767,7 +830,10 @@ fn extract_internal_a2a_target(request: &Value) -> Option<AgentRouteKey> {
 
 #[async_trait]
 impl A2aRequestHandler for ScopedInternalA2aRouter {
-    async fn handle_a2a_stream(&self, request: Value) -> Result<BusStream<Value>> {
+    async fn handle_a2a_stream(
+        &self,
+        request: A2aWireRequest,
+    ) -> Result<BusStream<A2aStreamChunk>> {
         self.router.route_from(&self.caller, request).await
     }
 }
@@ -792,21 +858,6 @@ fn split_agent_method(
             return Some((prefix.to_string(), suffix.to_string()));
         }
     }
-    None
-}
-
-fn select_implicit_stdio_agent(agents: &HashMap<String, BootedAgent>) -> Option<String> {
-    if agents.len() == 1 {
-        return agents.keys().next().cloned();
-    }
-
-    // TODO: As a follow-up we can enhance this
-    // by adding a special coordinator flag to agent
-    // manifest file
-    if agents.contains_key("coordinator-agent") {
-        return Some("coordinator-agent".to_string());
-    }
-
     None
 }
 
@@ -859,7 +910,7 @@ fn stdio_task_id() -> TaskId {
         .clone()
 }
 
-fn wrap_plaintext_message(text: &str) -> Result<Value> {
+fn wrap_plaintext_message(text: &str) -> Value {
     let seq = MESSAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let message_id = A2aMessageId::outgoing(DerivedId::new(format!("cli-msg-{seq}")));
     let message = Message {
@@ -889,10 +940,10 @@ fn wrap_plaintext_message(text: &str) -> Result<Value> {
     let request = JSONRPCRequest {
         jsonrpc: "2.0".to_string(),
         method: "message.sendStream".to_string(),
-        params: Some(serde_json::to_value(params)?),
+        params: Some(serde_json::to_value(params).unwrap_or(Value::Null)),
         id: Some(JSONRPCId::Null),
     };
-    serde_json::to_value(request).map_err(Into::into)
+    serde_json::to_value(request).unwrap_or(Value::Null)
 }
 
 /// Provenance DB: in-memory (default) or file-backed SQLite. No FalkorDB.
@@ -910,6 +961,10 @@ struct RunnerConfig {
     serve_http: Option<String>,
     web_dir: Option<PathBuf>,
     provenance_db: ProvenanceDb,
+    /// If set, used as Claude workspaces root (overrides BAML_CLAUDE_WORKSPACES_BASE env).
+    claude_workspaces_base: Option<PathBuf>,
+    /// Stream collector idle timeout in seconds. No yield for this long ends the stream (Timeout). Default 600 for long-running tool sessions (e.g. claude/dev).
+    stream_idle_secs: Option<u64>,
 }
 
 #[derive(Debug, Parser)]
@@ -940,6 +995,14 @@ struct Cli {
     /// Provenance SQLite database path. Default is ":memory:".
     #[arg(long, value_name = "PATH", default_value = ":memory:")]
     provenance_db: String,
+
+    /// Claude workspaces root directory (claude/dev session cwd base). When set, overrides BAML_CLAUDE_WORKSPACES_BASE. Use an absolute path or path relative to current working directory.
+    #[arg(long, value_name = "DIR")]
+    claude_workspaces_base: Option<PathBuf>,
+
+    /// Stream collector idle timeout (seconds). If no chunk is yielded for this long, the stream ends with Timeout. Default 600 for long-running tool sessions (e.g. claude/dev).
+    #[arg(long, value_name = "SECS", default_value = "600")]
+    stream_idle_secs: u64,
 }
 
 impl Cli {
@@ -961,6 +1024,8 @@ impl Cli {
             serve_http: self.serve_http,
             web_dir: self.web_dir,
             provenance_db,
+            claude_workspaces_base: self.claude_workspaces_base,
+            stream_idle_secs: Some(self.stream_idle_secs),
         })
     }
 }
@@ -1033,153 +1098,6 @@ impl baml_rt_api::MermaidService for MermaidServiceImpl {
     }
 }
 
-/// Context metrics service backed by GraphQLite provenance.
-struct ContextMetricsServiceImpl {
-    store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
-}
-
-impl ContextMetricsServiceImpl {
-    fn new(store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>) -> Self {
-        Self { store }
-    }
-}
-
-fn metrics_query_params(context_id: &str) -> GraphQueryParams {
-    let mut params = Map::new();
-    params.insert(
-        "context_id".to_string(),
-        Value::String(context_id.to_string()),
-    );
-    params
-}
-
-fn value_as_u64(value: Option<&Value>) -> u64 {
-    match value {
-        Some(Value::Number(n)) => n
-            .as_u64()
-            .or_else(|| n.as_i64().map(|v| v.max(0) as u64))
-            .unwrap_or(0),
-        Some(Value::String(s)) => s.parse::<u64>().unwrap_or(0),
-        _ => 0,
-    }
-}
-
-fn value_as_string(value: Option<&Value>) -> String {
-    match value {
-        Some(Value::String(s)) => s.clone(),
-        Some(v) => v.to_string(),
-        None => String::new(),
-    }
-}
-
-#[async_trait::async_trait]
-impl baml_rt_api::ContextMetricsService for ContextMetricsServiceImpl {
-    async fn metrics_for_context(
-        &self,
-        context_id: &str,
-    ) -> std::result::Result<baml_rt_api::ContextMetricsResponseDto, baml_rt_api::ContextMetricsError>
-    {
-        let params = metrics_query_params(context_id);
-
-        let turn_rows = self
-            .store
-            .query(context_metrics_queries::TURN_TOTALS_BY_CONTEXT, &params)
-            .await
-            .map_err(|e| {
-                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(e)))
-            })?;
-
-        let session_rows = self
-            .store
-            .query(context_metrics_queries::SESSION_TOTALS_BY_CONTEXT, &params)
-            .await
-            .map_err(|e| {
-                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(e)))
-            })?;
-
-        let prompt_rows = self
-            .store
-            .query(context_metrics_queries::USER_PROMPTS_BY_CONTEXT, &params)
-            .await
-            .map_err(|e| {
-                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(e)))
-            })?;
-
-        let mut prompt_count_by_message: HashMap<String, u64> = HashMap::new();
-        for row in prompt_rows {
-            let message_id = value_as_string(row.get("message_id"));
-            if message_id.is_empty() {
-                continue;
-            }
-            prompt_count_by_message.insert(message_id, value_as_u64(row.get("user_prompt_count")));
-        }
-
-        let mut turns = Vec::with_capacity(turn_rows.len());
-        for row in turn_rows {
-            let message_id = value_as_string(row.get("message_id"));
-            if message_id.is_empty() {
-                continue;
-            }
-            let user_prompt_count = prompt_count_by_message.remove(&message_id).unwrap_or(0);
-            turns.push(baml_rt_api::ContextTurnMetricsDto {
-                message_id,
-                user_prompt_count,
-                llm_call_count: value_as_u64(row.get("llm_call_count")),
-                llm_duration_ms_total: value_as_u64(row.get("llm_duration_ms_total")),
-                tokens: baml_rt_api::TokenUsageDto {
-                    input: value_as_u64(row.get("tokens_in")),
-                    output: value_as_u64(row.get("tokens_out")),
-                    total: value_as_u64(row.get("tokens_total")),
-                },
-            });
-        }
-
-        // Keep prompt-only turns visible even when no LLM call was made.
-        let mut prompt_only_turns = prompt_count_by_message.into_iter().collect::<Vec<_>>();
-        prompt_only_turns.sort_by(|(left, _), (right, _)| left.cmp(right));
-        for (message_id, user_prompt_count) in prompt_only_turns {
-            turns.push(baml_rt_api::ContextTurnMetricsDto {
-                message_id,
-                user_prompt_count,
-                llm_call_count: 0,
-                llm_duration_ms_total: 0,
-                tokens: baml_rt_api::TokenUsageDto {
-                    input: 0,
-                    output: 0,
-                    total: 0,
-                },
-            });
-        }
-
-        let session = session_rows.first();
-        let session_tokens_in = value_as_u64(session.and_then(|row| row.get("tokens_in")));
-        let session_tokens_out = value_as_u64(session.and_then(|row| row.get("tokens_out")));
-        let session_tokens_total = value_as_u64(session.and_then(|row| row.get("tokens_total")));
-        let session_llm_calls = value_as_u64(session.and_then(|row| row.get("llm_call_count")));
-        let session_llm_duration_ms =
-            value_as_u64(session.and_then(|row| row.get("llm_duration_ms_total")));
-
-        let user_prompts_total = turns.iter().map(|turn| turn.user_prompt_count).sum();
-        let turns_total = turns.len() as u64;
-
-        Ok(baml_rt_api::ContextMetricsResponseDto {
-            context_id: context_id.to_string(),
-            turns,
-            session: baml_rt_api::ContextSessionMetricsDto {
-                turns_total,
-                user_prompts_total,
-                llm_calls_total: session_llm_calls,
-                llm_duration_ms_total: session_llm_duration_ms,
-                tokens_total: baml_rt_api::TokenUsageDto {
-                    input: session_tokens_in,
-                    output: session_tokens_out,
-                    total: session_tokens_total,
-                },
-            },
-        })
-    }
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing
@@ -1195,6 +1113,38 @@ async fn main() -> anyhow::Result<()> {
     let config = Cli::parse()
         .into_config()
         .context("Failed to parse arguments")?;
+
+    // If --claude-workspaces-base is set, resolve to absolute path and set env so package boot uses it.
+    if let Some(ref base) = config.claude_workspaces_base {
+        let absolute = if base.is_absolute() {
+            base.clone()
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(base)
+        };
+        if let Err(e) = std::fs::create_dir_all(&absolute) {
+            eprintln!(
+                "Error: Cannot create Claude workspaces base {}: {}",
+                absolute.display(),
+                e
+            );
+            std::process::exit(1);
+        }
+        let canonical = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+        // SAFETY: single-threaded at this point; no other thread reads this var before we load packages.
+        unsafe {
+            std::env::set_var(
+                "BAML_CLAUDE_WORKSPACES_BASE",
+                canonical.to_string_lossy().to_string(),
+            );
+        }
+        info!(
+            base = %canonical.display(),
+            "Claude workspaces base set from --claude-workspaces-base (overrides env)",
+        );
+    }
+
     match &config.provenance_db {
         ProvenanceDb::InMemory => info!(
             "Provenance backend: in-memory (:memory:). External graph_exporter cannot read this process-local data."
@@ -1214,6 +1164,7 @@ async fn main() -> anyhow::Result<()> {
         provenance_config,
         tool_index,
         access_allowlist,
+        config.stream_idle_secs,
     );
 
     for package in &config.packages {
@@ -1249,7 +1200,6 @@ async fn main() -> anyhow::Result<()> {
             .invoke(&agent_name, &function_name, args_value)
             .await
             .context("Function invocation failed")?;
-        debug!("{}", serde_json::to_string_pretty(&result)?);
         println!("{}", serde_json::to_string_pretty(&result)?);
         return Ok(());
     }
@@ -1265,87 +1215,25 @@ async fn main() -> anyhow::Result<()> {
         println!("  - {}", agent_name);
     }
 
-    // Spawn the HTTP server as a background task when requested, so it can
-    // run concurrently with other modes (e.g. a2a-stdio).
-    let http_handle = if let Some(bind) = &config.serve_http {
-        let (mermaid, context_metrics) = match ready.runner().provenance_config() {
-            ProvenanceConfig::Graphqlite(store) => (
+    if let Some(bind) = &config.serve_http {
+        let mermaid = match ready.runner().provenance_config() {
+            ProvenanceConfig::Graphqlite(store) => {
                 Some(Arc::new(MermaidServiceImpl::new(store.clone()))
-                    as Arc<dyn baml_rt_api::MermaidService>),
-                Some(Arc::new(ContextMetricsServiceImpl::new(store.clone()))
-                    as Arc<dyn baml_rt_api::ContextMetricsService>),
-            ),
+                    as Arc<dyn baml_rt_api::MermaidService>)
+            }
         };
         let registry_impl = ready.registry();
-        let web_dir = config.web_dir.clone();
-        let bind = bind.clone();
-        info!(bind = %bind, web_dir = ?web_dir, "HTTP API: exposing GET /agents, POST /agents/.../a2a, GET /mermaid/..., GET /context/.../metrics, GET /openapi.json");
-        Some(tokio::spawn(async move {
-            baml_rt_api::serve_with_services(
-                registry_impl,
-                &bind,
-                mermaid,
-                context_metrics,
-                web_dir.as_deref(),
-            )
+        let web_dir = config.web_dir.as_deref();
+        info!(bind = %bind, web_dir = ?web_dir, "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a/sse, GET /mermaid/..., GET /openapi.json)");
+        baml_rt_api::serve(registry_impl, bind, mermaid, web_dir)
             .await
-            .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))
-        }))
-    } else {
-        None
-    };
+            .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))?;
+        return Ok(());
+    }
 
-    match (config.a2a_stdio, http_handle) {
-        (true, Some(mut handle)) => {
-            // When both stdio and HTTP are enabled, supervise both tasks:
-            // - if stdio completes first, stop HTTP explicitly before exiting
-            // - if HTTP exits first, log and keep stdio running for the active session
-            let stdio_fut = ready.run_a2a_stdio();
-            tokio::pin!(stdio_fut);
-            let mut http_exited = false;
-
-            loop {
-                tokio::select! {
-                    stdio_result = &mut stdio_fut => {
-                        if !http_exited {
-                            if !handle.is_finished() {
-                                info!("A2A stdio loop ended; stopping HTTP API server task");
-                                handle.abort();
-                            }
-                        }
-
-                        stdio_result?;
-                        break;
-                    }
-                    http_result = &mut handle, if !http_exited => {
-                        match http_result {
-                            Ok(Ok(())) => {
-                                warn!("HTTP API server exited; continuing A2A stdio loop");
-                            }
-                            Ok(Err(err)) => {
-                                warn!(error = %err, "HTTP API server exited with error; continuing A2A stdio loop");
-                            }
-                            Err(join_err) if join_err.is_cancelled() => {
-                                info!("HTTP API server task was cancelled; continuing A2A stdio loop");
-                            }
-                            Err(join_err) => {
-                                warn!("HTTP API server task join error: {join_err}; continuing A2A stdio loop");
-                            }
-                        }
-                        http_exited = true;
-                    }
-                }
-            }
-        }
-        (true, None) => {
-            ready.run_a2a_stdio().await?;
-        }
-        (false, Some(handle)) => {
-            // HTTP-only mode: wait for the server to finish (or fail).
-            handle.await??;
-            return Ok(());
-        }
-        (false, None) => {}
+    if config.a2a_stdio {
+        ready.run_a2a_stdio().await?;
+        return Ok(());
     }
 
     info!("Agent Runner completed successfully");
@@ -1354,18 +1242,9 @@ async fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(feature = "memory")]
-    use std::sync::{Mutex as StdMutex, OnceLock};
-
     use baml_rt::baml::BamlRuntimeManager;
-    #[cfg(feature = "memory")]
-    use baml_rt_core::{AgentDiscoveryEntry, AgentLister};
     use baml_rt_core::{bus::BusWithEffects, route_key_from_request};
-    #[cfg(feature = "memory")]
-    use baml_rt_tools::tool_fsm::ToolStep;
     use serde_json::json;
-    #[cfg(feature = "memory")]
-    use test_support::common::TempEnvVar;
 
     use super::*;
 
@@ -1397,129 +1276,13 @@ globalThis.onChatMessage = async function(_message) {
             .expect("build test agent")
     }
 
-    #[cfg(feature = "memory")]
-    fn env_test_lock() -> &'static StdMutex<()> {
-        static LOCK: OnceLock<StdMutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| StdMutex::new(()))
-    }
-
-    #[cfg(feature = "memory")]
-    fn fresh_temp_dir(prefix: &str) -> std::path::PathBuf {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("{prefix}-{}-{}", std::process::id(), unique));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).expect("create temp dir");
-        path
-    }
-
-    #[cfg(feature = "memory")]
-    struct EmptyAgentList;
-
-    #[cfg(feature = "memory")]
-    impl AgentLister for EmptyAgentList {
-        fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
-            Vec::new()
-        }
-    }
-
-    #[cfg(feature = "memory")]
-    struct EmptyA2a;
-
-    #[cfg(feature = "memory")]
-    #[async_trait::async_trait]
-    impl A2aRequestHandler for EmptyA2a {
-        async fn handle_a2a_stream(&self, _request: serde_json::Value) -> Result<BusStream<Value>> {
-            Ok(Box::pin(futures_util::stream::empty::<Value>()))
-        }
-    }
-
-    fn test_manifest(name: &str) -> AgentManifest {
-        AgentManifest {
-            name: name.to_string(),
-            version: "1.0.0".to_string(),
-            entry_point: "dist/index.js".to_string(),
-            signature: format!("{name}@1.0.0"),
-            tools: vec![],
-            discovery: None,
-        }
-    }
-
-    async fn insert_test_agent(runner: &AgentRunner, package_name: &str) {
-        let route_key = AgentRouteKey::new(
-            AgentPackageName::parse(package_name).expect("valid package"),
-            AgentInstanceId::default(),
-        );
-        let agent = build_test_agent().await;
-        runner.insert_agent(
-            package_name.to_string(),
-            route_key,
-            BootedAgent {
-                agent,
-                manifest: test_manifest(package_name),
-            },
-        );
-    }
-
-    #[tokio::test]
-    async fn prepare_a2a_request_defaults_to_coordinator_for_plaintext_with_multiple_agents() {
-        let runner = AgentRunner::new(test_provenance_config(), None, ToolAccessPolicy::default());
-        insert_test_agent(&runner, "coordinator-agent").await;
-        insert_test_agent(&runner, "notion-agent").await;
-        insert_test_agent(&runner, "clickup-agent").await;
-
-        let mut request =
-            wrap_plaintext_message("in clickup agent, what are my tasks in progress?")
-                .expect("wrap plaintext request");
-        let (agent_name, prepared) = runner
-            .prepare_a2a_request(&mut request)
-            .expect("coordinator implicit routing");
-
-        assert_eq!(agent_name, "coordinator-agent");
-        assert_eq!(
-            prepared
-                .get("method")
-                .and_then(Value::as_str)
-                .expect("method"),
-            "message.sendStream"
-        );
-        assert_eq!(
-            prepared
-                .get("params")
-                .and_then(|params| params.get("message"))
-                .and_then(|message| message.get("metadata"))
-                .and_then(|metadata| metadata.get("agent"))
-                .and_then(Value::as_str)
-                .expect("message metadata agent"),
-            "coordinator-agent"
-        );
-    }
-
-    #[tokio::test]
-    async fn prepare_a2a_request_still_errors_without_coordinator_when_multiple_agents_loaded() {
-        let runner = AgentRunner::new(test_provenance_config(), None, ToolAccessPolicy::default());
-        insert_test_agent(&runner, "notion-agent").await;
-        insert_test_agent(&runner, "clickup-agent").await;
-
-        let mut request = wrap_plaintext_message("list tasks").expect("wrap plaintext request");
-        let err = runner
-            .prepare_a2a_request(&mut request)
-            .expect_err("missing explicit agent should still fail");
-
-        assert!(
-            err.to_string().contains("A2A request missing agent"),
-            "expected missing-agent error, got: {err}"
-        );
-    }
-
     #[tokio::test]
     async fn internal_a2a_router_rejects_self_routing_by_route_key() {
         let runner = Arc::new(AgentRunner::new(
             test_provenance_config(),
             None,
             ToolAccessPolicy::default(),
+            None,
         ));
         runner.internal_a2a_router().set_runner(runner.clone());
         let caller = AgentRouteKey::new(
@@ -1542,7 +1305,7 @@ globalThis.onChatMessage = async function(_message) {
 
         let err = match runner
             .internal_a2a_router()
-            .route_from(&caller, request)
+            .route_from(&caller, baml_rt_core::A2aWireRequest::from(request))
             .await
         {
             Ok(_) => panic!("self-route must be rejected"),
@@ -1556,7 +1319,12 @@ globalThis.onChatMessage = async function(_message) {
 
     #[tokio::test]
     async fn handle_a2a_by_key_respects_instance_id() {
-        let runner = AgentRunner::new(test_provenance_config(), None, ToolAccessPolicy::default());
+        let runner = AgentRunner::new(
+            test_provenance_config(),
+            None,
+            ToolAccessPolicy::default(),
+            None,
+        );
         let package_name = AgentPackageName::parse("demo-agent").expect("valid package");
         let default_key = AgentRouteKey::new(package_name.clone(), AgentInstanceId::default());
         let staging_key = AgentRouteKey::new(
@@ -1565,7 +1333,14 @@ globalThis.onChatMessage = async function(_message) {
         );
 
         let agent = build_test_agent().await;
-        let manifest = test_manifest(package_name.as_str());
+        let manifest = AgentManifest {
+            name: package_name.as_str().to_string(),
+            version: "1.0.0".to_string(),
+            entry_point: "dist/index.js".to_string(),
+            signature: "demo-agent@1.0.0".to_string(),
+            tools: vec![],
+            discovery: None,
+        };
         runner.insert_agent(
             package_name.as_str().to_string(),
             default_key,
@@ -1575,11 +1350,11 @@ globalThis.onChatMessage = async function(_message) {
         let err = match runner
             .handle_a2a_by_key(
                 &staging_key,
-                json!({
+                A2aWireRequest::from(json!({
                     "jsonrpc": "2.0",
                     "method": "message.sendStream",
                     "params": {"message": {"parts": [{"text": "ping"}]}}
-                }),
+                })),
             )
             .await
         {
@@ -1607,7 +1382,7 @@ globalThis.onChatMessage = async function(_message) {
             },
             "id": 1
         });
-        let key = route_key_from_request(&request).unwrap();
+        let key = route_key_from_request(baml_rt_core::A2aWireRequest::from(request)).unwrap();
         assert_eq!(key.agent_package.as_str(), "my-pkg");
         assert_eq!(key.agent_instance_id.as_str(), "inst-1");
     }
@@ -1623,7 +1398,7 @@ globalThis.onChatMessage = async function(_message) {
                 }
             }
         });
-        let key = route_key_from_request(&request).unwrap();
+        let key = route_key_from_request(baml_rt_core::A2aWireRequest::from(request)).unwrap();
         assert_eq!(key.agent_package.as_str(), "solo");
         assert_eq!(key.agent_instance_id.as_str(), "default");
     }
@@ -1633,129 +1408,6 @@ globalThis.onChatMessage = async function(_message) {
         let request = json!({
             "params": { "metadata": {} }
         });
-        assert!(route_key_from_request(&request).is_err());
-    }
-
-    #[cfg(feature = "memory")]
-    #[tokio::test]
-    async fn register_tools_phase_loads_memory_bundle_and_executes_tool() {
-        let _env_guard = env_test_lock().lock().expect("env test lock");
-        let brain_dir = fresh_temp_dir("memory-bundle-brain");
-        let brain_dir_str = brain_dir.display().to_string();
-        let _brain_env = TempEnvVar::set("BRAIN_DIR", &brain_dir_str);
-        let extract_dir = fresh_temp_dir("memory-bundle-agent");
-        let baml_src = extract_dir.join("baml_src");
-        std::fs::create_dir_all(&baml_src).expect("create baml_src dir");
-
-        let package = AgentPackage {
-            manifest: AgentManifest {
-                name: "memory-test-agent".to_string(),
-                version: "1.0.0".to_string(),
-                entry_point: "dist/index.js".to_string(),
-                signature: "memory-test-agent@1.0.0".to_string(),
-                tools: vec!["memory/add".to_string(), "memory/stats".to_string()],
-                discovery: None,
-            },
-            extract_dir: extract_dir.clone(),
-            baml_src,
-        };
-
-        let loaded = SchemaLoaded {
-            runtime_manager: BamlRuntimeManager::new().expect("runtime manager"),
-        };
-        let registered = package
-            .register_tools_phase(
-                loaded,
-                &ToolAccessPolicy::default(),
-                Arc::new(EmptyAgentList),
-                Arc::new(EmptyA2a),
-            )
-            .await
-            .expect("register tools with memory bundle");
-        let registry = registered.runtime_manager.tool_registry();
-        let ctx = ContextId::new(1, 1);
-
-        let add_session = registry
-            .open_session("memory/add", json!({}), &ctx)
-            .await
-            .expect("open memory/add session");
-        registry
-            .session_send(
-                &add_session,
-                json!({
-                    "events": [{
-                        "eventType": "fact",
-                        "content": "The user prefers Rust.",
-                        "sessionId": 1,
-                        "confidence": 0.95
-                    }]
-                }),
-            )
-            .await
-            .expect("send memory/add");
-        let add_step = registry
-            .session_next(&add_session)
-            .await
-            .expect("next memory/add");
-        match add_step {
-            ToolStep::Done {
-                output: Some(output),
-            } => {
-                let node_ids = output
-                    .get("nodeIds")
-                    .and_then(|v| v.as_array())
-                    .expect("nodeIds array");
-                assert_eq!(node_ids.len(), 1, "memory/add should create one node");
-            }
-            other => panic!("unexpected memory/add step: {other:?}"),
-        }
-        registry
-            .session_finish(&add_session)
-            .await
-            .expect("finish memory/add");
-
-        let stats_session = registry
-            .open_session("memory/stats", json!({}), &ctx)
-            .await
-            .expect("open memory/stats session");
-        registry
-            .session_send(&stats_session, json!({}))
-            .await
-            .expect("send memory/stats");
-        let stats_step = registry
-            .session_next(&stats_session)
-            .await
-            .expect("next memory/stats");
-        match stats_step {
-            ToolStep::Done {
-                output: Some(output),
-            } => {
-                assert_eq!(
-                    output.get("nodeCount").and_then(|v| v.as_u64()),
-                    Some(1),
-                    "memory/stats should report persisted node"
-                );
-                let file_path = output
-                    .get("filePath")
-                    .and_then(|v| v.as_str())
-                    .expect("stats filePath");
-                assert!(
-                    std::path::Path::new(file_path).exists(),
-                    "memory file should exist on disk: {file_path}"
-                );
-                assert!(
-                    file_path.starts_with(brain_dir.to_str().expect("tempdir utf8")),
-                    "memory file should live under BRAIN_DIR override: {file_path}"
-                );
-            }
-            other => panic!("unexpected memory/stats step: {other:?}"),
-        }
-        registry
-            .session_finish(&stats_session)
-            .await
-            .expect("finish memory/stats");
-
-        let _ = std::fs::remove_dir_all(extract_dir);
-        let _ = std::fs::remove_dir_all(brain_dir);
+        assert!(route_key_from_request(baml_rt_core::A2aWireRequest::from(request)).is_err());
     }
 }
