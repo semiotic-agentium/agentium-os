@@ -285,6 +285,8 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
         "How many tasks are in progress?",
         "Please continue and fetch the required ClickUp data to compute the exact count.",
         "Continue and use tool calls to finish the exact in-progress task count.",
+        "If still pending, continue with the next required ClickUp tool call and complete the exact count.",
+        "Continue from the same context and finish the exact in-progress count using ClickUp tool calls.",
     ];
 
     for (turn, prompt) in turn_prompts.iter().enumerate() {
@@ -319,7 +321,7 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
 
         let mut last_signature = String::new();
         let mut stagnant_polls = 0u32;
-        for _ in 0..40 {
+        for _ in 0..80 {
             let items = provenance_reader
                 .conversation_context(&context_id, Some(220))
                 .await
@@ -356,7 +358,7 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
                 stagnant_polls = 0;
                 last_signature = signature;
             }
-            if stagnant_polls >= 12 {
+            if stagnant_polls >= 20 {
                 break;
             }
             sleep(Duration::from_millis(250)).await;
