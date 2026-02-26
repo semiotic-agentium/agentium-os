@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use baml_rt_a2a::{
     A2aAgent, A2aRequestHandler, AgentRegistry, a2a,
     a2a_types::{
-        A2aMessageId, JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER,
+        A2aMessageId, JSONRPCId, JSONRPCRequest, Message, MessageRole, Part,
         SendMessageConfiguration, SendMessageRequest,
     },
 };
@@ -937,7 +937,7 @@ fn wrap_plaintext_message(text: &str) -> Result<Value> {
     let message_id = A2aMessageId::outgoing(DerivedId::new(format!("cli-msg-{seq}")));
     let message = Message {
         message_id,
-        role: MessageRole::String(ROLE_USER.to_string()),
+        role: MessageRole::User,
         parts: vec![Part {
             text: Some(text.to_string()),
             ..Part::default()

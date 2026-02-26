@@ -558,9 +558,7 @@ mod tests {
     use super::A2aRequest;
     use crate::{
         A2aAgent, A2aRequestHandler,
-        a2a_types::{
-            JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER, SendMessageRequest,
-        },
+        a2a_types::{JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest},
     };
 
     /// Watchdog timeout for agent setup and tests - ensures tests fail fast if they hang.
@@ -748,7 +746,7 @@ mod tests {
         use crate::a2a_types::A2aMessageId;
         Message {
             message_id: A2aMessageId::incoming(ExternalId::new(message_id)),
-            role: MessageRole::String(ROLE_USER.to_string()),
+            role: MessageRole::User,
             parts: vec![Part {
                 text: Some(text.to_string()),
                 ..Part::default()
@@ -1259,6 +1257,53 @@ mod tests {
         match err {
             BamlRtError::InvalidArgument(_) | BamlRtError::Json(_) => {}
             other => panic!("unexpected error: {}", other),
+        }
+    }
+
+    #[test]
+    fn test_message_role_alias_assistant_maps_to_agent() {
+        let request = json!({
+            "jsonrpc": "2.0",
+            "id": "role-alias-1",
+            "method": "message.sendStream",
+            "params": {
+                "message": {
+                    "messageId": "msg-role-alias",
+                    "role": "assistant",
+                    "parts": [{ "text": "hello" }]
+                }
+            }
+        });
+
+        let parsed = A2aRequest::from_value(request).expect("role alias should parse");
+        let params = parsed
+            .params
+            .as_send_message()
+            .expect("message.sendStream params");
+        assert_eq!(params.message.role, MessageRole::Agent);
+    }
+
+    #[test]
+    fn test_message_role_rejects_empty_or_unknown() {
+        for bad_role in ["", "narrator", "ROLE_UNKNOWN"] {
+            let request = json!({
+                "jsonrpc": "2.0",
+                "id": "role-bad-1",
+                "method": "message.sendStream",
+                "params": {
+                    "message": {
+                        "messageId": "msg-bad-role",
+                        "role": bad_role,
+                        "parts": [{ "text": "hello" }]
+                    }
+                }
+            });
+
+            let err = A2aRequest::from_value(request).expect_err("invalid role should reject");
+            match err {
+                BamlRtError::Json(_) | BamlRtError::InvalidArgument(_) => {}
+                other => panic!("unexpected error: {}", other),
+            }
         }
     }
 }

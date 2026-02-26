@@ -137,3 +137,51 @@ fn normalize_same_message_id_in_different_contexts_produces_distinct_message_nod
         "message processing activity id must be context-scoped to avoid cross-context collisions"
     );
 }
+
+#[test]
+fn normalize_message_role_aliases_to_wire_constants() {
+    let message_id = MessageId::from_external(ExternalId::new("role-alias-1"));
+    let event = ProvEvent::message_sent_global(
+        ContextId::new(111, 1),
+        message_id,
+        "assistant".to_string(),
+        vec!["hello".to_string()],
+        None,
+        1,
+    );
+
+    let normalized = normalize_event(&event).expect("normalize message role alias");
+    let role_values: Vec<String> = normalized
+        .document
+        .entities()
+        .filter(|(id, _)| id.as_str().starts_with("message:"))
+        .filter_map(|(_, entity)| entity.attributes.get("a2a:role"))
+        .filter_map(serde_json::Value::as_str)
+        .map(ToString::to_string)
+        .collect();
+
+    assert!(
+        role_values.iter().any(|role| role == "ROLE_AGENT"),
+        "message entity role must be canonical ROLE_AGENT"
+    );
+}
+
+#[test]
+fn normalize_rejects_empty_message_role() {
+    let message_id = MessageId::from_external(ExternalId::new("role-empty-1"));
+    let event = ProvEvent::message_received_global(
+        ContextId::new(112, 1),
+        message_id,
+        "".to_string(),
+        vec!["hello".to_string()],
+        None,
+        1,
+    );
+
+    let err = normalize_event(&event).expect_err("empty role must fail normalization");
+    let err_text = err.to_string();
+    assert!(
+        err_text.contains("message role must be non-empty"),
+        "expected empty role rejection, got: {err_text}"
+    );
+}

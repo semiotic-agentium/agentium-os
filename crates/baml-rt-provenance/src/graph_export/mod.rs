@@ -165,26 +165,10 @@ fn parse_graphqlite_export_result(
         );
 
         if !src_id.is_empty() {
-            nodes_map
-                .entry(src_id.clone())
-                .or_insert_with(|| ExportedNode {
-                    display_name: derive_display_name(&src_label, &src_props),
-                    id: src_id.clone(),
-                    label: src_label.clone(),
-                    event_order: parse_event_order(&src_props),
-                    properties: src_props.clone(),
-                });
+            upsert_node(&mut nodes_map, &src_id, &src_label, &src_props);
         }
         if !tgt_id.is_empty() {
-            nodes_map
-                .entry(tgt_id.clone())
-                .or_insert_with(|| ExportedNode {
-                    display_name: derive_display_name(&tgt_label, &tgt_props),
-                    id: tgt_id.clone(),
-                    label: tgt_label.clone(),
-                    event_order: parse_event_order(&tgt_props),
-                    properties: tgt_props.clone(),
-                });
+            upsert_node(&mut nodes_map, &tgt_id, &tgt_label, &tgt_props);
         }
         if !src_id.is_empty() && !tgt_id.is_empty() && !rel_type.is_empty() {
             edges.push(ExportedEdge {
@@ -303,6 +287,65 @@ fn normalize_property_keys(
             (normalized, v)
         })
         .collect()
+}
+
+/// Merge/update node entry for a repeated node id.
+///
+/// Some graph backends may return multiple rows for the same node where one row
+/// has sparse properties (e.g. missing role/content) and another has richer
+/// properties. We merge by preferring non-empty incoming values over empty
+/// existing ones to avoid freezing sparse state.
+fn upsert_node(
+    nodes_map: &mut HashMap<String, ExportedNode>,
+    node_id: &str,
+    node_label: &str,
+    node_props: &HashMap<String, serde_json::Value>,
+) {
+    let incoming_event_order = parse_event_order(node_props);
+    if let Some(existing) = nodes_map.get_mut(node_id) {
+        if existing.label.is_empty() && !node_label.is_empty() {
+            existing.label = node_label.to_string();
+        }
+        existing.event_order = match (existing.event_order, incoming_event_order) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+        for (k, incoming) in node_props {
+            let should_replace = existing
+                .properties
+                .get(k)
+                .is_none_or(property_value_is_empty)
+                && !property_value_is_empty(incoming);
+            if should_replace {
+                existing.properties.insert(k.clone(), incoming.clone());
+            }
+        }
+        existing.display_name = derive_display_name(&existing.label, &existing.properties);
+        return;
+    }
+
+    nodes_map.insert(
+        node_id.to_string(),
+        ExportedNode {
+            display_name: derive_display_name(node_label, node_props),
+            id: node_id.to_string(),
+            label: node_label.to_string(),
+            event_order: incoming_event_order,
+            properties: node_props.clone(),
+        },
+    );
+}
+
+fn property_value_is_empty(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => true,
+        serde_json::Value::String(s) => s.trim().is_empty(),
+        serde_json::Value::Array(a) => a.is_empty(),
+        serde_json::Value::Object(o) => o.is_empty(),
+        _ => false,
+    }
 }
 
 // ── Scope post-filtering ────────────────────────────────────────────────────
@@ -699,26 +742,10 @@ pub fn build_graph_from_json_rows(
         let tgt_props = extract_properties(&cols[7]);
 
         if !src_id.is_empty() {
-            nodes_map
-                .entry(src_id.clone())
-                .or_insert_with(|| ExportedNode {
-                    display_name: derive_display_name(&src_label, &src_props),
-                    id: src_id.clone(),
-                    label: src_label.clone(),
-                    event_order: parse_event_order(&src_props),
-                    properties: src_props.clone(),
-                });
+            upsert_node(&mut nodes_map, &src_id, &src_label, &src_props);
         }
         if !tgt_id.is_empty() {
-            nodes_map
-                .entry(tgt_id.clone())
-                .or_insert_with(|| ExportedNode {
-                    display_name: derive_display_name(&tgt_label, &tgt_props),
-                    id: tgt_id.clone(),
-                    label: tgt_label.clone(),
-                    event_order: parse_event_order(&tgt_props),
-                    properties: tgt_props.clone(),
-                });
+            upsert_node(&mut nodes_map, &tgt_id, &tgt_label, &tgt_props);
         }
         if !src_id.is_empty() && !tgt_id.is_empty() && !rel_type.is_empty() {
             edges.push(ExportedEdge {
@@ -921,6 +948,54 @@ mod tests {
         let graph = build_graph_from_json_rows(&[row.clone(), row], ExportScope::Full)
             .expect("should parse");
         assert_eq!(graph.edges.len(), 1, "duplicate edges should be deduped");
+    }
+
+    #[test]
+    fn repeated_message_node_prefers_non_empty_role_and_content() {
+        let sparse_first = make_row(
+            "Message",
+            "msg-1",
+            serde_json::json!({
+                "a2a:role": "",
+                "a2a:content": [],
+                "a2a:event_id": "prov-1"
+            }),
+            "WAS_RECEIVED_BY",
+            serde_json::json!({}),
+            "A2AMessageProcessing",
+            "mp-1",
+            serde_json::json!({}),
+        );
+        let richer_second = make_row(
+            "Message",
+            "msg-1",
+            serde_json::json!({
+                "a2a:role": "ROLE_USER",
+                "a2a:content": ["hello world"],
+                "a2a:event_id": "prov-1"
+            }),
+            "WAS_RECEIVED_BY",
+            serde_json::json!({}),
+            "A2AMessageProcessing",
+            "mp-2",
+            serde_json::json!({}),
+        );
+
+        let graph = build_graph_from_json_rows(&[sparse_first, richer_second], ExportScope::Full)
+            .expect("should parse");
+        let msg = graph
+            .nodes
+            .iter()
+            .find(|n| n.id == "msg-1")
+            .expect("message node exists");
+        assert_eq!(
+            msg.properties.get(a2a::ROLE),
+            Some(&serde_json::Value::String("ROLE_USER".to_string()))
+        );
+        assert_eq!(
+            msg.properties.get(a2a::CONTENT),
+            Some(&serde_json::json!(["hello world"]))
+        );
     }
 
     // ── Display name enrichment tests (§15 fixes) ───────────────────────

@@ -16,7 +16,7 @@ use tokio::sync::broadcast;
 
 use crate::{
     a2a_store::{TaskStoreBackend, TaskUpdateEvent},
-    a2a_types::{A2aMessageId, Message, MessageRole, Part, ROLE_AGENT, TaskState, TaskStatus},
+    a2a_types::{A2aMessageId, Message, MessageRole, Part, TaskState, TaskStatus},
 };
 
 static STATUS_MESSAGE_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -53,7 +53,7 @@ pub(crate) fn make_working_status_event(
     ));
     let message = Message {
         message_id: A2aMessageId::outgoing(derived),
-        role: MessageRole::String(ROLE_AGENT.to_string()),
+        role: MessageRole::Agent,
         parts: vec![Part {
             text: Some(text),
             ..Part::default()

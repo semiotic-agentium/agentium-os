@@ -48,6 +48,30 @@ fn parse_agent_id(event: &ProvEvent, raw: &str) -> Result<AgentId> {
         })
 }
 
+fn canonical_message_role(event: &ProvEvent, role: &str) -> Result<&'static str> {
+    let normalized = role.trim();
+    if normalized.is_empty() {
+        return Err(ProvenanceError::InvalidEvent {
+            event_id: event.id().as_str().to_string(),
+            reason: "message role must be non-empty".to_string(),
+        });
+    }
+    if normalized.eq_ignore_ascii_case("ROLE_USER") || normalized.eq_ignore_ascii_case("user") {
+        return Ok("ROLE_USER");
+    }
+    if normalized.eq_ignore_ascii_case("ROLE_AGENT")
+        || normalized.eq_ignore_ascii_case("agent")
+        || normalized.eq_ignore_ascii_case("assistant")
+        || normalized.eq_ignore_ascii_case("ROLE_ASSISTANT")
+    {
+        return Ok("ROLE_AGENT");
+    }
+    Err(ProvenanceError::InvalidEvent {
+        event_id: event.id().as_str().to_string(),
+        reason: format!("invalid message role '{normalized}'"),
+    })
+}
+
 pub trait ProvNormalizer: Send + Sync {
     fn normalize(&self, event: &ProvEvent) -> Result<NormalizedProv>;
 }
@@ -725,13 +749,17 @@ fn normalize_event_with_registry(
             content,
             metadata,
         } => {
+            let canonical_role = canonical_message_role(event, role)?;
             let message_id = message_entity_id(event.context_id(), id);
             let mut message_attrs = base_attrs(event);
             message_attrs.insert(
                 a2a::MESSAGE_ID.to_string(),
                 Value::String(id.as_str().to_string()),
             );
-            message_attrs.insert(a2a::ROLE.to_string(), Value::String(role.clone()));
+            message_attrs.insert(
+                a2a::ROLE.to_string(),
+                Value::String(canonical_role.to_string()),
+            );
             let content_values: Vec<Value> = content
                 .iter()
                 .map(|line| Value::String(line.clone()))
@@ -769,7 +797,10 @@ fn normalize_event_with_registry(
                 a2a::DIRECTION.to_string(),
                 Value::String(direction.to_string()),
             );
-            processing_attrs.insert(a2a::ROLE.to_string(), Value::String(role.clone()));
+            processing_attrs.insert(
+                a2a::ROLE.to_string(),
+                Value::String(canonical_role.to_string()),
+            );
             doc.insert_activity(
                 processing_id.clone(),
                 Activity {

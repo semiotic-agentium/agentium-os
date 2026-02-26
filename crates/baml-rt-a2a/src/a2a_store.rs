@@ -475,10 +475,7 @@ impl TaskRepository for ProvenanceTaskStore {
 }
 
 fn message_role_string(role: &MessageRole) -> String {
-    match role {
-        MessageRole::String(value) => value.clone(),
-        MessageRole::Integer(value) => value.to_string(),
-    }
+    role.as_wire_str().to_string()
 }
 
 fn message_content(message: &Message) -> Vec<String> {

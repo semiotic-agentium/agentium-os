@@ -50,11 +50,28 @@ pub struct JSONRPCErrorResponse {
     pub id: Option<JSONRPCId>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum MessageRole {
-    String(String),
-    Integer(i64),
+    #[serde(rename = "ROLE_USER", alias = "user", alias = "USER")]
+    User,
+    #[serde(
+        rename = "ROLE_AGENT",
+        alias = "agent",
+        alias = "AGENT",
+        alias = "assistant",
+        alias = "ASSISTANT",
+        alias = "ROLE_ASSISTANT"
+    )]
+    Agent,
+}
+
+impl MessageRole {
+    pub const fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::User => ROLE_USER,
+            Self::Agent => ROLE_AGENT,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
