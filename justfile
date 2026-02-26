@@ -36,7 +36,20 @@ coordinator-agent-provenance:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/coordinator-agent --output coordinator-agent.tar.gz
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- coordinator-agent.tar.gz notion-agent.tar.gz clickup-agent.tar.gz --a2a-stdio --provenance-db {{provenance_db}} --serve-http {{runner_http_bind}}
+    cargo run -p baml-rt-builder --bin baml-agent-builder -- package --agent-dir agents/claude-session-agent --output claude-session-agent.tar.gz
+    cargo run -p baml-agent-runner --features http-tools -- coordinator-agent.tar.gz notion-agent.tar.gz clickup-agent.tar.gz claude-session-agent.tar.gz --a2a-stdio --provenance-db {{provenance_db}} --serve-http {{runner_http_bind}}
+
+# Rebuilds claude-session-agent package and runs it via a2a stdio.
+claude-session-agent:
+    cargo run -p baml-rt-builder --bin baml-agent-builder -- package --agent-dir agents/claude-session-agent --output claude-session-agent.tar.gz
+    cargo run -p baml-agent-runner -- claude-session-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}}
+
+# Same as claude-session-agent, but persists provenance to provenance.db for graph_exporter.
+claude-session-agent-provenance:
+    cargo run -p baml-rt-builder --bin baml-agent-builder -- package --agent-dir agents/claude-session-agent --output claude-session-agent.tar.gz
+    cargo run -p baml-agent-runner -- claude-session-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
+
+
 
 # Runs the HTTP Notion demo script (starts runner if needed and streams one request).
 notion-demo:

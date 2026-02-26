@@ -38,23 +38,75 @@ export interface StreamChunkResult {
   index: number;
   final: boolean;
   chunk: ChunkPayload;
+  /** Present and true when this chunk was relayed from the tool path (async). Non-standard; use to distinguish from normal collect-path chunks. */
+  toolStreamChunk?: boolean;
 }
 
 export interface ChunkPayload {
   message?: A2aMessage;
   task?: TaskPayload;
-  statusUpdate?: { status?: TaskStatus };
+  statusUpdate?: StatusUpdatePayload;
+  /** When result.toolStreamChunk is true, chunk may have tool stream fields. */
+  toolName?: string;
+  events?: ToolEvent[];
+  completion?: ToolCompletion;
+  chunk?: unknown;
+}
+
+export interface StatusUpdatePayload {
+  taskId?: string;
+  status?: TaskStatus;
+  /** Nested event body (relay sends statusUpdate/status_update) */
+  statusUpdate?: { message?: A2aMessage; metadata?: Record<string, unknown> };
+  status_update?: { message?: A2aMessage; metadata?: Record<string, unknown> };
 }
 
 export interface TaskPayload {
   id?: string;
   contextId?: string;
   status?: TaskStatus;
+  /** Tool stream payload: when result.toolStreamChunk is true, task may carry tool events. */
+  toolName?: string;
+  events?: ToolEvent[];
+  completion?: ToolCompletion;
+  artifacts?: unknown[];
+  history?: unknown[];
 }
 
 export interface TaskStatus {
   state?: string;
   message?: A2aMessage;
+  metadata?: Record<string, unknown>;
+}
+
+/** One event from a tool stream (e.g. claude/dev). */
+export interface ToolEvent {
+  kind: string;
+  thinking?: string;
+  text?: string;
+  name?: string;
+  input?: unknown;
+  subtype?: string;
+  result?: string;
+  [key: string]: unknown;
+}
+
+export type ToolCompletion = "DONE" | "INPUT_REQUIRED" | "INTERRUPTED";
+
+/** Block inside an agent message (text or tool notification). */
+export type ContentBlock = TextContentBlock | ToolNotificationBlock;
+
+export interface TextContentBlock {
+  type: "text";
+  text: string;
+}
+
+export interface ToolNotificationBlock {
+  type: "tool";
+  toolName: string;
+  status: string;
+  events: ToolEvent[];
+  completion?: ToolCompletion;
 }
 
 /** Internal chat message for the UI */
@@ -64,4 +116,10 @@ export interface ChatMessage {
   text: string;
   timestamp: Date;
   isStreaming?: boolean;
+  /** When set, UI renders blocks instead of single text (agent messages only). */
+  contentBlocks?: ContentBlock[];
+  /** When true, stream ended with TASK_STATE_INPUT_REQUIRED; agent is waiting for user reply */
+  awaitingInput?: boolean;
+  /** Optional prompt from the agent (e.g. from awaitInput(prompt)); show as hint/placeholder */
+  inputRequiredPrompt?: string;
 }

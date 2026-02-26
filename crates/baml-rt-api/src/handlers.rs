@@ -15,12 +15,22 @@ use axum::{
         sse::{Event, KeepAlive, Sse},
     },
 };
-use baml_rt_core::{AgentInstanceId, AgentPackageName, AgentRouteKey, BamlRtError};
+use baml_rt_core::{
+    A2aWireRequest, AgentInstanceId, AgentPackageName, AgentRouteKey, BamlRtError,
+    collect_a2a_stream,
+};
 use futures_util::stream::{Stream, StreamExt};
 use http_api_problem::HttpApiProblem;
 use serde_json::Value;
 
-use crate::{ApiState, mermaid::MermaidError, metrics, openapi::AgentDiscoveryEntryDto, spans};
+use crate::{
+    ApiState,
+    context_metrics::{ContextMetricsError, ContextMetricsResponseDto},
+    mermaid::MermaidError,
+    metrics,
+    openapi::AgentDiscoveryEntryDto,
+    spans,
+};
 
 /// HTTP result type for handlers that return RFC 7807 problem details on error.
 type HttpResult<T> = Result<T, HttpApiProblem>;
@@ -63,6 +73,76 @@ pub async fn list_agents(
         .collect();
     metrics::record_request("list_agents", "success", start.elapsed());
     (AxumStatus::OK, Json(dtos))
+}
+
+/// Forward A2A JSON-RPC request (POST /agents/{agent_package}/{agent_instance_id}/a2a).
+#[utoipa::path(
+    post,
+    path = "/agents/{agent_package}/{agent_instance_id}/a2a",
+    tag = "agents",
+    params(
+        ("agent_package" = String, Path, description = "Agent package identifier (e.g. manifest name)"),
+        ("agent_instance_id" = String, Path, description = "Agent instance identifier")
+    ),
+    request_body = Value,
+    responses(
+        (status = 200, description = "JSON-RPC responses", body = [Value]),
+        (status = 400, description = "Malformed request"),
+        (status = 404, description = "Agent not found"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn post_a2a(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path((agent_package, agent_instance_id)): axum::extract::Path<(String, String)>,
+    Json(body): Json<Value>,
+) -> HttpResult<Json<Vec<Value>>> {
+    let span = spans::post_a2a(&agent_package, &agent_instance_id);
+    let _guard = span.enter();
+    let start = Instant::now();
+    let package_name = AgentPackageName::parse(&agent_package)
+        .ok_or_else(|| problem(400, "Bad Request", "agent_package must match [A-Za-z0-9_-]"))?;
+    let instance_id = AgentInstanceId::parse(&agent_instance_id).ok_or_else(|| {
+        problem(
+            400,
+            "Bad Request",
+            "agent_instance_id must match [A-Za-z0-9_-]",
+        )
+    })?;
+    let key = AgentRouteKey::new(package_name, instance_id);
+
+    if !body.is_object() {
+        metrics::record_request("post_a2a", "bad_request", start.elapsed());
+        return Err(problem(
+            400,
+            "Bad Request",
+            "Body must be a JSON object (JSON-RPC request)",
+        ));
+    }
+
+    match state
+        .registry
+        .handle_a2a_stream(&key, A2aWireRequest::from(body))
+        .await
+    {
+        Ok(stream) => {
+            let responses = collect_a2a_stream(stream)
+                .await
+                .into_iter()
+                .map(|chunk| chunk.into_inner())
+                .collect();
+            metrics::record_request("post_a2a", "success", start.elapsed());
+            Ok(Json(responses))
+        }
+        Err(e) => {
+            metrics::record_request(
+                "post_a2a",
+                result_label_for_domain_error(&e),
+                start.elapsed(),
+            );
+            Err(domain_to_problem(&e, &agent_package, &agent_instance_id))
+        }
+    }
 }
 
 /// A2A over Server-Sent Events: POST /agents/{agent_package}/{agent_instance_id}/a2a/sse
@@ -120,7 +200,7 @@ pub async fn post_a2a_sse(
     tracing::debug!(%agent_package, "A2A SSE: calling handle_a2a_stream");
     let stream = match state
         .registry
-        .handle_a2a_stream(&key, baml_rt_core::A2aWireRequest::from(body))
+        .handle_a2a_stream(&key, A2aWireRequest::from(body))
         .await
     {
         Ok(r) => r,
@@ -133,8 +213,8 @@ pub async fn post_a2a_sse(
             return Err(domain_to_problem(&e, &agent_package, &agent_instance_id));
         }
     };
-    tracing::info!(%agent_package, "A2A SSE: stream obtained, forwarding as SSE");
-    let event_stream = stream.map(|chunk: baml_rt_core::A2aStreamChunk| {
+    tracing::info!(%agent_package, "A2A SSE: stream obtained, forwarding incrementally");
+    let event_stream = stream.map(|chunk| {
         let data = serde_json::to_string(chunk.as_ref()).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "SSE chunk serialization failed");
             r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"Chunk serialization failed"}}"#
@@ -275,6 +355,64 @@ pub async fn get_mermaid_task(
         }
         Err(MermaidError::Other(e)) => {
             metrics::record_request("get_mermaid_task", "internal", start.elapsed());
+            Err(problem(500, "Internal Server Error", e.to_string()))
+        }
+    }
+}
+
+/// Get context token/call metrics aggregated from provenance graph data.
+#[utoipa::path(
+    get,
+    path = "/context/{context_id}/metrics",
+    tag = "provenance",
+    summary = "Context metrics by context_id",
+    description = "Returns turn-level and session-level token/call/duration metrics for the given A2A context ID. Available when GraphQLite-backed provenance is configured.",
+    params(("context_id" = String, Path, description = "A2A context ID")),
+    responses(
+        (status = 200, description = "Context metrics", body = ContextMetricsResponseDto),
+        (status = 404, description = "No metrics found for context"),
+        (status = 501, description = "Metrics service not available (provenance not configured)"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn get_context_metrics(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(context_id): axum::extract::Path<String>,
+) -> HttpResult<Json<ContextMetricsResponseDto>> {
+    let span = spans::get_context_metrics(&context_id);
+    let _guard = span.enter();
+    let start = Instant::now();
+    let Some(svc) = &state.context_metrics else {
+        metrics::record_request("get_context_metrics", "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Context metrics service not configured",
+        ));
+    };
+    match svc.metrics_for_context(&context_id).await {
+        Ok(report) => {
+            metrics::record_request("get_context_metrics", "success", start.elapsed());
+            Ok(Json(report))
+        }
+        Err(ContextMetricsError::NotFound) => {
+            metrics::record_request("get_context_metrics", "not_found", start.elapsed());
+            Err(problem(
+                404,
+                "Not Found",
+                format!("no metrics for context {context_id}"),
+            ))
+        }
+        Err(ContextMetricsError::Unavailable) => {
+            metrics::record_request("get_context_metrics", "unavailable", start.elapsed());
+            Err(problem(
+                501,
+                "Not Implemented",
+                "Context metrics service unavailable",
+            ))
+        }
+        Err(ContextMetricsError::Other(e)) => {
+            metrics::record_request("get_context_metrics", "internal", start.elapsed());
             Err(problem(500, "Internal Server Error", e.to_string()))
         }
     }

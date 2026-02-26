@@ -1,3 +1,5 @@
+use std::{path::PathBuf, sync::Arc};
+
 use baml_rt_core::{
     Outcome,
     ids::{AgentId, ArtifactId, ContextId, ExternalId, MessageId, TaskId, UuidId},
@@ -9,6 +11,17 @@ use baml_rt_provenance::{
 };
 use insta::assert_snapshot;
 use serde_json::json;
+
+fn build_isolated_store(test_name: &str) -> Arc<baml_rt_provenance::GraphqliteProvenanceStore> {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock after epoch")
+        .as_nanos();
+    let db_path: PathBuf = std::env::temp_dir().join(format!("prov-{test_name}-{unique}.db"));
+    GraphqliteStoreBuilder::file(&db_path)
+        .build()
+        .expect("build isolated file-backed store")
+}
 
 #[tokio::test]
 async fn test_normalize_event_snapshot_for_tool_call_started() {
@@ -33,17 +46,13 @@ async fn test_normalize_event_snapshot_for_tool_call_started() {
         "normalized tool call must include USED relation with role a2a:args"
     );
 
-    let store = GraphqliteStoreBuilder::in_memory()
-        .build()
-        .expect("build store");
+    let store = build_isolated_store("normalize-event");
     store.add_event(event).await.expect("persist event");
 }
 
 #[tokio::test]
 async fn test_snapshot_exemplary_mermaid_agent_flow() {
-    let store = GraphqliteStoreBuilder::in_memory()
-        .build()
-        .expect("build store");
+    let store = build_isolated_store("exemplary-agent-flow");
 
     let context_id = ContextId::new(1_771_470_000_000, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-sequence-1"));
@@ -148,9 +157,7 @@ async fn test_snapshot_exemplary_mermaid_agent_flow() {
 
 #[tokio::test]
 async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
-    let store = GraphqliteStoreBuilder::in_memory()
-        .build()
-        .expect("build store");
+    let store = build_isolated_store("multiturn-lifecycle");
 
     let context_id = ContextId::new(1_771_470_111_000, 1);
     let task_id = TaskId::from_external(ExternalId::new("task-lifecycle-1"));

@@ -103,9 +103,9 @@ impl GraphExporter {
     pub async fn export_by_context(&self, context_id: &str) -> Result<ExportedGraph> {
         const QUERY: &str = "MATCH (a)-[r]->(b) \
             WHERE a.a2a_context_id = $context AND b.a2a_context_id = $context \
-            RETURN a.id AS src_id, labels(a)[0] AS src_label, toString(properties(a)) AS src_props, \
-                   type(r) AS rel_type, toString(properties(r)) AS rel_props, \
-                   b.id AS tgt_id, labels(b)[0] AS tgt_label, toString(properties(b)) AS tgt_props \
+            RETURN a.id AS src_id, labels(a)[0] AS src_label, properties(a) AS src_props, \
+                   type(r) AS rel_type, properties(r) AS rel_props, \
+                   b.id AS tgt_id, labels(b)[0] AS tgt_label, properties(b) AS tgt_props \
             ORDER BY a.a2a_event_id, type(r), b.a2a_event_id";
         let params = single_param("context", context_id);
         let result = self.store.run_cypher_read(QUERY, &params).await?;
@@ -119,9 +119,9 @@ impl GraphExporter {
     pub async fn export_by_task(&self, task_id: &str) -> Result<ExportedGraph> {
         const QUERY: &str = "MATCH (a)-[r]->(b) \
             WHERE a.a2a_task_id = $task AND b.a2a_task_id = $task \
-            RETURN a.id AS src_id, labels(a)[0] AS src_label, toString(properties(a)) AS src_props, \
-                   type(r) AS rel_type, toString(properties(r)) AS rel_props, \
-                   b.id AS tgt_id, labels(b)[0] AS tgt_label, toString(properties(b)) AS tgt_props \
+            RETURN a.id AS src_id, labels(a)[0] AS src_label, properties(a) AS src_props, \
+                   type(r) AS rel_type, properties(r) AS rel_props, \
+                   b.id AS tgt_id, labels(b)[0] AS tgt_label, properties(b) AS tgt_props \
             ORDER BY a.a2a_event_id, type(r), b.a2a_event_id";
         let params = single_param("task", task_id);
         let result = self.store.run_cypher_read(QUERY, &params).await?;
@@ -148,12 +148,21 @@ fn parse_graphqlite_export_result(
     for row in result.iter() {
         let src_id = row_get_string_any(row, &["src_id", "a.id"]).unwrap_or_default();
         let src_label = row_get_string_any(row, &["src_label", "labels(a)[0]"]).unwrap_or_default();
-        let src_props = row_to_properties(row, &["src_props", "toString(properties(a))"]);
+        let src_props = row_to_properties(
+            row,
+            &["src_props", "properties(a)", "toString(properties(a))"],
+        );
         let rel_type = row_get_string_any(row, &["rel_type", "type(r)"]).unwrap_or_default();
-        let rel_props = row_to_properties(row, &["rel_props", "toString(properties(r))"]);
+        let rel_props = row_to_properties(
+            row,
+            &["rel_props", "properties(r)", "toString(properties(r))"],
+        );
         let tgt_id = row_get_string_any(row, &["tgt_id", "b.id"]).unwrap_or_default();
         let tgt_label = row_get_string_any(row, &["tgt_label", "labels(b)[0]"]).unwrap_or_default();
-        let tgt_props = row_to_properties(row, &["tgt_props", "toString(properties(b))"]);
+        let tgt_props = row_to_properties(
+            row,
+            &["tgt_props", "properties(b)", "toString(properties(b))"],
+        );
 
         if !src_id.is_empty() {
             nodes_map
@@ -219,9 +228,42 @@ fn row_get_string_any(row: &graphqlite::Row, cols: &[&str]) -> Option<String> {
 
 /// Read a properties column from a GraphQLite row (JSON string) and normalize keys to a2a: form.
 fn row_to_properties(row: &graphqlite::Row, cols: &[&str]) -> HashMap<String, serde_json::Value> {
-    let s = row_get_string_any(row, cols).unwrap_or_default();
-    let map: HashMap<String, serde_json::Value> = serde_json::from_str::<serde_json::Value>(&s)
-        .ok()
+    let as_json = cols.iter().find_map(|col| {
+        row.get_value(col).map(|v| match v {
+            graphqlite::Value::Null => serde_json::Value::Null,
+            graphqlite::Value::Bool(v) => serde_json::Value::Bool(*v),
+            graphqlite::Value::Integer(v) => serde_json::Value::Number((*v).into()),
+            graphqlite::Value::Float(v) => serde_json::Number::from_f64(*v)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
+            graphqlite::Value::String(s) => serde_json::from_str::<serde_json::Value>(s)
+                .unwrap_or_else(|_| serde_json::Value::String(s.clone())),
+            graphqlite::Value::Array(items) => serde_json::Value::Array(
+                items
+                    .iter()
+                    .map(|item| match item {
+                        graphqlite::Value::Null => serde_json::Value::Null,
+                        graphqlite::Value::Bool(v) => serde_json::Value::Bool(*v),
+                        graphqlite::Value::Integer(v) => serde_json::Value::Number((*v).into()),
+                        graphqlite::Value::Float(v) => serde_json::Number::from_f64(*v)
+                            .map(serde_json::Value::Number)
+                            .unwrap_or(serde_json::Value::Null),
+                        graphqlite::Value::String(s) => {
+                            serde_json::from_str::<serde_json::Value>(s)
+                                .unwrap_or_else(|_| serde_json::Value::String(s.clone()))
+                        }
+                        graphqlite::Value::Array(_) | graphqlite::Value::Object(_) => {
+                            serde_json::to_value(item).unwrap_or(serde_json::Value::Null)
+                        }
+                    })
+                    .collect(),
+            ),
+            graphqlite::Value::Object(_) => {
+                serde_json::to_value(v).unwrap_or(serde_json::Value::Null)
+            }
+        })
+    });
+    let map: HashMap<String, serde_json::Value> = as_json
         .and_then(|v| {
             v.as_object().map(|m| {
                 m.iter()
@@ -229,7 +271,19 @@ fn row_to_properties(row: &graphqlite::Row, cols: &[&str]) -> HashMap<String, se
                     .collect::<HashMap<String, serde_json::Value>>()
             })
         })
-        .unwrap_or_default();
+        .unwrap_or_else(|| {
+            let s = row_get_string_any(row, cols).unwrap_or_default();
+            serde_json::from_str::<serde_json::Value>(&s)
+                .ok()
+                .and_then(|v| {
+                    v.as_object().map(|m| {
+                        m.iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect::<HashMap<String, serde_json::Value>>()
+                    })
+                })
+                .unwrap_or_default()
+        });
     normalize_property_keys(map)
 }
 

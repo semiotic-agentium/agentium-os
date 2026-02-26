@@ -1,10 +1,18 @@
 <script setup lang="ts">
-import type { ChatMessage } from "../types/a2a";
+import type { ChatMessage, ContentBlock } from "../types/a2a";
+import ToolNotificationCard from "./ToolNotificationCard.vue";
 
-const props = defineProps<{ message: ChatMessage }>();
+const props = withDefaults(
+  defineProps<{ message: ChatMessage; showInlineStreamingDots?: boolean }>(),
+  { showInlineStreamingDots: true },
+);
 
 function formatTime(date: Date): string {
   return new Date(date).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function isToolBlock(block: ContentBlock): block is import("../types/a2a").ToolNotificationBlock {
+  return block.type === "tool";
 }
 </script>
 
@@ -23,18 +31,57 @@ function formatTime(date: Date): string {
       </div>
     </div>
     <div class="message-content">
-      <div :class="['bubble', message.role]">
-        <div class="bubble-text">
-          <template v-if="message.isStreaming && !message.text">
-            <span class="thinking-dots">
-              <span /><span /><span />
-            </span>
-          </template>
-          <template v-else>
-            {{ message.text }}
-          </template>
+      <!-- Block-based content (agent with tool notifications) -->
+      <template v-if="message.role === 'agent' && message.contentBlocks?.length">
+        <template v-for="(block, idx) in message.contentBlocks" :key="idx">
+          <div v-if="block.type === 'text'" :class="['bubble', message.role]">
+            <div class="bubble-text">
+              <template v-if="block.text">
+                {{ block.text }}
+                <span v-if="showInlineStreamingDots && message.isStreaming && idx === message.contentBlocks!.length - 1" class="thinking-dots inline">
+                  <span /><span /><span />
+                </span>
+              </template>
+              <template v-else-if="showInlineStreamingDots && message.isStreaming && idx === message.contentBlocks!.length - 1">
+                <span class="thinking-dots"><span /><span /><span /></span>
+              </template>
+            </div>
+          </div>
+          <ToolNotificationCard v-else-if="isToolBlock(block)" :block="block" />
+        </template>
+        <div v-if="showInlineStreamingDots && message.isStreaming" class="streaming-dots-row">
+          <span class="thinking-dots"><span /><span /><span /></span>
         </div>
-      </div>
+        <div v-if="message.awaitingInput" class="awaiting-input-hint" role="status">
+          <span class="awaiting-input-dot" aria-hidden="true" />
+          Waiting for your response
+        </div>
+      </template>
+      <!-- Legacy single-text content -->
+      <template v-else>
+        <div :class="['bubble', message.role]">
+          <div class="bubble-text">
+            <template v-if="showInlineStreamingDots && message.isStreaming && !message.text">
+              <span class="thinking-dots">
+                <span /><span /><span />
+              </span>
+            </template>
+            <template v-else-if="message.text">
+              {{ message.text }}
+              <span v-if="showInlineStreamingDots && message.isStreaming" class="thinking-dots inline">
+                <span /><span /><span />
+              </span>
+            </template>
+            <template v-else>
+              {{ message.text }}
+            </template>
+          </div>
+          <div v-if="message.awaitingInput" class="awaiting-input-hint" role="status">
+            <span class="awaiting-input-dot" aria-hidden="true" />
+            Waiting for your response
+          </div>
+        </div>
+      </template>
       <span class="message-time">{{ formatTime(props.message.timestamp) }}</span>
     </div>
   </div>

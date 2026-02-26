@@ -42,17 +42,15 @@ use std::{
 };
 
 use async_trait::async_trait;
-use baml_rt_core::{
-    ActivityOutcome,
-    ids::{ContextId, EventId, MessageId},
-};
-use graphqlite::{Connection, CypherResult, Graph, Row};
+use baml_rt_core::ids::{ContextId, EventId, MessageId};
+use graphqlite::{Connection, CypherResult, Graph, Row, Value as GraphqliteValue};
 use serde_json::{Map, Value};
 use tokio::sync::{Mutex as TokioMutex, oneshot};
 
 use crate::{
     cypher_build::{self, KeyStyle},
     error::{ProvenanceError, Result},
+    events::ProvEventData,
     graph_model::{ConversationReadModel, TOOL_CALL_ARGS_EDGE},
     graphqlite_config::GraphqliteStoreConfig,
     normalizer::{DefaultProvNormalizer, ProvNormalizer, validate_event},
@@ -78,18 +76,32 @@ const MSG_COL_CONTENT_ALT: &str = "a2a_content";
 
 const TOOL_COL_EVENT_ID: &str = "t.a2a_event_id";
 const TOOL_COL_TOOL_NAME: &str = "t.a2a_tool_name";
-const TOOL_COL_METADATA: &str = "toString(t.a2a_metadata)";
-const TOOL_COL_ARGS: &str = "toString(args.a2a_args)";
+const TOOL_COL_METADATA: &str = "t.a2a_metadata";
+const TOOL_COL_ARGS: &str = "args.a2a_args";
 const TOOL_COL_SUCCESS: &str = "t.a2a_success";
 const TOOL_COL_EVENT_ID_ALT: &str = "t.`a2a:event_id`";
 const TOOL_COL_TOOL_NAME_ALT: &str = "t.`a2a:tool_name`";
-const TOOL_COL_METADATA_ALT: &str = "toString(t.`a2a:metadata`)";
-const TOOL_COL_ARGS_ALT: &str = "toString(args.`a2a:args`)";
+const TOOL_COL_METADATA_ALT: &str = "t.`a2a:metadata`";
+const TOOL_COL_ARGS_ALT: &str = "args.`a2a:args`";
 const TOOL_COL_ROLE: &str = "used.prov_role";
 const TOOL_COL_ROLE_ALT: &str = "used.`prov:role`";
 const TOOL_COL_TARGET_TYPE: &str = "args.prov_type";
 const TOOL_COL_TARGET_TYPE_ALT: &str = "args.`prov:type`";
 const TOOL_COL_SUCCESS_ALT: &str = "t.`a2a:success`";
+
+const TOOL_PAYLOAD_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS provenance_tool_payload (
+    event_id TEXT PRIMARY KEY,
+    metadata_json TEXT NOT NULL,
+    args_json TEXT NOT NULL
+)";
+const UPSERT_TOOL_PAYLOAD_SQL: &str =
+    "INSERT INTO provenance_tool_payload (event_id, metadata_json, args_json)
+    VALUES (?1, ?2, ?3)
+    ON CONFLICT(event_id) DO UPDATE SET
+        metadata_json = excluded.metadata_json,
+        args_json = excluded.args_json";
+const SELECT_TOOL_PAYLOAD_SQL: &str =
+    "SELECT metadata_json, args_json FROM provenance_tool_payload WHERE event_id = ?1";
 
 /// Public alias so downstream crates can avoid a direct graphqlite dependency.
 pub type GraphCypherResult = CypherResult;
@@ -110,6 +122,14 @@ enum WorkerRequest {
         QueryParams,
         oneshot::Sender<std::result::Result<(), graphqlite::Error>>,
     ),
+    UpsertToolPayload(
+        ToolPayloadRecord,
+        oneshot::Sender<std::result::Result<(), graphqlite::Error>>,
+    ),
+    ReadToolPayload(
+        String,
+        oneshot::Sender<std::result::Result<Option<ToolPayloadRecord>, graphqlite::Error>>,
+    ),
 }
 
 /// Provenance-only store backed by GraphQLite (SQLite + Cypher).
@@ -128,6 +148,88 @@ struct MessageRow {
     content: Value,
 }
 
+#[derive(Debug, Clone)]
+struct ToolPayloadRecord {
+    event_id: String,
+    metadata_json: String,
+    args_json: String,
+}
+
+fn graphqlite_value_to_json(value: &GraphqliteValue) -> Value {
+    match value {
+        GraphqliteValue::Null => Value::Null,
+        GraphqliteValue::Bool(v) => Value::Bool(*v),
+        GraphqliteValue::Integer(v) => Value::Number((*v).into()),
+        GraphqliteValue::Float(v) => {
+            serde_json::Number::from_f64(*v).map_or(Value::Null, Value::Number)
+        }
+        GraphqliteValue::String(s) => parse_json_like_string(s),
+        GraphqliteValue::Array(items) => {
+            Value::Array(items.iter().map(graphqlite_value_to_json).collect())
+        }
+        GraphqliteValue::Object(map) => {
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (k, v) in map {
+                out.insert(k.clone(), graphqlite_value_to_json(v));
+            }
+            Value::Object(out)
+        }
+    }
+}
+
+fn read_json_column(
+    row: &Row,
+    primary_col: &str,
+    alt_col: &str,
+) -> std::result::Result<Value, graphqlite::Error> {
+    if let Some(value) = row
+        .get_value(primary_col)
+        .or_else(|| row.get_value(alt_col))
+    {
+        return Ok(graphqlite_value_to_json(value));
+    }
+    if let Ok(raw) = row
+        .get::<String>(primary_col)
+        .or_else(|_| row.get::<String>(alt_col))
+    {
+        return Ok(parse_json_like_string(&raw));
+    }
+    Err(graphqlite::Error::ColumnNotFound(primary_col.to_string()))
+}
+
+fn parse_json_like_string(raw: &str) -> Value {
+    let parsed =
+        serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.to_string()));
+    if let Value::String(inner) = parsed {
+        let trimmed = inner.trim();
+        if trimmed.starts_with('{') || trimmed.starts_with('[') {
+            return serde_json::from_str::<Value>(&inner).unwrap_or(Value::String(inner));
+        }
+        return Value::String(inner);
+    }
+    parsed
+}
+
+fn init_tool_payload_table(graph: &Graph) -> std::result::Result<(), graphqlite::Error> {
+    graph
+        .connection()
+        .sqlite_connection()
+        .execute_batch(TOOL_PAYLOAD_TABLE_SQL)?;
+    Ok(())
+}
+
+fn tool_payload_record_from_event(event: &crate::events::ProvEvent) -> Option<ToolPayloadRecord> {
+    match event.data() {
+        ProvEventData::ToolCallStarted { args, metadata, .. }
+        | ProvEventData::ToolCallCompleted { args, metadata, .. } => Some(ToolPayloadRecord {
+            event_id: event.id().as_str().to_string(),
+            metadata_json: serde_json::to_string(metadata).unwrap_or_else(|_| "{}".to_string()),
+            args_json: serde_json::to_string(args).unwrap_or_else(|_| "{}".to_string()),
+        }),
+        _ => None,
+    }
+}
+
 impl MessageRow {
     fn from_row(row: &Row) -> std::result::Result<Self, graphqlite::Error> {
         let event_id: String = row
@@ -142,10 +244,7 @@ impl MessageRow {
         let role: String = row
             .get(MSG_COL_ROLE)
             .or_else(|_| row.get(MSG_COL_ROLE_ALT))?;
-        let content_str: String = row
-            .get(MSG_COL_CONTENT)
-            .or_else(|_| row.get(MSG_COL_CONTENT_ALT))?;
-        let content = serde_json::from_str(&content_str).unwrap_or(Value::String(content_str));
+        let content = read_json_column(row, MSG_COL_CONTENT, MSG_COL_CONTENT_ALT)?;
         Ok(Self {
             event_id,
             message_id,
@@ -164,7 +263,7 @@ struct ToolCallRow {
     args: Value,
     role: String,
     target_type: String,
-    outcome: ActivityOutcome,
+    success: Option<bool>,
 }
 
 fn parse_bool_string(raw: &str) -> Option<bool> {
@@ -205,15 +304,6 @@ fn decode_optional_bool(row: &Row, primary_col: &str, alt_col: &str) -> Option<b
     None
 }
 
-/// Decode activity outcome from DB: NULL / missing → InProgress, true → Success, false → Failed.
-fn decode_activity_outcome(row: &Row, primary_col: &str, alt_col: &str) -> ActivityOutcome {
-    match decode_optional_bool(row, primary_col, alt_col) {
-        None => ActivityOutcome::InProgress,
-        Some(true) => ActivityOutcome::Success,
-        Some(false) => ActivityOutcome::Failed,
-    }
-}
-
 impl ToolCallRow {
     fn from_row(row: &Row) -> std::result::Result<Self, graphqlite::Error> {
         let event_id: String = row
@@ -222,20 +312,8 @@ impl ToolCallRow {
         let tool_name: String = row
             .get(TOOL_COL_TOOL_NAME)
             .or_else(|_| row.get(TOOL_COL_TOOL_NAME_ALT))?;
-        let metadata_str: String = row
-            .get(TOOL_COL_METADATA)
-            .or_else(|_| row.get(TOOL_COL_METADATA_ALT))?;
-        let args_str: String = row
-            .get(TOOL_COL_ARGS)
-            .or_else(|_| row.get(TOOL_COL_ARGS_ALT))?;
-        let metadata = serde_json::from_str(&metadata_str).unwrap_or_else(|e| {
-            tracing::debug!(error = %e, "ToolCallRow: metadata parse failed, using raw string");
-            Value::String(metadata_str)
-        });
-        let args = serde_json::from_str(&args_str).unwrap_or_else(|e| {
-            tracing::debug!(error = %e, "ToolCallRow: args parse failed, using raw string");
-            Value::String(args_str)
-        });
+        let metadata = read_json_column(row, TOOL_COL_METADATA, TOOL_COL_METADATA_ALT)?;
+        let args = read_json_column(row, TOOL_COL_ARGS, TOOL_COL_ARGS_ALT)?;
         let role: String = row
             .get(TOOL_COL_ROLE)
             .or_else(|_| row.get(TOOL_COL_ROLE_ALT))
@@ -244,7 +322,7 @@ impl ToolCallRow {
             .get(TOOL_COL_TARGET_TYPE)
             .or_else(|_| row.get(TOOL_COL_TARGET_TYPE_ALT))
             .unwrap_or_default();
-        let outcome = decode_activity_outcome(row, TOOL_COL_SUCCESS, TOOL_COL_SUCCESS_ALT);
+        let success = decode_optional_bool(row, TOOL_COL_SUCCESS, TOOL_COL_SUCCESS_ALT);
         Ok(Self {
             event_id,
             tool_name,
@@ -252,12 +330,12 @@ impl ToolCallRow {
             args,
             role,
             target_type,
-            outcome,
+            success,
         })
     }
 
     fn is_completed(&self) -> bool {
-        self.outcome.is_completed()
+        self.success.is_some()
     }
 
     fn contract_holds(&self) -> bool {
@@ -454,6 +532,7 @@ fn build_store_from_config(
         })?;
         GraphqliteProvenanceStore::open_graph(config).map_err(map_graphqlite_error)?
     };
+    init_tool_payload_table(&graph).map_err(map_graphqlite_error)?;
     let (request_tx, request_rx) = mpsc::sync_channel::<WorkerRequest>(256);
     thread::spawn(move || {
         let graph = graph;
@@ -475,6 +554,57 @@ fn build_store_from_config(
                     let _guard = span.enter();
                     tracing::debug!(query_text = %query, params = ?params, "cypher execute");
                     let result = run_query_builder_with_params(&graph, &query, &params).map(|_| ());
+                    if reply.send(result).is_err() {
+                        tracing::debug!(
+                            "worker reply dropped (caller likely timed out or dropped)"
+                        );
+                    }
+                }
+                WorkerRequest::UpsertToolPayload(payload, reply) => {
+                    let result = graph
+                        .connection()
+                        .sqlite_connection()
+                        .execute(
+                            UPSERT_TOOL_PAYLOAD_SQL,
+                            (
+                                &payload.event_id,
+                                &payload.metadata_json,
+                                &payload.args_json,
+                            ),
+                        )
+                        .map(|_| ())
+                        .map_err(graphqlite::Error::from);
+                    if reply.send(result).is_err() {
+                        tracing::debug!(
+                            "worker reply dropped (caller likely timed out or dropped)"
+                        );
+                    }
+                }
+                WorkerRequest::ReadToolPayload(event_id, reply) => {
+                    let row = graph.connection().sqlite_connection().query_row(
+                        SELECT_TOOL_PAYLOAD_SQL,
+                        [event_id.as_str()],
+                        |row| {
+                            Ok(ToolPayloadRecord {
+                                event_id: event_id.clone(),
+                                metadata_json: row.get::<_, String>(0)?,
+                                args_json: row.get::<_, String>(1)?,
+                            })
+                        },
+                    );
+                    let result = match row {
+                        Ok(record) => Ok(Some(record)),
+                        Err(e) => {
+                            let msg = e.to_string();
+                            if msg.contains("Query returned no rows")
+                                || msg.contains("query returned no rows")
+                            {
+                                Ok(None)
+                            } else {
+                                Err(graphqlite::Error::from(e))
+                            }
+                        }
+                    };
                     if reply.send(result).is_err() {
                         tracing::debug!(
                             "worker reply dropped (caller likely timed out or dropped)"
@@ -553,6 +683,35 @@ impl GraphqliteProvenanceStore {
     pub async fn run_cypher_execute(&self, query: &str, params: &QueryParams) -> Result<()> {
         self.run_cypher_write(query, params).await
     }
+
+    async fn upsert_tool_payload(&self, payload: ToolPayloadRecord) -> Result<()> {
+        let serial = CYPHER_REQUEST_SERIAL.get_or_init(|| TokioMutex::new(()));
+        let _guard = serial.lock().await;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.request_tx
+            .send(WorkerRequest::UpsertToolPayload(payload, reply_tx))
+            .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
+        let result = reply_rx
+            .await
+            .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
+        result.map_err(map_graphqlite_error)
+    }
+
+    async fn read_tool_payload(&self, event_id: &str) -> Result<Option<ToolPayloadRecord>> {
+        let serial = CYPHER_REQUEST_SERIAL.get_or_init(|| TokioMutex::new(()));
+        let _guard = serial.lock().await;
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.request_tx
+            .send(WorkerRequest::ReadToolPayload(
+                event_id.to_string(),
+                reply_tx,
+            ))
+            .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
+        let result = reply_rx
+            .await
+            .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
+        result.map_err(map_graphqlite_error)
+    }
 }
 
 #[async_trait]
@@ -560,6 +719,7 @@ impl ProvenanceWriter for GraphqliteProvenanceStore {
     async fn add_event(&self, event: crate::events::ProvEvent) -> Result<()> {
         let _start = Instant::now();
         validate_event(&event)?;
+        let tool_payload = tool_payload_record_from_event(&event);
         let normalized = self.normalizer.normalize(&event)?;
         let statements = cypher_build::build_queries_with_key_style_params(
             &normalized,
@@ -568,6 +728,9 @@ impl ProvenanceWriter for GraphqliteProvenanceStore {
         for stmt in &statements {
             let params = require_object_params(&stmt.params)?;
             self.run_cypher_write(&stmt.query, &params).await?;
+        }
+        if let Some(payload) = tool_payload {
+            self.upsert_tool_payload(payload).await?;
         }
         Ok(())
     }
@@ -675,18 +838,23 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
             if !tool.is_completed() {
                 continue;
             }
-            let phase = ToolSessionPhase::from_metadata(&tool.metadata);
-            let result = tool
-                .metadata
+            let mut metadata = tool.metadata.clone();
+            let mut args = tool.args.clone();
+            if let Some(payload) = self.read_tool_payload(&tool.event_id).await? {
+                metadata = parse_json_like_string(&payload.metadata_json);
+                args = parse_json_like_string(&payload.args_json);
+            }
+            let phase = ToolSessionPhase::from_metadata(&metadata);
+            let result = metadata
                 .get("result")
                 .cloned()
                 .unwrap_or(Value::Object(serde_json::Map::new()));
-            let error = metadata_error(&tool.metadata);
+            let error = metadata_error(&metadata);
             let has_outcome = has_meaningful_result(&result) || error.is_some();
             let include_call = !matches!(
                 phase,
                 ToolSessionPhase::Open | ToolSessionPhase::Finish | ToolSessionPhase::Abort
-            ) && (!is_empty_object(&tool.args) || has_outcome);
+            ) && (!is_empty_object(&args) || has_outcome);
 
             if include_call {
                 items.push(ProvenanceConversationContextItem {
@@ -696,7 +864,7 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
                     content: serde_json::json!({
                         "tool_call": {
                             "name": tool.tool_name,
-                            "args": tool.args,
+                            "args": args,
                             "fsm_phase": phase.label()
                         }
                     }),

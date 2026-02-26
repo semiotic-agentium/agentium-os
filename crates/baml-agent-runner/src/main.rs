@@ -50,6 +50,8 @@ use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
 use baml_tools_calculator as _;
 #[cfg(feature = "clickup")]
 use baml_tools_clickup as _;
+#[cfg(feature = "memory")]
+use baml_tools_memory as _;
 #[cfg(feature = "notion")]
 use baml_tools_notion as _;
 use baml_tools_system::SystemBundle;
@@ -160,6 +162,12 @@ impl AgentPackage {
         tool_registry.register_bundle(ClaudeSessionBundle::new(Arc::new(
             AgentWorkspaceRegistry::new(claude_workspace_root),
         )))?;
+
+        #[cfg(feature = "memory")]
+        if self.manifest.tools.iter().any(|t| t.starts_with("memory/")) {
+            let memory_bundle = baml_tools_memory::MemoryBundle::new(&self.manifest.name)?;
+            tool_registry.register_bundle(memory_bundle)?;
+        }
 
         register_manifest_tools(
             runtime_manager.tool_registry().as_ref(),
@@ -515,8 +523,8 @@ impl AgentRunner {
 
             let mut request_value: Value = match serde_json::from_str::<Value>(line) {
                 Ok(value) if value.is_object() => value,
-                Ok(_) => wrap_plaintext_message(line),
-                Err(_) => wrap_plaintext_message(line),
+                Ok(_) => wrap_plaintext_message(line)?,
+                Err(_) => wrap_plaintext_message(line)?,
             };
 
             let request_id = a2a::extract_jsonrpc_id(&request_value);
@@ -616,8 +624,7 @@ impl AgentRunner {
             if let Some(agent_name) = agent_name {
                 return Ok((agent_name, request.clone()));
             }
-            if agents.len() == 1 {
-                let agent_name = agents.keys().next().cloned().unwrap_or_default();
+            if let Some(agent_name) = select_implicit_stdio_agent(&agents) {
                 return Ok((agent_name, request.clone()));
             }
             return Err(BamlRtError::InvalidArgument(
@@ -650,8 +657,7 @@ impl AgentRunner {
             (agent_name, method_base)
         } else if let Some((agent_name, method_name)) = split_agent_method(&method_base, &agents) {
             (agent_name, method_name)
-        } else if agents.len() == 1 {
-            let agent_name = agents.keys().next().cloned().unwrap_or_default();
+        } else if let Some(agent_name) = select_implicit_stdio_agent(&agents) {
             (agent_name, method_base)
         } else {
             return Err(BamlRtError::InvalidArgument(
@@ -861,6 +867,19 @@ fn split_agent_method(
     None
 }
 
+fn select_implicit_stdio_agent(agents: &HashMap<String, BootedAgent>) -> Option<String> {
+    if agents.len() == 1 {
+        return agents.keys().next().cloned();
+    }
+
+    // Preserve backwards-compatible plaintext routing for multi-agent stdio sessions.
+    if agents.contains_key("coordinator-agent") {
+        return Some("coordinator-agent".to_string());
+    }
+
+    None
+}
+
 fn is_a2a_method(method: &str) -> bool {
     method.starts_with("message/") || method.starts_with("tasks/") || method.starts_with("agent/")
 }
@@ -910,7 +929,7 @@ fn stdio_task_id() -> TaskId {
         .clone()
 }
 
-fn wrap_plaintext_message(text: &str) -> Value {
+fn wrap_plaintext_message(text: &str) -> Result<Value> {
     let seq = MESSAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let message_id = A2aMessageId::outgoing(DerivedId::new(format!("cli-msg-{seq}")));
     let message = Message {
@@ -943,7 +962,8 @@ fn wrap_plaintext_message(text: &str) -> Value {
         params: Some(serde_json::to_value(params).unwrap_or(Value::Null)),
         id: Some(JSONRPCId::Null),
     };
-    serde_json::to_value(request).unwrap_or(Value::Null)
+    serde_json::to_value(request)
+        .map_err(|e| BamlRtError::InvalidArgument(format!("Failed to build stdio request: {e}")))
 }
 
 /// Provenance DB: in-memory (default) or file-backed SQLite. No FalkorDB.
@@ -1215,7 +1235,7 @@ async fn main() -> anyhow::Result<()> {
         println!("  - {}", agent_name);
     }
 
-    if let Some(bind) = &config.serve_http {
+    let http_handle = if let Some(bind) = config.serve_http.clone() {
         let mermaid = match ready.runner().provenance_config() {
             ProvenanceConfig::Graphqlite(store) => {
                 Some(Arc::new(MermaidServiceImpl::new(store.clone()))
@@ -1223,17 +1243,53 @@ async fn main() -> anyhow::Result<()> {
             }
         };
         let registry_impl = ready.registry();
-        let web_dir = config.web_dir.as_deref();
+        let web_dir = config.web_dir.clone();
         info!(bind = %bind, web_dir = ?web_dir, "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a/sse, GET /mermaid/..., GET /openapi.json)");
-        baml_rt_api::serve(registry_impl, bind, mermaid, web_dir)
-            .await
-            .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))?;
-        return Ok(());
-    }
+        Some(tokio::spawn(async move {
+            baml_rt_api::serve(registry_impl, &bind, mermaid, web_dir.as_deref())
+                .await
+                .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))
+        }))
+    } else {
+        None
+    };
 
-    if config.a2a_stdio {
-        ready.run_a2a_stdio().await?;
-        return Ok(());
+    match (config.a2a_stdio, http_handle) {
+        (true, Some(mut handle)) => {
+            let stdio_fut = ready.run_a2a_stdio();
+            tokio::pin!(stdio_fut);
+            let mut http_exited = false;
+
+            loop {
+                tokio::select! {
+                    stdio_result = &mut stdio_fut => {
+                        if !http_exited && !handle.is_finished() {
+                            info!("A2A stdio loop ended; stopping HTTP API server task");
+                            handle.abort();
+                        }
+                        stdio_result?;
+                        break;
+                    }
+                    http_result = &mut handle, if !http_exited => {
+                        match http_result {
+                            Ok(Ok(())) => warn!("HTTP API server exited; continuing A2A stdio loop"),
+                            Ok(Err(err)) => warn!(error = %err, "HTTP API server exited with error; continuing A2A stdio loop"),
+                            Err(join_err) if join_err.is_cancelled() => info!("HTTP API server task was cancelled; continuing A2A stdio loop"),
+                            Err(join_err) => warn!("HTTP API server task join error: {join_err}; continuing A2A stdio loop"),
+                        }
+                        http_exited = true;
+                    }
+                }
+            }
+        }
+        (true, None) => {
+            ready.run_a2a_stdio().await?;
+        }
+        (false, Some(handle)) => {
+            handle.await??;
+            return Ok(());
+        }
+        (false, None) => {}
     }
 
     info!("Agent Runner completed successfully");
@@ -1274,6 +1330,88 @@ globalThis.onChatMessage = async function(_message) {
             .build()
             .await
             .expect("build test agent")
+    }
+
+    async fn insert_test_agent(runner: &AgentRunner, package_name: &str) {
+        let package = AgentPackageName::parse(package_name).expect("valid package name");
+        let route_key = AgentRouteKey::new(package.clone(), AgentInstanceId::default());
+        let manifest = AgentManifest {
+            name: package_name.to_string(),
+            version: "1.0.0".to_string(),
+            entry_point: "dist/index.js".to_string(),
+            signature: format!("{package_name}@1.0.0"),
+            tools: vec![],
+            discovery: None,
+        };
+        runner.insert_agent(
+            package_name.to_string(),
+            route_key,
+            BootedAgent {
+                agent: build_test_agent().await,
+                manifest,
+            },
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_a2a_request_defaults_to_coordinator_for_plaintext_with_multiple_agents() {
+        let runner = AgentRunner::new(
+            test_provenance_config(),
+            None,
+            ToolAccessPolicy::default(),
+            None,
+        );
+        insert_test_agent(&runner, "coordinator-agent").await;
+        insert_test_agent(&runner, "notion-agent").await;
+        insert_test_agent(&runner, "clickup-agent").await;
+
+        let mut request =
+            wrap_plaintext_message("in clickup agent, what are my tasks in progress?")
+                .expect("wrap plaintext request");
+        let (agent_name, prepared) = runner
+            .prepare_a2a_request(&mut request)
+            .expect("coordinator implicit routing");
+
+        assert_eq!(agent_name, "coordinator-agent");
+        assert_eq!(
+            prepared
+                .get("method")
+                .and_then(Value::as_str)
+                .expect("method"),
+            "message.sendStream"
+        );
+        assert_eq!(
+            prepared
+                .get("params")
+                .and_then(|params| params.get("message"))
+                .and_then(|message| message.get("metadata"))
+                .and_then(|metadata| metadata.get("agent"))
+                .and_then(Value::as_str)
+                .expect("message metadata agent"),
+            "coordinator-agent"
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_a2a_request_still_errors_without_coordinator_when_multiple_agents_loaded() {
+        let runner = AgentRunner::new(
+            test_provenance_config(),
+            None,
+            ToolAccessPolicy::default(),
+            None,
+        );
+        insert_test_agent(&runner, "notion-agent").await;
+        insert_test_agent(&runner, "clickup-agent").await;
+
+        let mut request = wrap_plaintext_message("list tasks").expect("wrap plaintext request");
+        let err = runner
+            .prepare_a2a_request(&mut request)
+            .expect_err("missing explicit agent should still fail");
+
+        assert!(
+            err.to_string().contains("A2A request missing agent"),
+            "expected missing-agent error, got: {err}"
+        );
     }
 
     #[tokio::test]

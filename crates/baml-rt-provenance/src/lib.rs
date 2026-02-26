@@ -9,6 +9,7 @@ pub mod builders;
 pub mod bus_subscriber;
 pub mod cypher_build;
 pub use cypher_build::{CypherStatement, KeyStyle};
+pub mod context_metrics_queries;
 pub mod document;
 pub mod effect_subscriber;
 pub mod error;
@@ -31,7 +32,7 @@ pub use a2a_graph_event_recorder::{
     A2aGraphEventRecorder, ArtifactUpdateContext, StatusUpdateContext, record_artifact_update,
     record_status_update,
 };
-pub use baml_rt_vocabulary::{A2aGraphStore, TaskSubgraphNode, TaskSubgraphUpdateNode};
+pub use baml_rt_vocabulary::{A2aGraphStore, GraphStore, TaskSubgraphNode, TaskSubgraphUpdateNode};
 pub use bus_subscriber::ProvenanceBusSubscriber;
 pub use effect_subscriber::ProvenanceEffectSubscriber;
 pub use error::ProvenanceError;

@@ -160,7 +160,13 @@ pub(super) async fn register_await_helper(bridge: &QuickJSBridge) -> Result<()> 
                     .lock()
                     .map_err(|_| quickjs_runtime::jsutils::JsError::new_str("eval_results lock poisoned"))?;
                 if !guard.contains_key(&key) {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Missing eval result slot for token"));
+                    // Late promise resolution after host cleanup (e.g. bounded resume poll timeout).
+                    // Ignore stale writes so we do not surface an unhandled rejection in JS.
+                    tracing::debug!(
+                        token = %key.0,
+                        "stale eval result: token slot already removed"
+                    );
+                    return Ok(JsValueFacade::Undefined);
                 }
                 guard.insert(key.clone(), Some(json_str));
             }
