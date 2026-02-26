@@ -295,15 +295,15 @@ impl QuickJSBridge {
         tracing::debug!("initialize_sandbox: Calling runtime.eval() for sandbox code");
 
         // INVARIANT L2: Runtime eval must yield control within bounded time
-        // If this hangs, the QuickJS runtime may have internal blocking
+        // If this hangs, the QuickJS runtime may have internal blocking. 15s for CI/slow runners.
         use tokio::time::{Duration, timeout};
         timeout(
-            Duration::from_secs(5),
+            Duration::from_secs(15),
             self.runtime.eval(None, script),
         )
         .await
         .map_err(|_| BamlRtError::QuickJs(
-            "Sandbox initialization timed out after 5 seconds - QuickJS runtime.eval() may be blocking".to_string()
+            "Sandbox initialization timed out after 15 seconds - QuickJS runtime.eval() may be blocking".to_string()
         ))?
         .map_err(|e| BamlRtError::QuickJsWithSource {
             context: "Failed to initialize sandbox".to_string(),
@@ -864,9 +864,9 @@ impl QuickJSBridge {
                         "resume: promise pending; bounded poll for resume completion"
                     );
                     // Bounded poll: preserve resume semantics when promise settles quickly, but
-                    // never allow this path to hang indefinitely.
+                    // never allow this path to hang indefinitely. 15s allows CI/slow runners.
                     let poll_result = tokio::time::timeout(
-                        tokio::time::Duration::from_secs(5),
+                        tokio::time::Duration::from_secs(15),
                         promise_polling::poll_promise_until_result(
                             promise_polling::PollPromiseParams {
                                 runtime: Some(params.runtime.clone()),

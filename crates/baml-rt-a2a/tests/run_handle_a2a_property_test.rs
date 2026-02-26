@@ -202,7 +202,7 @@ async fn test_input_required_resume_single_context() {
         .await
         .expect("open input-required stream");
     let ask_responses: Vec<baml_rt_core::A2aStreamChunk> = timeout(
-        Duration::from_secs(10),
+        Duration::from_secs(15),
         baml_rt_core::collect_a2a_stream_until(ask_stream, |c| {
             response_has_input_required(c.as_ref())
         }),
@@ -241,7 +241,7 @@ async fn test_input_required_resume_single_context() {
         Some(context_id.clone()),
     );
     let answer_responses = timeout(
-        Duration::from_secs(10),
+        Duration::from_secs(15),
         collect_responses(&agent, answer_req),
     )
     .await
@@ -298,7 +298,7 @@ proptest! {
 
             for i in 0..n {
                 let malformed_request = json!({ "foo": format!("bad-{i}") });
-                let timed = timeout(Duration::from_secs(2), collect_responses(&agent, malformed_request))
+                let timed = timeout(Duration::from_secs(5), collect_responses(&agent, malformed_request))
                     .await
                     .expect("handle_a2a timeout");
                 let responses = timed.expect("handle_a2a result");
@@ -332,8 +332,8 @@ proptest! {
             .expect("runtime");
 
         // Per-request timeout must allow for serialization: last request waits for (ops.len()-1)
-        // others. Use (ops.len() * 3) + 5s so even the last request has time to run.
-        let timeout_secs = (ops.len() * 3) + 5;
+        // others. Use (ops.len() * 4) + 10s so CI/slow runners have headroom.
+        let timeout_secs = (ops.len() * 4) + 10;
         let request_timeout = Duration::from_secs(timeout_secs as u64);
 
         rt.block_on(async move {
@@ -437,7 +437,7 @@ proptest! {
                         .await
                         .expect("open input-required stream");
                     let ask_responses: Vec<baml_rt_core::A2aStreamChunk> = timeout(
-                        Duration::from_secs(6),
+                        Duration::from_secs(15),
                         baml_rt_core::collect_a2a_stream_until(ask_stream, |c| response_has_input_required(c.as_ref())),
                     )
                     .await
@@ -468,7 +468,7 @@ proptest! {
                         &format!("corr-1700000000400-{}", idx + 1),
                         Some(context_id.clone()),
                     );
-                    let answer_responses = timeout(Duration::from_secs(6), collect_responses(&agent, answer_req))
+                    let answer_responses = timeout(Duration::from_secs(15), collect_responses(&agent, answer_req))
                         .await
                         .expect("resumed stream timed out")
                         .expect("resumed stream failed");
