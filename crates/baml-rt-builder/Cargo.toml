@@ -18,6 +18,7 @@ baml-rt-tools-claude = { path = "../tools/claude" }
 baml-tools-system = { path = "../tools/system" }
 baml-tools-calculator = { path = "../tools/calculator" }
 baml-tools-clickup = { path = "../tools/clickup", optional = true }
+baml-tools-memory = { path = "../tools/memory", optional = true }
 baml-tools-notion = { path = "../tools/notion", optional = true }
 baml-runtime = { workspace = true }
 baml-types = { workspace = true }
@@ -52,5 +53,6 @@ insta = { workspace = true }
 [features]
 default = []
 clickup = ["dep:baml-tools-clickup"]
+memory = ["dep:baml-tools-memory"]
 notion = ["dep:baml-tools-notion"]
 http-tools = ["clickup", "notion"]

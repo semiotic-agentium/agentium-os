@@ -1201,6 +1201,7 @@ dependencies = [
  "baml-runtime",
  "baml-tools-calculator",
  "baml-tools-clickup",
+ "baml-tools-memory",
  "baml-tools-notion",
  "baml-tools-system",
  "baml-types",

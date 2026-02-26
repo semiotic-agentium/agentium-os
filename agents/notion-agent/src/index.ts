@@ -80,6 +80,30 @@ function wantsSummary(text: string): boolean {
   return keywords.some((k) => lowered.includes(k));
 }
 
+function normalizeUserMessage(text: string): string {
+  const trimmed = text.trim();
+  const notionDirective = trimmed.match(/^use\s+notion\s*[:,-]?\s*/i);
+  if (!notionDirective) return trimmed;
+  const withoutDirective = trimmed.slice(notionDirective[0].length).trim();
+  return withoutDirective.length > 0 ? withoutDirective : trimmed;
+}
+
+function looksLikePlaceholderSummary(message: string): boolean {
+  const lowered = message.toLowerCase();
+  const hasStructuredSummary =
+    lowered.includes("commitments:") ||
+    lowered.includes("conflicts:") ||
+    lowered.includes("missing:") ||
+    lowered.includes("sources:");
+  if (hasStructuredSummary) return false;
+  return (
+    lowered.includes("let me provide") ||
+    lowered.includes("i can summarize") ||
+    lowered.includes("i can provide") ||
+    lowered.includes("i already have")
+  );
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object";
 }
@@ -219,7 +243,8 @@ async function summarizeBlocks(args: {
 async function onChatMessage(message: ChatMessageWithToken): Promise<void> {
   const s = session(message);
   await s.run(async () => {
-    const text = s.text() || "unknown";
+    const originalText = s.text() || "unknown";
+    const text = normalizeUserMessage(originalText);
 
     let toolResult: NotionActionResult = null;
     const directId = extractNotionId(text);
@@ -240,6 +265,23 @@ async function onChatMessage(message: ChatMessageWithToken): Promise<void> {
     }
 
     if (isReadOnlyResponse(toolResult)) {
+      if (wantsSummary(text) && looksLikePlaceholderSummary(toolResult.message)) {
+        const fallback = await executeNotionAction({
+          query: text,
+          page_size: 5,
+        });
+        if (fallback && fallback.pages && fallback.pages.length > 0) {
+          let response = "I found several potentially relevant Notion pages. Pick one and I will summarize it:";
+          response += formatPages(fallback.pages);
+          response +=
+            "\n\nNext step:\n- Reply with one page URL or page ID from the list above.";
+          return { message: response };
+        }
+        return {
+          message:
+            "I need a specific Notion page to produce a reliable summary. Share a page URL/ID, or refine the query.",
+        };
+      }
       const nextStep = toolResult.next_step
         ? `\n\nNext step:\n- ${toolResult.next_step}`
         : "";

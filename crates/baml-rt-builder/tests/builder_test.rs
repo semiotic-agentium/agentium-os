@@ -203,6 +203,11 @@ async fn test_full_integration_package_load_execute() {
                     chunks.push(chunk);
                 }
             }
+            baml_rt_quickjs::StreamOutput::RelayChunk(chunk) => {
+                if chunk != serde_json::Value::Null {
+                    chunks.push(chunk);
+                }
+            }
             baml_rt_quickjs::StreamOutput::Terminal(_, c) => {
                 completion = Some(c);
                 break;
