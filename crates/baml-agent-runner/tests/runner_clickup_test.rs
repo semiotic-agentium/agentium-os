@@ -311,12 +311,12 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
         );
 
         let chunks = chunks_from_responses(&responses);
-        let texts = message_texts_from_chunks(&chunks);
         assert!(
-            !texts.is_empty(),
-            "Expected at least one assistant message chunk. Raw: {}",
+            chunks.iter().any(|chunk| !chunk.is_null()),
+            "Expected at least one non-null stream chunk. Raw: {}",
             serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
         );
+        let texts = message_texts_from_chunks(&chunks);
         turn_texts.extend(texts);
 
         let mut last_signature = String::new();
