@@ -423,7 +423,7 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
     );
 
     let mermaid_url = format!(
-        "{}/mermaid/context/{}",
+        "{}/contexts/{}/mermaid",
         runner_api.base_url,
         context_id.as_str()
     );
@@ -433,7 +433,7 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
         .expect("mermaid request failed");
     assert!(
         mermaid_response.status().is_success(),
-        "Expected 200 from /mermaid/context, got {}",
+        "Expected 200 from /contexts/<context_id>/mermaid, got {}",
         mermaid_response.status()
     );
     let mermaid = mermaid_response.text().await.expect("mermaid body");

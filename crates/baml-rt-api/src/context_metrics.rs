@@ -58,7 +58,7 @@ pub struct ContextSessionMetricsDto {
     pub tokens_total: TokenUsageDto,
 }
 
-/// API response for `GET /context/{context_id}/metrics`.
+/// API response for `GET /contexts/{context_id}/metrics`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ContextMetricsResponseDto {
     pub context_id: String,

@@ -233,7 +233,7 @@ pub async fn post_a2a_sse(
 /// Get provenance graph as a Mermaid sequence diagram for an A2A context.
 #[utoipa::path(
     get,
-    path = "/mermaid/context/{context_id}",
+    path = "/contexts/{context_id}/mermaid",
     tag = "mermaid",
     summary = "Mermaid diagram by context",
     description = "Returns the provenance subgraph for the given A2A context ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with GraphQLite provenance.",
@@ -298,7 +298,7 @@ pub async fn get_mermaid_context(
 /// Get provenance graph as a Mermaid sequence diagram for an A2A task.
 #[utoipa::path(
     get,
-    path = "/mermaid/task/{task_id}",
+    path = "/tasks/{task_id}/mermaid",
     tag = "mermaid",
     summary = "Mermaid diagram by task",
     description = "Returns the provenance subgraph for the given A2A task ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with GraphQLite provenance.",
@@ -363,7 +363,7 @@ pub async fn get_mermaid_task(
 /// Get context token/call metrics aggregated from provenance graph data.
 #[utoipa::path(
     get,
-    path = "/context/{context_id}/metrics",
+    path = "/contexts/{context_id}/metrics",
     tag = "provenance",
     summary = "Context metrics by context_id",
     description = "Returns turn-level and session-level token/call/duration metrics for the given A2A context ID. Available when GraphQLite-backed provenance is configured.",

@@ -38,7 +38,8 @@ use baml_rt_core::{
 };
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_provenance::{
-    AgentType, GraphExporter, GraphqliteStoreBuilder, ProvEvent, ProvenanceWriter, ToolIndexConfig,
+    AgentType, GraphExporter, GraphQueryParams, GraphStore, GraphqliteStoreBuilder, ProvEvent,
+    ProvenanceWriter, ToolIndexConfig, context_metrics_queries,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
     index_tools,
 };
@@ -56,7 +57,7 @@ use baml_tools_memory as _;
 use baml_tools_notion as _;
 use baml_tools_system::SystemBundle;
 use clap::Parser;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
     sync::Mutex,
@@ -1118,6 +1119,153 @@ impl baml_rt_api::MermaidService for MermaidServiceImpl {
     }
 }
 
+/// Context metrics service backed by GraphQLite provenance.
+struct ContextMetricsServiceImpl {
+    store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+}
+
+impl ContextMetricsServiceImpl {
+    fn new(store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>) -> Self {
+        Self { store }
+    }
+}
+
+fn metrics_query_params(context_id: &str) -> GraphQueryParams {
+    let mut params = Map::new();
+    params.insert(
+        "context_id".to_string(),
+        Value::String(context_id.to_string()),
+    );
+    params
+}
+
+fn value_as_u64(value: Option<&Value>) -> u64 {
+    match value {
+        Some(Value::Number(n)) => n
+            .as_u64()
+            .or_else(|| n.as_i64().map(|v| v.max(0) as u64))
+            .unwrap_or(0),
+        Some(Value::String(s)) => s.parse::<u64>().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn value_as_string(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(s)) => s.clone(),
+        Some(v) => v.to_string(),
+        None => String::new(),
+    }
+}
+
+#[async_trait::async_trait]
+impl baml_rt_api::ContextMetricsService for ContextMetricsServiceImpl {
+    async fn metrics_for_context(
+        &self,
+        context_id: &str,
+    ) -> std::result::Result<baml_rt_api::ContextMetricsResponseDto, baml_rt_api::ContextMetricsError>
+    {
+        let params = metrics_query_params(context_id);
+
+        let turn_rows = self
+            .store
+            .query(context_metrics_queries::TURN_TOTALS_BY_CONTEXT, &params)
+            .await
+            .map_err(|e| {
+                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(e)))
+            })?;
+
+        let session_rows = self
+            .store
+            .query(context_metrics_queries::SESSION_TOTALS_BY_CONTEXT, &params)
+            .await
+            .map_err(|e| {
+                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(e)))
+            })?;
+
+        let prompt_rows = self
+            .store
+            .query(context_metrics_queries::USER_PROMPTS_BY_CONTEXT, &params)
+            .await
+            .map_err(|e| {
+                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(e)))
+            })?;
+
+        let mut prompt_count_by_message: HashMap<String, u64> = HashMap::new();
+        for row in prompt_rows {
+            let message_id = value_as_string(row.get("message_id"));
+            if message_id.is_empty() {
+                continue;
+            }
+            prompt_count_by_message.insert(message_id, value_as_u64(row.get("user_prompt_count")));
+        }
+
+        let mut turns = Vec::with_capacity(turn_rows.len());
+        for row in turn_rows {
+            let message_id = value_as_string(row.get("message_id"));
+            if message_id.is_empty() {
+                continue;
+            }
+            let user_prompt_count = prompt_count_by_message.remove(&message_id).unwrap_or(0);
+            turns.push(baml_rt_api::ContextTurnMetricsDto {
+                message_id,
+                user_prompt_count,
+                llm_call_count: value_as_u64(row.get("llm_call_count")),
+                llm_duration_ms_total: value_as_u64(row.get("llm_duration_ms_total")),
+                tokens: baml_rt_api::TokenUsageDto {
+                    input: value_as_u64(row.get("tokens_in")),
+                    output: value_as_u64(row.get("tokens_out")),
+                    total: value_as_u64(row.get("tokens_total")),
+                },
+            });
+        }
+
+        // Keep prompt-only turns visible even when no LLM call was made.
+        let mut prompt_only_turns = prompt_count_by_message.into_iter().collect::<Vec<_>>();
+        prompt_only_turns.sort_by(|(left, _), (right, _)| left.cmp(right));
+        for (message_id, user_prompt_count) in prompt_only_turns {
+            turns.push(baml_rt_api::ContextTurnMetricsDto {
+                message_id,
+                user_prompt_count,
+                llm_call_count: 0,
+                llm_duration_ms_total: 0,
+                tokens: baml_rt_api::TokenUsageDto {
+                    input: 0,
+                    output: 0,
+                    total: 0,
+                },
+            });
+        }
+
+        let session = session_rows.first();
+        let session_tokens_in = value_as_u64(session.and_then(|row| row.get("tokens_in")));
+        let session_tokens_out = value_as_u64(session.and_then(|row| row.get("tokens_out")));
+        let session_tokens_total = value_as_u64(session.and_then(|row| row.get("tokens_total")));
+        let session_llm_calls = value_as_u64(session.and_then(|row| row.get("llm_call_count")));
+        let session_llm_duration_ms =
+            value_as_u64(session.and_then(|row| row.get("llm_duration_ms_total")));
+
+        let user_prompts_total = turns.iter().map(|turn| turn.user_prompt_count).sum();
+        let turns_total = turns.len() as u64;
+
+        Ok(baml_rt_api::ContextMetricsResponseDto {
+            context_id: context_id.to_string(),
+            turns,
+            session: baml_rt_api::ContextSessionMetricsDto {
+                turns_total,
+                user_prompts_total,
+                llm_calls_total: session_llm_calls,
+                llm_duration_ms_total: session_llm_duration_ms,
+                tokens_total: baml_rt_api::TokenUsageDto {
+                    input: session_tokens_in,
+                    output: session_tokens_out,
+                    total: session_tokens_total,
+                },
+            },
+        })
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing
@@ -1236,19 +1384,31 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let http_handle = if let Some(bind) = config.serve_http.clone() {
-        let mermaid = match ready.runner().provenance_config() {
-            ProvenanceConfig::Graphqlite(store) => {
+        let (mermaid, context_metrics) = match ready.runner().provenance_config() {
+            ProvenanceConfig::Graphqlite(store) => (
                 Some(Arc::new(MermaidServiceImpl::new(store.clone()))
-                    as Arc<dyn baml_rt_api::MermaidService>)
-            }
+                    as Arc<dyn baml_rt_api::MermaidService>),
+                Some(Arc::new(ContextMetricsServiceImpl::new(store.clone()))
+                    as Arc<dyn baml_rt_api::ContextMetricsService>),
+            ),
         };
         let registry_impl = ready.registry();
         let web_dir = config.web_dir.clone();
-        info!(bind = %bind, web_dir = ?web_dir, "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a/sse, GET /mermaid/..., GET /openapi.json)");
+        info!(
+            bind = %bind,
+            web_dir = ?web_dir,
+            "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a/sse, GET /contexts/.../mermaid, GET /tasks/.../mermaid, GET /contexts/.../metrics, GET /openapi.json)"
+        );
         Some(tokio::spawn(async move {
-            baml_rt_api::serve(registry_impl, &bind, mermaid, web_dir.as_deref())
-                .await
-                .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))
+            baml_rt_api::serve_with_services(
+                registry_impl,
+                &bind,
+                mermaid,
+                context_metrics,
+                web_dir.as_deref(),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("HTTP API server: {e}"))
         }))
     } else {
         None

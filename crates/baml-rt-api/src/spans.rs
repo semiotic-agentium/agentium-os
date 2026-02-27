@@ -37,19 +37,19 @@ pub(crate) fn post_a2a_sse(agent_package: &str, agent_instance_id: &str) -> Span
     )
 }
 
-/// Create span for GET /mermaid/context/{context_id}.
+/// Create span for GET /contexts/{context_id}/mermaid.
 #[inline]
 pub(crate) fn get_mermaid_context(context_id: &str) -> Span {
     tracing::debug_span!("baml_rt_api.get_mermaid_context", context_id = %context_id)
 }
 
-/// Create span for GET /mermaid/task/{task_id}.
+/// Create span for GET /tasks/{task_id}/mermaid.
 #[inline]
 pub(crate) fn get_mermaid_task(task_id: &str) -> Span {
     tracing::debug_span!("baml_rt_api.get_mermaid_task", task_id = %task_id)
 }
 
-/// Create span for GET /context/{context_id}/metrics.
+/// Create span for GET /contexts/{context_id}/metrics.
 #[inline]
 pub(crate) fn get_context_metrics(context_id: &str) -> Span {
     tracing::debug_span!("baml_rt_api.get_context_metrics", context_id = %context_id)

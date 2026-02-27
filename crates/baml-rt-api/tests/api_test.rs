@@ -575,7 +575,7 @@ async fn get_mermaid_context_returns_snapshot() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/mermaid/context/ctx-1-1")
+                .uri("/contexts/ctx-1-1/mermaid")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -602,7 +602,7 @@ async fn get_mermaid_task_returns_snapshot() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/mermaid/task/task-123")
+                .uri("/tasks/task-123/mermaid")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -630,7 +630,7 @@ async fn get_mermaid_context_emits_http_and_handler_spans() {
     let response = app
         .oneshot(
             Request::builder()
-                .uri("/mermaid/context/ctx-1-1")
+                .uri("/contexts/ctx-1-1/mermaid")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -648,13 +648,13 @@ async fn get_mermaid_context_emits_http_and_handler_spans() {
         Some("ctx-1-1")
     );
     if let Some(http_span) = find_span(&spans, "baml_rt_api.http.request")
-        .or_else(|| find_span_with_attr(&spans, "http.route", "/mermaid/context/{context_id}"))
-        .or_else(|| find_span_with_attr(&spans, "url.path", "/mermaid/context/ctx-1-1"))
+        .or_else(|| find_span_with_attr(&spans, "http.route", "/contexts/{context_id}/mermaid"))
+        .or_else(|| find_span_with_attr(&spans, "url.path", "/contexts/ctx-1-1/mermaid"))
     {
         let route = attr_value(http_span, "http.route").unwrap_or_default();
         assert!(
-            route == "/mermaid/context/{context_id}"
-                || route == "/mermaid/context/ctx-1-1"
+            route == "/contexts/{context_id}/mermaid"
+                || route == "/contexts/ctx-1-1/mermaid"
                 || route == "<unmatched>",
             "http.route should be template, concrete path, or <unmatched>, got {route:?}"
         );

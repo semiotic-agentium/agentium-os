@@ -109,7 +109,7 @@ async fn start_clickup_mock_server() -> std::io::Result<(RunningHttpServer, Mock
                     "id": "task-902",
                     "name": "Verify Mermaid export endpoint",
                     "status": { "status": "in progress" },
-                    "description": "Fetch /mermaid/context while runtime is alive and assert sequence output.",
+                    "description": "Fetch /contexts/{context_id}/mermaid while runtime is alive and assert sequence output.",
                     "url": "https://app.clickup.com/t/task-902",
                     "assignees": [{ "username": "platform-bot" }],
                     "priority": { "priority": "low" },
@@ -200,14 +200,14 @@ fn maybe_task_status(status: &Value) -> Option<String> {
 
 async fn fetch_mermaid_context(base_url: &str, context_id: &ContextId) -> String {
     let http_client = reqwest::Client::new();
-    let mermaid_url = format!("{base_url}/mermaid/context/{}", context_id.as_str());
+    let mermaid_url = format!("{base_url}/contexts/{}/mermaid", context_id.as_str());
     let mermaid_response = timeout(Duration::from_secs(20), http_client.get(mermaid_url).send())
         .await
         .expect("mermaid request timed out")
         .expect("mermaid request failed");
     assert!(
         mermaid_response.status().is_success(),
-        "Expected 200 from /mermaid/context, got {}",
+        "Expected 200 from /contexts/<context_id>/mermaid, got {}",
         mermaid_response.status()
     );
     mermaid_response.text().await.expect("mermaid body")
