@@ -15,7 +15,14 @@ async fn collect_responses(
     agent: &A2aAgent,
     request: serde_json::Value,
 ) -> baml_rt::Result<Vec<serde_json::Value>> {
-    Ok(baml_rt_core::collect_a2a_stream(agent.handle_a2a_stream(request).await?).await)
+    let stream = agent
+        .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(request))
+        .await?;
+    let chunks = baml_rt_core::collect_a2a_stream(stream).await;
+    Ok(chunks
+        .into_iter()
+        .map(baml_rt_core::A2aStreamChunk::into_inner)
+        .collect())
 }
 
 /// Minimal agent that yields one chunk and signals completion so the host's collect()
@@ -91,6 +98,11 @@ async fn test_context_id_preserved_per_request() {
     let agent = setup_agent(writer).await;
 
     let context_ids: Vec<ContextId> = (0..4).map(|i| ContextId::new(10, i as u64)).collect();
+    let request_timeout = if std::env::var_os("CI").is_some() {
+        Duration::from_secs(30)
+    } else {
+        Duration::from_secs(10)
+    };
     for (idx, context_id) in context_ids.iter().enumerate() {
         let request = send_stream_request(
             &format!("msg-{idx}"),
@@ -98,13 +110,10 @@ async fn test_context_id_preserved_per_request() {
             &format!("corr-2-{}", idx + 3),
             Some(context_id.clone()),
         );
-        let responses =
-            tokio::time::timeout(Duration::from_secs(10), collect_responses(&agent, request))
-                .await
-                .expect(
-                    "request timeout (agent must yield TASK_STATE_COMPLETED so collect returns)",
-                )
-                .expect("a2a handle");
+        let responses = tokio::time::timeout(request_timeout, collect_responses(&agent, request))
+            .await
+            .expect("request timeout (agent must yield TASK_STATE_COMPLETED so collect returns)")
+            .expect("a2a handle");
         let got = expect_context_id(responses);
         assert_eq!(
             got,

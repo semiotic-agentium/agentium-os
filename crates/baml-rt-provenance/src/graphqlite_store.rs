@@ -594,8 +594,16 @@ fn build_store_from_config(
                     );
                     let result = match row {
                         Ok(record) => Ok(Some(record)),
-                        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-                        Err(e) => Err(graphqlite::Error::from(e)),
+                        Err(e) => {
+                            let msg = e.to_string();
+                            if msg.contains("Query returned no rows")
+                                || msg.contains("query returned no rows")
+                            {
+                                Ok(None)
+                            } else {
+                                Err(graphqlite::Error::from(e))
+                            }
+                        }
                     };
                     if reply.send(result).is_err() {
                         tracing::debug!(

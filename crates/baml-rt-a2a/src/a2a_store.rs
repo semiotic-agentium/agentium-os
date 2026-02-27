@@ -71,13 +71,13 @@ pub trait TaskRepository: Send + Sync {
 pub trait TaskEventRecorder: Send + Sync {
     async fn record_status_update(
         &self,
-        task_id: Option<TaskId>,
+        task_id: TaskId,
         context_id: Option<ContextId>,
         status: TaskStatus,
     ) -> Result<Option<TaskUpdateEvent>>;
     async fn record_artifact_update(
         &self,
-        task_id: Option<TaskId>,
+        task_id: TaskId,
         context_id: Option<ContextId>,
         artifact: Artifact,
         append: Option<bool>,
@@ -108,6 +108,10 @@ pub trait TaskChunkApplier: Send + Sync {
 /// Single source of truth for conversation context: read from the same store that
 /// receives task/message updates. Unifies A2A task state and conversation; provenance
 /// is the write-through audit log.
+///
+/// For resume, the caller must use the same `context_id` as the session; scope is
+/// resolved from `OutcomeInvocationContext::LiveSessionResume` so `context_id` (and
+/// optional `task_id`) are consistent. Limit (e.g. 40) is applied by the implementation.
 #[async_trait]
 pub trait ConversationContextSource: Send + Sync {
     async fn conversation_context(
@@ -175,24 +179,24 @@ impl TaskRepository for Mutex<TaskStore> {
 impl TaskEventRecorder for Mutex<TaskStore> {
     async fn record_status_update(
         &self,
-        task_id: Option<TaskId>,
+        task_id: TaskId,
         context_id: Option<ContextId>,
         status: TaskStatus,
     ) -> Result<Option<TaskUpdateEvent>> {
         let mut store = self.lock().await;
-        Ok(store.record_status_update(task_id, context_id, status))
+        Ok(store.record_status_update(Some(task_id), context_id, status))
     }
 
     async fn record_artifact_update(
         &self,
-        task_id: Option<TaskId>,
+        task_id: TaskId,
         context_id: Option<ContextId>,
         artifact: Artifact,
         append: Option<bool>,
         last_chunk: Option<bool>,
     ) -> Result<Option<TaskUpdateEvent>> {
         let mut store = self.lock().await;
-        Ok(store.record_artifact_update(task_id, context_id, artifact, append, last_chunk))
+        Ok(store.record_artifact_update(Some(task_id), context_id, artifact, append, last_chunk))
     }
 }
 
@@ -459,9 +463,13 @@ impl TaskRepository for ProvenanceTaskStore {
         };
         self.record_event(event).await;
 
-        let start = Instant::now();
-        self.inner.insert_message(message).await?;
-        record_task_store_metrics("insert_message", "success", start);
+        // Task-scoped backends (e.g. GraphqliteTaskSubgraphStore) require task_id; global
+        // messages are only in the provenance event stream and appear in context_messages.
+        if message.task_id.is_some() {
+            let start = Instant::now();
+            self.inner.insert_message(message).await?;
+            record_task_store_metrics("insert_message", "success", start);
+        }
         Ok(())
     }
 }
@@ -514,7 +522,7 @@ impl TaskEventRecorder for ProvenanceTaskStore {
     /// I3: provenance emitted only after store accepts the status update.
     async fn record_status_update(
         &self,
-        task_id: Option<TaskId>,
+        task_id: TaskId,
         context_id: Option<ContextId>,
         status: TaskStatus,
     ) -> Result<Option<TaskUpdateEvent>> {
@@ -543,7 +551,7 @@ impl TaskEventRecorder for ProvenanceTaskStore {
     /// I3: provenance emitted only after store accepts the artifact update.
     async fn record_artifact_update(
         &self,
-        task_id: Option<TaskId>,
+        task_id: TaskId,
         context_id: Option<ContextId>,
         artifact: Artifact,
         append: Option<bool>,
@@ -1025,6 +1033,10 @@ impl TaskStore {
         artifact_update: Option<TaskArtifactUpdateEvent>,
     ) -> Vec<TaskUpdateEvent> {
         let mut out = Vec::new();
+        // When a chunk has both task.status and status_update (e.g. make_submitted_chunk), record
+        // status only once to avoid duplicate provenance/sequence notes.
+        let mut status_recorded_from_task: Option<(Option<TaskId>, Option<ContextId>, String)> =
+            None;
         if let Some(mut t) = task {
             let status = t.status.take();
             let context_id = t.context_id.clone();
@@ -1037,8 +1049,10 @@ impl TaskStore {
             );
             if let Some(status) = status
                 && let Some(ev) =
-                    self.record_status_update(task_id.clone(), context_id.clone(), status)
+                    self.record_status_update(task_id.clone(), context_id.clone(), status.clone())
             {
+                let state_str = status_to_string(&status).unwrap_or_default();
+                status_recorded_from_task = Some((task_id.clone(), context_id.clone(), state_str));
                 out.push(ev);
             }
             if let Some(tid) = task_id {
@@ -1060,10 +1074,19 @@ impl TaskStore {
         }
         if let Some(ref up) = status_update
             && let Some(status) = up.status.clone()
-            && let Some(ev) =
-                self.record_status_update(up.task_id.clone(), up.context_id.clone(), status)
         {
-            out.push(ev);
+            let state_str = status_to_string(&status).unwrap_or_default();
+            let is_duplicate = status_recorded_from_task
+                .as_ref()
+                .is_some_and(|(tid, cid, s)| {
+                    tid == &up.task_id && cid == &up.context_id && *s == state_str
+                });
+            if !is_duplicate
+                && let Some(ev) =
+                    self.record_status_update(up.task_id.clone(), up.context_id.clone(), status)
+            {
+                out.push(ev);
+            }
         }
         if let Some(ref up) = artifact_update
             && let Some(ev) = self.record_artifact_update(

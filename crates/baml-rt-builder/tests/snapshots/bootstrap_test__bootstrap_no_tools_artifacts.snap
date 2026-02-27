@@ -15,7 +15,7 @@ expression: artifacts
 }
 
 === baml_src/explorer_agent_prompt.baml ===
-// Agent prompt — edit as needed
+// Agent prompt
 function Exploreragent(input: string) -> string {
   client DefaultClient
   prompt #"

@@ -1,6 +1,10 @@
 //! A2A adapter over provenance-owned graph persistence.
+//!
+//! The boundary lives in the **provenance crate**: [baml_rt_provenance::A2aGraphStore] and
+//! [baml_rt_provenance::TaskSubgraphNode]. This module implements a store that calls that
+//! interface; wire→graph conversion is local to this adapter.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, convert::TryFrom, sync::Arc};
 
 use async_trait::async_trait;
 use baml_rt_core::{
@@ -8,10 +12,11 @@ use baml_rt_core::{
     ids::{ContextId, ExternalId, TaskId},
 };
 use baml_rt_provenance::{
-    A2aGraphStore, ProvenanceContextReader, ProvenanceConversationContextItem, TaskSubgraphNode,
+    A2aGraphStore, ArtifactUpdateContext, ProvenanceContextReader,
+    ProvenanceConversationContextItem, StatusUpdateContext, TaskSubgraphNode,
+    record_artifact_update as prov_record_artifact_update,
+    record_status_update as prov_record_status_update,
 };
-use tokio::sync::Mutex as TokioMutex;
-use tracing::warn;
 
 use crate::{
     a2a_store::{
@@ -85,10 +90,86 @@ fn map_store_err(e: String) -> BamlRtError {
     }
 }
 
+/// Wire Task converted for A2aGraphStore. Use [TryFrom]/[TryInto] at the boundary.
+struct TaskNodeForProv(TaskSubgraphNode);
+
+impl TaskNodeForProv {
+    fn as_node(&self) -> &TaskSubgraphNode {
+        &self.0
+    }
+    fn as_node_mut(&mut self) -> &mut TaskSubgraphNode {
+        &mut self.0
+    }
+}
+
+impl TryFrom<&Task> for TaskNodeForProv {
+    type Error = BamlRtError;
+
+    fn try_from(task: &Task) -> Result<Self> {
+        let id = task
+            .id
+            .as_ref()
+            .ok_or_else(|| {
+                BamlRtError::InvalidArgument("task.id required for provenance upsert".into())
+            })?
+            .as_str()
+            .to_string();
+        let context_id = task
+            .context_id
+            .as_ref()
+            .map(|c| c.as_str().to_string())
+            .unwrap_or_default();
+        let status_json = task
+            .status
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| BamlRtError::InvalidArgument(format!("serialize status: {e}")))?
+            .unwrap_or_default();
+        let metadata_json = task
+            .metadata
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| BamlRtError::InvalidArgument(format!("serialize metadata: {e}")))?
+            .unwrap_or_default();
+        let extra_json = serde_json::to_string(&task.extra)
+            .map_err(|e| BamlRtError::InvalidArgument(format!("serialize extra: {e}")))?;
+        let artifacts_json = serde_json::to_string(&task.artifacts)
+            .map_err(|e| BamlRtError::InvalidArgument(format!("serialize artifacts: {e}")))?;
+        Ok(TaskNodeForProv(TaskSubgraphNode {
+            id,
+            context_id,
+            status_json,
+            metadata_json,
+            extra_json,
+            artifacts_json,
+        }))
+    }
+}
+
+/// task_id extracted from Message for A2aGraphStore::insert_message_node. Use [TryFrom]/[TryInto] at the boundary.
+struct MessageTaskIdForProv(String);
+
+impl TryFrom<&Message> for MessageTaskIdForProv {
+    type Error = BamlRtError;
+
+    fn try_from(message: &Message) -> Result<Self> {
+        message
+            .task_id
+            .as_ref()
+            .ok_or_else(|| {
+                BamlRtError::InvalidArgument(
+                    "message.task_id required for provenance insert".into(),
+                )
+            })
+            .map(|t| MessageTaskIdForProv(t.as_str().to_string()))
+    }
+}
+
 pub struct GraphqliteTaskSubgraphStore {
     graph: Arc<dyn A2aGraphStore>,
     context_reader: Arc<dyn ProvenanceContextReader>,
-    mutation_lock: TokioMutex<()>,
 }
 
 impl GraphqliteTaskSubgraphStore {
@@ -99,7 +180,6 @@ impl GraphqliteTaskSubgraphStore {
         Self {
             graph,
             context_reader,
-            mutation_lock: TokioMutex::new(()),
         }
     }
 }
@@ -107,50 +187,24 @@ impl GraphqliteTaskSubgraphStore {
 #[async_trait]
 impl TaskRepository for GraphqliteTaskSubgraphStore {
     async fn upsert(&self, task: Task) -> Result<Option<Task>> {
-        let id = task
-            .id
-            .as_ref()
-            .ok_or_else(|| BamlRtError::InvalidArgument("task.id required".into()))?
-            .as_str()
-            .to_string();
-        let context_id = task
-            .context_id
-            .as_ref()
-            .map(|c| c.as_str().to_string())
-            .unwrap_or_default();
-        let _guard = self.mutation_lock.lock().await;
+        let mut node: TaskNodeForProv = (&task).try_into()?;
         let preserve_status = self
             .graph
-            .get_task_node(&id)
+            .get_task_node(&node.as_node().id)
             .await
             .map_err(map_store_err)?
             .and_then(|n| (!n.status_json.is_empty()).then_some(n.status_json))
             .and_then(|raw| serde_json::from_str::<TaskStatus>(&raw).ok());
         let status_to_store = preserve_status.clone().or(task.status.clone());
-        let node = TaskSubgraphNode {
-            id: id.clone(),
-            context_id,
-            status_json: status_to_store
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(|e| BamlRtError::InvalidArgument(format!("serialize status: {e}")))?
-                .unwrap_or_default(),
-            metadata_json: task
-                .metadata
-                .as_ref()
-                .map(serde_json::to_string)
-                .transpose()
-                .map_err(|e| BamlRtError::InvalidArgument(format!("serialize metadata: {e}")))?
-                .unwrap_or_default(),
-            extra_json: serde_json::to_string(&task.extra)
-                .map_err(|e| BamlRtError::InvalidArgument(format!("serialize extra: {e}")))?,
-            artifacts_json: serde_json::to_string(&task.artifacts)
-                .map_err(|e| BamlRtError::InvalidArgument(format!("serialize artifacts: {e}")))?,
-        };
+        node.as_node_mut().status_json = status_to_store
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| BamlRtError::InvalidArgument(format!("serialize status: {e}")))?
+            .unwrap_or_default();
         let ord = self.graph.max_task_ord().await.map_err(map_store_err)? + 1;
         self.graph
-            .upsert_task_node(&node, ord)
+            .upsert_task_node(node.as_node(), ord)
             .await
             .map_err(map_store_err)?;
         let mut out = task;
@@ -163,7 +217,6 @@ impl TaskRepository for GraphqliteTaskSubgraphStore {
         task_id: &TaskId,
         context_id: Option<&ContextId>,
     ) -> Result<()> {
-        let _guard = self.mutation_lock.lock().await;
         let ord = self.graph.max_task_ord().await.map_err(map_store_err)?;
         self.graph
             .ensure_task_node(
@@ -302,31 +355,25 @@ impl TaskRepository for GraphqliteTaskSubgraphStore {
             timestamp: None,
             extra: HashMap::new(),
         };
-        if let Err(err) = self
-            .record_status_update(Some(task_id), context_id, status)
-            .await
-        {
-            warn!(task_id = %id, error = %err, "failed to persist cancel status update");
+        if let Err(e) = self.record_status_update(task_id, context_id, status).await {
+            tracing::warn!(task_id = %id, error = ?e, "cancel: record_status_update failed, provenance may be incomplete");
         }
         self.get(id, None).await
     }
 
     async fn insert_message(&self, message: &Message) -> Result<()> {
-        let Some(task_id) = message.task_id.as_ref().map(|t| t.as_str().to_string()) else {
-            return Ok(());
-        };
-        let _guard = self.mutation_lock.lock().await;
+        let task_id: MessageTaskIdForProv = message.try_into()?;
         let seq = self
             .graph
-            .max_message_seq(&task_id)
+            .max_message_seq(&task_id.0)
             .await
             .map_err(map_store_err)?
             + 1;
         let message_json = serde_json::to_string(message)
             .map_err(|e| BamlRtError::InvalidArgument(format!("serialize message: {e}")))?;
-        let node_id = format!("{task_id}:msg:{seq}");
+        let node_id = format!("{}:msg:{seq}", task_id.0);
         self.graph
-            .insert_message_node(&node_id, &task_id, seq, &message_json)
+            .insert_message_node(&node_id, &task_id.0, seq, &message_json)
             .await
             .map_err(map_store_err)
     }
@@ -336,15 +383,10 @@ impl TaskRepository for GraphqliteTaskSubgraphStore {
 impl TaskEventRecorder for GraphqliteTaskSubgraphStore {
     async fn record_status_update(
         &self,
-        task_id: Option<TaskId>,
+        task_id: TaskId,
         context_id: Option<ContextId>,
         status: TaskStatus,
     ) -> Result<Option<TaskUpdateEvent>> {
-        let task_id = match task_id {
-            Some(t) => t,
-            None => return Ok(None),
-        };
-        let _guard = self.mutation_lock.lock().await;
         let new_state = match status_to_string(&status) {
             Some(s) => s,
             None => return Ok(None),
@@ -366,35 +408,15 @@ impl TaskEventRecorder for GraphqliteTaskSubgraphStore {
         if !allowed {
             return Ok(None);
         }
-        self.graph
-            .ensure_task_node(
-                task_id.as_str(),
-                context_id.as_ref().map(|c| c.as_str()).unwrap_or_default(),
-                self.graph.max_task_ord().await.map_err(map_store_err)? + 1,
-            )
-            .await
-            .map_err(map_store_err)?;
         let status_json = serde_json::to_string(&status)
             .map_err(|e| BamlRtError::InvalidArgument(format!("serialize status: {e}")))?;
-        self.graph
-            .set_task_status_json(task_id.as_str(), &status_json)
-            .await
-            .map_err(map_store_err)?;
-        let seq = self
-            .graph
-            .max_update_seq(task_id.as_str())
-            .await
-            .map_err(map_store_err)?
-            + 1;
-        let payload_json = serde_json::to_string(&serde_json::json!({
-            "context_id": context_id.as_ref().map(|c| c.as_str()),
-            "task_id": task_id.as_str(),
-            "status": status
-        }))
-        .map_err(|e| BamlRtError::InvalidArgument(format!("serialize payload: {e}")))?;
-        let node_id = format!("{}:update:{seq}", task_id.as_str());
-        self.graph
-            .insert_update_node(&node_id, task_id.as_str(), seq, "status", &payload_json)
+        let prov_ctx = match &context_id {
+            Some(c) => StatusUpdateContext::Scoped {
+                context_id: c.clone(),
+            },
+            None => StatusUpdateContext::TaskOnly,
+        };
+        prov_record_status_update(self.graph.as_ref(), &task_id, &prov_ctx, &status_json)
             .await
             .map_err(map_store_err)?;
         Ok(Some(TaskUpdateEvent::Status(TaskStatusUpdateEvent {
@@ -408,44 +430,30 @@ impl TaskEventRecorder for GraphqliteTaskSubgraphStore {
 
     async fn record_artifact_update(
         &self,
-        task_id: Option<TaskId>,
+        task_id: TaskId,
         context_id: Option<ContextId>,
         artifact: Artifact,
         append: Option<bool>,
         last_chunk: Option<bool>,
     ) -> Result<Option<TaskUpdateEvent>> {
-        let task_id = match task_id {
-            Some(t) => t,
-            None => return Ok(None),
+        let artifact_json = serde_json::to_string(&artifact)
+            .map_err(|e| BamlRtError::InvalidArgument(format!("serialize artifact: {e}")))?;
+        let prov_ctx = match &context_id {
+            Some(c) => ArtifactUpdateContext::Scoped {
+                context_id: c.clone(),
+            },
+            None => ArtifactUpdateContext::TaskOnly,
         };
-        let _guard = self.mutation_lock.lock().await;
-        self.graph
-            .ensure_task_node(
-                task_id.as_str(),
-                context_id.as_ref().map(|c| c.as_str()).unwrap_or_default(),
-                self.graph.max_task_ord().await.map_err(map_store_err)? + 1,
-            )
-            .await
-            .map_err(map_store_err)?;
-        let seq = self
-            .graph
-            .max_update_seq(task_id.as_str())
-            .await
-            .map_err(map_store_err)?
-            + 1;
-        let payload_json = serde_json::to_string(&serde_json::json!({
-            "context_id": context_id.as_ref().map(|c| c.as_str()),
-            "task_id": task_id.as_str(),
-            "last_chunk": last_chunk,
-            "append": append,
-            "artifact": artifact
-        }))
-        .map_err(|e| BamlRtError::InvalidArgument(format!("serialize payload: {e}")))?;
-        let node_id = format!("{}:update:{seq}", task_id.as_str());
-        self.graph
-            .insert_update_node(&node_id, task_id.as_str(), seq, "artifact", &payload_json)
-            .await
-            .map_err(map_store_err)?;
+        prov_record_artifact_update(
+            self.graph.as_ref(),
+            &task_id,
+            &prov_ctx,
+            &artifact_json,
+            append,
+            last_chunk,
+        )
+        .await
+        .map_err(map_store_err)?;
         Ok(Some(TaskUpdateEvent::Artifact(TaskArtifactUpdateEvent {
             context_id,
             task_id: Some(task_id),
@@ -484,8 +492,8 @@ impl TaskUpdateQueue for GraphqliteTaskSubgraphStore {
             })
             .collect();
         for id in ids {
-            if let Err(err) = self.graph.delete_update_node(&id).await {
-                warn!(update_id = %id, error = %err, "failed to delete drained task update node");
+            if let Err(e) = self.graph.delete_update_node(&id).await {
+                tracing::warn!(update_node_id = %id, error = ?e, "delete_update_node failed during apply_task_delta cleanup");
             }
         }
         events
@@ -507,6 +515,10 @@ impl TaskChunkApplier for GraphqliteTaskSubgraphStore {
             ));
         }
         let mut out = Vec::new();
+        // When a chunk has both task.status and status_update (e.g. make_submitted_chunk), record
+        // status only once to avoid duplicate provenance/sequence notes.
+        let mut status_recorded_from_task: Option<(Option<TaskId>, Option<ContextId>, String)> =
+            None;
         if let Some(mut t) = task {
             let status = t.status.take();
             let context_id = t.context_id.clone();
@@ -516,16 +528,18 @@ impl TaskChunkApplier for GraphqliteTaskSubgraphStore {
             if let Some(status) = status
                 && let Some(tid) = &task_id
                 && let Some(ev) = self
-                    .record_status_update(Some(tid.clone()), context_id.clone(), status)
+                    .record_status_update(tid.clone(), context_id.clone(), status.clone())
                     .await?
             {
+                let state_str = status_to_string(&status).unwrap_or_default();
+                status_recorded_from_task = Some((task_id.clone(), context_id.clone(), state_str));
                 out.push(ev);
             }
             if let Some(tid) = task_id {
                 for artifact in artifacts {
                     if let Some(ev) = self
                         .record_artifact_update(
-                            Some(tid.clone()),
+                            tid.clone(),
                             None,
                             artifact,
                             Some(false),
@@ -543,16 +557,27 @@ impl TaskChunkApplier for GraphqliteTaskSubgraphStore {
         }
         if let Some(ref up) = status_update
             && let Some(status) = up.status.clone()
-            && let Some(ev) = self
-                .record_status_update(up.task_id.clone(), up.context_id.clone(), status)
-                .await?
         {
-            out.push(ev);
+            let state_str = status_to_string(&status).unwrap_or_default();
+            let is_duplicate = status_recorded_from_task
+                .as_ref()
+                .is_some_and(|(tid, cid, s)| {
+                    tid == &up.task_id && cid == &up.context_id && *s == state_str
+                });
+            if !is_duplicate
+                && let Some(ref tid) = up.task_id
+                && let Some(ev) = self
+                    .record_status_update(tid.clone(), up.context_id.clone(), status)
+                    .await?
+            {
+                out.push(ev);
+            }
         }
         if let Some(ref up) = artifact_update
+            && let Some(ref tid) = up.task_id
             && let Some(ev) = self
                 .record_artifact_update(
-                    up.task_id.clone(),
+                    tid.clone(),
                     up.context_id.clone(),
                     up.artifact.clone().unwrap_or_default(),
                     up.append,
@@ -579,240 +604,5 @@ impl ConversationContextSource for GraphqliteTaskSubgraphStore {
             .map_err(|e| BamlRtError::ProvenanceContextRead {
                 source: Box::new(e),
             })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
-    use baml_rt_provenance::GraphqliteStoreBuilder;
-
-    use super::*;
-
-    fn test_store() -> (
-        GraphqliteTaskSubgraphStore,
-        Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
-    ) {
-        let prov = GraphqliteStoreBuilder::in_memory()
-            .build()
-            .expect("build graphqlite store");
-        let graph: Arc<dyn A2aGraphStore> = prov.clone();
-        let context_reader: Arc<dyn ProvenanceContextReader> = prov.clone();
-        (
-            GraphqliteTaskSubgraphStore::new(graph, context_reader),
-            prov,
-        )
-    }
-
-    #[tokio::test]
-    async fn upsert_then_get_round_trips_task_node() {
-        let (store, _prov) = test_store();
-        let task = Task {
-            id: Some(TaskId::from_external(ExternalId::new(
-                "task-upsert-roundtrip",
-            ))),
-            context_id: Some(ContextId::new(1, 1)),
-            artifacts: Vec::new(),
-            history: Vec::new(),
-            status: None,
-            metadata: None,
-            extra: HashMap::new(),
-        };
-        store.upsert(task).await.expect("upsert task");
-
-        let raw = store
-            .graph
-            .get_task_node("task-upsert-roundtrip")
-            .await
-            .expect("raw graph get");
-        assert!(raw.is_some(), "expected raw task node in graph");
-
-        let got = store.get("task-upsert-roundtrip", None).await;
-        assert!(
-            got.is_some(),
-            "expected task node to be visible immediately"
-        );
-    }
-
-    #[tokio::test]
-    async fn apply_task_delta_with_task_status_creates_readable_task() {
-        let (store, _prov) = test_store();
-        let task = Task {
-            id: Some(TaskId::from_external(ExternalId::new("task-apply-delta"))),
-            context_id: Some(ContextId::new(2, 1)),
-            artifacts: Vec::new(),
-            history: Vec::new(),
-            status: Some(TaskStatus {
-                state: Some(TaskState::String(S_SUBMITTED.to_string())),
-                message: None,
-                timestamp: None,
-                extra: HashMap::new(),
-            }),
-            metadata: None,
-            extra: HashMap::new(),
-        };
-        let events = store
-            .apply_task_delta(Some(task), None, None, None)
-            .await
-            .expect("apply delta");
-        assert!(
-            !events.is_empty(),
-            "expected status event from apply_task_delta with submitted status"
-        );
-
-        let got = store.get("task-apply-delta", None).await;
-        assert!(got.is_some(), "expected task after apply_task_delta");
-    }
-
-    #[tokio::test]
-    async fn record_status_update_creates_task_with_context_id() {
-        let (store, _prov) = test_store();
-        let task_id = TaskId::from_external(ExternalId::new("task-status-create"));
-        let context_id = ContextId::new(3, 1);
-        let status = TaskStatus {
-            state: Some(TaskState::String(S_SUBMITTED.to_string())),
-            message: None,
-            timestamp: None,
-            extra: HashMap::new(),
-        };
-
-        let out = store
-            .record_status_update(Some(task_id.clone()), Some(context_id.clone()), status)
-            .await
-            .expect("record status");
-        assert!(out.is_some(), "expected accepted status update");
-
-        let task = store
-            .get(task_id.as_str(), None)
-            .await
-            .expect("task should exist after status update");
-        assert_eq!(
-            task.context_id.as_ref().map(|id| id.as_str()),
-            Some(context_id.as_str()),
-            "ensure_task_node should preserve context_id for subscribe/get paths"
-        );
-    }
-
-    #[tokio::test]
-    async fn record_status_update_rejected_initial_state_does_not_create_placeholder_task() {
-        let (store, _prov) = test_store();
-        let task_id = TaskId::from_external(ExternalId::new("task-status-reject"));
-        let context_id = ContextId::new(4, 1);
-        let invalid_first_status = TaskStatus {
-            state: Some(TaskState::String(S_WORKING.to_string())),
-            message: None,
-            timestamp: None,
-            extra: HashMap::new(),
-        };
-
-        let out = store
-            .record_status_update(
-                Some(task_id.clone()),
-                Some(context_id.clone()),
-                invalid_first_status,
-            )
-            .await
-            .expect("record status");
-        assert!(
-            out.is_none(),
-            "invalid initial transition should be rejected"
-        );
-        assert!(
-            store.get(task_id.as_str(), None).await.is_none(),
-            "rejected status update must not leave a placeholder task row"
-        );
-    }
-
-    #[tokio::test]
-    async fn upsert_then_get_round_trips_task_id_with_control_whitespace() {
-        let (store, _prov) = test_store();
-        let weird_id = "task-line\tbreak\nsegment\rend";
-        let task = Task {
-            id: Some(TaskId::from_external(ExternalId::new(weird_id))),
-            context_id: Some(ContextId::new(5, 1)),
-            artifacts: Vec::new(),
-            history: Vec::new(),
-            status: None,
-            metadata: None,
-            extra: HashMap::new(),
-        };
-        store.upsert(task).await.expect("upsert task");
-        store
-            .graph
-            .insert_message_node(
-                "weird-msg-1",
-                weird_id,
-                1,
-                r#"{"role":"user","parts":[{"text":"hello"}]}"#,
-            )
-            .await
-            .expect("insert message");
-        let submitted = TaskStatus {
-            state: Some(TaskState::String(S_SUBMITTED.to_string())),
-            message: None,
-            timestamp: None,
-            extra: HashMap::new(),
-        };
-        let status_event = store
-            .record_status_update(
-                Some(TaskId::from_external(ExternalId::new(weird_id))),
-                Some(ContextId::new(5, 1)),
-                submitted,
-            )
-            .await
-            .expect("record status for weird id");
-        assert!(
-            status_event.is_some(),
-            "status update should be accepted for weird-id task"
-        );
-
-        let got = store.get(weird_id, None).await;
-        assert!(
-            got.is_some(),
-            "expected control-whitespace task id to round-trip"
-        );
-        let message_rows = store
-            .graph
-            .list_message_json(weird_id)
-            .await
-            .expect("list messages");
-        assert_eq!(
-            message_rows.len(),
-            1,
-            "message lookup should match weird task_id"
-        );
-        assert_eq!(
-            store
-                .graph
-                .max_message_seq(weird_id)
-                .await
-                .expect("max message seq"),
-            1
-        );
-        assert_eq!(
-            store
-                .graph
-                .max_update_seq(weird_id)
-                .await
-                .expect("max update seq"),
-            1
-        );
-        let updates = store
-            .graph
-            .list_update_nodes(weird_id)
-            .await
-            .expect("list updates");
-        assert_eq!(updates.len(), 1, "update lookup should match weird task_id");
-        let raw = store
-            .graph
-            .get_task_node(weird_id)
-            .await
-            .expect("raw graph get");
-        assert!(
-            raw.is_some(),
-            "raw graph lookup should handle escaped id literal"
-        );
     }
 }

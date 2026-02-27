@@ -16,9 +16,10 @@ use axum::{
     },
 };
 use baml_rt_core::{
-    AgentInstanceId, AgentPackageName, AgentRouteKey, BamlRtError, collect_a2a_stream,
+    A2aWireRequest, AgentInstanceId, AgentPackageName, AgentRouteKey, BamlRtError,
+    collect_a2a_stream,
 };
-use futures_util::stream::{self, Stream};
+use futures_util::stream::{Stream, StreamExt};
 use http_api_problem::HttpApiProblem;
 use serde_json::Value;
 
@@ -119,9 +120,17 @@ pub async fn post_a2a(
         ));
     }
 
-    match state.registry.handle_a2a_stream(&key, body).await {
+    match state
+        .registry
+        .handle_a2a_stream(&key, A2aWireRequest::from(body))
+        .await
+    {
         Ok(stream) => {
-            let responses = collect_a2a_stream(stream).await;
+            let responses = collect_a2a_stream(stream)
+                .await
+                .into_iter()
+                .map(|chunk| chunk.into_inner())
+                .collect();
             metrics::record_request("post_a2a", "success", start.elapsed());
             Ok(Json(responses))
         }
@@ -189,7 +198,11 @@ pub async fn post_a2a_sse(
     }
 
     tracing::debug!(%agent_package, "A2A SSE: calling handle_a2a_stream");
-    let stream = match state.registry.handle_a2a_stream(&key, body).await {
+    let stream = match state
+        .registry
+        .handle_a2a_stream(&key, A2aWireRequest::from(body))
+        .await
+    {
         Ok(r) => r,
         Err(e) => {
             metrics::record_request(
@@ -200,35 +213,18 @@ pub async fn post_a2a_sse(
             return Err(domain_to_problem(&e, &agent_package, &agent_instance_id));
         }
     };
-    tracing::info!(%agent_package, "A2A SSE: stream obtained, collecting responses");
-    let responses = collect_a2a_stream(stream).await;
-    tracing::info!(
-        %agent_package,
-        count = responses.len(),
-        "A2A SSE: stream collected, building SSE response"
-    );
-    let data_strings: Result<Vec<String>, HttpApiProblem> = responses
-        .into_iter()
-        .map(|v| {
-            serde_json::to_string(&v)
-                .map_err(|e| problem(500, "Internal Server Error", format!("Serialization: {e}")))
-        })
-        .collect();
-    let data_strings = match data_strings {
-        Ok(d) => d,
-        Err(e) => {
-            metrics::record_request("post_a2a_sse", "internal", start.elapsed());
-            return Err(e);
-        }
-    };
-    let stream = stream::iter(
-        data_strings
-            .into_iter()
-            .map(|data| Ok(Event::default().data(data))),
-    );
+    tracing::info!(%agent_package, "A2A SSE: stream obtained, forwarding incrementally");
+    let event_stream = stream.map(|chunk| {
+        let data = serde_json::to_string(chunk.as_ref()).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "SSE chunk serialization failed");
+            r#"{"jsonrpc":"2.0","error":{"code":-32603,"message":"Chunk serialization failed"}}"#
+                .to_string()
+        });
+        Ok::<_, Infallible>(Event::default().data(data))
+    });
 
-    let sse =
-        Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text(""));
+    let sse = Sse::new(event_stream)
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text(""));
 
     metrics::record_request("post_a2a_sse", "success", start.elapsed());
     Ok(sse)

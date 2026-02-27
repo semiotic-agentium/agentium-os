@@ -3,6 +3,7 @@
 //! This crate provides event types and interceptors for provenance recording,
 //! along with a pluggable storage interface and GraphQLite-backed implementation.
 
+pub mod a2a_graph_event_recorder;
 pub mod a2a_graph_store;
 pub mod builders;
 pub mod bus_subscriber;
@@ -27,6 +28,10 @@ pub mod tool_index;
 pub mod types;
 pub mod vocabulary;
 
+pub use a2a_graph_event_recorder::{
+    A2aGraphEventRecorder, ArtifactUpdateContext, StatusUpdateContext, record_artifact_update,
+    record_status_update,
+};
 pub use baml_rt_vocabulary::{A2aGraphStore, GraphStore, TaskSubgraphNode, TaskSubgraphUpdateNode};
 pub use bus_subscriber::ProvenanceBusSubscriber;
 pub use effect_subscriber::ProvenanceEffectSubscriber;

@@ -3,15 +3,15 @@
 //! Lives in test-support to avoid a dependency cycle: internal-dev has no baml-rt dependency
 //! so baml-rt-builder can depend on it; tool impls need baml-rt so they live here.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
-use baml_rt::Result;
-use baml_rt::tools::BamlTool;
+use baml_rt::{Result, tools::BamlTool};
 use baml_rt_tools_internal_dev::{
     A2aRelayInput, A2aRelayOutput, CalculatorInput, CalculatorOutput, DelayedInput, DelayedOutput,
     InternalDev, MathOperation, UppercaseInput, UppercaseOutput, WeatherInput, WeatherOutput,
 };
 use serde_json::Value;
-use std::sync::Arc;
 use tokio::task;
 
 pub struct WeatherTool;
@@ -139,7 +139,15 @@ impl A2aInMemoryClient {
     }
 
     pub async fn send(&self, request: Value) -> Result<Vec<Value>> {
-        Ok(baml_rt_core::collect_a2a_stream(self.target.handle_a2a_stream(request).await?).await)
+        let stream = self
+            .target
+            .handle_a2a_stream(baml_rt_core::A2aWireRequest::from(request))
+            .await?;
+        let chunks = baml_rt_core::collect_a2a_stream(stream).await;
+        Ok(chunks
+            .into_iter()
+            .map(baml_rt_core::A2aStreamChunk::into_inner)
+            .collect())
     }
 }
 

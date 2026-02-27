@@ -82,6 +82,8 @@ const MAX_FANOUT_CONCURRENCY = 3;
 const CONFIDENCE_CLARIFY_THRESHOLD = 0.7;
 const MAX_TRANSCRIPT_CHARS = 12_000;
 const MAX_CONVERSATION_CONTEXT_CHARS = 4_000;
+const MAX_SINGLE_SEND_CONTINUE_STEPS = 16;
+const MAX_DELEGATION_CONTINUE_STEPS = 128;
 const URL_PATTERN = /https?:\/\/[^\s)\]]+/g;
 
 const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
@@ -291,6 +293,58 @@ function parseDiscoverToolsOutput(value: unknown): DiscoverToolsOutput | null {
   };
 }
 
+type ToolSessionStepStatus = "streaming" | "suspended" | "done" | "error" | "unknown";
+
+type ParsedToolSessionStep = {
+  status: ToolSessionStepStatus;
+  output: unknown;
+  errorMessage: string | null;
+};
+
+type DrainToolSessionResult = {
+  steps: ParsedToolSessionStep[];
+  hitStepLimit: boolean;
+};
+
+function parseToolSessionStep(step: unknown): ParsedToolSessionStep {
+  if (!isObject(step)) {
+    return { status: "unknown", output: step, errorMessage: null };
+  }
+
+  const rawStatus = typeof step.status === "string" ? step.status.toLowerCase() : null;
+  const status: ToolSessionStepStatus =
+    rawStatus === "streaming" ||
+    rawStatus === "suspended" ||
+    rawStatus === "done" ||
+    rawStatus === "error"
+      ? rawStatus
+      : "unknown";
+
+  const output = "output" in step ? step.output : step;
+  const errObj = isObject(step.error) ? step.error : null;
+  const errorMessage =
+    errObj && typeof errObj.message === "string"
+      ? errObj.message
+      : status === "error"
+        ? "Tool session returned error status."
+        : null;
+
+  return { status, output, errorMessage };
+}
+
+async function drainToolSession(
+  sessionHandle: ToolSessionHandle,
+  maxSteps: number,
+): Promise<DrainToolSessionResult> {
+  const steps: ParsedToolSessionStep[] = [];
+  for (let step = 0; step < maxSteps; step++) {
+    const parsed = parseToolSessionStep(await sessionHandle.continue());
+    steps.push(parsed);
+    if (parsed.status !== "streaming") return { steps, hitStepLimit: false };
+  }
+  return { steps, hitStepLimit: true };
+}
+
 // ---------------------------------------------------------------------------
 // Tool session management
 // ---------------------------------------------------------------------------
@@ -304,10 +358,19 @@ async function runSingleSendSession(
   try {
     sessionHandle = await openToolSession(toolName, openInput);
     await sessionHandle.send(sendInput);
-    const output = await sessionHandle.continue();
+    const drained = await drainToolSession(sessionHandle, MAX_SINGLE_SEND_CONTINUE_STEPS);
+    if (drained.hitStepLimit) {
+      throw new Error(
+        `Tool session did not reach terminal status within ${MAX_SINGLE_SEND_CONTINUE_STEPS} continue steps.`,
+      );
+    }
+    const terminal = drained.steps[drained.steps.length - 1] || null;
+    if (terminal?.status === "error") {
+      throw new Error(terminal.errorMessage || "Tool session returned error status.");
+    }
     await sessionHandle.finish();
     sessionHandle = null;
-    return output;
+    return terminal ? terminal.output : null;
   } catch (err) {
     if (sessionHandle) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -348,10 +411,19 @@ async function delegateToAgent(target: RouteTarget, prompt: string): Promise<str
       target,
     });
     await sessionHandle.send({ parts: [{ text: prompt }] });
-    const delegatedOutput = await sessionHandle.continue();
+    const drained = await drainToolSession(sessionHandle, MAX_DELEGATION_CONTINUE_STEPS);
+    if (drained.hitStepLimit) {
+      throw new Error(
+        `Delegated session did not reach terminal status within ${MAX_DELEGATION_CONTINUE_STEPS} continue steps.`,
+      );
+    }
+    const terminal = drained.steps[drained.steps.length - 1] || null;
+    if (terminal?.status === "error") {
+      throw new Error(terminal.errorMessage || "Delegated session returned error status.");
+    }
     await sessionHandle.finish();
     sessionHandle = null;
-    return collectDelegatedTexts(delegatedOutput);
+    return collectDelegatedTexts(drained.steps.map((step) => step.output));
   } catch (err) {
     if (sessionHandle) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -451,7 +523,7 @@ async function llmRoute(
       action: "DirectAnswer",
       targets: [],
       direct_message: "I could not determine the best routing. Please rephrase your request.",
-      reasoning: "LLM routing returned an unparseable response",
+      reasoning: "LLM routing returned an unparsable response",
     };
   }
   return parsed;
@@ -827,6 +899,14 @@ function renderNoSourceBackedTargetSummary(domain: RoutingIntent): string {
   return `No source-backed evidence was returned from ${domainLabel} for this delegation.`;
 }
 
+function hasMeaningfulEvidenceText(transcript: string): boolean {
+  const normalized = normalizeText(transcript);
+  if (!normalized) return false;
+  if (/^delegation error:/i.test(normalized)) return false;
+  if (/^no source-backed evidence was returned/i.test(normalized)) return false;
+  return true;
+}
+
 async function collectLlmTargetEvidence(
   userText: string,
   delegationPrompt: string,
@@ -850,6 +930,9 @@ async function collectLlmTargetEvidence(
 
   let transcript = snippets.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
   let hasSourceBackedEvidence = extractUrls(transcript).length > 0;
+  if (domain === RoutingIntent.ClickUp && !hasSourceBackedEvidence) {
+    hasSourceBackedEvidence = hasMeaningfulEvidenceText(transcript);
+  }
   let notionRecoveryUrls: string[] = [];
 
   if (domain === RoutingIntent.Notion && !hasSourceBackedEvidence) {
@@ -862,10 +945,7 @@ async function collectLlmTargetEvidence(
     notionRecoveryUrls = recovered.candidateUrls;
   }
 
-  if (
-    (domain === RoutingIntent.Notion || domain === RoutingIntent.ClickUp) &&
-    !hasSourceBackedEvidence
-  ) {
+  if (domain === RoutingIntent.Notion && !hasSourceBackedEvidence) {
     return {
       key: routeTargetKey(target),
       domain,
@@ -1441,7 +1521,7 @@ async function runLegacyCoordinator(ctx: RunContext): Promise<SessionResult> {
     notionRecoveryUrls = recovered.candidateUrls;
   }
 
-  if ((decision.domain === RoutingIntent.Notion || decision.domain === RoutingIntent.ClickUp) && !hasSourcesInEvidence) {
+  if (decision.domain === RoutingIntent.Notion && !hasSourcesInEvidence) {
     return { message: renderNoEvidenceResponse(decision.domain, notionRecoveryUrls) };
   }
 

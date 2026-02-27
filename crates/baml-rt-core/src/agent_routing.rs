@@ -189,7 +189,8 @@ pub struct AgentDiscoveryEntry {
 
 /// Extract route key from a JSON-RPC A2A request (params.metadata.target from system/internal_a2a).
 /// Centralizes the protocol so all consumers use the same parsing.
-pub fn route_key_from_request(request: &Value) -> Result<AgentRouteKey> {
+pub fn route_key_from_request(request: impl AsRef<Value>) -> Result<AgentRouteKey> {
+    let request = request.as_ref();
     let params = request
         .get("params")
         .and_then(|p| p.as_object())

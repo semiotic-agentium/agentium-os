@@ -24,10 +24,25 @@ impl From<InvocationKind> for bool {
     }
 }
 
+/// Outcome of a completed activity (e.g. tool call). Binary: success or failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Outcome {
     Success,
     Failure,
+}
+
+/// State of an activity (e.g. tool call). No optional completion: either still running or one of success/fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActivityOutcome {
+    InProgress,
+    Success,
+    Failed,
+}
+
+impl ActivityOutcome {
+    pub const fn is_completed(self) -> bool {
+        matches!(self, Self::Success | Self::Failed)
+    }
 }
 
 impl Outcome {

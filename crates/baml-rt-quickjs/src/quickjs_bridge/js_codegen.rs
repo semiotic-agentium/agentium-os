@@ -7,7 +7,7 @@ use baml_rt_core::Result;
 
 /// No prelude: invocation context is resolved on the host from the active context stack.
 /// JS never receives tokens or context ids.
-#[allow(dead_code)]
+#[allow(dead_code)] // reserved for tests and alternative scope strategies
 pub(crate) fn build_scope_prelude_empty() -> Result<String> {
     Ok(String::new())
 }

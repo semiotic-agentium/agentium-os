@@ -7,16 +7,19 @@ publish = false
 
 [dependencies]
 baml-rt = { path = "../baml-rt" }
+baml-rt-builder = { path = "../baml-rt-builder" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 baml-tools-calculator = { path = "../tools/calculator" }
 baml-rt-core = { path = "../baml-rt-core" }
 async-trait = { workspace = true }
+flate2 = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-ts-rs = { workspace = true }
+tar = { workspace = true }
 tokio = { workspace = true }
+ts-rs = { workspace = true }
 dotenvy = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }

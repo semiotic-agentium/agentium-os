@@ -14,6 +14,7 @@ baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-quickjs = { path = "../baml-rt-quickjs" }
 baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
+baml-rt-tools-claude = { path = "../tools/claude" }
 baml-tools-system = { path = "../tools/system" }
 baml-tools-calculator = { path = "../tools/calculator" }
 baml-tools-clickup = { path = "../tools/clickup", optional = true }

@@ -15,6 +15,8 @@ const {
   messages,
   isLoading,
   provenanceDiagram,
+  awaitingInput,
+  inputRequiredPrompt,
   fetchAgents,
   selectAgent,
   sendMessage,
@@ -39,7 +41,6 @@ onMounted(() => fetchAgents());
 
 <template>
   <div class="app">
-    <!-- Global navbar — always visible -->
     <Navbar
       :view="view"
       :agent-count="agents.length"
@@ -49,20 +50,21 @@ onMounted(() => fetchAgents());
     />
 
     <div class="app-content-area">
-      <!-- Dashboard view — v-show keeps it mounted so state persists -->
       <Dashboard v-show="view === 'dashboard'" :agents="agents" />
 
-      <!-- Chat view — v-show preserves messages, reasoning pane, agent selection -->
       <div v-show="view === 'chat'" class="chat-layout">
         <div class="chat-toolbar">
           <AgentSelector :agents="agents" :selected="selectedAgent" @select="selectAgent" />
         </div>
+        
         <div class="app-body">
           <ReasoningPane :diagrams="diagrams" />
           <ChatWindow
             :messages="messages"
             :is-loading="isLoading"
             :disabled="!selectedAgent"
+            :awaiting-input="awaitingInput"
+            :input-required-prompt="inputRequiredPrompt"
             @send="sendMessage"
           />
         </div>

@@ -7,35 +7,33 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex as StdMutex,
-        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
+        atomic::{AtomicU32, AtomicU64},
     },
+    thread,
 };
 
 use baml_rt_core::{
-    BamlRtError, Result,
-    bus::EffectLiveness,
-    context::{self, InvocationScope, RuntimeScope},
-    correlation,
+    BamlRtError, Result, bus::EffectLiveness, context::InvocationScope, correlation,
 };
-use baml_rt_tools::ToolStep;
 use quickjs_runtime::{
     builder::QuickJsRuntimeBuilder, facades::QuickJsRuntimeFacade, jsutils::Script,
-    quickjsrealmadapter::QuickJsRealmAdapter, values::JsValueFacade,
+    values::JsValueFacade,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, Semaphore, mpsc};
-use tokio_util::sync::CancellationToken;
 
-use crate::{baml::BamlRuntimeManager, js_value_converter::value_to_js_value_facade};
+use crate::baml::BamlRuntimeManager;
 
+mod baml_registration;
 mod eval;
+mod invocation;
 mod js_codegen;
 mod promise_polling;
 mod scope;
 mod stream;
-pub(crate) use stream::BufferDrain;
 pub(crate) mod stream_yield;
 mod tools;
+mod types;
 mod wrappers;
 
 pub use eval::EffectGatedTimeoutPolicy;
@@ -43,160 +41,41 @@ use scope::{
     InvocationContextId, InvocationContextRegistry, InvocationToken, next_invocation_token,
     resolve_scope_from_active_context, resolve_scope_from_session,
 };
-
-type InvocationScopeMap = Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>>;
-type CorrelationMap = Arc<StdMutex<HashMap<InvocationToken, baml_rt_core::ids::CorrelationId>>>;
-type InvocationContextRegistrySlot = Arc<StdMutex<InvocationContextRegistry>>;
-type EvalResultMap = Arc<StdMutex<HashMap<InvocationToken, Option<String>>>>;
-type StreamSemaphore = Arc<Semaphore>;
-type StreamPermit = tokio::sync::OwnedSemaphorePermit;
-type InFlightCounter = Arc<AtomicU32>;
-
-/// Host-only stream session identifier. Never exposed to JS; used for yield routing and finalization.
-/// Each `invoke_js_function_stream` call allocates a unique id; session is looked up in `stream_sessions`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StreamSessionId(pub(crate) u64);
-
-impl std::fmt::Display for StreamSessionId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "stream-session-{}", self.0)
-    }
-}
-
-/// Active stream invocation session.
-///
-/// Held in `QuickJSBridge::stream_sessions` for the lifetime of a single stream
-/// invocation. Native callbacks clone the `Arc` to capture the session and resolve
-/// scope, correlation id, and cancellation state. The permit is released when
-/// the session is removed from the map (drop). The context is exited in
-/// `finalize_a2a_stream_invocation` before removal.
-pub(crate) struct StreamInvocationSession {
-    /// Retained for diagnostic tracing; not read in production paths yet.
-    #[allow(dead_code)]
-    pub(crate) id: StreamSessionId,
-    pub(crate) scope: RuntimeScope,
-    pub(crate) correlation_id: Option<baml_rt_core::ids::CorrelationId>,
-    pub(crate) cancel: CancellationToken,
-    pub(crate) closed: AtomicBool,
-    /// Held so the semaphore permit is released when this session is dropped (RAII; not read).
-    #[allow(dead_code)]
-    pub(crate) permit: Option<StreamPermit>,
-    /// LIFO context id to exit when this session is finalized.
-    pub(crate) context_id: Option<InvocationContextId>,
-}
-
-impl StreamInvocationSession {
-    /// Check whether this session has been finalized or cancelled.
-    pub(crate) fn is_terminated(&self) -> bool {
-        self.closed.load(Ordering::Acquire) || self.cancel.is_cancelled()
-    }
-}
-
-pub(crate) type StreamSessionMap =
-    Arc<StdMutex<HashMap<StreamSessionId, Arc<StreamInvocationSession>>>>;
-
-/// RAII guard that decrements the in-flight counter when dropped.
-///
-/// Used inside `JsValueFacade::new_promise` async bodies so the counter is
-/// decremented even on panic/cancellation.
-struct InFlightGuard(InFlightCounter);
-
-impl Drop for InFlightGuard {
-    fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::Release);
-    }
-}
-
-/// Ensures evaluate() bookkeeping is cleaned up on all exits, including cancellation/drop.
-struct EvalLifecycleGuard {
-    eval_results_by_token: EvalResultMap,
-    invocation_context_registry: InvocationContextRegistrySlot,
-    eval_token: InvocationToken,
-    context_id_to_exit: Option<InvocationContextId>,
-    eval_slot_registered: bool,
-}
-
-impl EvalLifecycleGuard {
-    fn new(
-        eval_results_by_token: EvalResultMap,
-        invocation_context_registry: InvocationContextRegistrySlot,
-        eval_token: InvocationToken,
-        context_id_to_exit: Option<InvocationContextId>,
-    ) -> Self {
-        Self {
-            eval_results_by_token,
-            invocation_context_registry,
-            eval_token,
-            context_id_to_exit,
-            eval_slot_registered: false,
-        }
-    }
-
-    fn mark_eval_slot_registered(&mut self) {
-        self.eval_slot_registered = true;
-    }
-}
-
-impl Drop for EvalLifecycleGuard {
-    fn drop(&mut self) {
-        if self.eval_slot_registered
-            && let Ok(mut guard) = self.eval_results_by_token.lock()
-        {
-            guard.remove(&self.eval_token);
-        }
-
-        if let Some(id) = self.context_id_to_exit.as_ref()
-            && let Ok(mut guard) = self.invocation_context_registry.lock()
-        {
-            guard.exit(id);
-        }
-    }
-}
-
-/// Helper function for creating an empty open_input value.
-///
-/// This centralizes the pattern of using an empty JSON object as the default
-/// open_input when none is provided.
-fn empty_open_input() -> Value {
-    serde_json::Value::Object(serde_json::Map::new())
-}
-
-fn tool_step_to_value(step: ToolStep) -> Value {
-    match step {
-        ToolStep::Streaming { output } => json!({ "status": "streaming", "output": output }),
-        ToolStep::Suspended { output } => json!({ "status": "suspended", "output": output }),
-        ToolStep::Done { output } => json!({ "status": "done", "output": output }),
-        ToolStep::Error { error } => json!({
-            "status": "error",
-            "error": {
-                "kind": format!("{:?}", error.kind),
-                "message": error.message,
-                "retryable": bool::from(error.retryability)
-            }
-        }),
-    }
-}
+pub use types::StreamSessionId;
+use types::{
+    BriefPollParams, CorrelationMap, EvalLifecycleGuard, EvalNotifyMap, EvalOnceResult,
+    EvalResultMap, InFlightCounter, InFlightGuard, InvocationContextRegistrySlot,
+    InvocationScopeMap, PreparedBriefPollEval, StreamInvocationSession, StreamSemaphore,
+    StreamSessionMap, empty_open_input, tool_step_to_value,
+};
 
 /// Bridge between QuickJS JavaScript runtime and BAML functions
 ///
 /// BAML functions execute in Rust. This bridge exposes them to QuickJS
 /// so JavaScript code can call them.
+///
+/// The runtime is held in an [`Arc`] so the promise-poll loop can run pending jobs
+/// without holding the bridge lock (deadlock-free resume path).
 pub struct QuickJSBridge {
-    runtime: QuickJsRuntimeFacade,
+    runtime: Arc<QuickJsRuntimeFacade>,
     baml_manager: Arc<Mutex<BamlRuntimeManager>>,
     js_tools: HashSet<String>, // Track JavaScript-only tools
     agent_id: baml_rt_core::ids::AgentId,
     effect_liveness: Option<Arc<dyn EffectLiveness>>,
     idle_timeout_ms: u64,
     max_attempts_ms: u64,
+    /// Stream collector idle timeout (secs). Default 60; configurable for tests.
+    stream_collector_idle_secs: u64,
     /// Host-only active invocation stack; natives resolve scope from current top (tokenless).
     invocation_context_registry: InvocationContextRegistrySlot,
-    /// Token → scope (legacy); still populated for eval result tracking; natives prefer active context.
+    /// Token → scope, still populated for eval result tracking.
     invocation_scope_by_token: InvocationScopeMap,
     /// Token -> correlation id captured at invocation entry and propagated through native callbacks.
     correlation_id_by_token: CorrelationMap,
     /// Token → eval result (None while pending). Strictly keyed by token.
     eval_results_by_token: EvalResultMap,
+    /// Token → Notify; when __set_eval_result runs for that token it notifies. Ensures poll loop observes result only after write (no ordering race).
+    eval_notify_by_token: EvalNotifyMap,
     /// Up to N stream invocations may be active; each holds a permit in its session.
     /// Permit is released when the session is removed in finalize_a2a_stream_invocation.
     stream_semaphore: StreamSemaphore,
@@ -208,12 +87,8 @@ pub struct QuickJSBridge {
     /// drained in `finalize_a2a_stream_invocation`. Session-aware natives resolve scope
     /// from this map instead of the LIFO `invocation_context_registry`.
     stream_sessions: StreamSessionMap,
-    /// Per-session yield senders. Host-only: __baml_chat_yield_host(chunk_json) reads
-    /// current_stream_session_id_slot and sends here. Never expose session id to JS.
+    /// Per-session yield senders used by host routing from the active invocation context.
     a2a_yield_tx_by_session: Arc<StdMutex<HashMap<StreamSessionId, mpsc::UnboundedSender<Value>>>>,
-    /// Host-only "current" stream session for yield routing. Set when stream starts,
-    /// cleared when it finalizes. JS never sees this; __baml_chat_yield_host uses it.
-    current_stream_session_id_slot: Arc<StdMutex<Option<StreamSessionId>>>,
     /// Monotonic counter for allocating unique `StreamSessionId` values.
     next_stream_session_id: AtomicU64,
 }
@@ -274,7 +149,11 @@ impl QuickJSBridge {
             builder = builder.gc_interval(interval);
         }
 
-        let runtime = builder.build();
+        let runtime = Arc::new(builder.build());
+
+        let stream_permits = config
+            .stream_concurrency
+            .unwrap_or_else(|| thread::available_parallelism().map_or(4, |value| value.get()));
 
         // Create bridge instance
         let mut bridge = Self {
@@ -287,15 +166,16 @@ impl QuickJSBridge {
             max_attempts_ms: config
                 .max_attempts_ms
                 .unwrap_or(EffectGatedTimeoutPolicy::DEFAULT_MAX_ATTEMPTS as u64), // Default 30 minutes
+            stream_collector_idle_secs: config.stream_collector_idle_secs.unwrap_or(60),
             invocation_context_registry: Arc::new(StdMutex::new(InvocationContextRegistry::new())),
             invocation_scope_by_token: Arc::new(StdMutex::new(HashMap::new())),
             correlation_id_by_token: Arc::new(StdMutex::new(HashMap::new())),
             eval_results_by_token: Arc::new(StdMutex::new(HashMap::new())),
-            stream_semaphore: Arc::new(Semaphore::new(1)),
+            eval_notify_by_token: Arc::new(StdMutex::new(HashMap::new())),
+            stream_semaphore: Arc::new(Semaphore::new(stream_permits.max(1))),
             in_flight_invoke_count: Arc::new(AtomicU32::new(0)),
             stream_sessions: Arc::new(StdMutex::new(HashMap::new())),
             a2a_yield_tx_by_session: Arc::new(StdMutex::new(HashMap::new())),
-            current_stream_session_id_slot: Arc::new(StdMutex::new(None)),
             next_stream_session_id: AtomicU64::new(1),
         };
 
@@ -329,9 +209,38 @@ impl QuickJSBridge {
         self.max_attempts_ms
     }
 
+    /// Stream collector idle timeout in seconds (default 60). Used by collect_into_channel_owned.
+    pub fn stream_collector_idle_secs(&self) -> u64 {
+        self.stream_collector_idle_secs
+    }
+
     /// Agent ID for this bridge (set at construction; used for attribution and scope).
     pub fn agent_id(&self) -> &baml_rt_core::ids::AgentId {
         &self.agent_id
+    }
+
+    /// Getters for registration module (baml_registration) and other submodules.
+    pub(crate) fn runtime(&self) -> &Arc<QuickJsRuntimeFacade> {
+        &self.runtime
+    }
+    pub(crate) fn baml_manager(&self) -> &Arc<Mutex<BamlRuntimeManager>> {
+        &self.baml_manager
+    }
+    pub(crate) fn invocation_context_registry(&self) -> &InvocationContextRegistrySlot {
+        &self.invocation_context_registry
+    }
+    pub(crate) fn eval_results_by_token(&self) -> &EvalResultMap {
+        &self.eval_results_by_token
+    }
+    pub(crate) fn eval_notify_by_token(&self) -> &EvalNotifyMap {
+        &self.eval_notify_by_token
+    }
+    /// Arc to the in-flight counter (for registration closures). Use `in_flight_invoke_count()` for the current count.
+    pub(crate) fn in_flight_invoke_count_arc(&self) -> &InFlightCounter {
+        &self.in_flight_invoke_count
+    }
+    pub(crate) fn stream_sessions(&self) -> &StreamSessionMap {
+        &self.stream_sessions
     }
 
     /// Initialize the sandbox environment
@@ -386,15 +295,15 @@ impl QuickJSBridge {
         tracing::debug!("initialize_sandbox: Calling runtime.eval() for sandbox code");
 
         // INVARIANT L2: Runtime eval must yield control within bounded time
-        // If this hangs, the QuickJS runtime may have internal blocking
+        // If this hangs, the QuickJS runtime may have internal blocking. 15s for CI/slow runners.
         use tokio::time::{Duration, timeout};
         timeout(
-            Duration::from_secs(5),
+            Duration::from_secs(15),
             self.runtime.eval(None, script),
         )
         .await
         .map_err(|_| BamlRtError::QuickJs(
-            "Sandbox initialization timed out after 5 seconds - QuickJS runtime.eval() may be blocking".to_string()
+            "Sandbox initialization timed out after 15 seconds - QuickJS runtime.eval() may be blocking".to_string()
         ))?
         .map_err(|e| BamlRtError::QuickJsWithSource {
             context: "Failed to initialize sandbox".to_string(),
@@ -438,731 +347,42 @@ impl QuickJSBridge {
 
     /// Register __baml_invoke. Tokenless: host resolves scope from active context. JS calls (function_name, args).
     async fn register_baml_invoke_helper(&mut self) -> Result<()> {
-        let manager_clone = self.baml_manager.clone();
-        let registry = self.invocation_context_registry.clone();
-        let in_flight = self.in_flight_invoke_count.clone();
-
-        self.runtime.set_function(
-            &[],
-            "__baml_invoke",
-            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                let scope = resolve_scope_from_active_context(&registry)?;
-                if args.len() < 2 {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (function_name, args)"));
-                }
-
-                let func_name_js = &args[0];
-                let func_name = if func_name_js.is_string() {
-                    func_name_js.get_str().to_string()
-                } else {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Function name must be a string"));
-                };
-
-                let args_js = &args[1];
-                let args_json_str = if args_js.is_string() {
-                    args_js.get_str().to_string()
-                } else {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Args must be a JSON string - use JSON.stringify in JavaScript"));
-                };
-
-                let args_json: Value = serde_json::from_str(&args_json_str)
-                    .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&format!("Failed to parse JSON args: {}", e)))?;
-
-                let func_name_clone = func_name.clone();
-                let manager_for_promise = manager_clone.clone();
-                let correlation_id = registry
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.current_frame().ok())
-                    .and_then(|f| f.correlation_id);
-                let scope_for_tools = scope.clone();
-
-                // Track this async body in the in-flight counter so the stream
-                // quiescence barrier knows when it is safe to tear down the context.
-                in_flight.fetch_add(1, Ordering::Release);
-                let guard_counter = in_flight.clone();
-
-                Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
-                    let _in_flight_guard = InFlightGuard(guard_counter);
-                    let run = async move {
-                        context::with_scope(scope, async move {
-                            let manager = manager_for_promise.lock().await;
-                            let invocation_scope = InvocationScope::new(scope_for_tools.clone());
-                            let value = manager
-                                .invoke_function(&invocation_scope, &func_name_clone, args_json)
-                                .await
-                                .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
-                            let result = manager
-                                .execute_tool_from_baml_result_or_value(
-                                    &scope_for_tools,
-                                    value,
-                                    Some(&func_name_clone),
-                                )
-                                .await
-                                .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
-                            Ok(value_to_js_value_facade(result))
-                        })
-                        .await
-                    };
-                    if let Some(correlation_id) = correlation_id {
-                        correlation::with_correlation_id(correlation_id, run).await
-                    } else {
-                        run.await
-                    }
-                }))
-            },
-        ).map_err(|e| BamlRtError::QuickJsWithSource {
-            context: "Failed to register helper function".to_string(),
-            source: Box::new(e),
-        })?;
-
-        tracing::debug!("Registered __baml_invoke helper function with async promise support");
-        Ok(())
+        baml_registration::register_baml_invoke_helper(self).await
     }
 
     /// Register a helper function that can await promises and return JSON strings
     /// This helps with the synchronous eval() limitation
     async fn register_await_helper(&mut self) -> Result<()> {
-        // Register a helper that synchronously extracts promise results
-        // This will be used by evaluate() to handle promises
-        let js_code = r#"
-            globalThis.__awaitAndStringify = async function(promise) {
-                try {
-                    const result = await promise;
-                    // Return the result directly, not wrapped in success notification
-                    return JSON.stringify(result);
-                } catch (e) {
-                    return JSON.stringify({ error: e.toString() });
-                }
-            };
-
-            // Helper to synchronously check if a value is a promise
-            globalThis.__isPromise = function(value) {
-                return value && typeof value.then === 'function';
-            };
-        "#;
-
-        let script = Script::new("await_helper.js", js_code);
-        self.runtime
-            .eval(None, script)
-            .await
-            .map_err(|e| BamlRtError::QuickJsWithSource {
-                context: "Failed to register await helper".to_string(),
-                source: Box::new(e),
-            })?;
-
-        // Register eval-result setter: __set_eval_result(token, json_string)
-        let eval_results = self.eval_results_by_token.clone();
-        self.runtime.set_function(
-            &[],
-            "__set_eval_result",
-            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                if args.len() < 2 {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (token, json_string)"));
-                }
-                let token = if args[0].is_string() {
-                    args[0].get_str().to_string()
-                } else {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Token must be a string"));
-                };
-                let json_str = if args[1].is_string() {
-                    args[1].get_str().to_string()
-                } else {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("json_string must be a string"));
-                };
-                let mut guard = eval_results
-                    .lock()
-                    .map_err(|_| quickjs_runtime::jsutils::JsError::new_str("eval_results lock poisoned"))?;
-                let key = InvocationToken(token);
-                if !guard.contains_key(&key) {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Missing eval result slot for token"));
-                }
-                guard.insert(key, Some(json_str));
-                Ok(JsValueFacade::Undefined)
-            },
-        ).map_err(|e| BamlRtError::QuickJsWithSource {
-            context: "Failed to register __set_eval_result".to_string(),
-            source: Box::new(e),
-        })?;
-
-        tracing::debug!("Registered __awaitAndStringify helper function");
-        Ok(())
+        baml_registration::register_await_helper(self).await
     }
 
     /// Register __baml_stream. Tokenless: host resolves scope from active context. JS calls (function_name, args).
     async fn register_baml_stream_helper(&mut self) -> Result<()> {
-        let manager_clone = self.baml_manager.clone();
-        let registry = self.invocation_context_registry.clone();
-        let in_flight = self.in_flight_invoke_count.clone();
-
-        self.runtime.set_function(
-            &[],
-            "__baml_stream",
-            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                let scope = resolve_scope_from_active_context(&registry)?;
-                if args.len() < 2 {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (function_name, args)"));
-                }
-
-                let func_name_js = &args[0];
-                let func_name = if func_name_js.is_string() {
-                    func_name_js.get_str().to_string()
-                } else {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Function name must be a string"));
-                };
-
-                let args_js = &args[1];
-                let args_json_str = if args_js.is_string() {
-                    args_js.get_str().to_string()
-                } else {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Second argument must be a JSON string"));
-                };
-
-                let args_json: Value = match serde_json::from_str(&args_json_str) {
-                    Ok(v) => v,
-                    Err(e) => return Err(quickjs_runtime::jsutils::JsError::new_str(&format!("Failed to parse JSON args: {}", e))),
-                };
-
-                let func_name_clone = func_name.clone();
-                let correlation_id = registry
-                    .lock()
-                    .ok()
-                    .and_then(|g| g.current_frame().ok())
-                    .and_then(|f| f.correlation_id);
-                let manager_for_stream = manager_clone.clone();
-                let correlation_id_for_spawn = correlation_id.clone();
-
-                // Track in-flight for quiescence barrier (same as __baml_invoke).
-                in_flight.fetch_add(1, Ordering::Release);
-                let guard_counter = in_flight.clone();
-
-                Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
-                    let _in_flight_guard = InFlightGuard(guard_counter);
-                    let run = async move {
-                        use tokio::sync::mpsc;
-                        let (tx, mut rx) = mpsc::channel::<serde_json::Value>(100);
-                        let func_name_stream = func_name_clone.clone();
-                        let args_json_stream = args_json.clone();
-                        let spawn_correlation_id = correlation_id_for_spawn.clone();
-                        let spawn_scope = scope.clone();
-                        let scope_for_stream = spawn_scope.clone();
-                        // Spawn a task to run the stream and send incremental results
-                        tokio::spawn(async move {
-                            let run = async move {
-                                context::with_scope(spawn_scope, async move {
-                                if args_json_stream
-                                    .get("__scope_probe")
-                                    .and_then(Value::as_bool)
-                                    == Some(true)
-                                {
-                                    let payload = json!({
-                                        "context_id": scope_for_stream.context_id().to_string(),
-                                        "message_id": scope_for_stream.message_id().to_string(),
-                                        "task_id": scope_for_stream.task_id_opt().map(|id| id.to_string()),
-                                    });
-                                    if let Err(e) = tx.send(payload).await {
-                                        tracing::warn!(error = ?e, "Failed to send scope probe payload");
-                                    }
-                                    return;
-                                }
-
-                                // Create the stream
-                                let manager = manager_for_stream.lock().await;
-                                let invocation_scope =
-                                    InvocationScope::new(scope_for_stream.clone());
-                                let stream_result = manager.invoke_function_stream(
-                                    &invocation_scope,
-                                    &func_name_stream,
-                                    args_json_stream,
-                                );
-                                let executor_ref = match manager.executor.as_ref() {
-                                    Some(exec) => exec,
-                                    None => {
-                                        let error_value = serde_json::json!({
-                                            "error": "BAML executor not initialized"
-                                        });
-                                        if let Err(e) = tx.send(error_value).await {
-                                            tracing::warn!(error = ?e, "Stream channel send failed");
-                                        }
-                                        return;
-                                    }
-                                };
-                                let ctx_manager =
-                                    match executor_ref.create_ctx_manager_for_scope(
-                                        &scope_for_stream,
-                                        None,
-                                    ) {
-                                    Ok(manager) => manager,
-                                    Err(err) => {
-                                        let error_value = serde_json::json!({
-                                            "error": format!("Failed to create context manager: {}", err)
-                                        });
-                                        if let Err(e) = tx.send(error_value).await {
-                                            tracing::warn!(error = ?e, "Stream channel send failed");
-                                        }
-                                        return;
-                                    }
-                                };
-                                // Create the stream
-                                let mut stream = match stream_result {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        drop(manager); // Release lock
-                                        let error_value = serde_json::json!({"error": format!("Failed to create stream: {}", e)});
-                                    if let Err(e) = tx.send(error_value).await {
-                                        tracing::warn!(error = ?e, "Stream channel send failed");
-                                    }
-                                        return;
-                                    }
-                                };
-                                // ctx_manager is owned; drop manager lock before stream.run so that
-                                // tool calls (or other re-entry) during the stream can take the lock.
-                                drop(manager);
-                                let env_vars = HashMap::new();
-                                // Set task-local so execute_tool_session_plan can push tool streaming chunks into this channel.
-                                let tx_for_yield = tx.clone();
-                                stream_yield::scope_stream_yield(Some(tx_for_yield), async move {
-                                    let (final_result, _call_id) = stream
-                                        .run(
-                                            None::<fn()>, // on_tick
-                                            Some(|result: baml_runtime::FunctionResult| {
-                                                if let Some(Ok(parsed)) = result.parsed()
-                                                    && let Ok(parsed_value) =
-                                                        serde_json::to_value(parsed.serialize_partial())
-                                                    && let Err(e) = tx.try_send(parsed_value)
-                                                {
-                                                    tracing::warn!(error = ?e, "Stream channel try_send failed");
-                                                }
-                                            }),
-                                            &ctx_manager,
-                                            None, // type_builder
-                                            None, // client_registry
-                                            env_vars,
-                                        )
-                                        .await;
-
-                                    // Send final result
-                                    match final_result {
-                                        Ok(result) => {
-                                            // parsed() returns Option<Result<ResponseBamlValue, Error>>
-                                            if let Some(Ok(parsed)) = result.parsed()
-                                                && let Ok(final_value) =
-                                                    serde_json::to_value(parsed.serialize_partial())
-                                                && let Err(e) = tx.send(final_value).await
-                                            {
-                                                tracing::warn!(error = ?e, "Stream channel send failed");
-                                            }
-                                        }
-                                        Err(e) => {
-                                            let error_value = serde_json::json!({"error": format!("{}", e)});
-                                            if let Err(e) = tx.send(error_value).await {
-                                                tracing::warn!(error = ?e, "Stream channel send failed");
-                                            }
-                                        }
-                                    }
-                                })
-                                .await;
-                                }).await;
-                            };
-                            if let Some(correlation_id) = spawn_correlation_id {
-                                correlation::with_correlation_id(correlation_id, run).await;
-                            } else {
-                                run.await;
-                            }
-                        });
-
-                        // Collect results from the channel into an array
-                        let mut results = Vec::new();
-                        while let Some(value) = rx.recv().await {
-                            results.push(value);
-                        }
-
-                        // Convert results array to JsValueFacade directly
-                        Ok(value_to_js_value_facade(serde_json::Value::Array(results)))
-                    };
-                    if let Some(correlation_id) = correlation_id {
-                        correlation::with_correlation_id(correlation_id, run).await
-                    } else {
-                        run.await
-                    }
-                }))
-            },
-        ).map_err(|e| BamlRtError::QuickJsWithSource {
-            context: "Failed to register streaming helper function".to_string(),
-            source: Box::new(e),
-        })?;
-
-        tracing::debug!("Registered __baml_stream helper function");
-        Ok(())
+        baml_registration::register_baml_stream_helper(self).await
     }
 
     /// Register `__baml_invoke_session(session_id, function_name, args_json)`.
-    ///
-    /// Session-aware mirror of `__baml_invoke`. Stream JS wrappers call this with a
-    /// baked-in session id so scope is resolved from the session map, not the LIFO registry.
     async fn register_baml_invoke_session_helper(&mut self) -> Result<()> {
-        let manager_clone = self.baml_manager.clone();
-        let sessions = self.stream_sessions.clone();
-        let in_flight = self.in_flight_invoke_count.clone();
-
-        self.runtime.set_function(
-            &[],
-            "__baml_invoke_session",
-            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                if args.len() < 3 {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id, function_name, args)"));
-                }
-                let session_id = tools::parse_session_id_arg(&args)?;
-                let (scope, session) = match resolve_scope_from_session(&sessions, session_id) {
-                    Ok(pair) => pair,
-                    Err(e) => {
-                        let msg = e.to_string();
-                        tracing::debug!(error = %msg, %session_id, "__baml_invoke_session: session lookup failed, returning rejected promise");
-                        return Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
-                            Err(quickjs_runtime::jsutils::JsError::new_str(&msg))
-                        }));
-                    }
-                };
-
-                let func_name = if args[1].is_string() {
-                    args[1].get_str().to_string()
-                } else {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Function name must be a string"));
-                };
-                let args_json_str = if args[2].is_string() {
-                    args[2].get_str().to_string()
-                } else {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Args must be a JSON string"));
-                };
-                let args_json: Value = serde_json::from_str(&args_json_str)
-                    .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&format!("Failed to parse JSON args: {}", e)))?;
-
-                let manager_for_promise = manager_clone.clone();
-                let correlation_id = session.correlation_id.clone();
-                let scope_for_tools = scope.clone();
-                let cancel = session.cancel.clone();
-
-                in_flight.fetch_add(1, Ordering::Release);
-                let guard_counter = in_flight.clone();
-
-                Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
-                    let _in_flight_guard = InFlightGuard(guard_counter);
-                    // Cancellation checkpoint: entry
-                    if cancel.is_cancelled() {
-                        return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
-                    }
-                    let cancel_inner = cancel.clone();
-                    let run = async move {
-                        context::with_scope(scope, async move {
-                            let manager = manager_for_promise.lock().await;
-                            // Cancellation checkpoint: after acquiring manager lock
-                            if cancel_inner.is_cancelled() {
-                                return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
-                            }
-                            let invocation_scope = InvocationScope::new(scope_for_tools.clone());
-                            let value = manager
-                                .invoke_function(&invocation_scope, &func_name, args_json)
-                                .await
-                                .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
-                            // Cancellation checkpoint: after BAML invoke, before tool execution
-                            if cancel_inner.is_cancelled() {
-                                return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
-                            }
-                            let result = manager
-                                .execute_tool_from_baml_result_or_value(&scope_for_tools, value, Some(&func_name))
-                                .await
-                                .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
-                            Ok(value_to_js_value_facade(result))
-                        })
-                        .await
-                    };
-                    if let Some(correlation_id) = correlation_id {
-                        correlation::with_correlation_id(correlation_id, run).await
-                    } else {
-                        run.await
-                    }
-                }))
-            },
-        ).map_err(|e| BamlRtError::QuickJsWithSource {
-            context: "Failed to register __baml_invoke_session".to_string(),
-            source: Box::new(e),
-        })?;
-
-        tracing::debug!("Registered __baml_invoke_session helper function");
-        Ok(())
+        baml_registration::register_baml_invoke_session_helper(self).await
     }
 
     /// Register `__baml_stream_session(session_id, function_name, args_json)`.
-    ///
-    /// Session-aware mirror of `__baml_stream`. Same structure as `__baml_invoke_session`
-    /// but spawns a BAML stream with incremental results.
     async fn register_baml_stream_session_helper(&mut self) -> Result<()> {
-        let manager_clone = self.baml_manager.clone();
-        let sessions = self.stream_sessions.clone();
-        let in_flight = self.in_flight_invoke_count.clone();
-
-        self.runtime.set_function(
-            &[],
-            "__baml_stream_session",
-            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
-                if args.len() < 3 {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id, function_name, args)"));
-                }
-                let session_id = tools::parse_session_id_arg(&args)?;
-                let (scope, session) = match resolve_scope_from_session(&sessions, session_id) {
-                    Ok(pair) => pair,
-                    Err(e) => {
-                        let msg = e.to_string();
-                        tracing::debug!(error = %msg, %session_id, "__baml_stream_session: session lookup failed, returning rejected promise");
-                        return Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
-                            Err(quickjs_runtime::jsutils::JsError::new_str(&msg))
-                        }));
-                    }
-                };
-
-                let func_name = if args[1].is_string() {
-                    args[1].get_str().to_string()
-                } else {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Function name must be a string"));
-                };
-                let args_json_str = if args[2].is_string() {
-                    args[2].get_str().to_string()
-                } else {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Args must be a JSON string"));
-                };
-                let args_json: Value = serde_json::from_str(&args_json_str)
-                    .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&format!("Failed to parse JSON args: {}", e)))?;
-
-                let manager_for_stream = manager_clone.clone();
-                let correlation_id = session.correlation_id.clone();
-                let cancel = session.cancel.clone();
-
-                in_flight.fetch_add(1, Ordering::Release);
-                let guard_counter = in_flight.clone();
-
-                let correlation_id_for_wrap = correlation_id.clone();
-                Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
-                    let _in_flight_guard = InFlightGuard(guard_counter);
-                    if cancel.is_cancelled() {
-                        return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
-                    }
-                    let run = async move {
-                        use tokio::sync::mpsc;
-                        let (tx, mut rx) = mpsc::channel::<serde_json::Value>(100);
-                        let func_name_stream = func_name.clone();
-                        let args_json_stream = args_json.clone();
-                        let spawn_correlation_id = correlation_id.clone();
-                        let spawn_scope = scope.clone();
-                        let scope_for_stream = spawn_scope.clone();
-                        let cancel_for_spawn = cancel.clone();
-                        tokio::spawn(async move {
-                            let run = async move {
-                                context::with_scope(spawn_scope, async move {
-                                if cancel_for_spawn.is_cancelled() {
-                                    return;
-                                }
-                                if args_json_stream
-                                    .get("__scope_probe")
-                                    .and_then(Value::as_bool)
-                                    == Some(true)
-                                {
-                                    let payload = json!({
-                                        "context_id": scope_for_stream.context_id().to_string(),
-                                        "message_id": scope_for_stream.message_id().to_string(),
-                                        "task_id": scope_for_stream.task_id_opt().map(|id| id.to_string()),
-                                    });
-                                    if let Err(e) = tx.send(payload).await {
-                                        tracing::warn!(error = ?e, "Failed to send scope probe payload");
-                                    }
-                                    return;
-                                }
-
-                                let manager = manager_for_stream.lock().await;
-                                // Cancellation checkpoint: after acquiring manager lock
-                                if cancel_for_spawn.is_cancelled() {
-                                    return;
-                                }
-                                let invocation_scope =
-                                    InvocationScope::new(scope_for_stream.clone());
-                                let stream_result = manager.invoke_function_stream(
-                                    &invocation_scope,
-                                    &func_name_stream,
-                                    args_json_stream,
-                                );
-                                let executor_ref = match manager.executor.as_ref() {
-                                    Some(exec) => exec,
-                                    None => {
-                                        let error_value = serde_json::json!({
-                                            "error": "BAML executor not initialized"
-                                        });
-                                        if let Err(e) = tx.send(error_value).await {
-                                            tracing::warn!(error = ?e, "Stream channel send failed");
-                                        }
-                                        return;
-                                    }
-                                };
-                                let ctx_manager =
-                                    match executor_ref.create_ctx_manager_for_scope(
-                                        &scope_for_stream,
-                                        None,
-                                    ) {
-                                    Ok(manager) => manager,
-                                    Err(err) => {
-                                        let error_value = serde_json::json!({
-                                            "error": format!("Failed to create context manager: {}", err)
-                                        });
-                                        if let Err(e) = tx.send(error_value).await {
-                                            tracing::warn!(error = ?e, "Stream channel send failed");
-                                        }
-                                        return;
-                                    }
-                                };
-                                let mut stream = match stream_result {
-                                    Ok(s) => s,
-                                    Err(e) => {
-                                        drop(manager);
-                                        let error_value = serde_json::json!({"error": format!("Failed to create stream: {}", e)});
-                                    if let Err(e) = tx.send(error_value).await {
-                                        tracing::warn!(error = ?e, "Stream channel send failed");
-                                    }
-                                        return;
-                                    }
-                                };
-                                drop(manager);
-                                // Cancellation checkpoint: after setup, before expensive stream.run()
-                                if cancel_for_spawn.is_cancelled() {
-                                    return;
-                                }
-                                let env_vars = HashMap::new();
-                                let tx_for_yield = tx.clone();
-                                stream_yield::scope_stream_yield(Some(tx_for_yield), async move {
-                                    let (final_result, _call_id) = stream
-                                        .run(
-                                            None::<fn()>,
-                                            Some(|result: baml_runtime::FunctionResult| {
-                                                if let Some(Ok(parsed)) = result.parsed()
-                                                    && let Ok(parsed_value) =
-                                                        serde_json::to_value(parsed.serialize_partial())
-                                                    && let Err(e) = tx.try_send(parsed_value)
-                                                {
-                                                    tracing::warn!(error = ?e, "Stream channel try_send failed");
-                                                }
-                                            }),
-                                            &ctx_manager,
-                                            None,
-                                            None,
-                                            env_vars,
-                                        )
-                                        .await;
-
-                                    match final_result {
-                                        Ok(result) => {
-                                            if let Some(Ok(parsed)) = result.parsed()
-                                                && let Ok(final_value) =
-                                                    serde_json::to_value(parsed.serialize_partial())
-                                                && let Err(e) = tx.send(final_value).await
-                                            {
-                                                tracing::warn!(error = ?e, "Stream channel send failed");
-                                            }
-                                        }
-                                        Err(e) => {
-                                            let error_value = serde_json::json!({"error": format!("{}", e)});
-                                            if let Err(e) = tx.send(error_value).await {
-                                                tracing::warn!(error = ?e, "Stream channel send failed");
-                                            }
-                                        }
-                                    }
-                                })
-                                .await;
-                                }).await;
-                            };
-                            if let Some(correlation_id) = spawn_correlation_id {
-                                correlation::with_correlation_id(correlation_id, run).await;
-                            } else {
-                                run.await;
-                            }
-                        });
-
-                        let mut results = Vec::new();
-                        while let Some(value) = rx.recv().await {
-                            results.push(value);
-                        }
-                        Ok(value_to_js_value_facade(serde_json::Value::Array(results)))
-                    };
-                    if let Some(correlation_id) = correlation_id_for_wrap {
-                        correlation::with_correlation_id(correlation_id, run).await
-                    } else {
-                        run.await
-                    }
-                }))
-            },
-        ).map_err(|e| BamlRtError::QuickJsWithSource {
-            context: "Failed to register __baml_stream_session".to_string(),
-            source: Box::new(e),
-        })?;
-
-        tracing::debug!("Registered __baml_stream_session helper function");
-        Ok(())
+        baml_registration::register_baml_stream_session_helper(self).await
     }
 
     /// Register a single BAML function with QuickJS (tokenless wrapper).
     async fn register_single_function(&mut self, function_name: &str) -> Result<()> {
-        let js_code = wrappers::build_token_args_wrapper(
-            function_name,
-            &format!(
-                "__baml_invoke(\"{}\", JSON.stringify(argObj))",
-                function_name.replace('\\', "\\\\").replace('"', "\\\"")
-            ),
-        );
-
-        let script = Script::new("register_function.js", &js_code);
-        let _result =
-            self.runtime
-                .eval(None, script)
-                .await
-                .map_err(|e| BamlRtError::QuickJsWithSource {
-                    context: "Failed to register function".to_string(),
-                    source: Box::new(e),
-                })?;
-
-        tracing::debug!(function = function_name, "Registered function with QuickJS");
-
-        Ok(())
+        baml_registration::register_single_function(self, function_name).await
     }
 
     /// Register a streaming version of a single BAML function with QuickJS
     async fn register_single_stream_function(&mut self, function_name: &str) -> Result<()> {
-        // Register a JavaScript wrapper function for streaming
-        let stream_function_name = format!("{}Stream", function_name);
-        let js_code = wrappers::build_token_args_wrapper(
-            &stream_function_name,
-            &format!(
-                "__baml_stream(\"{}\", JSON.stringify(argObj))",
-                function_name.replace('\\', "\\\\").replace('"', "\\\"")
-            ),
-        );
-
-        let script = Script::new("register_stream_function.js", &js_code);
-        let _result =
-            self.runtime
-                .eval(None, script)
-                .await
-                .map_err(|e| BamlRtError::QuickJsWithSource {
-                    context: "Failed to register stream function".to_string(),
-                    source: Box::new(e),
-                })?;
-
-        tracing::debug!(
-            function = function_name,
-            stream_function = stream_function_name,
-            "Registered streaming function with QuickJS"
-        );
-
-        Ok(())
+        baml_registration::register_single_stream_function(self, function_name).await
     }
 
     /// Legacy: create token and register scope (used only for correlation map when needed).
-    #[allow(dead_code)]
+    #[allow(dead_code)] // reserved for legacy correlation/scope cleanup when re-enabled
     fn create_invocation_token(&mut self, scope: &InvocationScope) -> (InvocationToken, String) {
         let token = next_invocation_token();
         let prelude = format!(
@@ -1182,7 +402,7 @@ impl QuickJSBridge {
 
     /// Remove an invocation token so it can no longer be used for scope lookup. Reserved for
     /// post-invocation cleanup of scope/correlation maps.
-    #[allow(dead_code)]
+    #[allow(dead_code)] // reserved for post-invocation scope/correlation cleanup when re-enabled
     fn remove_invocation_token(&mut self, token: &InvocationToken) {
         if let Ok(mut map) = self.invocation_scope_by_token.lock() {
             map.remove(token);
@@ -1257,6 +477,7 @@ impl QuickJSBridge {
             self.invocation_context_registry.clone(),
             eval_token.clone(),
             context_id_to_exit,
+            self.baml_manager.clone(),
         );
 
         {
@@ -1271,53 +492,9 @@ impl QuickJSBridge {
         }
         lifecycle_guard.mark_eval_slot_registered();
 
-        let code_trimmed = code.trim_start();
-        let is_arrow_iife =
-            code_trimmed.starts_with("(()") || code_trimmed.starts_with("(async ()");
-        let already_wrapped = code_trimmed.starts_with("(function()")
-            || code_trimmed.starts_with("(async function()")
-            || is_arrow_iife;
-        let code_expr_body = if already_wrapped {
-            code_trimmed.to_string()
-        } else {
-            format!("(function() {{ {} }})()", code)
-        };
-
-        // Execute user code exactly once. Promise results are handed off by installing inline
-        // then/catch handlers that call __set_eval_result(token, ...), avoiding any second eval
-        // or globalThis pending-promise storage.
+        let code_expr_body = eval::normalize_code_to_expr_body(code);
         let token_literal = eval_token.0.replace('\\', "\\\\").replace('"', "\\\"");
-        let direct_code = format!(
-            r#"(function() {{
-var __r = {code};
-if (__r && typeof __r.then === 'function') {{
-  Promise.resolve(__r).then(function(__v) {{
-    var __json;
-    if (typeof __v === 'string') {{
-      __json = __v;
-    }} else if (typeof __v === 'undefined') {{
-      __json = "{{}}";
-    }} else {{
-      __json = JSON.stringify(__v);
-      if (typeof __json === 'undefined') {{
-        __json = "{{}}";
-      }}
-    }}
-    __set_eval_result("{token}", __json);
-  }}).catch(function(__e) {{
-    __set_eval_result("{token}", JSON.stringify({{ error: (__e && __e.toString ? __e.toString() : String(__e)) }}));
-  }});
-  return "__EVAL_PROMISE_PENDING__";
-}}
-if (typeof __r === 'string') {{ return __r; }}
-if (typeof __r === 'undefined') {{ return "{{}}"; }}
-var __sync_json = JSON.stringify(__r);
-if (typeof __sync_json === 'undefined') {{ return "{{}}"; }}
-return __sync_json;
-}})()"#,
-            code = code_expr_body,
-            token = token_literal,
-        );
+        let direct_code = eval::build_eval_direct_code(&code_expr_body, &token_literal);
         let direct_script = Script::new("eval_direct.js", &direct_code);
         let js_result = match scope {
             Some(s) => {
@@ -1357,7 +534,7 @@ return __sync_json;
         })?;
         let result_str =
             promise_polling::poll_promise_until_result(promise_polling::PollPromiseParams {
-                runtime: &self.runtime,
+                runtime: Some(Arc::clone(&self.runtime)),
                 eval_results_by_token: &self.eval_results_by_token,
                 eval_token: &eval_token,
                 token_to_remove: None,
@@ -1366,6 +543,8 @@ return __sync_json;
                 effect_liveness: self.effect_liveness.clone(),
                 idle_timeout_ms: self.idle_timeout_ms,
                 max_attempts_ms: self.max_attempts_ms,
+                run_pending_jobs_brief: None,
+                result_notify: None,
             })
             .await?;
 
@@ -1382,6 +561,117 @@ return __sync_json;
                 raw_prefix: prefix,
             }
         })
+    }
+
+    /// Prepares eval for brief-poll path (sync only). Caller runs the eval without holding the bridge lock.
+    fn prepare_brief_poll_eval(
+        &mut self,
+        scope: &InvocationScope,
+        code: &str,
+    ) -> Result<PreparedBriefPollEval> {
+        let context_id_to_exit: Option<InvocationContextId> = {
+            let correlation_id = correlation::current_correlation_id();
+            let mut guard = self.invocation_context_registry.lock().map_err(|_| {
+                BamlRtError::QuickJs("invocation context registry lock poisoned".to_string())
+            })?;
+            Some(guard.enter(scope.as_scope().clone(), correlation_id))
+        };
+
+        let eval_token = next_invocation_token();
+        let mut lifecycle_guard = EvalLifecycleGuard::new(
+            self.eval_results_by_token.clone(),
+            self.invocation_context_registry.clone(),
+            eval_token.clone(),
+            context_id_to_exit,
+            self.baml_manager.clone(),
+        );
+
+        {
+            let mut guard = self
+                .eval_results_by_token
+                .lock()
+                .map_err(|_| BamlRtError::QuickJs("eval_results lock poisoned".to_string()))?;
+            if guard.contains_key(&eval_token) {
+                return Err(BamlRtError::QuickJs("eval token collision".to_string()));
+            }
+            guard.insert(eval_token.clone(), None);
+        }
+        lifecycle_guard.mark_eval_slot_registered();
+
+        let code_expr_body = eval::normalize_code_to_expr_body(code);
+        let token_literal = eval_token.0.replace('\\', "\\\\").replace('"', "\\\"");
+        let direct_code = eval::build_eval_direct_code(&code_expr_body, &token_literal);
+        let direct_script = Script::new("eval_direct.js", &direct_code);
+        let result_notify = Arc::new(tokio::sync::Notify::new());
+        {
+            let mut guard = self.eval_notify_by_token.lock().map_err(|_| {
+                BamlRtError::QuickJs("eval_notify_by_token lock poisoned".to_string())
+            })?;
+            guard.insert(eval_token.clone(), Arc::clone(&result_notify));
+        }
+        Ok(PreparedBriefPollEval {
+            direct_script,
+            scope: scope.clone(),
+            runtime: Arc::clone(&self.runtime),
+            eval_token: eval_token.clone(),
+            lifecycle_guard,
+            result_notify,
+            eval_results_by_token: self.eval_results_by_token.clone(),
+            eval_notify_by_token: self.eval_notify_by_token.clone(),
+            invocation_scope_by_token: self.invocation_scope_by_token.clone(),
+            effect_liveness: self.effect_liveness.clone(),
+            idle_timeout_ms: self.idle_timeout_ms,
+            max_attempts_ms: self.max_attempts_ms,
+        })
+    }
+
+    /// Runs prepared eval without holding the bridge lock so the worker and TaskManager can make progress.
+    async fn run_prepared_brief_poll_eval(
+        prepared: PreparedBriefPollEval,
+    ) -> Result<EvalOnceResult> {
+        let js_result = scope::run_eval_with_scope(
+            &prepared.runtime,
+            &prepared.scope,
+            prepared.direct_script,
+            scope::ClearPolicy::Clear,
+        )
+        .await
+        .map_err(|e| {
+            let message = e.to_string();
+            BamlRtError::QuickJsWithSource {
+                context: format!("Failed to execute JavaScript: {}", message),
+                source: Box::new(e),
+            }
+        })?;
+
+        if !js_result.is_string() {
+            return Ok(EvalOnceResult::Sync(serde_json::json!({})));
+        }
+
+        let json_str = js_result.get_str();
+        if json_str != "__EVAL_PROMISE_PENDING__" {
+            if let Ok(parsed) = serde_json::from_str::<Value>(json_str) {
+                return Ok(EvalOnceResult::Sync(parsed));
+            }
+            return Ok(EvalOnceResult::Sync(
+                serde_json::json!({ "result": json_str }),
+            ));
+        }
+
+        let params = BriefPollParams {
+            runtime: prepared.runtime,
+            eval_results_by_token: prepared.eval_results_by_token,
+            eval_token: prepared.eval_token,
+            result_notify: prepared.result_notify,
+            eval_notify_by_token: prepared.eval_notify_by_token,
+            invocation_scope_by_token: prepared.invocation_scope_by_token,
+            scope: prepared.scope,
+            effect_liveness: prepared.effect_liveness,
+            idle_timeout_ms: prepared.idle_timeout_ms,
+            max_attempts_ms: prepared.max_attempts_ms,
+            lifecycle_guard: prepared.lifecycle_guard,
+        };
+        Ok(EvalOnceResult::PromisePending(params))
     }
 
     /// Invoke a BAML function by name.
@@ -1407,20 +697,7 @@ return __sync_json;
         args: Value,
     ) -> Result<Value> {
         let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
-        let js_code = format!(
-            r#"
-            (function() {{
-                try {{
-                    const args = {};
-                    const promise = __baml_invoke("{}", JSON.stringify(args));
-                    return __awaitAndStringify(promise);
-                }} catch (error) {{
-                    return JSON.stringify({{ error: error.message || String(error) }});
-                }}
-            }})()
-            "#,
-            args_json, function_name
-        );
+        let js_code = invocation::build_baml_invoke_js_code(function_name, &args_json);
 
         if correlation::current_correlation_id().is_some() {
             self.evaluate(Some(scope), &js_code).await
@@ -1459,23 +736,7 @@ return __sync_json;
         args: Value,
     ) -> Result<Value> {
         let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
-        let js_code = format!(
-            r#"
-            (function() {{
-                try {{
-                    const args = {};
-                    const func = globalThis.__js_tools && globalThis.__js_tools["{}"];
-                    if (func === undefined || typeof func !== 'function') {{
-                        return JSON.stringify({{ error: "JS tool not found" }});
-                    }}
-                    return __awaitAndStringify(func(args));
-                }} catch (error) {{
-                    return JSON.stringify({{ error: error.message || String(error) }});
-                }}
-            }})()
-            "#,
-            args_json, tool_name
-        );
+        let js_code = invocation::build_js_tool_invoke_js_code(tool_name, &args_json);
 
         if correlation::current_correlation_id().is_some() {
             self.evaluate(Some(invocation_scope), &js_code).await
@@ -1495,6 +756,183 @@ return __sync_json;
     /// callbacks and yielded chunks are attributed to the correct conversation. Multiple parallel
     /// conversations each use their own scope when the host invokes this.
     ///
+    /// Deliver a resume message into an active stream session so the shim's pending
+    /// `awaitInput` Promise resolves and the same JS run continues. Must be called from
+    /// the same thread as the collector (handover thread).
+    ///
+    /// **Deadlock-free:** Takes `Arc<Mutex<QuickJSBridge>>` so the caller does not hold the lock.
+    /// The promise-poll loop runs with brief locks only (lock → run pending jobs → unlock each
+    /// iteration), so the LLM completion task can acquire the bridge lock to resolve the promise.
+    pub async fn deliver_resume_input(
+        bridge: Arc<Mutex<Self>>,
+        session_id: StreamSessionId,
+        request: Value,
+    ) -> Result<()> {
+        tracing::debug!(session_id = %session_id, "resume: deliver input begin");
+        let (inv_scope, message) = {
+            let scope = {
+                let guard = bridge.lock().await;
+                guard
+                    .stream_sessions
+                    .lock()
+                    .map_err(|_| BamlRtError::QuickJs("stream_sessions lock poisoned".to_string()))?
+                    .get(&session_id)
+                    .map(|s| s.scope.clone())
+                    .ok_or_else(|| {
+                        BamlRtError::QuickJs(format!(
+                            "stream session {} not found for resume delivery",
+                            session_id
+                        ))
+                    })?
+            };
+            let inv_scope = InvocationScope::new(scope);
+            let mut message = request
+                .get("params")
+                .and_then(|p| p.get("message"))
+                .cloned()
+                .unwrap_or(request);
+            if let Some(obj) = message.as_object_mut() {
+                obj.insert("__session".to_string(), json!(session_id.0));
+            }
+            (inv_scope, message)
+        };
+        tracing::debug!(
+            session_id = %session_id,
+            context_id = %inv_scope.context_id(),
+            "resume: session scope resolved and message tagged"
+        );
+        let context_id_for_log = inv_scope.context_id().to_string();
+        // Return the promise (do not await). run_eval_once_for_brief_poll wraps this in
+        // direct_code that attaches .then/.catch and returns "__EVAL_PROMISE_PENDING__"
+        // so the eval returns immediately and we never hold the bridge lock across the
+        // promise resolution (avoids deadlock with LLM completion).
+        let js_code = format!(
+            r#"
+            (function() {{
+                try {{
+                    const args = {};
+                    const func = globalThis["onChatMessage"];
+                    if (func === undefined || typeof func !== 'function') {{
+                        return JSON.stringify({{ error: "JS function not found: onChatMessage" }});
+                    }}
+                    return func(args);
+                }} catch (error) {{
+                    return JSON.stringify({{ error: error.message || String(error) }});
+                }}
+            }})()
+            "#,
+            serde_json::to_string(&message).map_err(BamlRtError::Json)?
+        );
+
+        let run_correlation = correlation::current_correlation_id().is_some();
+        let correlation_id = correlation::current_correlation_id();
+        let cid_for_run = correlation_id.clone();
+        let run = async move {
+            // Hold the bridge lock only for sync prepare; run the eval without the lock so the
+            // worker and TaskManager can make progress (fixes resume deadlock).
+            let prepared = {
+                let mut guard = bridge.lock().await;
+                guard.prepare_brief_poll_eval(&inv_scope, &js_code)?
+            };
+            tracing::debug!(
+                token = %prepared.eval_token.0,
+                "resume: prepared brief poll eval, running without bridge lock"
+            );
+            let eval_result = if run_correlation {
+                QuickJSBridge::run_prepared_brief_poll_eval(prepared).await
+            } else {
+                correlation::with_correlation_id(
+                    cid_for_run.unwrap_or_else(correlation::generate_correlation_id),
+                    QuickJSBridge::run_prepared_brief_poll_eval(prepared),
+                )
+                .await
+            }?;
+
+            match eval_result {
+                EvalOnceResult::Sync(result) => {
+                    if let Some(err) = result.get("error").and_then(Value::as_str) {
+                        return Err(BamlRtError::QuickJs(format!(
+                            "JS stream resume error: {}",
+                            err
+                        )));
+                    }
+                    Ok(())
+                }
+                EvalOnceResult::PromisePending(params) => {
+                    tracing::debug!(
+                        token = %params.eval_token.0,
+                        "resume: promise pending; bounded poll for resume completion"
+                    );
+                    // Bounded poll: preserve resume semantics when promise settles quickly, but
+                    // never allow this path to hang indefinitely. 15s allows CI/slow runners.
+                    let poll_result = tokio::time::timeout(
+                        tokio::time::Duration::from_secs(15),
+                        promise_polling::poll_promise_until_result(
+                            promise_polling::PollPromiseParams {
+                                runtime: Some(params.runtime.clone()),
+                                eval_results_by_token: &params.eval_results_by_token,
+                                eval_token: &params.eval_token,
+                                token_to_remove: None,
+                                invocation_scope_by_token: &params.invocation_scope_by_token,
+                                scope: &params.scope,
+                                effect_liveness: params.effect_liveness.clone(),
+                                idle_timeout_ms: params.idle_timeout_ms,
+                                max_attempts_ms: params.max_attempts_ms,
+                                run_pending_jobs_brief: None,
+                                result_notify: Some(params.result_notify.clone()),
+                            },
+                        ),
+                    )
+                    .await;
+                    if let Ok(Ok(result_str)) = poll_result {
+                        let result: Value = serde_json::from_str(&result_str).map_err(|e| {
+                            BamlRtError::QuickJs(format!("resume eval result parse error: {}", e))
+                        })?;
+                        if let Some(err) = result.get("error").and_then(Value::as_str) {
+                            return Err(BamlRtError::QuickJs(format!(
+                                "JS stream resume error: {}",
+                                err
+                            )));
+                        }
+                    } else if let Ok(Err(e)) = poll_result {
+                        return Err(e);
+                    } else {
+                        tracing::warn!(
+                            token = %params.eval_token.0,
+                            "resume: bounded poll timed out; continuing with stream-driven completion"
+                        );
+                    }
+                    drop(params);
+                    Ok(())
+                }
+            }
+        };
+
+        if run_correlation {
+            let result = run.await;
+            tracing::debug!(
+                session_id = %session_id,
+                context_id = %context_id_for_log,
+                ok = result.is_ok(),
+                "resume: deliver input end"
+            );
+            result
+        } else {
+            let result = correlation::with_correlation_id(
+                correlation_id.unwrap_or_else(correlation::generate_correlation_id),
+                run,
+            )
+            .await;
+            tracing::debug!(
+                session_id = %session_id,
+                context_id = %context_id_for_log,
+                ok = result.is_ok(),
+                "resume: deliver input end"
+            );
+            result
+        }
+    }
+
     /// **INVARIANT:** For non-stream functions, the promise MUST resolve within bounded time.
     /// For stream functions, use `invoke_js_function_stream()` instead.
     pub async fn invoke_js_function(
@@ -1504,23 +942,7 @@ return __sync_json;
         args: Value,
     ) -> Result<Value> {
         let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
-        let js_code = format!(
-            r#"
-            (function() {{
-                try {{
-                    const args = {};
-                    const func = globalThis["{}"];
-                    if (func === undefined || typeof func !== 'function') {{
-                        return JSON.stringify({{ error: "JS function not found: {}" }});
-                    }}
-                    return __awaitAndStringify(func(args));
-                }} catch (error) {{
-                    return JSON.stringify({{ error: error.message || String(error) }});
-                }}
-            }})()
-            "#,
-            args_json, function_name, function_name
-        );
+        let js_code = invocation::build_js_function_invoke_js_code(function_name, &args_json);
 
         let result = if correlation::current_correlation_id().is_some() {
             self.evaluate(Some(scope), &js_code).await
@@ -1550,24 +972,8 @@ return __sync_json;
         args: Value,
     ) -> Result<Option<Value>> {
         let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
-
-        let js_code = format!(
-            r#"
-            (function() {{
-                try {{
-                    const args = {};
-                    const func = globalThis["{}"];
-                    if (func === undefined || typeof func !== 'function') {{
-                        return JSON.stringify({{ __absent: true }});
-                    }}
-                    return __awaitAndStringify(func(args));
-                }} catch (error) {{
-                    return JSON.stringify({{ error: error.message || String(error) }});
-                }}
-            }})()
-            "#,
-            args_json, function_name
-        );
+        let js_code =
+            invocation::build_optional_js_function_invoke_js_code(function_name, &args_json);
 
         let result = if correlation::current_correlation_id().is_some() {
             self.evaluate(None, &js_code).await?
@@ -1609,28 +1015,7 @@ return __sync_json;
         args: Value,
     ) -> Result<Vec<Value>> {
         let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
-        let stream_function = format!("{}Stream", function_name);
-
-        let js_code = format!(
-            r#"
-            (function() {{
-                try {{
-                    const args = {};
-                    let promise;
-                    const streamFunc = globalThis["{}"];
-                    if (streamFunc !== undefined && typeof streamFunc === 'function') {{
-                        promise = streamFunc(args);
-                    }} else {{
-                        promise = __baml_stream("{}", JSON.stringify(args));
-                    }}
-                    return __awaitAndStringify(promise);
-                }} catch (error) {{
-                    return JSON.stringify({{ error: error.message || String(error) }});
-                }}
-            }})()
-            "#,
-            args_json, stream_function, function_name
-        );
+        let js_code = invocation::build_stream_invoke_js_code(function_name, &args_json);
 
         let result = if correlation::current_correlation_id().is_some() {
             self.evaluate(Some(invocation_scope), &js_code).await?

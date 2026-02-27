@@ -72,6 +72,15 @@ impl InvocationContextRegistry {
         id
     }
 
+    /// Return the runtime scope's context_id for this invocation id, if present.
+    /// Used at teardown to close tool sessions for this context before exiting.
+    pub(crate) fn get_context_id(
+        &self,
+        id: &InvocationContextId,
+    ) -> Option<baml_rt_core::ids::ContextId> {
+        self.by_id.get(id).map(|f| f.scope.context_id().clone())
+    }
+
     /// Exit the invocation for this id. Must match the id returned from [`enter`](Self::enter).
     pub(crate) fn exit(&mut self, id: &InvocationContextId) {
         // Remove from stack even if exits arrive out-of-order. This prevents

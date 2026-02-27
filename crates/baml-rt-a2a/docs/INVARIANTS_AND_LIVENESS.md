@@ -188,7 +188,7 @@ For a single session, responses are delivered in the order of the Send commands 
 ```
 
 The live stream session does not infer continuation from chunk JSON shape. It forwards
-all formatted chunks and then transitions strictly from `StreamResult.completion`:
+all formatted chunks and then transitions strictly from `StreamCompletion`:
 
 - `InputRequired` → wait for exactly one next input turn
 - `SemanticFinal | ChannelClosed | Timeout` → close session
@@ -200,8 +200,8 @@ hang or be prematurely closed depending on heuristics.
 
 | Layer | Mechanism |
 |-------|-----------|
-| **Collection** | `A2aYieldSessionComplete::collect()` returns explicit `StreamCompletion` (`SemanticFinal`, `InputRequired`, `ChannelClosed`, `Timeout`). |
-| **Transport** | `run_live_stream_session` matches on `stream_result.completion`; no chunk-shape booleans for control flow. |
+| **Collection** | `spawn_stream_handover` + `collect_into_channel_owned` emit explicit completion (`SemanticFinal`, `InputRequired`, `ChannelClosed`, `Timeout`). |
+| **Transport** | `run_live_stream_session` matches on completion from the stream receiver; no chunk-shape booleans for control flow. |
 | **Testing** | `a2a` unit tests cover stream and task paths; hangs regress to watchdog timeout failures. |
 
 ---

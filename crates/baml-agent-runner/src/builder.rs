@@ -38,11 +38,13 @@ impl RunnerBuilder<Loading> {
         provenance_config: ProvenanceConfig,
         tool_index: Option<ToolIndexConfig>,
         access_policy: ToolAccessPolicy,
+        stream_idle_secs: Option<u64>,
     ) -> Self {
         let runner = Arc::new(crate::AgentRunner::new(
             provenance_config,
             tool_index,
             access_policy,
+            stream_idle_secs,
         ));
         // Wire the internal A2A router to the runner for cross-agent dispatch.
         runner.internal_a2a_router().set_runner(Arc::clone(&runner));
@@ -76,6 +78,7 @@ impl RunnerBuilder<Loading> {
                 self.runner.access_policy(),
                 catalogue,
                 scoped_router,
+                self.runner.stream_idle_secs(),
             )
             .await?;
         let manifest = package.manifest().clone();

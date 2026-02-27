@@ -39,6 +39,13 @@ pub struct QuickJSConfig {
     /// Maximum timeout in milliseconds when effects are in-flight (default: 1,800,000ms = 30 minutes)
     /// This allows long-running I/O operations (tool calls, LLM calls) to complete.
     pub max_attempts_ms: Option<u64>,
+
+    /// Stream collector idle timeout in seconds (default: 60). Tests can set lower.
+    pub stream_collector_idle_secs: Option<u64>,
+
+    /// Maximum number of stream invocations that may be active at once.
+    /// `None` uses available parallelism.
+    pub stream_concurrency: Option<usize>,
 }
 
 impl QuickJSConfig {
@@ -87,6 +94,19 @@ impl QuickJSConfig {
     /// (tool calls, LLM calls, A2A requests) to complete.
     pub fn with_max_attempts_ms(mut self, timeout_ms: Option<u64>) -> Self {
         self.max_attempts_ms = timeout_ms;
+        self
+    }
+
+    /// Set stream collector idle timeout in seconds (default: 60). Use lower in tests.
+    pub fn with_stream_collector_idle_secs(mut self, secs: Option<u64>) -> Self {
+        self.stream_collector_idle_secs = secs;
+        self
+    }
+
+    /// Set the maximum number of active stream invocations allowed simultaneously.
+    /// Defaults to available parallelism when unset.
+    pub fn with_stream_concurrency(mut self, stream_concurrency: Option<usize>) -> Self {
+        self.stream_concurrency = stream_concurrency;
         self
     }
 }

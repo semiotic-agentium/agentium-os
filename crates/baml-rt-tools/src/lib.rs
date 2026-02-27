@@ -4,6 +4,7 @@ pub mod access;
 pub mod bundles;
 pub mod host_registration;
 mod metrics;
+pub mod session_coordination;
 mod spans;
 pub mod tool_catalog;
 pub mod tool_discovery;
@@ -14,7 +15,8 @@ pub mod ts_gen;
 
 pub use access::{ToolAccessPolicy, enforce_tool_access, parse_access_allowlist};
 pub use bundles::{BundleType, Support};
-pub use host_registration::{is_system_host_tool, register_manifest_tools};
+pub use host_registration::register_manifest_tools;
+pub use session_coordination::get_session_coordination_baml_for_tools;
 pub use tool_catalog::{InventoryCatalog, ManifestToolNames, ToolCatalog};
 pub use tool_discovery::search_tools;
 pub use tool_fsm::{
