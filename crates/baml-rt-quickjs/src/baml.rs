@@ -7,7 +7,7 @@
 
 mod tool_extraction;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, hash_map::Entry},
     fs,
     path::Path,
     sync::Arc,
@@ -458,38 +458,57 @@ impl ToolSessionExecutionHandle {
                 interceptor_registry.intercept_tool_call(&context).await?;
             drop(interceptor_registry);
 
-            // Emit ToolStarted so relay can send TASK_STATE_WORKING (session path does not use execute_tool).
-            if let Some(emitter) = self.effect_emitter.as_ref() {
-                let effect_metadata = ToolEffectMetadata {
-                    tool_name: session_scope.tool_name.clone(),
-                    function_name: None,
-                    args: input.clone(),
-                    metadata: context.metadata.clone(),
-                };
-                if let Ok(token) = emitter
-                    .start_tool(session_scope.scope.context_id().clone(), effect_metadata)
-                    .await
-                {
-                    let mut tokens = self.tool_session_effect_tokens.lock().await;
-                    tokens.insert(session_id.clone(), token);
-                }
-            }
-
-            {
+            // Keep a single in-flight state/token per session. This avoids replacing an
+            // existing EffectStartToken on duplicate send() calls (which would leak/panic).
+            let is_new_send = {
                 let mut states = self.tool_session_states.lock().await;
-                states.insert(
-                    session_id.clone(),
-                    ToolCallSessionState {
-                        context: context.clone(),
-                        start,
-                    },
+                match states.entry(session_id.clone()) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(ToolCallSessionState {
+                            context: context.clone(),
+                            start,
+                        });
+                        true
+                    }
+                    Entry::Occupied(_) => false,
+                }
+            };
+
+            // Emit ToolStarted so relay can send TASK_STATE_WORKING (session path does not use execute_tool).
+            if is_new_send {
+                if let Some(emitter) = self.effect_emitter.as_ref() {
+                    let effect_metadata = ToolEffectMetadata {
+                        tool_name: session_scope.tool_name.clone(),
+                        function_name: None,
+                        args: input.clone(),
+                        metadata: context.metadata.clone(),
+                    };
+                    if let Ok(token) = emitter
+                        .start_tool(session_scope.scope.context_id().clone(), effect_metadata)
+                        .await
+                    {
+                        let mut tokens = self.tool_session_effect_tokens.lock().await;
+                        tokens.insert(session_id.clone(), token);
+                    }
+                }
+            } else {
+                tracing::debug!(
+                    session_id = %session_id,
+                    "Tool session send: reusing in-flight state/token"
                 );
             }
 
             let result = self.tool_registry.session_send(session_id, input).await;
 
             if result.is_err() {
-                let duration_ms = start.elapsed().as_millis() as u64;
+                let state = {
+                    let mut states = self.tool_session_states.lock().await;
+                    states.remove(session_id)
+                };
+                let duration_ms = state
+                    .as_ref()
+                    .map(|state| state.start.elapsed().as_millis() as u64)
+                    .unwrap_or_else(|| start.elapsed().as_millis() as u64);
                 if let Some(token) = self
                     .tool_session_effect_tokens
                     .lock()
@@ -506,12 +525,16 @@ impl ToolSessionExecutionHandle {
                     Err(err) => Err(BamlRtError::InvalidArgument(err.to_string())),
                 };
                 let interceptor_registry = self.interceptor_registry.lock().await;
-                interceptor_registry
-                    .notify_tool_call_complete(&context, &completion_result, duration_ms)
-                    .await;
+                if let Some(state) = state.as_ref() {
+                    interceptor_registry
+                        .notify_tool_call_complete(&state.context, &completion_result, duration_ms)
+                        .await;
+                } else {
+                    interceptor_registry
+                        .notify_tool_call_complete(&context, &completion_result, duration_ms)
+                        .await;
+                }
                 drop(interceptor_registry);
-                let mut states = self.tool_session_states.lock().await;
-                states.remove(session_id);
                 let mut scopes = self.tool_session_scopes.lock().await;
                 scopes.remove(session_id);
             }
