@@ -28,6 +28,8 @@ use baml_rt_provenance::{
 };
 use baml_rt_provenance::{GraphqliteProvenanceStore, GraphqliteStoreBuilder};
 use baml_rt_tools::bundles::BundleType;
+#[cfg(feature = "slack")]
+use baml_tools_slack as _;
 use flate2::{Compression, write::GzEncoder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -92,6 +94,22 @@ use test_support::common::{first_task_id_from_stream, user_message_with_task};
 
 async fn build_fixture_to_temp_async(fixture_name: &str) -> std::path::PathBuf {
     test_support::common::build_fixture_package_to_temp(fixture_name).await
+}
+
+#[cfg(feature = "slack")]
+#[tokio::test]
+async fn test_slack_smoke_fixture_builds_with_generated_tools() {
+    ensure_fixture_runtime_types();
+    let built = build_fixture_to_temp_async("slack-smoke-tool").await;
+    assert!(
+        built.join("dist").join("index.js").exists(),
+        "Expected compiled dist/index.js for slack-smoke-tool fixture"
+    );
+    assert!(
+        built.join("baml_src").join("generated_tools.baml").exists(),
+        "Expected generated_tools.baml in packaged fixture baml_src"
+    );
+    std::fs::remove_dir_all(&built).ok();
 }
 
 /// Create a test agent package from a fixture agent

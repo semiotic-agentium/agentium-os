@@ -1,0 +1,21 @@
+{
+  "version": "1.0.0",
+  "name": "slack-agent",
+  "entry_point": "src/index.ts",
+  "signature": "slack-agent@1.0.0",
+  "tools": [
+    "support/slack",
+    "system/discover_agents",
+    "system/discover_tools",
+    "system/internal_a2a"
+  ],
+  "discovery": {
+    "description": "Read-only Slack assistant that extracts source-backed todos from channels and threads",
+    "capabilities": [
+      "slack:history-read",
+      "slack:thread-read",
+      "slack:todo-extraction",
+      "planning:action-item-extraction"
+    ]
+  }
+}

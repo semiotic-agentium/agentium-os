@@ -1,0 +1,40 @@
+_metadata:
+  major_version: 1
+  minor_version: 1
+display_information:
+  name: Agentium Slack Read Integration
+  description: Read-only Slack access for source-backed todo extraction
+  background_color: "#0f172a"
+features:
+  bot_user:
+    display_name: Agentium Reader
+    always_online: false
+oauth_config:
+  redirect_urls:
+    - https://localhost:8787/slack/oauth/callback
+  scopes:
+    bot:
+      - channels:read
+      - groups:read
+      - im:read
+      - mpim:read
+      - channels:history
+      - groups:history
+      - im:history
+      - mpim:history
+      - users:read
+    user:
+      - channels:read
+      - groups:read
+      - im:read
+      - mpim:read
+      - channels:history
+      - groups:history
+      - im:history
+      - mpim:history
+      - users:read
+      - search:read
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: true

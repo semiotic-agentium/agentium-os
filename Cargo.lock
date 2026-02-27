@@ -956,6 +956,7 @@ dependencies = [
  "baml-tools-clickup",
  "baml-tools-memory",
  "baml-tools-notion",
+ "baml-tools-slack",
  "baml-tools-system",
  "clap",
  "dotenvy",
@@ -1203,6 +1204,7 @@ dependencies = [
  "baml-tools-clickup",
  "baml-tools-memory",
  "baml-tools-notion",
+ "baml-tools-slack",
  "baml-tools-system",
  "baml-types",
  "clap",
@@ -1567,6 +1569,28 @@ name = "baml-tools-notion"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "baml-derive 0.1.0",
+ "baml-derive-core",
+ "baml-rt-core",
+ "baml-rt-tools",
+ "inventory",
+ "reqwest",
+ "schemars 1.2.1",
+ "serde",
+ "serde_json",
+ "test-support",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "ts-rs",
+]
+
+[[package]]
+name = "baml-tools-slack"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
  "baml-derive 0.1.0",
  "baml-derive-core",
  "baml-rt-core",

@@ -17,6 +17,7 @@ members = [
   "crates/tools/claude",
   "crates/tools/internal-dev",
   "crates/tools/clickup",
+  "crates/tools/slack",
   "crates/tools/notion",
   "crates/tools/system",
   "crates/tools/memory",
