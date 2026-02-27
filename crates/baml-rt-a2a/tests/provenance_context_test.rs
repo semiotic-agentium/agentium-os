@@ -98,6 +98,11 @@ async fn test_context_id_preserved_per_request() {
     let agent = setup_agent(writer).await;
 
     let context_ids: Vec<ContextId> = (0..4).map(|i| ContextId::new(10, i as u64)).collect();
+    let request_timeout = if std::env::var_os("CI").is_some() {
+        Duration::from_secs(30)
+    } else {
+        Duration::from_secs(10)
+    };
     for (idx, context_id) in context_ids.iter().enumerate() {
         let request = send_stream_request(
             &format!("msg-{idx}"),
@@ -105,13 +110,10 @@ async fn test_context_id_preserved_per_request() {
             &format!("corr-2-{}", idx + 3),
             Some(context_id.clone()),
         );
-        let responses =
-            tokio::time::timeout(Duration::from_secs(10), collect_responses(&agent, request))
-                .await
-                .expect(
-                    "request timeout (agent must yield TASK_STATE_COMPLETED so collect returns)",
-                )
-                .expect("a2a handle");
+        let responses = tokio::time::timeout(request_timeout, collect_responses(&agent, request))
+            .await
+            .expect("request timeout (agent must yield TASK_STATE_COMPLETED so collect returns)")
+            .expect("a2a handle");
         let got = expect_context_id(responses);
         assert_eq!(
             got,

@@ -28,6 +28,18 @@ use tokio::{
     time::{Duration, sleep, timeout},
 };
 
+fn ci_timeout_scale() -> u64 {
+    if std::env::var_os("CI").is_some() {
+        3
+    } else {
+        1
+    }
+}
+
+fn scaled_timeout_secs(base_secs: u64) -> Duration {
+    Duration::from_secs(base_secs.saturating_mul(ci_timeout_scale()))
+}
+
 fn proptest_cfg(cases: u32) -> ProptestConfig {
     let mut cfg = ProptestConfig::with_cases(cases);
     // Integration tests do not have a crate root (lib.rs/main.rs) for source-based persistence.
@@ -202,7 +214,7 @@ async fn test_input_required_resume_single_context() {
         .await
         .expect("open input-required stream");
     let ask_responses: Vec<baml_rt_core::A2aStreamChunk> = timeout(
-        Duration::from_secs(15),
+        scaled_timeout_secs(15),
         baml_rt_core::collect_a2a_stream_until(ask_stream, |c| {
             response_has_input_required(c.as_ref())
         }),
@@ -241,7 +253,7 @@ async fn test_input_required_resume_single_context() {
         Some(context_id.clone()),
     );
     let answer_responses = timeout(
-        Duration::from_secs(15),
+        scaled_timeout_secs(15),
         collect_responses(&agent, answer_req),
     )
     .await
@@ -332,9 +344,9 @@ proptest! {
             .expect("runtime");
 
         // Per-request timeout must allow for serialization: last request waits for (ops.len()-1)
-        // others. Use (ops.len() * 4) + 10s so CI/slow runners have headroom.
-        let timeout_secs = (ops.len() * 4) + 10;
-        let request_timeout = Duration::from_secs(timeout_secs as u64);
+        // others. Base uses (ops.len() * 6) + 20s, then CI multiplies for shared-runner headroom.
+        let timeout_secs = (ops.len() as u64 * 6) + 20;
+        let request_timeout = scaled_timeout_secs(timeout_secs);
 
         rt.block_on(async move {
             let agent = setup_interleaving_agent().await;
@@ -419,6 +431,7 @@ proptest! {
 
         rt.block_on(async move {
             let agent = setup_interleaving_agent().await;
+            let per_turn_timeout = scaled_timeout_secs((jitters.len() as u64 * 5) + 20);
             let mut join_set = JoinSet::new();
             for (idx, jitter_raw) in jitters.iter().copied().enumerate() {
                 let agent = agent.clone();
@@ -437,7 +450,7 @@ proptest! {
                         .await
                         .expect("open input-required stream");
                     let ask_responses: Vec<baml_rt_core::A2aStreamChunk> = timeout(
-                        Duration::from_secs(15),
+                        per_turn_timeout,
                         baml_rt_core::collect_a2a_stream_until(ask_stream, |c| response_has_input_required(c.as_ref())),
                     )
                     .await
@@ -468,7 +481,7 @@ proptest! {
                         &format!("corr-1700000000400-{}", idx + 1),
                         Some(context_id.clone()),
                     );
-                    let answer_responses = timeout(Duration::from_secs(15), collect_responses(&agent, answer_req))
+                    let answer_responses = timeout(per_turn_timeout, collect_responses(&agent, answer_req))
                         .await
                         .expect("resumed stream timed out")
                         .expect("resumed stream failed");

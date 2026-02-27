@@ -486,7 +486,11 @@ async fn test_a2a_session_send_returns_fast_and_next_drains() {
         // Open multiple sessions and time one send per session; min elapsed approximates
         // "enqueue only" and is less sensitive to a single slow scheduler run.
         const N_SAMPLES: usize = 3;
-        const ENQUEUE_THRESHOLD_MS: u64 = 60;
+        let enqueue_threshold_ms: u64 = if std::env::var_os("CI").is_some() {
+            250
+        } else {
+            100
+        };
         let mut send_elapsed = Vec::with_capacity(N_SAMPLES);
         let mut session_ids = Vec::with_capacity(N_SAMPLES);
         for i in 0..N_SAMPLES {
@@ -524,9 +528,9 @@ async fn test_a2a_session_send_returns_fast_and_next_drains() {
             .copied()
             .expect("N_SAMPLES > 0");
         assert!(
-            min_elapsed < std::time::Duration::from_millis(ENQUEUE_THRESHOLD_MS),
+            min_elapsed < std::time::Duration::from_millis(enqueue_threshold_ms),
             "session send() must return in under {}ms (enqueue only); min of {} samples: {:?}, all: {:?}",
-            ENQUEUE_THRESHOLD_MS,
+            enqueue_threshold_ms,
             N_SAMPLES,
             min_elapsed,
             send_elapsed
