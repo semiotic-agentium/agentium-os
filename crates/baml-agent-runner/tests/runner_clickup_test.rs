@@ -576,11 +576,15 @@ async fn test_e2e_clickup_get_task_description_fast() {
     );
 
     let chunks = chunks_from_responses(&responses);
+    assert!(
+        chunks.iter().any(|chunk| !chunk.is_null()),
+        "Expected at least one non-null stream chunk. Raw: {}",
+        serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+    );
     let texts = message_texts_from_chunks(&chunks);
     assert!(
         !texts.is_empty(),
-        "Expected at least one assistant message chunk. Raw: {}",
-        serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+        "Expected assistant output text in stream"
     );
 
     let mut matched_tool_result: Option<Value> = None;
