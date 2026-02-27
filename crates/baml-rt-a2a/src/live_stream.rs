@@ -122,10 +122,20 @@ impl WorkingChunkPusher {
             let sessions = self.sessions.lock().await;
             sessions.get(&key).and_then(|s| s.relay_tx.clone())
         };
-        if let Some(tx) = tx
-            && tx.send(chunk).await.is_err()
-        {
-            tracing::debug!("relay chunk send failed (receiver dropped)");
+        if let Some(tx) = tx {
+            // Best-effort delivery: never let a slow/blocked client stream backpressure runtime/tool execution.
+            match tx.try_send(chunk) {
+                Ok(()) => {}
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    tracing::debug!(
+                        context_id = %context_id,
+                        "relay chunk dropped (channel full)"
+                    );
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    tracing::debug!("relay chunk send failed (receiver dropped)");
+                }
+            }
         }
     }
 }

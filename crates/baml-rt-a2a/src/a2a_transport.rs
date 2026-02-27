@@ -1254,7 +1254,8 @@ impl A2aAgent {
                                 break;
                             }
                         };
-                        let (relay_tx, relay_rx) = mpsc::channel(64);
+                        // Allow bursty tool/status relay chunks without backpressuring the live session.
+                        let (relay_tx, relay_rx) = mpsc::channel(256);
                         session.relay_tx = Some(relay_tx);
                         Some(relay_rx)
                     };
