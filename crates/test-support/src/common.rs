@@ -49,10 +49,15 @@ pub async fn build_fixture_package_to_temp(fixture_name: &str) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let tar_path =
-        std::env::temp_dir().join(format!("a2a-test-{}-{}.tar.gz", fixture_name, unique));
-    let extract_dir =
-        std::env::temp_dir().join(format!("a2a-test-{}-extract-{}", fixture_name, unique));
+    let pid = std::process::id();
+    let tar_path = std::env::temp_dir().join(format!(
+        "a2a-test-{}-{}-{}.tar.gz",
+        fixture_name, pid, unique
+    ));
+    let extract_dir = std::env::temp_dir().join(format!(
+        "a2a-test-{}-extract-{}-{}",
+        fixture_name, pid, unique
+    ));
     let _ = fs::remove_dir_all(&extract_dir);
     fs::create_dir_all(&extract_dir).expect("create extract dir");
 
@@ -91,10 +96,12 @@ pub async fn build_agent_package_to_temp(agent_dir: PathBuf, package_label: &str
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    let pid = std::process::id();
     let tar_path =
-        std::env::temp_dir().join(format!("runner-test-{package_label}-{unique}.tar.gz"));
-    let extract_dir =
-        std::env::temp_dir().join(format!("runner-test-{package_label}-extract-{unique}"));
+        std::env::temp_dir().join(format!("runner-test-{package_label}-{pid}-{unique}.tar.gz"));
+    let extract_dir = std::env::temp_dir().join(format!(
+        "runner-test-{package_label}-extract-{pid}-{unique}"
+    ));
     let _ = fs::remove_dir_all(&extract_dir);
     fs::create_dir_all(&extract_dir).expect("create extract dir");
 
