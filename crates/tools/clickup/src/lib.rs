@@ -24,6 +24,10 @@ use ts_rs::TS;
 /// ClickUp v2 REST API base URL.
 pub const BASE_URL: &str = "https://api.clickup.com/api/v2";
 
+fn option_is_empty(opt: &Option<String>) -> bool {
+    opt.as_ref().is_none_or(|s| s.is_empty())
+}
+
 // ---------------------------------------------------------------------------
 // Per-action input types
 // ---------------------------------------------------------------------------
@@ -145,10 +149,14 @@ pub struct ClickUpTaskSummary {
     pub id: String,
     pub name: String,
     pub status: String,
+    #[serde(default, skip_serializing_if = "option_is_empty")]
     pub description: Option<String>,
     pub url: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub assignees: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub due_date: Option<String>,
 }
 
@@ -169,8 +177,10 @@ pub struct ClickUpItem {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct ClickUpOutput {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tasks: Vec<ClickUpTaskSummary>,
     /// Teams, spaces, or lists returned by navigation actions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[baml(description = "Teams, spaces, or lists returned by navigation actions.")]
     pub items: Vec<ClickUpItem>,
     pub message: String,
