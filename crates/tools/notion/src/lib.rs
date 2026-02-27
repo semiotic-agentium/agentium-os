@@ -145,6 +145,7 @@ pub struct NotionPageSummary {
     pub id: String,
     pub title: String,
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_edited_time: Option<String>,
 }
 
@@ -153,6 +154,7 @@ pub struct NotionPageSummary {
 pub struct NotionBlockSummary {
     pub id: String,
     pub block_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     pub has_children: bool,
 }
@@ -167,10 +169,14 @@ pub struct NotionSource {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct NotionOutput {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<NotionPageSummary>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<NotionBlockSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
     pub has_more: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<NotionSource>,
     pub message: String,
 }
