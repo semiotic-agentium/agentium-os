@@ -1,0 +1,13 @@
+[package]
+name = "integrations-clickup-client"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "Shared ClickUp API client for tools and daemons"
+
+[dependencies]
+reqwest = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

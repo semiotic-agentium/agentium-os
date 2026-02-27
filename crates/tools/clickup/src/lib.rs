@@ -17,12 +17,12 @@ use baml_rt_tools::{
         BamlTool, ToolFunctionMetadata, ToolHandler, ToolSecretRequirement, create_tool_handler,
     },
 };
+/// ClickUp v2 REST API base URL.
+pub use integrations_clickup_client::BASE_URL;
+use integrations_clickup_client::{ClickUpClient, ClickUpClientError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-
-/// ClickUp v2 REST API base URL.
-pub const BASE_URL: &str = "https://api.clickup.com/api/v2";
 
 fn option_is_empty(opt: &Option<String>) -> bool {
     opt.as_ref().is_none_or(|s| s.is_empty())
@@ -277,45 +277,33 @@ impl From<RawClickUpTask> for ClickUpTaskSummary {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClickUpError {
-    #[error("ClickUp HTTP request failed")]
-    Http(#[source] reqwest::Error),
-
-    #[error("ClickUp API authentication failed (401): {body}")]
-    Unauthorized { body: String },
-
-    #[error("ClickUp resource not found (404): {body}")]
-    NotFound { body: String },
-
-    #[error("ClickUp rate limit exceeded (429), resets at {reset_at}: {body}")]
-    RateLimited { body: String, reset_at: String },
-
-    #[error("ClickUp API returned {status}: {body}")]
-    Api { status: u16, body: String },
-
-    #[error("Failed to deserialize ClickUp response")]
-    Deserialize(#[source] reqwest::Error),
-
-    #[error("CLICKUP_API_KEY environment variable not set")]
-    MissingApiKey(#[source] std::env::VarError),
+    #[error(transparent)]
+    Client(#[from] ClickUpClientError),
+    #[error("Unexpected ClickUp response shape: {message}")]
+    UnexpectedShape { message: String },
 }
 
 impl From<ClickUpError> for BamlRtError {
     fn from(err: ClickUpError) -> Self {
-        match &err {
-            ClickUpError::MissingApiKey(_) | ClickUpError::Unauthorized { .. } => {
-                BamlRtError::Configuration(err.to_string())
-            }
-            ClickUpError::NotFound { .. } => BamlRtError::InvalidArgument(err.to_string()),
-            ClickUpError::Http(_)
-            | ClickUpError::RateLimited { .. }
-            | ClickUpError::Api { .. }
-            | ClickUpError::Deserialize(_) => BamlRtError::ToolExecution(err.to_string()),
+        match err {
+            ClickUpError::Client(inner) => match inner {
+                ClickUpClientError::MissingApiKey(_) | ClickUpClientError::Unauthorized { .. } => {
+                    BamlRtError::Configuration(inner.to_string())
+                }
+                ClickUpClientError::NotFound { .. } => {
+                    BamlRtError::InvalidArgument(inner.to_string())
+                }
+                ClickUpClientError::Http(_)
+                | ClickUpClientError::RateLimited { .. }
+                | ClickUpClientError::Api { .. } => BamlRtError::ToolExecution(inner.to_string()),
+            },
+            ClickUpError::UnexpectedShape { message } => BamlRtError::ToolExecution(message),
         }
     }
 }
 
 pub struct ClickUpTool {
-    client: reqwest::Client,
+    client: ClickUpClient,
 }
 
 impl Default for ClickUpTool {
@@ -327,77 +315,25 @@ impl Default for ClickUpTool {
 impl ClickUpTool {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: ClickUpClient::new(),
         }
-    }
-
-    fn base_url() -> String {
-        std::env::var("CLICKUP_API_BASE_URL")
-            .ok()
-            .map(|raw| raw.trim().trim_end_matches('/').to_string())
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| BASE_URL.to_string())
     }
 
     fn api_key() -> std::result::Result<String, ClickUpError> {
-        std::env::var("CLICKUP_API_KEY").map_err(ClickUpError::MissingApiKey)
-    }
-
-    #[tracing::instrument(skip_all, fields(url))]
-    async fn send_request(
-        &self,
-        request: reqwest::RequestBuilder,
-    ) -> std::result::Result<serde_json::Value, ClickUpError> {
-        let resp = request.send().await.map_err(ClickUpError::Http)?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            let reset_at = resp
-                .headers()
-                .get("x-ratelimit-reset")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("unknown")
-                .to_string();
-            let body = resp.text().await.unwrap_or_default();
-
-            // ClickUp returns 401 with ECODE "OAUTH_017"/"OAUTH_018"/"OAUTH_019"
-            // when a resource ID is invalid or inaccessible, rather than a proper
-            // 404. Detect this pattern and reclassify as NotFound so the LLM gets
-            // an actionable error instead of a misleading auth failure.
-            let is_fake_auth_error = code == 401
-                && body.contains("OAUTH_0")
-                && (body.contains("token not found") || body.contains("Token not found"));
-
-            return Err(match code {
-                401 if is_fake_auth_error => ClickUpError::NotFound {
-                    body: format!("Resource not found : {body}"),
-                },
-                401 => ClickUpError::Unauthorized { body },
-                404 => ClickUpError::NotFound { body },
-                429 => ClickUpError::RateLimited { body, reset_at },
-                _ => ClickUpError::Api { status: code, body },
-            });
-        }
-
-        resp.json().await.map_err(ClickUpError::Deserialize)
+        ClickUpClient::api_key().map_err(ClickUpError::Client)
     }
 
     #[tracing::instrument(skip(self, api_key))]
     async fn list_teams(&self, api_key: &str) -> Result<ClickUpOutput> {
-        let base_url = Self::base_url();
         let json = self
-            .send_request(
-                self.client
-                    .get(format!("{base_url}/team"))
-                    .header("Authorization", api_key),
-            )
-            .await?;
-
-        let raw: RawTeamList = serde_json::from_value(json).map_err(|e| ClickUpError::Api {
-            status: 0,
-            body: format!("unexpected teams response shape: {e}"),
-        })?;
+            .client
+            .send_json(self.client.get("/team", api_key))
+            .await
+            .map_err(ClickUpError::Client)?;
+        let raw: RawTeamList =
+            serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
+                message: format!("unexpected teams response shape: {e}"),
+            })?;
 
         let items: Vec<ClickUpItem> = raw
             .teams
@@ -419,19 +355,15 @@ impl ClickUpTool {
 
     #[tracing::instrument(skip(self, api_key))]
     async fn list_spaces(&self, api_key: &str, team_id: &str) -> Result<ClickUpOutput> {
-        let base_url = Self::base_url();
         let json = self
-            .send_request(
-                self.client
-                    .get(format!("{base_url}/team/{team_id}/space"))
-                    .header("Authorization", api_key),
-            )
-            .await?;
-
-        let raw: RawSpaceList = serde_json::from_value(json).map_err(|e| ClickUpError::Api {
-            status: 0,
-            body: format!("unexpected spaces response shape: {e}"),
-        })?;
+            .client
+            .send_json(self.client.get(&format!("/team/{team_id}/space"), api_key))
+            .await
+            .map_err(ClickUpError::Client)?;
+        let raw: RawSpaceList =
+            serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
+                message: format!("unexpected spaces response shape: {e}"),
+            })?;
 
         let items: Vec<ClickUpItem> = raw
             .spaces
@@ -453,19 +385,15 @@ impl ClickUpTool {
 
     #[tracing::instrument(skip(self, api_key))]
     async fn list_lists(&self, api_key: &str, space_id: &str) -> Result<ClickUpOutput> {
-        let base_url = Self::base_url();
         let json = self
-            .send_request(
-                self.client
-                    .get(format!("{base_url}/space/{space_id}/list"))
-                    .header("Authorization", api_key),
-            )
-            .await?;
+            .client
+            .send_json(self.client.get(&format!("/space/{space_id}/list"), api_key))
+            .await
+            .map_err(ClickUpError::Client)?;
 
         let raw: RawFolderlessList =
-            serde_json::from_value(json).map_err(|e| ClickUpError::Api {
-                status: 0,
-                body: format!("unexpected lists response shape: {e}"),
+            serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
+                message: format!("unexpected lists response shape: {e}"),
             })?;
 
         let items: Vec<ClickUpItem> = raw
@@ -488,19 +416,15 @@ impl ClickUpTool {
 
     #[tracing::instrument(skip(self, api_key))]
     async fn list_tasks(&self, api_key: &str, list_id: &str) -> Result<ClickUpOutput> {
-        let base_url = Self::base_url();
         let json = self
-            .send_request(
-                self.client
-                    .get(format!("{base_url}/list/{list_id}/task"))
-                    .header("Authorization", api_key),
-            )
-            .await?;
+            .client
+            .send_json(self.client.get(&format!("/list/{list_id}/task"), api_key))
+            .await
+            .map_err(ClickUpError::Client)?;
 
         let raw_list: RawTaskList =
-            serde_json::from_value(json).map_err(|e| ClickUpError::Api {
-                status: 0,
-                body: format!("unexpected response shape: {e}"),
+            serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
+                message: format!("unexpected response shape: {e}"),
             })?;
 
         let mut tasks = Vec::with_capacity(raw_list.tasks.len());
@@ -527,19 +451,16 @@ impl ClickUpTool {
 
     #[tracing::instrument(skip(self, api_key))]
     async fn get_task(&self, api_key: &str, task_id: &str) -> Result<ClickUpOutput> {
-        let base_url = Self::base_url();
         let json = self
-            .send_request(
-                self.client
-                    .get(format!("{base_url}/task/{task_id}"))
-                    .header("Authorization", api_key),
-            )
-            .await?;
+            .client
+            .send_json(self.client.get(&format!("/task/{task_id}"), api_key))
+            .await
+            .map_err(ClickUpError::Client)?;
 
-        let raw: RawClickUpTask = serde_json::from_value(json).map_err(|e| ClickUpError::Api {
-            status: 0,
-            body: format!("unexpected task shape: {e}"),
-        })?;
+        let raw: RawClickUpTask =
+            serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
+                message: format!("unexpected task shape: {e}"),
+            })?;
 
         let summary = ClickUpTaskSummary::from(raw);
         Ok(ClickUpOutput {
@@ -558,7 +479,6 @@ impl ClickUpTool {
         description: Option<&str>,
         priority: Option<u8>,
     ) -> Result<ClickUpOutput> {
-        let base_url = Self::base_url();
         let mut body = serde_json::json!({ "name": name });
         if let Some(desc) = description {
             body["description"] = serde_json::Value::String(desc.to_string());
@@ -568,18 +488,19 @@ impl ClickUpTool {
         }
 
         let json = self
-            .send_request(
+            .client
+            .send_json(
                 self.client
-                    .post(format!("{base_url}/list/{list_id}/task"))
-                    .header("Authorization", api_key)
+                    .post(&format!("/list/{list_id}/task"), api_key)
                     .json(&body),
             )
-            .await?;
+            .await
+            .map_err(ClickUpError::Client)?;
 
-        let raw: RawClickUpTask = serde_json::from_value(json).map_err(|e| ClickUpError::Api {
-            status: 0,
-            body: format!("unexpected task shape: {e}"),
-        })?;
+        let raw: RawClickUpTask =
+            serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
+                message: format!("unexpected task shape: {e}"),
+            })?;
 
         let summary = ClickUpTaskSummary::from(raw);
         Ok(ClickUpOutput {
@@ -598,7 +519,6 @@ impl ClickUpTool {
         description: Option<&str>,
         priority: Option<u8>,
     ) -> Result<ClickUpOutput> {
-        let base_url = Self::base_url();
         let mut body = serde_json::Map::new();
         if let Some(s) = status {
             body.insert(
@@ -617,18 +537,19 @@ impl ClickUpTool {
         }
 
         let json = self
-            .send_request(
+            .client
+            .send_json(
                 self.client
-                    .put(format!("{base_url}/task/{task_id}"))
-                    .header("Authorization", api_key)
+                    .put(&format!("/task/{task_id}"), api_key)
                     .json(&serde_json::Value::Object(body)),
             )
-            .await?;
+            .await
+            .map_err(ClickUpError::Client)?;
 
-        let raw: RawClickUpTask = serde_json::from_value(json).map_err(|e| ClickUpError::Api {
-            status: 0,
-            body: format!("unexpected task shape: {e}"),
-        })?;
+        let raw: RawClickUpTask =
+            serde_json::from_value(json).map_err(|e| ClickUpError::UnexpectedShape {
+                message: format!("unexpected task shape: {e}"),
+            })?;
 
         let summary = ClickUpTaskSummary::from(raw);
         Ok(ClickUpOutput {
@@ -640,30 +561,10 @@ impl ClickUpTool {
 
     #[tracing::instrument(skip(self, api_key))]
     async fn delete_task(&self, api_key: &str, task_id: &str) -> Result<ClickUpOutput> {
-        let base_url = Self::base_url();
-        let resp = self
-            .client
-            .delete(format!("{base_url}/task/{task_id}"))
-            .header("Authorization", api_key)
-            .send()
+        self.client
+            .send_no_content(self.client.delete(&format!("/task/{task_id}"), api_key))
             .await
-            .map_err(ClickUpError::Http)?;
-
-        let status = resp.status();
-        if !status.is_success() {
-            let code = status.as_u16();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(match code {
-                401 => ClickUpError::Unauthorized { body },
-                404 => ClickUpError::NotFound { body },
-                429 => {
-                    let reset_at = "unknown".to_string();
-                    ClickUpError::RateLimited { body, reset_at }
-                }
-                _ => ClickUpError::Api { status: code, body },
-            }
-            .into());
-        }
+            .map_err(ClickUpError::Client)?;
 
         Ok(ClickUpOutput {
             message: format!("Deleted task {task_id}"),

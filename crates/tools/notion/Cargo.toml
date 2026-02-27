@@ -11,6 +11,7 @@ baml-rt-core = { path = "../../baml-rt-core" }
 baml-rt-tools = { path = "../../baml-rt-tools" }
 baml-derive-core = { path = "../../baml-derive-core" }
 baml-derive = { path = "../../baml-derive" }
+integrations-notion-read = { path = "../../integrations/notion-read" }
 serde_json = { workspace = true }
 serde = { workspace = true }
 async-trait = { workspace = true }

@@ -11,11 +11,11 @@ baml-rt-core = { path = "../../baml-rt-core" }
 baml-rt-tools = { path = "../../baml-rt-tools" }
 baml-derive-core = { path = "../../baml-derive-core" }
 baml-derive = { path = "../../baml-derive" }
+integrations-slack-read = { path = "../../integrations/slack-read" }
 serde_json = { workspace = true }
 serde = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }
-tokio = { workspace = true }
 schemars = { workspace = true }
 ts-rs = { workspace = true }
 reqwest = { workspace = true }

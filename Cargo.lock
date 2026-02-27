@@ -1518,6 +1518,7 @@ dependencies = [
  "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
+ "integrations-clickup-client",
  "inventory",
  "reqwest",
  "schemars 1.2.1",
@@ -1573,6 +1574,7 @@ dependencies = [
  "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
+ "integrations-notion-read",
  "inventory",
  "reqwest",
  "schemars 1.2.1",
@@ -1595,6 +1597,7 @@ dependencies = [
  "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
+ "integrations-slack-read",
  "inventory",
  "reqwest",
  "schemars 1.2.1",
@@ -3826,6 +3829,39 @@ dependencies = [
  "serde",
  "similar",
  "tempfile",
+]
+
+[[package]]
+name = "integrations-clickup-client"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "integrations-notion-read"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "integrations-slack-read"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

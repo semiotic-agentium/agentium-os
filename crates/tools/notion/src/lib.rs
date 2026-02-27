@@ -5,7 +5,7 @@
 //! - `raw_blocks`: render mode (raw skips Notable lines / Missing info hints).
 //! - `max_depth`: limit child block expansion depth (0 disables expansion).
 
-use std::{collections::VecDeque, fmt, sync::Arc, time::Duration};
+use std::{collections::VecDeque, fmt, sync::Arc};
 
 use async_trait::async_trait;
 use baml_derive::BamlType;
@@ -21,26 +21,24 @@ use baml_rt_tools::{
         create_tool_handler,
     },
 };
+use integrations_notion_read::{
+    self as notion_read, NotionReadClient, NotionReadError, RetryAfter,
+};
+/// Notion REST API base URL.
+pub use notion_read::BASE_URL;
+/// Notion API version header value.
+pub use notion_read::NOTION_VERSION;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-
-/// Notion REST API base URL.
-pub const BASE_URL: &str = "https://api.notion.com/v1";
-/// Notion API version header value.
-pub const NOTION_VERSION: &str = "2022-06-28";
 const MAX_BLOCK_DEPTH: u32 = 10;
-const MAX_RATE_LIMIT_RETRIES: usize = 3;
+#[cfg(test)]
 const RATE_LIMIT_BASE_DELAY_MS: u64 = 500;
+#[cfg(test)]
 const RATE_LIMIT_MAX_DELAY_MS: u64 = 5_000;
 const MAX_BLOCK_PAGES: usize = 10;
 
 mod spans {
-    #[inline]
-    pub fn notion_request(url: &str) -> tracing::Span {
-        tracing::debug_span!("baml_tools_notion.notion_request", url = url)
-    }
-
     #[inline]
     pub fn notion_search_pages(query_len: Option<usize>, page_size: Option<u32>) -> tracing::Span {
         tracing::debug_span!(
@@ -80,11 +78,12 @@ mod spans {
     }
 }
 
-fn backoff_delay(retries: usize) -> Duration {
+#[cfg(test)]
+fn backoff_delay(retries: usize) -> std::time::Duration {
     let shift = u32::try_from(retries).unwrap_or(u32::MAX);
     let multiplier = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
     let backoff = RATE_LIMIT_BASE_DELAY_MS.saturating_mul(multiplier);
-    Duration::from_millis(backoff.min(RATE_LIMIT_MAX_DELAY_MS))
+    std::time::Duration::from_millis(backoff.min(RATE_LIMIT_MAX_DELAY_MS))
 }
 
 // ---------------------------------------------------------------------------
@@ -320,179 +319,69 @@ impl From<NotionError> for BamlRtError {
     }
 }
 
+impl From<NotionReadError> for NotionError {
+    fn from(value: NotionReadError) -> Self {
+        match value {
+            NotionReadError::Http(inner) => NotionError::Http(inner),
+            NotionReadError::Unauthorized { status, body } => {
+                NotionError::Unauthorized { status, body }
+            }
+            NotionReadError::NotFound { body } => NotionError::NotFound { body },
+            NotionReadError::RateLimited { body, retry_after } => {
+                NotionError::RateLimited { body, retry_after }
+            }
+            NotionReadError::Api { status, body } => NotionError::Api { status, body },
+            NotionReadError::Deserialize(inner) => NotionError::Deserialize(inner),
+            NotionReadError::MissingApiKey => NotionError::MissingApiKey,
+            NotionReadError::InvalidId { id } => NotionError::InvalidId { id },
+            NotionReadError::InvalidHeader { message } => NotionError::InvalidHeader { message },
+            NotionReadError::RequestClone => NotionError::RequestClone,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Client helpers
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 struct NotionClient {
-    client: reqwest::Client,
-    api_key: Option<String>,
-    base_url: String,
-}
-
-#[derive(Debug, Clone)]
-pub enum RetryAfter {
-    Seconds(u64),
-    Unknown(String),
-    Missing,
-}
-
-impl RetryAfter {
-    fn as_duration(&self) -> Option<Duration> {
-        match self {
-            RetryAfter::Seconds(seconds) => Some(Duration::from_secs(*seconds)),
-            RetryAfter::Unknown(_) | RetryAfter::Missing => None,
-        }
-    }
-}
-
-impl fmt::Display for RetryAfter {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            RetryAfter::Seconds(seconds) => write!(f, "{seconds}s"),
-            RetryAfter::Unknown(raw) => write!(f, "unknown({raw})"),
-            RetryAfter::Missing => write!(f, "missing"),
-        }
-    }
+    client: NotionReadClient,
 }
 
 impl NotionClient {
     fn new() -> Self {
-        let api_key = std::env::var("NOTION_API_TOKEN").ok();
-        let base_url = Self::resolve_base_url();
         Self {
-            client: reqwest::Client::new(),
-            api_key,
-            base_url,
+            client: NotionReadClient::new(),
         }
     }
 
-    fn resolve_base_url() -> String {
-        let override_url = std::env::var("NOTION_API_BASE_URL")
-            .ok()
-            .map(|raw| raw.trim().trim_end_matches('/').to_string())
-            .filter(|v| !v.is_empty());
-        if let Some(base_url) = override_url {
-            if !cfg!(test) && should_warn_on_insecure_base_url(&base_url) {
-                tracing::warn!(
-                    base_url = %base_url,
-                    "NOTION_API_BASE_URL is not https; bearer token may be sent to an insecure endpoint"
-                );
-            }
-            return base_url;
-        }
-        BASE_URL.to_string()
-    }
-
+    #[cfg(test)]
     fn base_url(&self) -> &str {
-        self.base_url.as_str()
+        self.client.base_url()
     }
 
     fn api_key(&self) -> std::result::Result<&str, NotionError> {
-        self.api_key.as_deref().ok_or(NotionError::MissingApiKey)
+        self.client.api_key().map_err(NotionError::from)
     }
 
     fn normalize_id(id: &str) -> std::result::Result<String, NotionError> {
-        let cleaned: String = id.chars().filter(|c| *c != '-').collect();
-        if cleaned.len() != 32 || !cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(NotionError::InvalidId { id: id.to_string() });
-        }
-        Ok(format!(
-            "{}-{}-{}-{}-{}",
-            &cleaned[0..8],
-            &cleaned[8..12],
-            &cleaned[12..16],
-            &cleaned[16..20],
-            &cleaned[20..32]
-        ))
-    }
-
-    fn auth_headers(
-        &self,
-        api_key: &str,
-    ) -> std::result::Result<reqwest::header::HeaderMap, NotionError> {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            format!("Bearer {api_key}")
-                .parse::<reqwest::header::HeaderValue>()
-                .map_err(|e| NotionError::InvalidHeader {
-                    message: e.to_string(),
-                })?,
-        );
-        headers.insert(
-            "Notion-Version",
-            NOTION_VERSION
-                .parse::<reqwest::header::HeaderValue>()
-                .map_err(|e| NotionError::InvalidHeader {
-                    message: e.to_string(),
-                })?,
-        );
-        Ok(headers)
+        NotionReadClient::normalize_id(id).map_err(NotionError::from)
     }
 
     async fn send_request(
         &self,
         request: reqwest::RequestBuilder,
     ) -> std::result::Result<serde_json::Value, NotionError> {
-        let request = request.build().map_err(NotionError::Http)?;
-        let url = request.url().to_string();
-        let span = spans::notion_request(&url);
-        let _guard = span.enter();
-        let mut retries = 0usize;
-
-        loop {
-            let req = request.try_clone().ok_or(NotionError::RequestClone)?;
-            let resp = self.client.execute(req).await.map_err(NotionError::Http)?;
-
-            let status = resp.status();
-            if !status.is_success() {
-                let retry_after = Self::parse_retry_after(resp.headers().get("retry-after"));
-                let body = resp.text().await.unwrap_or_default();
-                if status == reqwest::StatusCode::TOO_MANY_REQUESTS
-                    && retries < MAX_RATE_LIMIT_RETRIES
-                {
-                    let delay = retry_after
-                        .as_duration()
-                        .unwrap_or_else(|| backoff_delay(retries));
-                    tracing::warn!(
-                        retries = retries + 1,
-                        retry_after = %retry_after,
-                        "Notion rate limit hit; backing off"
-                    );
-                    retries += 1;
-                    tokio::time::sleep(delay).await;
-                    continue;
-                }
-                return Err(match status {
-                    reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
-                        NotionError::Unauthorized { status, body }
-                    }
-                    reqwest::StatusCode::NOT_FOUND => NotionError::NotFound { body },
-                    reqwest::StatusCode::TOO_MANY_REQUESTS => {
-                        NotionError::RateLimited { body, retry_after }
-                    }
-                    _ => NotionError::Api { status, body },
-                });
-            }
-
-            return resp.json().await.map_err(NotionError::Deserialize);
-        }
+        self.client
+            .send_request(request)
+            .await
+            .map_err(NotionError::from)
     }
 
+    #[cfg(test)]
     fn parse_retry_after(value: Option<&reqwest::header::HeaderValue>) -> RetryAfter {
-        let Some(value) = value else {
-            return RetryAfter::Missing;
-        };
-        let raw = match value.to_str() {
-            Ok(raw) => raw,
-            Err(_) => return RetryAfter::Unknown("invalid-utf8".to_string()),
-        };
-        match raw.trim().parse::<u64>() {
-            Ok(seconds) => RetryAfter::Seconds(seconds),
-            Err(_) => RetryAfter::Unknown(raw.to_string()),
-        }
+        notion_read::parse_retry_after(value)
     }
 
     async fn search_pages(
@@ -504,7 +393,6 @@ impl NotionClient {
     ) -> Result<NotionOutput> {
         let span = spans::notion_search_pages(query.map(|q| q.len()), page_size);
         let _guard = span.enter();
-        let base_url = self.base_url();
         let mut body = serde_json::Map::new();
         if let Some(q) = query {
             body.insert(
@@ -529,8 +417,8 @@ impl NotionClient {
         let json = self
             .send_request(
                 self.client
-                    .post(format!("{base_url}/search"))
-                    .headers(self.auth_headers(api_key)?)
+                    .post("/search", api_key)
+                    .map_err(NotionError::from)?
                     .json(&serde_json::Value::Object(body)),
             )
             .await?;
@@ -559,13 +447,12 @@ impl NotionClient {
     async fn get_page(&self, api_key: &str, page_id: &str) -> Result<NotionOutput> {
         let span = spans::notion_get_page(page_id);
         let _guard = span.enter();
-        let base_url = self.base_url();
         let normalized = Self::normalize_id(page_id)?;
         let json = self
             .send_request(
                 self.client
-                    .get(format!("{base_url}/pages/{normalized}"))
-                    .headers(self.auth_headers(api_key)?),
+                    .get(&format!("/pages/{normalized}"), api_key)
+                    .map_err(NotionError::from)?,
             )
             .await?;
 
@@ -646,13 +533,12 @@ impl NotionClient {
     ) -> std::result::Result<NotionPageSummary, NotionError> {
         let span = spans::notion_fetch_page_summary(page_id);
         let _guard = span.enter();
-        let base_url = self.base_url();
         let normalized = Self::normalize_id(page_id)?;
         let json = self
             .send_request(
                 self.client
-                    .get(format!("{base_url}/pages/{normalized}"))
-                    .headers(self.auth_headers(api_key)?),
+                    .get(&format!("/pages/{normalized}"), api_key)
+                    .map_err(NotionError::from)?,
             )
             .await?;
         parse_page_summary(&json).ok_or_else(|| NotionError::UnexpectedShape {
@@ -677,11 +563,10 @@ impl NotionClient {
     )> {
         let span = spans::notion_get_page_blocks(block_id);
         let _guard = span.enter();
-        let base_url = self.base_url();
         let mut request = self
             .client
-            .get(format!("{base_url}/blocks/{block_id}/children"))
-            .headers(self.auth_headers(api_key)?);
+            .get(&format!("/blocks/{block_id}/children"), api_key)
+            .map_err(NotionError::from)?;
         let mut params: Vec<(&str, String)> = Vec::new();
         if let Some(cursor) = start_cursor {
             params.push(("start_cursor", cursor.to_string()));
@@ -828,19 +713,9 @@ impl NotionClient {
     }
 }
 
+#[cfg(test)]
 fn should_warn_on_insecure_base_url(base_url: &str) -> bool {
-    if base_url.starts_with("https://") {
-        return false;
-    }
-    if let Ok(parsed) = reqwest::Url::parse(base_url)
-        && let Some(host) = parsed.host_str()
-    {
-        let normalized = host.to_ascii_lowercase();
-        if normalized == "localhost" || normalized == "127.0.0.1" || normalized == "::1" {
-            return false;
-        }
-    }
-    true
+    notion_read::should_warn_on_insecure_base_url(base_url)
 }
 
 fn next_depth_for_children(depth: u32, max_depth: u32) -> Option<u32> {

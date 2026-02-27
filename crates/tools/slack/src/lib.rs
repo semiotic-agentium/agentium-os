@@ -11,7 +11,6 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     sync::Arc,
-    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -27,6 +26,7 @@ use baml_rt_tools::{
         create_tool_handler,
     },
 };
+use integrations_slack_read::{self as slack_read, SlackReadClient, SlackReadError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -34,15 +34,17 @@ use ts_rs::TS;
 /// Slack API base URL.
 pub const BASE_URL: &str = "https://slack.com/api";
 
-const MAX_RATE_LIMIT_RETRIES: usize = 3;
+#[cfg(test)]
 const RATE_LIMIT_BASE_DELAY_MS: u64 = 500;
+#[cfg(test)]
 const RATE_LIMIT_MAX_DELAY_MS: u64 = 5_000;
 
-fn backoff_delay(retries: usize) -> Duration {
+#[cfg(test)]
+fn backoff_delay(retries: usize) -> std::time::Duration {
     let shift = u32::try_from(retries).unwrap_or(u32::MAX);
     let multiplier = 1u64.checked_shl(shift).unwrap_or(u64::MAX);
     let backoff = RATE_LIMIT_BASE_DELAY_MS.saturating_mul(multiplier);
-    Duration::from_millis(backoff.min(RATE_LIMIT_MAX_DELAY_MS))
+    std::time::Duration::from_millis(backoff.min(RATE_LIMIT_MAX_DELAY_MS))
 }
 
 // ---------------------------------------------------------------------------
@@ -396,21 +398,61 @@ pub enum RetryAfter {
     Missing,
 }
 
-impl RetryAfter {
-    fn as_duration(&self) -> Option<Duration> {
-        match self {
-            RetryAfter::Seconds(seconds) => Some(Duration::from_secs(*seconds)),
-            RetryAfter::Unknown(_) | RetryAfter::Missing => None,
-        }
-    }
-}
-
 impl std::fmt::Display for RetryAfter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             RetryAfter::Seconds(seconds) => write!(f, "{seconds}s"),
             RetryAfter::Unknown(raw) => write!(f, "unknown({raw})"),
             RetryAfter::Missing => write!(f, "missing"),
+        }
+    }
+}
+
+impl From<slack_read::RetryAfter> for RetryAfter {
+    fn from(value: slack_read::RetryAfter) -> Self {
+        match value {
+            slack_read::RetryAfter::Seconds(seconds) => RetryAfter::Seconds(seconds),
+            slack_read::RetryAfter::Unknown(raw) => RetryAfter::Unknown(raw),
+            slack_read::RetryAfter::Missing => RetryAfter::Missing,
+        }
+    }
+}
+
+impl From<slack_read::SlackApiErrorClass> for SlackApiErrorClass {
+    fn from(value: slack_read::SlackApiErrorClass) -> Self {
+        match value {
+            slack_read::SlackApiErrorClass::Configuration => SlackApiErrorClass::Configuration,
+            slack_read::SlackApiErrorClass::InvalidArgument => SlackApiErrorClass::InvalidArgument,
+            slack_read::SlackApiErrorClass::ToolExecution => SlackApiErrorClass::ToolExecution,
+        }
+    }
+}
+
+impl From<SlackReadError> for SlackError {
+    fn from(value: SlackReadError) -> Self {
+        match value {
+            SlackReadError::Http(inner) => SlackError::Http(inner),
+            SlackReadError::Unauthorized { status, body } => {
+                SlackError::Unauthorized { status, body }
+            }
+            SlackReadError::RateLimited { body, retry_after } => SlackError::RateLimited {
+                body,
+                retry_after: retry_after.into(),
+            },
+            SlackReadError::Api { status, body } => SlackError::Api { status, body },
+            SlackReadError::ApiError {
+                method,
+                error,
+                class,
+            } => SlackError::ApiError {
+                method,
+                error,
+                class: class.into(),
+            },
+            SlackReadError::UnexpectedShape { message } => SlackError::UnexpectedShape { message },
+            SlackReadError::MissingToken { message } => SlackError::MissingToken { message },
+            SlackReadError::InvalidHeader { message } => SlackError::InvalidHeader { message },
+            SlackReadError::RequestClone => SlackError::RequestClone,
         }
     }
 }
@@ -538,24 +580,38 @@ enum SlackTokenKind {
     User,
 }
 
-#[derive(Debug, Clone)]
-struct SlackAuthConfig {
-    bot_token: Option<String>,
-    user_token: Option<String>,
+fn map_auth_preference(
+    preference: Option<SlackAuthPreference>,
+) -> Option<slack_read::SlackAuthPreference> {
+    preference.map(|preference| match preference {
+        SlackAuthPreference::Auto => slack_read::SlackAuthPreference::Auto,
+        SlackAuthPreference::Bot => slack_read::SlackAuthPreference::Bot,
+        SlackAuthPreference::User => slack_read::SlackAuthPreference::User,
+    })
 }
 
-impl SlackAuthConfig {
-    fn from_env() -> Self {
+fn map_token_kind(kind: slack_read::SlackTokenKind) -> SlackTokenKind {
+    match kind {
+        slack_read::SlackTokenKind::Bot => SlackTokenKind::Bot,
+        slack_read::SlackTokenKind::User => SlackTokenKind::User,
+    }
+}
+
+#[derive(Clone)]
+struct SlackClient {
+    client: SlackReadClient,
+}
+
+impl SlackClient {
+    fn new() -> Self {
         Self {
-            bot_token: std::env::var("SLACK_BOT_TOKEN")
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty()),
-            user_token: std::env::var("SLACK_USER_TOKEN")
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty()),
+            client: SlackReadClient::new(),
         }
+    }
+
+    #[cfg(test)]
+    fn base_url(&self) -> &str {
+        self.client.base_url()
     }
 
     fn select_token(
@@ -563,91 +619,10 @@ impl SlackAuthConfig {
         preference: Option<SlackAuthPreference>,
         requires_user: bool,
     ) -> std::result::Result<(&str, SlackTokenKind), SlackError> {
-        let preference = preference.unwrap_or_default();
-        if requires_user {
-            if preference == SlackAuthPreference::Bot {
-                return Err(SlackError::MissingToken {
-                    message: "Search requires a user token; auth=bot is not supported".to_string(),
-                });
-            }
-            return self
-                .user_token
-                .as_deref()
-                .map(|token| (token, SlackTokenKind::User))
-                .ok_or_else(|| SlackError::MissingToken {
-                    message: "SLACK_USER_TOKEN environment variable is required for message search"
-                        .to_string(),
-                });
-        }
-
-        match preference {
-            SlackAuthPreference::Bot => self
-                .bot_token
-                .as_deref()
-                .map(|token| (token, SlackTokenKind::Bot))
-                .ok_or_else(|| SlackError::MissingToken {
-                    message: "SLACK_BOT_TOKEN environment variable is required when auth=bot"
-                        .to_string(),
-                }),
-            SlackAuthPreference::User => self
-                .user_token
-                .as_deref()
-                .map(|token| (token, SlackTokenKind::User))
-                .ok_or_else(|| SlackError::MissingToken {
-                    message: "SLACK_USER_TOKEN environment variable is required when auth=user"
-                        .to_string(),
-                }),
-            SlackAuthPreference::Auto => self
-                .bot_token
-                .as_deref()
-                .map(|token| (token, SlackTokenKind::Bot))
-                .or_else(|| {
-                    self.user_token
-                        .as_deref()
-                        .map(|token| (token, SlackTokenKind::User))
-                })
-                .ok_or_else(|| SlackError::MissingToken {
-                    message: "Set SLACK_BOT_TOKEN (preferred) or SLACK_USER_TOKEN".to_string(),
-                }),
-        }
-    }
-}
-
-#[derive(Clone)]
-struct SlackClient {
-    client: reqwest::Client,
-    auth: SlackAuthConfig,
-    base_url: String,
-}
-
-impl SlackClient {
-    fn new() -> Self {
-        Self {
-            client: reqwest::Client::new(),
-            auth: SlackAuthConfig::from_env(),
-            base_url: Self::resolve_base_url(),
-        }
-    }
-
-    fn resolve_base_url() -> String {
-        let override_url = std::env::var("SLACK_API_BASE_URL")
-            .ok()
-            .map(|raw| raw.trim().trim_end_matches('/').to_string())
-            .filter(|v| !v.is_empty());
-        if let Some(base_url) = override_url {
-            if !cfg!(test) && should_warn_on_insecure_base_url(&base_url) {
-                tracing::warn!(
-                    base_url = %base_url,
-                    "SLACK_API_BASE_URL is not https; bearer token may be sent to an insecure endpoint"
-                );
-            }
-            return base_url;
-        }
-        BASE_URL.to_string()
-    }
-
-    fn base_url(&self) -> &str {
-        self.base_url.as_str()
+        let (token, kind) = self
+            .client
+            .select_token(map_auth_preference(preference), requires_user)?;
+        Ok((token, map_token_kind(kind)))
     }
 
     fn authorized_get(
@@ -655,16 +630,9 @@ impl SlackClient {
         token: &str,
         method: &'static str,
     ) -> std::result::Result<reqwest::RequestBuilder, SlackError> {
-        let endpoint = format!("{}/{}", self.base_url(), method);
-        let authorization = format!("Bearer {token}")
-            .parse::<reqwest::header::HeaderValue>()
-            .map_err(|e| SlackError::InvalidHeader {
-                message: e.to_string(),
-            })?;
-        Ok(self
-            .client
-            .get(endpoint)
-            .header(reqwest::header::AUTHORIZATION, authorization))
+        self.client
+            .authorized_get(token, method)
+            .map_err(SlackError::from)
     }
 
     async fn send_request(
@@ -672,78 +640,19 @@ impl SlackClient {
         method_name: &'static str,
         request: reqwest::RequestBuilder,
     ) -> std::result::Result<serde_json::Value, SlackError> {
-        let request = request.build().map_err(SlackError::Http)?;
-        let mut retries = 0usize;
-        loop {
-            let req = request.try_clone().ok_or(SlackError::RequestClone)?;
-            let resp = self.client.execute(req).await.map_err(SlackError::Http)?;
-            let status = resp.status();
-            if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-                let retry_after = Self::parse_retry_after(resp.headers().get("retry-after"));
-                let body = resp.text().await.unwrap_or_default();
-                if retries < MAX_RATE_LIMIT_RETRIES {
-                    let delay = retry_after
-                        .as_duration()
-                        .unwrap_or_else(|| backoff_delay(retries));
-                    tracing::warn!(
-                        method = method_name,
-                        retries = retries + 1,
-                        retry_after = %retry_after,
-                        "Slack rate limit hit; backing off"
-                    );
-                    retries += 1;
-                    tokio::time::sleep(delay).await;
-                    continue;
-                }
-                return Err(SlackError::RateLimited { body, retry_after });
-            }
-
-            if !status.is_success() {
-                let body = resp.text().await.unwrap_or_default();
-                return Err(match status {
-                    reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
-                        SlackError::Unauthorized { status, body }
-                    }
-                    _ => SlackError::Api { status, body },
-                });
-            }
-
-            let json: serde_json::Value = resp.json().await.map_err(SlackError::Deserialize)?;
-            let ok = json.get("ok").and_then(serde_json::Value::as_bool);
-            match ok {
-                Some(true) => return Ok(json),
-                Some(false) => {
-                    let code = json
-                        .get("error")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("unknown_error");
-                    return Err(map_slack_api_error(method_name, code.to_string()));
-                }
-                None => {
-                    return Err(SlackError::UnexpectedShape {
-                        message: format!("missing 'ok' field for {method_name}"),
-                    });
-                }
-            }
-        }
+        self.client
+            .send_request(method_name, request)
+            .await
+            .map_err(SlackError::from)
     }
 
+    #[cfg(test)]
     fn parse_retry_after(value: Option<&reqwest::header::HeaderValue>) -> RetryAfter {
-        let Some(value) = value else {
-            return RetryAfter::Missing;
-        };
-        let raw = match value.to_str() {
-            Ok(raw) => raw,
-            Err(_) => return RetryAfter::Unknown("invalid-utf8".to_string()),
-        };
-        match raw.trim().parse::<u64>() {
-            Ok(seconds) => RetryAfter::Seconds(seconds),
-            Err(_) => RetryAfter::Unknown(raw.to_string()),
-        }
+        slack_read::parse_retry_after(value).into()
     }
 
     async fn list_conversations(&self, input: ListConversationsInput) -> Result<SlackOutput> {
-        let (token, _token_kind) = self.auth.select_token(input.auth, false)?;
+        let (token, _token_kind) = self.select_token(input.auth, false)?;
         let kinds_param = conversation_types_param(&input.kinds);
         let limit = input.limit.unwrap_or(100).clamp(1, 1_000);
         let request = self.authorized_get(token, "conversations.list")?.query(&[
@@ -821,7 +730,7 @@ impl SlackClient {
             }
             .into());
         }
-        let (token, _token_kind) = self.auth.select_token(input.auth, false)?;
+        let (token, _token_kind) = self.select_token(input.auth, false)?;
         let limit = input.limit.unwrap_or(100).clamp(1, 1_000);
         let request = self
             .authorized_get(token, "conversations.history")?
@@ -894,7 +803,7 @@ impl SlackClient {
             }
             .into());
         }
-        let (token, _token_kind) = self.auth.select_token(input.auth, false)?;
+        let (token, _token_kind) = self.select_token(input.auth, false)?;
         let limit = input.limit.unwrap_or(100).clamp(1, 1_000);
         let request = self
             .authorized_get(token, "conversations.replies")?
@@ -1006,7 +915,7 @@ impl SlackClient {
             }
             .into());
         }
-        let (token, _token_kind) = self.auth.select_token(input.auth, true)?;
+        let (token, _token_kind) = self.select_token(input.auth, true)?;
         let count = input.count.unwrap_or(20).clamp(1, 100);
         let page = input.page.unwrap_or(1).max(1);
         let sort = match input.sort.unwrap_or_default() {
@@ -1107,7 +1016,7 @@ impl SlackClient {
         if unique_ids.is_empty() {
             return Vec::new();
         }
-        let token = match self.auth.select_token(auth, false) {
+        let token = match self.select_token(auth, false) {
             Ok((token, _)) => token,
             Err(err) => {
                 tracing::warn!(
@@ -1341,6 +1250,7 @@ fn dedupe_sources(sources: Vec<SlackSource>) -> Vec<SlackSource> {
     out
 }
 
+#[cfg(test)]
 fn should_warn_on_insecure_base_url(base_url: &str) -> bool {
     if base_url.starts_with("https://") {
         return false;
@@ -1356,6 +1266,7 @@ fn should_warn_on_insecure_base_url(base_url: &str) -> bool {
     true
 }
 
+#[cfg(test)]
 fn map_slack_api_error(method: &'static str, error: String) -> SlackError {
     let class = if is_auth_error_code(&error) {
         SlackApiErrorClass::Configuration
@@ -1371,6 +1282,7 @@ fn map_slack_api_error(method: &'static str, error: String) -> SlackError {
     }
 }
 
+#[cfg(test)]
 fn is_auth_error_code(code: &str) -> bool {
     matches!(
         code,
@@ -1383,6 +1295,7 @@ fn is_auth_error_code(code: &str) -> bool {
     )
 }
 
+#[cfg(test)]
 fn is_invalid_argument_error_code(code: &str) -> bool {
     matches!(
         code,
