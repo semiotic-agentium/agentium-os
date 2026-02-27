@@ -22,16 +22,18 @@ use baml_rt_core::{
     context::{self, InvocationScope},
     ids::{AgentId, ContextId, UuidId},
 };
+#[cfg(feature = "llm-tests")]
 use baml_rt_provenance::{
-    AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
-    ProvenanceContextMessage, ProvenanceContextReader, ProvenanceWriter,
+    AgentType, ProvEvent, ProvenanceContextMessage, ProvenanceContextReader, ProvenanceWriter,
 };
+use baml_rt_provenance::{GraphqliteProvenanceStore, GraphqliteStoreBuilder};
 use baml_rt_tools::bundles::BundleType;
 use flate2::{Compression, write::GzEncoder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tar::Builder;
+#[cfg(feature = "llm-tests")]
 use tokio::time::{Duration, sleep, timeout};
 use ts_rs::TS;
 
@@ -581,6 +583,7 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
     (agent, extract_dir)
 }
 
+#[cfg(feature = "llm-tests")]
 async fn setup_conversational_context_auto_agent()
 -> (baml_rt::A2aAgent, Arc<GraphqliteProvenanceStore>) {
     ensure_fixture_runtime_types();
@@ -1776,10 +1779,21 @@ async fn test_e2e_task_lifecycle_demo_reject_path() {
     );
 }
 
+#[cfg(feature = "llm-tests")]
 #[tokio::test]
 async fn test_e2e_conversational_context_auto_via_provenance() {
+    if std::env::var("BAML_SKIP_LLM_TESTS").is_ok() {
+        eprintln!("Skipping LLM test: BAML_SKIP_LLM_TESTS set");
+        return;
+    }
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
     let _ = dotenvy::dotenv();
+    if std::env::var("OPENROUTER_API_KEY").is_err() {
+        eprintln!(
+            "Skipping test_e2e_conversational_context_auto_via_provenance: OPENROUTER_API_KEY not set"
+        );
+        return;
+    }
     eprintln!("conversational-context-auto: setup start");
     let (agent, provenance_reader) = timeout(
         Duration::from_secs(600),
@@ -1788,7 +1802,12 @@ async fn test_e2e_conversational_context_auto_via_provenance() {
     .await
     .expect("agent setup timed out");
     eprintln!("conversational-context-auto: setup complete");
-    let per_turn_timeout = Duration::from_secs(45);
+    // Live provider calls can be slower under CI load.
+    let per_turn_timeout = if std::env::var_os("CI").is_some() {
+        Duration::from_secs(120)
+    } else {
+        Duration::from_secs(45)
+    };
 
     let first_turn = SendMessageRequest {
         message: user_message(
