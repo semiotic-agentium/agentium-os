@@ -28,7 +28,7 @@ fn option_is_empty(opt: &Option<String>) -> bool {
     opt.as_ref().is_none_or(|s| s.is_empty())
 }
 
-const LIST_TASKS_DESCRIPTION_MAX_CHARS: usize = 160;
+const GET_TASK_DESCRIPTION_MAX_CHARS: usize = 120;
 const SINGLE_TASK_DESCRIPTION_MAX_CHARS: usize = 1200;
 
 fn truncate_chars_with_ellipsis(input: &str, max_chars: usize) -> String {
@@ -736,20 +736,21 @@ impl ClickUpTool {
         match output.operation {
             Some(ClickUpOperation::ListTasks) => {
                 for task in &mut output.tasks {
-                    normalize_optional_description(
-                        &mut task.description,
-                        LIST_TASKS_DESCRIPTION_MAX_CHARS,
-                    );
+                    task.description = None;
                 }
             }
             Some(ClickUpOperation::GetTask)
-            | Some(ClickUpOperation::CreateTask)
-            | Some(ClickUpOperation::UpdateTask) => {
+            => {
                 for task in &mut output.tasks {
                     normalize_optional_description(
                         &mut task.description,
-                        SINGLE_TASK_DESCRIPTION_MAX_CHARS,
+                        GET_TASK_DESCRIPTION_MAX_CHARS,
                     );
+                }
+            }
+            Some(ClickUpOperation::CreateTask) | Some(ClickUpOperation::UpdateTask) => {
+                for task in &mut output.tasks {
+                    task.description = None;
                 }
             }
             _ => {
