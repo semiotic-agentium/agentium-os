@@ -739,8 +739,7 @@ impl ClickUpTool {
                     task.description = None;
                 }
             }
-            Some(ClickUpOperation::GetTask)
-            => {
+            Some(ClickUpOperation::GetTask) => {
                 for task in &mut output.tasks {
                     normalize_optional_description(
                         &mut task.description,
