@@ -5,7 +5,7 @@
 /// If truncation occurs the result is capped at `max_chars` characters
 /// followed by `"..."`.  Inputs that fit within the limit are returned
 /// unchanged.
-pub fn truncate_chars_with_ellipsis(input: &str, max_chars: usize) -> String {
+pub(crate) fn truncate_chars_with_ellipsis(input: &str, max_chars: usize) -> String {
     let mut out = String::with_capacity(input.len().min(max_chars) + 3);
     for (i, ch) in input.chars().enumerate() {
         if i >= max_chars {
@@ -22,7 +22,10 @@ pub fn truncate_chars_with_ellipsis(input: &str, max_chars: usize) -> String {
 /// Empty or whitespace-only strings are left as empty.  Otherwise the
 /// string is trimmed and, if it exceeds `max_chars` characters, truncated
 /// with an ellipsis via [`truncate_chars_with_ellipsis`].
-pub fn trim_and_truncate(text: &mut String, max_chars: usize) {
+// Reserved for struct-level compaction; production code currently uses the
+// JSON-level helpers, but these remain for direct `String` manipulation.
+#[allow(dead_code)]
+pub(crate) fn trim_and_truncate(text: &mut String, max_chars: usize) {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return;
@@ -37,7 +40,9 @@ pub fn trim_and_truncate(text: &mut String, max_chars: usize) {
 /// Like [`trim_and_truncate`] but for `Option<String>`.
 ///
 /// `None` and whitespace-only values become `None`.
-pub fn trim_and_truncate_option(text: &mut Option<String>, max_chars: usize) {
+// Reserved for struct-level compaction; see `trim_and_truncate` above.
+#[allow(dead_code)]
+pub(crate) fn trim_and_truncate_option(text: &mut Option<String>, max_chars: usize) {
     let Some(current) = text.as_ref() else {
         return;
     };
@@ -132,15 +137,20 @@ pub fn trim_and_truncate_json_field_option(
     }
 }
 
-/// Remove a key from a JSON object, returning the raw string if it was a
-/// string value.
+/// Remove a string-valued key from a JSON object, returning its value.
+///
+/// Only removes the key when the value is a JSON string.  Non-string
+/// values (numbers, booleans, objects, …) are left untouched and the
+/// function returns `None`.
 pub fn remove_json_string_field(obj: &mut serde_json::Value, field: &str) -> Option<String> {
-    obj.as_object_mut()
-        .and_then(|o| o.remove(field))
-        .and_then(|v| match v {
-            serde_json::Value::String(s) => Some(s),
-            _ => None,
-        })
+    let map = obj.as_object_mut()?;
+    if !map.get(field).is_some_and(serde_json::Value::is_string) {
+        return None;
+    }
+    match map.remove(field) {
+        Some(serde_json::Value::String(s)) => Some(s),
+        _ => None, // unreachable given the guard above
+    }
 }
 
 enum FieldAction {
@@ -368,11 +378,11 @@ mod tests {
     }
 
     #[test]
-    fn remove_json_string_non_string() {
+    fn remove_json_string_non_string_preserved() {
         let mut obj = serde_json::json!({"op": 42});
         let val = remove_json_string_field(&mut obj, "op");
         assert!(val.is_none());
-        // Non-string value is still removed
-        assert!(obj.get("op").is_none());
+        // Non-string value must be left in place
+        assert_eq!(obj["op"], 42);
     }
 }

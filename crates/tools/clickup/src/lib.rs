@@ -621,7 +621,8 @@ impl ClickUpTool {
         };
 
         match operation.as_deref() {
-            Some("list_tasks") | Some("create_task") | Some("update_task") => {
+            Some("list_tasks") | Some("create_task") | Some("update_task")
+            | Some("delete_task") => {
                 for task in tasks {
                     if let Some(obj) = task.as_object_mut() {
                         obj.remove("description");
@@ -637,7 +638,10 @@ impl ClickUpTool {
                     );
                 }
             }
-            _ => {
+            // list_teams, list_spaces, list_lists don't produce a `tasks`
+            // array so the early-return guard above handles them.  The
+            // fallback covers missing or unrecognised operation values.
+            Some("list_teams") | Some("list_spaces") | Some("list_lists") | None | Some(_) => {
                 for task in tasks {
                     trim_and_truncate_json_field_option(
                         task,
