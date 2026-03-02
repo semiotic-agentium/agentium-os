@@ -1387,6 +1387,14 @@ fn compact_slack_payload(content: &mut serde_json::Value) {
     }
 }
 
+fn compact_slack_result(content: &mut serde_json::Value) {
+    if let Some(result) = content.get_mut("result") {
+        compact_slack_payload(result);
+    } else {
+        compact_slack_payload(content);
+    }
+}
+
 #[async_trait]
 impl BamlTool for SlackTool {
     type Bundle = Support;
@@ -1421,11 +1429,7 @@ impl BamlTool for SlackTool {
     }
 
     fn compact_result(&self, content: &mut serde_json::Value) {
-        if let Some(result) = content.get_mut("result") {
-            compact_slack_payload(result);
-        } else {
-            compact_slack_payload(content);
-        }
+        compact_slack_result(content);
     }
 }
 
