@@ -32,6 +32,35 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 const MAX_BLOCK_DEPTH: u32 = 10;
+const BLOCK_TEXT_MAX_CHARS: usize = 200;
+
+fn truncate_chars_with_ellipsis(input: &str, max_chars: usize) -> String {
+    let mut out = String::with_capacity(input.len().min(max_chars) + 3);
+    for (i, ch) in input.chars().enumerate() {
+        if i >= max_chars {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn truncate_optional_text(text: &mut Option<String>, max_chars: usize) {
+    let Some(current) = text.as_ref() else {
+        return;
+    };
+    let trimmed = current.trim();
+    if trimmed.is_empty() {
+        *text = None;
+        return;
+    }
+    if trimmed.chars().count() > max_chars {
+        *text = Some(truncate_chars_with_ellipsis(trimmed, max_chars));
+    } else if trimmed.len() != current.len() {
+        *text = Some(trimmed.to_string());
+    }
+}
 #[cfg(test)]
 const RATE_LIMIT_BASE_DELAY_MS: u64 = 500;
 #[cfg(test)]
@@ -165,6 +194,14 @@ pub struct NotionSource {
     pub url: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotionOperation {
+    SearchPages,
+    GetPage,
+    GetPageBlocks,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct NotionOutput {
@@ -178,6 +215,11 @@ pub struct NotionOutput {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<NotionSource>,
     pub message: String,
+    #[baml(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<NotionOperation>,
 }
 
 #[derive(Debug, Default, Clone, Copy, Serialize, JsonSchema, TS, BamlType)]
@@ -441,6 +483,7 @@ impl NotionClient {
             has_more,
             sources,
             message: format!("Found {count} page(s)"),
+            operation: Some(NotionOperation::SearchPages),
         })
     }
 
@@ -469,6 +512,7 @@ impl NotionClient {
             has_more: false,
             sources,
             message: format!("Page: {title}"),
+            operation: Some(NotionOperation::GetPage),
         })
     }
 
@@ -523,6 +567,7 @@ impl NotionClient {
             has_more,
             sources,
             message: "Retrieved page blocks".to_string(),
+            operation: Some(NotionOperation::GetPageBlocks),
         })
     }
 
@@ -933,6 +978,28 @@ impl NotionTool {
     }
 }
 
+fn compact_notion_output(output: &mut NotionOutput) {
+    if let Some(NotionOperation::GetPageBlocks) = output.operation {
+        for block in &mut output.blocks {
+            if block.block_type == "notable_lines" {
+                continue;
+            }
+            truncate_optional_text(&mut block.text, BLOCK_TEXT_MAX_CHARS);
+        }
+    }
+    output.operation = None;
+}
+
+fn compact_notion_payload(content: &mut serde_json::Value) {
+    let Ok(mut output) = serde_json::from_value::<NotionOutput>(content.clone()) else {
+        return;
+    };
+    compact_notion_output(&mut output);
+    if let Ok(compacted) = serde_json::to_value(output) {
+        *content = compacted;
+    }
+}
+
 #[async_trait]
 impl BamlTool for NotionTool {
     type Bundle = Support;
@@ -973,6 +1040,14 @@ impl BamlTool for NotionTool {
                     )
                     .await
             }
+        }
+    }
+
+    fn compact_result(&self, content: &mut serde_json::Value) {
+        if let Some(result) = content.get_mut("result") {
+            compact_notion_payload(result);
+        } else {
+            compact_notion_payload(content);
         }
     }
 }
@@ -1018,6 +1093,14 @@ impl BamlTool for NotionSearchPagesTool {
             )
             .await
     }
+
+    fn compact_result(&self, content: &mut serde_json::Value) {
+        if let Some(result) = content.get_mut("result") {
+            compact_notion_payload(result);
+        } else {
+            compact_notion_payload(content);
+        }
+    }
 }
 
 pub struct NotionGetPageTool {
@@ -1053,6 +1136,14 @@ impl BamlTool for NotionGetPageTool {
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
         let api_key = self.client.api_key()?;
         self.client.get_page(api_key, &args.page_id).await
+    }
+
+    fn compact_result(&self, content: &mut serde_json::Value) {
+        if let Some(result) = content.get_mut("result") {
+            compact_notion_payload(result);
+        } else {
+            compact_notion_payload(content);
+        }
     }
 }
 
@@ -1100,6 +1191,14 @@ impl BamlTool for NotionGetPageBlocksTool {
                 max_depth,
             )
             .await
+    }
+
+    fn compact_result(&self, content: &mut serde_json::Value) {
+        if let Some(result) = content.get_mut("result") {
+            compact_notion_payload(result);
+        } else {
+            compact_notion_payload(content);
+        }
     }
 }
 
@@ -1457,3 +1556,203 @@ register_tool!(
     notion_get_page_blocks_build
 );
 register_tool!(notion_metadata, notion_build);
+
+#[cfg(test)]
+mod compaction_tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // truncate_chars_with_ellipsis
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn truncate_below_limit_unchanged() {
+        assert_eq!(truncate_chars_with_ellipsis("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_at_limit_unchanged() {
+        assert_eq!(truncate_chars_with_ellipsis("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_above_limit_adds_ellipsis() {
+        assert_eq!(truncate_chars_with_ellipsis("hello world", 5), "hello...");
+    }
+
+    #[test]
+    fn truncate_multi_byte_chars() {
+        // 3 chars, limit 2 → keeps 2 chars + "..."
+        assert_eq!(truncate_chars_with_ellipsis("héllo", 2), "hé...");
+    }
+
+    // -----------------------------------------------------------------------
+    // truncate_optional_text
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn truncate_optional_none_is_noop() {
+        let mut val: Option<String> = None;
+        truncate_optional_text(&mut val, 10);
+        assert!(val.is_none());
+    }
+
+    #[test]
+    fn truncate_optional_empty_becomes_none() {
+        let mut val = Some(String::new());
+        truncate_optional_text(&mut val, 10);
+        assert!(val.is_none());
+    }
+
+    #[test]
+    fn truncate_optional_whitespace_becomes_none() {
+        let mut val = Some("   ".to_string());
+        truncate_optional_text(&mut val, 10);
+        assert!(val.is_none());
+    }
+
+    #[test]
+    fn truncate_optional_within_limit_unchanged() {
+        let mut val = Some("short".to_string());
+        truncate_optional_text(&mut val, 10);
+        assert_eq!(val.as_deref(), Some("short"));
+    }
+
+    #[test]
+    fn truncate_optional_over_limit_truncates() {
+        let mut val = Some("a]".repeat(150));
+        truncate_optional_text(&mut val, 10);
+        let result = val.unwrap();
+        assert!(result.ends_with("..."));
+        // 10 chars + "..."
+        assert_eq!(result.chars().count(), 13);
+    }
+
+    // -----------------------------------------------------------------------
+    // compact_notion_output — GetPageBlocks
+    // -----------------------------------------------------------------------
+
+    fn make_block(block_type: &str, text: Option<&str>) -> NotionBlockSummary {
+        NotionBlockSummary {
+            id: "block-1".to_string(),
+            block_type: block_type.to_string(),
+            text: text.map(|t| t.to_string()),
+            has_children: false,
+        }
+    }
+
+    #[test]
+    fn compact_get_page_blocks_truncates_long_text() {
+        let long_text = "x".repeat(300);
+        let mut output = NotionOutput {
+            pages: vec![],
+            blocks: vec![make_block("paragraph", Some(&long_text))],
+            next_cursor: None,
+            has_more: false,
+            sources: vec![],
+            message: "test".to_string(),
+            operation: Some(NotionOperation::GetPageBlocks),
+        };
+        compact_notion_output(&mut output);
+        let text = output.blocks[0].text.as_ref().unwrap();
+        assert!(text.ends_with("..."));
+        assert!(text.chars().count() <= BLOCK_TEXT_MAX_CHARS + 3);
+        assert!(output.operation.is_none());
+    }
+
+    #[test]
+    fn compact_get_page_blocks_preserves_notable_lines() {
+        let long_text = "x".repeat(300);
+        let mut output = NotionOutput {
+            pages: vec![],
+            blocks: vec![make_block("notable_lines", Some(&long_text))],
+            next_cursor: None,
+            has_more: false,
+            sources: vec![],
+            message: "test".to_string(),
+            operation: Some(NotionOperation::GetPageBlocks),
+        };
+        compact_notion_output(&mut output);
+        let text = output.blocks[0].text.as_ref().unwrap();
+        assert_eq!(text.len(), 300);
+        assert!(!text.ends_with("..."));
+    }
+
+    #[test]
+    fn compact_get_page_blocks_none_text_unchanged() {
+        let mut output = NotionOutput {
+            pages: vec![],
+            blocks: vec![make_block("paragraph", None)],
+            next_cursor: None,
+            has_more: false,
+            sources: vec![],
+            message: "test".to_string(),
+            operation: Some(NotionOperation::GetPageBlocks),
+        };
+        compact_notion_output(&mut output);
+        assert!(output.blocks[0].text.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // compact_notion_output — SearchPages / GetPage (no-op for blocks)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compact_search_pages_is_noop_for_blocks() {
+        let mut output = NotionOutput {
+            pages: vec![],
+            blocks: vec![],
+            next_cursor: None,
+            has_more: false,
+            sources: vec![],
+            message: "test".to_string(),
+            operation: Some(NotionOperation::SearchPages),
+        };
+        compact_notion_output(&mut output);
+        assert!(output.operation.is_none());
+    }
+
+    #[test]
+    fn compact_get_page_is_noop_for_blocks() {
+        let mut output = NotionOutput {
+            pages: vec![],
+            blocks: vec![],
+            next_cursor: None,
+            has_more: false,
+            sources: vec![],
+            message: "test".to_string(),
+            operation: Some(NotionOperation::GetPage),
+        };
+        compact_notion_output(&mut output);
+        assert!(output.operation.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // compact_notion_payload — envelope handling
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compact_payload_via_result_envelope() {
+        let long_text = "y".repeat(300);
+        let output = NotionOutput {
+            pages: vec![],
+            blocks: vec![make_block("paragraph", Some(&long_text))],
+            next_cursor: None,
+            has_more: false,
+            sources: vec![],
+            message: "test".to_string(),
+            operation: Some(NotionOperation::GetPageBlocks),
+        };
+        let mut content = serde_json::json!({
+            "tool_name": "support/notion",
+            "result": serde_json::to_value(&output).unwrap(),
+        });
+        let tool = NotionTool::new();
+        tool.compact_result(&mut content);
+        let result: NotionOutput =
+            serde_json::from_value(content.get("result").unwrap().clone()).unwrap();
+        let text = result.blocks[0].text.as_ref().unwrap();
+        assert!(text.ends_with("..."));
+        assert!(text.chars().count() <= BLOCK_TEXT_MAX_CHARS + 3);
+    }
+}
