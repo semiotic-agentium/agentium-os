@@ -24,6 +24,16 @@ notion-agent-provenance:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
     cargo run -p baml-agent-runner --features http-tools -- notion-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
 
+# Rebuilds slack-agent package and runs it via a2a stdio.
+slack-agent:
+    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/slack-agent --output slack-agent.tar.gz
+    cargo run -p baml-agent-runner --features http-tools -- slack-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}}
+
+# Same as slack-agent, but persists provenance to provenance.db for graph_exporter.
+slack-agent-provenance:
+    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/slack-agent --output slack-agent.tar.gz
+    cargo run -p baml-agent-runner --features http-tools -- slack-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
+
 # Rebuilds coordinator + notion packages and runs coordinator-agent via a2a stdio.
 coordinator-agent:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/coordinator-agent --output coordinator-agent.tar.gz
@@ -58,6 +68,14 @@ notion-demo:
 # Stops the background runner started by notion-demo.
 notion-demo-stop:
     ./scripts/stop-notion-demo.sh
+
+# Runs the HTTP Slack todo-extraction demo script (starts runner if needed and streams one request).
+slack-demo:
+    ./scripts/run-slack-demo.sh
+
+# Stops the background runner started by slack-demo.
+slack-demo-stop:
+    ./scripts/stop-slack-demo.sh
 
 # Runs coordinator + notion HTTP demo and streams one coordinated request.
 coordinator-demo:

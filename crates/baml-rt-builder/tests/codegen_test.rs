@@ -46,6 +46,27 @@ fn test_notion_tool_baml_interfaces() {
     );
 }
 
+#[cfg(feature = "slack")]
+#[test]
+fn test_slack_tool_baml_interfaces() {
+    let tool_names = vec!["support/slack".to_string()];
+    let baml_output =
+        render_baml_tool_interfaces(&tool_names).expect("Should generate Slack BAML interfaces");
+
+    assert!(
+        baml_output.contains("type SlackInput"),
+        "Expected SlackInput union in generated BAML"
+    );
+    assert!(
+        baml_output.contains("class SlackOutput"),
+        "Expected SlackOutput class in generated BAML"
+    );
+    assert!(
+        baml_output.contains("class SupportSlackOpenStep"),
+        "Expected SupportSlack session scaffolding in generated BAML"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // ClickUp tool codegen — validates that schemars 1.x nullable types
 // (Option<T> → "type": ["T", "null"]) and u8 integers are mapped correctly.

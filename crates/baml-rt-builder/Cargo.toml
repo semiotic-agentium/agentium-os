@@ -20,6 +20,7 @@ baml-tools-calculator = { path = "../tools/calculator" }
 baml-tools-clickup = { path = "../tools/clickup", optional = true }
 baml-tools-memory = { path = "../tools/memory", optional = true }
 baml-tools-notion = { path = "../tools/notion", optional = true }
+baml-tools-slack = { path = "../tools/slack", optional = true }
 baml-runtime = { workspace = true }
 baml-types = { workspace = true }
 internal-baml-core = { workspace = true }
@@ -55,4 +56,5 @@ default = []
 clickup = ["dep:baml-tools-clickup"]
 memory = ["dep:baml-tools-memory"]
 notion = ["dep:baml-tools-notion"]
-http-tools = ["clickup", "notion"]
+slack = ["dep:baml-tools-slack"]
+http-tools = ["clickup", "notion", "slack"]

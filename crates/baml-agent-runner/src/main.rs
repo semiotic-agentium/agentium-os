@@ -55,6 +55,8 @@ use baml_tools_clickup as _;
 use baml_tools_memory as _;
 #[cfg(feature = "notion")]
 use baml_tools_notion as _;
+#[cfg(feature = "slack")]
+use baml_tools_slack as _;
 use baml_tools_system::SystemBundle;
 use clap::Parser;
 use serde_json::{Map, Value};
