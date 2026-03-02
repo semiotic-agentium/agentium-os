@@ -16,7 +16,7 @@ use std::{
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, Result, truncate_chars_with_ellipsis};
 use baml_rt_tools::{
     ToolMetadataBuilder, TypeBasedMetadataBuilder,
     bundles::Support,
@@ -37,18 +37,6 @@ pub const BASE_URL: &str = "https://slack.com/api";
 const HISTORY_TEXT_MAX_CHARS: usize = 300;
 const THREAD_TEXT_MAX_CHARS: usize = 500;
 const SEARCH_TEXT_MAX_CHARS: usize = 200;
-
-fn truncate_chars_with_ellipsis(input: &str, max_chars: usize) -> String {
-    let mut out = String::with_capacity(input.len().min(max_chars) + 3);
-    for (i, ch) in input.chars().enumerate() {
-        if i >= max_chars {
-            out.push_str("...");
-            return out;
-        }
-        out.push(ch);
-    }
-    out
-}
 
 fn truncate_string(text: &mut String, max_chars: usize) {
     let trimmed = text.trim();
@@ -1832,30 +1820,6 @@ mod tests {
 #[cfg(test)]
 mod compaction_tests {
     use super::*;
-
-    // -----------------------------------------------------------------------
-    // truncate_chars_with_ellipsis
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn truncate_below_limit_unchanged() {
-        assert_eq!(truncate_chars_with_ellipsis("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_at_limit_unchanged() {
-        assert_eq!(truncate_chars_with_ellipsis("hello", 5), "hello");
-    }
-
-    #[test]
-    fn truncate_above_limit_adds_ellipsis() {
-        assert_eq!(truncate_chars_with_ellipsis("hello world", 5), "hello...");
-    }
-
-    #[test]
-    fn truncate_multi_byte_chars() {
-        assert_eq!(truncate_chars_with_ellipsis("héllo", 2), "hé...");
-    }
 
     // -----------------------------------------------------------------------
     // truncate_string

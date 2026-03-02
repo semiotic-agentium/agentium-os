@@ -10,7 +10,7 @@ use std::{collections::VecDeque, fmt, sync::Arc};
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, Result, truncate_chars_with_ellipsis};
 use baml_rt_tools::{
     ToolMetadataBuilder, TypeBasedMetadataBuilder,
     bundles::Support,
@@ -33,18 +33,6 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 const MAX_BLOCK_DEPTH: u32 = 10;
 const BLOCK_TEXT_MAX_CHARS: usize = 200;
-
-fn truncate_chars_with_ellipsis(input: &str, max_chars: usize) -> String {
-    let mut out = String::with_capacity(input.len().min(max_chars) + 3);
-    for (i, ch) in input.chars().enumerate() {
-        if i >= max_chars {
-            out.push_str("...");
-            return out;
-        }
-        out.push(ch);
-    }
-    out
-}
 
 fn truncate_optional_text(text: &mut Option<String>, max_chars: usize) {
     let Some(current) = text.as_ref() else {
@@ -1560,31 +1548,6 @@ register_tool!(notion_metadata, notion_build);
 #[cfg(test)]
 mod compaction_tests {
     use super::*;
-
-    // -----------------------------------------------------------------------
-    // truncate_chars_with_ellipsis
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn truncate_below_limit_unchanged() {
-        assert_eq!(truncate_chars_with_ellipsis("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_at_limit_unchanged() {
-        assert_eq!(truncate_chars_with_ellipsis("hello", 5), "hello");
-    }
-
-    #[test]
-    fn truncate_above_limit_adds_ellipsis() {
-        assert_eq!(truncate_chars_with_ellipsis("hello world", 5), "hello...");
-    }
-
-    #[test]
-    fn truncate_multi_byte_chars() {
-        // 3 chars, limit 2 → keeps 2 chars + "..."
-        assert_eq!(truncate_chars_with_ellipsis("héllo", 2), "hé...");
-    }
 
     // -----------------------------------------------------------------------
     // truncate_optional_text

@@ -13,6 +13,7 @@ pub mod json;
 pub mod package;
 pub mod semantics;
 pub mod stream_completion;
+pub mod strings;
 pub mod types;
 
 pub use a2a_handler::{A2aRequestHandler, collect_a2a_stream, collect_a2a_stream_until};
@@ -38,3 +39,4 @@ pub use json::to_json_value;
 pub use package::AgentManifest;
 pub use semantics::{ActivityOutcome, InvocationKind, Outcome, Retryability};
 pub use stream_completion::{StreamCompletion, StreamResult};
+pub use strings::truncate_chars_with_ellipsis;

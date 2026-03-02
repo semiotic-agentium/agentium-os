@@ -8,7 +8,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
-use baml_rt_core::{BamlRtError, Result};
+use baml_rt_core::{BamlRtError, Result, truncate_chars_with_ellipsis};
 use baml_rt_tools::{
     ToolMetadataBuilder, TypeBasedMetadataBuilder,
     bundles::Support,
@@ -30,18 +30,6 @@ fn option_is_empty(opt: &Option<String>) -> bool {
 
 const GET_TASK_DESCRIPTION_MAX_CHARS: usize = 120;
 const SINGLE_TASK_DESCRIPTION_MAX_CHARS: usize = 1200;
-
-fn truncate_chars_with_ellipsis(input: &str, max_chars: usize) -> String {
-    let mut out = String::with_capacity(input.len().min(max_chars) + 3);
-    for (i, ch) in input.chars().enumerate() {
-        if i >= max_chars {
-            out.push_str("...");
-            return out;
-        }
-        out.push(ch);
-    }
-    out
-}
 
 fn normalize_optional_description(desc: &mut Option<String>, max_chars: usize) {
     let Some(current) = desc.as_ref() else {
