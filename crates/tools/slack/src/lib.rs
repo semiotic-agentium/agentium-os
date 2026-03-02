@@ -34,6 +34,34 @@ use ts_rs::TS;
 /// Slack API base URL.
 pub const BASE_URL: &str = "https://slack.com/api";
 
+const HISTORY_TEXT_MAX_CHARS: usize = 300;
+const THREAD_TEXT_MAX_CHARS: usize = 500;
+const SEARCH_TEXT_MAX_CHARS: usize = 200;
+
+fn truncate_chars_with_ellipsis(input: &str, max_chars: usize) -> String {
+    let mut out = String::with_capacity(input.len().min(max_chars) + 3);
+    for (i, ch) in input.chars().enumerate() {
+        if i >= max_chars {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn truncate_string(text: &mut String, max_chars: usize) {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if trimmed.chars().count() > max_chars {
+        *text = truncate_chars_with_ellipsis(trimmed, max_chars);
+    } else if trimmed.len() != text.len() {
+        *text = trimmed.to_string();
+    }
+}
+
 #[cfg(test)]
 const RATE_LIMIT_BASE_DELAY_MS: u64 = 500;
 #[cfg(test)]
@@ -236,6 +264,16 @@ pub struct SlackSource {
     pub thread_ts: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SlackOperation {
+    ListConversations,
+    GetConversationHistory,
+    GetThreadReplies,
+    ResolveUsers,
+    SearchMessages,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct SlackConversationSummary {
@@ -300,6 +338,11 @@ pub struct SlackOutput {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<SlackSource>,
     pub message: String,
+    #[baml(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<SlackOperation>,
 }
 
 // ---------------------------------------------------------------------------
@@ -717,6 +760,7 @@ impl SlackClient {
             has_more,
             sources,
             message: format!("Retrieved {count} conversation(s)"),
+            operation: Some(SlackOperation::ListConversations),
         })
     }
 
@@ -787,6 +831,7 @@ impl SlackClient {
             has_more,
             sources,
             message: format!("Retrieved {count} message(s) from {}", input.channel_id),
+            operation: Some(SlackOperation::GetConversationHistory),
         })
     }
 
@@ -864,6 +909,7 @@ impl SlackClient {
                 "Retrieved {count} thread message(s) from {} at {}",
                 input.channel_id, input.thread_ts
             ),
+            operation: Some(SlackOperation::GetThreadReplies),
         })
     }
 
@@ -905,6 +951,7 @@ impl SlackClient {
             has_more: false,
             sources,
             message: format!("Resolved {count} user(s)"),
+            operation: Some(SlackOperation::ResolveUsers),
         })
     }
 
@@ -986,6 +1033,7 @@ impl SlackClient {
             has_more,
             sources,
             message: format!("Retrieved {count} search match(es)"),
+            operation: Some(SlackOperation::SearchMessages),
         })
     }
 
@@ -1338,6 +1386,31 @@ impl SlackTool {
     }
 }
 
+fn compact_slack_output(output: &mut SlackOutput) {
+    let max_chars = match output.operation {
+        Some(SlackOperation::GetConversationHistory) => Some(HISTORY_TEXT_MAX_CHARS),
+        Some(SlackOperation::GetThreadReplies) => Some(THREAD_TEXT_MAX_CHARS),
+        Some(SlackOperation::SearchMessages) => Some(SEARCH_TEXT_MAX_CHARS),
+        _ => None,
+    };
+    if let Some(limit) = max_chars {
+        for msg in &mut output.messages {
+            truncate_string(&mut msg.text, limit);
+        }
+    }
+    output.operation = None;
+}
+
+fn compact_slack_payload(content: &mut serde_json::Value) {
+    let Ok(mut output) = serde_json::from_value::<SlackOutput>(content.clone()) else {
+        return;
+    };
+    compact_slack_output(&mut output);
+    if let Ok(compacted) = serde_json::to_value(output) {
+        *content = compacted;
+    }
+}
+
 #[async_trait]
 impl BamlTool for SlackTool {
     type Bundle = Support;
@@ -1368,6 +1441,14 @@ impl BamlTool for SlackTool {
             SlackInput::GetThreadReplies(input) => self.client.get_thread_replies(input).await,
             SlackInput::ResolveUsers(input) => self.client.resolve_users(input).await,
             SlackInput::SearchMessages(input) => self.client.search_messages(input).await,
+        }
+    }
+
+    fn compact_result(&self, content: &mut serde_json::Value) {
+        if let Some(result) = content.get_mut("result") {
+            compact_slack_payload(result);
+        } else {
+            compact_slack_payload(content);
         }
     }
 }
@@ -1745,5 +1826,212 @@ mod tests {
         assert_eq!(state.rate_limit_hits.load(Ordering::SeqCst), 2);
         let hits = state.snapshot().await;
         assert_eq!(hits.len(), 2, "expected two hits due to retry: {hits:?}");
+    }
+}
+
+#[cfg(test)]
+mod compaction_tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // truncate_chars_with_ellipsis
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn truncate_below_limit_unchanged() {
+        assert_eq!(truncate_chars_with_ellipsis("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_at_limit_unchanged() {
+        assert_eq!(truncate_chars_with_ellipsis("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_above_limit_adds_ellipsis() {
+        assert_eq!(truncate_chars_with_ellipsis("hello world", 5), "hello...");
+    }
+
+    #[test]
+    fn truncate_multi_byte_chars() {
+        assert_eq!(truncate_chars_with_ellipsis("héllo", 2), "hé...");
+    }
+
+    // -----------------------------------------------------------------------
+    // truncate_string
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn truncate_string_empty_is_noop() {
+        let mut val = String::new();
+        truncate_string(&mut val, 10);
+        assert_eq!(val, "");
+    }
+
+    #[test]
+    fn truncate_string_within_limit_unchanged() {
+        let mut val = "short".to_string();
+        truncate_string(&mut val, 10);
+        assert_eq!(val, "short");
+    }
+
+    #[test]
+    fn truncate_string_at_boundary_unchanged() {
+        let mut val = "12345".to_string();
+        truncate_string(&mut val, 5);
+        assert_eq!(val, "12345");
+    }
+
+    #[test]
+    fn truncate_string_over_boundary_truncates() {
+        let mut val = "x".repeat(400);
+        truncate_string(&mut val, 10);
+        assert!(val.ends_with("..."));
+        assert_eq!(val.chars().count(), 13);
+    }
+
+    #[test]
+    fn truncate_string_multi_byte() {
+        let mut val = "ñ".repeat(20);
+        truncate_string(&mut val, 5);
+        assert!(val.ends_with("..."));
+        assert_eq!(val.chars().count(), 8); // 5 + "..."
+    }
+
+    // -----------------------------------------------------------------------
+    // compact_slack_output — GetConversationHistory
+    // -----------------------------------------------------------------------
+
+    fn make_message(text: &str) -> SlackMessageSummary {
+        SlackMessageSummary {
+            channel_id: "C123".to_string(),
+            ts: "1700000000.000000".to_string(),
+            thread_ts: None,
+            user_id: None,
+            user_name: None,
+            text: text.to_string(),
+            subtype: None,
+            source_ref: "slack://channel/C123/p1700000000000000".to_string(),
+            permalink: None,
+        }
+    }
+
+    #[test]
+    fn compact_history_truncates_long_messages() {
+        let long_text = "x".repeat(500);
+        let mut output = SlackOutput {
+            conversations: vec![],
+            messages: vec![make_message(&long_text)],
+            users: vec![],
+            next_cursor: None,
+            has_more: false,
+            sources: vec![],
+            message: "test".to_string(),
+            operation: Some(SlackOperation::GetConversationHistory),
+        };
+        compact_slack_output(&mut output);
+        assert!(output.messages[0].text.ends_with("..."));
+        assert!(output.messages[0].text.chars().count() <= HISTORY_TEXT_MAX_CHARS + 3);
+        assert!(output.operation.is_none());
+    }
+
+    #[test]
+    fn compact_thread_replies_truncates_long_messages() {
+        let long_text = "x".repeat(700);
+        let mut output = SlackOutput {
+            conversations: vec![],
+            messages: vec![make_message(&long_text)],
+            users: vec![],
+            next_cursor: None,
+            has_more: false,
+            sources: vec![],
+            message: "test".to_string(),
+            operation: Some(SlackOperation::GetThreadReplies),
+        };
+        compact_slack_output(&mut output);
+        assert!(output.messages[0].text.ends_with("..."));
+        assert!(output.messages[0].text.chars().count() <= THREAD_TEXT_MAX_CHARS + 3);
+        assert!(output.operation.is_none());
+    }
+
+    #[test]
+    fn compact_search_truncates_long_messages() {
+        let long_text = "x".repeat(400);
+        let mut output = SlackOutput {
+            conversations: vec![],
+            messages: vec![make_message(&long_text)],
+            users: vec![],
+            next_cursor: None,
+            has_more: false,
+            sources: vec![],
+            message: "test".to_string(),
+            operation: Some(SlackOperation::SearchMessages),
+        };
+        compact_slack_output(&mut output);
+        assert!(output.messages[0].text.ends_with("..."));
+        assert!(output.messages[0].text.chars().count() <= SEARCH_TEXT_MAX_CHARS + 3);
+        assert!(output.operation.is_none());
+    }
+
+    #[test]
+    fn compact_list_conversations_leaves_messages_unchanged() {
+        let mut output = SlackOutput {
+            conversations: vec![],
+            messages: vec![make_message("hello")],
+            users: vec![],
+            next_cursor: None,
+            has_more: false,
+            sources: vec![],
+            message: "test".to_string(),
+            operation: Some(SlackOperation::ListConversations),
+        };
+        compact_slack_output(&mut output);
+        assert_eq!(output.messages[0].text, "hello");
+        assert!(output.operation.is_none());
+    }
+
+    #[test]
+    fn compact_resolve_users_leaves_messages_unchanged() {
+        let mut output = SlackOutput {
+            conversations: vec![],
+            messages: vec![],
+            users: vec![],
+            next_cursor: None,
+            has_more: false,
+            sources: vec![],
+            message: "test".to_string(),
+            operation: Some(SlackOperation::ResolveUsers),
+        };
+        compact_slack_output(&mut output);
+        assert!(output.operation.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // compact_slack_payload — envelope handling
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn compact_payload_via_result_envelope() {
+        let long_text = "y".repeat(500);
+        let output = SlackOutput {
+            conversations: vec![],
+            messages: vec![make_message(&long_text)],
+            users: vec![],
+            next_cursor: None,
+            has_more: false,
+            sources: vec![],
+            message: "test".to_string(),
+            operation: Some(SlackOperation::GetConversationHistory),
+        };
+        let mut content = serde_json::json!({
+            "tool_name": "support/slack",
+            "result": serde_json::to_value(&output).unwrap(),
+        });
+        let tool = SlackTool::new();
+        tool.compact_result(&mut content);
+        let result: SlackOutput =
+            serde_json::from_value(content.get("result").unwrap().clone()).unwrap();
+        assert!(result.messages[0].text.ends_with("..."));
+        assert!(result.messages[0].text.chars().count() <= HISTORY_TEXT_MAX_CHARS + 3);
     }
 }
