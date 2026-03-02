@@ -531,7 +531,12 @@ async fn test_invalid_open_input_deserialization() {
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap());
     let result = registry
-        .open_session("test/add_numbers", invalid_open_input, &context_id, &agent_id)
+        .open_session(
+            "test/add_numbers",
+            invalid_open_input,
+            &context_id,
+            &agent_id,
+        )
         .await;
 
     assert!(result.is_err(), "Should fail with invalid open_input");

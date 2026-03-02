@@ -10,14 +10,14 @@ sequenceDiagram
 
     User->>+clickup_1_0_0: Draft a weekly status update
     rect rgb(220, 230, 241)
-    Note over User,notion: Completed
+    Note over clickup_1_0_0,notion: "Completed"
     clickup_1_0_0->>-User: Need project scope before I can proceed.
     activate clickup_1_0_0
-    Note over clickup_1_0_0: Artifact application/markdown (artifact-weekly-status)
+    Note over clickup_1_0_0: "Artifact application/markdown (artifact-weekly-status)"
     User->>+clickup_1_0_0: Use the platform project context.
     end
     rect rgb(220, 230, 241)
-    Note over User,notion: Completed
+    Note over clickup_1_0_0,notion: "Completed"
     clickup_1_0_0->>+notion: action=CreatePage title=Weekly Status
     notion-->>-clickup_1_0_0: 145ms ✓
     clickup_1_0_0->>-User: Draft is ready and attached.

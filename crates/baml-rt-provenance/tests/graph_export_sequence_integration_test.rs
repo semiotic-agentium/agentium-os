@@ -173,7 +173,9 @@ async fn file_backed_export_renders_expected_sequence_flow() {
         "{mermaid}"
     );
 
-    let user_pos = mermaid.find("User->>+clickup_1_0_0:").expect("user message");
+    let user_pos = mermaid
+        .find("User->>+clickup_1_0_0:")
+        .expect("user message");
     let llm_pos = mermaid
         .find("clickup_1_0_0->>+LLM_openai_generic:")
         .expect("llm request arrow");
@@ -212,8 +214,7 @@ async fn export_by_context_is_scoped_when_db_has_multiple_contexts() {
     for i in 0..N_CONTEXTS {
         let ctx = ContextId::new(1_771_470_000_000 + i * 10_000, 1);
         let agent_id = AgentId::from_uuid(
-            UuidId::parse_str(&format!("00000000-0000-0000-0000-0000000000{:02}", 70 + i))
-                .unwrap(),
+            UuidId::parse_str(&format!("00000000-0000-0000-0000-0000000000{:02}", 70 + i)).unwrap(),
         );
         let task_id = TaskId::from_external(ExternalId::new(format!("task-{i}")));
 
@@ -268,7 +269,7 @@ async fn export_by_context_is_scoped_when_db_has_multiple_contexts() {
         .count();
 
     assert!(
-        agent_instance_count >= 1 && agent_instance_count <= 2,
+        (1..=2).contains(&agent_instance_count),
         "export for one context must include only that context's agent(s), not all {} in DB (got {} agents)",
         N_CONTEXTS,
         agent_instance_count
@@ -323,7 +324,7 @@ async fn message_received_global_with_agent_id_renders_initial_user_message() {
     let export_store = GraphqliteStoreBuilder::file(&db_path)
         .build()
         .expect("export store");
-    let exporter = GraphExporter::new(export_store.into());
+    let exporter = GraphExporter::new(export_store);
     let graph = exporter
         .export_by_context(context_id.as_str())
         .await
@@ -332,7 +333,9 @@ async fn message_received_global_with_agent_id_renders_initial_user_message() {
     let output = render_sequence_diagram(&simplified);
 
     assert!(
-        output.contains("User->>") && output.contains("coordinator") && output.contains("ello boss"),
+        output.contains("User->>")
+            && output.contains("coordinator")
+            && output.contains("ello boss"),
         "initial User→Agent message must appear when metadata.agent_id is set; got:\n{output}"
     );
 }
@@ -410,8 +413,10 @@ async fn coordinator_flow_shows_initial_user_message_before_delegated_message() 
             task_id.clone(),
             MessageId::from_external(ExternalId::new("msg-delegated")),
             "user".to_string(),
-            vec![r#"{"objective":"Generate a bash script that prints hello world","plan_steps":[]}"#
-                .to_string()],
+            vec![
+                r#"{"objective":"Generate a bash script that prints hello world","plan_steps":[]}"#
+                    .to_string(),
+            ],
             None,
             worker_id.clone(),
             1_771_470_000_202,
@@ -422,7 +427,7 @@ async fn coordinator_flow_shows_initial_user_message_before_delegated_message() 
     let export_store = GraphqliteStoreBuilder::file(&db_path)
         .build()
         .expect("export store");
-    let exporter = GraphExporter::new(export_store.into());
+    let exporter = GraphExporter::new(export_store);
     let graph = exporter
         .export_by_context(context_id.as_str())
         .await
@@ -431,7 +436,9 @@ async fn coordinator_flow_shows_initial_user_message_before_delegated_message() 
     let output = render_sequence_diagram(&simplified);
 
     assert!(
-        output.contains("User->>") && output.contains("bashskript") && output.contains("ello world"),
+        output.contains("User->>")
+            && output.contains("bashskript")
+            && output.contains("ello world"),
         "initial User→Coordinator message must appear with user's actual text; got:\n{output}"
     );
 }
@@ -467,7 +474,10 @@ async fn two_tasks_in_same_context_both_render_with_separate_rects() {
 
     // Task 1: user "hi" → llm → tool → reply
     store
-        .add_event(ProvEvent::task_exists(context_id.clone(), task_id_1.clone()))
+        .add_event(ProvEvent::task_exists(
+            context_id.clone(),
+            task_id_1.clone(),
+        ))
         .await
         .expect("task_exists");
     store
@@ -546,7 +556,10 @@ async fn two_tasks_in_same_context_both_render_with_separate_rects() {
 
     // Task 2: user "hi" again → llm → reply
     store
-        .add_event(ProvEvent::task_exists(context_id.clone(), task_id_2.clone()))
+        .add_event(ProvEvent::task_exists(
+            context_id.clone(),
+            task_id_2.clone(),
+        ))
         .await
         .expect("task_exists");
     store
@@ -606,7 +619,7 @@ async fn two_tasks_in_same_context_both_render_with_separate_rects() {
     let export_store = GraphqliteStoreBuilder::file(&db_path)
         .build()
         .expect("export store");
-    let exporter = GraphExporter::new(export_store.into());
+    let exporter = GraphExporter::new(export_store);
     let graph = exporter
         .export_by_context(context_id.as_str())
         .await

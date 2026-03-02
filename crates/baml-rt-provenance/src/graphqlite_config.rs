@@ -3,7 +3,10 @@
 //! Construct only via named constructors so invalid states (e.g. empty path
 //! when file-backed) are unrepresentable.
 
-use std::{path::{Path, PathBuf}, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use crate::mermaid_cache::MermaidCache;
 

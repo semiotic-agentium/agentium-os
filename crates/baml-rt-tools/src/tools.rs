@@ -12,7 +12,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, ids::AgentId, ContextId, Result};
+use baml_rt_core::{BamlRtError, ContextId, Result, ids::AgentId};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1653,7 +1653,12 @@ impl ToolRegistry {
 
         // For execute, open_input is always () (empty object)
         let session_id = self
-            .open_session(&parsed.to_string(), empty_open_input(), context_id, agent_id)
+            .open_session(
+                &parsed.to_string(),
+                empty_open_input(),
+                context_id,
+                agent_id,
+            )
             .await?;
         self.session_send(&session_id, args).await?;
         let result = match self.session_next(&session_id).await? {

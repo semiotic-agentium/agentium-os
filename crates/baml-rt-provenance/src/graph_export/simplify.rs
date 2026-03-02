@@ -130,14 +130,15 @@ pub fn simplify_graph(graph: &ExportedGraph) -> ExportedGraph {
         .collect();
 
     for node in &mut nodes {
-        if node.label == GraphNodeLabel::ToolCall.as_str() {
-            if let Some(open_order) = open_order_for_kept_tool_call(graph, &node, &open_order_by_activity) {
-                node.event_order = Some(
-                    node.event_order
-                        .map(|o| o.min(open_order))
-                        .unwrap_or(open_order),
-                );
-            }
+        if node.label == GraphNodeLabel::ToolCall.as_str()
+            && let Some(open_order) =
+                open_order_for_kept_tool_call(graph, node, &open_order_by_activity)
+        {
+            node.event_order = Some(
+                node.event_order
+                    .map(|o| o.min(open_order))
+                    .unwrap_or(open_order),
+            );
         }
     }
 
@@ -192,7 +193,8 @@ fn open_phase_event_orders(
             m
         });
     for node in &graph.nodes {
-        if node.label != GraphNodeLabel::ToolCall.as_str() || !remove_ids.contains(node.id.as_str()) {
+        if node.label != GraphNodeLabel::ToolCall.as_str() || !remove_ids.contains(node.id.as_str())
+        {
             continue;
         }
         let tool_name = node

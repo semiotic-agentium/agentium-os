@@ -87,9 +87,10 @@ fn normalize_tool_call_completed_with_delegation_target_creates_was_delegated_to
         "normalized internal_a2a with delegation_target must include USED relation with role a2a:delegation_target"
     );
 
-    let has_delegation_entity = normalized.document.entities().any(|(id, _)| {
-        id.as_str().contains("delegation_target")
-    });
+    let has_delegation_entity = normalized
+        .document
+        .entities()
+        .any(|(id, _)| id.as_str().contains("delegation_target"));
     assert!(
         has_delegation_entity,
         "normalized internal_a2a with delegation_target must create DelegationTarget entity"

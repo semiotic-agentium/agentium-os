@@ -1,0 +1,22 @@
+---
+source: crates/baml-rt-provenance/src/graphqlite_store.rs
+expression: snapshot
+---
+[
+  {
+    "message_id": "msg-1",
+    "timestamp_ms": 2,
+    "role": "ROLE_USER",
+    "content": [
+      "Hello"
+    ]
+  },
+  {
+    "message_id": "msg-2",
+    "timestamp_ms": 3,
+    "role": "ROLE_AGENT",
+    "content": [
+      "Hi there."
+    ]
+  }
+]

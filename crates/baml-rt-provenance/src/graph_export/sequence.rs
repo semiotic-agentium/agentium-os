@@ -15,8 +15,7 @@ use std::{
 
 use baml_rt_observability::record_provenance_sequence_render;
 
-use super::activity_outcome::NodeActivityOutcome;
-use super::{ExportedEdge, ExportedGraph, ExportedNode};
+use super::{ExportedEdge, ExportedGraph, ExportedNode, activity_outcome::NodeActivityOutcome};
 use crate::{
     graph_model::{
         EDGE_WAS_EMITTED_BY, EDGE_WAS_EXECUTED_BY, EDGE_WAS_GENERATED_BY, EDGE_WAS_INVOKED_BY,
@@ -199,7 +198,6 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
         &emission_order,
         &agent_for_node,
         &indices,
-        &resolution,
         &participants,
     );
 
@@ -224,32 +222,28 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
         // When the initiating user message triggers a new rect, emit it BEFORE the rect so it
         // appears above the task scope (the message initiates the task).
         if should_open_rect && is_user_msg {
-            if let Some(agent) = agent_for_node.get(&node.id) {
-                if indices
+            if let Some(agent) = agent_for_node.get(&node.id)
+                && indices
                     .label_by_node
                     .get(node.id.as_str())
                     .copied()
                     .flatten()
                     != Some(GraphNodeLabel::TaskState)
-                {
-                    emit_node(
-                        &mut out,
-                        node,
-                        &indices,
-                        &resolution,
-                        &participants,
-                        agent,
-                        &mut last_activated_agent,
-                    );
-                }
+            {
+                emit_node(
+                    &mut out,
+                    node,
+                    &indices,
+                    &resolution,
+                    &participants,
+                    agent,
+                    &mut last_activated_agent,
+                );
             }
             saw_user_message = true;
         }
         if should_open_rect {
-            let tid = task_id
-                .as_ref()
-                .or_else(|| current_rect_task.as_ref())
-                .cloned();
+            let tid = task_id.as_ref().or(current_rect_task.as_ref()).cloned();
             let is_new_turn_same_task =
                 is_user_msg && saw_user_message && current_rect_task.as_deref() == tid.as_deref();
             let (should_open, note_tid) = if let Some(ref tid) = tid {
@@ -293,34 +287,31 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
                     let _ = writeln!(
                         out,
                         "    Note over {first},{last}: {}",
-                        escape_sequence_text(&label)
+                        escape_note_content(&label)
                     );
                 }
             }
         }
         // Emit node unless we already emitted it (initiating user message above rect).
         let already_emitted = should_open_rect && is_user_msg;
-        if !already_emitted {
-            if let Some(agent) = agent_for_node.get(&node.id) {
-                // Skip TaskState nodes entirely — they add noise without useful visual value.
-                if indices
-                    .label_by_node
-                    .get(node.id.as_str())
-                    .copied()
-                    .flatten()
-                    != Some(GraphNodeLabel::TaskState)
-                {
-                    emit_node(
-                        &mut out,
-                        node,
-                        &indices,
-                        &resolution,
-                        &participants,
-                        agent,
-                        &mut last_activated_agent,
-                    );
-                }
-            }
+        if !already_emitted
+            && let Some(agent) = agent_for_node.get(&node.id)
+            && indices
+                .label_by_node
+                .get(node.id.as_str())
+                .copied()
+                .flatten()
+                != Some(GraphNodeLabel::TaskState)
+        {
+            emit_node(
+                &mut out,
+                node,
+                &indices,
+                &resolution,
+                &participants,
+                agent,
+                &mut last_activated_agent,
+            );
         }
         if is_user_msg && will_emit {
             saw_user_message = true;
@@ -350,7 +341,11 @@ fn is_user_message(node: &ExportedNode) -> bool {
 /// Artifact, PromptRejected). False for TaskExecution, MessageProcessing, TaskState.
 fn node_emits_visible_content(node: &ExportedNode, indices: &GraphIndices<'_>) -> bool {
     matches!(
-        indices.label_by_node.get(node.id.as_str()).copied().flatten(),
+        indices
+            .label_by_node
+            .get(node.id.as_str())
+            .copied()
+            .flatten(),
         Some(GraphNodeLabel::Message)
             | Some(GraphNodeLabel::LlmCall)
             | Some(GraphNodeLabel::ToolCall)
@@ -368,13 +363,22 @@ fn resolve_task_id_for_sequence_node(
     if let Some(tid) = prop_str(node, a2a::TASK_ID) {
         return Some(tid);
     }
-    if indices.label_by_node.get(node.id.as_str()).copied().flatten()
+    if indices
+        .label_by_node
+        .get(node.id.as_str())
+        .copied()
+        .flatten()
         != Some(GraphNodeLabel::Message)
     {
         return None;
     }
     // WAS_RECEIVED_BY: MessageProcessing -> Message. edge.to == node.id, from = mp.
-    for edge in indices.edges_by_to.get(node.id.as_str()).into_iter().flatten() {
+    for edge in indices
+        .edges_by_to
+        .get(node.id.as_str())
+        .into_iter()
+        .flatten()
+    {
         if edge_relation_matches(&edge.relation, EDGE_WAS_RECEIVED_BY) {
             let mp = indices.nodes_by_id.get(edge.from.as_str())?;
             if let Some(tid) = prop_str(mp, a2a::TASK_ID) {
@@ -383,7 +387,12 @@ fn resolve_task_id_for_sequence_node(
         }
     }
     // WAS_EMITTED_BY: Message -> MessageProcessing. edge.from == node.id, to = mp.
-    for edge in indices.edges_by_from.get(node.id.as_str()).into_iter().flatten() {
+    for edge in indices
+        .edges_by_from
+        .get(node.id.as_str())
+        .into_iter()
+        .flatten()
+    {
         if edge_relation_matches(&edge.relation, EDGE_WAS_EMITTED_BY) {
             let mp = indices.nodes_by_id.get(edge.to.as_str())?;
             if let Some(tid) = prop_str(mp, a2a::TASK_ID) {
@@ -415,7 +424,7 @@ fn build_task_status_map(
         let status = prop_str(node, a2a::TASK_STATE);
         let order = node.event_order.unwrap_or(0);
         if let (Some(tid), Some(st)) = (task_id, status) {
-            let keep = by_task.get(&tid).map_or(true, |(_, o)| order > *o);
+            let keep = by_task.get(&tid).is_none_or(|(_, o)| order > *o);
             if keep {
                 by_task.insert(tid, (st, order));
             }
@@ -471,32 +480,38 @@ fn task_rect_note_span(participants: &Participants) -> Option<(String, String)> 
     Some((first, last))
 }
 
-/// Task-scoped (first, last) for Note span. For delegated tasks, first is the coordinator
-/// (not User). Falls back to global participants when task has no specific scope.
+/// Task-scoped (first, last) for Note span. A task executes in the context of a SINGLE agent;
+/// the rect spans only that agent and its tools/LLMs, never multiple agents.
 fn build_task_rect_spans(
     _graph: &ExportedGraph,
     emission_order: &[&ExportedNode],
     agent_for_node: &HashMap<String, String>,
     indices: &GraphIndices<'_>,
-    resolution: &ResolutionMaps<'_>,
     participants: &Participants,
 ) -> HashMap<Option<String>, (String, String)> {
-    let mut by_task: HashMap<Option<String>, (Vec<String>, Vec<String>, Vec<String>)> =
-        HashMap::new();
+    type TaskAccum = (Vec<String>, Vec<String>, Vec<String>);
+    let mut by_task: HashMap<Option<String>, TaskAccum> = HashMap::new();
     for node in emission_order.iter().copied() {
         if !agent_for_node.contains_key(&node.id) || !node_emits_visible_content(node, indices) {
             continue;
         }
         let task_id = prop_str(node, a2a::TASK_ID)
             .or_else(|| resolve_task_id_for_sequence_node(node, indices));
-        let entry = by_task.entry(task_id).or_insert_with(|| (Vec::new(), Vec::new(), Vec::new()));
+        let entry = by_task
+            .entry(task_id)
+            .or_insert_with(|| (Vec::new(), Vec::new(), Vec::new()));
         if let Some(agent) = agent_for_node.get(&node.id) {
             let a = sanitize_participant(agent);
             if !entry.0.contains(&a) {
                 entry.0.push(a);
             }
         }
-        match indices.label_by_node.get(node.id.as_str()).copied().flatten() {
+        match indices
+            .label_by_node
+            .get(node.id.as_str())
+            .copied()
+            .flatten()
+        {
             Some(GraphNodeLabel::LlmCall) => {
                 let model = prop_str(node, a2a::MODEL).unwrap_or_else(|| "unknown".to_string());
                 let llm = sanitize_participant(&format!("LLM {model}"));
@@ -511,7 +526,7 @@ fn build_task_rect_spans(
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 if !A2A_MEDIATOR_TOOLS.contains(&tool_name_raw) {
-                    let tool = sanitize_participant(&strip_tool_prefix(tool_name_raw).to_string());
+                    let tool = sanitize_participant(strip_tool_prefix(tool_name_raw));
                     if !tool.is_empty() && !entry.2.contains(&tool) {
                         entry.2.push(tool);
                     }
@@ -522,55 +537,29 @@ fn build_task_rect_spans(
     }
     let mut result = HashMap::new();
     for (task_id, (agents, llms, tools)) in by_task {
-        let first = task_rect_span_for_delegated(
-            task_id.as_ref(),
-            emission_order,
-            agent_for_node,
-            indices,
-            resolution,
-        )
-        .map(|s| sanitize_participant(&s))
-        .or_else(|| {
-            if participants.has_user && agents.is_empty() {
-                Some("User".to_string())
-            } else {
-                agents.first().cloned()
-            }
-        })
-        .unwrap_or_else(|| {
-            participants
-                .agents
-                .first()
-                .map(|a| sanitize_participant(a))
-                .unwrap_or_else(|| "User".into())
-        });
-        let last = tools
-            .last()
-            .or_else(|| llms.last())
-            .or_else(|| agents.last())
-            .cloned()
-            .unwrap_or_else(|| first.clone());
+        // First = executing agent for this task. Never span multiple agents.
+        let first = if participants.has_user && agents.is_empty() {
+            Some("User".to_string())
+        } else {
+            agents.first().cloned()
+        }
+        .or_else(|| participants.agents.first().map(|a| sanitize_participant(a)))
+        .unwrap_or_else(|| "User".into());
+        // Last = tools/llms of this agent, or the agent itself. Never span to a different agent.
+        // When multiple agents share a task_id (e.g. coordinator+worker), span only the first.
+        let last = if agents.len() > 1 {
+            agents.first().cloned().unwrap_or_else(|| first.clone())
+        } else {
+            tools
+                .last()
+                .or_else(|| llms.last())
+                .or_else(|| agents.first())
+                .cloned()
+                .unwrap_or_else(|| first.clone())
+        };
         result.insert(task_id, (first, last));
     }
     result
-}
-
-/// For a delegated task, the first user message's sender is the coordinator.
-/// Use that as the rect's first participant instead of User.
-fn task_rect_span_for_delegated(
-    task_id: Option<&String>,
-    emission_order: &[&ExportedNode],
-    agent_for_node: &HashMap<String, String>,
-    indices: &GraphIndices<'_>,
-    resolution: &ResolutionMaps<'_>,
-) -> Option<String> {
-    let first_user_in_task = emission_order.iter().copied().find(|node| {
-        is_user_message(node)
-            && agent_for_node.contains_key(&node.id)
-            && prop_str(node, a2a::TASK_ID).or_else(|| resolve_task_id_for_sequence_node(node, indices)).as_deref() == task_id.map(String::as_str)
-    })?;
-    let recipient = agent_for_node.get(&first_user_in_task.id)?;
-    resolve_user_message_sender(recipient, indices, resolution)
 }
 
 /// Build a map from node id to sanitized agent package name for every node
@@ -651,14 +640,8 @@ fn find_executing_activity_impl(
         let found = match label {
             Some(GraphNodeLabel::Message) => {
                 if edge.to == node_id
-                    && edge_relation_matches(&edge.relation, EDGE_WAS_RECEIVED_BY)
-                    && resolution
-                        .activity_to_agent
-                        .contains_key(edge.from.as_str())
-                {
-                    Some(edge.from.to_string())
-                } else if edge.to == node_id
-                    && edge_relation_matches(&edge.relation, EDGE_WAS_SPAWNED_BY)
+                    && (edge_relation_matches(&edge.relation, EDGE_WAS_RECEIVED_BY)
+                        || edge_relation_matches(&edge.relation, EDGE_WAS_SPAWNED_BY))
                     && resolution
                         .activity_to_agent
                         .contains_key(edge.from.as_str())
@@ -758,10 +741,7 @@ fn find_executing_activity_impl(
 /// Build turn number per node. User messages get turns 1, 2, 3... by event_order.
 /// Replies and processing nodes inherit the turn of the user message that triggered them.
 /// Ensures replies appear before the next user message even when event_order is later.
-fn build_turn_by_node(
-    graph: &ExportedGraph,
-    indices: &GraphIndices<'_>,
-) -> HashMap<String, u32> {
+fn build_turn_by_node(graph: &ExportedGraph, indices: &GraphIndices<'_>) -> HashMap<String, u32> {
     let mut user_msgs: Vec<&ExportedNode> = graph
         .nodes
         .iter()
@@ -801,41 +781,60 @@ fn turn_for_node(
     if let Some(&t) = turn_by_user.get(node.id.as_str()) {
         return t;
     }
-    let label = indices.label_by_node.get(node.id.as_str()).copied().flatten();
+    let label = indices
+        .label_by_node
+        .get(node.id.as_str())
+        .copied()
+        .flatten();
     let order = node.event_order.unwrap_or(0);
     if label == Some(GraphNodeLabel::Message) {
         // Assistant message: reply -[WAS_EMITTED_BY]-> MP. MP -[WAS_RECEIVED_BY]-> user_msg.
-        for edge in indices.edges_by_from.get(node.id.as_str()).into_iter().flatten() {
+        for edge in indices
+            .edges_by_from
+            .get(node.id.as_str())
+            .into_iter()
+            .flatten()
+        {
             if edge_relation_matches(&edge.relation, EDGE_WAS_EMITTED_BY) {
                 let mp = edge.to.as_str();
                 for e2 in indices.edges_by_from.get(mp).into_iter().flatten() {
-                    if edge_relation_matches(&e2.relation, EDGE_WAS_RECEIVED_BY) {
-                        if let Some(&t) = turn_by_user.get(e2.to.as_str()) {
-                            return t;
-                        }
+                    if edge_relation_matches(&e2.relation, EDGE_WAS_RECEIVED_BY)
+                        && let Some(&t) = turn_by_user.get(e2.to.as_str())
+                    {
+                        return t;
                     }
                 }
             }
         }
     }
     if label == Some(GraphNodeLabel::LlmCall) || label == Some(GraphNodeLabel::ToolCall) {
-        for edge in indices.edges_by_to.get(node.id.as_str()).into_iter().flatten() {
+        for edge in indices
+            .edges_by_to
+            .get(node.id.as_str())
+            .into_iter()
+            .flatten()
+        {
             if edge_relation_matches(&edge.relation, EDGE_WAS_INVOKED_BY)
                 || edge_relation_matches(&edge.relation, EDGE_WAS_EXECUTED_BY)
             {
                 let mp = edge.from.as_str();
                 for e2 in indices.edges_by_from.get(mp).into_iter().flatten() {
-                    if edge_relation_matches(&e2.relation, EDGE_WAS_RECEIVED_BY) {
-                        if let Some(&t) = turn_by_user.get(e2.to.as_str()) {
-                            return t;
-                        }
+                    if edge_relation_matches(&e2.relation, EDGE_WAS_RECEIVED_BY)
+                        && let Some(&t) = turn_by_user.get(e2.to.as_str())
+                    {
+                        return t;
                     }
                 }
             }
         }
     }
     if label == Some(GraphNodeLabel::Artifact) {
-        for edge in indices.edges_by_from.get(node.id.as_str()).into_iter().flatten() {
+        for edge in indices
+            .edges_by_from
+            .get(node.id.as_str())
+            .into_iter()
+            .flatten()
+        {
             if edge_relation_matches(&edge.relation, EDGE_WAS_GENERATED_BY) {
                 let activity = edge.to.as_str();
                 if let Some(act_node) = indices.nodes_by_id.get(activity) {
@@ -854,6 +853,7 @@ fn turn_for_node(
 
 /// Order for emission: turn first (so replies appear before next user msg), then first user message,
 /// then event_order, then type priority, then id.
+#[allow(clippy::too_many_arguments)]
 fn cmp_emission_order_with_turn(
     a_order: Option<u64>,
     a_id: &str,
@@ -867,7 +867,8 @@ fn cmp_emission_order_with_turn(
 ) -> std::cmp::Ordering {
     let a_turn = a_turn.unwrap_or(u32::MAX);
     let b_turn = b_turn.unwrap_or(u32::MAX);
-    a_turn.cmp(&b_turn)
+    a_turn
+        .cmp(&b_turn)
         .then_with(|| {
             if let Some(fid) = first_user_msg_id {
                 match (a_id == fid, b_id == fid) {
@@ -885,7 +886,8 @@ fn cmp_emission_order_with_turn(
             (None, None) => std::cmp::Ordering::Equal,
         })
         .then_with(|| {
-            node_type_emission_priority_enum(a_label).cmp(&node_type_emission_priority_enum(b_label))
+            node_type_emission_priority_enum(a_label)
+                .cmp(&node_type_emission_priority_enum(b_label))
         })
         .then_with(|| a_id.cmp(b_id))
 }
@@ -990,11 +992,11 @@ fn resolve_message_recipient(
         } else if edge_relation_matches(&edge.relation, semantic_labels::WAS_CONSUMED_BY) {
             // ToolCall consumed this message (e.g. prompt to claude_dev). Recipient is the tool.
             let tool_call_id = edge.from.as_str();
-            if let Some(tool_node) = indices.nodes_by_id.get(tool_call_id) {
-                if let Some(tool_name) = prop_str(tool_node, a2a::TOOL_NAME) {
-                    let tool_participant = sanitize_participant(strip_tool_prefix(&tool_name));
-                    return Some(tool_participant);
-                }
+            if let Some(tool_node) = indices.nodes_by_id.get(tool_call_id)
+                && let Some(tool_name) = prop_str(tool_node, a2a::TOOL_NAME)
+            {
+                let tool_participant = sanitize_participant(strip_tool_prefix(&tool_name));
+                return Some(tool_participant);
             }
         }
     }
@@ -1080,10 +1082,6 @@ fn resolve_user_message_sender(
     None
 }
 
-/// Emit a `User->>Agent` or `Agent->>Recipient` arrow for a Message node.
-/// Sender is always the resolved `agent` from the graph (strict provenance; no override).
-/// Recipient is resolved from `WAS_RECEIVED_BY` edges: if another agent's activity received
-/// the message, we show `Agent->>OtherAgent`; otherwise `Agent->>User`.
 /// Ensure the agent has an activation bar before LLM/tool calls. When the user message was skipped
 /// (e.g. empty content) or we're in a later task, the agent would otherwise show fragmented
 /// activations (one per call). Emit explicit `activate` so the agent has one continuous bar.
@@ -1098,7 +1096,8 @@ fn ensure_agent_activated(
     }
 }
 
-/// Deactivation (`-`) is emitted only when this agent was the one last activated (Mermaid pairing).
+/// Emit a `User->>Agent` or `Agent->>Recipient` arrow for a Message node.
+/// Sender is resolved from the graph (WAS_DELEGATED_TO); no fallbacks.
 fn emit_message(
     out: &mut String,
     node: &ExportedNode,
@@ -1152,12 +1151,16 @@ fn emit_message(
             }
         }
         other => {
-            let _ = writeln!(out, "    Note over {agent}: {other}: {escaped}");
+            let _ = writeln!(
+                out,
+                "    Note over {agent}: {other}: {}",
+                escape_note_content(&content)
+            );
         }
     }
 }
 
-/// Emit Agent->>LLM and LLM-->>Agent arrows for an LLM call, with usage as Note over LLM.
+/// Emit Agent->>LLM and LLM-->>Agent arrows for an LLM call, with token usage on the response arrow.
 fn emit_llm_call(out: &mut String, node: &ExportedNode, agent: &str) {
     let model = prop_str(node, a2a::MODEL).unwrap_or_else(|| "unknown".to_string());
     let llm = sanitize_participant(&format!("LLM {model}"));
@@ -1173,12 +1176,7 @@ fn emit_llm_call(out: &mut String, node: &ExportedNode, agent: &str) {
         escape_sequence_text(&request_label)
     );
 
-    // Note over LLM: prompt/token usage
-    if let Some(usage) = llm_usage_summary(node) {
-        let _ = writeln!(out, "    Note over {llm}: {usage}");
-    }
-
-    // LLM -> Agent (response with timing)
+    // LLM -> Agent (response with timing and token usage on arrow)
     let mut response = String::new();
     if let Some(dur) = prop_str(node, a2a::DURATION_MS) {
         response.push_str(&format!("{dur}ms"));
@@ -1189,15 +1187,21 @@ fn emit_llm_call(out: &mut String, node: &ExportedNode, agent: &str) {
         if !response.is_empty() {
             response.push(' ');
         }
-        response.push_str("✓");
+        response.push('✓');
     } else if failed {
         if !response.is_empty() {
             response.push(' ');
         }
-        response.push_str("✗");
+        response.push('✗');
         if let Some(err) = extract_error_preview(node) {
             response.push_str(&format!(" {err}"));
         }
+    }
+    if let Some(usage) = llm_usage_summary(node) {
+        if !response.is_empty() {
+            response.push(' ');
+        }
+        response.push_str(&usage);
     }
     if response.is_empty() {
         response.push_str("done");
@@ -1220,14 +1224,12 @@ fn emit_llm_call(out: &mut String, node: &ExportedNode, agent: &str) {
 }
 
 /// Emit a `Note over Agent` for a BAML prompt rejection/provenance failure marker.
+/// Truncates the reason to avoid Mermaid parse errors from very long Note content.
 fn emit_prompt_rejected(out: &mut String, node: &ExportedNode, agent: &str) {
     let reason = prop_str(node, a2a::REASON).unwrap_or_else(|| "unknown reason".to_string());
-    let note = format!("✗ BAML rejection: {reason}");
-    let _ = writeln!(
-        out,
-        "    Note over {agent}: {}",
-        escape_sequence_text(&note)
-    );
+    let truncated = super::truncate_str(&reason, SEQUENCE_ERROR_PREVIEW_LEN);
+    let note = format!("✗ BAML rejection: {truncated}");
+    let _ = writeln!(out, "    Note over {agent}: {}", escape_note_content(&note));
 }
 
 const A2A_MEDIATOR_TOOLS: [&str; 2] = ["system/internal_a2a", "system/a2a"];
@@ -1294,7 +1296,7 @@ fn emit_tool_call(
             let _ = writeln!(
                 out,
                 "    Note over {tool_participant},{agent}: ✗ {}",
-                escape_sequence_text(&err)
+                escape_note_content(&err)
             );
         }
     } else {
@@ -1317,11 +1319,7 @@ fn emit_artifact(out: &mut String, node: &ExportedNode, agent: &str) {
         (None, Some(id)) => format!("Artifact ({id})"),
         (None, None) => "Artifact generated".to_string(),
     };
-    let _ = writeln!(
-        out,
-        "    Note over {agent}: {}",
-        escape_sequence_text(&note)
-    );
+    let _ = writeln!(out, "    Note over {agent}: {}", escape_note_content(&note));
 }
 
 /// Relation comparison: graph may store relation with different casing/whitespace.
@@ -1389,10 +1387,10 @@ fn extract_participants(
                 if is_infrastructure_agent(agent_type) {
                     continue;
                 }
-                if let Some(archive_path) = prop_str(node, a2a::ARCHIVE_PATH) {
-                    if seen_agents.insert(archive_path.clone()) {
-                        agents.push(archive_path);
-                    }
+                if let Some(archive_path) = prop_str(node, a2a::ARCHIVE_PATH)
+                    && seen_agents.insert(archive_path.clone())
+                {
+                    agents.push(archive_path);
                 }
             }
             Some(GraphNodeLabel::LlmCall) => {
@@ -1544,13 +1542,13 @@ fn find_tool_args(indices: &GraphIndices<'_>, tool_call_id: &str) -> String {
         .into_iter()
         .flatten()
     {
-        if edge.relation == "WAS_USED_BY" {
-            if let Some(args_node) = indices.nodes_by_id.get(edge.to.as_str()) {
-                return super::summarize_args(
-                    args_node.properties.get(a2a::ARGS),
-                    SEQUENCE_ARGS_SUMMARY_LEN,
-                );
-            }
+        if edge.relation == "WAS_USED_BY"
+            && let Some(args_node) = indices.nodes_by_id.get(edge.to.as_str())
+        {
+            return super::summarize_args(
+                args_node.properties.get(a2a::ARGS),
+                SEQUENCE_ARGS_SUMMARY_LEN,
+            );
         }
     }
     String::new()
@@ -1592,12 +1590,18 @@ fn escape_sequence_text(s: &str) -> String {
         .replace('\n', " ")
 }
 
+/// Escape and wrap Note content in double quotes so reserved words (e.g. "end") and
+/// colons do not break the Mermaid parser.
+fn escape_note_content(s: &str) -> String {
+    format!("\"{}\"", escape_sequence_text(s))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
 
     use super::*;
-    use crate::graph_export::{enrich, ExportScope, ExportedEdge, ExportedGraph, ExportedNode};
+    use crate::graph_export::{ExportScope, ExportedEdge, ExportedGraph, ExportedNode, enrich};
 
     fn msg_node(id: &str, role: &str, content: &str, order: Option<u64>) -> ExportedNode {
         let mut props = HashMap::new();
@@ -1644,7 +1648,10 @@ mod tests {
             serde_json::Value::String(model.to_string()),
         );
         props.insert(a2a::DURATION_MS.to_string(), serde_json::json!(duration_ms));
-        props.insert(a2a::ACTIVITY_OUTCOME.to_string(), serde_json::json!("Success"));
+        props.insert(
+            a2a::ACTIVITY_OUTCOME.to_string(),
+            serde_json::json!("Success"),
+        );
         ExportedNode {
             id: id.to_string(),
             label: "LlmCall".to_string(),
@@ -1661,7 +1668,10 @@ mod tests {
             serde_json::Value::String(tool_name.to_string()),
         );
         props.insert(a2a::DURATION_MS.to_string(), serde_json::json!(duration_ms));
-        props.insert(a2a::ACTIVITY_OUTCOME.to_string(), serde_json::json!("Success"));
+        props.insert(
+            a2a::ACTIVITY_OUTCOME.to_string(),
+            serde_json::json!("Success"),
+        );
         ExportedNode {
             id: id.to_string(),
             label: "ToolCall".to_string(),
@@ -1935,7 +1945,10 @@ mod tests {
             display_name: "Completed".to_string(),
             properties: {
                 let mut p = HashMap::new();
-                p.insert(a2a::TASK_STATE.to_string(), serde_json::json!("TASK_STATE_COMPLETED"));
+                p.insert(
+                    a2a::TASK_STATE.to_string(),
+                    serde_json::json!("TASK_STATE_COMPLETED"),
+                );
                 p
             },
             event_order: Some(3),
@@ -1946,7 +1959,10 @@ mod tests {
             display_name: "Input required".to_string(),
             properties: {
                 let mut p = HashMap::new();
-                p.insert(a2a::TASK_STATE.to_string(), serde_json::json!("TASK_STATE_INPUT_REQUIRED"));
+                p.insert(
+                    a2a::TASK_STATE.to_string(),
+                    serde_json::json!("TASK_STATE_INPUT_REQUIRED"),
+                );
                 p
             },
             event_order: Some(7),
@@ -1957,7 +1973,10 @@ mod tests {
             display_name: "Completed".to_string(),
             properties: {
                 let mut p = HashMap::new();
-                p.insert(a2a::TASK_STATE.to_string(), serde_json::json!("TASK_STATE_COMPLETED"));
+                p.insert(
+                    a2a::TASK_STATE.to_string(),
+                    serde_json::json!("TASK_STATE_COMPLETED"),
+                );
                 p
             },
             event_order: Some(11),
@@ -2200,7 +2219,10 @@ mod tests {
             serde_json::Value::String("gpt-4".to_string()),
         );
         props.insert(a2a::DURATION_MS.to_string(), serde_json::json!(3000));
-        props.insert(a2a::ACTIVITY_OUTCOME.to_string(), serde_json::json!("Failed"));
+        props.insert(
+            a2a::ACTIVITY_OUTCOME.to_string(),
+            serde_json::json!("Failed"),
+        );
         let node = ExportedNode {
             id: "llm1".to_string(),
             label: "LlmCall".to_string(),
@@ -2440,7 +2462,10 @@ mod tests {
             serde_json::Value::String("support/clickupTasks".to_string()),
         );
         props.insert(a2a::DURATION_MS.to_string(), serde_json::json!(569));
-        props.insert(a2a::ACTIVITY_OUTCOME.to_string(), serde_json::json!("Failed"));
+        props.insert(
+            a2a::ACTIVITY_OUTCOME.to_string(),
+            serde_json::json!("Failed"),
+        );
         props.insert(
             a2a::METADATA.to_string(),
             serde_json::json!({"error": "list_id is required", "phase": "send"}),
@@ -2477,7 +2502,7 @@ mod tests {
             "failed tool return must use Mermaid cross-headed arrow (--x): {output}"
         );
         assert!(
-            output.contains("Note over clickupTasks,clickup_agent: ✗ list_id is required"),
+            output.contains("Note over clickupTasks,clickup_agent: ✗ \"list_id is required\""),
             "failed tool call should have aligned note: {output}"
         );
     }
@@ -2492,7 +2517,10 @@ mod tests {
             serde_json::Value::String("support/clickupTasks".to_string()),
         );
         props.insert(a2a::DURATION_MS.to_string(), serde_json::json!(273));
-        props.insert(a2a::ACTIVITY_OUTCOME.to_string(), serde_json::json!("Failed"));
+        props.insert(
+            a2a::ACTIVITY_OUTCOME.to_string(),
+            serde_json::json!("Failed"),
+        );
         let node = ExportedNode {
             id: "tc1".to_string(),
             label: "ToolCall".to_string(),
@@ -2538,7 +2566,10 @@ mod tests {
             serde_json::Value::String("gpt-4".to_string()),
         );
         props.insert(a2a::DURATION_MS.to_string(), serde_json::json!(3000));
-        props.insert(a2a::ACTIVITY_OUTCOME.to_string(), serde_json::json!("Failed"));
+        props.insert(
+            a2a::ACTIVITY_OUTCOME.to_string(),
+            serde_json::json!("Failed"),
+        );
         props.insert(
             a2a::METADATA.to_string(),
             serde_json::json!({"error": "rate limit exceeded"}),

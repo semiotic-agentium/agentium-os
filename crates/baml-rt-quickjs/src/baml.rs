@@ -97,7 +97,10 @@ fn tool_session_trace(message: &str) {
 
 /// Extract target.agent_package from open_input for delegation tools.
 /// Supports system/internal_a2a, system/a2a, and support/a2aRelay (same Open shape).
-fn extract_delegation_target_from_open_input(tool_name: &str, open_input: &Value) -> Option<String> {
+fn extract_delegation_target_from_open_input(
+    tool_name: &str,
+    open_input: &Value,
+) -> Option<String> {
     const A2A_TOOLS: [&str; 3] = ["system/internal_a2a", "system/a2a", "support/a2aRelay"];
     if !A2A_TOOLS.contains(&tool_name) {
         return None;
@@ -312,13 +315,14 @@ impl ToolSessionExecutionHandle {
 
         let start = Instant::now();
         let metadata = build_metadata_map_with_phase(&scope, Some("open"));
+        let delegation_target = extract_delegation_target_from_open_input(tool_name, &open_input);
         let context = ToolCallContext {
             tool_name: tool_name.to_string(),
             function_name: None,
             args: open_input.clone(),
             metadata,
             runtime_scope: scope.clone(),
-            delegation_target: None,
+            delegation_target,
         };
 
         tracing::info!(
@@ -1094,7 +1098,7 @@ impl BamlRuntimeManager {
                 if let Some(h) = completion {
                     h.complete(Outcome::Failure, Some(e.to_string())).await;
                 }
-                Err(e.into())
+                Err(e)
             }
         }
     }
@@ -1721,9 +1725,8 @@ impl BamlRuntimeManager {
         // Skip when we broke on Suspended (session left open for resume) or when an explicit Next already returned Done.
         if suspended {
             // Leave session open; streaming_outputs already has the suspended output.
-        } else if !next_returned_done {
-            if let Some(session) = session_id.as_ref() {
-                loop {
+        } else if !next_returned_done && let Some(session) = session_id.as_ref() {
+            loop {
                 match self.tool_session_next(session).await? {
                     ToolStep::Streaming { output } => {
                         let decorated = crate::quickjs_bridge::stream_yield::decorate_tool_chunk(
@@ -1774,7 +1777,6 @@ impl BamlRuntimeManager {
                         )));
                     }
                 }
-            }
             }
         }
 

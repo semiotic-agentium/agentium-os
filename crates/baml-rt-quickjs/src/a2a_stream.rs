@@ -37,7 +37,7 @@ use std::{
 
 use async_channel as achan;
 use baml_rt_core::{Result, context::InvocationScope, stream_completion::StreamCompletion};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::{
     sync::{
         Mutex, Semaphore, mpsc,
@@ -167,7 +167,8 @@ async fn run_stream_on_js_thread(
     };
 
     if let Err(e) =
-        collect_into_channel_owned(bridge, session_id, yield_rx, tx, resume_rx, relay_rx).await
+        collect_into_channel_owned(bridge, session_id, yield_rx, tx, resume_rx, relay_rx, scope)
+            .await
     {
         let _ = tx_err
             .send(StreamOutput::Terminal(
@@ -264,12 +265,82 @@ fn chunk_has_input_required_state(chunk: &Value) -> bool {
     )
 }
 
+/// Build a completion chunk when the yield channel closes without an explicit terminal yield.
+/// The collector is the layer that knows the stream ended; this chunk flows through the normal
+/// pipeline so provenance records task_execution_ended. Not synthetic—observable stream lifecycle.
+fn make_channel_closed_completion_chunk(
+    last_chunk: Option<&Value>,
+    scope: &InvocationScope,
+    completion: StreamCompletion,
+) -> Value {
+    let (task_id, context_id) = match last_chunk {
+        Some(c) => {
+            let tid = c
+                .get("task")
+                .and_then(|t| t.get("id"))
+                .and_then(Value::as_str)
+                .map(String::from)
+                .or_else(|| {
+                    c.get("statusUpdate")
+                        .and_then(|s| s.get("status"))
+                        .and_then(|s| s.get("taskId"))
+                        .and_then(Value::as_str)
+                        .map(String::from)
+                });
+            let cid = c
+                .get("task")
+                .and_then(|t| t.get("contextId"))
+                .and_then(Value::as_str)
+                .map(String::from);
+            (
+                tid.unwrap_or_else(|| {
+                    scope
+                        .task_id_opt()
+                        .map(|t| t.as_str().to_string())
+                        .unwrap_or_else(|| format!("stream-{}", scope.context_id()))
+                }),
+                cid.unwrap_or_else(|| scope.context_id().as_str().to_string()),
+            )
+        }
+        None => (
+            scope
+                .task_id_opt()
+                .map(|t| t.as_str().to_string())
+                .unwrap_or_else(|| format!("stream-{}", scope.context_id())),
+            scope.context_id().as_str().to_string(),
+        ),
+    };
+    let (state, message) = match completion {
+        StreamCompletion::Timeout => (
+            "TASK_STATE_FAILED",
+            Some(json!({
+                "parts": [{ "text": "Request timed out before the agent produced a terminal response." }]
+            })),
+        ),
+        StreamCompletion::ChannelClosed => ("TASK_STATE_COMPLETED", None),
+        _ => ("TASK_STATE_COMPLETED", None),
+    };
+    let mut status = json!({ "state": state });
+    if let Some(msg) = message {
+        status["message"] = msg;
+    }
+    json!({
+        "task": {
+            "id": task_id,
+            "contextId": context_id,
+            "status": status
+        }
+    })
+}
+
 /// Common state for a stream collection pass.
 ///
 /// Split into explicit phase types to keep lock ownership and control flow visible.
 enum CollectIteration {
     /// Continue pumping. When `had_chunks` is true, use minimal sleep to reduce latency.
-    Continue { had_chunks: bool },
+    Continue {
+        had_chunks: bool,
+    },
     Done,
 }
 
@@ -282,7 +353,8 @@ struct StreamCollectorContext {
     resume_rx: Option<ResumeRx>,
     /// When present, drain each iteration after yield_rx and emit as RelayChunk (single ordered stream).
     relay_rx: Option<mpsc::Receiver<Value>>,
-    start: Instant,
+    /// Invocation scope; used to build completion chunks when channel closes without explicit terminal yield.
+    scope: InvocationScope,
     /// Idle timeout in seconds; reset on every yield. Stream ends with Timeout if no yield for this long.
     idle_timeout_secs: u64,
     /// Last time we saw a chunk from the agent; used for idle timeout (reset per yield).
@@ -307,9 +379,18 @@ impl StreamCollectorContext {
             .await;
 
         if let Some(completion) = completion {
+            // When channel closes or times out without explicit terminal yield, emit a completion
+            // chunk so provenance records task_execution_ended. The collector knows the stream
+            // ended; this is canonical, not synthetic.
+            let payload = match completion {
+                StreamCompletion::ChannelClosed | StreamCompletion::Timeout => {
+                    make_channel_closed_completion_chunk(self.all.last(), &self.scope, completion)
+                }
+                _ => Value::Null,
+            };
             let _ = self
                 .tx
-                .send(StreamOutput::Terminal(Value::Null, completion))
+                .send(StreamOutput::Terminal(payload, completion))
                 .await;
         }
     }
@@ -470,8 +551,9 @@ pub async fn collect_into_channel_owned(
     tx: mpsc::Sender<StreamOutput>,
     resume_rx: Option<ResumeRx>,
     relay_rx: Option<mpsc::Receiver<Value>>,
+    scope: InvocationScope,
 ) -> Result<()> {
-    let start = std::time::Instant::now();
+    let now = std::time::Instant::now();
     let idle_timeout_secs = {
         let guard = bridge.lock().await;
         guard.stream_collector_idle_secs()
@@ -483,9 +565,9 @@ pub async fn collect_into_channel_owned(
         tx,
         resume_rx,
         relay_rx,
-        start,
+        scope,
         idle_timeout_secs,
-        last_yield_at: start,
+        last_yield_at: now,
         all: Vec::new(),
         // Lower collector cadence improves perceived stream latency under light load.
         interval: Duration::from_millis(20),

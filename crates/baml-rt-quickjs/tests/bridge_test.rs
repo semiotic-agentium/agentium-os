@@ -419,6 +419,7 @@ async fn test_failed_stream_does_not_leak_state() {
         tx,
         None,
         None,
+        scope,
     )
     .await
     .expect("collect after failed stream should succeed");
@@ -551,9 +552,11 @@ async fn test_stream_finalize_closes_tool_sessions_no_leak() {
     };
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-    baml_rt_quickjs::collect_into_channel_owned(bridge, session_id, yield_rx, tx, None, None)
-        .await
-        .expect("collect");
+    baml_rt_quickjs::collect_into_channel_owned(
+        bridge, session_id, yield_rx, tx, None, None, scope,
+    )
+    .await
+    .expect("collect");
 
     // Drain until terminal
     while let Some(output) = rx.recv().await {
@@ -628,7 +631,10 @@ async fn test_tool_session_plan_open_send_next_finish_runs_finish() {
     manager.register_tool(ScopeEchoTool).await.unwrap();
     // ScopeEchoTool: Bundle Test, LOCAL_NAME scope_echo → class_name "TestScope_echo"
     let mut map = std::collections::HashMap::new();
-    map.insert("EchoPlanFn".to_string(), "TestScope_echoSessionPlan".to_string());
+    map.insert(
+        "EchoPlanFn".to_string(),
+        "TestScope_echoSessionPlan".to_string(),
+    );
     manager.set_session_plan_functions(Some(map));
 
     let plan = json!({

@@ -14,14 +14,14 @@ use crate::{
         AgentBootActivityId, AgentBootActivityInput, AgentRuntimeInstanceId,
         AgentRuntimeInstanceInput, ArchiveEntityId, ArchiveEntityInput, ArtifactByEventEntityId,
         ArtifactByEventEntityInput, ArtifactByIdEntityId, ArtifactByIdEntityInput,
-        ArtifactByTypeEntityId, ArtifactByTypeEntityInput, ArtifactIdentity,         LlmCallActivityId,
+        ArtifactByTypeEntityId, ArtifactByTypeEntityInput, ArtifactIdentity,
+        DelegationTargetEntityId, DelegationTargetEntityInput, LlmCallActivityId,
         LlmCallActivityInput, LlmPromptEntityId, LlmPromptEntityInput, MessageEntityId,
-        PromptRejectedActivityId, PromptRejectedActivityInput,
         MessageEntityInput, MessageProcessingActivityId, MessageProcessingActivityInput,
-        RunnerRuntimeInstanceId, TaskEntityId, TaskEntityInput, TaskExecutionActivityId,
-        TaskExecutionActivityInput, TaskStateEntityId, TaskStateEntityInput,
-        DelegationTargetEntityId, DelegationTargetEntityInput,
-        ToolArgsEntityId, ToolArgsEntityInput, ToolCallActivityId, ToolCallActivityInput,
+        PromptRejectedActivityId, PromptRejectedActivityInput, RunnerRuntimeInstanceId,
+        TaskEntityId, TaskEntityInput, TaskExecutionActivityId, TaskExecutionActivityInput,
+        TaskStateEntityId, TaskStateEntityInput, ToolArgsEntityId, ToolArgsEntityInput,
+        ToolCallActivityId, ToolCallActivityInput,
     },
     types::{
         Activity, Agent, Entity, ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef,
@@ -119,7 +119,10 @@ impl ProvNormalizer for DefaultProvNormalizer {
         context: Option<&NormalizeContext>,
     ) -> Result<NormalizedProv> {
         let mut registry = self.agent_registry.lock().expect("agent registry lock");
-        let mut call_state = self.call_ordinal_state.lock().expect("call ordinal state lock");
+        let mut call_state = self
+            .call_ordinal_state
+            .lock()
+            .expect("call ordinal state lock");
         normalize_event_with_registry(event, &mut registry, &mut call_state, context)
     }
 }
@@ -159,11 +162,7 @@ fn prov_type<S: ProvVocabularyType>() -> String {
 
 /// Build deterministic scope key from operational identifiers: context_id:scope_id:agent_id.
 /// Scope_id is message_id (Message scope) or task_id (Task scope).
-fn build_call_scope_key(
-    event: &ProvEvent,
-    scope: &CallScope,
-    metadata: &Value,
-) -> Result<String> {
+fn build_call_scope_key(event: &ProvEvent, scope: &CallScope, metadata: &Value) -> Result<String> {
     let context_id = event.context_id().as_str();
     let agent_id = metadata
         .get("agent_id")
@@ -175,10 +174,12 @@ fn build_call_scope_key(
     let scope_id = match scope {
         CallScope::Message { message_id } => message_id.as_str().to_string(),
         CallScope::Task { task_id } => {
-            let tid = event.task_id().ok_or_else(|| ProvenanceError::InvalidEvent {
-                event_id: event.id().as_str().to_string(),
-                reason: "task-scoped call requires task_id on event".to_string(),
-            })?;
+            let tid = event
+                .task_id()
+                .ok_or_else(|| ProvenanceError::InvalidEvent {
+                    event_id: event.id().as_str().to_string(),
+                    reason: "task-scoped call requires task_id on event".to_string(),
+                })?;
             if tid != task_id {
                 return Err(ProvenanceError::InvalidEvent {
                     event_id: event.id().as_str().to_string(),
@@ -192,8 +193,15 @@ fn build_call_scope_key(
 }
 
 /// Get ordinal for Started (increment after) or Completed (use current-1, no change to count).
-fn get_ordinal_for_call(call_state: &mut CallOrdinalState, scope_key: &str, is_started: bool) -> u64 {
-    let count = call_state.call_counts.entry(scope_key.to_string()).or_insert(0);
+fn get_ordinal_for_call(
+    call_state: &mut CallOrdinalState,
+    scope_key: &str,
+    is_started: bool,
+) -> u64 {
+    let count = call_state
+        .call_counts
+        .entry(scope_key.to_string())
+        .or_insert(0);
     if is_started {
         let o = *count;
         *count += 1;
@@ -402,7 +410,9 @@ fn normalize_event_with_registry(
                 .get(llm_call_event_id.as_str())
                 .ok_or_else(|| ProvenanceError::InvalidEvent {
                     event_id: event.id().as_str().to_string(),
-                    reason: "PromptRejected requires prior LlmCallCompleted in same normalizer session".to_string(),
+                    reason:
+                        "PromptRejected requires prior LlmCallCompleted in same normalizer session"
+                            .to_string(),
                 })?
                 .clone();
             let activity_id = prompt_rejected_activity_id(&scope_key, ordinal);
@@ -727,7 +737,10 @@ fn normalize_event_with_registry(
                 Some(prov_roles::EXECUTING_AGENT.to_string()),
             );
         }
-        ProvEventData::TaskExists { task_id, context_id: _ } => {
+        ProvEventData::TaskExists {
+            task_id,
+            context_id: _,
+        } => {
             let _ = ensure_task_entity(&mut doc, task_id);
         }
         ProvEventData::TaskExecutionStarted {
@@ -754,8 +767,7 @@ fn normalize_event_with_registry(
                 Some(event.timestamp_ms()),
             );
 
-            let agent_instance_id =
-                get_agent_runtime_instance(&doc, agent_id, &mut agent_labels)?;
+            let agent_instance_id = get_agent_runtime_instance(&doc, agent_id, &mut agent_labels)?;
             insert_was_associated_with(
                 &mut doc,
                 task_execution.clone(),
@@ -772,7 +784,10 @@ fn normalize_event_with_registry(
                 Some(prov_roles::INVOKING_AGENT.to_string()),
             );
         }
-        ProvEventData::TaskExecutionEnded { task_id, context_id } => {
+        ProvEventData::TaskExecutionEnded {
+            task_id,
+            context_id,
+        } => {
             let _ = ensure_task_entity(&mut doc, task_id);
             let _ = ensure_task_execution_activity(
                 &mut doc,
@@ -862,12 +877,7 @@ fn normalize_event_with_registry(
                 );
                 old_attrs.insert(
                     a2a::TASK_STATE_TIME.to_string(),
-                    Value::Number(
-                        event
-                            .timestamp_ms()
-                            .saturating_sub(1)
-                            .into(),
-                    ),
+                    Value::Number(event.timestamp_ms().saturating_sub(1).into()),
                 );
                 old_attrs.insert(
                     a2a::TASK_STATE.to_string(),
@@ -1136,7 +1146,10 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
         ProvEventData::PromptRejected { scope, .. } => {
             validate_call_scope(event, scope, "prompt rejected")?;
         }
-        ProvEventData::TaskExists { task_id, context_id } => {
+        ProvEventData::TaskExists {
+            task_id,
+            context_id,
+        } => {
             validate_task_scoped_event(event, task_id, "TaskExists")?;
             if event.context_id() != context_id {
                 return Err(ProvenanceError::InvalidEvent {
@@ -1146,7 +1159,9 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
             }
         }
         ProvEventData::TaskExecutionStarted {
-            task_id, context_id, ..
+            task_id,
+            context_id,
+            ..
         } => {
             validate_task_scoped_event(event, task_id, "TaskExecutionStarted")?;
             if event.context_id() != context_id {
@@ -1157,13 +1172,15 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
                 });
             }
         }
-        ProvEventData::TaskExecutionEnded { task_id, context_id } => {
+        ProvEventData::TaskExecutionEnded {
+            task_id,
+            context_id,
+        } => {
             validate_task_scoped_event(event, task_id, "TaskExecutionEnded")?;
             if event.context_id() != context_id {
                 return Err(ProvenanceError::InvalidEvent {
                     event_id: event.id().as_str().to_string(),
-                    reason: "TaskExecutionEnded context_id must match event context_id"
-                        .to_string(),
+                    reason: "TaskExecutionEnded context_id must match event context_id".to_string(),
                 });
             }
         }
@@ -1183,11 +1200,7 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
     Ok(())
 }
 
-fn validate_task_scoped_event(
-    event: &ProvEvent,
-    task_id: &TaskId,
-    event_kind: &str,
-) -> Result<()> {
+fn validate_task_scoped_event(event: &ProvEvent, task_id: &TaskId, event_kind: &str) -> Result<()> {
     let event_id = event.id().as_str().to_string();
     match event {
         ProvEvent::Global(_) => Err(ProvenanceError::InvalidEvent {
@@ -1726,20 +1739,14 @@ fn attach_task_call_context(
 
     let _task_entity = ensure_task_entity(doc, task_id);
 
-    let task_execution = ensure_task_execution_activity(
-        doc,
-        task_id,
-        ctx,
-        None,
-        None,
-        agent_labels,
-        None,
-        context,
-    )?;
+    let task_execution =
+        ensure_task_execution_activity(doc, task_id, ctx, None, None, agent_labels, None, context)?;
     associate_call_with_agent(
         doc,
         activity_id,
-        agent_id_from_metadata.as_ref().or_else(|| context.and_then(|c| c.task_agent_id.as_ref())),
+        agent_id_from_metadata
+            .as_ref()
+            .or_else(|| context.and_then(|c| c.task_agent_id.as_ref())),
         agent_labels,
     )?;
     derived_relations.push(A2aDerivedRelation {
@@ -1761,8 +1768,7 @@ fn associate_task_execution_agents(
         return Ok(());
     };
 
-    let executing_agent_id =
-        get_agent_runtime_instance(doc, agent_id, agent_labels)?;
+    let executing_agent_id = get_agent_runtime_instance(doc, agent_id, agent_labels)?;
     insert_was_associated_with(
         doc,
         task_execution.clone(),
@@ -1787,12 +1793,10 @@ fn associate_call_with_agent(
     agent_id: Option<&AgentId>,
     agent_labels: &mut HashMap<String, String>,
 ) -> Result<()> {
-
     // If agent_id is available, associate the call with the agent
     // If not, the association will be added when TaskExecutionStarted is processed
     if let Some(agent_id) = agent_id {
-        let executing_agent_id =
-            get_agent_runtime_instance(doc, &agent_id, agent_labels)?;
+        let executing_agent_id = get_agent_runtime_instance(doc, agent_id, agent_labels)?;
         insert_was_associated_with(
             doc,
             activity_id.clone(),

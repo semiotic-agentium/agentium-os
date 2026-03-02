@@ -17,17 +17,21 @@ repos:
       - id: check-merge-conflict
       - id: check-case-conflict
 
-  # Rust formatting
-  - repo: https://github.com/doublify/pre-commit-rust
-    rev: v1.0
+  # Rust formatting and clippy (language: system respects rust-toolchain.toml)
+  - repo: local
     hooks:
       - id: fmt
-        args: ['--', '--check']
+        name: cargo fmt
+        entry: cargo fmt -- --check
+        language: system
+        pass_filenames: false
+        types: [rust]
       - id: clippy
-        args: ['--', '-D', 'warnings']
-        # Only run on staged files for faster checks
-        # Uncomment below to run on all files (slower but more thorough)
-        # args: ['--all', '--', '-D', 'warnings']
+        name: cargo clippy
+        entry: cargo clippy --all-targets --all-features -- -D warnings
+        language: system
+        pass_filenames: false
+        types: [rust]
 
   # Typos - spell checker for code
   - repo: https://github.com/crate-ci/typos

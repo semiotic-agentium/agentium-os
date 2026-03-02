@@ -29,13 +29,12 @@ use baml_rt_a2a::{
 };
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentLister,
-    AgentManifest, AgentPackageName, AgentRouteKey, BamlRtError, ContextId, Result,
+    AgentManifest, AgentPackageName, AgentRouteKey, BamlRtError, ContextId, Result, RuntimeScope,
     bus::BusStream,
     collect_a2a_stream,
     context::{self, InvocationScope},
     ids::{AgentId, DerivedId, ExternalId, TaskId},
     route_key_from_request,
-    RuntimeScope,
 };
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_provenance::{
@@ -808,8 +807,7 @@ impl InternalA2aRouter {
         // caller's context_id (from build_send_stream_request); the child agent parses it
         // and sets scope from the request. Wrap in scope_from_request so the child runs
         // with the request's context_id even if any code path reads the thread-local scope.
-        let scope =
-            scope_from_request(request.as_ref(), routed_agent.agent_id().clone());
+        let scope = scope_from_request(request.as_ref(), routed_agent.agent_id().clone());
         context::with_scope(scope.as_scope().clone(), async move {
             routed_agent.handle_a2a_stream(request).await
         })
@@ -1140,7 +1138,10 @@ impl MermaidServiceImpl {
         Self { store, cache }
     }
 
-    async fn export_by_context(&self, context_id: &str) -> std::result::Result<baml_rt_provenance::ExportedGraph, baml_rt_api::MermaidError> {
+    async fn export_by_context(
+        &self,
+        context_id: &str,
+    ) -> std::result::Result<baml_rt_provenance::ExportedGraph, baml_rt_api::MermaidError> {
         let exporter = GraphExporter::new(self.store.clone());
         exporter
             .export_by_context(context_id)
@@ -1148,7 +1149,10 @@ impl MermaidServiceImpl {
             .map_err(|e| baml_rt_api::MermaidError::Other(Box::new(e)))
     }
 
-    async fn export_by_task(&self, task_id: &str) -> std::result::Result<baml_rt_provenance::ExportedGraph, baml_rt_api::MermaidError> {
+    async fn export_by_task(
+        &self,
+        task_id: &str,
+    ) -> std::result::Result<baml_rt_provenance::ExportedGraph, baml_rt_api::MermaidError> {
         let exporter = GraphExporter::new(self.store.clone());
         exporter
             .export_by_task(task_id)

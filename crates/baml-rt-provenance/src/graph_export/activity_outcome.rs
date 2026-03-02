@@ -21,14 +21,15 @@ pub enum NodeActivityOutcome {
 impl NodeActivityOutcome {
     /// Parse from node properties. Checks `a2a:activity_outcome` only.
     pub fn from_props(props: &HashMap<String, Value>) -> Option<Self> {
-        props.get(a2a::ACTIVITY_OUTCOME).and_then(|v| v.as_str()).and_then(|v| {
-            match v {
+        props
+            .get(a2a::ACTIVITY_OUTCOME)
+            .and_then(|v| v.as_str())
+            .and_then(|v| match v {
                 "Success" => Some(Self::Success),
                 "Failed" => Some(Self::Failed),
                 "InProgress" => Some(Self::InProgress),
                 _ => None,
-            }
-        })
+            })
     }
 
     pub fn is_completed(self) -> bool {

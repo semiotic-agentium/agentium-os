@@ -1,0 +1,19 @@
+---
+source: crates/baml-rt-provenance/src/graphqlite_store.rs
+expression: mermaid
+---
+sequenceDiagram
+    autonumber
+    actor User
+    participant chain_1_0_0
+    participant clickup
+
+    User->>+chain_1_0_0: Fetch then mutate
+    rect rgb(220, 230, 241)
+    Note over chain_1_0_0,clickup: "task-multi-tool-1"
+    chain_1_0_0->>+clickup: action=CreateTask name=from-chain
+    clickup--xchain_1_0_0: 400ms ✗ API rate limit
+    deactivate clickup
+    Note over clickup,chain_1_0_0: ✗ "API rate limit"
+    chain_1_0_0->>-User: Weather 68°F; CreateTask failed: API rate limit
+    end

@@ -191,8 +191,7 @@ impl GraphExporter {
             .collect();
         if ids.is_empty() {
             // Fallback: nodes may have a2a_context_id without a Context node (legacy or sparse writes).
-            let fallback =
-                "MATCH (n) WHERE n.a2a_context_id IS NOT NULL RETURN DISTINCT n.a2a_context_id AS ctx_id";
+            let fallback = "MATCH (n) WHERE n.a2a_context_id IS NOT NULL RETURN DISTINCT n.a2a_context_id AS ctx_id";
             let result = self.store.run_cypher_read(fallback, &params).await?;
             ids = result
                 .iter()

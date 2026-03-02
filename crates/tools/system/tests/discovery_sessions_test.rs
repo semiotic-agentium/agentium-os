@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    ids::{AgentId, UuidId},
     A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister,
     BusStream, ContextId, Result,
+    ids::{AgentId, UuidId},
 };
 use baml_rt_tools::{ToolRegistry, ToolStep};
 use baml_tools_calculator::CalculatorTool;

@@ -273,11 +273,12 @@ struct ToolCallRow {
     activity_outcome: Option<NodeActivityOutcome>,
 }
 
-fn decode_activity_outcome(row: &Row, primary_col: &str, alt_col: &str) -> Option<NodeActivityOutcome> {
-    let raw: String = row
-        .get(primary_col)
-        .or_else(|_| row.get(alt_col))
-        .ok()?;
+fn decode_activity_outcome(
+    row: &Row,
+    primary_col: &str,
+    alt_col: &str,
+) -> Option<NodeActivityOutcome> {
+    let raw: String = row.get(primary_col).or_else(|_| row.get(alt_col)).ok()?;
     match raw.trim() {
         "Success" => Some(NodeActivityOutcome::Success),
         "Failed" => Some(NodeActivityOutcome::Failed),
@@ -312,8 +313,11 @@ impl ToolCallRow {
             .get(TOOL_COL_TARGET_TYPE)
             .or_else(|_| row.get(TOOL_COL_TARGET_TYPE_ALT))
             .unwrap_or_default();
-        let activity_outcome =
-            decode_activity_outcome(row, TOOL_COL_ACTIVITY_OUTCOME, TOOL_COL_ACTIVITY_OUTCOME_ALT);
+        let activity_outcome = decode_activity_outcome(
+            row,
+            TOOL_COL_ACTIVITY_OUTCOME,
+            TOOL_COL_ACTIVITY_OUTCOME_ALT,
+        );
         Ok(Self {
             event_id,
             tool_name,
@@ -425,13 +429,13 @@ pub(crate) fn ensure_extension_path() {
     } else {
         "graphqlite.so"
     };
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let path = dir.join(ext_name);
-            if path.exists() {
-                // SAFETY: Single-threaded init before any graphqlite connection; no other thread reads this env.
-                unsafe { std::env::set_var("GRAPHQLITE_EXTENSION_PATH", path) };
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let path = dir.join(ext_name);
+        if path.exists() {
+            // SAFETY: Single-threaded init before any graphqlite connection; no other thread reads this env.
+            unsafe { std::env::set_var("GRAPHQLITE_EXTENSION_PATH", path) };
         }
     }
 }
@@ -1065,16 +1069,20 @@ impl Default for GraphqliteStoreBuilder {
 
 #[cfg(test)]
 mod tests {
-    use baml_rt_core::Outcome;
-    use baml_rt_core::ids::{AgentId, ArtifactId, EventId, ExternalId, MessageId, TaskId, UuidId};
-
-    use super::*;
-    use crate::{
-        graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph, GraphExporter},
-        AgentType, CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData, TaskScopedEvent,
+    use baml_rt_core::{
+        Outcome,
+        ids::{AgentId, ArtifactId, EventId, ExternalId, MessageId, TaskId, UuidId},
     };
     use insta::{assert_json_snapshot, assert_snapshot};
     use serde_json::json;
+
+    use super::*;
+    use crate::{
+        AgentType, CallScope, LlmUsage, ProvEvent, ProvEventData, TaskScopedEvent,
+        graph_export::{
+            GraphExporter, sequence::render_sequence_diagram, simplify::simplify_graph,
+        },
+    };
 
     /// Build a store backed by a unique temp path so tests can run concurrently.
     fn build_test_store() -> Arc<GraphqliteProvenanceStore> {
@@ -1096,8 +1104,7 @@ mod tests {
             )
             .await
             .expect("merge");
-        let (query, params) =
-            ConversationReadModel::message_query_storage_safe_params("ctx-1-1");
+        let (query, params) = ConversationReadModel::message_query_storage_safe_params("ctx-1-1");
         let params = match &params {
             Value::Object(m) => m.clone(),
             _ => panic!("expected object"),
@@ -1106,7 +1113,10 @@ mod tests {
             .run_cypher_for_test_with_params(&query, &params)
             .await
             .expect("match");
-        assert!(!results.is_empty(), "ON CREATE/ON MATCH SET must persist props for MATCH to find");
+        assert!(
+            !results.is_empty(),
+            "ON CREATE/ON MATCH SET must persist props for MATCH to find"
+        );
     }
 
     #[tokio::test]
@@ -1243,7 +1253,8 @@ mod tests {
             store.add_event(event.clone()).await.expect("add_event");
         }
 
-        let query = "MATCH (a)-[r]->(b) WHERE type(r) = 'WAS_EXECUTED_BY' RETURN a.id AS src, b.id AS tgt";
+        let query =
+            "MATCH (a)-[r]->(b) WHERE type(r) = 'WAS_EXECUTED_BY' RETURN a.id AS src, b.id AS tgt";
         let results = store
             .run_cypher_for_test_with_params(query, &Map::new())
             .await
@@ -1725,7 +1736,10 @@ mod tests {
             .expect("export graph by context");
         let simplified = simplify_graph(&exported);
         let mermaid = render_sequence_diagram(&simplified);
-        assert_snapshot!("graphqlite_sequence_rendering_documents_tool_failure_mermaid", mermaid);
+        assert_snapshot!(
+            "graphqlite_sequence_rendering_documents_tool_failure_mermaid",
+            mermaid
+        );
     }
 
     #[tokio::test]
@@ -2045,14 +2059,16 @@ mod tests {
                         .and_then(|a| a.first())
                         .and_then(|v| v.as_str())
                 });
-                s.map_or(false, |s| s.contains("Final summary from worker"))
+                s.is_some_and(|s| s.contains("Final summary from worker"))
             })
             .map(|n| n.id.as_str())
             .expect("Final summary message node");
         let mp_id = exported
             .edges
             .iter()
-            .find(|e| e.from == final_msg_id && e.relation == crate::graph_model::EDGE_WAS_EMITTED_BY)
+            .find(|e| {
+                e.from == final_msg_id && e.relation == crate::graph_model::EDGE_WAS_EMITTED_BY
+            })
             .map(|e| e.to.as_str())
             .expect("MessageProcessing for Final summary");
         let executing_agent = exported
@@ -2063,8 +2079,7 @@ mod tests {
             .expect("WAS_EXECUTED_BY agent for Final summary MP");
         let planner_instance_id = format!("agent_instance:{}", planner_agent.as_str());
         assert_eq!(
-            executing_agent,
-            planner_instance_id,
+            executing_agent, planner_instance_id,
             "Final summary should be attributed to planner (task_id was planner task)"
         );
 
@@ -2081,20 +2096,24 @@ mod tests {
                         .and_then(|a| a.first())
                         .and_then(|v| v.as_str())
                 });
-                s.map_or(false, |s| s.contains("Final summary from worker"))
+                s.is_some_and(|s| s.contains("Final summary from worker"))
             })
             .map(|n| n.id.as_str())
             .expect("Final summary message in simplified");
         let mp_id_simp = simplified
             .edges
             .iter()
-            .find(|e| e.from == final_msg_id_simp && e.relation == crate::graph_model::EDGE_WAS_EMITTED_BY)
+            .find(|e| {
+                e.from == final_msg_id_simp && e.relation == crate::graph_model::EDGE_WAS_EMITTED_BY
+            })
             .map(|e| e.to.as_str())
             .expect("MP for Final summary in simplified");
         let exec_agent_simp = simplified
             .edges
             .iter()
-            .find(|e| e.from == mp_id_simp && e.relation == crate::graph_model::EDGE_WAS_EXECUTED_BY)
+            .find(|e| {
+                e.from == mp_id_simp && e.relation == crate::graph_model::EDGE_WAS_EXECUTED_BY
+            })
             .map(|e| e.to.as_str());
         assert_eq!(
             exec_agent_simp,
@@ -2206,7 +2225,9 @@ mod tests {
                 task_id: task_a.clone(),
                 timestamp_ms: 1_700_000_500_005,
                 data: ProvEventData::LlmCallCompleted {
-                    scope: CallScope::Task { task_id: task_a.clone() },
+                    scope: CallScope::Task {
+                        task_id: task_a.clone(),
+                    },
                     client: "DefaultClient".to_string(),
                     model: "openai-generic".to_string(),
                     function_name: "StepA".to_string(),
@@ -2227,7 +2248,9 @@ mod tests {
                 task_id: task_b.clone(),
                 timestamp_ms: 1_700_000_500_006,
                 data: ProvEventData::ToolCallCompleted {
-                    scope: CallScope::Task { task_id: task_b.clone() },
+                    scope: CallScope::Task {
+                        task_id: task_b.clone(),
+                    },
                     tool_name: "support/weather".to_string(),
                     function_name: None,
                     args: serde_json::json!({"city":"NYC"}),
@@ -2249,7 +2272,9 @@ mod tests {
                 task_id: task_a.clone(),
                 timestamp_ms: 1_700_000_500_007,
                 data: ProvEventData::ToolCallCompleted {
-                    scope: CallScope::Task { task_id: task_a.clone() },
+                    scope: CallScope::Task {
+                        task_id: task_a.clone(),
+                    },
                     tool_name: "support/calculator".to_string(),
                     function_name: None,
                     args: serde_json::json!({"op":"add","a":1,"b":2}),
@@ -2369,7 +2394,9 @@ mod tests {
                 task_id: task_id.clone(),
                 timestamp_ms: 1_700_000_600_003,
                 data: ProvEventData::LlmCallCompleted {
-                    scope: CallScope::Task { task_id: task_id.clone() },
+                    scope: CallScope::Task {
+                        task_id: task_id.clone(),
+                    },
                     client: "DefaultClient".to_string(),
                     model: "openai-generic".to_string(),
                     function_name: "FirstAttempt".to_string(),
@@ -2390,7 +2417,9 @@ mod tests {
                 task_id: task_id.clone(),
                 timestamp_ms: 1_700_000_600_004,
                 data: ProvEventData::PromptRejected {
-                    scope: CallScope::Task { task_id: task_id.clone() },
+                    scope: CallScope::Task {
+                        task_id: task_id.clone(),
+                    },
                     llm_call_event_id: EventId::from_counter(603),
                     reason: "invalid schema: missing required field".to_string(),
                 },
@@ -2401,7 +2430,9 @@ mod tests {
                 task_id: task_id.clone(),
                 timestamp_ms: 1_700_000_600_005,
                 data: ProvEventData::LlmCallCompleted {
-                    scope: CallScope::Task { task_id: task_id.clone() },
+                    scope: CallScope::Task {
+                        task_id: task_id.clone(),
+                    },
                     client: "DefaultClient".to_string(),
                     model: "openai-generic".to_string(),
                     function_name: "RetryAttempt".to_string(),
@@ -2507,7 +2538,9 @@ mod tests {
                 task_id: task_id.clone(),
                 timestamp_ms: 1_700_000_700_003,
                 data: ProvEventData::ToolCallCompleted {
-                    scope: CallScope::Task { task_id: task_id.clone() },
+                    scope: CallScope::Task {
+                        task_id: task_id.clone(),
+                    },
                     tool_name: "support/weather".to_string(),
                     function_name: None,
                     args: serde_json::json!({"city":"LA"}),
@@ -2529,7 +2562,9 @@ mod tests {
                 task_id: task_id.clone(),
                 timestamp_ms: 1_700_000_700_004,
                 data: ProvEventData::ToolCallCompleted {
-                    scope: CallScope::Task { task_id: task_id.clone() },
+                    scope: CallScope::Task {
+                        task_id: task_id.clone(),
+                    },
                     tool_name: "support/clickup".to_string(),
                     function_name: None,
                     args: serde_json::json!({"action":"CreateTask","name":"from-chain"}),

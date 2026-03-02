@@ -359,26 +359,35 @@ pub fn build_queries_with_key_style_params(
         let scoped_node_ids: Vec<String> = normalized
             .document
             .entities()
-            .map(|(id, _)| (id.as_str().to_string(), label_for_entity(&entity_labels, id.as_str()).to_string()))
-            .chain(
-                normalized
-                    .document
-                    .activities()
-                    .map(|(id, _)| (id.as_str().to_string(), label_for_activity(&activity_labels, id.as_str()).to_string())),
-            )
-            .chain(
-                normalized
-                    .document
-                    .agents()
-                    .map(|(id, _)| (id.as_str().to_string(), label_for_agent(&agent_labels, id.as_str()).to_string())),
-            )
+            .map(|(id, _)| {
+                (
+                    id.as_str().to_string(),
+                    label_for_entity(&entity_labels, id.as_str()).to_string(),
+                )
+            })
+            .chain(normalized.document.activities().map(|(id, _)| {
+                (
+                    id.as_str().to_string(),
+                    label_for_activity(&activity_labels, id.as_str()).to_string(),
+                )
+            }))
+            .chain(normalized.document.agents().map(|(id, _)| {
+                (
+                    id.as_str().to_string(),
+                    label_for_agent(&agent_labels, id.as_str()).to_string(),
+                )
+            }))
             .filter(|(_, label)| !context_scope::SCOPE_EXEMPT_LABELS.contains(&label.as_str()))
             .map(|(id, _)| id)
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
         if !scoped_node_ids.is_empty() {
-            queries.extend(build_context_scope_statements(ctx_id, &scoped_node_ids, key_style));
+            queries.extend(build_context_scope_statements(
+                ctx_id,
+                &scoped_node_ids,
+                key_style,
+            ));
         }
     }
 
@@ -503,9 +512,7 @@ fn merge_node_param(
         KeyStyle::StorageSafeUnderscore => {
             format!("'{}'", escape_cypher_string(id))
         }
-        KeyStyle::Backtick => {
-            cypher_value_param(&Value::String(id.to_string()), collector)
-        }
+        KeyStyle::Backtick => cypher_value_param(&Value::String(id.to_string()), collector),
     };
     if set_clause.is_empty() {
         format!("MERGE (n:{label} {{{id_key}: {id_in_pattern}}})")
@@ -970,9 +977,7 @@ fn derived_relation_label(
             _ => None,
         },
         a2a_relations::TASK_MESSAGE => match props.get(a2a::DIRECTION).and_then(Value::as_str) {
-            Some(message_directions::RECEIVED) => {
-                Some(semantic_labels::TASK_TRIGGERED_BY_MESSAGE)
-            }
+            Some(message_directions::RECEIVED) => Some(semantic_labels::TASK_TRIGGERED_BY_MESSAGE),
             Some(message_directions::SENT) => Some(semantic_labels::TASK_EMITTED_MESSAGE),
             _ => Some(semantic_labels::WAS_RELATED_TO),
         },

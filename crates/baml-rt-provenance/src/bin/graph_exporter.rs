@@ -71,7 +71,11 @@ enum OutputFormat {
 
 fn print_diagnose(graph: &baml_rt_provenance::ExportedGraph, scope_name: &str, export_ms: u128) {
     eprintln!("[diagnose] export_by_{scope_name}: {export_ms}ms");
-    eprintln!("[diagnose] result: {} nodes, {} edges", graph.nodes.len(), graph.edges.len());
+    eprintln!(
+        "[diagnose] result: {} nodes, {} edges",
+        graph.nodes.len(),
+        graph.edges.len()
+    );
 }
 
 #[tokio::main]
@@ -120,7 +124,11 @@ Use the same file path passed to baml-agent-runner --provenance-db <path>."
         print_diagnose(&graph, scope_name, export_ms);
     }
     if cli.profile {
-        eprintln!("[profile] export_by_{scope_name}: {export_ms}ms ({} nodes, {} edges)", graph.nodes.len(), graph.edges.len());
+        eprintln!(
+            "[profile] export_by_{scope_name}: {export_ms}ms ({} nodes, {} edges)",
+            graph.nodes.len(),
+            graph.edges.len()
+        );
     }
 
     eprintln!(
@@ -133,7 +141,12 @@ Use the same file path passed to baml-agent-runner --provenance-db <path>."
     let graph = if cli.simplify {
         let simplified = simplify_graph(&graph);
         if cli.profile {
-            eprintln!("[profile] simplify_graph: {}ms ({} nodes, {} edges)", t1.elapsed().as_millis(), simplified.nodes.len(), simplified.edges.len());
+            eprintln!(
+                "[profile] simplify_graph: {}ms ({} nodes, {} edges)",
+                t1.elapsed().as_millis(),
+                simplified.nodes.len(),
+                simplified.edges.len()
+            );
         }
         eprintln!(
             "Simplified to {} nodes and {} edges",
@@ -162,7 +175,16 @@ Use the same file path passed to baml-agent-runner --provenance-db <path>."
         OutputFormat::Json => serde_json::to_string_pretty(&graph).context("JSON serialization")?,
     };
     if cli.profile {
-        eprintln!("[profile] render ({}): {}ms ({} bytes)", match cli.format { OutputFormat::Mermaid => "mermaid", OutputFormat::Dot => "dot", OutputFormat::Json => "json" }, t2.elapsed().as_millis(), rendered.len());
+        eprintln!(
+            "[profile] render ({}): {}ms ({} bytes)",
+            match cli.format {
+                OutputFormat::Mermaid => "mermaid",
+                OutputFormat::Dot => "dot",
+                OutputFormat::Json => "json",
+            },
+            t2.elapsed().as_millis(),
+            rendered.len()
+        );
         eprintln!("[profile] total: {}ms", t0.elapsed().as_millis());
     }
 

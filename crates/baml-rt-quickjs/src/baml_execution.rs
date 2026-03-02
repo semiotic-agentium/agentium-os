@@ -159,13 +159,14 @@ impl BamlExecutor {
         let start_time = Instant::now();
 
         // Create collector for LLM interception if registry is provided (Arc so we can pass a clone to completion handle).
-        let collector: Option<Arc<BamlLLMCollector>> = interceptor_registry.as_ref().map(|registry| {
-            let mut coll = BamlLLMCollector::new(registry.clone(), function_name.to_string());
-            if let Some(ref emitter) = self.effect_emitter {
-                coll.set_effect_emitter(emitter.clone());
-            }
-            Arc::new(coll)
-        });
+        let collector: Option<Arc<BamlLLMCollector>> =
+            interceptor_registry.as_ref().map(|registry| {
+                let mut coll = BamlLLMCollector::new(registry.clone(), function_name.to_string());
+                if let Some(ref emitter) = self.effect_emitter {
+                    coll.set_effect_emitter(emitter.clone());
+                }
+                Arc::new(coll)
+            });
 
         // Pre-execution interception: intercept LLM calls before they're sent
         let context_tags = self.build_conversation_context_tags(scope).await?;
@@ -310,12 +311,8 @@ impl BamlExecutor {
                         .map_err(BamlRtError::Json)?;
 
                     let elapsed_ms = start_time.elapsed().as_millis() as u64;
-                    match maybe_execute_tool_from_result(
-                        &self.tool_registry,
-                        &json_value,
-                        scope,
-                    )
-                    .await
+                    match maybe_execute_tool_from_result(&self.tool_registry, &json_value, scope)
+                        .await
                     {
                         Err(e) => {
                             if let Some(ref collector) = collector {
@@ -323,7 +320,7 @@ impl BamlExecutor {
                                     .complete_pending_effects(Outcome::Failure, elapsed_ms, None)
                                     .await;
                             }
-                            return Err(e.into());
+                            return Err(e);
                         }
                         Ok(None) => {
                             // Defer: manager will run execute_tool_from_baml_result_or_value (e.g.
@@ -333,9 +330,9 @@ impl BamlExecutor {
                             // effect completion. If we notified here, we'd race with the correct
                             // outcome and risk showing Success in the sequence diagram when the
                             // plan had empty steps.
-                            let handle = collector
-                                .as_ref()
-                                .map(|c| BamlLLMCollector::completion_handle(c.clone(), start_time));
+                            let handle = collector.as_ref().map(|c| {
+                                BamlLLMCollector::completion_handle(c.clone(), start_time)
+                            });
                             return Ok((json_value, handle));
                         }
                         Ok(Some(tool_result)) => {
@@ -548,12 +545,7 @@ async fn maybe_execute_tool_from_result(
     };
 
     let tool_result = tool_registry
-        .execute(
-            &tool_name,
-            tool_args,
-            scope.context_id(),
-            scope.agent_id(),
-        )
+        .execute(&tool_name, tool_args, scope.context_id(), scope.agent_id())
         .await?;
     Ok(Some(tool_result))
 }
@@ -669,14 +661,10 @@ mod tests {
             "message": "hello"
         });
 
-        let tool_result = maybe_execute_tool_from_result(
-            &registry,
-            &result,
-            scope.as_scope(),
-        )
-        .await
-        .unwrap()
-        .expect("expected tool execution");
+        let tool_result = maybe_execute_tool_from_result(&registry, &result, scope.as_scope())
+            .await
+            .unwrap()
+            .expect("expected tool execution");
 
         assert_eq!(tool_result["echo"]["message"], "hello");
     }

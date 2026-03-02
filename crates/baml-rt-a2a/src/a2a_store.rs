@@ -65,6 +65,21 @@ pub trait TaskRepository: Send + Sync {
     async fn list(&self, request: &ListTasksRequest) -> ListTasksResponse;
     async fn cancel(&self, id: &str) -> Option<Task>;
     async fn insert_message(&self, message: &Message) -> Result<()>;
+
+    /// Insert a received message (ROLE_USER) with explicit scope. Use this for all inbound
+    /// messages so provenance cannot be misattributed to the sender's (context_id, task_id).
+    /// Default: clones message with scope values and calls insert_message.
+    async fn insert_message_for_receiver(
+        &self,
+        message: &Message,
+        context_id: ContextId,
+        task_id: Option<TaskId>,
+    ) -> Result<()> {
+        let mut msg = message.clone();
+        msg.context_id = Some(context_id);
+        msg.task_id = task_id;
+        self.insert_message(&msg).await
+    }
 }
 
 #[async_trait]
@@ -285,13 +300,12 @@ impl ProvenanceTaskStore {
 
     async fn record_event_required(&self, event: ProvEvent, context: &str) -> Result<()> {
         if let Some(writer) = &self.writer {
-            writer
-                .add_event(event)
-                .await
-                .map_err(|source| BamlRtError::InvalidArgumentWithSource {
+            writer.add_event(event).await.map_err(|source| {
+                BamlRtError::InvalidArgumentWithSource {
                     message: format!("failed to record provenance event for {context}"),
                     source: Box::new(source),
-                })?;
+                }
+            })?;
         }
         Ok(())
     }
@@ -310,6 +324,81 @@ impl ProvenanceTaskStore {
             m
         });
         (task, message)
+    }
+
+    /// Insert received message using explicit scope. Never reads context_id/task_id from message.
+    /// Caller must pass ROLE_USER messages only.
+    async fn insert_message_with_scope(
+        &self,
+        message: &Message,
+        context_id: ContextId,
+        task_id: Option<TaskId>,
+    ) -> Result<()> {
+        let role = message_role_string(&message.role);
+        if role != ROLE_USER {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "insert_message_with_scope requires ROLE_USER, got {role}"
+            )));
+        }
+        let content = validated_message_content(message, "insert_message_with_scope")?;
+        tracing::trace!(
+            context_id = context_id.as_str(),
+            task_id = task_id.as_ref().map(|t| t.as_str()),
+            message_id = message.message_id.as_message_id().as_str(),
+            role = role.as_str(),
+            "Storing received message with explicit scope (no wire-derived context/task)",
+        );
+        let mut msg_metadata = message.metadata.clone();
+        ensure_agent_id_in_metadata(&mut msg_metadata, &self.agent_id);
+        let metadata = msg_metadata.as_ref().map(metadata_string_map);
+        if let Some(ref tid) = task_id {
+            self.record_event_required(
+                ProvEvent::task_exists(context_id.clone(), tid.clone()),
+                "insert_message_with_scope task_exists",
+            )
+            .await?;
+            self.record_event_required(
+                ProvEvent::task_execution_started(
+                    context_id.clone(),
+                    tid.clone(),
+                    self.agent_id.clone(),
+                ),
+                "insert_message_with_scope task_execution_started",
+            )
+            .await?;
+        }
+        let event = match task_id.clone() {
+            Some(tid) => ProvEvent::message_received_task(
+                context_id.clone(),
+                tid,
+                message.message_id.as_message_id().clone(),
+                role,
+                content,
+                metadata,
+                self.agent_id.clone(),
+                now_millis(),
+            ),
+            None => ProvEvent::message_received_global(
+                context_id.clone(),
+                message.message_id.as_message_id().clone(),
+                role,
+                content,
+                metadata,
+                self.agent_id.clone(),
+                now_millis(),
+            ),
+        };
+        self.record_event_required(event, "insert_message_with_scope message lifecycle")
+            .await?;
+        if task_id.is_some() {
+            let mut msg = message.clone();
+            msg.context_id = Some(context_id);
+            msg.task_id = task_id;
+            let start = Instant::now();
+            self.inner.insert_message(&msg).await?;
+            record_task_store_metrics("insert_message_with_scope", "success", start);
+        }
+        Ok(())
     }
 }
 
@@ -418,6 +507,17 @@ impl TaskRepository for ProvenanceTaskStore {
                 .await;
         }
         out
+    }
+
+    async fn insert_message_for_receiver(
+        &self,
+        message: &Message,
+        context_id: ContextId,
+        task_id: Option<TaskId>,
+    ) -> Result<()> {
+        // Provenance: use explicit scope only; never read context_id/task_id from message.
+        self.insert_message_with_scope(message, context_id, task_id)
+            .await
     }
 
     async fn insert_message(&self, message: &Message) -> Result<()> {
@@ -702,8 +802,7 @@ impl TaskChunkApplier for ProvenanceTaskStore {
                             self.record_event(prov).await;
                             if status_str.as_deref().is_some_and(is_terminal_state) {
                                 self.record_event(ProvEvent::task_execution_ended(
-                                    context_id,
-                                    task_id,
+                                    context_id, task_id,
                                 ))
                                 .await;
                             }

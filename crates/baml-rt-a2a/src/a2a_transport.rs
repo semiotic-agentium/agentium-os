@@ -123,27 +123,20 @@ impl GraphqliteRuntimeStore {
         Ok(content)
     }
 
-    fn metadata_string_map(
-        metadata: &HashMap<String, Value>,
-    ) -> HashMap<String, String> {
+    fn metadata_string_map(metadata: &HashMap<String, Value>) -> HashMap<String, String> {
         metadata
             .iter()
             .filter_map(|(key, value)| value.as_str().map(|v| (key.clone(), v.to_string())))
             .collect()
     }
 
-    async fn add_provenance_event_required(
-        &self,
-        event: ProvEvent,
-        context: &str,
-    ) -> Result<()> {
-        self.provenance
-            .add_event(event)
-            .await
-            .map_err(|source| BamlRtError::InvalidArgumentWithSource {
+    async fn add_provenance_event_required(&self, event: ProvEvent, context: &str) -> Result<()> {
+        self.provenance.add_event(event).await.map_err(|source| {
+            BamlRtError::InvalidArgumentWithSource {
                 message: format!("failed to record provenance event for {context}"),
                 source: Box::new(source),
-            })
+            }
+        })
     }
 
     async fn emit_message_lifecycle_event(&self, message: &Message, operation: &str) -> Result<()> {
@@ -154,10 +147,7 @@ impl GraphqliteRuntimeStore {
         })?;
         let role = Self::message_role_wire(&message.role);
         let content = Self::message_content_strict(message, operation)?;
-        let metadata = message
-            .metadata
-            .as_ref()
-            .map(Self::metadata_string_map);
+        let metadata = message.metadata.as_ref().map(Self::metadata_string_map);
         tracing::debug!(
             context_id = %context_id,
             message_id = %message.message_id.as_message_id(),
@@ -1197,17 +1187,26 @@ fn build_stream_sessions_and_relay(
 }
 
 /// Scope resolution for outcome handling. No optionality; branching is on the typed invocation context.
+///
+/// **Provenance invariant (agent,task) not shared:** For LiveSessionFirstTurn, when the message
+/// carries a task_id (e.g. delegated worker task from internal_a2a), use it. Otherwise fall back
+/// to context_id-based task for direct first-turn. This ensures MessageReceived is attributed to
+/// the receiver's (agent_id, task_id), never the sender's.
 fn resolve_scope_for_outcome(
     parsed: &a2a::A2aRequest,
     ctx: &OutcomeInvocationContext,
 ) -> RequestScope {
     match ctx {
         OutcomeInvocationContext::Standalone => parsed.resolved_scope.clone(),
-        OutcomeInvocationContext::LiveSessionFirstTurn { context_id } => RequestScope::TaskScoped {
-            context_id: context_id.clone(),
-            message_id: parsed.message_id().clone(),
-            task_id: TaskId::from_external(ExternalId::new(context_id.as_str().to_string())),
-        },
+        OutcomeInvocationContext::LiveSessionFirstTurn { context_id } => {
+            // Never use message.task_id from wire (could be coordinator's); use synthetic for first turn.
+            let task_id = TaskId::from_external(ExternalId::new(context_id.as_str().to_string()));
+            RequestScope::TaskScoped {
+                context_id: context_id.clone(),
+                message_id: parsed.message_id().clone(),
+                task_id,
+            }
+        }
         OutcomeInvocationContext::LiveSessionResume {
             context_id,
             task_id,
@@ -1407,7 +1406,11 @@ impl A2aAgent {
                                         "live session missing".to_string(),
                                     ),
                                 );
-                                if response_tx.send(LiveResponseChunk(formatted)).await.is_err() {
+                                if response_tx
+                                    .send(LiveResponseChunk(formatted))
+                                    .await
+                                    .is_err()
+                                {
                                     tracing::debug!(
                                         "live stream error/synthetic-final send failed (receiver dropped)"
                                     );
@@ -1488,14 +1491,14 @@ impl A2aAgent {
             );
             let mut completion = None;
             let mut last_task_id: Option<String> = None;
-            let mut seen_non_completed_terminal = false;
             let mut resume_chunk_count: u32 = 0;
 
             loop {
                 let outcome_msg = rx.recv().await;
 
                 let Some(outcome_msg) = outcome_msg else {
-                    // rx closed without terminal completion; emit synthetic final so client gets exactly one final: true.
+                    // rx closed without terminal completion (collector dropped before finalizing).
+                    // Emit completion chunk for client and store for provenance so task lifecycle completes.
                     let tid = last_task_id
                         .clone()
                         .or(session_task_id_str.clone())
@@ -1505,7 +1508,7 @@ impl A2aAgent {
                                 .and_then(|p| p.task_id_opt().map(|t| t.as_str().to_string()))
                         })
                         .unwrap_or_else(|| format!("stream-{}", session_context_id));
-                    let synthetic = json!({
+                    let completion_chunk = json!({
                         "task": {
                             "id": tid,
                             "contextId": session_context_id.as_str(),
@@ -1513,13 +1516,27 @@ impl A2aAgent {
                             "final": true
                         }
                     });
+                    if let Err(e) = self
+                        .live_result_pipeline
+                        .store_result(&completion_chunk)
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            "live stream: store_result for rx-closed completion failed (provenance may show Running)"
+                        );
+                    }
                     let formatted = self.response_formatter.format_stream_chunk(
                         request_id.clone(),
-                        synthetic,
+                        completion_chunk,
                         0_usize,
                         true,
                     );
-                    if response_tx.send(LiveResponseChunk(formatted)).await.is_err() {
+                    if response_tx
+                        .send(LiveResponseChunk(formatted))
+                        .await
+                        .is_err()
+                    {
                         tracing::debug!(
                             "live stream synthetic-final send failed (receiver dropped)"
                         );
@@ -1533,9 +1550,6 @@ impl A2aAgent {
                 if !view.is_null() {
                     if let Some(tid) = view.task_id() {
                         last_task_id = Some(tid.as_str().to_string());
-                    }
-                    if view.is_non_completed_terminal() {
-                        seen_non_completed_terminal = true;
                     }
                     let store_span =
                         spans::live_stream_store_result(index, view.has_storable_payload());
@@ -1588,49 +1602,6 @@ impl A2aAgent {
                         );
                     }
                     break;
-                }
-                let effective_task_id = last_task_id
-                    .clone()
-                    .or(session_task_id_str.clone())
-                    .or_else(|| {
-                        a2a::A2aRequest::from_value(request_value.clone())
-                            .ok()
-                            .and_then(|p| p.task_id_opt().map(|t| t.as_str().to_string()))
-                    });
-                let emit_synthetic_completed = effective_task_id.as_ref().is_some()
-                    && !seen_non_completed_terminal
-                    && view.is_null()
-                    && comp.as_ref().is_some_and(|c| {
-                        matches!(
-                            c,
-                            StreamCompletion::SemanticFinal | StreamCompletion::ChannelClosed
-                        )
-                    });
-                if let Some(tid) = effective_task_id
-                    .as_ref()
-                    .filter(|_| emit_synthetic_completed)
-                {
-                    let synthetic = json!({
-                        "task": {
-                            "id": tid,
-                            "contextId": session_context_id.as_str(),
-                            "status": { "state": "TASK_STATE_COMPLETED" },
-                            "final": true
-                        }
-                    });
-                    let formatted_synthetic = self.response_formatter.format_stream_chunk(
-                        request_id.clone(),
-                        synthetic,
-                        index,
-                        false,
-                    );
-                    if response_tx
-                        .send(LiveResponseChunk(formatted_synthetic))
-                        .await
-                        .is_err()
-                    {
-                        tracing::debug!("live stream chunk send failed (receiver dropped)");
-                    }
                 }
                 let is_final = comp.is_some_and(StreamCompletion::is_wire_final);
                 let mut chunk_for_format = view.raw.clone();
@@ -1731,61 +1702,11 @@ impl A2aAgent {
             }
             a2a::A2aOutcome::Stream(handle) => {
                 let mut rx = handle.receiver;
-                let mut last_task_id: Option<String> = None;
-                let mut seen_non_completed_terminal = false;
                 // Stream in real time: receive → format → send immediately. No buffering.
                 while let Some((chunk, index, comp)) = rx.recv().await {
                     let view = StreamChunkView::new(chunk);
-                    if !view.is_null() {
-                        if let Some(tid) = view.task_id() {
-                            last_task_id = Some(tid.as_str().to_string());
-                        }
-                        if view.is_non_completed_terminal() {
-                            seen_non_completed_terminal = true;
-                        }
-                    }
                     if comp == Some(StreamCompletion::InputRequired) && view.is_null() {
                         break;
-                    }
-                    let effective_task_id = last_task_id.clone().or_else(|| {
-                        a2a::A2aRequest::from_value(request.clone())
-                            .ok()
-                            .and_then(|p| p.task_id_opt().map(|t| t.as_str().to_string()))
-                    });
-                    let emit_synthetic_completed = effective_task_id.as_ref().is_some()
-                        && !seen_non_completed_terminal
-                        && view.is_null()
-                        && comp.as_ref().is_some_and(|c| {
-                            matches!(
-                                c,
-                                StreamCompletion::SemanticFinal | StreamCompletion::ChannelClosed
-                            )
-                        });
-                    if let Some(tid) = effective_task_id
-                        .as_ref()
-                        .filter(|_| emit_synthetic_completed)
-                    {
-                        let context_id_str = a2a::A2aRequest::from_value(request.clone())
-                            .ok()
-                            .map(|p| p.context_id().as_str().to_string())
-                            .unwrap_or_else(|| "ctx-0-0".to_string());
-                        let synthetic = json!({
-                            "task": {
-                                "id": tid,
-                                "contextId": context_id_str,
-                                "status": { "state": "TASK_STATE_COMPLETED" },
-                                "final": true
-                            }
-                        });
-                        let formatted = self.response_formatter.format_stream_chunk(
-                            request_id.clone(),
-                            synthetic,
-                            index,
-                            false,
-                        );
-                        if stream_tx.send(formatted).await.is_err() {
-                            break;
-                        }
                     }
                     let is_final = comp.is_some_and(StreamCompletion::is_wire_final);
                     let mut chunk_for_format = view.raw.clone();
@@ -1889,10 +1810,13 @@ impl A2aAgent {
             context::with_scope(scope, async move {
                 if let a2a::A2aParams::MessageSendStream(params) = &parsed_request.params {
                     let canonical_context_id = invocation_scope.context_id().clone();
-                    // When the inbound message carries a task_id, ensure the parent task row exists.
-                    if let Some(task_id) = params.message.task_id.clone() {
+                    // Provenance invariant: use RECEIVER's (context_id, task_id), never sender's.
+                    // Scope is resolved from invocation_ctx; for delegation, message carries
+                    // worker's task_id; we override from scope so misattribution is impossible.
+                    let receiver_task_id = invocation_scope.task_id_opt().cloned();
+                    if let Some(ref task_id) = receiver_task_id {
                         self.task_store
-                            .ensure_task_exists(&task_id, Some(&canonical_context_id))
+                            .ensure_task_exists(task_id, Some(&canonical_context_id))
                             .await?;
                     }
                     // Persist user message for conversation context (first turn has no task_id →
@@ -1900,12 +1824,16 @@ impl A2aAgent {
                     // INVARIANT (read-after-write): insert_message completes before route() so
                     // conversation_context(context_id, limit) read in BAML sees this message.
                     //
-                    // Use scope's context_id so MessageReceived lands where the agent runs.
-                    // (Raw request is parsed multiple times; each parse generates a fresh
-                    // context_id when client omits it.)
-                    let mut msg = params.message.clone();
-                    msg.context_id = Some(canonical_context_id);
-                    self.task_store.insert_message(&msg).await?;
+                    // Use scope's context_id and task_id so MessageReceived lands in receiver's
+                    // (agent_id, task_id). INVARIANT: (agent,task) is not shared; never use
+                    // message.task_id from the wire—it may be the sender's (coordinator's).
+                    self.task_store
+                        .insert_message_for_receiver(
+                            &params.message,
+                            canonical_context_id,
+                            receiver_task_id,
+                        )
+                        .await?;
                 }
                 let route_span = spans::a2a_route(
                     parsed_request.method().as_str(),
@@ -2115,10 +2043,9 @@ mod tests {
         let provenance = baml_rt_provenance::GraphqliteStoreBuilder::in_memory()
             .build()
             .expect("build store");
-        let agent_id =
-            baml_rt_core::ids::AgentId::from_uuid(baml_rt_core::ids::UuidId::parse_str(
-                "00000000-0000-0000-0000-000000000099",
-            ).unwrap());
+        let agent_id = baml_rt_core::ids::AgentId::from_uuid(
+            baml_rt_core::ids::UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
+        );
         let runtime_store = GraphqliteRuntimeStore::new(provenance.clone(), agent_id);
         let context_id = ContextId::new(99, 1);
         let task_id = TaskId::from_external(ExternalId::new("task-ctx-99-1"));

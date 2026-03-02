@@ -88,7 +88,10 @@ impl ProvDerivedIdTemplate for PromptRejectedActivityId {
     type Input<'a> = PromptRejectedActivityInput<'a>;
 
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
-        DerivedId::from_parts("prompt_rejected", [input.scope_key, &input.ordinal.to_string()])
+        DerivedId::from_parts(
+            "prompt_rejected",
+            [input.scope_key, &input.ordinal.to_string()],
+        )
     }
 }
 
@@ -166,7 +169,10 @@ impl ProvDerivedIdTemplate for DelegationTargetEntityId {
     type Input<'a> = DelegationTargetEntityInput<'a>;
 
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
-        DerivedId::from_parts("delegation_target", [input.scope_key, &input.ordinal.to_string()])
+        DerivedId::from_parts(
+            "delegation_target",
+            [input.scope_key, &input.ordinal.to_string()],
+        )
     }
 }
 
@@ -220,7 +226,10 @@ impl ProvDerivedIdTemplate for TaskStateEntityId {
     type Input<'a> = TaskStateEntityInput<'a>;
 
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
-        DerivedId::new(task_state_entity_id_string(input.task_id.as_str(), input.status))
+        DerivedId::new(task_state_entity_id_string(
+            input.task_id.as_str(),
+            input.status,
+        ))
     }
 }
 
@@ -347,7 +356,10 @@ impl ProvDerivedIdTemplate for ArtifactByEventEntityId {
     type Input<'a> = ArtifactByEventEntityInput<'a>;
 
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
-        DerivedId::from_parts("artifact", [input.task_id.as_str(), input.event_id.as_str()])
+        DerivedId::from_parts(
+            "artifact",
+            [input.task_id.as_str(), input.event_id.as_str()],
+        )
     }
 }
 
