@@ -64,6 +64,8 @@ pub struct ToolEffectMetadata {
     pub function_name: Option<String>,
     pub args: serde_json::Value,
     pub metadata: serde_json::Value,
+    /// For system/internal_a2a: the delegated-to agent package (write-time provenance).
+    pub delegation_target: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -132,6 +134,8 @@ pub enum EffectEvent {
         usage: Option<LlmUsage>,
         duration_ms: u64,
         outcome: Outcome,
+        /// When outcome is Failure, optional reason (e.g. plan extraction failure) for provenance PromptRejected.
+        rejection_reason: Option<String>,
     },
     A2aStarted {
         context_id: ContextId,
@@ -261,6 +265,7 @@ impl EffectStartToken<LlmKind> {
         usage: Option<LlmUsage>,
         duration_ms: u64,
         outcome: Outcome,
+        rejection_reason: Option<String>,
     ) -> crate::Result<()> {
         let (context_id, metadata) = take_token_parts(&mut self.context_id, &mut self.metadata);
         let metadata = match metadata {
@@ -274,6 +279,7 @@ impl EffectStartToken<LlmKind> {
                 usage,
                 duration_ms,
                 outcome,
+                rejection_reason,
             })
             .await
     }

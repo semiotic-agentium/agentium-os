@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use baml_rt_core::{
+    ids::{AgentId, UuidId},
     A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister,
     BusStream, ContextId, Result,
 };
@@ -78,8 +79,15 @@ async fn discover_agents_session_returns_paged_cards() {
         .register_bundle(SystemBundle::new(agent_list, registry.clone(), a2a_handler))
         .unwrap();
 
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000001").unwrap());
     let session_id = registry
-        .open_session("system/discover_agents", json!({}), &ContextId::new(1, 1))
+        .open_session(
+            "system/discover_agents",
+            json!({}),
+            &ContextId::new(1, 1),
+            &agent_id,
+        )
         .await
         .unwrap();
 
@@ -127,8 +135,15 @@ async fn discover_tools_session_returns_search_results() {
         ))
         .unwrap();
 
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000002").unwrap());
     let session_id = registry
-        .open_session("system/discover_tools", json!({}), &ContextId::new(1, 2))
+        .open_session(
+            "system/discover_tools",
+            json!({}),
+            &ContextId::new(1, 2),
+            &agent_id,
+        )
         .await
         .unwrap();
 

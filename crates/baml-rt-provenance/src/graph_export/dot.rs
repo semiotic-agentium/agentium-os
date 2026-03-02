@@ -136,7 +136,8 @@ fn dot_node_attrs(label: &str) -> (&'static str, &'static str) {
             | GraphNodeLabel::Task
             | GraphNodeLabel::TaskState
             | GraphNodeLabel::Artifact
-            | GraphNodeLabel::AgentArchive,
+            | GraphNodeLabel::AgentArchive
+            | GraphNodeLabel::PromptRejected,
         ) => ("box", "#0f3460"),
         None => ("box", "#333333"),
     }

@@ -38,6 +38,7 @@ impl Subscriber for ProvenanceBusSubscriber {
                         "ROLE_USER".to_string(),
                         vec![format!("command: {}", command.name)],
                         None,
+                        scope.agent_id().clone(),
                         envelope.timestamp_ms,
                     );
                     self.writer
@@ -53,6 +54,7 @@ impl Subscriber for ProvenanceBusSubscriber {
                         "ROLE_AGENT".to_string(),
                         vec![format!("event: {}", event.name)],
                         None,
+                        scope.agent_id().clone(),
                         envelope.timestamp_ms,
                     );
                     self.writer

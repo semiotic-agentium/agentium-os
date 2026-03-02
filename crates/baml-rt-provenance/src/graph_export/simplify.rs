@@ -4,13 +4,13 @@
 //! that clutter visual output without adding semantic value:
 //!
 //! 1. **LlmPrompt** nodes — always show just "💬 Prompt" with no useful info.
-//! 2. **LlmCall start** nodes — have `model: "unknown"` and no duration/success.
+//! 2. **LlmCall start** nodes — have `model: "unknown"` and no duration/activity_outcome.
 //!    The matching *complete* node carries the real model, duration, and outcome.
 //! 3. **ToolCall non-send phases** — FSM tools produce open/send/next/finish
 //!    phases. Only the `send` phase carries the actual action payload; the rest
 //!    are FSM bookkeeping.
 //! 4. **ToolCall start** nodes — within the kept `send` phase, remove the start
-//!    event (no duration/success) and keep only the complete event.
+//!    event (no duration/activity_outcome) and keep only the complete event.
 //! 5. **Orphaned ToolArgs** — ToolArgs connected to removed ToolCalls are dropped.
 //!
 //! Edges touching any removed node are also removed. The remaining graph stays
@@ -20,7 +20,10 @@
 use std::collections::{HashMap, HashSet};
 
 use super::{ExportedEdge, ExportedGraph, ExportedNode};
-use crate::{graph_model::GraphNodeLabel, vocabulary::a2a};
+use crate::{
+    graph_model::GraphNodeLabel,
+    vocabulary::{a2a, semantic_labels},
+};
 
 /// Simplify an [`ExportedGraph`] for human-readable rendering.
 ///
@@ -37,7 +40,7 @@ pub fn simplify_graph(graph: &ExportedGraph) -> ExportedGraph {
         }
     }
 
-    // ── 2. Remove LlmCall "start" nodes (no duration_ms / success) ─────
+    // ── 2. Remove LlmCall "start" nodes (no duration_ms / activity_outcome) ─────
     for node in &graph.nodes {
         if node.label == GraphNodeLabel::LlmCall.as_str() && !is_complete_event(node) {
             remove_ids.insert(&node.id);
@@ -45,16 +48,27 @@ pub fn simplify_graph(graph: &ExportedGraph) -> ExportedGraph {
     }
 
     // ── 3+4. Remove ToolCall nodes that aren't "send complete" ──────────
+    // Exception: keep A2A ToolCall nodes that have WAS_DELEGATED_TO so delegation
+    // attribution works during delegation (before send-complete exists).
+    let delegation_source_ids: HashSet<&str> = graph
+        .edges
+        .iter()
+        .filter(|e| e.relation == semantic_labels::WAS_DELEGATED_TO)
+        .map(|e| e.from.as_str())
+        .collect();
+
     for node in &graph.nodes {
         if node.label == GraphNodeLabel::ToolCall.as_str() {
             let phase = super::extract_metadata_field(node.properties.get(a2a::METADATA), "phase");
             let complete = is_complete_event(node);
+            let has_delegation_edge = delegation_source_ids.contains(node.id.as_str());
 
             let keep = match phase.as_deref() {
                 // FSM tool: keep only the send-complete event.
                 Some("send") => complete,
-                // open, finish, next — always noise.
-                Some(_) => false,
+                // open, finish, next — normally noise, but keep if it has WAS_DELEGATED_TO
+                // so coordinator->worker attribution works before delegation completes.
+                Some(_) => has_delegation_edge,
                 // Non-FSM tool (no phase): keep the complete event.
                 None => complete,
             };
@@ -92,7 +106,7 @@ pub fn simplify_graph(graph: &ExportedGraph) -> ExportedGraph {
         }
     }
 
-    // ── 6. Deduplicate AgentRuntimeInstance nodes by agent_type ────────
+    // ── 6. Deduplicate AgentRuntimeInstance nodes by agent_type ──────────
     //
     // Multiple boot events (across CLI runs) create separate agent nodes
     // with the same `a2a:agent_type`. The scope filter exempts them from
@@ -100,18 +114,39 @@ pub fn simplify_graph(graph: &ExportedGraph) -> ExportedGraph {
     // representative per `agent_type` and redirect edges.
     let agent_redirect = dedup_agents_by_type(graph, &mut remove_ids);
 
+    // ── 7. Preserve open-phase event_order for FSM ToolCalls ─────────────
+    //
+    // FSM tools (e.g. internal_a2a) complete when the session ends, so the
+    // completion event_order is late. Use the open-phase event_order so the
+    // tool call appears when it was invoked, not when it returned.
+    let open_order_by_activity = open_phase_event_orders(graph, &remove_ids);
+
     // ── Build filtered graph ────────────────────────────────────────────
-    let nodes: Vec<ExportedNode> = graph
+    let mut nodes: Vec<ExportedNode> = graph
         .nodes
         .iter()
         .filter(|n| !remove_ids.contains(n.id.as_str()))
         .cloned()
         .collect();
 
+    for node in &mut nodes {
+        if node.label == GraphNodeLabel::ToolCall.as_str() {
+            if let Some(open_order) = open_order_for_kept_tool_call(graph, &node, &open_order_by_activity) {
+                node.event_order = Some(
+                    node.event_order
+                        .map(|o| o.min(open_order))
+                        .unwrap_or(open_order),
+                );
+            }
+        }
+    }
+
+    // Apply agent redirect BEFORE filtering: edges to deduplicated agents must be
+    // rewritten to the kept representative, otherwise we drop MP->agent links and
+    // the second task's messages lose agent attribution (agent_for_node empty).
     let edges: Vec<ExportedEdge> = graph
         .edges
         .iter()
-        .filter(|e| !remove_ids.contains(e.from.as_str()) && !remove_ids.contains(e.to.as_str()))
         .map(|e| {
             let mut e = e.clone();
             if let Some(new_id) = agent_redirect.get(e.from.as_str()) {
@@ -122,6 +157,7 @@ pub fn simplify_graph(graph: &ExportedGraph) -> ExportedGraph {
             }
             e
         })
+        .filter(|e| !remove_ids.contains(e.from.as_str()) && !remove_ids.contains(e.to.as_str()))
         .collect();
 
     // Deduplicate edges that may now be identical after redirect, while
@@ -135,6 +171,88 @@ pub fn simplify_graph(graph: &ExportedGraph) -> ExportedGraph {
         edges: deduped_edges,
         scope: graph.scope.clone(),
     }
+}
+
+const WAS_EXECUTED_BY: &str = "WAS_EXECUTED_BY";
+
+/// Open-phase event_order by (activity_id, tool_name). Correlation is reflected in graph
+/// structure: open and send phases share the same executing activity via WAS_EXECUTED_BY.
+fn open_phase_event_orders(
+    graph: &ExportedGraph,
+    remove_ids: &HashSet<&str>,
+) -> HashMap<(String, String), u64> {
+    const A2A_TOOLS: [&str; 2] = ["system/internal_a2a", "system/a2a"];
+    let mut result = HashMap::new();
+    let edges_to: HashMap<&str, Vec<&ExportedEdge>> = graph
+        .edges
+        .iter()
+        .filter(|e| e.relation == WAS_EXECUTED_BY)
+        .fold(HashMap::new(), |mut m, e| {
+            m.entry(e.to.as_str()).or_default().push(e);
+            m
+        });
+    for node in &graph.nodes {
+        if node.label != GraphNodeLabel::ToolCall.as_str() || !remove_ids.contains(node.id.as_str()) {
+            continue;
+        }
+        let tool_name = node
+            .properties
+            .get(a2a::TOOL_NAME)
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if !A2A_TOOLS.contains(&tool_name) {
+            continue;
+        }
+        let phase = super::extract_metadata_field(node.properties.get(a2a::METADATA), "phase");
+        if phase.as_deref() != Some("open") {
+            continue;
+        }
+        let Some(order) = node.event_order else {
+            continue;
+        };
+        let Some(edges) = edges_to.get(node.id.as_str()) else {
+            continue;
+        };
+        let Some(exec_edge) = edges.first() else {
+            continue;
+        };
+        let activity_id = exec_edge.from.as_str();
+        result
+            .entry((activity_id.to_string(), tool_name.to_string()))
+            .and_modify(|o: &mut u64| *o = (*o).min(order))
+            .or_insert(order);
+    }
+    result
+}
+
+/// For a kept send-complete ToolCall, return the open-phase event_order from the same
+/// executing activity (graph structure links them).
+fn open_order_for_kept_tool_call(
+    graph: &ExportedGraph,
+    node: &ExportedNode,
+    open_order_by_activity: &HashMap<(String, String), u64>,
+) -> Option<u64> {
+    const A2A_TOOLS: [&str; 2] = ["system/internal_a2a", "system/a2a"];
+    let tool_name = node
+        .properties
+        .get(a2a::TOOL_NAME)
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if !A2A_TOOLS.contains(&tool_name) {
+        return None;
+    }
+    let phase = super::extract_metadata_field(node.properties.get(a2a::METADATA), "phase");
+    if phase.as_deref() != Some("send") {
+        return None;
+    }
+    let activity_id = graph
+        .edges
+        .iter()
+        .find(|e| e.relation == WAS_EXECUTED_BY && e.to == node.id)
+        .map(|e| e.from.as_str())?;
+    open_order_by_activity
+        .get(&(activity_id.to_string(), tool_name.to_string()))
+        .copied()
 }
 
 /// Deduplicate `AgentRuntimeInstance` nodes that share the same `a2a:agent_type`.
@@ -176,13 +294,14 @@ fn dedup_agents_by_type<'a>(
     redirect
 }
 
-/// Check if a node represents a *complete* event (has duration_ms or success).
+/// Check if a node represents a *complete* event (has duration_ms or activity_outcome).
 ///
 /// Start events are written before the operation runs and lack these fields.
 /// Complete events are written after the operation finishes and carry timing
 /// and outcome data.
 fn is_complete_event(node: &ExportedNode) -> bool {
-    node.properties.contains_key(a2a::DURATION_MS) || node.properties.contains_key(a2a::SUCCESS)
+    node.properties.contains_key(a2a::DURATION_MS)
+        || node.properties.contains_key(a2a::ACTIVITY_OUTCOME)
 }
 
 #[cfg(test)]
@@ -262,7 +381,7 @@ mod tests {
                         (a2a::FUNCTION_NAME, serde_json::json!("Chat")),
                     ],
                 ),
-                // Complete: has duration_ms and success.
+                // Complete: has duration_ms and activity_outcome.
                 node_with_props(
                     "llm-complete",
                     "LlmCall",
@@ -271,7 +390,7 @@ mod tests {
                         (a2a::MODEL, serde_json::json!("deepseek/v3")),
                         (a2a::FUNCTION_NAME, serde_json::json!("Chat")),
                         (a2a::DURATION_MS, serde_json::json!(5000)),
-                        (a2a::SUCCESS, serde_json::json!(true)),
+                        (a2a::ACTIVITY_OUTCOME, serde_json::json!("Success")),
                     ],
                 ),
                 simple_node("texec-1", "A2ATaskExecution", "⚙️ TaskExec"),
@@ -327,7 +446,7 @@ mod tests {
                             serde_json::json!({"phase": "open", "correlation_id": "corr-1"}),
                         ),
                         (a2a::DURATION_MS, serde_json::json!(50)),
-                        (a2a::SUCCESS, serde_json::json!(true)),
+                        (a2a::ACTIVITY_OUTCOME, serde_json::json!("Success")),
                     ],
                 ),
                 // send-start (no duration, phase=send)
@@ -355,7 +474,7 @@ mod tests {
                             serde_json::json!({"phase": "send", "correlation_id": "corr-1"}),
                         ),
                         (a2a::DURATION_MS, serde_json::json!(150)),
-                        (a2a::SUCCESS, serde_json::json!(true)),
+                        (a2a::ACTIVITY_OUTCOME, serde_json::json!("Success")),
                     ],
                 ),
                 // ToolArgs: empty for open, real for send
@@ -421,7 +540,7 @@ mod tests {
                     vec![
                         (a2a::TOOL_NAME, serde_json::json!("memory/tony")),
                         (a2a::DURATION_MS, serde_json::json!(200)),
-                        (a2a::SUCCESS, serde_json::json!(true)),
+                        (a2a::ACTIVITY_OUTCOME, serde_json::json!("Success")),
                     ],
                 ),
                 simple_node("args-start", "ToolArgs", "📋 Args query=test"),
@@ -480,7 +599,7 @@ mod tests {
                     "🤖 LLM deepseek 5000ms ✅",
                     vec![
                         (a2a::DURATION_MS, serde_json::json!(5000)),
-                        (a2a::SUCCESS, serde_json::json!(true)),
+                        (a2a::ACTIVITY_OUTCOME, serde_json::json!("Success")),
                     ],
                 ),
                 // Prompts
@@ -510,7 +629,7 @@ mod tests {
                     vec![
                         (a2a::METADATA, serde_json::json!({"phase": "send"})),
                         (a2a::DURATION_MS, serde_json::json!(150)),
-                        (a2a::SUCCESS, serde_json::json!(true)),
+                        (a2a::ACTIVITY_OUTCOME, serde_json::json!("Success")),
                     ],
                 ),
                 // ToolArgs (4 matching)

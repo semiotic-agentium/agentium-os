@@ -156,7 +156,12 @@ async fn claude_dev_fsm_suspend_then_done_cycle() {
     ));
     context::with_scope(scope.as_scope().clone(), async {
         let session_id = registry
-            .open_session("claude/dev", json!({}), scope.as_scope().context_id())
+            .open_session(
+                "claude/dev",
+                json!({}),
+                scope.as_scope().context_id(),
+                scope.as_scope().agent_id(),
+            )
             .await
             .expect("open");
         registry

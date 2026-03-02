@@ -2,7 +2,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ProvenanceError {
-    #[error("provenance storage error")]
+    #[error("provenance storage error: {0}")]
     Storage(#[from] Box<dyn std::error::Error + Send + Sync>),
     #[error("invalid provenance event {event_id}: {reason}")]
     InvalidEvent { event_id: String, reason: String },

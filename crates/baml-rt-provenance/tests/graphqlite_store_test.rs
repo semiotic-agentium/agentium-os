@@ -29,7 +29,7 @@ use std::collections::HashSet;
 
 use baml_rt_core::ids::{AgentId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId};
 use baml_rt_provenance::{
-    AgentType, GlobalEvent, GraphqliteStoreBuilder, ProvEvent, ProvEventData,
+    AgentBootedEvent, AgentType, GraphqliteStoreBuilder, ProvEvent, ProvEventData,
     ProvenanceContextReader, ProvenanceQueryApi, ProvenanceWriter, TaskScopedEvent,
 };
 use tempfile::tempdir;
@@ -48,9 +48,8 @@ async fn graphqlite_store_persists_messages_and_returns_conversation_context() {
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000010").unwrap());
 
     let events = [
-        ProvEvent::Global(GlobalEvent {
+        ProvEvent::AgentBooted(AgentBootedEvent {
             id: EventId::from_counter(0),
-            context_id: context_id.clone(),
             timestamp_ms: 1_700_000_000_000,
             data: ProvEventData::AgentBooted {
                 agent_id: agent_id.clone(),
@@ -64,9 +63,9 @@ async fn graphqlite_store_persists_messages_and_returns_conversation_context() {
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_000_001,
-            data: ProvEventData::TaskCreated {
+            data: ProvEventData::TaskExists {
                 task_id: task_id.clone(),
-                agent_id: agent_id.clone(),
+                context_id: context_id.clone(),
             },
         }),
         ProvEvent::Task(TaskScopedEvent {
@@ -74,11 +73,10 @@ async fn graphqlite_store_persists_messages_and_returns_conversation_context() {
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_000_002,
-            data: ProvEventData::MessageReceived {
-                id: MessageId::from_external(ExternalId::new("msg-1")),
-                role: "user".to_string(),
-                content: vec!["Hello".to_string()],
-                metadata: None,
+            data: ProvEventData::TaskExecutionStarted {
+                task_id: task_id.clone(),
+                agent_id: agent_id.clone(),
+                context_id: context_id.clone(),
             },
         }),
         ProvEvent::Task(TaskScopedEvent {
@@ -86,11 +84,25 @@ async fn graphqlite_store_persists_messages_and_returns_conversation_context() {
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_000_003,
+            data: ProvEventData::MessageReceived {
+                id: MessageId::from_external(ExternalId::new("msg-1")),
+                role: "user".to_string(),
+                content: vec!["Hello".to_string()],
+                metadata: None,
+                agent_id: agent_id.clone(),
+            },
+        }),
+        ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(4),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_000_004,
             data: ProvEventData::MessageSent {
                 id: MessageId::from_external(ExternalId::new("msg-2")),
                 role: "assistant".to_string(),
                 content: vec!["Hi there.".to_string()],
                 metadata: None,
+                agent_id: agent_id.clone(),
             },
         }),
     ];
@@ -104,9 +116,9 @@ async fn graphqlite_store_persists_messages_and_returns_conversation_context() {
         .await
         .expect("context_messages");
     assert_eq!(messages.len(), 2, "expect user + assistant message");
-    assert_eq!(messages[0].role, "user");
+    assert_eq!(messages[0].role, "ROLE_USER");
     assert_eq!(messages[0].content, vec!["Hello"]);
-    assert_eq!(messages[1].role, "assistant");
+    assert_eq!(messages[1].role, "ROLE_AGENT");
     assert_eq!(messages[1].content, vec!["Hi there."]);
 
     let items = store
@@ -114,9 +126,9 @@ async fn graphqlite_store_persists_messages_and_returns_conversation_context() {
         .await
         .expect("conversation_context");
     assert_eq!(items.len(), 2);
-    assert_eq!(items[0].role, "user");
+    assert_eq!(items[0].role, "ROLE_USER");
     assert_eq!(items[0].source, "message");
-    assert_eq!(items[1].role, "assistant");
+    assert_eq!(items[1].role, "ROLE_AGENT");
     assert_eq!(items[1].source, "message");
 }
 
@@ -136,11 +148,10 @@ async fn graphqlite_store_no_stale_read_after_interleaved_writes() {
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000010").unwrap());
 
-    // Bootstrap: AgentBooted + TaskCreated (no messages yet).
+    // Bootstrap: AgentBooted + TaskExists + TaskExecutionStarted (no messages yet).
     store
-        .add_event(ProvEvent::Global(GlobalEvent {
+        .add_event(ProvEvent::AgentBooted(AgentBootedEvent {
             id: EventId::from_counter(0),
-            context_id: context_id.clone(),
             timestamp_ms: 1_700_000_000_000,
             data: ProvEventData::AgentBooted {
                 agent_id: agent_id.clone(),
@@ -152,16 +163,15 @@ async fn graphqlite_store_no_stale_read_after_interleaved_writes() {
         .await
         .expect("add_event");
     store
-        .add_event(ProvEvent::Task(TaskScopedEvent {
-            id: EventId::from_counter(1),
-            context_id: context_id.clone(),
-            task_id: task_id.clone(),
-            timestamp_ms: 1_700_000_000_001,
-            data: ProvEventData::TaskCreated {
-                task_id: task_id.clone(),
-                agent_id: agent_id.clone(),
-            },
-        }))
+        .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+        .await
+        .expect("add_event");
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            agent_id.clone(),
+        ))
         .await
         .expect("add_event");
 
@@ -177,6 +187,7 @@ async fn graphqlite_store_no_stale_read_after_interleaved_writes() {
                 role: "user".to_string(),
                 content: vec!["First".to_string()],
                 metadata: None,
+                agent_id: agent_id.clone(),
             },
         }))
         .await
@@ -192,7 +203,7 @@ async fn graphqlite_store_no_stale_read_after_interleaved_writes() {
         1,
         "no-stale-read: first read must see first message"
     );
-    assert_eq!(messages[0].role, "user");
+    assert_eq!(messages[0].role, "ROLE_USER");
     assert_eq!(messages[0].content, vec!["First"]);
 
     let items = store
@@ -204,7 +215,7 @@ async fn graphqlite_store_no_stale_read_after_interleaved_writes() {
         1,
         "no-stale-read: first read must see first message in conversation_context"
     );
-    assert_eq!(items[0].role, "user");
+    assert_eq!(items[0].role, "ROLE_USER");
     assert_eq!(items[0].source, "message");
 
     // Second message (assistant).
@@ -219,6 +230,7 @@ async fn graphqlite_store_no_stale_read_after_interleaved_writes() {
                 role: "assistant".to_string(),
                 content: vec!["Second".to_string()],
                 metadata: None,
+                agent_id: agent_id.clone(),
             },
         }))
         .await
@@ -234,9 +246,9 @@ async fn graphqlite_store_no_stale_read_after_interleaved_writes() {
         2,
         "no-stale-read: second read must see both messages"
     );
-    assert_eq!(messages[0].role, "user");
+    assert_eq!(messages[0].role, "ROLE_USER");
     assert_eq!(messages[0].content, vec!["First"]);
-    assert_eq!(messages[1].role, "assistant");
+    assert_eq!(messages[1].role, "ROLE_AGENT");
     assert_eq!(messages[1].content, vec!["Second"]);
 
     let items = store
@@ -248,8 +260,8 @@ async fn graphqlite_store_no_stale_read_after_interleaved_writes() {
         2,
         "no-stale-read: second read must see both messages in conversation_context"
     );
-    assert_eq!(items[0].role, "user");
-    assert_eq!(items[1].role, "assistant");
+    assert_eq!(items[0].role, "ROLE_USER");
+    assert_eq!(items[1].role, "ROLE_AGENT");
 }
 
 /// API path uses [ProvenanceQueryApi]; no guarantee of no-stale-read. Same data as agent path
@@ -268,9 +280,8 @@ async fn graphqlite_store_query_api_returns_same_shape_as_reader() {
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000010").unwrap());
 
     store
-        .add_event(ProvEvent::Global(GlobalEvent {
+        .add_event(ProvEvent::AgentBooted(AgentBootedEvent {
             id: EventId::from_counter(0),
-            context_id: context_id.clone(),
             timestamp_ms: 1_700_000_000_000,
             data: ProvEventData::AgentBooted {
                 agent_id: agent_id.clone(),
@@ -282,16 +293,15 @@ async fn graphqlite_store_query_api_returns_same_shape_as_reader() {
         .await
         .expect("add_event");
     store
-        .add_event(ProvEvent::Task(TaskScopedEvent {
-            id: EventId::from_counter(1),
-            context_id: context_id.clone(),
-            task_id: task_id.clone(),
-            timestamp_ms: 1_700_000_000_001,
-            data: ProvEventData::TaskCreated {
-                task_id: task_id.clone(),
-                agent_id: agent_id.clone(),
-            },
-        }))
+        .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+        .await
+        .expect("add_event");
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            agent_id.clone(),
+        ))
         .await
         .expect("add_event");
     store
@@ -305,6 +315,7 @@ async fn graphqlite_store_query_api_returns_same_shape_as_reader() {
                 role: "user".to_string(),
                 content: vec!["Hello".to_string()],
                 metadata: None,
+                agent_id: agent_id.clone(),
             },
         }))
         .await
@@ -315,7 +326,7 @@ async fn graphqlite_store_query_api_returns_same_shape_as_reader() {
         .await
         .expect("query_context_messages");
     assert_eq!(messages.len(), 1);
-    assert_eq!(messages[0].role, "user");
+    assert_eq!(messages[0].role, "ROLE_USER");
 
     let items = store
         .query_conversation_context(&context_id, None)
@@ -340,11 +351,10 @@ async fn graphqlite_conversation_context_includes_tool_calls() {
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap());
 
-    // 1) AgentBooted + TaskCreated (required bootstrap)
+    // 1) AgentBooted + TaskExists + TaskExecutionStarted (required bootstrap)
     store
-        .add_event(ProvEvent::Global(GlobalEvent {
+        .add_event(ProvEvent::AgentBooted(AgentBootedEvent {
             id: EventId::from_counter(100),
-            context_id: context_id.clone(),
             timestamp_ms: 1_700_000_000_000,
             data: ProvEventData::AgentBooted {
                 agent_id: agent_id.clone(),
@@ -356,18 +366,17 @@ async fn graphqlite_conversation_context_includes_tool_calls() {
         .await
         .expect("AgentBooted");
     store
-        .add_event(ProvEvent::Task(TaskScopedEvent {
-            id: EventId::from_counter(101),
-            context_id: context_id.clone(),
-            task_id: task_id.clone(),
-            timestamp_ms: 1_700_000_000_001,
-            data: ProvEventData::TaskCreated {
-                task_id: task_id.clone(),
-                agent_id: agent_id.clone(),
-            },
-        }))
+        .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
         .await
-        .expect("TaskCreated");
+        .expect("task_exists");
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            agent_id.clone(),
+        ))
+        .await
+        .expect("task_execution_started");
 
     // 2) User message
     store
@@ -381,6 +390,7 @@ async fn graphqlite_conversation_context_includes_tool_calls() {
                 role: "user".to_string(),
                 content: vec!["list my tasks".to_string()],
                 metadata: None,
+                agent_id: agent_id.clone(),
             },
         }))
         .await
@@ -402,6 +412,7 @@ async fn graphqlite_conversation_context_includes_tool_calls() {
             None,
             tool_args.clone(),
             started_metadata,
+            None,
         ))
         .await
         .expect("ToolCallStarted");
@@ -428,6 +439,7 @@ async fn graphqlite_conversation_context_includes_tool_calls() {
             completed_metadata,
             616,
             baml_rt_core::Outcome::Success,
+            None,
         ))
         .await
         .expect("ToolCallCompleted");
@@ -492,9 +504,8 @@ async fn graphqlite_conversation_context_includes_failed_tool_results() {
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000098").unwrap());
 
     store
-        .add_event(ProvEvent::Global(GlobalEvent {
+        .add_event(ProvEvent::AgentBooted(AgentBootedEvent {
             id: EventId::from_counter(200),
-            context_id: context_id.clone(),
             timestamp_ms: 1_700_000_000_100,
             data: ProvEventData::AgentBooted {
                 agent_id: agent_id.clone(),
@@ -511,13 +522,21 @@ async fn graphqlite_conversation_context_includes_failed_tool_results() {
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_000_101,
-            data: ProvEventData::TaskCreated {
+            data: ProvEventData::TaskExists {
                 task_id: task_id.clone(),
-                agent_id: agent_id.clone(),
+                context_id: context_id.clone(),
             },
         }))
         .await
-        .expect("TaskCreated");
+        .expect("task_exists");
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            agent_id.clone(),
+        ))
+        .await
+        .expect("task_execution_started");
     store
         .add_event(ProvEvent::Task(TaskScopedEvent {
             id: EventId::from_counter(202),
@@ -529,6 +548,7 @@ async fn graphqlite_conversation_context_includes_failed_tool_results() {
                 role: "user".to_string(),
                 content: vec!["list all tasks".to_string()],
                 metadata: None,
+                agent_id: agent_id.clone(),
             },
         }))
         .await
@@ -549,6 +569,7 @@ async fn graphqlite_conversation_context_includes_failed_tool_results() {
             None,
             tool_args.clone(),
             started_metadata,
+            None,
         ))
         .await
         .expect("ToolCallStarted");
@@ -570,6 +591,7 @@ async fn graphqlite_conversation_context_includes_failed_tool_results() {
             completed_metadata,
             23,
             baml_rt_core::Outcome::Failure,
+            None,
         ))
         .await
         .expect("ToolCallCompletedFailure");
@@ -626,9 +648,8 @@ async fn graphqlite_conversation_context_preserves_large_tool_result_payload() {
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000096").unwrap());
 
     store
-        .add_event(ProvEvent::Global(GlobalEvent {
+        .add_event(ProvEvent::AgentBooted(AgentBootedEvent {
             id: EventId::from_counter(240),
-            context_id: context_id.clone(),
             timestamp_ms: 1_700_000_000_200,
             data: ProvEventData::AgentBooted {
                 agent_id: agent_id.clone(),
@@ -645,13 +666,21 @@ async fn graphqlite_conversation_context_preserves_large_tool_result_payload() {
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_000_201,
-            data: ProvEventData::TaskCreated {
+            data: ProvEventData::TaskExists {
                 task_id: task_id.clone(),
-                agent_id: agent_id.clone(),
+                context_id: context_id.clone(),
             },
         }))
         .await
-        .expect("TaskCreated");
+        .expect("task_exists");
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            agent_id.clone(),
+        ))
+        .await
+        .expect("task_execution_started");
 
     let tool_args = serde_json::json!({"list_id":"901325431486"});
     let very_large_description = "d".repeat(12_000);
@@ -682,6 +711,7 @@ async fn graphqlite_conversation_context_preserves_large_tool_result_payload() {
             completed_metadata,
             99,
             baml_rt_core::Outcome::Success,
+            None,
         ))
         .await
         .expect("ToolCallCompleted");
@@ -730,9 +760,8 @@ async fn graphqlite_tool_call_writes_enforce_args_edge_role_and_type() {
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000097").unwrap());
 
     store
-        .add_event(ProvEvent::Global(GlobalEvent {
+        .add_event(ProvEvent::AgentBooted(AgentBootedEvent {
             id: EventId::from_counter(300),
-            context_id: context_id.clone(),
             timestamp_ms: 1_700_000_100_000,
             data: ProvEventData::AgentBooted {
                 agent_id: agent_id.clone(),
@@ -749,13 +778,21 @@ async fn graphqlite_tool_call_writes_enforce_args_edge_role_and_type() {
             context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: 1_700_000_100_001,
-            data: ProvEventData::TaskCreated {
+            data: ProvEventData::TaskExists {
                 task_id: task_id.clone(),
-                agent_id: agent_id.clone(),
+                context_id: context_id.clone(),
             },
         }))
         .await
-        .expect("TaskCreated");
+        .expect("task_exists");
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            agent_id.clone(),
+        ))
+        .await
+        .expect("task_execution_started");
 
     let args = serde_json::json!({ "task_id": "task-901" });
     let metadata = serde_json::json!({
@@ -775,6 +812,7 @@ async fn graphqlite_tool_call_writes_enforce_args_edge_role_and_type() {
             metadata,
             12,
             baml_rt_core::Outcome::Success,
+            None,
         ))
         .await
         .expect("ToolCallCompleted");

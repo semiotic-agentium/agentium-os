@@ -3,7 +3,9 @@
 //! Construct only via named constructors so invalid states (e.g. empty path
 //! when file-backed) are unrepresentable.
 
-use std::path::{Path, PathBuf};
+use std::{path::{Path, PathBuf}, sync::Arc};
+
+use crate::mermaid_cache::MermaidCache;
 
 /// Database location: either a file path or in-memory.
 ///
@@ -57,6 +59,8 @@ pub struct GraphqliteStoreConfig {
     pub path: StorePath,
     /// Use WAL so multiple agents can write without blocking each other.
     pub wal: bool,
+    /// Optional Mermaid cache for context-scoped diagram invalidation on add_event.
+    pub mermaid_cache: Option<Arc<MermaidCache>>,
 }
 
 impl GraphqliteStoreConfig {
@@ -65,6 +69,7 @@ impl GraphqliteStoreConfig {
         Self {
             path: StorePath::file(path),
             wal: true,
+            mermaid_cache: None,
         }
     }
 
@@ -73,6 +78,13 @@ impl GraphqliteStoreConfig {
         Self {
             path: StorePath::in_memory(),
             wal: true,
+            mermaid_cache: None,
         }
+    }
+
+    /// Attach a Mermaid cache for invalidation on add_event. File-backed only.
+    pub fn with_mermaid_cache(mut self, cache: Arc<MermaidCache>) -> Self {
+        self.mermaid_cache = Some(cache);
+        self
     }
 }

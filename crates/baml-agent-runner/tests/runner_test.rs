@@ -613,7 +613,6 @@ async fn setup_conversational_context_auto_agent()
     let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
     provenance
         .add_event(ProvEvent::agent_booted(
-            ContextId::new(1, 1),
             agent_id.clone(),
             AgentType::new("conversational-context-auto").expect("agent type"),
             "1.0.0".to_string(),

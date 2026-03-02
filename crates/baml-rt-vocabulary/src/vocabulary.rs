@@ -22,7 +22,6 @@ pub mod a2a {
     pub const TASK_STATE: &str = "a2a:task_state";
     pub const TASK_STATE_TIME: &str = "a2a:task_state_time";
     pub const OLD_STATUS: &str = "a2a:old_status";
-    pub const IS_PREVIOUS: &str = "a2a:is_previous";
     pub const MESSAGE_ID: &str = "a2a:message_id";
     pub const ROLE: &str = "a2a:role";
     pub const CONTENT: &str = "a2a:content";
@@ -40,14 +39,18 @@ pub mod a2a {
     pub const USAGE_COMPLETION_TOKENS: &str = "a2a:usage_completion_tokens";
     pub const USAGE_TOTAL_TOKENS: &str = "a2a:usage_total_tokens";
     pub const DURATION_MS: &str = "a2a:duration_ms";
-    pub const SUCCESS: &str = "a2a:success";
+    /// Tri-state outcome inferred from (1) activity having an end time and (2) outcome.
+    /// InProgress when no end time; Success | Failed when completed, from outcome.
+    pub const ACTIVITY_OUTCOME: &str = "a2a:activity_outcome";
     pub const TOOL_NAME: &str = "a2a:tool_name";
     pub const ARGS: &str = "a2a:args";
     pub const ARCHIVE_PATH: &str = "a2a:archive_path";
     pub const ARTIFACT_ID: &str = "a2a:artifact_id";
     pub const ARTIFACT_TYPE: &str = "a2a:artifact_type";
     pub const CONTEXT_ID: &str = "a2a:context_id";
+    pub const REASON: &str = "a2a:reason";
     pub const TIMESTAMP_MS: &str = "a2a:timestamp_ms";
+    pub const DELEGATION_TARGET: &str = "a2a:delegation_target";
 }
 
 pub mod prov_types {
@@ -77,6 +80,7 @@ pub mod a2a_types {
     pub const TASK_EXECUTION: &str = "a2a:A2ATaskExecution";
     pub const MESSAGE_PROCESSING: &str = "a2a:A2AMessageProcessing";
     pub const LLM_PROMPT: &str = "a2a:LlmPrompt";
+    pub const PROMPT_REJECTED: &str = "a2a:PromptRejected";
     pub const TOOL_ARGS: &str = "a2a:ToolArgs";
     pub const AGENT_ARCHIVE: &str = "a2a:AgentArchive";
     pub const AGENT_RUNTIME_INSTANCE: &str = "a2a:AgentRuntimeInstance";
@@ -84,10 +88,23 @@ pub mod a2a_types {
     pub const TASK_STATE: &str = "a2a:A2ATaskState";
     pub const MESSAGE: &str = "a2a:Message";
     pub const ARTIFACT: &str = "a2a:Artifact";
+    pub const DELEGATION_TARGET: &str = "a2a:DelegationTarget";
 }
 
 pub mod a2a_relation_types {
     pub const STATUS_TRANSITION: &str = "a2a:status_transition";
+}
+
+/// Structural relation: Context node to nodes scoped to that context.
+/// Used for indexed traversal instead of property-based filtering.
+pub mod context_scope {
+    pub const LABEL: &str = "Context";
+    pub const SCOPED_TO: &str = "SCOPED_TO";
+
+    /// Node labels that must NOT get SCOPED_TO edges. They cross context boundaries
+    /// (e.g. AgentBoot/AgentArchive are shared across conversations).
+    /// AgentRuntimeInstance gets SCOPED_TO so export can traverse TaskExecution -[WAS_EXECUTED_BY]-> AgentRuntimeInstance.
+    pub const SCOPE_EXEMPT_LABELS: &[&str] = &["AgentBoot", "AgentArchive"];
 }
 
 pub mod semantic_labels {
@@ -106,6 +123,9 @@ pub mod semantic_labels {
     pub const WAS_TRANSITIONED_FROM: &str = "WAS_TRANSITIONED_FROM";
     pub const WAS_TRANSITIONED_TO: &str = "WAS_TRANSITIONED_TO";
     pub const WAS_RELATED_TO: &str = "WAS_RELATED_TO";
+    pub const WAS_DELEGATED_TO: &str = "WAS_DELEGATED_TO";
+    pub const TASK_TRIGGERED_BY_MESSAGE: &str = "TASK_TRIGGERED_BY_MESSAGE";
+    pub const TASK_EMITTED_MESSAGE: &str = "TASK_EMITTED_MESSAGE";
 }
 
 pub mod prov_roles {
@@ -119,7 +139,9 @@ pub mod a2a_roles {
     pub const ARGS: &str = "a2a:args";
     pub const ARCHIVE: &str = "a2a:archive";
     pub const INPUT_MESSAGE: &str = "input_message";
+    pub const REJECTED_OUTPUT: &str = "a2a:rejected_output";
     pub const TASK_STATE: &str = "task_state";
+    pub const DELEGATION_TARGET: &str = "a2a:delegation_target";
 }
 
 pub mod agent_types {
@@ -159,7 +181,6 @@ pub mod storage_safe {
     pub const A2A_TASK_STATE: &str = "a2a_task_state";
     pub const A2A_TASK_STATE_TIME: &str = "a2a_task_state_time";
     pub const A2A_OLD_STATUS: &str = "a2a_old_status";
-    pub const A2A_IS_PREVIOUS: &str = "a2a_is_previous";
     pub const A2A_MESSAGE_ID: &str = "a2a_message_id";
     pub const A2A_ROLE: &str = "a2a_role";
     pub const A2A_CONTENT: &str = "a2a_content";
@@ -177,7 +198,7 @@ pub mod storage_safe {
     pub const A2A_USAGE_COMPLETION_TOKENS: &str = "a2a_usage_completion_tokens";
     pub const A2A_USAGE_TOTAL_TOKENS: &str = "a2a_usage_total_tokens";
     pub const A2A_DURATION_MS: &str = "a2a_duration_ms";
-    pub const A2A_SUCCESS: &str = "a2a_success";
+    pub const A2A_ACTIVITY_OUTCOME: &str = "a2a_activity_outcome";
     pub const A2A_TOOL_NAME: &str = "a2a_tool_name";
     pub const A2A_ARGS: &str = "a2a_args";
     pub const A2A_ARCHIVE_PATH: &str = "a2a_archive_path";
@@ -201,4 +222,5 @@ pub mod node_labels {
     pub const TASK_STATE: &str = "A2ATaskState";
     pub const MESSAGE: &str = "A2AMessage";
     pub const ARTIFACT: &str = "Artifact";
+    pub const DELEGATION_TARGET: &str = "DelegationTarget";
 }

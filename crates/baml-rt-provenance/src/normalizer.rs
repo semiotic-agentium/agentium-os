@@ -14,13 +14,14 @@ use crate::{
         AgentBootActivityId, AgentBootActivityInput, AgentRuntimeInstanceId,
         AgentRuntimeInstanceInput, ArchiveEntityId, ArchiveEntityInput, ArtifactByEventEntityId,
         ArtifactByEventEntityInput, ArtifactByIdEntityId, ArtifactByIdEntityInput,
-        ArtifactByTypeEntityId, ArtifactByTypeEntityInput, ArtifactIdentity, LlmCallActivityId,
+        ArtifactByTypeEntityId, ArtifactByTypeEntityInput, ArtifactIdentity,         LlmCallActivityId,
         LlmCallActivityInput, LlmPromptEntityId, LlmPromptEntityInput, MessageEntityId,
+        PromptRejectedActivityId, PromptRejectedActivityInput,
         MessageEntityInput, MessageProcessingActivityId, MessageProcessingActivityInput,
         RunnerRuntimeInstanceId, TaskEntityId, TaskEntityInput, TaskExecutionActivityId,
-        TaskExecutionActivityInput, TaskStateEntityId, TaskStateEntityInput, TaskStatePrevEntityId,
-        TaskStatePrevEntityInput, ToolArgsEntityId, ToolArgsEntityInput, ToolCallActivityId,
-        ToolCallActivityInput,
+        TaskExecutionActivityInput, TaskStateEntityId, TaskStateEntityInput,
+        DelegationTargetEntityId, DelegationTargetEntityInput,
+        ToolArgsEntityId, ToolArgsEntityInput, ToolCallActivityId, ToolCallActivityInput,
     },
     types::{
         Activity, Agent, Entity, ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef,
@@ -72,19 +73,54 @@ fn canonical_message_role(event: &ProvEvent, role: &str) -> Result<&'static str>
     })
 }
 
+/// Prior state from the backing store, used so message events can attach
+/// (MessageProcessing, WAS_EXECUTED_BY, task_agent) when the task entity
+/// was persisted by an earlier event (TaskExists + TaskExecutionStarted).
+#[derive(Debug, Clone, Default)]
+pub struct NormalizeContext {
+    /// Agent id stored on the task entity (from TaskExecutionStarted). Used when normalizing
+    /// MessageReceived/MessageSent so we emit WAS_EXECUTED_BY to the task's agent.
+    pub task_agent_id: Option<AgentId>,
+}
+
 pub trait ProvNormalizer: Send + Sync {
-    fn normalize(&self, event: &ProvEvent) -> Result<NormalizedProv>;
+    fn normalize(&self, event: &ProvEvent) -> Result<NormalizedProv> {
+        self.normalize_with_context(event, None)
+    }
+
+    fn normalize_with_context(
+        &self,
+        event: &ProvEvent,
+        context: Option<&NormalizeContext>,
+    ) -> Result<NormalizedProv>;
+}
+
+/// State for deriving call ordinals from event stream order.
+/// Tracks per-scope call counts and maps completed LLM event IDs to (scope_key, ordinal)
+/// for PromptRejected resolution.
+#[derive(Debug, Default)]
+pub struct CallOrdinalState {
+    /// scope_key -> count of Started events seen (ordinal for next Started).
+    pub call_counts: HashMap<String, u64>,
+    /// event_id.as_str() -> (scope_key, ordinal) for completed LLM calls; used by PromptRejected.
+    pub llm_event_to_scope_ordinal: HashMap<String, (String, u64)>,
 }
 
 #[derive(Debug, Default)]
 pub struct DefaultProvNormalizer {
     agent_registry: std::sync::Mutex<std::collections::HashSet<String>>,
+    call_ordinal_state: std::sync::Mutex<CallOrdinalState>,
 }
 
 impl ProvNormalizer for DefaultProvNormalizer {
-    fn normalize(&self, event: &ProvEvent) -> Result<NormalizedProv> {
+    fn normalize_with_context(
+        &self,
+        event: &ProvEvent,
+        context: Option<&NormalizeContext>,
+    ) -> Result<NormalizedProv> {
         let mut registry = self.agent_registry.lock().expect("agent registry lock");
-        normalize_event_with_registry(event, &mut registry)
+        let mut call_state = self.call_ordinal_state.lock().expect("call ordinal state lock");
+        normalize_event_with_registry(event, &mut registry, &mut call_state, context)
     }
 }
 
@@ -121,13 +157,66 @@ fn prov_type<S: ProvVocabularyType>() -> String {
     S::VOCAB_TYPE.to_string()
 }
 
+/// Build deterministic scope key from operational identifiers: context_id:scope_id:agent_id.
+/// Scope_id is message_id (Message scope) or task_id (Task scope).
+fn build_call_scope_key(
+    event: &ProvEvent,
+    scope: &CallScope,
+    metadata: &Value,
+) -> Result<String> {
+    let context_id = event.context_id().as_str();
+    let agent_id = metadata
+        .get("agent_id")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| ProvenanceError::MissingField {
+            event_id: event.id().as_str().to_string(),
+            field: "metadata.agent_id".to_string(),
+        })?;
+    let scope_id = match scope {
+        CallScope::Message { message_id } => message_id.as_str().to_string(),
+        CallScope::Task { task_id } => {
+            let tid = event.task_id().ok_or_else(|| ProvenanceError::InvalidEvent {
+                event_id: event.id().as_str().to_string(),
+                reason: "task-scoped call requires task_id on event".to_string(),
+            })?;
+            if tid != task_id {
+                return Err(ProvenanceError::InvalidEvent {
+                    event_id: event.id().as_str().to_string(),
+                    reason: "scope task_id does not match event task_id".to_string(),
+                });
+            }
+            task_id.as_str().to_string()
+        }
+    };
+    Ok(format!("{context_id}:{scope_id}:{agent_id}"))
+}
+
+/// Get ordinal for Started (increment after) or Completed (use current-1, no change to count).
+fn get_ordinal_for_call(call_state: &mut CallOrdinalState, scope_key: &str, is_started: bool) -> u64 {
+    let count = call_state.call_counts.entry(scope_key.to_string()).or_insert(0);
+    if is_started {
+        let o = *count;
+        *count += 1;
+        o
+    } else {
+        count.saturating_sub(1)
+    }
+}
+
 pub fn normalize_event(event: &ProvEvent) -> Result<NormalizedProv> {
-    normalize_event_with_registry(event, &mut std::collections::HashSet::new())
+    normalize_event_with_registry(
+        event,
+        &mut std::collections::HashSet::new(),
+        &mut CallOrdinalState::default(),
+        None,
+    )
 }
 
 fn normalize_event_with_registry(
     event: &ProvEvent,
     agent_registry: &mut std::collections::HashSet<String>,
+    call_state: &mut CallOrdinalState,
+    context: Option<&NormalizeContext>,
 ) -> Result<NormalizedProv> {
     let mut doc = ProvDocument::new();
     let mut derived_relations = Vec::new();
@@ -142,7 +231,9 @@ fn normalize_event_with_registry(
             prompt,
             metadata,
         } => {
-            let activity_id = llm_activity_id(event.id());
+            let scope_key = build_call_scope_key(event, scope, metadata)?;
+            let ordinal = get_ordinal_for_call(call_state, &scope_key, true);
+            let activity_id = llm_activity_id(&scope_key, ordinal);
             let mut attrs = base_attrs(event);
             attrs.insert(a2a::CLIENT.to_string(), Value::String(client.clone()));
             attrs.insert(a2a::MODEL.to_string(), Value::String(model.clone()));
@@ -163,7 +254,7 @@ fn normalize_event_with_registry(
                 },
             );
 
-            let prompt_id = llm_prompt_entity_id(event.id());
+            let prompt_id = llm_prompt_entity_id(&scope_key, ordinal);
             let mut prompt_attrs = base_attrs(event);
             prompt_attrs.insert(a2a::PROMPT.to_string(), prompt.clone());
             doc.insert_entity(
@@ -193,8 +284,8 @@ fn normalize_event_with_registry(
                 event,
                 &activity_id,
                 &mut derived_relations,
-                agent_registry,
                 &mut agent_labels,
+                context,
             )?;
         }
         ProvEventData::LlmCallCompleted {
@@ -208,7 +299,13 @@ fn normalize_event_with_registry(
             duration_ms,
             outcome,
         } => {
-            let activity_id = llm_activity_id(event.id());
+            let scope_key = build_call_scope_key(event, scope, metadata)?;
+            let ordinal = get_ordinal_for_call(call_state, &scope_key, false);
+            call_state.llm_event_to_scope_ordinal.insert(
+                event.id().as_str().to_string(),
+                (scope_key.clone(), ordinal),
+            );
+            let activity_id = llm_activity_id(&scope_key, ordinal);
             let mut attrs = base_attrs(event);
             attrs.insert(a2a::CLIENT.to_string(), Value::String(client.clone()));
             attrs.insert(a2a::MODEL.to_string(), Value::String(model.clone()));
@@ -242,7 +339,14 @@ fn normalize_event_with_registry(
                 a2a::DURATION_MS.to_string(),
                 Value::Number((*duration_ms).into()),
             );
-            attrs.insert(a2a::SUCCESS.to_string(), Value::Bool(bool::from(*outcome)));
+            attrs.insert(
+                a2a::ACTIVITY_OUTCOME.to_string(),
+                Value::String(if bool::from(*outcome) {
+                    "Success".to_string()
+                } else {
+                    "Failed".to_string()
+                }),
+            );
 
             doc.insert_activity(
                 activity_id.clone(),
@@ -254,7 +358,7 @@ fn normalize_event_with_registry(
                 },
             );
 
-            let prompt_id = llm_prompt_entity_id(event.id());
+            let prompt_id = llm_prompt_entity_id(&scope_key, ordinal);
             let mut prompt_attrs = base_attrs(event);
             prompt_attrs.insert(a2a::PROMPT.to_string(), prompt.clone());
             doc.insert_entity(
@@ -284,8 +388,59 @@ fn normalize_event_with_registry(
                 event,
                 &activity_id,
                 &mut derived_relations,
-                agent_registry,
                 &mut agent_labels,
+                context,
+            )?;
+        }
+        ProvEventData::PromptRejected {
+            scope,
+            llm_call_event_id,
+            reason,
+        } => {
+            let (scope_key, ordinal) = call_state
+                .llm_event_to_scope_ordinal
+                .get(llm_call_event_id.as_str())
+                .ok_or_else(|| ProvenanceError::InvalidEvent {
+                    event_id: event.id().as_str().to_string(),
+                    reason: "PromptRejected requires prior LlmCallCompleted in same normalizer session".to_string(),
+                })?
+                .clone();
+            let activity_id = prompt_rejected_activity_id(&scope_key, ordinal);
+            let mut attrs = base_attrs(event);
+            attrs.insert(a2a::REASON.to_string(), Value::String(reason.clone()));
+            let ts = event.timestamp_ms();
+            doc.insert_activity(
+                activity_id.clone(),
+                Activity {
+                    start_time_ms: Some(ts),
+                    end_time_ms: Some(ts),
+                    prov_type: Some(prov_type::<PromptRejectedActivityId>()),
+                    attributes: attrs,
+                },
+            );
+            let prompt_id = llm_prompt_entity_id(&scope_key, ordinal);
+            insert_used(
+                &mut doc,
+                activity_id.clone(),
+                prompt_id,
+                Some(a2a_roles::REJECTED_OUTPUT.to_string()),
+            );
+            if let CallScope::Message { message_id } = scope {
+                attach_message_context(
+                    &mut doc,
+                    event,
+                    &activity_id,
+                    message_id,
+                    &mut derived_relations,
+                );
+            }
+            attach_task_call_context(
+                &mut doc,
+                event,
+                &activity_id,
+                &mut derived_relations,
+                &mut agent_labels,
+                context,
             )?;
         }
         ProvEventData::ToolCallStarted {
@@ -294,8 +449,11 @@ fn normalize_event_with_registry(
             function_name,
             args,
             metadata,
+            delegation_target,
         } => {
-            let activity_id = tool_activity_id(event.id());
+            let scope_key = build_call_scope_key(event, scope, metadata)?;
+            let ordinal = get_ordinal_for_call(call_state, &scope_key, true);
+            let activity_id = tool_activity_id(&scope_key, ordinal);
             let mut attrs = base_attrs(event);
             attrs.insert(a2a::TOOL_NAME.to_string(), Value::String(tool_name.clone()));
             if let Some(function_name) = function_name {
@@ -317,7 +475,7 @@ fn normalize_event_with_registry(
                 },
             );
 
-            let args_id = tool_args_entity_id(event.id());
+            let args_id = tool_args_entity_id(&scope_key, ordinal);
             let mut args_attrs = base_attrs(event);
             args_attrs.insert(a2a::ARGS.to_string(), args.clone());
             doc.insert_entity(
@@ -333,6 +491,27 @@ fn normalize_event_with_registry(
                 args_id,
                 Some(a2a_roles::ARGS.to_string()),
             );
+            if let Some(agent_package) = delegation_target {
+                let delegation_id = delegation_target_entity_id(&scope_key, ordinal);
+                let mut delegation_attrs = base_attrs(event);
+                delegation_attrs.insert(
+                    a2a::DELEGATION_TARGET.to_string(),
+                    Value::String(agent_package.clone()),
+                );
+                doc.insert_entity(
+                    delegation_id.clone(),
+                    Entity {
+                        prov_type: Some(prov_type::<DelegationTargetEntityId>()),
+                        attributes: delegation_attrs,
+                    },
+                );
+                insert_used(
+                    &mut doc,
+                    activity_id.clone(),
+                    delegation_id,
+                    Some(a2a_roles::DELEGATION_TARGET.to_string()),
+                );
+            }
             if let Some(message_id) = scoped_message_id(scope, metadata) {
                 attach_message_context(
                     &mut doc,
@@ -347,8 +526,8 @@ fn normalize_event_with_registry(
                 event,
                 &activity_id,
                 &mut derived_relations,
-                agent_registry,
                 &mut agent_labels,
+                context,
             )?;
         }
         ProvEventData::ToolCallCompleted {
@@ -359,8 +538,11 @@ fn normalize_event_with_registry(
             metadata,
             duration_ms,
             outcome,
+            delegation_target,
         } => {
-            let activity_id = tool_activity_id(event.id());
+            let scope_key = build_call_scope_key(event, scope, metadata)?;
+            let ordinal = get_ordinal_for_call(call_state, &scope_key, false);
+            let activity_id = tool_activity_id(&scope_key, ordinal);
             let mut attrs = base_attrs(event);
             attrs.insert(a2a::TOOL_NAME.to_string(), Value::String(tool_name.clone()));
             if let Some(function_name) = function_name {
@@ -374,7 +556,14 @@ fn normalize_event_with_registry(
                 a2a::DURATION_MS.to_string(),
                 Value::Number((*duration_ms).into()),
             );
-            attrs.insert(a2a::SUCCESS.to_string(), Value::Bool(bool::from(*outcome)));
+            attrs.insert(
+                a2a::ACTIVITY_OUTCOME.to_string(),
+                Value::String(if bool::from(*outcome) {
+                    "Success".to_string()
+                } else {
+                    "Failed".to_string()
+                }),
+            );
 
             doc.insert_activity(
                 activity_id.clone(),
@@ -386,7 +575,7 @@ fn normalize_event_with_registry(
                 },
             );
 
-            let args_id = tool_args_entity_id(event.id());
+            let args_id = tool_args_entity_id(&scope_key, ordinal);
             let mut args_attrs = base_attrs(event);
             args_attrs.insert(a2a::ARGS.to_string(), args.clone());
             doc.insert_entity(
@@ -402,6 +591,27 @@ fn normalize_event_with_registry(
                 args_id,
                 Some(a2a_roles::ARGS.to_string()),
             );
+            if let Some(agent_package) = delegation_target {
+                let delegation_id = delegation_target_entity_id(&scope_key, ordinal);
+                let mut delegation_attrs = base_attrs(event);
+                delegation_attrs.insert(
+                    a2a::DELEGATION_TARGET.to_string(),
+                    Value::String(agent_package.clone()),
+                );
+                doc.insert_entity(
+                    delegation_id.clone(),
+                    Entity {
+                        prov_type: Some(prov_type::<DelegationTargetEntityId>()),
+                        attributes: delegation_attrs,
+                    },
+                );
+                insert_used(
+                    &mut doc,
+                    activity_id.clone(),
+                    delegation_id,
+                    Some(a2a_roles::DELEGATION_TARGET.to_string()),
+                );
+            }
             if let Some(message_id) = scoped_message_id(scope, metadata) {
                 attach_message_context(
                     &mut doc,
@@ -416,8 +626,8 @@ fn normalize_event_with_registry(
                 event,
                 &activity_id,
                 &mut derived_relations,
-                agent_registry,
                 &mut agent_labels,
+                context,
             )?;
         }
         ProvEventData::AgentBooted {
@@ -442,13 +652,9 @@ fn normalize_event_with_registry(
                 },
             );
 
-            // Create AgentBoot activity
+            // Create AgentBoot activity (agent_id derivable from id: boot:{agent_id})
             let boot_activity_id = boot_activity_id(agent_id);
             let mut boot_attrs = base_attrs(event);
-            boot_attrs.insert(
-                a2a::AGENT_ID.to_string(),
-                Value::String(agent_id.as_str().to_string()),
-            );
             boot_attrs.insert(
                 a2a::AGENT_TYPE.to_string(),
                 Value::String(agent_type.as_str().to_string()),
@@ -475,13 +681,9 @@ fn normalize_event_with_registry(
                 Some(a2a_roles::ARCHIVE.to_string()),
             );
 
-            // Create AgentRuntimeInstance agent
+            // Create AgentRuntimeInstance agent (agent_id derivable from id: agent_instance:{agent_id}).
             let instance_agent_id = agent_runtime_instance_id(agent_id);
             let mut instance_attrs = base_attrs(event);
-            instance_attrs.insert(
-                a2a::AGENT_ID.to_string(),
-                Value::String(agent_id.as_str().to_string()),
-            );
             instance_attrs.insert(
                 a2a::AGENT_TYPE.to_string(),
                 Value::String(agent_type.as_str().to_string()),
@@ -489,6 +691,10 @@ fn normalize_event_with_registry(
             instance_attrs.insert(
                 a2a::AGENT_VERSION.to_string(),
                 Value::String(agent_version.clone()),
+            );
+            instance_attrs.insert(
+                a2a::ARCHIVE_PATH.to_string(),
+                Value::String(archive_path.clone()),
             );
             doc.insert_agent(
                 instance_agent_id.clone(),
@@ -521,43 +727,25 @@ fn normalize_event_with_registry(
                 Some(prov_roles::EXECUTING_AGENT.to_string()),
             );
         }
-        ProvEventData::TaskCreated { task_id, agent_id } => {
-            let task_entity = ensure_task_entity(&mut doc, task_id, event.context_id(), None);
-
-            // Store agent_id in task entity for later lookups
-            let task_entity_id = task_entity_id(task_id);
-            if let Some(entity) = doc.entity(&task_entity_id) {
-                let mut attrs = entity.attributes.clone();
-                attrs.insert(
-                    a2a::AGENT_ID.to_string(),
-                    Value::String(agent_id.as_str().to_string()),
-                );
-                doc.insert_entity(
-                    task_entity_id.clone(),
-                    Entity {
-                        prov_type: entity.prov_type.clone(),
-                        attributes: attrs,
-                    },
-                );
-            }
-
-            // Look up agent_type from runtime instance agent - AgentBooted must have been written first
-            let agent_instance_id = agent_runtime_instance_id(agent_id);
-            let agent_type = doc
-                .agent(&agent_instance_id)
-                .and_then(|agent| agent.attributes.get(a2a::AGENT_TYPE))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+        ProvEventData::TaskExists { task_id, context_id: _ } => {
+            let _ = ensure_task_entity(&mut doc, task_id);
+        }
+        ProvEventData::TaskExecutionStarted {
+            task_id,
+            agent_id,
+            context_id,
+        } => {
+            let task_entity = ensure_task_entity(&mut doc, task_id);
 
             let task_execution = ensure_task_execution_activity(
                 &mut doc,
                 task_id,
-                event.context_id(),
+                context_id,
                 Some(event.timestamp_ms()),
                 None,
-                agent_type.as_deref(),
-                agent_registry,
                 &mut agent_labels,
+                Some(agent_id),
+                context,
             )?;
             insert_was_generated_by(
                 &mut doc,
@@ -567,7 +755,7 @@ fn normalize_event_with_registry(
             );
 
             let agent_instance_id =
-                get_agent_runtime_instance(&doc, agent_id, agent_registry, &mut agent_labels)?;
+                get_agent_runtime_instance(&doc, agent_id, &mut agent_labels)?;
             insert_was_associated_with(
                 &mut doc,
                 task_execution.clone(),
@@ -584,42 +772,57 @@ fn normalize_event_with_registry(
                 Some(prov_roles::INVOKING_AGENT.to_string()),
             );
         }
+        ProvEventData::TaskExecutionEnded { task_id, context_id } => {
+            let _ = ensure_task_entity(&mut doc, task_id);
+            let _ = ensure_task_execution_activity(
+                &mut doc,
+                task_id,
+                context_id,
+                None,
+                Some(event.timestamp_ms()),
+                &mut agent_labels,
+                None,
+                context,
+            )?;
+        }
         ProvEventData::TaskStatusChanged {
             task_id,
             old_status,
             new_status,
         } => {
-            let _task_entity = ensure_task_entity(&mut doc, task_id, event.context_id(), None);
-            let is_terminal = new_status
-                .as_deref()
-                .map(is_terminal_status)
-                .unwrap_or(false);
+            let Some(new_status) = new_status.as_deref() else {
+                return Ok(NormalizedProv {
+                    document: doc,
+                    derived_relations,
+                    agent_labels,
+                });
+            };
+            let _task_entity = ensure_task_entity(&mut doc, task_id);
+            let is_terminal = is_terminal_status(new_status);
             let task_execution = ensure_task_execution_activity(
                 &mut doc,
                 task_id,
                 event.context_id(),
                 None,
                 is_terminal.then_some(event.timestamp_ms()),
-                None,
-                agent_registry,
                 &mut agent_labels,
+                None,
+                context,
             )?;
-            let status_id = task_state_entity_id(task_id, event.timestamp_ms());
+            let status_id = task_state_entity_id(task_id, new_status);
             let mut status_attrs = base_attrs(event);
             status_attrs.insert(
                 a2a::TASK_STATE_TIME.to_string(),
                 Value::Number(event.timestamp_ms().into()),
             );
-            if let Some(new_status) = new_status {
-                status_attrs.insert(
-                    a2a::TASK_STATE.to_string(),
-                    Value::String(new_status.clone()),
-                );
-            }
-            if let Some(old_status) = old_status {
+            status_attrs.insert(
+                a2a::TASK_STATE.to_string(),
+                Value::String(new_status.to_string()),
+            );
+            if let Some(old_status) = old_status.as_deref() {
                 status_attrs.insert(
                     a2a::OLD_STATUS.to_string(),
-                    Value::String(old_status.clone()),
+                    Value::String(old_status.to_string()),
                 );
             }
             doc.insert_entity(
@@ -646,22 +849,34 @@ fn normalize_event_with_registry(
                 );
             }
 
-            if let Some(old_status) = old_status {
-                let old_id = task_state_prev_entity_id(task_id, event.timestamp_ms());
-                let mut old_attrs = base_attrs(event);
+            if let Some(old_status) = old_status.as_deref() {
+                let old_id = task_state_entity_id(task_id, old_status);
+                let mut old_attrs = HashMap::new();
+                old_attrs.insert(
+                    a2a::CONTEXT_ID.to_string(),
+                    Value::String(event.context_id().as_str().to_string()),
+                );
+                old_attrs.insert(
+                    a2a::TASK_ID.to_string(),
+                    Value::String(task_id.as_str().to_string()),
+                );
                 old_attrs.insert(
                     a2a::TASK_STATE_TIME.to_string(),
-                    Value::Number(event.timestamp_ms().into()),
+                    Value::Number(
+                        event
+                            .timestamp_ms()
+                            .saturating_sub(1)
+                            .into(),
+                    ),
                 );
                 old_attrs.insert(
                     a2a::TASK_STATE.to_string(),
-                    Value::String(old_status.clone()),
+                    Value::String(old_status.to_string()),
                 );
-                old_attrs.insert(a2a::IS_PREVIOUS.to_string(), Value::Bool(true));
                 doc.insert_entity(
                     old_id.clone(),
                     Entity {
-                        prov_type: Some(prov_type::<TaskStatePrevEntityId>()),
+                        prov_type: Some(prov_type::<TaskStateEntityId>()),
                         attributes: old_attrs,
                     },
                 );
@@ -685,16 +900,16 @@ fn normalize_event_with_registry(
             artifact_id,
             artifact_type,
         } => {
-            let task_entity = ensure_task_entity(&mut doc, task_id, event.context_id(), None);
+            let task_entity = ensure_task_entity(&mut doc, task_id);
             let task_execution = ensure_task_execution_activity(
                 &mut doc,
                 task_id,
                 event.context_id(),
                 None,
                 None,
-                None,
-                agent_registry,
                 &mut agent_labels,
+                None,
+                context,
             )?;
             let artifact_id_str =
                 artifact_entity_id(task_id, artifact_id, artifact_type, event.id());
@@ -742,12 +957,14 @@ fn normalize_event_with_registry(
             role,
             content,
             metadata,
+            agent_id: _,
         }
         | ProvEventData::MessageSent {
             id,
             role,
             content,
             metadata,
+            agent_id: _,
         } => {
             let canonical_role = canonical_message_role(event, role)?;
             let message_id = message_entity_id(event.context_id(), id);
@@ -811,15 +1028,11 @@ fn normalize_event_with_registry(
                 },
             );
 
-            // metadata is optional for A2A messages; only associate executing agent when present.
-            let agent_id = metadata
-                .as_ref()
-                .and_then(|m| m.get("agent_id"))
-                .map(|raw| parse_agent_id(event, raw))
-                .transpose()?;
-            if let Some(agent_id) = agent_id.as_ref() {
+            // A message is always sent to/from an agent; agent_id is required on the event.
+            let agent_id_for_processing = event.message_agent_id().cloned();
+            if let Some(agent_id) = agent_id_for_processing.as_ref() {
                 let executing_agent_id =
-                    get_agent_runtime_instance(&doc, agent_id, agent_registry, &mut agent_labels)?;
+                    get_agent_runtime_instance(&doc, agent_id, &mut agent_labels)?;
                 insert_was_associated_with(
                     &mut doc,
                     processing_id.clone(),
@@ -858,28 +1071,7 @@ fn normalize_event_with_registry(
             }
 
             if let Some(task_id) = event.task_id() {
-                // Ensure task entity exists and has agent_id set from message metadata
-                let task_entity = ensure_task_entity(&mut doc, task_id, event.context_id(), None);
-                let task_entity_id = task_entity_id(task_id);
-                if let Some(entity) = doc.entity(&task_entity_id) {
-                    let mut attrs = entity.attributes.clone();
-                    // Set agent_id on task entity when available from message metadata.
-                    if !attrs.contains_key(a2a::AGENT_ID)
-                        && let Some(agent_id_ref) = agent_id.as_ref()
-                    {
-                        attrs.insert(
-                            a2a::AGENT_ID.to_string(),
-                            Value::String(agent_id_ref.as_str().to_string()),
-                        );
-                        doc.insert_entity(
-                            task_entity_id.clone(),
-                            Entity {
-                                prov_type: entity.prov_type.clone(),
-                                attributes: attrs,
-                            },
-                        );
-                    }
-                }
+                let task_entity = ensure_task_entity(&mut doc, task_id);
 
                 let task_execution = ensure_task_execution_activity(
                     &mut doc,
@@ -887,9 +1079,9 @@ fn normalize_event_with_registry(
                     event.context_id(),
                     None,
                     None,
-                    None,
-                    agent_registry,
                     &mut agent_labels,
+                    event.message_agent_id(),
+                    context,
                 )?;
                 if matches!(event.data(), ProvEventData::MessageReceived { .. }) {
                     insert_used(
@@ -941,9 +1133,77 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
             validate_call_scope(event, scope, "tool call")?;
             validate_required_call_metadata(event, scope, metadata, "tool call")?;
         }
+        ProvEventData::PromptRejected { scope, .. } => {
+            validate_call_scope(event, scope, "prompt rejected")?;
+        }
+        ProvEventData::TaskExists { task_id, context_id } => {
+            validate_task_scoped_event(event, task_id, "TaskExists")?;
+            if event.context_id() != context_id {
+                return Err(ProvenanceError::InvalidEvent {
+                    event_id: event.id().as_str().to_string(),
+                    reason: "TaskExists context_id must match event context_id".to_string(),
+                });
+            }
+        }
+        ProvEventData::TaskExecutionStarted {
+            task_id, context_id, ..
+        } => {
+            validate_task_scoped_event(event, task_id, "TaskExecutionStarted")?;
+            if event.context_id() != context_id {
+                return Err(ProvenanceError::InvalidEvent {
+                    event_id: event.id().as_str().to_string(),
+                    reason: "TaskExecutionStarted context_id must match event context_id"
+                        .to_string(),
+                });
+            }
+        }
+        ProvEventData::TaskExecutionEnded { task_id, context_id } => {
+            validate_task_scoped_event(event, task_id, "TaskExecutionEnded")?;
+            if event.context_id() != context_id {
+                return Err(ProvenanceError::InvalidEvent {
+                    event_id: event.id().as_str().to_string(),
+                    reason: "TaskExecutionEnded context_id must match event context_id"
+                        .to_string(),
+                });
+            }
+        }
+        ProvEventData::MessageReceived { role, content, .. }
+        | ProvEventData::MessageSent { role, content, .. } => {
+            canonical_message_role(event, role)?;
+            if content.iter().all(|line| line.trim().is_empty()) {
+                return Err(ProvenanceError::InvalidEvent {
+                    event_id: event.id().as_str().to_string(),
+                    reason: "message content must include at least one non-empty text part"
+                        .to_string(),
+                });
+            }
+        }
         _ => {}
     }
     Ok(())
+}
+
+fn validate_task_scoped_event(
+    event: &ProvEvent,
+    task_id: &TaskId,
+    event_kind: &str,
+) -> Result<()> {
+    let event_id = event.id().as_str().to_string();
+    match event {
+        ProvEvent::Global(_) => Err(ProvenanceError::InvalidEvent {
+            event_id,
+            reason: format!("{event_kind} must be task-scoped (event is global)"),
+        }),
+        ProvEvent::AgentBooted(_) => Err(ProvenanceError::InvalidEvent {
+            event_id,
+            reason: format!("{event_kind} cannot be AgentBooted (has no context)"),
+        }),
+        ProvEvent::Task(e) if &e.task_id == task_id => Ok(()),
+        ProvEvent::Task(_) => Err(ProvenanceError::InvalidEvent {
+            event_id,
+            reason: format!("{event_kind} task_id must match event task_id"),
+        }),
+    }
 }
 
 fn validate_call_scope(event: &ProvEvent, scope: &CallScope, call_kind: &str) -> Result<()> {
@@ -970,6 +1230,10 @@ fn validate_call_scope(event: &ProvEvent, scope: &CallScope, call_kind: &str) ->
                 })
             }
         }
+        (ProvEvent::AgentBooted(_), _) => Err(ProvenanceError::InvalidEvent {
+            event_id,
+            reason: format!("{call_kind} cannot be AgentBooted (has no call scope)"),
+        }),
     }
 }
 
@@ -1010,29 +1274,33 @@ fn validate_required_call_metadata(
 
 fn base_attrs(event: &ProvEvent) -> HashMap<String, Value> {
     let mut attrs = HashMap::new();
-    attrs.insert(
-        a2a::CONTEXT_ID.to_string(),
-        Value::String(event.context_id().as_str().to_string()),
-    );
-    attrs.insert(
-        a2a::EVENT_ID.to_string(),
-        Value::String(event.id().as_str().to_string()),
-    );
+    if let Some(ctx) = event.context_id_opt() {
+        attrs.insert(
+            a2a::CONTEXT_ID.to_string(),
+            Value::String(ctx.as_str().to_string()),
+        );
+    }
     if let Some(task_id) = event.task_id() {
         attrs.insert(
             a2a::TASK_ID.to_string(),
             Value::String(task_id.as_str().to_string()),
         );
     }
+    attrs.insert(
+        a2a::EVENT_ID.to_string(),
+        Value::String(event.id().as_str().to_string()),
+    );
     attrs
 }
 
 fn derived_attrs(event: &ProvEvent) -> HashMap<String, Value> {
     let mut attrs = HashMap::new();
-    attrs.insert(
-        a2a::CONTEXT_ID.to_string(),
-        Value::String(event.context_id().as_str().to_string()),
-    );
+    if let Some(ctx) = event.context_id_opt() {
+        attrs.insert(
+            a2a::CONTEXT_ID.to_string(),
+            Value::String(ctx.as_str().to_string()),
+        );
+    }
     if let Some(task_id) = event.task_id() {
         attrs.insert(
             a2a::TASK_ID.to_string(),
@@ -1046,12 +1314,7 @@ fn derived_attrs(event: &ProvEvent) -> HashMap<String, Value> {
     attrs
 }
 
-fn ensure_task_entity(
-    doc: &mut ProvDocument,
-    task_id: &TaskId,
-    context_id: &ContextId,
-    _agent_type: Option<&str>,
-) -> ProvEntityId {
+fn ensure_task_entity(doc: &mut ProvDocument, task_id: &TaskId) -> ProvEntityId {
     let id = task_entity_id(task_id);
     let mut attrs = doc
         .entity(&id)
@@ -1061,11 +1324,6 @@ fn ensure_task_entity(
         a2a::TASK_ID.to_string(),
         Value::String(task_id.as_str().to_string()),
     );
-    attrs.insert(
-        a2a::CONTEXT_ID.to_string(),
-        Value::String(context_id.as_str().to_string()),
-    );
-    // agent_id is set during message processing (if message has task_id) or TaskCreated handler
     doc.insert_entity(
         id.clone(),
         Entity {
@@ -1083,9 +1341,9 @@ fn ensure_task_execution_activity(
     context_id: &ContextId,
     start_time_ms: Option<u64>,
     end_time_ms: Option<u64>,
-    _agent_type: Option<&str>,
-    agent_registry: &std::collections::HashSet<String>,
     agent_labels: &mut HashMap<String, String>,
+    agent_id_override: Option<&AgentId>,
+    context: Option<&NormalizeContext>,
 ) -> Result<ProvActivityId> {
     let id = task_execution_activity_id(task_id);
     let (mut attrs, existing_start, existing_end) = if let Some(activity) = doc.activity(&id) {
@@ -1105,8 +1363,9 @@ fn ensure_task_execution_activity(
         a2a::CONTEXT_ID.to_string(),
         Value::String(context_id.as_str().to_string()),
     );
-    // Extract agent_id from task entity - optional, may not be set yet if TaskCreated hasn't been processed
-    let agent_id = task_agent_id(doc, task_id);
+    let agent_id = agent_id_override
+        .or_else(|| context.and_then(|c| c.task_agent_id.as_ref()))
+        .cloned();
 
     // Look up agent_type from runtime instance agent for display purposes
     if let Some(ref agent_id) = agent_id {
@@ -1134,8 +1393,8 @@ fn ensure_task_execution_activity(
             attributes: attrs,
         },
     );
-    // Associate with agent if available - if not, association will be added when TaskCreated is processed
-    associate_task_execution_agents(doc, &id, agent_id.as_ref(), agent_registry, agent_labels)?;
+    // Associate with agent if available - if not, association will be added when TaskExecutionStarted is processed
+    associate_task_execution_agents(doc, &id, agent_id.as_ref(), agent_labels)?;
     Ok(id)
 }
 
@@ -1227,26 +1486,46 @@ fn insert_was_derived_from(
 }
 
 /// LLM call activity id: derived from `EventId` to ensure per-call uniqueness.
-fn llm_activity_id(event_id: &EventId) -> ProvActivityId {
-    ProvActivityId::derived::<LlmCallActivityId>(LlmCallActivityInput { event_id })
+/// LLM call activity id: deterministic composite from (scope_key, ordinal).
+fn llm_activity_id(scope_key: &str, ordinal: u64) -> ProvActivityId {
+    ProvActivityId::derived::<LlmCallActivityId>(LlmCallActivityInput { scope_key, ordinal })
 }
 
-/// Tool call activity id: derived from `EventId` to ensure per-call uniqueness.
-fn tool_activity_id(event_id: &EventId) -> ProvActivityId {
-    ProvActivityId::derived::<ToolCallActivityId>(ToolCallActivityInput { event_id })
+/// Tool call activity id: deterministic composite from (scope_key, ordinal).
+fn tool_activity_id(scope_key: &str, ordinal: u64) -> ProvActivityId {
+    ProvActivityId::derived::<ToolCallActivityId>(ToolCallActivityInput { scope_key, ordinal })
 }
 
-fn llm_prompt_entity_id(event_id: &EventId) -> ProvEntityId {
-    ProvEntityId::derived::<LlmPromptEntityId>(LlmPromptEntityInput { event_id })
+fn llm_prompt_entity_id(scope_key: &str, ordinal: u64) -> ProvEntityId {
+    ProvEntityId::derived::<LlmPromptEntityId>(LlmPromptEntityInput { scope_key, ordinal })
 }
 
-fn tool_args_entity_id(event_id: &EventId) -> ProvEntityId {
-    ProvEntityId::derived::<ToolArgsEntityId>(ToolArgsEntityInput { event_id })
+fn prompt_rejected_activity_id(scope_key: &str, ordinal: u64) -> ProvActivityId {
+    ProvActivityId::derived::<PromptRejectedActivityId>(PromptRejectedActivityInput {
+        scope_key,
+        ordinal,
+    })
+}
+
+fn tool_args_entity_id(scope_key: &str, ordinal: u64) -> ProvEntityId {
+    ProvEntityId::derived::<ToolArgsEntityId>(ToolArgsEntityInput { scope_key, ordinal })
+}
+
+fn delegation_target_entity_id(scope_key: &str, ordinal: u64) -> ProvEntityId {
+    ProvEntityId::derived::<DelegationTargetEntityId>(DelegationTargetEntityInput {
+        scope_key,
+        ordinal,
+    })
 }
 
 /// Task entity id: derived from `TaskId` to provide stable task identity.
 fn task_entity_id(task_id: &TaskId) -> ProvEntityId {
     ProvEntityId::derived::<TaskEntityId>(TaskEntityInput { task_id })
+}
+
+/// Public helper so the store can build the task entity id string for graph lookups.
+pub fn task_entity_id_string(task_id: &TaskId) -> String {
+    task_entity_id(task_id).into_string()
 }
 
 /// Task execution activity id: derived from `TaskId` to group task execution edges.
@@ -1280,7 +1559,6 @@ fn runner_runtime_instance_id() -> ProvAgentId {
 fn get_agent_runtime_instance(
     doc: &ProvDocument,
     agent_id: &AgentId,
-    _agent_registry: &std::collections::HashSet<String>,
     agent_labels: &mut HashMap<String, String>,
 ) -> Result<ProvAgentId> {
     let instance_id = agent_runtime_instance_id(agent_id);
@@ -1369,7 +1647,16 @@ fn attach_message_context(
     derived_relations: &mut Vec<A2aDerivedRelation>,
 ) {
     let message_entity_id = message_entity_id(event.context_id(), message_id);
-    let mut message_attrs = base_attrs(event);
+    // Placeholder only: do not stamp role/content/event_id from call events.
+    // MessageReceived/MessageSent owns semantic message fields.
+    let mut message_attrs = doc
+        .entity(&message_entity_id)
+        .map(|entity| entity.attributes.clone())
+        .unwrap_or_default();
+    message_attrs.insert(
+        a2a::CONTEXT_ID.to_string(),
+        Value::String(event.context_id().as_str().to_string()),
+    );
     message_attrs.insert(
         a2a::MESSAGE_ID.to_string(),
         Value::String(message_id.as_str().to_string()),
@@ -1414,10 +1701,13 @@ fn attach_task_call_context(
     event: &ProvEvent,
     activity_id: &ProvActivityId,
     derived_relations: &mut Vec<A2aDerivedRelation>,
-    agent_registry: &std::collections::HashSet<String>,
     agent_labels: &mut HashMap<String, String>,
+    context: Option<&NormalizeContext>,
 ) -> Result<()> {
     let Some(task_id) = event.task_id() else {
+        return Ok(());
+    };
+    let Some(ctx) = event.context_id_opt() else {
         return Ok(());
     };
 
@@ -1434,47 +1724,22 @@ fn attach_task_call_context(
         _ => None,
     };
 
-    // Ensure task entity exists and set agent_id if available from metadata
-    let _task_entity = ensure_task_entity(doc, task_id, event.context_id(), None);
-    if let Some(agent_id) = agent_id_from_metadata.clone() {
-        let task_entity_id = task_entity_id(task_id);
-        if let Some(entity) = doc.entity(&task_entity_id) {
-            let mut attrs = entity.attributes.clone();
-            // Set agent_id on task entity from event metadata if not already set
-            if !attrs.contains_key(a2a::AGENT_ID) {
-                attrs.insert(
-                    a2a::AGENT_ID.to_string(),
-                    Value::String(agent_id.as_str().to_string()),
-                );
-                doc.insert_entity(
-                    task_entity_id.clone(),
-                    Entity {
-                        prov_type: entity.prov_type.clone(),
-                        attributes: attrs,
-                    },
-                );
-            }
-        }
-    }
+    let _task_entity = ensure_task_entity(doc, task_id);
 
     let task_execution = ensure_task_execution_activity(
         doc,
         task_id,
-        event.context_id(),
+        ctx,
         None,
         None,
-        None,
-        agent_registry,
         agent_labels,
+        None,
+        context,
     )?;
-    // Associate call with agent - use agent_id from metadata if available, otherwise try task entity
     associate_call_with_agent(
         doc,
-        event.context_id(),
-        task_id,
         activity_id,
-        agent_id_from_metadata.as_ref(),
-        agent_registry,
+        agent_id_from_metadata.as_ref().or_else(|| context.and_then(|c| c.task_agent_id.as_ref())),
         agent_labels,
     )?;
     derived_relations.push(A2aDerivedRelation {
@@ -1486,21 +1751,10 @@ fn attach_task_call_context(
     Ok(())
 }
 
-// Helper to extract agent_id from task entity - REQUIRED, no fallbacks
-fn task_agent_id(doc: &ProvDocument, task_id: &TaskId) -> Option<AgentId> {
-    let task_entity = task_entity_id(task_id);
-    doc.entity(&task_entity)
-        .and_then(|entity| entity.attributes.get(a2a::AGENT_ID))
-        .and_then(|v| v.as_str())
-        .and_then(|raw| UuidId::parse_str(raw).ok())
-        .map(AgentId::from_uuid)
-}
-
 fn associate_task_execution_agents(
     doc: &mut ProvDocument,
     task_execution: &ProvActivityId,
     agent_id: Option<&AgentId>,
-    agent_registry: &std::collections::HashSet<String>,
     agent_labels: &mut HashMap<String, String>,
 ) -> Result<()> {
     let Some(agent_id) = agent_id else {
@@ -1508,7 +1762,7 @@ fn associate_task_execution_agents(
     };
 
     let executing_agent_id =
-        get_agent_runtime_instance(doc, agent_id, agent_registry, agent_labels)?;
+        get_agent_runtime_instance(doc, agent_id, agent_labels)?;
     insert_was_associated_with(
         doc,
         task_execution.clone(),
@@ -1529,28 +1783,16 @@ fn associate_task_execution_agents(
 
 fn associate_call_with_agent(
     doc: &mut ProvDocument,
-    _context_id: &ContextId,
-    task_id: &TaskId,
     activity_id: &ProvActivityId,
-    agent_id_from_metadata: Option<&AgentId>,
-    agent_registry: &std::collections::HashSet<String>,
+    agent_id: Option<&AgentId>,
     agent_labels: &mut HashMap<String, String>,
 ) -> Result<()> {
-    // Try to get agent_id from metadata first, then from task entity
-    let agent_id = agent_id_from_metadata.cloned().or_else(|| {
-        let task_entity = task_entity_id(task_id);
-        doc.entity(&task_entity)
-            .and_then(|entity| entity.attributes.get(a2a::AGENT_ID))
-            .and_then(|v| v.as_str())
-            .and_then(|raw| UuidId::parse_str(raw).ok())
-            .map(AgentId::from_uuid)
-    });
 
     // If agent_id is available, associate the call with the agent
-    // If not, the association will be added when TaskCreated is processed
+    // If not, the association will be added when TaskExecutionStarted is processed
     if let Some(agent_id) = agent_id {
         let executing_agent_id =
-            get_agent_runtime_instance(doc, &agent_id, agent_registry, agent_labels)?;
+            get_agent_runtime_instance(doc, &agent_id, agent_labels)?;
         insert_was_associated_with(
             doc,
             activity_id.clone(),
@@ -1561,18 +1803,8 @@ fn associate_call_with_agent(
     Ok(())
 }
 
-fn task_state_entity_id(task_id: &TaskId, timestamp_ms: u64) -> ProvEntityId {
-    ProvEntityId::derived::<TaskStateEntityId>(TaskStateEntityInput {
-        task_id,
-        timestamp_ms,
-    })
-}
-
-fn task_state_prev_entity_id(task_id: &TaskId, timestamp_ms: u64) -> ProvEntityId {
-    ProvEntityId::derived::<TaskStatePrevEntityId>(TaskStatePrevEntityInput {
-        task_id,
-        timestamp_ms,
-    })
+fn task_state_entity_id(task_id: &TaskId, status: &str) -> ProvEntityId {
+    ProvEntityId::derived::<TaskStateEntityId>(TaskStateEntityInput { task_id, status })
 }
 
 fn artifact_entity_id(

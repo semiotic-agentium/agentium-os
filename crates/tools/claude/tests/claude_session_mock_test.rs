@@ -148,6 +148,7 @@ async fn claude_session_suspends_then_resumes_to_done() {
                 "claude/dev",
                 serde_json::json!({}),
                 scope.as_scope().context_id(),
+                scope.as_scope().agent_id(),
             )
             .await
             .expect("open");
@@ -219,6 +220,7 @@ async fn claude_session_rejects_double_send_while_active() {
                 "claude/dev",
                 serde_json::json!({}),
                 scope.as_scope().context_id(),
+                scope.as_scope().agent_id(),
             )
             .await
             .expect("open");

@@ -18,7 +18,8 @@ use tokio::{
 };
 
 use crate::{
-    baml_collector::BamlLLMCollector, baml_pre_execution::intercept_llm_call_pre_execution,
+    baml_collector::{BamlLLMCollector, LLMCompletionHandle},
+    baml_pre_execution::intercept_llm_call_pre_execution,
 };
 
 /// Policy for retrying BAML calls when the LLM response fails to parse.
@@ -122,14 +123,16 @@ impl BamlExecutor {
         self.conversation_context_provider = Some(provider);
     }
 
-    /// Execute a BAML function using the compiled IL
+    /// Execute a BAML function using the compiled IL.
+    /// Returns `(value, Some(handle))` on success when the manager will run tool/plan execution;
+    /// the manager must call `handle.complete(Success, None)` or `handle.complete(Failure, Some(reason))` after.
     pub async fn execute_function(
         &self,
         scope: &context::RuntimeScope,
         function_name: &str,
         args: Value,
         interceptor_registry: Option<Arc<Mutex<InterceptorRegistry>>>,
-    ) -> Result<Value> {
+    ) -> Result<(Value, Option<LLMCompletionHandle>)> {
         tracing::debug!(
             function = function_name,
             args = ?args,
@@ -155,17 +158,14 @@ impl BamlExecutor {
         // Track execution start time for effect completion (our clock, not BAML trace)
         let start_time = Instant::now();
 
-        // Create collector for LLM interception if registry is provided
-        let mut collector: Option<BamlLLMCollector> = interceptor_registry
-            .as_ref()
-            .map(|registry| BamlLLMCollector::new(registry.clone(), function_name.to_string()));
-
-        // Set effect emitter on collector if available
-        if let Some(ref mut coll) = collector
-            && let Some(ref emitter) = self.effect_emitter
-        {
-            coll.set_effect_emitter(emitter.clone());
-        }
+        // Create collector for LLM interception if registry is provided (Arc so we can pass a clone to completion handle).
+        let collector: Option<Arc<BamlLLMCollector>> = interceptor_registry.as_ref().map(|registry| {
+            let mut coll = BamlLLMCollector::new(registry.clone(), function_name.to_string());
+            if let Some(ref emitter) = self.effect_emitter {
+                coll.set_effect_emitter(emitter.clone());
+            }
+            Arc::new(coll)
+        });
 
         // Pre-execution interception: intercept LLM calls before they're sent
         let context_tags = self.build_conversation_context_tags(scope).await?;
@@ -181,7 +181,7 @@ impl BamlExecutor {
                 env_vars.clone(),
                 InvocationKind::Invoke,
                 self.effect_emitter.as_ref(),
-                collector.as_ref(),
+                collector.as_ref().map(Arc::as_ref),
             )
             .await
             {
@@ -191,7 +191,7 @@ impl BamlExecutor {
                 Ok(InterceptorDecision::Block(msg)) => {
                     if let Some(ref collector) = collector {
                         collector
-                            .complete_pending_effects(Outcome::Failure, 0)
+                            .complete_pending_effects(Outcome::Failure, 0, None)
                             .await;
                     }
                     return Err(BamlRtError::BamlRuntime(format!(
@@ -202,15 +202,15 @@ impl BamlExecutor {
                 Ok(InterceptorDecision::Substitute(value)) => {
                     if let Some(ref collector) = collector {
                         collector
-                            .complete_pending_effects(Outcome::Success, 0)
+                            .complete_pending_effects(Outcome::Success, 0, None)
                             .await;
                     }
-                    return Ok(value);
+                    return Ok((value, None));
                 }
                 Err(e) => {
                     if let Some(ref collector) = collector {
                         collector
-                            .complete_pending_effects(Outcome::Failure, 0)
+                            .complete_pending_effects(Outcome::Failure, 0, None)
                             .await;
                     }
                     return Err(e);
@@ -283,6 +283,7 @@ impl BamlExecutor {
                         .complete_pending_effects(
                             Outcome::Failure,
                             start_time.elapsed().as_millis() as u64,
+                            None,
                         )
                         .await;
                 }
@@ -303,35 +304,59 @@ impl BamlExecutor {
                         elapsed_ms = start_time.elapsed().as_millis() as u64,
                         "BAML call_function: ok"
                     );
-                    if let Some(ref collector) = collector {
-                        collector
-                            .complete_pending_effects(
-                                Outcome::Success,
-                                start_time.elapsed().as_millis() as u64,
-                            )
-                            .await;
-                    }
-                    // Success path continues below with `parsed`
+                    // Defer LLM completion until after tool plan execution: plan extraction/execution
+                    // failure is part of the LLM call outcome in the graph (invalid output from the LLM).
                     let json_value = serde_json::to_value(parsed.serialize_partial())
                         .map_err(BamlRtError::Json)?;
 
-                    // Process trace events to notify LLM interceptors of completion
-                    if let Some(ref collector) = collector
-                        && let Err(e) = collector.process_trace_events(scope).await
-                    {
-                        tracing::warn!(error = ?e, "Failed to process trace events for LLM interception");
-                    }
-
-                    if let Some(tool_result) = maybe_execute_tool_from_result(
+                    let elapsed_ms = start_time.elapsed().as_millis() as u64;
+                    match maybe_execute_tool_from_result(
                         &self.tool_registry,
                         &json_value,
-                        scope.context_id(),
+                        scope,
                     )
-                    .await?
+                    .await
                     {
-                        return Ok(tool_result);
+                        Err(e) => {
+                            if let Some(ref collector) = collector {
+                                collector
+                                    .complete_pending_effects(Outcome::Failure, elapsed_ms, None)
+                                    .await;
+                            }
+                            return Err(e.into());
+                        }
+                        Ok(None) => {
+                            // Defer: manager will run execute_tool_from_baml_result_or_value (e.g.
+                            // session plans). Do NOT call process_trace_events here — it always
+                            // passes Ok to the interceptor, so we'd write Success. The real outcome
+                            // (Success or Failure from plan extraction/execution) comes from the
+                            // effect completion. If we notified here, we'd race with the correct
+                            // outcome and risk showing Success in the sequence diagram when the
+                            // plan had empty steps.
+                            let handle = collector
+                                .as_ref()
+                                .map(|c| BamlLLMCollector::completion_handle(c.clone(), start_time));
+                            return Ok((json_value, handle));
+                        }
+                        Ok(Some(tool_result)) => {
+                            // Immediate tool execution completed; no plan to run. Safe to notify
+                            // interceptors now.
+                            if let Some(ref collector) = collector
+                                && let Err(e) = collector.process_trace_events(scope).await
+                            {
+                                tracing::warn!(
+                                    error = ?e,
+                                    "Failed to process trace events for LLM interception"
+                                );
+                            }
+                            if let Some(ref collector) = collector {
+                                collector
+                                    .complete_pending_effects(Outcome::Success, elapsed_ms, None)
+                                    .await;
+                            }
+                            return Ok((tool_result, None));
+                        }
                     }
-                    return Ok(json_value);
                 }
                 Err(e) => {
                     last_parse_err = Some(anyhow::Error::msg(e.to_string()));
@@ -341,6 +366,7 @@ impl BamlExecutor {
                                 .complete_pending_effects(
                                     Outcome::Failure,
                                     start_time.elapsed().as_millis() as u64,
+                                    None,
                                 )
                                 .await;
                         }
@@ -515,14 +541,19 @@ impl BamlExecutor {
 async fn maybe_execute_tool_from_result(
     tool_registry: &Arc<ToolRegistry>,
     result: &Value,
-    context_id: &baml_rt_core::ContextId,
+    scope: &baml_rt_core::context::RuntimeScope,
 ) -> Result<Option<Value>> {
     let Some((tool_name, tool_args)) = extract_tool_call(result)? else {
         return Ok(None);
     };
 
     let tool_result = tool_registry
-        .execute(&tool_name, tool_args, context_id)
+        .execute(
+            &tool_name,
+            tool_args,
+            scope.context_id(),
+            scope.agent_id(),
+        )
         .await?;
     Ok(Some(tool_result))
 }
@@ -638,17 +669,16 @@ mod tests {
             "message": "hello"
         });
 
-        baml_rt_core::context::with_scope(scope.as_scope().clone(), async move {
-            let current = baml_rt_core::context::current_scope().unwrap();
-            let context_id = current.context_id();
-            let tool_result = maybe_execute_tool_from_result(&registry, &result, context_id)
-                .await
-                .unwrap()
-                .expect("expected tool execution");
+        let tool_result = maybe_execute_tool_from_result(
+            &registry,
+            &result,
+            scope.as_scope(),
+        )
+        .await
+        .unwrap()
+        .expect("expected tool execution");
 
-            assert_eq!(tool_result["echo"]["message"], "hello");
-        })
-        .await;
+        assert_eq!(tool_result["echo"]["message"], "hello");
     }
 
     #[tokio::test]
@@ -660,15 +690,10 @@ mod tests {
         let scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id);
         let result = json!({ "value": "not a tool" });
 
-        baml_rt_core::context::with_scope(scope.as_scope().clone(), async move {
-            let current = baml_rt_core::context::current_scope().unwrap();
-            let context_id = current.context_id();
-            let tool_result = maybe_execute_tool_from_result(&registry, &result, context_id)
-                .await
-                .unwrap();
+        let tool_result = maybe_execute_tool_from_result(&registry, &result, scope.as_scope())
+            .await
+            .unwrap();
 
-            assert!(tool_result.is_none());
-        })
-        .await;
+        assert!(tool_result.is_none());
     }
 }

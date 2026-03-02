@@ -528,8 +528,10 @@ async fn test_invalid_open_input_deserialization() {
     // Try to open a session with invalid open_input (should be empty object for unit type)
     let invalid_open_input = serde_json::json!({"invalid": "data"});
     let context_id = ContextId::new(1, 1);
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap());
     let result = registry
-        .open_session("test/add_numbers", invalid_open_input, &context_id)
+        .open_session("test/add_numbers", invalid_open_input, &context_id, &agent_id)
         .await;
 
     assert!(result.is_err(), "Should fail with invalid open_input");
@@ -567,8 +569,10 @@ async fn test_open_session_with_initial_input() {
     // Test opening a session with empty initial_input (for unit type OpenInput)
     let empty_input = json!({});
     let context_id = ContextId::new(1, 2);
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap());
     let session_id = registry
-        .open_session("test/add_numbers", empty_input, &context_id)
+        .open_session("test/add_numbers", empty_input, &context_id, &agent_id)
         .await
         .unwrap();
 

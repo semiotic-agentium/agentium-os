@@ -43,7 +43,7 @@ fn task_id_from_chunk(value: &Value) -> Option<String> {
 
 /// Builds a stream chunk for TASK_STATE_SUBMITTED so the client FSM sees SUBMITTED before WORKING.
 /// This chunk is applied through the same pipeline as agent yields (store_result → apply_task_delta):
-/// the task is created/recorded and SUBMITTED is written to the store and to provenance (task_created,
+/// the task is created/recorded and SUBMITTED is written to the store and to provenance (task_exists + task_execution_started,
 /// task_status_changed). So the wire and PROV stay aligned—we record the task.
 fn make_submitted_chunk(context_id: &str, task_id: &str) -> Value {
     serde_json::json!({

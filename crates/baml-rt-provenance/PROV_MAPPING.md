@@ -68,6 +68,7 @@ These are labels applied **on top of** the PROV edges without changing direction
   - `A2ATaskExecution` -> `A2ATaskState` (role `task_state`) = `WAS_UPDATED_BY`
   - `LlmCall` -> `LlmPrompt` (role `a2a:prompt`) = `WAS_USED_BY`
   - `ToolCall` -> `ToolArgs` (role `a2a:args`) = `WAS_USED_BY`
+  - `ToolCall` -> `DelegationTarget` (role `a2a:delegation_target`) = `WAS_DELEGATED_TO`
   - `AgentBoot` -> `AgentArchive` (role `a2a:archive`) = `WAS_BOOTSTRAPPED_BY`
 - `WAS_GENERATED_BY` (entity -> activity):
   - `Message` -> `A2AMessageProcessing` = `WAS_EMITTED_BY`
@@ -106,8 +107,10 @@ semantics intact.
 | `LlmCallCompleted` | `LlmCall` activity, `LlmPrompt` entity, optional `Message` entity | `LlmCall` -> `LlmPrompt` (`WAS_USED_BY`), optional `LlmCall` -> `Message` (`WAS_CONSUMED_BY`) | `A2ATaskExecution` -> `LlmCall` (`WAS_INVOKED_BY`) or `A2AMessageProcessing` -> `LlmCall` (`WAS_INVOKED_BY`) |
 | `ToolCallStarted` | `ToolCall` activity, `ToolArgs` entity, optional `Message` entity | `ToolCall` -> `ToolArgs` (`WAS_USED_BY`), optional `ToolCall` -> `Message` (`WAS_CONSUMED_BY`) | `A2ATaskExecution` -> `ToolCall` (`WAS_EXECUTED_BY`) or `A2AMessageProcessing` -> `ToolCall` (`WAS_EXECUTED_BY`) |
 | `ToolCallCompleted` | `ToolCall` activity, `ToolArgs` entity, optional `Message` entity | `ToolCall` -> `ToolArgs` (`WAS_USED_BY`), optional `ToolCall` -> `Message` (`WAS_CONSUMED_BY`) | `A2ATaskExecution` -> `ToolCall` (`WAS_EXECUTED_BY`) or `A2AMessageProcessing` -> `ToolCall` (`WAS_EXECUTED_BY`) |
-| `TaskCreated` | `A2ATaskExecution` activity, `A2ATask` entity | `A2ATask` -> `A2ATaskExecution` (`WAS_CREATED_BY`), `A2ATaskExecution` -> `AgentRuntimeInstance` (`WAS_EXECUTED_BY`/`WAS_INVOKED_BY`) | — |
-| `TaskStatusChanged` | `A2ATaskExecution` activity, `A2ATaskState` entities | `A2ATaskExecution` -> `A2ATaskState` (`WAS_UPDATED_BY`), `A2ATaskState(old)` -> `A2ATaskState(new)` (`WAS_TRANSITIONED_FROM`) | `A2ATaskState(old)` -> `A2ATaskState(new)` (`WAS_TRANSITIONED_TO`) |
+| `TaskExists` | `A2ATask` entity | Idempotent upsert | — |
+| `TaskExecutionStarted` | `A2ATaskExecution` activity | `A2ATask` -> `A2ATaskExecution` (`WAS_CREATED_BY`), `A2ATaskExecution` -> `AgentRuntimeInstance` (`WAS_EXECUTED_BY`/`WAS_INVOKED_BY`) | — |
+| `TaskExecutionEnded` | `A2ATaskExecution` end_time | Updates existing activity | — |
+| `TaskStatusChanged` | `A2ATaskExecution` activity, `A2ATaskState` entities | `A2ATaskExecution` -> `A2ATaskState` (`WAS_UPDATED_BY`), `A2ATaskState(new)` -> `A2ATaskState(old)` (`WAS_DERIVED_FROM` / STATUS_TRANSITION). One node per (task_id, status); idempotent MERGE. | — |
 | `TaskArtifactGenerated` | `A2ATaskExecution` activity, `Artifact` entity, `A2ATask` entity | `Artifact` -> `A2ATaskExecution` (`WAS_GENERATED_BY`) | `A2ATask` -> `Artifact` (`WAS_GENERATED_BY`) |
 | `MessageReceived` | `A2AMessageProcessing` activity, `Message` entity, `A2ATask` entity | `A2AMessageProcessing` -> `Message` (`WAS_RECEIVED_BY`), `A2AMessageProcessing` -> `Agent` (`WAS_EXECUTED_BY`/`WAS_INVOKED_BY`) | `A2ATask` -> `Message` (`WAS_SPAWNED_BY`) |
 | `MessageSent` | `A2AMessageProcessing` activity, `Message` entity, `A2ATask` entity | `Message` -> `A2AMessageProcessing` (`WAS_EMITTED_BY`), `A2AMessageProcessing` -> `Agent` (`WAS_EXECUTED_BY`/`WAS_INVOKED_BY`) | `A2ATask` -> `Message` (`WAS_EMITTED_BY`) |

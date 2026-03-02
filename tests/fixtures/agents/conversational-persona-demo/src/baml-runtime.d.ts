@@ -25,6 +25,10 @@ export interface SelectedAgent { agent_package: string;
 agent_instance_id: string;
  }
 
+export interface StructuredPlan { objective: string;
+plan_steps: PlanStep[];
+ }
+
 export interface SystemDiscover_agentsSessionPlan { steps: SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsNextStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep[];
 reason: string | null;
  }
@@ -37,11 +41,13 @@ reason: string | null;
 
 declare global {
 
-declare function BuildDelegatePlan(args: { agent_package: string; agent_instance_id: string; user_message: string }): Promise<SystemInternal_a2aSessionPlan>;
+declare function BuildDelegatePlan(args: { plan: StructuredPlan; step: PlanStep }): Promise<SystemInternal_a2aSessionPlan>;
 
 declare function FormatCapabilities(args: { user_message: string; agents: AgentCardDto[] }): Promise<string>;
 
 declare function GetDiscoverAgentsPlan(args: { user_message: string }): Promise<SystemDiscover_agentsSessionPlan>;
+
+declare function MakeStructuredPlan(args: { user_message: string; agents: AgentCardDto[] }): Promise<StructuredPlan>;
 
 declare function PersonaChat(args: { user_message: string }): Promise<string>;
 

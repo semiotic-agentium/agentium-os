@@ -31,6 +31,11 @@ anyhow = { workspace = true, optional = true }
 insta = { workspace = true, features = ["json"] }
 tempfile = { workspace = true }
 test-support = { path = "../test-support" }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "sequence_render"
+harness = false
 
 [features]
 default = []

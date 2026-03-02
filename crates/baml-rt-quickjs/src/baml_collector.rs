@@ -8,7 +8,7 @@
 //! This module implements a collector that hooks into BAML's execution lifecycle
 //! to intercept LLM calls and route them through our interceptor system.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
 use baml_rt_core::{
     Outcome, Result,
@@ -32,6 +32,27 @@ pub struct BamlLLMCollector {
     effect_emitter: Option<Arc<dyn EffectEmitter>>,
     /// Store effect tokens keyed by context_id for type-safe completion
     effect_tokens: Arc<Mutex<HashMap<ContextId, EffectStartToken<LlmKind>>>>,
+}
+
+/// Handle to complete the LLM effect after tool/plan execution (e.g. so plan extraction failure emits PromptRejected).
+pub struct LLMCompletionHandle {
+    collector: Arc<BamlLLMCollector>,
+    start: Instant,
+}
+
+impl LLMCompletionHandle {
+    /// Complete the LLM effect with the given outcome. Call once after execute_tool_from_baml_result_or_value.
+    /// When outcome is Failure, pass rejection_reason (e.g. plan extraction error) to emit PromptRejected in provenance.
+    pub async fn complete(
+        self,
+        outcome: Outcome,
+        rejection_reason: Option<String>,
+    ) {
+        let elapsed_ms = self.start.elapsed().as_millis() as u64;
+        self.collector
+            .complete_pending_effects(outcome, elapsed_ms, rejection_reason)
+            .await;
+    }
 }
 
 impl BamlLLMCollector {
@@ -74,7 +95,13 @@ impl BamlLLMCollector {
     /// Complete all pending LLM effects using our token(s), clock, and outcome.
     /// Does not read BAML trace. Call this after call_function returns (success or failure).
     /// Trace is still used separately for provenance and interceptor notification.
-    pub async fn complete_pending_effects(&self, outcome: Outcome, duration_ms: u64) {
+    /// When outcome is Failure, pass `rejection_reason` (e.g. plan extraction error) to emit PromptRejected.
+    pub async fn complete_pending_effects(
+        &self,
+        outcome: Outcome,
+        duration_ms: u64,
+        rejection_reason: Option<String>,
+    ) {
         let emitter = match self.effect_emitter.as_ref() {
             Some(e) => e.clone(),
             None => return,
@@ -85,11 +112,21 @@ impl BamlLLMCollector {
         };
         for token in tokens {
             if let Err(e) = token
-                .complete(emitter.as_ref(), None, duration_ms, outcome)
+                .complete(emitter.as_ref(), None, duration_ms, outcome, rejection_reason.clone())
                 .await
             {
                 tracing::warn!(error = ?e, "Failed to complete LLM effect");
             }
+        }
+    }
+
+    /// Create a completion handle so the caller can complete the LLM effect after tool/plan execution.
+    /// Use when the executor returns successfully but tool/plan execution is done by the manager;
+    /// the manager calls `handle.complete(Success, None)` or `handle.complete(Failure, Some(reason))`.
+    pub fn completion_handle(collector: Arc<BamlLLMCollector>, start: Instant) -> LLMCompletionHandle {
+        LLMCompletionHandle {
+            collector,
+            start,
         }
     }
 

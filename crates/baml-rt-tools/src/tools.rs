@@ -12,7 +12,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, ContextId, Result};
+use baml_rt_core::{BamlRtError, ids::AgentId, ContextId, Result};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -757,14 +757,16 @@ pub enum ToolOrigin {
     Guest,
 }
 
-/// Context passed to a tool when a session is opened. context_id (from invocation scope)
-/// is set by the executor so tools (e.g. internal_a2a) can attach it to outbound requests for
-/// session continuity (e.g. INPUT_REQUIRED resume).
+/// Context passed to a tool when a session is opened. context_id and agent_id (from invocation
+/// scope) are set by the executor so tools (e.g. internal_a2a) can attach context_id to
+/// outbound requests for session continuity; agent_id is used for workspace resolution etc.
 pub struct ToolSessionContext {
     pub session_id: ToolSessionId,
     pub tool_name: ToolName,
     /// Invocation scope context_id; used by internal_a2a for delegated session continuity.
     pub context_id: ContextId,
+    /// Invocation scope agent_id; used for workspace resolution and attribution.
+    pub agent_id: AgentId,
 }
 
 #[async_trait]
@@ -865,8 +867,11 @@ impl ToolSessionHandle<AwaitingInput> {
         name: &str,
         open_input: Value,
         context_id: &ContextId,
+        agent_id: &AgentId,
     ) -> Result<ToolSessionHandle<AwaitingInput>> {
-        let session_id = registry.open_session(name, open_input, context_id).await?;
+        let session_id = registry
+            .open_session(name, open_input, context_id, agent_id)
+            .await?;
         Ok(ToolSessionHandle {
             id: session_id,
             registry,
@@ -1471,12 +1476,13 @@ impl ToolRegistry {
     }
 
     /// Open a tool session and return its session id.
-    /// Open a tool session. `context_id` is the invocation scope id (always present).
+    /// `context_id` and `agent_id` come from the invocation scope.
     pub async fn open_session(
         &self,
         name: &str,
         open_input: Value,
         context_id: &ContextId,
+        agent_id: &AgentId,
     ) -> Result<ToolSessionId> {
         let start = std::time::Instant::now();
         let parsed = ToolName::parse(name)?;
@@ -1505,6 +1511,7 @@ impl ToolRegistry {
             session_id: session_id.clone(),
             tool_name: metadata.name.clone(),
             context_id: context_id.clone(),
+            agent_id: agent_id.clone(),
         };
         let session = handler.open_session(ctx, open_input).await?;
         self.sessions
@@ -1611,8 +1618,14 @@ impl ToolRegistry {
         Ok(())
     }
 
-    /// Execute a tool function by name (single-shot convenience). `context_id` is the invocation scope id.
-    pub async fn execute(&self, name: &str, args: Value, context_id: &ContextId) -> Result<Value> {
+    /// Execute a tool function by name (single-shot convenience). `context_id` and `agent_id` from invocation scope.
+    pub async fn execute(
+        &self,
+        name: &str,
+        args: Value,
+        context_id: &ContextId,
+        agent_id: &AgentId,
+    ) -> Result<Value> {
         let start = std::time::Instant::now();
         let span = crate::spans::execute_tool(name);
         let _guard = span.enter();
@@ -1640,7 +1653,7 @@ impl ToolRegistry {
 
         // For execute, open_input is always () (empty object)
         let session_id = self
-            .open_session(&parsed.to_string(), empty_open_input(), context_id)
+            .open_session(&parsed.to_string(), empty_open_input(), context_id, agent_id)
             .await?;
         self.session_send(&session_id, args).await?;
         let result = match self.session_next(&session_id).await? {

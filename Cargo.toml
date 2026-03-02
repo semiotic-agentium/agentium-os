@@ -71,7 +71,9 @@ opentelemetry_sdk = "0.26"
 tracing-opentelemetry = "0.27"
 tokio-tungstenite = "0.28.0"
 futures-util = "0.3.31"
-graphqlite = "0.3"
+# Fork with reentrant Flex scanner (PR #26) for concurrent parsing. Submodule at graphqlite/;
+# build.rs compiles the extension and copies it next to the binary automatically.
+graphqlite = { path = "graphqlite/bindings/rust", default-features = false }
 rusqlite = "0.32"
 testcontainers = "0.23"
 insta = "1.46.3"

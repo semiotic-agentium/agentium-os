@@ -63,6 +63,9 @@ pub struct ToolCallContext {
 
     /// Additional metadata
     pub metadata: Value,
+
+    /// For system/internal_a2a: the delegated-to agent package (write-time provenance).
+    pub delegation_target: Option<String>,
 }
 
 /// Trait for intercepting LLM calls

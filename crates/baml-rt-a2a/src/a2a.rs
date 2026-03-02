@@ -68,7 +68,13 @@ impl A2aRequest {
             A2aWireMethod::MessageSendStream { params } => {
                 let mut params = *params;
                 if params.message.context_id.is_none() {
-                    params.message.context_id = Some(context::generate_context_id());
+                    let generated = context::generate_context_id();
+                    tracing::debug!(
+                        context_id = %generated,
+                        message_id = %params.message.message_id.as_message_id(),
+                        "A2aRequest::from_value: generated context_id for MessageSendStream (client omitted)"
+                    );
+                    params.message.context_id = Some(generated);
                 }
                 let context_id = params.message.context_id.clone().expect("set above");
                 let message_id = params.message.message_id.as_message_id().clone();

@@ -144,6 +144,7 @@ impl ToolInterceptor for ProvenanceInterceptor {
                 context.function_name.clone(),
                 context.args.clone(),
                 metadata.clone(),
+                context.delegation_target.clone(),
             )
         } else {
             let message_id = match message_id {
@@ -161,6 +162,7 @@ impl ToolInterceptor for ProvenanceInterceptor {
                 context.function_name.clone(),
                 context.args.clone(),
                 metadata.clone(),
+                context.delegation_target.clone(),
             )
         };
 
@@ -194,6 +196,7 @@ impl ToolInterceptor for ProvenanceInterceptor {
                 metadata.clone(),
                 duration_ms,
                 outcome,
+                context.delegation_target.clone(),
             )
         } else {
             let message_id = match message_id {
@@ -212,6 +215,7 @@ impl ToolInterceptor for ProvenanceInterceptor {
                 metadata.clone(),
                 duration_ms,
                 outcome,
+                context.delegation_target.clone(),
             )
         };
 

@@ -90,7 +90,6 @@ fn stream_handover_lane() -> &'static achan::Sender<StreamHandoverRequest> {
                 let local = tokio::task::LocalSet::new();
                 runtime.block_on(local.run_until(async move {
                     while let Ok(job) = rx.recv().await {
-                        tracing::trace!("stream handover lane: dequeued job");
                         tokio::task::spawn_local(async move {
                             run_stream_on_js_thread(
                                 job.bridge,
@@ -196,15 +195,8 @@ pub async fn spawn_stream_handover(
     relay_rx: Option<mpsc::Receiver<Value>>,
 ) -> mpsc::Receiver<StreamOutput> {
     let (tx, rx) = mpsc::channel(64);
-    tracing::trace!(
-        context_id = %scope.context_id(),
-        has_resume_rx = resume_rx.is_some(),
-        has_relay_rx = relay_rx.is_some(),
-        "stream handover: enqueue request"
-    );
     let tx_err = tx.clone();
     let tx_stream = tx.clone();
-    let ctx_for_log = scope.context_id().to_string();
     let enqueue = stream_handover_lane()
         .send(StreamHandoverRequest {
             bridge,
@@ -222,8 +214,6 @@ pub async fn spawn_stream_handover(
             serde_json::json!({ "error": "stream handover lane unavailable" }),
             StreamCompletion::SemanticFinal,
         ));
-    } else {
-        tracing::trace!(context_id = %ctx_for_log, "stream handover: enqueue accepted");
     }
 
     rx
@@ -278,7 +268,8 @@ fn chunk_has_input_required_state(chunk: &Value) -> bool {
 ///
 /// Split into explicit phase types to keep lock ownership and control flow visible.
 enum CollectIteration {
-    Continue,
+    /// Continue pumping. When `had_chunks` is true, use minimal sleep to reduce latency.
+    Continue { had_chunks: bool },
     Done,
 }
 
@@ -308,24 +299,6 @@ impl StreamCollectorContext {
         }
         self.finalized = true;
 
-        let elapsed = self.start.elapsed();
-        tracing::trace!(
-            session_id = %self.session_id,
-            elapsed_ms = elapsed.as_millis() as u64,
-            chunk_count = self.all.len(),
-            completion = ?completion,
-            "collect: finalize_once"
-        );
-        if std::env::var("BAML_STREAM_DEBUG").is_ok() {
-            eprintln!(
-                "collect: finalize_once session={} completion={:?} elapsed_ms={} chunk_count={}",
-                self.session_id,
-                completion,
-                elapsed.as_millis(),
-                self.all.len()
-            );
-        }
-
         let _ = self
             .bridge
             .lock()
@@ -344,13 +317,6 @@ impl StreamCollectorContext {
     /// Handle InputRequired terminal: either block on resume and deliver into JS (true resume)
     /// or finalize with InputRequired (standalone/test).
     async fn handle_input_required_resume(&mut self) -> Result<CollectIteration> {
-        tracing::trace!(session_id = %self.session_id, "collect: terminal reason input_required");
-        if std::env::var("BAML_STREAM_DEBUG").is_ok() {
-            eprintln!(
-                "collect: terminal reason input_required session={}",
-                self.session_id
-            );
-        }
         if let Some(ref mut resume_rx) = self.resume_rx {
             if self
                 .tx
@@ -364,17 +330,14 @@ impl StreamCollectorContext {
                 self.finalize_once(None).await;
                 return Ok(CollectIteration::Done);
             }
-            tracing::trace!(session_id = %self.session_id, "collect: blocking on resume_rx");
             let message = match resume_rx.recv().await {
                 Some(m) => m,
                 None => {
-                    tracing::debug!(session_id = %self.session_id, "collect: resume_rx closed");
                     self.finalize_once(Some(StreamCompletion::ChannelClosed))
                         .await;
                     return Ok(CollectIteration::Done);
                 }
             };
-            tracing::trace!(session_id = %self.session_id, "collect: resume message received, delivering into JS");
             let deliver_result =
                 QuickJSBridge::deliver_resume_input(self.bridge.clone(), self.session_id, message)
                     .await;
@@ -391,7 +354,7 @@ impl StreamCollectorContext {
                     .await;
                 return Ok(CollectIteration::Done);
             }
-            return Ok(CollectIteration::Continue);
+            return Ok(CollectIteration::Continue { had_chunks: true });
         }
         self.finalize_once(Some(StreamCompletion::InputRequired))
             .await;
@@ -399,36 +362,13 @@ impl StreamCollectorContext {
     }
 
     async fn next_iteration(&mut self) -> Result<CollectIteration> {
-        tracing::trace!(
-            session_id = %self.session_id,
-            "collect: entering pump phase"
-        );
-        if std::env::var("BAML_STREAM_DEBUG").is_ok() {
-            eprintln!("collect: entering pump phase session={}", self.session_id);
-        }
         run_stream_pending_jobs(&self.bridge).await;
-        tracing::trace!(
-            session_id = %self.session_id,
-            "collect: pump phase advanced pending jobs"
-        );
-        if std::env::var("BAML_STREAM_DEBUG").is_ok() {
-            eprintln!(
-                "collect: pump phase advanced pending jobs session={}",
-                self.session_id
-            );
-        }
-
-        tracing::trace!(
-            session_id = %self.session_id,
-            "stream: relay phase"
-        );
-        if std::env::var("BAML_STREAM_DEBUG").is_ok() {
-            eprintln!("stream: relay phase session={}", self.session_id);
-        }
 
         // Relay tool/status chunks first (causal order). Forward each immediately; do not buffer.
+        let mut saw_relay = false;
         if let Some(ref mut relay_rx) = self.relay_rx {
             while let Ok(value) = relay_rx.try_recv() {
+                saw_relay = true;
                 if self.tx.send(StreamOutput::RelayChunk(value)).await.is_err() {
                     break;
                 }
@@ -477,6 +417,7 @@ impl StreamCollectorContext {
         // Relay any remaining tool/status when there were no yield chunks this iteration.
         if let Some(ref mut relay_rx) = self.relay_rx {
             while let Ok(value) = relay_rx.try_recv() {
+                saw_relay = true;
                 if self.tx.send(StreamOutput::RelayChunk(value)).await.is_err() {
                     break;
                 }
@@ -484,10 +425,6 @@ impl StreamCollectorContext {
         }
 
         if channel_closed {
-            tracing::trace!(session_id = %self.session_id, "stream: channel closed");
-            if std::env::var("BAML_STREAM_DEBUG").is_ok() {
-                eprintln!("stream: channel closed session={}", self.session_id);
-            }
             self.finalize_once(Some(StreamCompletion::ChannelClosed))
                 .await;
             return Ok(CollectIteration::Done);
@@ -506,62 +443,24 @@ impl StreamCollectorContext {
             return Ok(CollectIteration::Done);
         }
 
-        tracing::trace!(
-            session_id = %self.session_id,
-            total_chunks = self.all.len(),
-            idle_elapsed_secs = idle_elapsed.as_secs(),
-            idle_timeout_secs = self.idle_timeout_secs,
-            "collect: continuing pump"
-        );
-        if std::env::var("BAML_STREAM_DEBUG").is_ok() {
-            eprintln!(
-                "collect: continuing pump session={} total_chunks={} idle_elapsed_secs={}",
-                self.session_id,
-                self.all.len(),
-                idle_elapsed.as_secs()
-            );
-        }
-
-        Ok(CollectIteration::Continue)
+        Ok(CollectIteration::Continue {
+            had_chunks: saw_yield || saw_relay,
+        })
     }
 }
 
 async fn run_stream_pending_jobs(bridge: &Arc<Mutex<QuickJSBridge>>) {
     let coordinator = stream_pending_job_coordinator();
     let Ok(_coordinator_permit) = coordinator.try_acquire() else {
-        tracing::trace!("collect: run_stream_pending_jobs skipped (coordinator busy)");
-        if std::env::var("BAML_STREAM_DEBUG").is_ok() {
-            eprintln!("collect: run_stream_pending_jobs skipped (coordinator busy)");
-        }
         return;
     };
 
-    tracing::trace!("collect: run_stream_pending_jobs acquired coordinator");
-    if std::env::var("BAML_STREAM_DEBUG").is_ok() {
-        eprintln!("collect: run_stream_pending_jobs acquired coordinator");
-    }
-
     let guard = match tokio::time::timeout(Duration::from_millis(50), bridge.lock()).await {
         Ok(guard) => guard,
-        Err(_) => {
-            tracing::trace!("collect: run_stream_pending_jobs skipped (bridge lock busy)");
-            if std::env::var("BAML_STREAM_DEBUG").is_ok() {
-                eprintln!("collect: run_stream_pending_jobs skipped (bridge lock busy)");
-            }
-            return;
-        }
+        Err(_) => return,
     };
 
-    tracing::trace!("collect: run_stream_pending_jobs advancing pending jobs");
-    if std::env::var("BAML_STREAM_DEBUG").is_ok() {
-        eprintln!("collect: run_stream_pending_jobs advancing pending jobs");
-    }
     guard.advance_pending_jobs();
-
-    tracing::trace!("collect: run_stream_pending_jobs completed");
-    if std::env::var("BAML_STREAM_DEBUG").is_ok() {
-        eprintln!("collect: run_stream_pending_jobs completed");
-    }
 }
 
 pub async fn collect_into_channel_owned(
@@ -572,16 +471,6 @@ pub async fn collect_into_channel_owned(
     resume_rx: Option<ResumeRx>,
     relay_rx: Option<mpsc::Receiver<Value>>,
 ) -> Result<()> {
-    tracing::trace!(
-        session_id = ?session_id,
-        "[collect] collect_into_channel_owned entered",
-    );
-    if std::env::var("BAML_STREAM_DEBUG").is_ok() {
-        eprintln!(
-            "[collect] collect_into_channel_owned entered session={}",
-            session_id
-        );
-    }
     let start = std::time::Instant::now();
     let idle_timeout_secs = {
         let guard = bridge.lock().await;
@@ -602,45 +491,20 @@ pub async fn collect_into_channel_owned(
         interval: Duration::from_millis(20),
         finalized: false,
     };
-    let mut phase_generation: u64 = 0;
 
     loop {
-        let active_session_id = context.session_id;
-        tracing::trace!(
-            session_id = %active_session_id,
-            phase = phase_generation,
-            elapsed_ms = start.elapsed().as_millis() as u64,
-            "collect: loop iteration begin"
-        );
-        if std::env::var("BAML_STREAM_DEBUG").is_ok() {
-            eprintln!(
-                "collect: loop iteration begin session={} phase={} elapsed_ms={}",
-                active_session_id,
-                phase_generation,
-                start.elapsed().as_millis()
-            );
-        }
         match context.next_iteration().await? {
-            CollectIteration::Continue => {
-                let interval = context.interval;
-                tracing::trace!(
-                    session_id = %active_session_id,
-                    phase = phase_generation,
-                    interval_ms = interval.as_millis() as u64,
-                    "collect: loop scheduled continue"
-                );
-                if std::env::var("BAML_STREAM_DEBUG").is_ok() {
-                    eprintln!(
-                        "collect: loop scheduled continue session={} phase={} interval_ms={}",
-                        active_session_id,
-                        phase_generation,
-                        interval.as_millis()
-                    );
-                }
+            CollectIteration::Continue { had_chunks } => {
+                // When we received chunks this iteration, use minimal sleep to reduce latency.
+                // Idle iterations use full interval to avoid busy-looping.
+                let interval = if had_chunks {
+                    Duration::from_millis(1)
+                } else {
+                    context.interval
+                };
                 sleep(interval).await;
             }
             CollectIteration::Done => return Ok(()),
         }
-        phase_generation += 1;
     }
 }

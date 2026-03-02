@@ -154,6 +154,42 @@ pub fn record_provenance_write(event_kind: &str, result: &str, duration: Duratio
     provenance_write_histogram().record(duration.as_millis() as f64, attributes);
 }
 
+static PROVENANCE_SEQUENCE_RENDER_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static PROVENANCE_SEQUENCE_RENDER_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+
+fn provenance_sequence_render_counter() -> &'static Counter<u64> {
+    PROVENANCE_SEQUENCE_RENDER_COUNTER.get_or_init(|| {
+        global::meter("baml_rt_provenance")
+            .u64_counter("baml_rt_provenance.sequence.render_total")
+            .init()
+    })
+}
+
+fn provenance_sequence_render_histogram() -> &'static Histogram<f64> {
+    PROVENANCE_SEQUENCE_RENDER_HISTOGRAM.get_or_init(|| {
+        global::meter("baml_rt_provenance")
+            .f64_histogram("baml_rt_provenance.sequence.render_duration_ms")
+            .init()
+    })
+}
+
+/// Record sequence diagram render (graph → Mermaid).
+/// Scope: "context" | "task" | "full". Nodes bucket for low cardinality.
+pub fn record_provenance_sequence_render(scope: &str, duration: Duration, nodes_count: usize) {
+    let nodes_bucket = match nodes_count {
+        0..=10 => "0-10",
+        11..=50 => "11-50",
+        51..=100 => "51-100",
+        _ => "100+",
+    };
+    let attributes = &[
+        KeyValue::new("scope", scope.to_string()),
+        KeyValue::new("nodes_bucket", nodes_bucket),
+    ];
+    provenance_sequence_render_counter().add(1, attributes);
+    provenance_sequence_render_histogram().record(duration.as_millis() as f64, attributes);
+}
+
 fn a2a_worker_handle_counter() -> &'static Counter<u64> {
     A2A_WORKER_HANDLE_COUNTER.get_or_init(|| {
         global::meter(METER_NAME)

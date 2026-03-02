@@ -4,23 +4,32 @@
 //! produces an [`ExportedGraph`] — a portable, renderable representation of
 //! nodes and edges. Pure-function renderers then convert `ExportedGraph` into
 //! Mermaid, Graphviz DOT, or JSON for frontends, tests, and documentation.
+//!
+//! **No heuristics in projection:** If export/query/render is impossible given
+//! the stored graph, the graph construction (write path) is incorrect.
 
+pub mod activity_outcome;
 pub mod assertions;
 pub mod dot;
+pub mod enrich;
 pub mod json;
 pub mod sequence;
 pub mod simplify;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use graphqlite::CypherResult;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     error::Result,
+    graph_export::activity_outcome::NodeActivityOutcome,
     graph_model::GraphNodeLabel,
     graphqlite_store::GraphqliteProvenanceStore,
-    vocabulary::{a2a, message_directions},
+    vocabulary::{a2a, context_scope, message_directions},
 };
 
 fn single_param(key: &str, value: &str) -> serde_json::Map<String, serde_json::Value> {
@@ -99,35 +108,114 @@ impl GraphExporter {
     }
 
     /// Export the full subgraph for a given `context_id`.
+    ///
+    /// Traverses SCOPED_TO edges. AgentRuntimeInstance has a2a:archive_path at write.
+    /// [`filter_scope`] keeps boot-chain nodes via [`context_scope::SCOPE_EXEMPT_LABELS`].
     #[tracing::instrument(skip(self), fields(context_id))]
     pub async fn export_by_context(&self, context_id: &str) -> Result<ExportedGraph> {
-        const QUERY: &str = "MATCH (a)-[r]->(b) \
-            WHERE a.a2a_context_id = $context AND b.a2a_context_id = $context \
-            RETURN a.id AS src_id, labels(a)[0] AS src_label, properties(a) AS src_props, \
-                   type(r) AS rel_type, properties(r) AS rel_props, \
-                   b.id AS tgt_id, labels(b)[0] AS tgt_label, properties(b) AS tgt_props \
-            ORDER BY a.a2a_event_id, type(r), b.a2a_event_id";
-        let params = single_param("context", context_id);
-        let result = self.store.run_cypher_read(QUERY, &params).await?;
-        let graph =
+        let graph = self.export_context_core(context_id).await?;
+        let allowed: HashSet<String> = std::iter::once(context_id.to_string()).collect();
+        Ok(filter_scope_multi(graph, a2a::CONTEXT_ID, &allowed))
+    }
+
+    async fn export_context_core(&self, context_id: &str) -> Result<ExportedGraph> {
+        tracing::debug!(context_id = %context_id, "export_context_core: START cypher");
+        // Traverse via SCOPED_TO edges (indexed by Context.id). No property filters.
+        // Only (a) must be scoped; (b) is reached via the relation (e.g. MessageProcessing
+        // -[WAS_EXECUTED_BY]-> AgentRuntimeInstance). AgentRuntimeInstance has no context.
+        let ctx_escaped = context_id.replace('\'', "''");
+        let query = format!(
+            "MATCH (ctx:{ctx_label} {{id: '{ctx_escaped}'}})-[:{scoped_to}]->(a), (a)-[r]->(b) \
+             RETURN a.id AS src_id, labels(a)[0] AS src_label, properties(a) AS src_props, \
+                    type(r) AS rel_type, properties(r) AS rel_props, \
+                    b.id AS tgt_id, labels(b)[0] AS tgt_label, properties(b) AS tgt_props",
+            ctx_label = context_scope::LABEL,
+            scoped_to = context_scope::SCOPED_TO,
+        );
+        let params = serde_json::Map::new();
+        let t0 = std::time::Instant::now();
+        let result = self.store.run_cypher_read(&query, &params).await?;
+        let cypher_ms = t0.elapsed().as_millis();
+        tracing::debug!(context_id = %context_id, cypher_ms, "export_context_core: DONE cypher, START parse");
+        let t1 = std::time::Instant::now();
+        let mut graph =
             parse_graphqlite_export_result(&result, ExportScope::Context(context_id.to_string()))?;
-        Ok(filter_scope(graph, a2a::CONTEXT_ID, context_id))
+        enrich::enrich_derived_properties(&mut graph);
+        let parse_ms = t1.elapsed().as_millis();
+        tracing::debug!(
+            context_id = %context_id,
+            cypher_ms,
+            parse_ms,
+            nodes = graph.nodes.len(),
+            edges = graph.edges.len(),
+            "export_context_core: cypher + parse"
+        );
+
+        Ok(graph)
     }
 
     /// Export the full subgraph for a given `task_id`.
+    ///
+    /// Resolves the task's context_id (from TaskExecution etc.), then runs the same
+    /// SCOPED_TO traversal as export_by_context so the initial user message (which
+    /// has context_id but no task_id) is included.
     #[tracing::instrument(skip(self), fields(task_id))]
     pub async fn export_by_task(&self, task_id: &str) -> Result<ExportedGraph> {
-        const QUERY: &str = "MATCH (a)-[r]->(b) \
-            WHERE a.a2a_task_id = $task AND b.a2a_task_id = $task \
-            RETURN a.id AS src_id, labels(a)[0] AS src_label, properties(a) AS src_props, \
-                   type(r) AS rel_type, properties(r) AS rel_props, \
-                   b.id AS tgt_id, labels(b)[0] AS tgt_label, properties(b) AS tgt_props \
-            ORDER BY a.a2a_event_id, type(r), b.a2a_event_id";
-        let params = single_param("task", task_id);
-        let result = self.store.run_cypher_read(QUERY, &params).await?;
-        let graph =
-            parse_graphqlite_export_result(&result, ExportScope::Task(task_id.to_string()))?;
+        let context_id = self.task_context_id(task_id).await?;
+        let graph = if let Some(ctx_id) = context_id {
+            let mut g = self.export_context_core(&ctx_id).await?;
+            g.scope = ExportScope::Task(task_id.to_string());
+            g
+        } else {
+            ExportedGraph {
+                nodes: vec![],
+                edges: vec![],
+                scope: ExportScope::Task(task_id.to_string()),
+            }
+        };
         Ok(filter_scope(graph, a2a::TASK_ID, task_id))
+    }
+
+    /// List all distinct context IDs in the provenance graph.
+    ///
+    /// Tries Context nodes first; falls back to scanning nodes with a2a_context_id.
+    pub async fn list_contexts(&self) -> Result<Vec<String>> {
+        let ctx_label = context_scope::LABEL;
+        let query = format!("MATCH (ctx:{ctx_label}) RETURN ctx.id AS ctx_id");
+        let params = serde_json::Map::new();
+        let result = self.store.run_cypher_read(&query, &params).await?;
+        let mut ids: Vec<String> = result
+            .iter()
+            .filter_map(|row| row_get_string_any(row, &["ctx_id"]))
+            .filter(|s| !s.is_empty())
+            .collect();
+        if ids.is_empty() {
+            // Fallback: nodes may have a2a_context_id without a Context node (legacy or sparse writes).
+            let fallback =
+                "MATCH (n) WHERE n.a2a_context_id IS NOT NULL RETURN DISTINCT n.a2a_context_id AS ctx_id";
+            let result = self.store.run_cypher_read(fallback, &params).await?;
+            ids = result
+                .iter()
+                .filter_map(|row| row_get_string_any(row, &["ctx_id"]))
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+        ids.sort();
+        ids.dedup();
+        Ok(ids)
+    }
+
+    /// Get context_id for a task from any node with a2a_task_id and a2a_context_id (e.g. TaskExecution).
+    async fn task_context_id(&self, task_id: &str) -> Result<Option<String>> {
+        let query = "MATCH (t) WHERE t.a2a_task_id = $task_id AND t.a2a_context_id IS NOT NULL \
+             RETURN t.a2a_context_id AS ctx_id LIMIT 1";
+        let params = single_param("task_id", task_id);
+        let result = self.store.run_cypher_read(query, &params).await?;
+        let ctx_id = result
+            .iter()
+            .next()
+            .and_then(|row| row_get_string_any(row, &["ctx_id"]));
+        Ok(ctx_id)
     }
 }
 
@@ -148,10 +236,6 @@ fn parse_graphqlite_export_result(
     for row in result.iter() {
         let src_id = row_get_string_any(row, &["src_id", "a.id"]).unwrap_or_default();
         let src_label = row_get_string_any(row, &["src_label", "labels(a)[0]"]).unwrap_or_default();
-        let src_props = row_to_properties(
-            row,
-            &["src_props", "properties(a)", "toString(properties(a))"],
-        );
         let rel_type = row_get_string_any(row, &["rel_type", "type(r)"]).unwrap_or_default();
         let rel_props = row_to_properties(
             row,
@@ -159,22 +243,37 @@ fn parse_graphqlite_export_result(
         );
         let tgt_id = row_get_string_any(row, &["tgt_id", "b.id"]).unwrap_or_default();
         let tgt_label = row_get_string_any(row, &["tgt_label", "labels(b)[0]"]).unwrap_or_default();
-        let tgt_props = row_to_properties(
-            row,
-            &["tgt_props", "properties(b)", "toString(properties(b))"],
-        );
 
         if !src_id.is_empty() {
-            upsert_node(&mut nodes_map, &src_id, &src_label, &src_props);
+            let needs_enrichment = nodes_map
+                .get(src_id.as_str())
+                .is_none_or(|existing| node_needs_enrichment(existing, &src_label));
+            if needs_enrichment {
+                let src_props = row_to_properties(
+                    row,
+                    &["src_props", "properties(a)", "toString(properties(a))"],
+                );
+                upsert_node(&mut nodes_map, &src_id, &src_label, &src_props);
+            }
         }
         if !tgt_id.is_empty() {
-            upsert_node(&mut nodes_map, &tgt_id, &tgt_label, &tgt_props);
+            let needs_enrichment = nodes_map
+                .get(tgt_id.as_str())
+                .is_none_or(|existing| node_needs_enrichment(existing, &tgt_label));
+            if needs_enrichment {
+                let tgt_props = row_to_properties(
+                    row,
+                    &["tgt_props", "properties(b)", "toString(properties(b))"],
+                );
+                upsert_node(&mut nodes_map, &tgt_id, &tgt_label, &tgt_props);
+            }
         }
-        if !src_id.is_empty() && !tgt_id.is_empty() && !rel_type.is_empty() {
+        let relation = rel_type.trim().to_string();
+        if !src_id.is_empty() && !tgt_id.is_empty() && !relation.is_empty() {
             edges.push(ExportedEdge {
                 from: src_id,
                 to: tgt_id,
-                relation: rel_type,
+                relation,
                 properties: rel_props,
             });
         }
@@ -348,43 +447,73 @@ fn property_value_is_empty(value: &serde_json::Value) -> bool {
     }
 }
 
-// ── Scope post-filtering ────────────────────────────────────────────────────
+fn node_needs_enrichment(existing: &ExportedNode, incoming_label: &str) -> bool {
+    if existing.label.is_empty() && !incoming_label.is_empty() {
+        return true;
+    }
+    if existing.event_order.is_none() {
+        return true;
+    }
+    if GraphNodeLabel::parse(&existing.label).or_else(|| GraphNodeLabel::parse(incoming_label))
+        == Some(GraphNodeLabel::Message)
+    {
+        let missing_role = existing
+            .properties
+            .get(a2a::ROLE)
+            .is_none_or(property_value_is_empty);
+        let missing_content = existing
+            .properties
+            .get(a2a::CONTENT)
+            .is_none_or(property_value_is_empty);
+        let missing_event_id = existing
+            .properties
+            .get(a2a::EVENT_ID)
+            .is_none_or(property_value_is_empty);
+        return missing_role || missing_content || missing_event_id;
+    }
+    false
+}
 
-/// Node labels exempt from scope filtering.
-///
-/// Agent nodes legitimately cross context boundaries because the boot event
-/// fires with a separate context_id from the conversation. Removing them
-/// would leave the graph without agent attribution.
-const SCOPE_EXEMPT_LABELS: &[&str] = &["AgentRuntimeInstance", "AgentBoot", "AgentArchive"];
+// ── Scope post-filtering ────────────────────────────────────────────────────
 
 /// Post-filter an exported graph to remove nodes that belong to a different
 /// scope (context or task).
 ///
-/// The broad Cypher `OR` query can pull in stale nodes via shared endpoints
-/// (e.g. a `Message` node whose ID is reused across CLI runs). This function
-/// removes those contaminants while preserving agent nodes that legitimately
-/// cross context boundaries.
+/// The only reason for this filter is the boot chain: AgentBoot and AgentArchive
+/// have no context_id at all. They are exempt (see [`context_scope::SCOPE_EXEMPT_LABELS`])
+/// so they remain in the graph for agent attribution.
 ///
 /// A node is **kept** if:
-/// - Its label is in [`SCOPE_EXEMPT_LABELS`], OR
+/// - Its label is in [`context_scope::SCOPE_EXEMPT_LABELS`], OR
 /// - It has no `property_key` property at all, OR
 /// - Its `property_key` value matches `expected_value`.
 ///
 /// Edges referencing any removed node are also dropped.
 fn filter_scope(graph: ExportedGraph, property_key: &str, expected_value: &str) -> ExportedGraph {
+    filter_scope_multi(
+        graph,
+        property_key,
+        &HashSet::from([expected_value.to_string()]),
+    )
+}
+
+/// Like [`filter_scope`] but allows multiple values (e.g. primary + initiator context).
+fn filter_scope_multi(
+    graph: ExportedGraph,
+    property_key: &str,
+    allowed_values: &HashSet<String>,
+) -> ExportedGraph {
     let removed: std::collections::HashSet<String> = graph
         .nodes
         .iter()
         .filter(|n| {
-            // Exempt agent-related nodes from scope filtering.
-            if SCOPE_EXEMPT_LABELS.contains(&n.label.as_str()) {
+            if context_scope::SCOPE_EXEMPT_LABELS.contains(&n.label.as_str()) {
                 return false;
             }
-            // Remove if the node has the property but it doesn't match.
             n.properties
                 .get(property_key)
                 .and_then(|v| v.as_str())
-                .is_some_and(|v| v != expected_value)
+                .is_some_and(|v| !allowed_values.contains(v))
         })
         .map(|n| n.id.clone())
         .collect();
@@ -457,24 +586,25 @@ fn derive_display_name(label: &str, props: &HashMap<String, serde_json::Value>) 
             let model = prop_str(a2a::MODEL).unwrap_or_default();
             let func = prop_str(a2a::FUNCTION_NAME).unwrap_or_default();
             let mut name = format!("🤖 LLM {model} ({func})");
-            // Append completion info when available.
             if let Some(duration) = prop_str(a2a::DURATION_MS) {
                 name.push_str(&format!(" {duration}ms"));
             }
-            if is_success_value(props.get(a2a::SUCCESS)) {
-                name.push_str(" ✅");
-            } else if is_failure_value(props.get(a2a::SUCCESS)) {
-                name.push_str(" ❌");
+            if let Some(outcome) = NodeActivityOutcome::from_props(props) {
+                name.push_str(outcome.display_suffix());
             }
             name
         }
         Some(GraphNodeLabel::ToolCall) => {
             let tool = strip_tool_prefix(&prop_str(a2a::TOOL_NAME).unwrap_or_default());
             let phase = extract_metadata_field(props.get(a2a::METADATA), "phase");
-            match phase {
+            let mut name = match phase {
                 Some(p) => format!("🔧 {tool} ({p})"),
                 None => format!("🔧 {tool}"),
+            };
+            if let Some(outcome) = NodeActivityOutcome::from_props(props) {
+                name.push_str(outcome.display_suffix());
             }
+            name
         }
         Some(GraphNodeLabel::ToolArgs) => {
             let summary = summarize_args(props.get(a2a::ARGS), DEFAULT_ARGS_SUMMARY_LEN);
@@ -509,6 +639,10 @@ fn derive_display_name(label: &str, props: &HashMap<String, serde_json::Value>) 
             format!("📄 Artifact {art_type}")
         }
         Some(GraphNodeLabel::LlmPrompt) => "💬 Prompt".to_string(),
+        Some(GraphNodeLabel::PromptRejected) => {
+            let reason = prop_str(a2a::REASON).unwrap_or_default();
+            format!("⚠️ Rejected {reason}")
+        }
         None => label.to_string(),
     }
 }
@@ -560,10 +694,12 @@ fn first_array_element_text(arr: &[serde_json::Value]) -> String {
 
 /// Strip common tool name prefixes for brevity.
 ///
-/// `"support/clickupNavigate"` → `"clickupNavigate"`.
+/// `"support/clickupNavigate"` → `"clickupNavigate"`, `"system/internal_a2a"` → `"internal_a2a"`.
 fn strip_tool_prefix(name: &str) -> String {
-    // Strip known prefixes; the most common is `support/`.
     if let Some(rest) = name.strip_prefix("support/") {
+        return rest.to_string();
+    }
+    if let Some(rest) = name.strip_prefix("system/") {
         return rest.to_string();
     }
     name.to_string()
@@ -626,24 +762,6 @@ fn summarize_args(value: Option<&serde_json::Value>, max_len: usize) -> String {
     truncate_str(&pairs.join(" "), max_len)
 }
 
-/// Check if a JSON value represents a success (bool `true` or string `"true"`).
-fn is_success_value(value: Option<&serde_json::Value>) -> bool {
-    match value {
-        Some(serde_json::Value::Bool(true)) => true,
-        Some(serde_json::Value::String(s)) => s == "true",
-        _ => false,
-    }
-}
-
-/// Check if a JSON value represents a failure (bool `false` or string `"false"`).
-fn is_failure_value(value: Option<&serde_json::Value>) -> bool {
-    match value {
-        Some(serde_json::Value::Bool(false)) => true,
-        Some(serde_json::Value::String(s)) => s == "false",
-        _ => false,
-    }
-}
-
 /// Truncate a string to `max_len` characters, appending `…` if truncated.
 fn truncate_str(s: &str, max_len: usize) -> String {
     if s.chars().count() <= max_len {
@@ -676,7 +794,7 @@ fn cmp_event_order(
 /// Extract a temporal ordering key from node properties.
 ///
 /// Primary: parse the monotonic counter from `a2a:event_id` (`"prov-42"` → 42).
-/// Fallback: use `a2a:timestamp_ms` when `event_id` is absent.
+/// Fallback: use `a2a:timestamp_ms`, then `a2a:task_state_time` for TaskState nodes.
 fn parse_event_order(props: &HashMap<String, serde_json::Value>) -> Option<u64> {
     // Try a2a:event_id first (format: "prov-{counter}").
     if let Some(event_id) = props.get(a2a::EVENT_ID).and_then(|v| v.as_str())
@@ -686,7 +804,11 @@ fn parse_event_order(props: &HashMap<String, serde_json::Value>) -> Option<u64> 
         return Some(counter);
     }
     // Fallback to a2a:timestamp_ms.
-    props.get(a2a::TIMESTAMP_MS).and_then(|v| v.as_u64())
+    if let Some(ts) = props.get(a2a::TIMESTAMP_MS).and_then(|v| v.as_u64()) {
+        return Some(ts);
+    }
+    // Fallback for TaskState nodes: a2a:task_state_time.
+    props.get(a2a::TASK_STATE_TIME).and_then(|v| v.as_u64())
 }
 
 /// Extract a `String` from a JSON value (returns empty string for non-strings).
@@ -1048,6 +1170,8 @@ mod tests {
         );
     }
 
+    /// Delegated messages from coordinator contain JSON plan; extract "objective" for display.
+
     #[test]
     fn role_normalization() {
         assert_eq!(normalize_role("ROLE_USER"), "user");
@@ -1161,7 +1285,10 @@ mod tests {
             a2a::DURATION_MS.to_string(),
             serde_json::Value::Number(5232.into()),
         );
-        props.insert(a2a::SUCCESS.to_string(), serde_json::Value::Bool(true));
+        props.insert(
+            a2a::ACTIVITY_OUTCOME.to_string(),
+            serde_json::Value::String("Success".to_string()),
+        );
         let name = derive_display_name("LlmCall", &props);
         assert!(name.contains("5232ms"), "should show duration: {name}");
         assert!(name.contains('✅'), "should show success indicator: {name}");
@@ -1195,6 +1322,7 @@ mod tests {
         assert_eq!(strip_tool_prefix("support/clickup"), "clickup");
         assert_eq!(strip_tool_prefix("memory/tony"), "memory/tony");
         assert_eq!(strip_tool_prefix("plain_tool"), "plain_tool");
+        assert_eq!(strip_tool_prefix("system/internal_a2a"), "internal_a2a");
     }
 
     // ── Direction-aware display name tests ────────────────────────────────

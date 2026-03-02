@@ -618,6 +618,47 @@ async fn test_tool_session_plan_requires_manifest_mapping() {
     tracing::info!("✅ ToolSessionPlan enforces manifest mapping with no metadata fallback");
 }
 
+/// Full plan [Open, Send, Next, Finish] must run Finish so the session is closed (regression for session_id cleared on Done).
+#[tokio::test]
+async fn test_tool_session_plan_open_send_next_finish_runs_finish() {
+    use baml_rt::baml::BamlRuntimeManager;
+    use serde_json::json;
+
+    let mut manager = BamlRuntimeManager::new().unwrap();
+    manager.register_tool(ScopeEchoTool).await.unwrap();
+    // ScopeEchoTool: Bundle Test, LOCAL_NAME scope_echo → class_name "TestScope_echo"
+    let mut map = std::collections::HashMap::new();
+    map.insert("EchoPlanFn".to_string(), "TestScope_echoSessionPlan".to_string());
+    manager.set_session_plan_functions(Some(map));
+
+    let plan = json!({
+        "steps": [
+            { "op": "Open", "initial_input": {} },
+            { "op": "Send", "input": { "text": "ping" } },
+            { "op": "Next" },
+            { "op": "Finish" }
+        ]
+    });
+
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000021").unwrap());
+    let scope = InvocationScope::synthetic_message(agent_id);
+
+    let result = context::with_scope(scope.as_scope().clone(), async {
+        manager
+            .execute_tool_from_baml_result_or_value(scope.as_scope(), plan, Some("EchoPlanFn"))
+            .await
+    })
+    .await;
+
+    let value = result.expect("full plan Open/Send/Next/Finish should succeed");
+    assert!(
+        value.get("context_id").is_some() || value.get("message_id").is_some() || !value.is_null(),
+        "expected echo output, got {:?}",
+        value
+    );
+}
+
 /// Operations requiring invocation scope must be called with explicit scope.
 /// invoke_function requires explicit scope; missing function should produce a function-level error.
 #[tokio::test]

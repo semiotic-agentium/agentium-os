@@ -157,6 +157,12 @@ impl AgentId {
 impl ExternalConstructible for MessageId {}
 impl DerivedConstructible for MessageId {}
 impl ExternalConstructible for TaskId {}
+impl From<&str> for ContextId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
 impl TemporalConstructible for ContextId {}
 impl TemporalConstructible for CorrelationId {}
 impl ExternalConstructible for ArtifactId {}

@@ -1,29 +1,40 @@
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 set dotenv-load
+
 provenance_db := "provenance.db"
 runner_http_bind := "127.0.0.1:8080"
 slack_channel := "agentium-eng"
 
-# Rebuilds clickup-agent package and runs it via a2a stdio.
-clickup-agent:
-    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- clickup-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}}
+# Release binaries (build once with `just build-release`, then agent recipes use these).
+builder_bin := "target/debug/baml-agent-builder"
+runner_bin := "target/debug/baml-agent-runner"
+graph_exporter_bin := "target/debug/graph_exporter"
+
+# Build release versions of builder, runner, and graph_exporter. Run once before using agent recipes.
+build-release:
+    cargo build -p baml-rt-builder --bin baml-agent-builder --all-features
+    cargo build -p baml-agent-runner --all-features
+    cargo build -p baml-rt-provenance --bin graph_exporter --features cli
+
+# Rebuilds clickup-agent package and runs it via a2a stdio. Requires: just build-release
+clickup-agent: build-release
+    {{builder_bin}} package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
+    {{runner_bin}} clickup-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}}
 
 # Same as clickup-agent, but persists provenance to provenance.db for graph_exporter.
-# Also starts the HTTP API on runner_http_bind for mermaid/metrics endpoints.
-clickup-agent-provenance:
-    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- clickup-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
+clickup-agent-provenance: build-release
+    {{builder_bin}} package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
+    {{runner_bin}} clickup-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
 
-# Rebuilds notion-agent package and runs it via a2a stdio.
-notion-agent:
-    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- notion-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}}
+# Rebuilds notion-agent package and runs it via a2a stdio. Requires: just build-release
+notion-agent: build-release
+    {{builder_bin}} package --agent-dir agents/notion-agent --output notion-agent.tar.gz
+    {{runner_bin}} notion-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}}
 
 # Same as notion-agent, but persists provenance to provenance.db for graph_exporter.
-notion-agent-provenance:
-    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- notion-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
+notion-agent-provenance: build-release
+    {{builder_bin}} package --agent-dir agents/notion-agent --output notion-agent.tar.gz
+    {{runner_bin}} notion-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
 
 # Rebuilds slack-agent package and runs it via a2a stdio.
 slack-agent:
@@ -35,30 +46,31 @@ slack-agent-provenance:
     cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/slack-agent --output slack-agent.tar.gz
     cargo run -p baml-agent-runner --features http-tools -- slack-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
 
-# Rebuilds coordinator + notion packages and runs coordinator-agent via a2a stdio.
-coordinator-agent:
-    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/coordinator-agent --output coordinator-agent.tar.gz
-    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
-    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- coordinator-agent.tar.gz notion-agent.tar.gz clickup-agent.tar.gz  --a2a-stdio --serve-http {{runner_http_bind}}
+# Rebuilds coordinator + notion + clickup packages and runs coordinator-agent via a2a stdio. Requires: just build-release
+coordinator-agent: build-release
+    {{builder_bin}} package --agent-dir agents/coordinator-agent --output coordinator-agent.tar.gz
+    {{builder_bin}} package --agent-dir agents/notion-agent --output notion-agent.tar.gz
+    {{builder_bin}} package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
+    {{runner_bin}} coordinator-agent.tar.gz notion-agent.tar.gz clickup-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}}
 
 # Same as coordinator-agent, but persists provenance to provenance.db for graph_exporter.
-coordinator-agent-provenance:
-    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/coordinator-agent --output coordinator-agent.tar.gz
-    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/notion-agent --output notion-agent.tar.gz
-    cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
-    cargo run -p baml-rt-builder --bin baml-agent-builder -- package --agent-dir agents/claude-session-demo --output claude-session-agent.tar.gz
-    cargo run -p baml-agent-runner --features http-tools -- coordinator-agent.tar.gz notion-agent.tar.gz clickup-agent.tar.gz claude-session-agent.tar.gz --a2a-stdio --provenance-db {{provenance_db}} --serve-http {{runner_http_bind}}
+coordinator-agent-provenance: build-release
+    {{builder_bin}} package --agent-dir agents/coordinator-agent --output coordinator-agent.tar.gz
+    {{builder_bin}} package --agent-dir agents/notion-agent --output notion-agent.tar.gz
+    {{builder_bin}} package --agent-dir agents/clickup-agent --output clickup-agent.tar.gz
+    {{builder_bin}} package --agent-dir agents/claude-session-demo --output claude-session-agent.tar.gz
+    {{builder_bin}} package --agent-dir tests/fixtures/agents/conversational-persona-demo --output conversational-persona-demo.tar.gz
+    {{runner_bin}} coordinator-agent.tar.gz notion-agent.tar.gz clickup-agent.tar.gz claude-session-agent.tar.gz conversational-persona-demo.tar.gz --a2a-stdio --provenance-db {{provenance_db}} --serve-http {{runner_http_bind}}
 
-# Rebuilds claude-session-agent package and runs it via a2a stdio.
-claude-session-agent:
-    cargo run -p baml-rt-builder --bin baml-agent-builder -- package --agent-dir agents/claude-session-demo --output claude-session-agent.tar.gz
-    cargo run -p baml-agent-runner -- claude-session-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}}
+# Rebuilds claude-session-agent package and runs it via a2a stdio. Requires: just build-release
+claude-session-agent: build-release
+    {{builder_bin}} package --agent-dir agents/claude-session-demo --output claude-session-agent.tar.gz
+    {{runner_bin}} claude-session-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}}
 
 # Same as claude-session-agent, but persists provenance to provenance.db for graph_exporter.
-claude-session-agent-provenance:
-    cargo run -p baml-rt-builder --bin baml-agent-builder -- package --agent-dir agents/claude-session-demo --output claude-session-agent.tar.gz
-    cargo run -p baml-agent-runner -- claude-session-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
+claude-session-agent-provenance: build-release
+    {{builder_bin}} package --agent-dir agents/claude-session-demo --output claude-session-agent.tar.gz
+    {{runner_bin}} claude-session-agent.tar.gz --a2a-stdio --serve-http {{runner_http_bind}} --provenance-db {{provenance_db}}
 
 
 
@@ -116,7 +128,7 @@ test-crate crate:
 test-unit:
     cargo nextest run --workspace --features baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory
 
-# Export a Mermaid sequence diagram for a given context-id.
+# Export a Mermaid sequence diagram for a given context-id. Requires: just build-release
 # Usage: just provenance-mermaid ctx-1771426017780-2
-provenance-mermaid context_id:
-    cargo run -p baml-rt-provenance --features cli --bin graph_exporter -- --db {{provenance_db}} --context-id {{context_id}} --simplify --format mermaid
+provenance-mermaid context_id: build-release
+    {{graph_exporter_bin}} --db {{provenance_db}} --context-id {{context_id}} --simplify --format mermaid

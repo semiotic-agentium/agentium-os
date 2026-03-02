@@ -48,6 +48,7 @@ pub async fn index_tools(
     config: &ToolIndexConfig,
     tools: &[ToolFunctionMetadataExport],
 ) -> Result<()> {
+    crate::graphqlite_store::ensure_extension_path();
     let conn = Connection::open(&config.path)
         .map_err(|e| crate::error::ProvenanceError::Storage(Box::new(e)))?;
     for tool in tools {
@@ -62,6 +63,7 @@ pub async fn index_tools_into_connection(
     config: &ToolIndexConfig,
     tools: &[ToolFunctionMetadataExport],
 ) -> Result<Connection> {
+    crate::graphqlite_store::ensure_extension_path();
     let conn = Connection::open(&config.path)
         .map_err(|e| crate::error::ProvenanceError::Storage(Box::new(e)))?;
     for tool in tools {
