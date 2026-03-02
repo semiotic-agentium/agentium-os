@@ -39,4 +39,7 @@ pub use json::to_json_value;
 pub use package::AgentManifest;
 pub use semantics::{ActivityOutcome, InvocationKind, Outcome, Retryability};
 pub use stream_completion::{StreamCompletion, StreamResult};
-pub use strings::{trim_and_truncate, trim_and_truncate_option, truncate_chars_with_ellipsis};
+pub use strings::{
+    remove_json_string_field, trim_and_truncate, trim_and_truncate_json_field,
+    trim_and_truncate_json_field_option, trim_and_truncate_option, truncate_chars_with_ellipsis,
+};

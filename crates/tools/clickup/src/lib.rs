@@ -8,7 +8,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
-use baml_rt_core::{BamlRtError, Result, truncate_chars_with_ellipsis};
+use baml_rt_core::{
+    BamlRtError, Result, remove_json_string_field, trim_and_truncate_json_field_option,
+};
 use baml_rt_tools::{
     ToolMetadataBuilder, TypeBasedMetadataBuilder,
     bundles::Support,
@@ -30,22 +32,6 @@ fn option_is_empty(opt: &Option<String>) -> bool {
 
 const GET_TASK_DESCRIPTION_MAX_CHARS: usize = 120;
 const SINGLE_TASK_DESCRIPTION_MAX_CHARS: usize = 1200;
-
-fn normalize_optional_description(desc: &mut Option<String>, max_chars: usize) {
-    let Some(current) = desc.as_ref() else {
-        return;
-    };
-    let trimmed = current.trim();
-    if trimmed.is_empty() {
-        *desc = None;
-        return;
-    }
-    if trimmed.chars().count() > max_chars {
-        *desc = Some(truncate_chars_with_ellipsis(trimmed, max_chars));
-    } else if trimmed.len() != current.len() {
-        *desc = Some(trimmed.to_string());
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Per-action input types
@@ -219,6 +205,10 @@ pub struct ClickUpOutput {
     #[baml(description = "Teams, spaces, or lists returned by navigation actions.")]
     pub items: Vec<ClickUpItem>,
     pub message: String,
+    /// Internal compaction hint — consumed and removed by
+    /// [`ClickUpTool::compact_tool_result_payload`] so it never reaches the
+    /// LLM context. Intentionally serialized (not `#[serde(skip)]`) so the
+    /// in-place JSON compaction can read then strip it.
     #[baml(skip)]
     #[schemars(skip)]
     #[ts(skip)]
@@ -621,48 +611,41 @@ impl ClickUpTool {
         })
     }
 
-    fn compact_clickup_output(output: &mut ClickUpOutput) {
-        match output.operation {
-            Some(ClickUpOperation::ListTasks) => {
-                for task in &mut output.tasks {
-                    task.description = None;
+    /// Compact a `ClickUpOutput` JSON value in place — no clone or
+    /// deserialize/re-serialize round-trip.
+    fn compact_tool_result_payload(content: &mut serde_json::Value) {
+        let operation = remove_json_string_field(content, "operation");
+
+        let Some(tasks) = content.get_mut("tasks").and_then(|t| t.as_array_mut()) else {
+            return;
+        };
+
+        match operation.as_deref() {
+            Some("list_tasks") | Some("create_task") | Some("update_task") => {
+                for task in tasks {
+                    if let Some(obj) = task.as_object_mut() {
+                        obj.remove("description");
+                    }
                 }
             }
-            Some(ClickUpOperation::GetTask) => {
-                for task in &mut output.tasks {
-                    normalize_optional_description(
-                        &mut task.description,
+            Some("get_task") => {
+                for task in tasks {
+                    trim_and_truncate_json_field_option(
+                        task,
+                        "description",
                         GET_TASK_DESCRIPTION_MAX_CHARS,
                     );
                 }
             }
-            Some(ClickUpOperation::CreateTask) | Some(ClickUpOperation::UpdateTask) => {
-                for task in &mut output.tasks {
-                    task.description = None;
-                }
-            }
             _ => {
-                for task in &mut output.tasks {
-                    normalize_optional_description(
-                        &mut task.description,
+                for task in tasks {
+                    trim_and_truncate_json_field_option(
+                        task,
+                        "description",
                         SINGLE_TASK_DESCRIPTION_MAX_CHARS,
                     );
                 }
             }
-        }
-
-        // Internal host metadata is useful in raw provenance but unnecessary in
-        // prompt-projection context.
-        output.operation = None;
-    }
-
-    fn compact_tool_result_payload(content: &mut serde_json::Value) {
-        let Ok(mut output) = serde_json::from_value::<ClickUpOutput>(content.clone()) else {
-            return;
-        };
-        Self::compact_clickup_output(&mut output);
-        if let Ok(compacted) = serde_json::to_value(output) {
-            *content = compacted;
         }
     }
 }

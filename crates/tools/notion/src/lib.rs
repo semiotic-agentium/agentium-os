@@ -10,7 +10,9 @@ use std::{collections::VecDeque, fmt, sync::Arc};
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
-use baml_rt_core::{BamlRtError, Result, trim_and_truncate_option};
+use baml_rt_core::{
+    BamlRtError, Result, remove_json_string_field, trim_and_truncate_json_field_option,
+};
 use baml_rt_tools::{
     ToolMetadataBuilder, TypeBasedMetadataBuilder,
     bundles::Support,
@@ -188,6 +190,10 @@ pub struct NotionOutput {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<NotionSource>,
     pub message: String,
+    /// Internal compaction hint — consumed and removed by
+    /// [`compact_notion_payload`] so it never reaches the LLM context.
+    /// Intentionally serialized (not `#[serde(skip)]`) so the in-place
+    /// JSON compaction can read then strip it.
     #[baml(skip)]
     #[schemars(skip)]
     #[ts(skip)]
@@ -951,25 +957,23 @@ impl NotionTool {
     }
 }
 
-fn compact_notion_output(output: &mut NotionOutput) {
-    if let Some(NotionOperation::GetPageBlocks) = output.operation {
-        for block in &mut output.blocks {
-            if block.block_type == "notable_lines" {
-                continue;
-            }
-            trim_and_truncate_option(&mut block.text, BLOCK_TEXT_MAX_CHARS);
-        }
-    }
-    output.operation = None;
-}
-
+/// Compact a `NotionOutput` JSON value in place — no clone or
+/// deserialize/re-serialize round-trip.
 fn compact_notion_payload(content: &mut serde_json::Value) {
-    let Ok(mut output) = serde_json::from_value::<NotionOutput>(content.clone()) else {
-        return;
-    };
-    compact_notion_output(&mut output);
-    if let Ok(compacted) = serde_json::to_value(output) {
-        *content = compacted;
+    let operation = remove_json_string_field(content, "operation");
+
+    if operation.as_deref() == Some("get_page_blocks")
+        && let Some(blocks) = content.get_mut("blocks").and_then(|b| b.as_array_mut())
+    {
+        for block in blocks {
+            let is_notable = block
+                .get("block_type")
+                .and_then(|t| t.as_str())
+                .is_some_and(|t| t == "notable_lines");
+            if !is_notable {
+                trim_and_truncate_json_field_option(block, "text", BLOCK_TEXT_MAX_CHARS);
+            }
+        }
     }
 }
 
@@ -1527,7 +1531,7 @@ mod compaction_tests {
     use super::*;
 
     // -----------------------------------------------------------------------
-    // compact_notion_output — GetPageBlocks
+    // Helper: serialize a NotionOutput to JSON for in-place compaction tests
     // -----------------------------------------------------------------------
 
     fn make_block(block_type: &str, text: Option<&str>) -> NotionBlockSummary {
@@ -1539,10 +1543,18 @@ mod compaction_tests {
         }
     }
 
+    fn output_to_json(output: &NotionOutput) -> serde_json::Value {
+        serde_json::to_value(output).unwrap()
+    }
+
+    // -----------------------------------------------------------------------
+    // compact_notion_payload — GetPageBlocks
+    // -----------------------------------------------------------------------
+
     #[test]
     fn compact_get_page_blocks_truncates_long_text() {
         let long_text = "x".repeat(300);
-        let mut output = NotionOutput {
+        let output = NotionOutput {
             pages: vec![],
             blocks: vec![make_block("paragraph", Some(&long_text))],
             next_cursor: None,
@@ -1551,17 +1563,21 @@ mod compaction_tests {
             message: "test".to_string(),
             operation: Some(NotionOperation::GetPageBlocks),
         };
-        compact_notion_output(&mut output);
-        let text = output.blocks[0].text.as_ref().unwrap();
+        let mut json = output_to_json(&output);
+        compact_notion_payload(&mut json);
+        let text = json["blocks"][0]["text"].as_str().unwrap();
         assert!(text.ends_with("..."));
         assert!(text.chars().count() <= BLOCK_TEXT_MAX_CHARS + 3);
-        assert!(output.operation.is_none());
+        assert!(
+            json.get("operation").is_none(),
+            "operation must be stripped"
+        );
     }
 
     #[test]
     fn compact_get_page_blocks_preserves_notable_lines() {
         let long_text = "x".repeat(300);
-        let mut output = NotionOutput {
+        let output = NotionOutput {
             pages: vec![],
             blocks: vec![make_block("notable_lines", Some(&long_text))],
             next_cursor: None,
@@ -1570,15 +1586,16 @@ mod compaction_tests {
             message: "test".to_string(),
             operation: Some(NotionOperation::GetPageBlocks),
         };
-        compact_notion_output(&mut output);
-        let text = output.blocks[0].text.as_ref().unwrap();
+        let mut json = output_to_json(&output);
+        compact_notion_payload(&mut json);
+        let text = json["blocks"][0]["text"].as_str().unwrap();
         assert_eq!(text.len(), 300);
         assert!(!text.ends_with("..."));
     }
 
     #[test]
     fn compact_get_page_blocks_none_text_unchanged() {
-        let mut output = NotionOutput {
+        let output = NotionOutput {
             pages: vec![],
             blocks: vec![make_block("paragraph", None)],
             next_cursor: None,
@@ -1587,17 +1604,18 @@ mod compaction_tests {
             message: "test".to_string(),
             operation: Some(NotionOperation::GetPageBlocks),
         };
-        compact_notion_output(&mut output);
-        assert!(output.blocks[0].text.is_none());
+        let mut json = output_to_json(&output);
+        compact_notion_payload(&mut json);
+        assert!(json["blocks"][0].get("text").is_none());
     }
 
     // -----------------------------------------------------------------------
-    // compact_notion_output — SearchPages / GetPage (no-op for blocks)
+    // compact_notion_payload — SearchPages / GetPage (no-op for blocks)
     // -----------------------------------------------------------------------
 
     #[test]
-    fn compact_search_pages_is_noop_for_blocks() {
-        let mut output = NotionOutput {
+    fn compact_search_pages_strips_operation() {
+        let output = NotionOutput {
             pages: vec![],
             blocks: vec![],
             next_cursor: None,
@@ -1606,13 +1624,17 @@ mod compaction_tests {
             message: "test".to_string(),
             operation: Some(NotionOperation::SearchPages),
         };
-        compact_notion_output(&mut output);
-        assert!(output.operation.is_none());
+        let mut json = output_to_json(&output);
+        compact_notion_payload(&mut json);
+        assert!(
+            json.get("operation").is_none(),
+            "operation must be stripped"
+        );
     }
 
     #[test]
-    fn compact_get_page_is_noop_for_blocks() {
-        let mut output = NotionOutput {
+    fn compact_get_page_strips_operation() {
+        let output = NotionOutput {
             pages: vec![],
             blocks: vec![],
             next_cursor: None,
@@ -1621,12 +1643,16 @@ mod compaction_tests {
             message: "test".to_string(),
             operation: Some(NotionOperation::GetPage),
         };
-        compact_notion_output(&mut output);
-        assert!(output.operation.is_none());
+        let mut json = output_to_json(&output);
+        compact_notion_payload(&mut json);
+        assert!(
+            json.get("operation").is_none(),
+            "operation must be stripped"
+        );
     }
 
     // -----------------------------------------------------------------------
-    // compact_notion_payload — envelope handling
+    // compact_notion_result — envelope handling
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1647,10 +1673,13 @@ mod compaction_tests {
         });
         let tool = NotionTool::new();
         tool.compact_result(&mut content);
-        let result: NotionOutput =
-            serde_json::from_value(content.get("result").unwrap().clone()).unwrap();
-        let text = result.blocks[0].text.as_ref().unwrap();
+        let result = content.get("result").unwrap();
+        let text = result["blocks"][0]["text"].as_str().unwrap();
         assert!(text.ends_with("..."));
         assert!(text.chars().count() <= BLOCK_TEXT_MAX_CHARS + 3);
+        assert!(
+            result.get("operation").is_none(),
+            "operation must be stripped from envelope"
+        );
     }
 }

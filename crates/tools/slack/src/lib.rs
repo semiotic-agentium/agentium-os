@@ -16,7 +16,7 @@ use std::{
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
-use baml_rt_core::{BamlRtError, Result, trim_and_truncate};
+use baml_rt_core::{BamlRtError, Result, remove_json_string_field, trim_and_truncate_json_field};
 use baml_rt_tools::{
     ToolMetadataBuilder, TypeBasedMetadataBuilder,
     bundles::Support,
@@ -314,6 +314,10 @@ pub struct SlackOutput {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<SlackSource>,
     pub message: String,
+    /// Internal compaction hint — consumed and removed by
+    /// [`compact_slack_payload`] so it never reaches the LLM context.
+    /// Intentionally serialized (not `#[serde(skip)]`) so the in-place
+    /// JSON compaction can read then strip it.
     #[baml(skip)]
     #[schemars(skip)]
     #[ts(skip)]
@@ -1362,28 +1366,24 @@ impl SlackTool {
     }
 }
 
-fn compact_slack_output(output: &mut SlackOutput) {
-    let max_chars = match output.operation {
-        Some(SlackOperation::GetConversationHistory) => Some(HISTORY_TEXT_MAX_CHARS),
-        Some(SlackOperation::GetThreadReplies) => Some(THREAD_TEXT_MAX_CHARS),
-        Some(SlackOperation::SearchMessages) => Some(SEARCH_TEXT_MAX_CHARS),
+/// Compact a `SlackOutput` JSON value in place — no clone or
+/// deserialize/re-serialize round-trip.
+fn compact_slack_payload(content: &mut serde_json::Value) {
+    let operation = remove_json_string_field(content, "operation");
+
+    let max_chars = match operation.as_deref() {
+        Some("get_conversation_history") => Some(HISTORY_TEXT_MAX_CHARS),
+        Some("get_thread_replies") => Some(THREAD_TEXT_MAX_CHARS),
+        Some("search_messages") => Some(SEARCH_TEXT_MAX_CHARS),
         _ => None,
     };
-    if let Some(limit) = max_chars {
-        for msg in &mut output.messages {
-            trim_and_truncate(&mut msg.text, limit);
-        }
-    }
-    output.operation = None;
-}
 
-fn compact_slack_payload(content: &mut serde_json::Value) {
-    let Ok(mut output) = serde_json::from_value::<SlackOutput>(content.clone()) else {
-        return;
-    };
-    compact_slack_output(&mut output);
-    if let Ok(compacted) = serde_json::to_value(output) {
-        *content = compacted;
+    if let Some(limit) = max_chars
+        && let Some(messages) = content.get_mut("messages").and_then(|m| m.as_array_mut())
+    {
+        for msg in messages {
+            trim_and_truncate_json_field(msg, "text", limit);
+        }
     }
 }
 
@@ -1814,7 +1814,7 @@ mod compaction_tests {
     use super::*;
 
     // -----------------------------------------------------------------------
-    // compact_slack_output — GetConversationHistory
+    // Helper: serialize a SlackOutput to JSON for in-place compaction tests
     // -----------------------------------------------------------------------
 
     fn make_message(text: &str) -> SlackMessageSummary {
@@ -1831,10 +1831,18 @@ mod compaction_tests {
         }
     }
 
+    fn output_to_json(output: &SlackOutput) -> serde_json::Value {
+        serde_json::to_value(output).unwrap()
+    }
+
+    // -----------------------------------------------------------------------
+    // compact_slack_payload — GetConversationHistory
+    // -----------------------------------------------------------------------
+
     #[test]
     fn compact_history_truncates_long_messages() {
         let long_text = "x".repeat(500);
-        let mut output = SlackOutput {
+        let output = SlackOutput {
             conversations: vec![],
             messages: vec![make_message(&long_text)],
             users: vec![],
@@ -1844,16 +1852,21 @@ mod compaction_tests {
             message: "test".to_string(),
             operation: Some(SlackOperation::GetConversationHistory),
         };
-        compact_slack_output(&mut output);
-        assert!(output.messages[0].text.ends_with("..."));
-        assert!(output.messages[0].text.chars().count() <= HISTORY_TEXT_MAX_CHARS + 3);
-        assert!(output.operation.is_none());
+        let mut json = output_to_json(&output);
+        compact_slack_payload(&mut json);
+        let text = json["messages"][0]["text"].as_str().unwrap();
+        assert!(text.ends_with("..."));
+        assert!(text.chars().count() <= HISTORY_TEXT_MAX_CHARS + 3);
+        assert!(
+            json.get("operation").is_none(),
+            "operation must be stripped"
+        );
     }
 
     #[test]
     fn compact_thread_replies_truncates_long_messages() {
         let long_text = "x".repeat(700);
-        let mut output = SlackOutput {
+        let output = SlackOutput {
             conversations: vec![],
             messages: vec![make_message(&long_text)],
             users: vec![],
@@ -1863,16 +1876,21 @@ mod compaction_tests {
             message: "test".to_string(),
             operation: Some(SlackOperation::GetThreadReplies),
         };
-        compact_slack_output(&mut output);
-        assert!(output.messages[0].text.ends_with("..."));
-        assert!(output.messages[0].text.chars().count() <= THREAD_TEXT_MAX_CHARS + 3);
-        assert!(output.operation.is_none());
+        let mut json = output_to_json(&output);
+        compact_slack_payload(&mut json);
+        let text = json["messages"][0]["text"].as_str().unwrap();
+        assert!(text.ends_with("..."));
+        assert!(text.chars().count() <= THREAD_TEXT_MAX_CHARS + 3);
+        assert!(
+            json.get("operation").is_none(),
+            "operation must be stripped"
+        );
     }
 
     #[test]
     fn compact_search_truncates_long_messages() {
         let long_text = "x".repeat(400);
-        let mut output = SlackOutput {
+        let output = SlackOutput {
             conversations: vec![],
             messages: vec![make_message(&long_text)],
             users: vec![],
@@ -1882,15 +1900,20 @@ mod compaction_tests {
             message: "test".to_string(),
             operation: Some(SlackOperation::SearchMessages),
         };
-        compact_slack_output(&mut output);
-        assert!(output.messages[0].text.ends_with("..."));
-        assert!(output.messages[0].text.chars().count() <= SEARCH_TEXT_MAX_CHARS + 3);
-        assert!(output.operation.is_none());
+        let mut json = output_to_json(&output);
+        compact_slack_payload(&mut json);
+        let text = json["messages"][0]["text"].as_str().unwrap();
+        assert!(text.ends_with("..."));
+        assert!(text.chars().count() <= SEARCH_TEXT_MAX_CHARS + 3);
+        assert!(
+            json.get("operation").is_none(),
+            "operation must be stripped"
+        );
     }
 
     #[test]
     fn compact_list_conversations_leaves_messages_unchanged() {
-        let mut output = SlackOutput {
+        let output = SlackOutput {
             conversations: vec![],
             messages: vec![make_message("hello")],
             users: vec![],
@@ -1900,14 +1923,18 @@ mod compaction_tests {
             message: "test".to_string(),
             operation: Some(SlackOperation::ListConversations),
         };
-        compact_slack_output(&mut output);
-        assert_eq!(output.messages[0].text, "hello");
-        assert!(output.operation.is_none());
+        let mut json = output_to_json(&output);
+        compact_slack_payload(&mut json);
+        assert_eq!(json["messages"][0]["text"].as_str().unwrap(), "hello");
+        assert!(
+            json.get("operation").is_none(),
+            "operation must be stripped"
+        );
     }
 
     #[test]
-    fn compact_resolve_users_leaves_messages_unchanged() {
-        let mut output = SlackOutput {
+    fn compact_resolve_users_strips_operation() {
+        let output = SlackOutput {
             conversations: vec![],
             messages: vec![],
             users: vec![],
@@ -1917,12 +1944,16 @@ mod compaction_tests {
             message: "test".to_string(),
             operation: Some(SlackOperation::ResolveUsers),
         };
-        compact_slack_output(&mut output);
-        assert!(output.operation.is_none());
+        let mut json = output_to_json(&output);
+        compact_slack_payload(&mut json);
+        assert!(
+            json.get("operation").is_none(),
+            "operation must be stripped"
+        );
     }
 
     // -----------------------------------------------------------------------
-    // compact_slack_payload — envelope handling
+    // compact_slack_result — envelope handling
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1944,9 +1975,13 @@ mod compaction_tests {
         });
         let tool = SlackTool::new();
         tool.compact_result(&mut content);
-        let result: SlackOutput =
-            serde_json::from_value(content.get("result").unwrap().clone()).unwrap();
-        assert!(result.messages[0].text.ends_with("..."));
-        assert!(result.messages[0].text.chars().count() <= HISTORY_TEXT_MAX_CHARS + 3);
+        let result = content.get("result").unwrap();
+        let text = result["messages"][0]["text"].as_str().unwrap();
+        assert!(text.ends_with("..."));
+        assert!(text.chars().count() <= HISTORY_TEXT_MAX_CHARS + 3);
+        assert!(
+            result.get("operation").is_none(),
+            "operation must be stripped from envelope"
+        );
     }
 }
