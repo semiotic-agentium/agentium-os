@@ -28,6 +28,37 @@ fn option_is_empty(opt: &Option<String>) -> bool {
     opt.as_ref().is_none_or(|s| s.is_empty())
 }
 
+const GET_TASK_DESCRIPTION_MAX_CHARS: usize = 120;
+const SINGLE_TASK_DESCRIPTION_MAX_CHARS: usize = 1200;
+
+fn truncate_chars_with_ellipsis(input: &str, max_chars: usize) -> String {
+    let mut out = String::with_capacity(input.len().min(max_chars) + 3);
+    for (i, ch) in input.chars().enumerate() {
+        if i >= max_chars {
+            out.push_str("...");
+            return out;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn normalize_optional_description(desc: &mut Option<String>, max_chars: usize) {
+    let Some(current) = desc.as_ref() else {
+        return;
+    };
+    let trimmed = current.trim();
+    if trimmed.is_empty() {
+        *desc = None;
+        return;
+    }
+    if trimmed.chars().count() > max_chars {
+        *desc = Some(truncate_chars_with_ellipsis(trimmed, max_chars));
+    } else if trimmed.len() != current.len() {
+        *desc = Some(trimmed.to_string());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Per-action input types
 // ---------------------------------------------------------------------------
@@ -174,6 +205,22 @@ pub struct ClickUpItem {
 /// Output returned by every ClickUp tool action.
 ///
 /// Task actions populate `tasks`; navigation actions populate `items`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClickUpOperation {
+    ListTeams,
+    ListSpaces,
+    ListLists,
+    ListTasks,
+    GetTask,
+    CreateTask,
+    UpdateTask,
+    DeleteTask,
+}
+
+/// Output returned by every ClickUp tool action.
+///
+/// Task actions populate `tasks`; navigation actions populate `items`.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct ClickUpOutput {
@@ -184,6 +231,11 @@ pub struct ClickUpOutput {
     #[baml(description = "Teams, spaces, or lists returned by navigation actions.")]
     pub items: Vec<ClickUpItem>,
     pub message: String,
+    #[baml(skip)]
+    #[schemars(skip)]
+    #[ts(skip)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<ClickUpOperation>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -350,6 +402,7 @@ impl ClickUpTool {
             tasks: vec![],
             items,
             message: format!("Found {count} team(s)"),
+            operation: Some(ClickUpOperation::ListTeams),
         })
     }
 
@@ -380,6 +433,7 @@ impl ClickUpTool {
             tasks: vec![],
             items,
             message: format!("Found {count} space(s) in team {team_id}"),
+            operation: Some(ClickUpOperation::ListSpaces),
         })
     }
 
@@ -411,6 +465,7 @@ impl ClickUpTool {
             tasks: vec![],
             items,
             message: format!("Found {count} list(s) in space {space_id}"),
+            operation: Some(ClickUpOperation::ListLists),
         })
     }
 
@@ -446,6 +501,7 @@ impl ClickUpTool {
             tasks,
             items: vec![],
             message: format!("Found {count} task(s) in list {list_id}"),
+            operation: Some(ClickUpOperation::ListTasks),
         })
     }
 
@@ -467,6 +523,7 @@ impl ClickUpTool {
             message: format!("Task {task_id}: {}", summary.name),
             tasks: vec![summary],
             items: vec![],
+            operation: Some(ClickUpOperation::GetTask),
         })
     }
 
@@ -507,6 +564,7 @@ impl ClickUpTool {
             message: format!("Created task '{}' in list {list_id}", summary.name),
             tasks: vec![summary],
             items: vec![],
+            operation: Some(ClickUpOperation::CreateTask),
         })
     }
 
@@ -556,6 +614,7 @@ impl ClickUpTool {
             message: format!("Updated task {task_id}"),
             tasks: vec![summary],
             items: vec![],
+            operation: Some(ClickUpOperation::UpdateTask),
         })
     }
 
@@ -570,7 +629,53 @@ impl ClickUpTool {
             message: format!("Deleted task {task_id}"),
             tasks: vec![],
             items: vec![],
+            operation: Some(ClickUpOperation::DeleteTask),
         })
+    }
+
+    fn compact_clickup_output(output: &mut ClickUpOutput) {
+        match output.operation {
+            Some(ClickUpOperation::ListTasks) => {
+                for task in &mut output.tasks {
+                    task.description = None;
+                }
+            }
+            Some(ClickUpOperation::GetTask) => {
+                for task in &mut output.tasks {
+                    normalize_optional_description(
+                        &mut task.description,
+                        GET_TASK_DESCRIPTION_MAX_CHARS,
+                    );
+                }
+            }
+            Some(ClickUpOperation::CreateTask) | Some(ClickUpOperation::UpdateTask) => {
+                for task in &mut output.tasks {
+                    task.description = None;
+                }
+            }
+            _ => {
+                for task in &mut output.tasks {
+                    normalize_optional_description(
+                        &mut task.description,
+                        SINGLE_TASK_DESCRIPTION_MAX_CHARS,
+                    );
+                }
+            }
+        }
+
+        // Internal host metadata is useful in raw provenance but unnecessary in
+        // prompt-projection context.
+        output.operation = None;
+    }
+
+    fn compact_tool_result_payload(content: &mut serde_json::Value) {
+        let Ok(mut output) = serde_json::from_value::<ClickUpOutput>(content.clone()) else {
+            return;
+        };
+        Self::compact_clickup_output(&mut output);
+        if let Ok(compacted) = serde_json::to_value(output) {
+            *content = compacted;
+        }
     }
 }
 
@@ -636,11 +741,23 @@ impl BamlTool for ClickUpTool {
                         ),
                         tasks: vec![],
                         items: vec![],
+                        operation: Some(ClickUpOperation::DeleteTask),
                     })
                 } else {
                     self.delete_task(&api_key, &input.task_id).await
                 }
             }
+        }
+    }
+
+    fn compact_result(&self, content: &mut serde_json::Value) {
+        // Provider-side tool_result content usually has envelope shape:
+        // {"tool_name":"support/clickup","fsm_phase":"send","result":{...}}
+        // Compact the nested result when present; otherwise compact the value directly.
+        if let Some(result) = content.get_mut("result") {
+            Self::compact_tool_result_payload(result);
+        } else {
+            Self::compact_tool_result_payload(content);
         }
     }
 }

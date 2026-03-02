@@ -233,6 +233,12 @@ pub trait BamlTool: Send + Sync + 'static {
     /// # Returns
     /// Typed output for the tool
     async fn execute(&self, args: Self::Input) -> Result<Self::Output>;
+
+    /// Compact a tool result for prompt-context projection in place.
+    ///
+    /// Default behavior is identity (no-op), so existing tools do not need to
+    /// implement this unless they want domain-specific compaction.
+    fn compact_result(&self, _content: &mut Value) {}
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -767,6 +773,10 @@ pub trait ToolHandler: Send + Sync {
     fn capability(&self) -> ToolCapability {
         ToolCapability::OneShot
     }
+    /// Compact a tool result for prompt-context projection in place.
+    ///
+    /// Default behavior is identity (no-op).
+    fn compact_result(&self, _content: &mut Value) {}
     async fn open_session(
         &self,
         ctx: ToolSessionContext,
@@ -1072,6 +1082,10 @@ impl<T: BamlTool> ToolHandler for ToolWrapper<T> {
         &self.metadata
     }
 
+    fn compact_result(&self, content: &mut Value) {
+        self.tool.compact_result(content)
+    }
+
     async fn open_session(
         &self,
         ctx: ToolSessionContext,
@@ -1342,6 +1356,13 @@ impl ToolRegistry {
             .tools
             .get(&parsed)
             .map(|(metadata, _)| metadata.clone())
+    }
+
+    /// Get a registered tool handler by name.
+    pub fn get_handler(&self, name: &str) -> Option<Arc<dyn ToolHandler>> {
+        let parsed = ToolName::parse(name).ok()?;
+        let inner = self.inner.lock().unwrap();
+        inner.tools.get(&parsed).map(|(_, handler)| handler.clone())
     }
 
     /// List all registered tool names

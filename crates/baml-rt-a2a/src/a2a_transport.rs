@@ -20,7 +20,7 @@ use baml_rt_quickjs::{
     BamlRuntimeManager, QuickJSBridge, QuickJSConfig, baml_execution::ConversationContextProvider,
 };
 use baml_rt_tools::{
-    ToolFailure, ToolHandler, ToolName, ToolSession, ToolSessionError, ToolTypeSpec,
+    ToolFailure, ToolHandler, ToolName, ToolRegistry, ToolSession, ToolSessionError, ToolTypeSpec,
     tools::{ToolFunctionMetadata, ToolSessionContext},
 };
 use baml_tools_system::A2aSessionBundle;
@@ -214,11 +214,15 @@ impl ProvenanceWriter for GraphqliteRuntimeStore {
 /// No separate provenance read path; store view and provenance write are one concept.
 struct TaskStoreConversationContextProvider {
     store: Arc<dyn ConversationContextSource>,
+    tool_registry: Arc<ToolRegistry>,
 }
 
 impl TaskStoreConversationContextProvider {
-    fn new(store: Arc<dyn ConversationContextSource>) -> Self {
-        Self { store }
+    fn new(store: Arc<dyn ConversationContextSource>, tool_registry: Arc<ToolRegistry>) -> Self {
+        Self {
+            store,
+            tool_registry,
+        }
     }
 }
 
@@ -240,7 +244,7 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
         scope: &context::RuntimeScope,
     ) -> Result<Option<Value>> {
         let context_id = scope.context_id();
-        let items = self
+        let mut items = self
             .store
             .conversation_context(context_id, Some(40))
             .await?;
@@ -252,6 +256,21 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
         if items.is_empty() {
             return Ok(None);
         }
+
+        // Read-time prompt projection only: compact tool_result items in-memory.
+        for item in &mut items {
+            if item.source != "tool_result" {
+                continue;
+            }
+            let Some(tool_name) = item.content.get("tool_name").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some(handler) = self.tool_registry.get_handler(tool_name) else {
+                continue;
+            };
+            handler.compact_result(&mut item.content);
+        }
+
         // Include all provenance items (messages, tool_call, tool_result)
         // so that BAML templates receive the full conversation context
         // including tool interactions from prior turns.
@@ -942,8 +961,9 @@ impl A2aAgentBuilderWithEffectEmitter {
                         "A2aAgentBuilder::build: timed out acquiring runtime lock".to_string(),
                     )
                 })?;
+            let tool_registry = runtime_guard.tool_registry();
             runtime_guard.set_conversation_context_provider(Arc::new(
-                TaskStoreConversationContextProvider::new(task_store.clone()),
+                TaskStoreConversationContextProvider::new(task_store.clone(), tool_registry),
             ));
             if let Some(writer) = provenance_writer.clone() {
                 tracing::debug!("A2aAgentBuilder::build: register_llm_interceptor start");
