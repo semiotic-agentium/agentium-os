@@ -16,7 +16,7 @@ use std::{
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
-use baml_rt_core::{BamlRtError, Result, truncate_chars_with_ellipsis};
+use baml_rt_core::{BamlRtError, Result, trim_and_truncate};
 use baml_rt_tools::{
     ToolMetadataBuilder, TypeBasedMetadataBuilder,
     bundles::Support,
@@ -37,18 +37,6 @@ pub const BASE_URL: &str = "https://slack.com/api";
 const HISTORY_TEXT_MAX_CHARS: usize = 300;
 const THREAD_TEXT_MAX_CHARS: usize = 500;
 const SEARCH_TEXT_MAX_CHARS: usize = 200;
-
-fn truncate_string(text: &mut String, max_chars: usize) {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return;
-    }
-    if trimmed.chars().count() > max_chars {
-        *text = truncate_chars_with_ellipsis(trimmed, max_chars);
-    } else if trimmed.len() != text.len() {
-        *text = trimmed.to_string();
-    }
-}
 
 #[cfg(test)]
 const RATE_LIMIT_BASE_DELAY_MS: u64 = 500;
@@ -1383,7 +1371,7 @@ fn compact_slack_output(output: &mut SlackOutput) {
     };
     if let Some(limit) = max_chars {
         for msg in &mut output.messages {
-            truncate_string(&mut msg.text, limit);
+            trim_and_truncate(&mut msg.text, limit);
         }
     }
     output.operation = None;
@@ -1820,47 +1808,6 @@ mod tests {
 #[cfg(test)]
 mod compaction_tests {
     use super::*;
-
-    // -----------------------------------------------------------------------
-    // truncate_string
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn truncate_string_empty_is_noop() {
-        let mut val = String::new();
-        truncate_string(&mut val, 10);
-        assert_eq!(val, "");
-    }
-
-    #[test]
-    fn truncate_string_within_limit_unchanged() {
-        let mut val = "short".to_string();
-        truncate_string(&mut val, 10);
-        assert_eq!(val, "short");
-    }
-
-    #[test]
-    fn truncate_string_at_boundary_unchanged() {
-        let mut val = "12345".to_string();
-        truncate_string(&mut val, 5);
-        assert_eq!(val, "12345");
-    }
-
-    #[test]
-    fn truncate_string_over_boundary_truncates() {
-        let mut val = "x".repeat(400);
-        truncate_string(&mut val, 10);
-        assert!(val.ends_with("..."));
-        assert_eq!(val.chars().count(), 13);
-    }
-
-    #[test]
-    fn truncate_string_multi_byte() {
-        let mut val = "ñ".repeat(20);
-        truncate_string(&mut val, 5);
-        assert!(val.ends_with("..."));
-        assert_eq!(val.chars().count(), 8); // 5 + "..."
-    }
 
     // -----------------------------------------------------------------------
     // compact_slack_output — GetConversationHistory

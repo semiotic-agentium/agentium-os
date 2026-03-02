@@ -10,7 +10,7 @@ use std::{collections::VecDeque, fmt, sync::Arc};
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_derive_core::BamlType as BamlTypeTrait;
-use baml_rt_core::{BamlRtError, Result, truncate_chars_with_ellipsis};
+use baml_rt_core::{BamlRtError, Result, trim_and_truncate_option};
 use baml_rt_tools::{
     ToolMetadataBuilder, TypeBasedMetadataBuilder,
     bundles::Support,
@@ -34,21 +34,6 @@ use ts_rs::TS;
 const MAX_BLOCK_DEPTH: u32 = 10;
 const BLOCK_TEXT_MAX_CHARS: usize = 200;
 
-fn truncate_optional_text(text: &mut Option<String>, max_chars: usize) {
-    let Some(current) = text.as_ref() else {
-        return;
-    };
-    let trimmed = current.trim();
-    if trimmed.is_empty() {
-        *text = None;
-        return;
-    }
-    if trimmed.chars().count() > max_chars {
-        *text = Some(truncate_chars_with_ellipsis(trimmed, max_chars));
-    } else if trimmed.len() != current.len() {
-        *text = Some(trimmed.to_string());
-    }
-}
 #[cfg(test)]
 const RATE_LIMIT_BASE_DELAY_MS: u64 = 500;
 #[cfg(test)]
@@ -972,7 +957,7 @@ fn compact_notion_output(output: &mut NotionOutput) {
             if block.block_type == "notable_lines" {
                 continue;
             }
-            truncate_optional_text(&mut block.text, BLOCK_TEXT_MAX_CHARS);
+            trim_and_truncate_option(&mut block.text, BLOCK_TEXT_MAX_CHARS);
         }
     }
     output.operation = None;
@@ -985,6 +970,14 @@ fn compact_notion_payload(content: &mut serde_json::Value) {
     compact_notion_output(&mut output);
     if let Ok(compacted) = serde_json::to_value(output) {
         *content = compacted;
+    }
+}
+
+fn compact_notion_result(content: &mut serde_json::Value) {
+    if let Some(result) = content.get_mut("result") {
+        compact_notion_payload(result);
+    } else {
+        compact_notion_payload(content);
     }
 }
 
@@ -1032,11 +1025,7 @@ impl BamlTool for NotionTool {
     }
 
     fn compact_result(&self, content: &mut serde_json::Value) {
-        if let Some(result) = content.get_mut("result") {
-            compact_notion_payload(result);
-        } else {
-            compact_notion_payload(content);
-        }
+        compact_notion_result(content);
     }
 }
 
@@ -1083,11 +1072,7 @@ impl BamlTool for NotionSearchPagesTool {
     }
 
     fn compact_result(&self, content: &mut serde_json::Value) {
-        if let Some(result) = content.get_mut("result") {
-            compact_notion_payload(result);
-        } else {
-            compact_notion_payload(content);
-        }
+        compact_notion_result(content);
     }
 }
 
@@ -1127,11 +1112,7 @@ impl BamlTool for NotionGetPageTool {
     }
 
     fn compact_result(&self, content: &mut serde_json::Value) {
-        if let Some(result) = content.get_mut("result") {
-            compact_notion_payload(result);
-        } else {
-            compact_notion_payload(content);
-        }
+        compact_notion_result(content);
     }
 }
 
@@ -1182,11 +1163,7 @@ impl BamlTool for NotionGetPageBlocksTool {
     }
 
     fn compact_result(&self, content: &mut serde_json::Value) {
-        if let Some(result) = content.get_mut("result") {
-            compact_notion_payload(result);
-        } else {
-            compact_notion_payload(content);
-        }
+        compact_notion_result(content);
     }
 }
 
@@ -1548,48 +1525,6 @@ register_tool!(notion_metadata, notion_build);
 #[cfg(test)]
 mod compaction_tests {
     use super::*;
-
-    // -----------------------------------------------------------------------
-    // truncate_optional_text
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn truncate_optional_none_is_noop() {
-        let mut val: Option<String> = None;
-        truncate_optional_text(&mut val, 10);
-        assert!(val.is_none());
-    }
-
-    #[test]
-    fn truncate_optional_empty_becomes_none() {
-        let mut val = Some(String::new());
-        truncate_optional_text(&mut val, 10);
-        assert!(val.is_none());
-    }
-
-    #[test]
-    fn truncate_optional_whitespace_becomes_none() {
-        let mut val = Some("   ".to_string());
-        truncate_optional_text(&mut val, 10);
-        assert!(val.is_none());
-    }
-
-    #[test]
-    fn truncate_optional_within_limit_unchanged() {
-        let mut val = Some("short".to_string());
-        truncate_optional_text(&mut val, 10);
-        assert_eq!(val.as_deref(), Some("short"));
-    }
-
-    #[test]
-    fn truncate_optional_over_limit_truncates() {
-        let mut val = Some("a]".repeat(150));
-        truncate_optional_text(&mut val, 10);
-        let result = val.unwrap();
-        assert!(result.ends_with("..."));
-        // 10 chars + "..."
-        assert_eq!(result.chars().count(), 13);
-    }
 
     // -----------------------------------------------------------------------
     // compact_notion_output — GetPageBlocks
