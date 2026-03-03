@@ -1103,7 +1103,7 @@ fn build_provenance_config(db: &ProvenanceDb) -> Result<ProvenanceConfig> {
             })
         }
         ProvenanceDb::File(path) => {
-            let cache = Arc::new(baml_rt_provenance::MermaidCache::new());
+            let cache = baml_rt_provenance::MermaidCache::new();
             let store = GraphqliteStoreBuilder::file(path)
                 .with_mermaid_cache(cache.clone())
                 .build()
@@ -1517,13 +1517,14 @@ async fn main() -> anyhow::Result<()> {
 
     let http_handle = if let Some(bind) = config.serve_http.clone() {
         let (mermaid, context_metrics) = {
-            let config = ready.runner().provenance_config();
-            let store = config.store().clone();
+            let runner = ready.runner();
+            let prov = runner.provenance_config();
+            let store = prov.store().clone();
             (
-                Some(Arc::new(MermaidServiceImpl::new(
-                    store.clone(),
-                    config.mermaid_cache(),
-                )) as Arc<dyn baml_rt_api::MermaidService>),
+                Some(
+                    Arc::new(MermaidServiceImpl::new(store.clone(), prov.mermaid_cache()))
+                        as Arc<dyn baml_rt_api::MermaidService>,
+                ),
                 Some(Arc::new(ContextMetricsServiceImpl::new(store))
                     as Arc<dyn baml_rt_api::ContextMetricsService>),
             )
