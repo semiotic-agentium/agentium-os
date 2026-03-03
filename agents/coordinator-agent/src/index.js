@@ -1,0 +1,1227 @@
+const MAX_FANOUT_CONCURRENCY = 3;
+const MAX_TRANSCRIPT_CHARS = 12000;
+const MAX_CONVERSATION_CONTEXT_CHARS = 4000;
+const MAX_SINGLE_SEND_CONTINUE_STEPS = 16;
+const MAX_DELEGATION_CONTINUE_STEPS = 128;
+const MAX_WORKFLOW_NODES = 30;
+const MAX_FOREACH_EXPANSIONS = 50;
+const USE_WORKFLOW_COORDINATOR = false;
+const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
+const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
+// ---------------------------------------------------------------------------
+// Utility helpers
+// ---------------------------------------------------------------------------
+function isObject(value) {
+    return value != null && typeof value === "object";
+}
+function normalizeText(value) {
+    return value.replace(/\s+/g, " ").trim();
+}
+function normalizeOptionalString(value) {
+    if (typeof value !== "string")
+        return null;
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : null;
+}
+function parseStringArray(value) {
+    if (!Array.isArray(value))
+        return [];
+    return value.filter((entry) => typeof entry === "string");
+}
+function parseRouteTarget(value) {
+    if (!isObject(value))
+        return null;
+    if (typeof value.agent_package !== "string")
+        return null;
+    if (typeof value.agent_instance_id !== "string")
+        return null;
+    return {
+        agent_package: value.agent_package,
+        agent_instance_id: value.agent_instance_id,
+    };
+}
+function parseWorkflowNodeKind(value) {
+    if (typeof value !== "string")
+        return null;
+    if (value === "call_agent" ||
+        value === "foreach" ||
+        value === "synthesize" ||
+        value === "clarify" ||
+        value === "direct_answer") {
+        return value;
+    }
+    return null;
+}
+function parseWorkflowForeachTemplate(value) {
+    if (!isObject(value))
+        return null;
+    if (typeof value.id_prefix !== "string" || value.id_prefix.trim().length === 0)
+        return null;
+    if (typeof value.prompt_template !== "string" || value.prompt_template.trim().length === 0) {
+        return null;
+    }
+    const target = parseRouteTarget(value.target);
+    if (!target)
+        return null;
+    const maxItemsRaw = typeof value.max_items === "number" ? value.max_items : Number(value.max_items);
+    const maxItems = Number.isFinite(maxItemsRaw) ? Math.floor(maxItemsRaw) : undefined;
+    return {
+        id_prefix: value.id_prefix.trim(),
+        target,
+        prompt_template: value.prompt_template.trim(),
+        max_items: maxItems,
+    };
+}
+function parseWorkflowNode(value) {
+    if (!isObject(value))
+        return null;
+    const id = normalizeOptionalString(value.id);
+    const kind = parseWorkflowNodeKind(value.kind);
+    if (!id || !kind)
+        return null;
+    return {
+        id,
+        kind,
+        depends_on: parseStringArray(value.depends_on),
+        target: parseRouteTarget(value.target) || undefined,
+        prompt_template: normalizeOptionalString(value.prompt_template) || undefined,
+        foreach_from: normalizeOptionalString(value.foreach_from) || undefined,
+        foreach_template: parseWorkflowForeachTemplate(value.foreach_template) || undefined,
+        synthesis_template: normalizeOptionalString(value.synthesis_template) || undefined,
+        rationale: normalizeOptionalString(value.rationale) || undefined,
+    };
+}
+function parseWorkflowPlan(value) {
+    if (!isObject(value) || !Array.isArray(value.nodes))
+        return null;
+    const nodes = value.nodes
+        .map((node) => parseWorkflowNode(node))
+        .filter((node) => node != null);
+    if (nodes.length === 0)
+        return null;
+    if (nodes.length !== value.nodes.length)
+        return null;
+    return {
+        goal: normalizeOptionalString(value.goal) || "Coordinate user request",
+        nodes,
+        final_node_id: normalizeOptionalString(value.final_node_id),
+    };
+}
+function workflowTargetKey(target) {
+    return `${target.agent_package}/${target.agent_instance_id}`;
+}
+function validateWorkflowPlan(plan, agentRegistry) {
+    if (!Array.isArray(plan.nodes) || plan.nodes.length === 0) {
+        throw new Error("Workflow plan must include at least one node.");
+    }
+    if (plan.nodes.length > MAX_WORKFLOW_NODES) {
+        throw new Error(`Workflow plan exceeds max node count (${plan.nodes.length} > ${MAX_WORKFLOW_NODES}).`);
+    }
+    const nodeById = new Map();
+    for (const node of plan.nodes) {
+        if (nodeById.has(node.id)) {
+            throw new Error(`Workflow plan has duplicate node id: ${node.id}`);
+        }
+        nodeById.set(node.id, node);
+    }
+    if (plan.final_node_id && !nodeById.has(plan.final_node_id)) {
+        throw new Error(`Workflow final_node_id does not exist: ${plan.final_node_id}`);
+    }
+    for (const node of plan.nodes) {
+        for (const depId of node.depends_on) {
+            if (!nodeById.has(depId)) {
+                throw new Error(`Workflow node ${node.id} depends on unknown node ${depId}.`);
+            }
+            if (depId === node.id) {
+                throw new Error(`Workflow node ${node.id} cannot depend on itself.`);
+            }
+        }
+        if (node.kind === "call_agent") {
+            if (!node.target) {
+                throw new Error(`Workflow node ${node.id} (call_agent) is missing target.`);
+            }
+            if (node.target.agent_package === "coordinator-agent") {
+                throw new Error(`Workflow node ${node.id} cannot target coordinator-agent.`);
+            }
+            if (!node.prompt_template) {
+                throw new Error(`Workflow node ${node.id} (call_agent) is missing prompt_template.`);
+            }
+            const key = workflowTargetKey(node.target);
+            if (!agentRegistry.has(key)) {
+                throw new Error(`Workflow node ${node.id} targets unknown agent ${key}.`);
+            }
+            continue;
+        }
+        if (node.kind === "foreach") {
+            if (!node.foreach_from) {
+                throw new Error(`Workflow node ${node.id} (foreach) is missing foreach_from.`);
+            }
+            if (!node.foreach_template) {
+                throw new Error(`Workflow node ${node.id} (foreach) is missing foreach_template.`);
+            }
+            if (node.foreach_template.target.agent_package === "coordinator-agent") {
+                throw new Error(`Workflow node ${node.id} foreach cannot target coordinator-agent.`);
+            }
+            const key = workflowTargetKey(node.foreach_template.target);
+            if (!agentRegistry.has(key)) {
+                throw new Error(`Workflow node ${node.id} foreach targets unknown agent ${key}.`);
+            }
+            const maxItems = node.foreach_template.max_items ?? MAX_FOREACH_EXPANSIONS;
+            if (maxItems < 1 || maxItems > MAX_FOREACH_EXPANSIONS) {
+                throw new Error(`Workflow node ${node.id} has invalid foreach max_items=${maxItems}; max=${MAX_FOREACH_EXPANSIONS}.`);
+            }
+            continue;
+        }
+        if (node.kind === "clarify" || node.kind === "direct_answer") {
+            if (!node.prompt_template) {
+                throw new Error(`Workflow node ${node.id} (${node.kind}) is missing prompt_template.`);
+            }
+        }
+    }
+    const indegree = new Map();
+    const dependents = new Map();
+    for (const node of plan.nodes) {
+        indegree.set(node.id, node.depends_on.length);
+        for (const depId of node.depends_on) {
+            const bucket = dependents.get(depId) || [];
+            bucket.push(node.id);
+            dependents.set(depId, bucket);
+        }
+    }
+    const queue = [];
+    for (const [id, degree] of indegree) {
+        if (degree === 0)
+            queue.push(id);
+    }
+    let visited = 0;
+    while (queue.length > 0) {
+        const id = queue.shift();
+        visited += 1;
+        const next = dependents.get(id) || [];
+        for (const depId of next) {
+            const current = indegree.get(depId);
+            if (current == null)
+                continue;
+            const updated = current - 1;
+            indegree.set(depId, updated);
+            if (updated === 0)
+                queue.push(depId);
+        }
+    }
+    if (visited !== plan.nodes.length) {
+        throw new Error("Workflow plan contains a dependency cycle.");
+    }
+}
+// ---------------------------------------------------------------------------
+// Delegated text extraction
+// ---------------------------------------------------------------------------
+function collectMessageParts(value, out) {
+    if (!isObject(value))
+        return;
+    const message = value.message;
+    if (!isObject(message) || !Array.isArray(message.parts))
+        return;
+    for (const part of message.parts) {
+        if (!isObject(part) || typeof part.text !== "string")
+            continue;
+        const text = part.text.trim();
+        if (text.length > 0)
+            out.add(text);
+    }
+}
+function extractTextsFromSerializedChunkField(value) {
+    if (typeof value !== "string")
+        return [];
+    const trimmed = value.trim();
+    if (!trimmed)
+        return [];
+    try {
+        const parsed = JSON.parse(trimmed);
+        const out = new Set();
+        collectMessageParts(parsed, out);
+        if (isObject(parsed)) {
+            collectMessageParts(parsed.task, out);
+            collectMessageParts(parsed.statusUpdate, out);
+            collectMessageParts(parsed.status, out);
+        }
+        return Array.from(out);
+    }
+    catch {
+        return [];
+    }
+}
+function collectDelegatedTexts(value) {
+    const out = new Set();
+    const visited = new WeakSet();
+    const pushMessageParts = (message) => {
+        if (!Array.isArray(message.parts))
+            return;
+        for (const part of message.parts) {
+            if (!part || typeof part.text !== "string")
+                continue;
+            const text = part.text.trim();
+            if (text.length > 0)
+                out.add(text);
+        }
+    };
+    const visit = (candidate) => {
+        if (Array.isArray(candidate)) {
+            if (visited.has(candidate))
+                return;
+            visited.add(candidate);
+            for (const item of candidate)
+                visit(item);
+            return;
+        }
+        if (!isObject(candidate))
+            return;
+        if (visited.has(candidate))
+            return;
+        visited.add(candidate);
+        const typed = candidate;
+        if (typed.message)
+            pushMessageParts(typed.message);
+        if (Array.isArray(typed.chunks)) {
+            for (const chunk of typed.chunks) {
+                if (!chunk)
+                    continue;
+                if (chunk.message)
+                    pushMessageParts(chunk.message);
+                for (const text of extractTextsFromSerializedChunkField(chunk.task))
+                    out.add(text);
+                for (const text of extractTextsFromSerializedChunkField(chunk.statusUpdate)) {
+                    out.add(text);
+                }
+            }
+        }
+        for (const nested of Object.values(candidate)) {
+            visit(nested);
+        }
+    };
+    visit(value);
+    return Array.from(out);
+}
+// ---------------------------------------------------------------------------
+// Discovery parsing
+// ---------------------------------------------------------------------------
+function parseDiscoveredAgent(value) {
+    if (!isObject(value))
+        return null;
+    const name = typeof value.name === "string" ? value.name : null;
+    const version = typeof value.version === "string" ? value.version : null;
+    const agentPackage = typeof value.agent_package === "string"
+        ? value.agent_package
+        : typeof value.agentPackage === "string"
+            ? value.agentPackage
+            : null;
+    const agentInstanceId = typeof value.agent_instance_id === "string"
+        ? value.agent_instance_id
+        : typeof value.agentInstanceId === "string"
+            ? value.agentInstanceId
+            : null;
+    if (!name || !version || !agentPackage || !agentInstanceId)
+        return null;
+    if (!Array.isArray(value.tools) || !value.tools.every((entry) => typeof entry === "string")) {
+        return null;
+    }
+    const description = normalizeOptionalString(value.description);
+    const capabilities = Array.isArray(value.capabilities)
+        ? value.capabilities.filter((entry) => typeof entry === "string")
+        : [];
+    return {
+        name,
+        version,
+        agent_package: agentPackage,
+        agent_instance_id: agentInstanceId,
+        tools: value.tools,
+        description: description || undefined,
+        capabilities,
+    };
+}
+function unwrapToolSessionNextOutput(value) {
+    if (!isObject(value))
+        return value;
+    if ("output" in value)
+        return value.output;
+    return value;
+}
+function parseDiscoverAgentsOutput(value) {
+    const normalized = unwrapToolSessionNextOutput(value);
+    if (!isObject(normalized) || !Array.isArray(normalized.agents))
+        return null;
+    const agents = normalized.agents
+        .map((entry) => parseDiscoveredAgent(entry))
+        .filter((entry) => entry != null);
+    if (agents.length === 0 && normalized.agents.length > 0)
+        return null;
+    return {
+        agents,
+        done: typeof normalized.done === "boolean" ? normalized.done : undefined,
+    };
+}
+function parseToolSessionStep(step) {
+    if (!isObject(step)) {
+        return { status: "unknown", output: step, errorMessage: null };
+    }
+    const rawStatus = typeof step.status === "string" ? step.status.toLowerCase() : null;
+    const status = rawStatus === "streaming" ||
+        rawStatus === "suspended" ||
+        rawStatus === "done" ||
+        rawStatus === "error"
+        ? rawStatus
+        : "unknown";
+    const output = "output" in step ? step.output : step;
+    const errObj = isObject(step.error) ? step.error : null;
+    const errorMessage = errObj && typeof errObj.message === "string"
+        ? errObj.message
+        : status === "error"
+            ? "Tool session returned error status."
+            : null;
+    return { status, output, errorMessage };
+}
+async function drainToolSession(sessionHandle, maxSteps) {
+    const steps = [];
+    for (let step = 0; step < maxSteps; step++) {
+        const parsed = parseToolSessionStep(await sessionHandle.continue());
+        steps.push(parsed);
+        if (parsed.status !== "streaming")
+            return { steps, hitStepLimit: false };
+    }
+    return { steps, hitStepLimit: true };
+}
+// ---------------------------------------------------------------------------
+// Tool session management
+// ---------------------------------------------------------------------------
+async function runSingleSendSession(toolName, openInput, sendInput) {
+    let sessionHandle = null;
+    try {
+        sessionHandle = await openToolSession(toolName, openInput);
+        await sessionHandle.send(sendInput);
+        const drained = await drainToolSession(sessionHandle, MAX_SINGLE_SEND_CONTINUE_STEPS);
+        if (drained.hitStepLimit) {
+            throw new Error(`Tool session did not reach terminal status within ${MAX_SINGLE_SEND_CONTINUE_STEPS} continue steps.`);
+        }
+        const terminal = drained.steps[drained.steps.length - 1] || null;
+        if (terminal?.status === "error") {
+            throw new Error(terminal.errorMessage || "Tool session returned error status.");
+        }
+        await sessionHandle.finish();
+        sessionHandle = null;
+        return terminal ? terminal.output : null;
+    }
+    catch (err) {
+        if (sessionHandle) {
+            const reason = err instanceof Error ? err.message : String(err);
+            try {
+                await sessionHandle.abort(reason);
+            }
+            catch {
+                // Ignore abort errors while already handling an upstream failure.
+            }
+        }
+        throw err;
+    }
+}
+async function discoverAgents(userText) {
+    const response = await runSingleSendSession(DISCOVER_AGENTS_TOOL_NAME, { reason: "Discover available specialist agents for coordinator routing" }, { query: userText, limit: 100, offset: 0 });
+    const parsed = parseDiscoverAgentsOutput(response);
+    return parsed?.agents || [];
+}
+async function delegateToAgent(target, prompt) {
+    let sessionHandle = null;
+    try {
+        sessionHandle = await openToolSession(INTERNAL_A2A_TOOL_NAME, {
+            target,
+        });
+        await sessionHandle.send({ parts: [{ text: prompt }] });
+        const drained = await drainToolSession(sessionHandle, MAX_DELEGATION_CONTINUE_STEPS);
+        if (drained.hitStepLimit) {
+            throw new Error(`Delegated session did not reach terminal status within ${MAX_DELEGATION_CONTINUE_STEPS} continue steps.`);
+        }
+        const terminal = drained.steps[drained.steps.length - 1] || null;
+        if (terminal?.status === "error") {
+            throw new Error(terminal.errorMessage || "Delegated session returned error status.");
+        }
+        await sessionHandle.finish();
+        sessionHandle = null;
+        return collectDelegatedTexts(drained.steps.map((step) => step.output));
+    }
+    catch (err) {
+        if (sessionHandle) {
+            const reason = err instanceof Error ? err.message : String(err);
+            try {
+                await sessionHandle.abort(reason);
+            }
+            catch {
+                // Ignore abort errors while on error path.
+            }
+        }
+        throw err;
+    }
+}
+// ---------------------------------------------------------------------------
+// LLM routing
+// ---------------------------------------------------------------------------
+function buildAgentCandidates(agents) {
+    return agents
+        .filter((a) => a.agent_package !== "coordinator-agent")
+        .filter((a) => a.agent_instance_id === "default")
+        .map((a) => ({
+        agent_package: a.agent_package,
+        agent_instance_id: a.agent_instance_id,
+        name: a.name,
+        description: a.description || null,
+        capabilities: a.capabilities || [],
+        tools: a.tools,
+    }));
+}
+function parseLlmRoutingDecision(value) {
+    if (!isObject(value))
+        return null;
+    if (typeof value.action !== "string")
+        return null;
+    if (!Array.isArray(value.targets))
+        return null;
+    if (typeof value.reasoning !== "string")
+        return null;
+    const targets = value.targets
+        .filter((t) => isObject(t) &&
+        typeof t.agent_package === "string" &&
+        typeof t.agent_instance_id === "string" &&
+        typeof t.prompt === "string" &&
+        typeof t.rationale === "string")
+        .map((t) => ({
+        agent_package: t.agent_package,
+        agent_instance_id: t.agent_instance_id,
+        prompt: t.prompt,
+        rationale: t.rationale,
+    }));
+    return {
+        action: value.action,
+        targets,
+        direct_message: typeof value.direct_message === "string" ? value.direct_message : null,
+        reasoning: value.reasoning,
+    };
+}
+async function llmRoute(userText, agents, conversationSummary) {
+    const candidates = buildAgentCandidates(agents);
+    const raw = await RouteToSpecialists({
+        user_message: userText,
+        available_agents: candidates,
+        conversation_summary: conversationSummary || null,
+    });
+    const parsed = parseLlmRoutingDecision(raw);
+    if (!parsed) {
+        return {
+            action: "DirectAnswer",
+            targets: [],
+            direct_message: "I could not determine the best routing. Please rephrase your request.",
+            reasoning: "LLM routing returned an unparsable response",
+        };
+    }
+    return parsed;
+}
+function buildFallbackWorkflowPlanFromRouting(userText, decision) {
+    const directMessage = normalizeOptionalString(decision.direct_message) ||
+        "I could not determine the best routing. Please rephrase your request.";
+    if (decision.action === "DirectAnswer") {
+        return {
+            goal: userText,
+            nodes: [
+                {
+                    id: "n1",
+                    kind: "direct_answer",
+                    depends_on: [],
+                    prompt_template: directMessage,
+                    rationale: decision.reasoning,
+                },
+            ],
+            final_node_id: "n1",
+        };
+    }
+    if (decision.action === "Clarify") {
+        return {
+            goal: userText,
+            nodes: [
+                {
+                    id: "n1",
+                    kind: "clarify",
+                    depends_on: [],
+                    prompt_template: directMessage ||
+                        "I need more information to route your request. Could you clarify which service or data source you'd like me to query?",
+                    rationale: decision.reasoning,
+                },
+            ],
+            final_node_id: "n1",
+        };
+    }
+    if (decision.targets.length === 0) {
+        return {
+            goal: userText,
+            nodes: [
+                {
+                    id: "n1",
+                    kind: "direct_answer",
+                    depends_on: [],
+                    prompt_template: "No specialist agents matched your request. Try rephrasing or ask what agents are available.",
+                    rationale: decision.reasoning,
+                },
+            ],
+            final_node_id: "n1",
+        };
+    }
+    const callNodes = decision.targets.map((target, index) => ({
+        id: `n${index + 1}`,
+        kind: "call_agent",
+        depends_on: [],
+        target: {
+            agent_package: target.agent_package,
+            agent_instance_id: target.agent_instance_id,
+        },
+        prompt_template: target.prompt,
+        rationale: target.rationale,
+    }));
+    if (callNodes.length === 1) {
+        return {
+            goal: userText,
+            nodes: callNodes,
+            final_node_id: callNodes[0].id,
+        };
+    }
+    const synthNodeId = `n${callNodes.length + 1}`;
+    return {
+        goal: userText,
+        nodes: [
+            ...callNodes,
+            {
+                id: synthNodeId,
+                kind: "synthesize",
+                depends_on: callNodes.map((node) => node.id),
+                rationale: "Merge parallel specialist outputs into one final response.",
+            },
+        ],
+        final_node_id: synthNodeId,
+    };
+}
+function buildAgentRegistry(agents) {
+    return new Set(agents.map((agent) => `${agent.agent_package}/${agent.agent_instance_id}`));
+}
+async function planWorkflow(userText, agents, conversationSummary) {
+    const candidates = buildAgentCandidates(agents);
+    const agentRegistry = buildAgentRegistry(agents);
+    try {
+        const rawPlan = await PlanCoordinatorWorkflow({
+            user_message: userText,
+            available_agents: candidates,
+            conversation_context: conversationSummary || null,
+        });
+        const parsed = parseWorkflowPlan(rawPlan);
+        if (!parsed) {
+            throw new Error("PlanCoordinatorWorkflow returned an unparsable plan.");
+        }
+        validateWorkflowPlan(parsed, agentRegistry);
+        return parsed;
+    }
+    catch {
+        const fallbackDecision = await llmRoute(userText, agents, conversationSummary);
+        const fallbackPlan = buildFallbackWorkflowPlanFromRouting(userText, fallbackDecision);
+        validateWorkflowPlan(fallbackPlan, agentRegistry);
+        return fallbackPlan;
+    }
+}
+// ---------------------------------------------------------------------------
+// Conversation context
+// ---------------------------------------------------------------------------
+function getConversationSummary(ctx) {
+    const tags = ctx.tags;
+    if (!isObject(tags))
+        return null;
+    const history = tags.conversation_history;
+    if (typeof history !== "string" || history.trim().length === 0)
+        return null;
+    return history.slice(0, MAX_CONVERSATION_CONTEXT_CHARS);
+}
+// ---------------------------------------------------------------------------
+// Synthesis and rendering
+// ---------------------------------------------------------------------------
+function toCoordinatorAnswer(value) {
+    if (!isObject(value) || typeof value.answer !== "string")
+        return null;
+    const actionable = Array.isArray(value.actionable_goals)
+        ? value.actionable_goals
+            .map((entry) => {
+            if (!isObject(entry))
+                return null;
+            const goal = normalizeOptionalString(entry.goal);
+            if (!goal)
+                return null;
+            return {
+                goal,
+                owner: normalizeOptionalString(entry.owner),
+                due_date: normalizeOptionalString(entry.due_date),
+            };
+        })
+            .filter((entry) => entry != null)
+        : [];
+    const sources = Array.isArray(value.sources)
+        ? value.sources.filter((entry) => typeof entry === "string")
+        : [];
+    const gaps = Array.isArray(value.gaps)
+        ? value.gaps.filter((entry) => typeof entry === "string")
+        : [];
+    const confidenceRaw = value.confidence;
+    const parsedConfidence = typeof confidenceRaw === "number" ? confidenceRaw : Number(confidenceRaw);
+    const confidence = Number.isFinite(parsedConfidence)
+        ? Math.max(0, Math.min(1, parsedConfidence))
+        : 0.0;
+    const clarificationQuestion = typeof value.clarification_question === "string"
+        ? value.clarification_question
+        : null;
+    return {
+        answer: value.answer.trim(),
+        actionable_goals: actionable.length > 0
+            ? actionable
+            : [{ goal: "None identified from current evidence", owner: null, due_date: null }],
+        sources: sources.length > 0 ? sources : ["None"],
+        confidence,
+        gaps: gaps.length > 0 ? gaps : ["None observed"],
+        clarification_question: clarificationQuestion,
+    };
+}
+function goalHasOwnerOrDate(goal) {
+    return Boolean((goal.owner && goal.owner.length > 0) || (goal.due_date && goal.due_date.length > 0));
+}
+function renderCoordinatorAnswer(answer) {
+    const lines = [];
+    lines.push("Answer:");
+    lines.push(answer.answer || "No answer available.");
+    lines.push("");
+    const hasOwnerOrDate = answer.actionable_goals.some(goalHasOwnerOrDate);
+    lines.push(hasOwnerOrDate
+        ? "Actionable Goals (Owner/Date Present):"
+        : "Actionable Goals (Owner/Date Missing In Evidence):");
+    for (const goal of answer.actionable_goals) {
+        if (!goalHasOwnerOrDate(goal)) {
+            lines.push(`- ${goal.goal}`);
+            continue;
+        }
+        const tags = [];
+        if (goal.owner)
+            tags.push(`owner: ${goal.owner}`);
+        if (goal.due_date)
+            tags.push(`due: ${goal.due_date}`);
+        lines.push(`- ${goal.goal} (${tags.join("; ")})`);
+    }
+    if (!hasOwnerOrDate) {
+        lines.push("- Owner/date details were not explicit in the current sources.");
+    }
+    lines.push("");
+    lines.push("Sources:");
+    for (const source of answer.sources)
+        lines.push(`- ${source}`);
+    lines.push("");
+    lines.push(`Confidence: ${answer.confidence.toFixed(2)}`);
+    lines.push("");
+    lines.push("Gaps:");
+    for (const gap of answer.gaps)
+        lines.push(`- ${gap}`);
+    if (answer.clarification_question) {
+        lines.push("");
+        lines.push("Clarification:");
+        lines.push(`- ${answer.clarification_question}`);
+    }
+    return lines.join("\n");
+}
+// ---------------------------------------------------------------------------
+// Evidence collection (single target)
+// ---------------------------------------------------------------------------
+async function collectEvidence(delegationPrompt, target) {
+    let chunkTexts;
+    try {
+        chunkTexts = await delegateToAgent(target, delegationPrompt);
+    }
+    catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        return [`Delegation error: ${reason}`];
+    }
+    const joined = normalizeText(chunkTexts.join("\n"));
+    if (!joined)
+        return [];
+    return [joined];
+}
+// ---------------------------------------------------------------------------
+// Synthesis
+// ---------------------------------------------------------------------------
+async function synthesize(userText, transcript, _conversationSummary) {
+    let synthesizedRaw;
+    try {
+        synthesizedRaw = await SynthesizeCoordinatorResponse({
+            user_message: userText,
+            delegated_transcript: transcript,
+        });
+    }
+    catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        return [
+            "Answer:",
+            "I gathered delegated evidence but synthesis failed this turn.",
+            "",
+            "Actionable Goals (Owner/Date Missing In Evidence):",
+            "- None identified from current evidence",
+            "- Owner/date details were not explicit in the current sources.",
+            "",
+            "Sources:",
+            "- None",
+            "",
+            "Confidence: 0.35",
+            "",
+            "Gaps:",
+            `- Synthesis failure: ${reason}`,
+            "",
+            "Clarification:",
+            "- Which exact source should I prioritize?",
+        ].join("\n");
+    }
+    const synthesized = toCoordinatorAnswer(synthesizedRaw);
+    if (!synthesized) {
+        return [
+            "Answer:",
+            "I collected evidence but could not produce a structured synthesis.",
+            "",
+            "Evidence snapshot:",
+            `- ${transcript.slice(0, 1200)}`,
+            "",
+            "Confidence: 0.40",
+            "",
+            "Gaps:",
+            "- Structured synthesis unavailable for this turn.",
+            "",
+            "Clarification:",
+            "- Which specific source should I prioritize?",
+        ].join("\n");
+    }
+    return renderCoordinatorAnswer(synthesized);
+}
+function routeTargetKey(target) {
+    return `${target.agent_package}/${target.agent_instance_id}`;
+}
+async function collectLlmTargetEvidence(delegationPrompt, target) {
+    const snippets = await collectEvidence(delegationPrompt, target);
+    return {
+        key: routeTargetKey(target),
+        snippets,
+    };
+}
+// ---------------------------------------------------------------------------
+// Workflow execution (Phase 3)
+// ---------------------------------------------------------------------------
+const MAX_INTERPOLATION_CHARS = 8000;
+function isTerminalArtifactStatus(status) {
+    return status === "completed" || status === "failed" || status === "skipped";
+}
+function resolveArtifactPath(path, artifacts) {
+    const segments = path.split(".").filter((segment) => segment.length > 0);
+    if (segments.length < 2)
+        return undefined;
+    const [nodeId, ...rest] = segments;
+    let current = artifacts.get(nodeId);
+    for (const segment of rest) {
+        if (!isObject(current))
+            return undefined;
+        current = current[segment];
+    }
+    return current;
+}
+function interpolateTemplate(template, artifacts) {
+    return template.replace(/\{\{([\w.]+)\}\}/g, (match, path) => {
+        const resolved = resolveArtifactPath(path, artifacts);
+        if (resolved === undefined)
+            return match;
+        if (typeof resolved === "string")
+            return resolved.slice(0, MAX_INTERPOLATION_CHARS);
+        try {
+            return JSON.stringify(resolved).slice(0, MAX_INTERPOLATION_CHARS);
+        }
+        catch {
+            return String(resolved).slice(0, MAX_INTERPOLATION_CHARS);
+        }
+    });
+}
+function nodeHasFailedDependency(node, artifacts) {
+    for (const depId of node.depends_on) {
+        const dep = artifacts.get(depId);
+        if (dep && (dep.status === "failed" || dep.status === "skipped")) {
+            return true;
+        }
+    }
+    return false;
+}
+function nodeDependenciesCompleted(node, artifacts) {
+    return node.depends_on.every((depId) => artifacts.get(depId)?.status === "completed");
+}
+function computeWaves(nodes) {
+    const nodeById = new Map();
+    const indegree = new Map();
+    const dependents = new Map();
+    for (const node of nodes) {
+        nodeById.set(node.id, node);
+        indegree.set(node.id, node.depends_on.length);
+        for (const depId of node.depends_on) {
+            const bucket = dependents.get(depId) || [];
+            bucket.push(node.id);
+            dependents.set(depId, bucket);
+        }
+    }
+    let queue = nodes
+        .filter((node) => (indegree.get(node.id) || 0) === 0)
+        .map((node) => node.id);
+    const waves = [];
+    while (queue.length > 0) {
+        const waveIds = queue;
+        queue = [];
+        const waveNodes = [];
+        for (const id of waveIds) {
+            const node = nodeById.get(id);
+            if (!node)
+                continue;
+            waveNodes.push(node);
+            const next = dependents.get(id) || [];
+            for (const nextId of next) {
+                const current = indegree.get(nextId);
+                if (current == null)
+                    continue;
+                const updated = current - 1;
+                indegree.set(nextId, updated);
+                if (updated === 0)
+                    queue.push(nextId);
+            }
+        }
+        if (waveNodes.length > 0)
+            waves.push(waveNodes);
+    }
+    return waves;
+}
+async function executeWorkflowNode(node, artifacts) {
+    const started_at = new Date().toISOString();
+    try {
+        if (node.kind === "call_agent") {
+            if (!node.target || !node.prompt_template) {
+                return {
+                    node_id: node.id,
+                    status: "failed",
+                    error: "call_agent node missing target or prompt_template.",
+                    started_at,
+                    ended_at: new Date().toISOString(),
+                };
+            }
+            const prompt = interpolateTemplate(node.prompt_template, artifacts);
+            const snippets = await collectEvidence(prompt, node.target);
+            const joined = normalizeText(snippets.join("\n\n---\n\n"));
+            if (!joined) {
+                return {
+                    node_id: node.id,
+                    status: "failed",
+                    error: "Delegation returned no usable evidence.",
+                    started_at,
+                    ended_at: new Date().toISOString(),
+                };
+            }
+            if (/^Delegation error:/i.test(joined)) {
+                return {
+                    node_id: node.id,
+                    status: "failed",
+                    error: joined,
+                    output_text: joined,
+                    started_at,
+                    ended_at: new Date().toISOString(),
+                };
+            }
+            return {
+                node_id: node.id,
+                status: "completed",
+                output_text: joined,
+                started_at,
+                ended_at: new Date().toISOString(),
+            };
+        }
+        if (node.kind === "direct_answer") {
+            const rendered = interpolateTemplate(node.prompt_template || "", artifacts);
+            return {
+                node_id: node.id,
+                status: "completed",
+                output_text: rendered,
+                started_at,
+                ended_at: new Date().toISOString(),
+            };
+        }
+        if (node.kind === "synthesize") {
+            return {
+                node_id: node.id,
+                status: "completed",
+                started_at,
+                ended_at: new Date().toISOString(),
+            };
+        }
+        if (node.kind === "foreach") {
+            return {
+                node_id: node.id,
+                status: "failed",
+                error: "foreach execution is not enabled yet (Phase 4).",
+                started_at,
+                ended_at: new Date().toISOString(),
+            };
+        }
+        if (node.kind === "clarify") {
+            return {
+                node_id: node.id,
+                status: "completed",
+                output_text: node.prompt_template || "Can you clarify your request?",
+                started_at,
+                ended_at: new Date().toISOString(),
+            };
+        }
+        return {
+            node_id: node.id,
+            status: "failed",
+            error: `Unsupported node kind: ${node.kind}`,
+            started_at,
+            ended_at: new Date().toISOString(),
+        };
+    }
+    catch (err) {
+        return {
+            node_id: node.id,
+            status: "failed",
+            error: err instanceof Error ? err.message : String(err),
+            started_at,
+            ended_at: new Date().toISOString(),
+        };
+    }
+}
+async function executeWave(wave, artifacts) {
+    const outputs = [];
+    for (let i = 0; i < wave.length; i += MAX_FANOUT_CONCURRENCY) {
+        const batch = wave.slice(i, i + MAX_FANOUT_CONCURRENCY);
+        const settled = await Promise.allSettled(batch.map((node) => executeWorkflowNode(node, artifacts)));
+        for (let j = 0; j < settled.length; j++) {
+            const outcome = settled[j];
+            if (outcome.status === "fulfilled") {
+                outputs.push(outcome.value);
+            }
+            else {
+                const node = batch[j];
+                outputs.push({
+                    node_id: node.id,
+                    status: "failed",
+                    error: outcome.reason instanceof Error
+                        ? outcome.reason.message
+                        : String(outcome.reason),
+                    started_at: new Date().toISOString(),
+                    ended_at: new Date().toISOString(),
+                });
+            }
+        }
+    }
+    return outputs;
+}
+function buildWorkflowTranscript(plan, artifacts) {
+    const parts = [];
+    for (const node of plan.nodes) {
+        const artifact = artifacts.get(node.id);
+        if (!artifact)
+            continue;
+        if (artifact.status === "completed" && artifact.output_text) {
+            parts.push(`[${node.id}]\n${artifact.output_text}`);
+            continue;
+        }
+        if (artifact.status === "failed") {
+            parts.push(`[${node.id}] ERROR: ${artifact.error || "unknown failure"}`);
+            continue;
+        }
+        if (artifact.status === "skipped") {
+            parts.push(`[${node.id}] SKIPPED: dependency failed`);
+        }
+    }
+    return parts.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
+}
+async function executeWorkflowPlanPhase3(plan, userText, conversationSummary) {
+    const waves = computeWaves(plan.nodes);
+    const artifacts = new Map();
+    for (const wave of waves) {
+        for (const node of wave) {
+            if (artifacts.has(node.id))
+                continue;
+            if (nodeHasFailedDependency(node, artifacts)) {
+                artifacts.set(node.id, {
+                    node_id: node.id,
+                    status: "skipped",
+                    error: "Skipped due to failed dependency.",
+                    started_at: new Date().toISOString(),
+                    ended_at: new Date().toISOString(),
+                });
+            }
+        }
+        const ready = wave.filter((node) => {
+            if (artifacts.has(node.id))
+                return false;
+            return nodeDependenciesCompleted(node, artifacts);
+        });
+        if (ready.length === 0)
+            continue;
+        const clarifyNode = ready.find((node) => node.kind === "clarify");
+        if (clarifyNode) {
+            return { message: clarifyNode.prompt_template || "Can you clarify your request?" };
+        }
+        const results = await executeWave(ready, artifacts);
+        for (const result of results) {
+            artifacts.set(result.node_id, result);
+        }
+    }
+    const directOnly = plan.nodes.every((node) => node.kind === "direct_answer" || node.kind === "synthesize");
+    if (directOnly) {
+        const message = plan.nodes
+            .map((node) => artifacts.get(node.id)?.output_text)
+            .filter((entry) => typeof entry === "string" && entry.trim().length > 0)
+            .join("\n");
+        return { message: message || "No direct response was produced by the workflow plan." };
+    }
+    const anyTerminal = plan.nodes.some((node) => isTerminalArtifactStatus(artifacts.get(node.id)?.status || "pending"));
+    if (!anyTerminal) {
+        return { message: "Workflow plan contains no executable call_agent nodes for this phase." };
+    }
+    const transcript = buildWorkflowTranscript(plan, artifacts);
+    if (!transcript) {
+        return {
+            message: "I delegated according to the workflow plan, but received no usable evidence.",
+        };
+    }
+    return { message: await synthesize(userText, transcript, conversationSummary) };
+}
+async function runWorkflowCoordinator(ctx) {
+    const userText = (ctx.text || "").trim();
+    if (!userText) {
+        return { message: "Please share what you want me to coordinate." };
+    }
+    const conversationSummary = getConversationSummary(ctx);
+    let agents;
+    try {
+        agents = await discoverAgents(userText);
+    }
+    catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        return { message: `Agent discovery failed: ${reason}` };
+    }
+    let plan;
+    try {
+        plan = await planWorkflow(userText, agents, conversationSummary);
+    }
+    catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        return { message: `Workflow planning failed: ${reason}` };
+    }
+    const hasForeach = plan.nodes.some((node) => node.kind === "foreach");
+    if (hasForeach) {
+        // Phase 4 will add foreach expansion.
+        return runLlmCoordinator(ctx);
+    }
+    return executeWorkflowPlanPhase3(plan, userText, conversationSummary);
+}
+// ---------------------------------------------------------------------------
+// LLM-routed coordinator (rollback/fallback path)
+// ---------------------------------------------------------------------------
+async function runLlmCoordinator(ctx) {
+    const userText = (ctx.text || "").trim();
+    if (!userText) {
+        return { message: "Please share what you want me to coordinate." };
+    }
+    const conversationSummary = getConversationSummary(ctx);
+    let agents;
+    try {
+        agents = await discoverAgents(userText);
+    }
+    catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        return { message: `Agent discovery failed: ${reason}` };
+    }
+    let decision;
+    try {
+        decision = await llmRoute(userText, agents, conversationSummary);
+    }
+    catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        return { message: `Routing failed: ${reason}` };
+    }
+    if (decision.action === "DirectAnswer") {
+        return {
+            message: decision.direct_message || "I can help coordinate requests to specialist agents. What would you like to know?",
+        };
+    }
+    if (decision.action === "Clarify") {
+        return {
+            message: decision.direct_message || "I need more information to route your request. Could you clarify which service or data source you'd like me to query?",
+        };
+    }
+    if (decision.targets.length === 0) {
+        return {
+            message: "No specialist agents matched your request. Try rephrasing or ask what agents are available.",
+        };
+    }
+    if (decision.action === "FanOut" && decision.targets.length > 1) {
+        const cappedTargets = decision.targets.slice(0, MAX_FANOUT_CONCURRENCY);
+        const settled = await Promise.allSettled(cappedTargets.map(async (t) => {
+            const target = {
+                agent_package: t.agent_package,
+                agent_instance_id: t.agent_instance_id,
+            };
+            return collectLlmTargetEvidence(t.prompt, target);
+        }));
+        const evidenceParts = [];
+        for (let i = 0; i < settled.length; i++) {
+            const outcome = settled[i];
+            const target = cappedTargets[i];
+            const label = `${target.agent_package}/${target.agent_instance_id}`;
+            if (outcome.status === "rejected") {
+                const reason = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+                evidenceParts.push(`[${label}]\nDelegation error: ${reason}`);
+                continue;
+            }
+            const transcript = outcome.value.snippets.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
+            const joined = normalizeText(transcript);
+            if (!joined)
+                continue;
+            evidenceParts.push(`[${outcome.value.key}]\n${joined}`);
+        }
+        if (evidenceParts.length === 0) {
+            return {
+                message: "I delegated to multiple specialists but received no usable evidence. Try a more specific query.",
+            };
+        }
+        const transcript = evidenceParts.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
+        return { message: await synthesize(userText, transcript, conversationSummary) };
+    }
+    // Single delegation (Delegate action or FanOut with one target)
+    const primary = decision.targets[0];
+    const target = {
+        agent_package: primary.agent_package,
+        agent_instance_id: primary.agent_instance_id,
+    };
+    const collected = await collectLlmTargetEvidence(primary.prompt, target);
+    if (collected.snippets.length === 0) {
+        return {
+            message: "I could not collect evidence from the delegated agent. Try a more specific query.",
+        };
+    }
+    const transcript = collected.snippets.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
+    return { message: await synthesize(userText, transcript, conversationSummary) };
+}
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+async function runCoordinator(ctx) {
+    if (USE_WORKFLOW_COORDINATOR) {
+        return runWorkflowCoordinator(ctx);
+    }
+    return runLlmCoordinator(ctx);
+}
+__chat_register({ run: runCoordinator });
+export {};

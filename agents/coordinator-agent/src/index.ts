@@ -1075,90 +1075,337 @@ async function collectLlmTargetEvidence(
 }
 
 // ---------------------------------------------------------------------------
-// Workflow planning (Phase 2)
+// Workflow execution (Phase 3)
 // ---------------------------------------------------------------------------
 
-function isPhase2ExecutableWorkflowPlan(plan: WorkflowPlan): boolean {
-  for (const node of plan.nodes) {
-    if (node.kind === "foreach") return false;
-    if (
-      (node.kind === "call_agent" ||
-        node.kind === "clarify" ||
-        node.kind === "direct_answer") &&
-      node.depends_on.length > 0
-    ) {
-      return false;
-    }
-  }
-  return true;
+const MAX_INTERPOLATION_CHARS = 8_000;
+
+function isTerminalArtifactStatus(status: NodeArtifactStatus): boolean {
+  return status === "completed" || status === "failed" || status === "skipped";
 }
 
-async function executePhase2WorkflowPlan(
+function resolveArtifactPath(path: string, artifacts: Map<string, NodeArtifact>): unknown {
+  const segments = path.split(".").filter((segment) => segment.length > 0);
+  if (segments.length < 2) return undefined;
+
+  const [nodeId, ...rest] = segments;
+  let current: unknown = artifacts.get(nodeId);
+  for (const segment of rest) {
+    if (!isObject(current)) return undefined;
+    current = current[segment];
+  }
+  return current;
+}
+
+function interpolateTemplate(template: string, artifacts: Map<string, NodeArtifact>): string {
+  return template.replace(/\{\{([\w.]+)\}\}/g, (match, path) => {
+    const resolved = resolveArtifactPath(path, artifacts);
+    if (resolved === undefined) return match;
+    if (typeof resolved === "string") return resolved.slice(0, MAX_INTERPOLATION_CHARS);
+    try {
+      return JSON.stringify(resolved).slice(0, MAX_INTERPOLATION_CHARS);
+    } catch {
+      return String(resolved).slice(0, MAX_INTERPOLATION_CHARS);
+    }
+  });
+}
+
+function nodeHasFailedDependency(
+  node: WorkflowNode,
+  artifacts: Map<string, NodeArtifact>,
+): boolean {
+  for (const depId of node.depends_on) {
+    const dep = artifacts.get(depId);
+    if (dep && (dep.status === "failed" || dep.status === "skipped")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function nodeDependenciesCompleted(
+  node: WorkflowNode,
+  artifacts: Map<string, NodeArtifact>,
+): boolean {
+  return node.depends_on.every((depId) => artifacts.get(depId)?.status === "completed");
+}
+
+function computeWaves(nodes: WorkflowNode[]): WorkflowNode[][] {
+  const nodeById = new Map<string, WorkflowNode>();
+  const indegree = new Map<string, number>();
+  const dependents = new Map<string, string[]>();
+
+  for (const node of nodes) {
+    nodeById.set(node.id, node);
+    indegree.set(node.id, node.depends_on.length);
+    for (const depId of node.depends_on) {
+      const bucket = dependents.get(depId) || [];
+      bucket.push(node.id);
+      dependents.set(depId, bucket);
+    }
+  }
+
+  let queue = nodes
+    .filter((node) => (indegree.get(node.id) || 0) === 0)
+    .map((node) => node.id);
+  const waves: WorkflowNode[][] = [];
+
+  while (queue.length > 0) {
+    const waveIds = queue;
+    queue = [];
+    const waveNodes: WorkflowNode[] = [];
+
+    for (const id of waveIds) {
+      const node = nodeById.get(id);
+      if (!node) continue;
+      waveNodes.push(node);
+      const next = dependents.get(id) || [];
+      for (const nextId of next) {
+        const current = indegree.get(nextId);
+        if (current == null) continue;
+        const updated = current - 1;
+        indegree.set(nextId, updated);
+        if (updated === 0) queue.push(nextId);
+      }
+    }
+
+    if (waveNodes.length > 0) waves.push(waveNodes);
+  }
+
+  return waves;
+}
+
+async function executeWorkflowNode(
+  node: WorkflowNode,
+  artifacts: Map<string, NodeArtifact>,
+): Promise<NodeArtifact> {
+  const started_at = new Date().toISOString();
+
+  try {
+    if (node.kind === "call_agent") {
+      if (!node.target || !node.prompt_template) {
+        return {
+          node_id: node.id,
+          status: "failed",
+          error: "call_agent node missing target or prompt_template.",
+          started_at,
+          ended_at: new Date().toISOString(),
+        };
+      }
+
+      const prompt = interpolateTemplate(node.prompt_template, artifacts);
+      const snippets = await collectEvidence(prompt, node.target);
+      const joined = normalizeText(snippets.join("\n\n---\n\n"));
+      if (!joined) {
+        return {
+          node_id: node.id,
+          status: "failed",
+          error: "Delegation returned no usable evidence.",
+          started_at,
+          ended_at: new Date().toISOString(),
+        };
+      }
+      if (/^Delegation error:/i.test(joined)) {
+        return {
+          node_id: node.id,
+          status: "failed",
+          error: joined,
+          output_text: joined,
+          started_at,
+          ended_at: new Date().toISOString(),
+        };
+      }
+
+      return {
+        node_id: node.id,
+        status: "completed",
+        output_text: joined,
+        started_at,
+        ended_at: new Date().toISOString(),
+      };
+    }
+
+    if (node.kind === "direct_answer") {
+      const rendered = interpolateTemplate(node.prompt_template || "", artifacts);
+      return {
+        node_id: node.id,
+        status: "completed",
+        output_text: rendered,
+        started_at,
+        ended_at: new Date().toISOString(),
+      };
+    }
+
+    if (node.kind === "synthesize") {
+      return {
+        node_id: node.id,
+        status: "completed",
+        started_at,
+        ended_at: new Date().toISOString(),
+      };
+    }
+
+    if (node.kind === "foreach") {
+      return {
+        node_id: node.id,
+        status: "failed",
+        error: "foreach execution is not enabled yet (Phase 4).",
+        started_at,
+        ended_at: new Date().toISOString(),
+      };
+    }
+
+    if (node.kind === "clarify") {
+      return {
+        node_id: node.id,
+        status: "completed",
+        output_text: node.prompt_template || "Can you clarify your request?",
+        started_at,
+        ended_at: new Date().toISOString(),
+      };
+    }
+
+    return {
+      node_id: node.id,
+      status: "failed",
+      error: `Unsupported node kind: ${node.kind}`,
+      started_at,
+      ended_at: new Date().toISOString(),
+    };
+  } catch (err) {
+    return {
+      node_id: node.id,
+      status: "failed",
+      error: err instanceof Error ? err.message : String(err),
+      started_at,
+      ended_at: new Date().toISOString(),
+    };
+  }
+}
+
+async function executeWave(
+  wave: WorkflowNode[],
+  artifacts: Map<string, NodeArtifact>,
+): Promise<NodeArtifact[]> {
+  const outputs: NodeArtifact[] = [];
+  for (let i = 0; i < wave.length; i += MAX_FANOUT_CONCURRENCY) {
+    const batch = wave.slice(i, i + MAX_FANOUT_CONCURRENCY);
+    const settled = await Promise.allSettled(
+      batch.map((node) => executeWorkflowNode(node, artifacts)),
+    );
+    for (let j = 0; j < settled.length; j++) {
+      const outcome = settled[j];
+      if (outcome.status === "fulfilled") {
+        outputs.push(outcome.value);
+      } else {
+        const node = batch[j];
+        outputs.push({
+          node_id: node.id,
+          status: "failed",
+          error:
+            outcome.reason instanceof Error
+              ? outcome.reason.message
+              : String(outcome.reason),
+          started_at: new Date().toISOString(),
+          ended_at: new Date().toISOString(),
+        });
+      }
+    }
+  }
+  return outputs;
+}
+
+function buildWorkflowTranscript(
+  plan: WorkflowPlan,
+  artifacts: Map<string, NodeArtifact>,
+): string {
+  const parts: string[] = [];
+  for (const node of plan.nodes) {
+    const artifact = artifacts.get(node.id);
+    if (!artifact) continue;
+    if (artifact.status === "completed" && artifact.output_text) {
+      parts.push(`[${node.id}]\n${artifact.output_text}`);
+      continue;
+    }
+    if (artifact.status === "failed") {
+      parts.push(`[${node.id}] ERROR: ${artifact.error || "unknown failure"}`);
+      continue;
+    }
+    if (artifact.status === "skipped") {
+      parts.push(`[${node.id}] SKIPPED: dependency failed`);
+    }
+  }
+  return parts.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
+}
+
+async function executeWorkflowPlanPhase3(
   plan: WorkflowPlan,
   userText: string,
   conversationSummary: string | null,
 ): Promise<SessionResult> {
-  const clarifyNode =
-    plan.nodes.find((node) => node.kind === "clarify" && node.depends_on.length === 0) || null;
-  if (clarifyNode?.prompt_template) {
-    return { message: clarifyNode.prompt_template };
+  const waves = computeWaves(plan.nodes);
+  const artifacts = new Map<string, NodeArtifact>();
+
+  for (const wave of waves) {
+    for (const node of wave) {
+      if (artifacts.has(node.id)) continue;
+      if (nodeHasFailedDependency(node, artifacts)) {
+        artifacts.set(node.id, {
+          node_id: node.id,
+          status: "skipped",
+          error: "Skipped due to failed dependency.",
+          started_at: new Date().toISOString(),
+          ended_at: new Date().toISOString(),
+        });
+      }
+    }
+
+    const ready = wave.filter((node) => {
+      if (artifacts.has(node.id)) return false;
+      return nodeDependenciesCompleted(node, artifacts);
+    });
+
+    if (ready.length === 0) continue;
+
+    const clarifyNode = ready.find((node) => node.kind === "clarify");
+    if (clarifyNode) {
+      return { message: clarifyNode.prompt_template || "Can you clarify your request?" };
+    }
+
+    const results = await executeWave(ready, artifacts);
+    for (const result of results) {
+      artifacts.set(result.node_id, result);
+    }
   }
 
-  const directNodes = plan.nodes.filter(
-    (node) => node.kind === "direct_answer" && node.depends_on.length === 0,
+  const directOnly = plan.nodes.every(
+    (node) => node.kind === "direct_answer" || node.kind === "synthesize",
   );
-  const callNodes = plan.nodes.filter(
-    (node): node is WorkflowNode & { kind: "call_agent"; target: RouteTarget; prompt_template: string } =>
-      node.kind === "call_agent" &&
-      node.depends_on.length === 0 &&
-      !!node.target &&
-      typeof node.prompt_template === "string",
-  );
-
-  if (directNodes.length > 0 && callNodes.length === 0) {
-    const message = directNodes
-      .map((node) => node.prompt_template)
+  if (directOnly) {
+    const message = plan.nodes
+      .map((node) => artifacts.get(node.id)?.output_text)
       .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
       .join("\n");
     return { message: message || "No direct response was produced by the workflow plan." };
   }
 
-  if (callNodes.length === 0) {
+  const anyTerminal = plan.nodes.some((node) =>
+    isTerminalArtifactStatus(artifacts.get(node.id)?.status || "pending"),
+  );
+  if (!anyTerminal) {
     return { message: "Workflow plan contains no executable call_agent nodes for this phase." };
   }
 
-  const settled = await Promise.allSettled(
-    callNodes.map(async (node) => ({
-      nodeId: node.id,
-      snippets: await collectEvidence(node.prompt_template, node.target),
-    })),
-  );
-
-  const evidenceParts: string[] = [];
-  for (const outcome of settled) {
-    if (outcome.status === "rejected") {
-      const reason =
-        outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
-      evidenceParts.push(`[unknown]\nDelegation error: ${reason}`);
-      continue;
-    }
-    const transcript = outcome.value.snippets.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
-    const joined = normalizeText(transcript);
-    if (!joined) continue;
-    evidenceParts.push(`[${outcome.value.nodeId}]\n${joined}`);
-  }
-
-  if (evidenceParts.length === 0) {
+  const transcript = buildWorkflowTranscript(plan, artifacts);
+  if (!transcript) {
     return {
       message: "I delegated according to the workflow plan, but received no usable evidence.",
     };
   }
-
-  const transcript = evidenceParts.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
   return { message: await synthesize(userText, transcript, conversationSummary) };
 }
 
-async function runWorkflowCoordinatorPhase2(ctx: RunContext): Promise<SessionResult> {
+async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
   const userText = (ctx.text || "").trim();
   if (!userText) {
     return { message: "Please share what you want me to coordinate." };
@@ -1182,12 +1429,13 @@ async function runWorkflowCoordinatorPhase2(ctx: RunContext): Promise<SessionRes
     return { message: `Workflow planning failed: ${reason}` };
   }
 
-  if (!isPhase2ExecutableWorkflowPlan(plan)) {
-    // Phase 3 will handle dependency-aware and foreach execution.
+  const hasForeach = plan.nodes.some((node) => node.kind === "foreach");
+  if (hasForeach) {
+    // Phase 4 will add foreach expansion.
     return runLlmCoordinator(ctx);
   }
 
-  return executePhase2WorkflowPlan(plan, userText, conversationSummary);
+  return executeWorkflowPlanPhase3(plan, userText, conversationSummary);
 }
 
 // ---------------------------------------------------------------------------
@@ -1302,7 +1550,7 @@ async function runLlmCoordinator(ctx: RunContext): Promise<SessionResult> {
 
 async function runCoordinator(ctx: RunContext): Promise<SessionResult> {
   if (USE_WORKFLOW_COORDINATOR) {
-    return runWorkflowCoordinatorPhase2(ctx);
+    return runWorkflowCoordinator(ctx);
   }
   return runLlmCoordinator(ctx);
 }
