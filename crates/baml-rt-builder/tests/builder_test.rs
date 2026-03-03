@@ -121,10 +121,7 @@ async fn test_full_integration_package_load_execute() {
     baml_manager
         .load_schema(baml_src.to_str().unwrap())
         .unwrap();
-    baml_manager
-        .register_tool(CalculatorTool)
-        .await
-        .unwrap();
+    baml_manager.register_tool(CalculatorTool).await.unwrap();
     let baml_manager = Arc::new(Mutex::new(baml_manager));
 
     // Create QuickJS bridge
