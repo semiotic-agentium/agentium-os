@@ -5,6 +5,7 @@ const MAX_SINGLE_SEND_CONTINUE_STEPS = 16;
 const MAX_DELEGATION_CONTINUE_STEPS = 128;
 const MAX_WORKFLOW_NODES = 30;
 const MAX_FOREACH_EXPANSIONS = 50;
+const MAX_WORKFLOW_ITERATIONS = 8;
 const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
 const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
 // ---------------------------------------------------------------------------
@@ -21,6 +22,25 @@ function normalizeOptionalString(value) {
         return null;
     const normalized = value.trim();
     return normalized.length > 0 ? normalized : null;
+}
+function getChatMessageText(message) {
+    if (!message)
+        return "";
+    try {
+        const extracted = messageText(message);
+        if (typeof extracted === "string" && extracted.trim().length > 0) {
+            return extracted.trim();
+        }
+    }
+    catch {
+        // Fallback below when runtime helper is unavailable.
+    }
+    if (!Array.isArray(message.parts))
+        return "";
+    const parts = message.parts
+        .map((part) => normalizeOptionalString(part.text))
+        .filter((entry) => entry != null);
+    return normalizeText(parts.join(" "));
 }
 function parseStringArray(value) {
     if (!Array.isArray(value))
@@ -948,10 +968,13 @@ async function executeWorkflowNode(node, artifacts) {
         };
     }
 }
-async function executeWave(wave, artifacts) {
+async function executeWave(wave, artifacts, emit) {
     const outputs = [];
     for (let i = 0; i < wave.length; i += MAX_FANOUT_CONCURRENCY) {
         const batch = wave.slice(i, i + MAX_FANOUT_CONCURRENCY);
+        if (emit) {
+            emit.message(`Executing ${batch.length} workflow node(s): ${batch.map((node) => node.id).join(", ")}`);
+        }
         const settled = await Promise.allSettled(batch.map((node) => executeWorkflowNode(node, artifacts)));
         for (let j = 0; j < settled.length; j++) {
             const outcome = settled[j];
@@ -1123,11 +1146,14 @@ function renderWorkflowExecutionNotes(summary) {
     }
     return lines.join("\n");
 }
-async function executeWorkflowPlanPhase3(plan, userText, conversationSummary) {
+async function executeWorkflowPlanPhase3(plan, userText, conversationSummary, emit) {
     const artifacts = new Map();
     const maxPasses = MAX_WORKFLOW_NODES + MAX_FOREACH_EXPANSIONS + 10;
     for (let pass = 0; pass < maxPasses; pass++) {
         let progressed = false;
+        if (emit) {
+            emit.message(`Workflow execution pass ${pass + 1}`);
+        }
         const waves = computeWaves(plan.nodes);
         for (const wave of waves) {
             for (const node of wave) {
@@ -1166,9 +1192,12 @@ async function executeWorkflowPlanPhase3(plan, userText, conversationSummary) {
                 continue;
             const clarifyNode = ready.find((node) => node.kind === "clarify");
             if (clarifyNode) {
-                return { message: clarifyNode.prompt_template || "Can you clarify your request?" };
+                return {
+                    kind: "await_input",
+                    prompt: clarifyNode.prompt_template || "Can you clarify your request?",
+                };
             }
-            const results = await executeWave(ready, artifacts);
+            const results = await executeWave(ready, artifacts, emit);
             for (const result of results) {
                 artifacts.set(result.node_id, result);
             }
@@ -1194,7 +1223,7 @@ async function executeWorkflowPlanPhase3(plan, userText, conversationSummary) {
         if (finalArtifact?.status === "completed" &&
             (finalNode.kind === "call_agent" || finalNode.kind === "direct_answer") &&
             finalArtifact.output_text) {
-            return appendExecutionNotes(finalArtifact.output_text);
+            return { kind: "final", result: appendExecutionNotes(finalArtifact.output_text) };
         }
         if (finalNode.kind === "synthesize") {
             const scope = collectAncestorNodeIds(plan, finalNode.id);
@@ -1203,7 +1232,7 @@ async function executeWorkflowPlanPhase3(plan, userText, conversationSummary) {
             if (transcript) {
                 const synthesisUserMessage = buildSynthesisUserMessage(userText, finalNode.synthesis_template);
                 const base = await synthesize(synthesisUserMessage, transcript, conversationSummary);
-                return appendExecutionNotes(base);
+                return { kind: "final", result: appendExecutionNotes(base) };
             }
         }
     }
@@ -1219,40 +1248,81 @@ async function executeWorkflowPlanPhase3(plan, userText, conversationSummary) {
             .filter((entry) => typeof entry === "string" && entry.trim().length > 0)
             .join("\n");
         if (!message) {
-            return { message: "No direct response was produced by the workflow plan." };
+            return {
+                kind: "final",
+                result: { message: "No direct response was produced by the workflow plan." },
+            };
         }
-        return appendExecutionNotes(message);
+        return { kind: "final", result: appendExecutionNotes(message) };
     }
     const transcript = buildWorkflowTranscript(plan, artifacts);
     if (!transcript) {
-        return appendExecutionNotes("I delegated according to the workflow plan, but received no usable evidence.");
+        return {
+            kind: "final",
+            result: appendExecutionNotes("I delegated according to the workflow plan, but received no usable evidence."),
+        };
     }
     const base = await synthesize(userText, transcript, conversationSummary);
-    return appendExecutionNotes(base);
+    return { kind: "final", result: appendExecutionNotes(base) };
 }
 async function runWorkflowCoordinator(ctx) {
-    const userText = (ctx.text || "").trim();
-    if (!userText) {
+    const baseUserText = (ctx.text || "").trim();
+    if (!baseUserText) {
         return { message: "Please share what you want me to coordinate." };
     }
-    const conversationSummary = getConversationSummary(ctx);
+    ctx.emit.statusChanged("TASK_STATE_WORKING");
+    const baseConversationSummary = getConversationSummary(ctx);
+    const clarificationTurns = [];
     let agents;
     try {
-        agents = await discoverAgents(userText);
+        ctx.emit.message("Discovering available specialist agents...");
+        agents = await discoverAgents(baseUserText);
     }
     catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         return { message: `Agent discovery failed: ${reason}` };
     }
-    let plan;
-    try {
-        plan = await planWorkflow(userText, agents, conversationSummary);
+    for (let iteration = 0; iteration < MAX_WORKFLOW_ITERATIONS; iteration++) {
+        const conversationSummary = [
+            baseConversationSummary,
+            clarificationTurns.length > 0
+                ? clarificationTurns.join("\n").slice(0, MAX_CONVERSATION_CONTEXT_CHARS)
+                : null,
+        ]
+            .filter((entry) => typeof entry === "string" && entry.trim().length > 0)
+            .join("\n\n")
+            .slice(0, MAX_CONVERSATION_CONTEXT_CHARS);
+        const effectiveUserText = clarificationTurns.length === 0
+            ? baseUserText
+            : `${baseUserText}\n\nAdditional user clarifications:\n${clarificationTurns.join("\n")}`;
+        let plan;
+        try {
+            ctx.emit.message(`Planning workflow (iteration ${iteration + 1})...`);
+            plan = await planWorkflow(effectiveUserText, agents, conversationSummary.length > 0 ? conversationSummary : null);
+        }
+        catch (err) {
+            const reason = err instanceof Error ? err.message : String(err);
+            return { message: `Workflow planning failed: ${reason}` };
+        }
+        const outcome = await executeWorkflowPlanPhase3(plan, effectiveUserText, conversationSummary.length > 0 ? conversationSummary : null, ctx.emit);
+        if (outcome.kind === "final") {
+            return outcome.result;
+        }
+        if (iteration >= MAX_WORKFLOW_ITERATIONS - 1) {
+            return {
+                message: `${outcome.prompt}\n\nReached clarification iteration limit. Please send a more specific request.`,
+            };
+        }
+        const nextMessage = await ctx.emit.awaitInput(outcome.prompt);
+        const userReply = normalizeOptionalString(getChatMessageText(nextMessage));
+        if (!userReply) {
+            return { message: "No clarification was provided. Please resend your request with details." };
+        }
+        clarificationTurns.push(`- ${userReply}`);
     }
-    catch (err) {
-        const reason = err instanceof Error ? err.message : String(err);
-        return { message: `Workflow planning failed: ${reason}` };
-    }
-    return executeWorkflowPlanPhase3(plan, userText, conversationSummary);
+    return {
+        message: "Workflow iteration limit reached before completion. Please narrow the request.",
+    };
 }
 // ---------------------------------------------------------------------------
 // Entry point
