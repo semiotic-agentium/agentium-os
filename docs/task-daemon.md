@@ -84,6 +84,12 @@ A typical batch includes:
 - `interpretation.workflow_seed.clarification_nodes`: questions that should be resolved before execution
 - `derived_tasks`: practical tasks emitted to sinks
 
+## Event Contract
+
+For integration between poller, interpreter, and orchestration layers, use the
+versioned interpretation event contract:
+- [docs/task-daemon-event-contract.md](/Users/joseph/git/semiotic-agentium/agent-platform/docs/task-daemon-event-contract.md)
+
 ## Important Behavior
 
 - LLM mode is the default. Heuristic mode is available only when explicitly requested (`--extractor heuristic`).

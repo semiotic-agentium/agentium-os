@@ -221,11 +221,9 @@ impl BamlExecutor {
         // Wire up the collector to track function execution
         // Note: We track the function call by passing the collector, but we also need
         // to manually track the call_id so we can process trace events later
-        let collectors = if let Some(ref collector) = collector {
-            Some(vec![collector.as_collector()])
-        } else {
-            None
-        };
+        let collectors = collector
+            .as_ref()
+            .map(|collector| vec![collector.as_collector()]);
 
         let max_attempts = self.parse_retry_policy.max_attempts.max(1);
         let delay_ms = self.parse_retry_policy.delay_ms;
