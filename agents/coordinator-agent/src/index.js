@@ -62,13 +62,16 @@ function parseRouteTarget(value) {
 function parseWorkflowNodeKind(value) {
     if (typeof value !== "string")
         return null;
-    if (value === "call_agent" ||
-        value === "foreach" ||
-        value === "synthesize" ||
-        value === "clarify" ||
-        value === "direct_answer") {
-        return value;
-    }
+    if (value === "call_agent" || value === "CallAgent")
+        return "call_agent";
+    if (value === "foreach" || value === "Foreach")
+        return "foreach";
+    if (value === "synthesize" || value === "Synthesize")
+        return "synthesize";
+    if (value === "clarify" || value === "Clarify")
+        return "clarify";
+    if (value === "direct_answer" || value === "DirectAnswer")
+        return "direct_answer";
     return null;
 }
 function parseWorkflowForeachTemplate(value) {

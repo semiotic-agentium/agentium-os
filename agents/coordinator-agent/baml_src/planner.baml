@@ -1,9 +1,9 @@
 enum NodeKind {
-  call_agent    @description("Send a prompt to a specialist agent via A2A")
-  foreach       @description("Expand items from upstream output into child agent calls")
-  synthesize    @description("Merge prior node outputs into final answer")
-  clarify       @description("Ask user for clarification before proceeding")
-  direct_answer @description("Coordinator answers directly without delegation")
+  CallAgent    @alias("call_agent") @description("Send a prompt to a specialist agent via A2A")
+  Foreach      @alias("foreach") @description("Expand items from upstream output into child agent calls")
+  Synthesize   @alias("synthesize") @description("Merge prior node outputs into final answer")
+  Clarify      @alias("clarify") @description("Ask user for clarification before proceeding")
+  DirectAnswer @alias("direct_answer") @description("Coordinator answers directly without delegation")
 }
 
 class WorkflowTarget {
@@ -36,12 +36,21 @@ class WorkflowPlan {
   final_node_id string?
 }
 
+class AgentCandidate {
+  agent_package string
+  agent_instance_id string
+  name string
+  description string?
+  capabilities string[]
+  tools string[]
+}
+
 function PlanCoordinatorWorkflow(
   user_message: string,
   available_agents: AgentCandidate[],
   conversation_context: string?
 ) -> WorkflowPlan {
-  client OpenRouterRouter
+  client OpenRouterGPT
   prompt #"
     You are a coordinator planner that decomposes user requests into a workflow DAG.
     Return a WorkflowPlan with explicit dependencies and node kinds.
@@ -60,7 +69,7 @@ function PlanCoordinatorWorkflow(
     - `call_agent` requires target and prompt_template.
     - `foreach` requires foreach_from and foreach_template.
     - `clarify` and `direct_answer` require prompt_template.
-    - Use references like {{n1.output_text}} only when there is a dependency on n1.
+    - Use references like n1.output_text only when there is a dependency on n1.
 
     {{ ctx.output_format }}
 
