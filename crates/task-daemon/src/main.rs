@@ -157,7 +157,7 @@ struct RunArgs {
     #[arg(long, default_value_t = false)]
     github_live: bool,
 
-    /// Coordinator agent URL for A2A delegation sink.
+    /// Coordinator runner base URL for A2A delegation sink (for example `http://127.0.0.1:8082`).
     #[arg(long)]
     coordinator_url: Option<String>,
 

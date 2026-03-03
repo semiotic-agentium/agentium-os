@@ -10,7 +10,8 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use integrations_clickup_client::ClickUpClient;
 use integrations_github_client::GitHubClient;
-use serde_json::json;
+use serde::Serialize;
+use serde_json::{Value, json};
 
 use crate::model::{InvestigationTask, TaskBatch};
 
@@ -396,6 +397,15 @@ pub struct A2aSink {
     dry_run: bool,
 }
 
+const COORDINATOR_HANDOFF_SCHEMA_VERSION: &str = "task-daemon.coordinator-handoff.v1";
+const A2A_ROLE_USER: &str = "user";
+
+#[derive(Debug, Clone, Serialize)]
+struct CoordinatorWorkflowHandoff<'a> {
+    schema_version: &'static str,
+    batch: &'a TaskBatch,
+}
+
 impl A2aSink {
     /// Creates an A2A coordinator sink.
     ///
@@ -414,19 +424,42 @@ impl A2aSink {
     }
 
     /// Builds the JSON-RPC `message.sendStream` request body.
-    fn build_jsonrpc_body(prompt: &str) -> serde_json::Value {
+    ///
+    /// Includes both:
+    /// - a concise text instruction for coordinator compatibility
+    /// - a typed handoff payload in `parts[].data` for machine-readability
+    fn build_jsonrpc_body(batch: &TaskBatch, prompt: &str) -> serde_json::Value {
+        let handoff = CoordinatorWorkflowHandoff {
+            schema_version: COORDINATOR_HANDOFF_SCHEMA_VERSION,
+            batch,
+        };
+
         json!({
             "jsonrpc": "2.0",
             "method": "message.sendStream",
             "id": uuid_v4(),
             "params": {
                 "message": {
+                    "messageId": format!("task-daemon-{}", uuid_v4()),
+                    "role": A2A_ROLE_USER,
                     "parts": [
                         {
-                            "kind": "text",
-                            "text": prompt
+                            "text": prompt,
+                            "metadata": {
+                                "content_type": "text/plain",
+                            }
+                        },
+                        {
+                            "data": handoff,
+                            "metadata": {
+                                "content_type": "application/vnd.baml.task-daemon.coordinator-handoff+json;version=1"
+                            }
                         }
-                    ]
+                    ],
+                    "metadata": {
+                        "source": "baml-task-daemon",
+                        "handoff_schema_version": COORDINATOR_HANDOFF_SCHEMA_VERSION,
+                    }
                 }
             }
         })
@@ -457,10 +490,10 @@ impl TaskSink for A2aSink {
         }
 
         let url = format!(
-            "{base}/agents/coordinator-agent/default/a2a/sse",
+            "{base}/agents/coordinator-agent/default/a2a",
             base = self.coordinator_url,
         );
-        let body = Self::build_jsonrpc_body(&prompt);
+        let body = Self::build_jsonrpc_body(batch, &prompt);
 
         tracing::info!(
             coordinator_url = %self.coordinator_url,
@@ -485,15 +518,15 @@ impl TaskSink for A2aSink {
             ));
         }
 
-        let sse_text = resp
-            .text()
+        let responses: Vec<Value> = resp
+            .json()
             .await
-            .context("reading coordinator A2A SSE response")?;
+            .context("reading coordinator A2A response JSON")?;
 
-        let final_text = extract_final_sse_text(&sse_text);
+        let final_text = extract_final_jsonrpc_text(&responses);
         tracing::info!(
             coordinator_url = %self.coordinator_url,
-            response_len = sse_text.len(),
+            response_count = responses.len(),
             final_text_len = final_text.as_ref().map_or(0, |t| t.len()),
             "Coordinator A2A response received"
         );
@@ -502,33 +535,44 @@ impl TaskSink for A2aSink {
     }
 }
 
-/// Extracts the last text content from an SSE stream body.
-fn extract_final_sse_text(sse: &str) -> Option<String> {
-    let mut last_text = None;
-    for line in sse.lines() {
-        let line = line.trim();
-        if let Some(data) = line.strip_prefix("data:") {
-            let data = data.trim();
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(data)
-                && parsed.get("final").and_then(|v| v.as_bool()) == Some(true)
-                && let Some(text) = parsed
-                    .pointer("/result/message/parts")
-                    .and_then(|parts| parts.as_array())
-                    .and_then(|parts| {
-                        parts.iter().find_map(|p| {
-                            if p.get("kind")?.as_str()? == "text" {
-                                p.get("text")?.as_str().map(|s| s.to_string())
-                            } else {
-                                None
-                            }
-                        })
-                    })
-            {
-                last_text = Some(text);
-            }
+/// Extracts the last text content from final JSON-RPC results.
+fn extract_final_jsonrpc_text(responses: &[Value]) -> Option<String> {
+    fn extract_text(parts: &[Value]) -> Option<String> {
+        parts.iter().find_map(|part| {
+            part.get("text")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+    }
+
+    for response in responses.iter().rev() {
+        let Some(result) = response.get("result") else {
+            continue;
+        };
+        let is_final = result
+            .get("final")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !is_final {
+            continue;
+        }
+
+        let parts = result
+            .pointer("/message/parts")
+            .and_then(Value::as_array)
+            .or_else(|| {
+                result
+                    .pointer("/chunk/message/parts")
+                    .and_then(Value::as_array)
+            });
+        if let Some(parts) = parts
+            && let Some(text) = extract_text(parts)
+        {
+            return Some(text);
         }
     }
-    last_text
+
+    None
 }
 
 /// Generates a UUID v4 string without pulling in the uuid crate.
@@ -611,18 +655,69 @@ mod tests {
     }
 
     #[test]
-    fn extract_final_sse_text_finds_text_in_final_event() {
-        let sse = r#"data: {"final":false,"result":{"message":{"parts":[{"kind":"text","text":"partial"}]}}}
-data: {"final":true,"result":{"message":{"parts":[{"kind":"text","text":"final answer"}]}}}
-"#;
-        let text = extract_final_sse_text(sse);
+    fn extract_final_jsonrpc_text_finds_text_in_final_event() {
+        let responses = vec![
+            json!({"jsonrpc":"2.0","id":"1","result":{"final":false,"message":{"parts":[{"text":"partial"}]}}}),
+            json!({"jsonrpc":"2.0","id":"1","result":{"final":true,"message":{"parts":[{"text":"final answer"}]}}}),
+        ];
+        let text = extract_final_jsonrpc_text(&responses);
         assert_eq!(text.as_deref(), Some("final answer"));
     }
 
     #[test]
-    fn extract_final_sse_text_returns_none_for_no_final() {
-        let sse = r#"data: {"final":false,"result":{"message":{"parts":[{"kind":"text","text":"partial"}]}}}
-"#;
-        assert!(extract_final_sse_text(sse).is_none());
+    fn extract_final_jsonrpc_text_returns_none_for_no_final() {
+        let responses = vec![
+            json!({"jsonrpc":"2.0","id":"1","result":{"final":false,"message":{"parts":[{"text":"partial"}]}}}),
+        ];
+        assert!(extract_final_jsonrpc_text(&responses).is_none());
+    }
+
+    #[test]
+    fn build_jsonrpc_body_contains_required_message_fields_and_typed_handoff() {
+        let batch = TaskBatch {
+            source: TaskSourceKind::Slack,
+            source_label: "#agentium-eng".to_string(),
+            generated_at_unix: 1_735_720_000,
+            messages_scanned: 2,
+            project: ProjectContext {
+                project_key: "agent-platform".to_string(),
+                repo_available: true,
+                repo_path: Some("/repo/agent-platform".to_string()),
+            },
+            interpretation: ProjectInterpretation::default(),
+            derived_tasks: vec![InvestigationTask {
+                key: "task-1".to_string(),
+                title: "Investigate cursor semantics".to_string(),
+                description: "Validate sink failure ordering".to_string(),
+                priority: TaskConfidence::High,
+                sources: Vec::new(),
+            }],
+        };
+        let prompt = format_coordinator_prompt(&batch);
+        let body = A2aSink::build_jsonrpc_body(&batch, &prompt);
+
+        assert_eq!(
+            body.pointer("/method").and_then(Value::as_str),
+            Some("message.sendStream")
+        );
+        assert!(
+            body.pointer("/params/message/messageId")
+                .and_then(Value::as_str)
+                .is_some()
+        );
+        assert_eq!(
+            body.pointer("/params/message/role").and_then(Value::as_str),
+            Some(A2A_ROLE_USER)
+        );
+        assert_eq!(
+            body.pointer("/params/message/parts/1/data/schema_version")
+                .and_then(Value::as_str),
+            Some(COORDINATOR_HANDOFF_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            body.pointer("/params/message/parts/1/data/batch/project/project_key")
+                .and_then(Value::as_str),
+            Some("agent-platform")
+        );
     }
 }

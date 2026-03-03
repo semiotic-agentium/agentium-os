@@ -74,6 +74,16 @@ cargo run -p baml-task-daemon -- run --channel agentium-eng --clickup-list-id <L
 cargo run -p baml-task-daemon -- run --channel agentium-eng --clickup-list-id <LIST_ID> --clickup-live
 ```
 
+Delegate to coordinator agent over A2A:
+
+```bash
+# dry-run (logs request payload intent, no network side-effects)
+cargo run -p baml-task-daemon -- run --channel agentium-eng --coordinator-url http://127.0.0.1:8082
+
+# live delegation
+cargo run -p baml-task-daemon -- run --channel agentium-eng --coordinator-url http://127.0.0.1:8082 --a2a-live
+```
+
 ## Output You Should Expect
 
 A typical batch includes:
@@ -83,6 +93,11 @@ A typical batch includes:
 - `interpretation.workflow_seed.investigation_nodes`: high-agency investigation prompts with evidence references
 - `interpretation.workflow_seed.clarification_nodes`: questions that should be resolved before execution
 - `derived_tasks`: practical tasks emitted to sinks
+
+When using coordinator delegation (`--coordinator-url --a2a-live`), task-daemon
+sends a valid `message.sendStream` request with:
+- a concise text instruction
+- a typed workflow handoff payload in `message.parts[].data`
 
 ## Event Contract
 
