@@ -73,6 +73,12 @@ declare function RouteToSpecialists(args: {
   conversation_summary?: string | null;
 }): Promise<unknown>;
 
+declare function PlanCoordinatorWorkflow(args: {
+  user_message: string;
+  available_agents: AgentCandidate[];
+  conversation_context?: string | null;
+}): Promise<unknown>;
+
 declare function openToolSession(
   toolName: string,
   openInput?: Record<string, unknown>,
@@ -85,6 +91,7 @@ const MAX_SINGLE_SEND_CONTINUE_STEPS = 16;
 const MAX_DELEGATION_CONTINUE_STEPS = 128;
 const MAX_WORKFLOW_NODES = 30;
 const MAX_FOREACH_EXPANSIONS = 50;
+const USE_WORKFLOW_COORDINATOR = false;
 
 const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
 const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
@@ -276,6 +283,9 @@ function validateWorkflowPlan(plan: WorkflowPlan, agentRegistry: Set<string>): v
       if (!node.target) {
         throw new Error(`Workflow node ${node.id} (call_agent) is missing target.`);
       }
+      if (node.target.agent_package === "coordinator-agent") {
+        throw new Error(`Workflow node ${node.id} cannot target coordinator-agent.`);
+      }
       if (!node.prompt_template) {
         throw new Error(`Workflow node ${node.id} (call_agent) is missing prompt_template.`);
       }
@@ -292,6 +302,9 @@ function validateWorkflowPlan(plan: WorkflowPlan, agentRegistry: Set<string>): v
       }
       if (!node.foreach_template) {
         throw new Error(`Workflow node ${node.id} (foreach) is missing foreach_template.`);
+      }
+      if (node.foreach_template.target.agent_package === "coordinator-agent") {
+        throw new Error(`Workflow node ${node.id} foreach cannot target coordinator-agent.`);
       }
       const key = workflowTargetKey(node.foreach_template.target);
       if (!agentRegistry.has(key)) {
@@ -715,6 +728,135 @@ async function llmRoute(
   return parsed;
 }
 
+function buildFallbackWorkflowPlanFromRouting(
+  userText: string,
+  decision: LlmRoutingDecision,
+): WorkflowPlan {
+  const directMessage =
+    normalizeOptionalString(decision.direct_message) ||
+    "I could not determine the best routing. Please rephrase your request.";
+
+  if (decision.action === "DirectAnswer") {
+    return {
+      goal: userText,
+      nodes: [
+        {
+          id: "n1",
+          kind: "direct_answer",
+          depends_on: [],
+          prompt_template: directMessage,
+          rationale: decision.reasoning,
+        },
+      ],
+      final_node_id: "n1",
+    };
+  }
+
+  if (decision.action === "Clarify") {
+    return {
+      goal: userText,
+      nodes: [
+        {
+          id: "n1",
+          kind: "clarify",
+          depends_on: [],
+          prompt_template:
+            directMessage ||
+            "I need more information to route your request. Could you clarify which service or data source you'd like me to query?",
+          rationale: decision.reasoning,
+        },
+      ],
+      final_node_id: "n1",
+    };
+  }
+
+  if (decision.targets.length === 0) {
+    return {
+      goal: userText,
+      nodes: [
+        {
+          id: "n1",
+          kind: "direct_answer",
+          depends_on: [],
+          prompt_template:
+            "No specialist agents matched your request. Try rephrasing or ask what agents are available.",
+          rationale: decision.reasoning,
+        },
+      ],
+      final_node_id: "n1",
+    };
+  }
+
+  const callNodes: WorkflowNode[] = decision.targets.map((target, index) => ({
+    id: `n${index + 1}`,
+    kind: "call_agent",
+    depends_on: [],
+    target: {
+      agent_package: target.agent_package,
+      agent_instance_id: target.agent_instance_id,
+    },
+    prompt_template: target.prompt,
+    rationale: target.rationale,
+  }));
+
+  if (callNodes.length === 1) {
+    return {
+      goal: userText,
+      nodes: callNodes,
+      final_node_id: callNodes[0].id,
+    };
+  }
+
+  const synthNodeId = `n${callNodes.length + 1}`;
+  return {
+    goal: userText,
+    nodes: [
+      ...callNodes,
+      {
+        id: synthNodeId,
+        kind: "synthesize",
+        depends_on: callNodes.map((node) => node.id),
+        rationale: "Merge parallel specialist outputs into one final response.",
+      },
+    ],
+    final_node_id: synthNodeId,
+  };
+}
+
+function buildAgentRegistry(agents: DiscoveredAgent[]): Set<string> {
+  return new Set(
+    agents.map((agent) => `${agent.agent_package}/${agent.agent_instance_id}`),
+  );
+}
+
+async function planWorkflow(
+  userText: string,
+  agents: DiscoveredAgent[],
+  conversationSummary: string | null,
+): Promise<WorkflowPlan> {
+  const candidates = buildAgentCandidates(agents);
+  const agentRegistry = buildAgentRegistry(agents);
+
+  try {
+    const rawPlan = await PlanCoordinatorWorkflow({
+      user_message: userText,
+      available_agents: candidates,
+      conversation_context: conversationSummary || null,
+    });
+    const parsed = parseWorkflowPlan(rawPlan);
+    if (!parsed) {
+      throw new Error("PlanCoordinatorWorkflow returned an unparsable plan.");
+    }
+    validateWorkflowPlan(parsed, agentRegistry);
+    return parsed;
+  } catch {
+    const fallbackDecision = await llmRoute(userText, agents, conversationSummary);
+    const fallbackPlan = buildFallbackWorkflowPlanFromRouting(userText, fallbackDecision);
+    validateWorkflowPlan(fallbackPlan, agentRegistry);
+    return fallbackPlan;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Conversation context
 // ---------------------------------------------------------------------------
@@ -933,7 +1075,123 @@ async function collectLlmTargetEvidence(
 }
 
 // ---------------------------------------------------------------------------
-// LLM-routed coordinator (Phases 1-5)
+// Workflow planning (Phase 2)
+// ---------------------------------------------------------------------------
+
+function isPhase2ExecutableWorkflowPlan(plan: WorkflowPlan): boolean {
+  for (const node of plan.nodes) {
+    if (node.kind === "foreach") return false;
+    if (
+      (node.kind === "call_agent" ||
+        node.kind === "clarify" ||
+        node.kind === "direct_answer") &&
+      node.depends_on.length > 0
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function executePhase2WorkflowPlan(
+  plan: WorkflowPlan,
+  userText: string,
+  conversationSummary: string | null,
+): Promise<SessionResult> {
+  const clarifyNode =
+    plan.nodes.find((node) => node.kind === "clarify" && node.depends_on.length === 0) || null;
+  if (clarifyNode?.prompt_template) {
+    return { message: clarifyNode.prompt_template };
+  }
+
+  const directNodes = plan.nodes.filter(
+    (node) => node.kind === "direct_answer" && node.depends_on.length === 0,
+  );
+  const callNodes = plan.nodes.filter(
+    (node): node is WorkflowNode & { kind: "call_agent"; target: RouteTarget; prompt_template: string } =>
+      node.kind === "call_agent" &&
+      node.depends_on.length === 0 &&
+      !!node.target &&
+      typeof node.prompt_template === "string",
+  );
+
+  if (directNodes.length > 0 && callNodes.length === 0) {
+    const message = directNodes
+      .map((node) => node.prompt_template)
+      .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+      .join("\n");
+    return { message: message || "No direct response was produced by the workflow plan." };
+  }
+
+  if (callNodes.length === 0) {
+    return { message: "Workflow plan contains no executable call_agent nodes for this phase." };
+  }
+
+  const settled = await Promise.allSettled(
+    callNodes.map(async (node) => ({
+      nodeId: node.id,
+      snippets: await collectEvidence(node.prompt_template, node.target),
+    })),
+  );
+
+  const evidenceParts: string[] = [];
+  for (const outcome of settled) {
+    if (outcome.status === "rejected") {
+      const reason =
+        outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+      evidenceParts.push(`[unknown]\nDelegation error: ${reason}`);
+      continue;
+    }
+    const transcript = outcome.value.snippets.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
+    const joined = normalizeText(transcript);
+    if (!joined) continue;
+    evidenceParts.push(`[${outcome.value.nodeId}]\n${joined}`);
+  }
+
+  if (evidenceParts.length === 0) {
+    return {
+      message: "I delegated according to the workflow plan, but received no usable evidence.",
+    };
+  }
+
+  const transcript = evidenceParts.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
+  return { message: await synthesize(userText, transcript, conversationSummary) };
+}
+
+async function runWorkflowCoordinatorPhase2(ctx: RunContext): Promise<SessionResult> {
+  const userText = (ctx.text || "").trim();
+  if (!userText) {
+    return { message: "Please share what you want me to coordinate." };
+  }
+
+  const conversationSummary = getConversationSummary(ctx);
+
+  let agents: DiscoveredAgent[];
+  try {
+    agents = await discoverAgents(userText);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    return { message: `Agent discovery failed: ${reason}` };
+  }
+
+  let plan: WorkflowPlan;
+  try {
+    plan = await planWorkflow(userText, agents, conversationSummary);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    return { message: `Workflow planning failed: ${reason}` };
+  }
+
+  if (!isPhase2ExecutableWorkflowPlan(plan)) {
+    // Phase 3 will handle dependency-aware and foreach execution.
+    return runLlmCoordinator(ctx);
+  }
+
+  return executePhase2WorkflowPlan(plan, userText, conversationSummary);
+}
+
+// ---------------------------------------------------------------------------
+// LLM-routed coordinator (rollback/fallback path)
 // ---------------------------------------------------------------------------
 
 async function runLlmCoordinator(ctx: RunContext): Promise<SessionResult> {
@@ -1043,6 +1301,9 @@ async function runLlmCoordinator(ctx: RunContext): Promise<SessionResult> {
 // ---------------------------------------------------------------------------
 
 async function runCoordinator(ctx: RunContext): Promise<SessionResult> {
+  if (USE_WORKFLOW_COORDINATOR) {
+    return runWorkflowCoordinatorPhase2(ctx);
+  }
   return runLlmCoordinator(ctx);
 }
 
