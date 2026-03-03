@@ -3,6 +3,7 @@ members = [
   "crates/baml-agent-runner",
   "crates/baml-derive-tests",
   "crates/integrations/clickup-client",
+  "crates/integrations/github-client",
   "crates/integrations/notion-read",
   "crates/integrations/slack-read",
   "crates/baml-rt",

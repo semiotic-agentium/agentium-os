@@ -29,6 +29,9 @@ pub use model::{
     QuestionItem, RiskItem, SlackMessage, SourceReference, TaskBatch, TaskConfidence,
     TaskSourceKind, WorkflowSeed,
 };
-pub use sink::{ClickUpSink, JsonlFileSink, StdoutSink, TaskSink};
+pub use sink::{
+    A2aSink, ClickUpSink, GithubIssueSink, JsonlFileSink, StdoutSink, TaskSink,
+    format_coordinator_prompt,
+};
 pub use slack_source::{SlackChannelSelector, SlackSourceConfig, SlackTaskSource};
 pub use state::{SourceState, StateStore, TaskDaemonState};

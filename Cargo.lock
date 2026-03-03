@@ -1503,6 +1503,7 @@ dependencies = [
  "axum",
  "clap",
  "integrations-clickup-client",
+ "integrations-github-client",
  "integrations-slack-read",
  "regex",
  "reqwest",
@@ -3854,6 +3855,16 @@ dependencies = [
 
 [[package]]
 name = "integrations-clickup-client"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "integrations-github-client"
 version = "0.1.0"
 dependencies = [
  "reqwest",

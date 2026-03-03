@@ -2,9 +2,9 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use baml_task_daemon::{
-    ClickUpSink, ExtractionMode, JsonlFileSink, ProjectContext, SlackChannelSelector,
-    SlackSourceConfig, SlackTaskSource, StateStore, StdoutSink, TaskDaemon, TaskExtractor,
-    TaskSink,
+    A2aSink, ClickUpSink, ExtractionMode, GithubIssueSink, JsonlFileSink, ProjectContext,
+    SlackChannelSelector, SlackSourceConfig, SlackTaskSource, StateStore, StdoutSink, TaskDaemon,
+    TaskExtractor, TaskSink,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use integrations_slack_read::SlackAuthPreference;
@@ -144,6 +144,26 @@ struct RunArgs {
     /// When set with ClickUp list id, writes live tasks instead of dry-run logging.
     #[arg(long, default_value_t = false)]
     clickup_live: bool,
+
+    /// GitHub repository owner for issue creation sink.
+    #[arg(long)]
+    github_owner: Option<String>,
+
+    /// GitHub repository name for issue creation sink.
+    #[arg(long)]
+    github_repo: Option<String>,
+
+    /// When set with GitHub owner/repo, writes live issues instead of dry-run logging.
+    #[arg(long, default_value_t = false)]
+    github_live: bool,
+
+    /// Coordinator agent URL for A2A delegation sink.
+    #[arg(long)]
+    coordinator_url: Option<String>,
+
+    /// When set with coordinator URL, sends live A2A requests instead of dry-run logging.
+    #[arg(long, default_value_t = false)]
+    a2a_live: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -227,9 +247,21 @@ async fn run(args: RunArgs) -> Result<()> {
         sinks.push(Box::new(ClickUpSink::new(list_id, !args.clickup_live)?));
     }
 
+    if let (Some(owner), Some(repo)) = (args.github_owner.clone(), args.github_repo.clone()) {
+        sinks.push(Box::new(GithubIssueSink::new(
+            owner,
+            repo,
+            !args.github_live,
+        )?));
+    }
+
+    if let Some(url) = args.coordinator_url.clone() {
+        sinks.push(Box::new(A2aSink::new(url, !args.a2a_live)?));
+    }
+
     if sinks.is_empty() {
         return Err(anyhow!(
-            "no sinks configured; enable stdout, --jsonl-out, or --clickup-list-id"
+            "no sinks configured; enable stdout, --jsonl-out, --clickup-list-id, --github-owner/--github-repo, or --coordinator-url"
         ));
     }
 
