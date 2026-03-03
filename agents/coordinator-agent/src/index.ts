@@ -67,12 +67,6 @@ type AgentCandidate = {
   tools: string[];
 };
 
-declare function RouteToSpecialists(args: {
-  user_message: string;
-  available_agents: AgentCandidate[];
-  conversation_summary?: string | null;
-}): Promise<unknown>;
-
 declare function PlanCoordinatorWorkflow(args: {
   user_message: string;
   available_agents: AgentCandidate[];
@@ -91,7 +85,6 @@ const MAX_SINGLE_SEND_CONTINUE_STEPS = 16;
 const MAX_DELEGATION_CONTINUE_STEPS = 128;
 const MAX_WORKFLOW_NODES = 30;
 const MAX_FOREACH_EXPANSIONS = 50;
-const USE_WORKFLOW_COORDINATOR = false;
 
 const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
 const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
@@ -643,10 +636,6 @@ async function delegateToAgent(target: RouteTarget, prompt: string): Promise<str
   }
 }
 
-// ---------------------------------------------------------------------------
-// LLM routing
-// ---------------------------------------------------------------------------
-
 function buildAgentCandidates(agents: DiscoveredAgent[]): AgentCandidate[] {
   return agents
     .filter((a) => a.agent_package !== "coordinator-agent")
@@ -659,168 +648,6 @@ function buildAgentCandidates(agents: DiscoveredAgent[]): AgentCandidate[] {
       capabilities: a.capabilities || [],
       tools: a.tools,
     }));
-}
-
-type LlmRoutingDecision = {
-  action: string;
-  targets: Array<{
-    agent_package: string;
-    agent_instance_id: string;
-    prompt: string;
-    rationale: string;
-  }>;
-  direct_message?: string | null;
-  reasoning: string;
-};
-
-function parseLlmRoutingDecision(value: unknown): LlmRoutingDecision | null {
-  if (!isObject(value)) return null;
-  if (typeof value.action !== "string") return null;
-  if (!Array.isArray(value.targets)) return null;
-  if (typeof value.reasoning !== "string") return null;
-
-  const targets = value.targets
-    .filter(
-      (t): t is Record<string, unknown> =>
-        isObject(t) &&
-        typeof t.agent_package === "string" &&
-        typeof t.agent_instance_id === "string" &&
-        typeof t.prompt === "string" &&
-        typeof t.rationale === "string",
-    )
-    .map((t) => ({
-      agent_package: t.agent_package as string,
-      agent_instance_id: t.agent_instance_id as string,
-      prompt: t.prompt as string,
-      rationale: t.rationale as string,
-    }));
-
-  return {
-    action: value.action,
-    targets,
-    direct_message: typeof value.direct_message === "string" ? value.direct_message : null,
-    reasoning: value.reasoning,
-  };
-}
-
-async function llmRoute(
-  userText: string,
-  agents: DiscoveredAgent[],
-  conversationSummary: string | null,
-): Promise<LlmRoutingDecision> {
-  const candidates = buildAgentCandidates(agents);
-
-  const raw = await RouteToSpecialists({
-    user_message: userText,
-    available_agents: candidates,
-    conversation_summary: conversationSummary || null,
-  });
-
-  const parsed = parseLlmRoutingDecision(raw);
-  if (!parsed) {
-    return {
-      action: "DirectAnswer",
-      targets: [],
-      direct_message: "I could not determine the best routing. Please rephrase your request.",
-      reasoning: "LLM routing returned an unparsable response",
-    };
-  }
-  return parsed;
-}
-
-function buildFallbackWorkflowPlanFromRouting(
-  userText: string,
-  decision: LlmRoutingDecision,
-): WorkflowPlan {
-  const directMessage =
-    normalizeOptionalString(decision.direct_message) ||
-    "I could not determine the best routing. Please rephrase your request.";
-
-  if (decision.action === "DirectAnswer") {
-    return {
-      goal: userText,
-      nodes: [
-        {
-          id: "n1",
-          kind: "direct_answer",
-          depends_on: [],
-          prompt_template: directMessage,
-          rationale: decision.reasoning,
-        },
-      ],
-      final_node_id: "n1",
-    };
-  }
-
-  if (decision.action === "Clarify") {
-    return {
-      goal: userText,
-      nodes: [
-        {
-          id: "n1",
-          kind: "clarify",
-          depends_on: [],
-          prompt_template:
-            directMessage ||
-            "I need more information to route your request. Could you clarify which service or data source you'd like me to query?",
-          rationale: decision.reasoning,
-        },
-      ],
-      final_node_id: "n1",
-    };
-  }
-
-  if (decision.targets.length === 0) {
-    return {
-      goal: userText,
-      nodes: [
-        {
-          id: "n1",
-          kind: "direct_answer",
-          depends_on: [],
-          prompt_template:
-            "No specialist agents matched your request. Try rephrasing or ask what agents are available.",
-          rationale: decision.reasoning,
-        },
-      ],
-      final_node_id: "n1",
-    };
-  }
-
-  const callNodes: WorkflowNode[] = decision.targets.map((target, index) => ({
-    id: `n${index + 1}`,
-    kind: "call_agent",
-    depends_on: [],
-    target: {
-      agent_package: target.agent_package,
-      agent_instance_id: target.agent_instance_id,
-    },
-    prompt_template: target.prompt,
-    rationale: target.rationale,
-  }));
-
-  if (callNodes.length === 1) {
-    return {
-      goal: userText,
-      nodes: callNodes,
-      final_node_id: callNodes[0].id,
-    };
-  }
-
-  const synthNodeId = `n${callNodes.length + 1}`;
-  return {
-    goal: userText,
-    nodes: [
-      ...callNodes,
-      {
-        id: synthNodeId,
-        kind: "synthesize",
-        depends_on: callNodes.map((node) => node.id),
-        rationale: "Merge parallel specialist outputs into one final response.",
-      },
-    ],
-    final_node_id: synthNodeId,
-  };
 }
 
 function buildAgentRegistry(agents: DiscoveredAgent[]): Set<string> {
@@ -849,11 +676,9 @@ async function planWorkflow(
     }
     validateWorkflowPlan(parsed, agentRegistry);
     return parsed;
-  } catch {
-    const fallbackDecision = await llmRoute(userText, agents, conversationSummary);
-    const fallbackPlan = buildFallbackWorkflowPlanFromRouting(userText, fallbackDecision);
-    validateWorkflowPlan(fallbackPlan, agentRegistry);
-    return fallbackPlan;
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`Workflow planner failed: ${reason}`);
   }
 }
 
@@ -1052,26 +877,6 @@ async function synthesize(
   }
 
   return renderCoordinatorAnswer(synthesized);
-}
-
-type LlmTargetEvidence = {
-  key: string;
-  snippets: string[];
-};
-
-function routeTargetKey(target: RouteTarget): string {
-  return `${target.agent_package}/${target.agent_instance_id}`;
-}
-
-async function collectLlmTargetEvidence(
-  delegationPrompt: string,
-  target: RouteTarget,
-): Promise<LlmTargetEvidence> {
-  const snippets = await collectEvidence(delegationPrompt, target);
-  return {
-    key: routeTargetKey(target),
-    snippets,
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1749,120 +1554,11 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
 }
 
 // ---------------------------------------------------------------------------
-// LLM-routed coordinator (rollback/fallback path)
-// ---------------------------------------------------------------------------
-
-async function runLlmCoordinator(ctx: RunContext): Promise<SessionResult> {
-  const userText = (ctx.text || "").trim();
-  if (!userText) {
-    return { message: "Please share what you want me to coordinate." };
-  }
-
-  const conversationSummary = getConversationSummary(ctx);
-
-  let agents: DiscoveredAgent[];
-  try {
-    agents = await discoverAgents(userText);
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    return { message: `Agent discovery failed: ${reason}` };
-  }
-
-  let decision: LlmRoutingDecision;
-  try {
-    decision = await llmRoute(userText, agents, conversationSummary);
-  } catch (err) {
-    const reason = err instanceof Error ? err.message : String(err);
-    return { message: `Routing failed: ${reason}` };
-  }
-
-  if (decision.action === "DirectAnswer") {
-    return {
-      message: decision.direct_message || "I can help coordinate requests to specialist agents. What would you like to know?",
-    };
-  }
-
-  if (decision.action === "Clarify") {
-    return {
-      message: decision.direct_message || "I need more information to route your request. Could you clarify which service or data source you'd like me to query?",
-    };
-  }
-
-  if (decision.targets.length === 0) {
-    return {
-      message: "No specialist agents matched your request. Try rephrasing or ask what agents are available.",
-    };
-  }
-
-  if (decision.action === "FanOut" && decision.targets.length > 1) {
-    const cappedTargets = decision.targets.slice(0, MAX_FANOUT_CONCURRENCY);
-    const settled = await Promise.allSettled(
-      cappedTargets.map(async (t) => {
-        const target: RouteTarget = {
-          agent_package: t.agent_package,
-          agent_instance_id: t.agent_instance_id,
-        };
-        return collectLlmTargetEvidence(t.prompt, target);
-      }),
-    );
-    const evidenceParts: string[] = [];
-
-    for (let i = 0; i < settled.length; i++) {
-      const outcome = settled[i];
-      const target = cappedTargets[i];
-      const label = `${target.agent_package}/${target.agent_instance_id}`;
-
-      if (outcome.status === "rejected") {
-        const reason =
-          outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
-        evidenceParts.push(`[${label}]\nDelegation error: ${reason}`);
-        continue;
-      }
-
-      const transcript = outcome.value.snippets.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
-      const joined = normalizeText(transcript);
-      if (!joined) continue;
-      evidenceParts.push(`[${outcome.value.key}]\n${joined}`);
-    }
-
-    if (evidenceParts.length === 0) {
-      return {
-        message: "I delegated to multiple specialists but received no usable evidence. Try a more specific query.",
-      };
-    }
-
-    const transcript = evidenceParts.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
-    return { message: await synthesize(userText, transcript, conversationSummary) };
-  }
-
-  // Single delegation (Delegate action or FanOut with one target)
-  const primary = decision.targets[0];
-  const target: RouteTarget = {
-    agent_package: primary.agent_package,
-    agent_instance_id: primary.agent_instance_id,
-  };
-
-  const collected = await collectLlmTargetEvidence(primary.prompt, target);
-
-  if (collected.snippets.length === 0) {
-    return {
-      message: "I could not collect evidence from the delegated agent. Try a more specific query.",
-    };
-  }
-
-  const transcript = collected.snippets.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
-  return { message: await synthesize(userText, transcript, conversationSummary) };
-}
-
-// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
 async function runCoordinator(ctx: RunContext): Promise<SessionResult> {
-  if (USE_WORKFLOW_COORDINATOR) {
-    return runWorkflowCoordinator(ctx);
-  }
-  return runLlmCoordinator(ctx);
+  return runWorkflowCoordinator(ctx);
 }
 
 __chat_register({ run: runCoordinator });
