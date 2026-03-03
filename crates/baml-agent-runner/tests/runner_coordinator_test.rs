@@ -87,6 +87,26 @@ async fn setup_coordinator_agent_with_provenance()
     manager
         .load_schema(built.to_str().expect("coordinator built path utf8"))
         .expect("load coordinator schema");
+    let allowlist: HashSet<String> = [
+        "system/internal_a2a",
+        "system/discover_agents",
+        "system/discover_tools",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    manager
+        .set_tool_allowlist(allowlist)
+        .await
+        .expect("set allowlist");
+    let registry = manager.tool_registry();
+    registry
+        .register_bundle(SystemBundle::new(
+            Arc::new(EmptyAgentList),
+            registry.clone(),
+            Arc::new(EmptyA2aHandler),
+        ))
+        .expect("register SystemBundle");
 
     let provenance = build_graphqlite_test_store();
     let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
@@ -177,6 +197,7 @@ async fn setup_workspace_coordinator_with_provenance()
 /// (either via direct_answer or delegation to discovered agents).
 #[tokio::test]
 async fn test_coordinator_smoke_direct_answer() {
+    let _openrouter_api_key = require_api_key();
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
 
     let (agent, _provenance, built_dir) = setup_coordinator_agent_with_provenance().await;

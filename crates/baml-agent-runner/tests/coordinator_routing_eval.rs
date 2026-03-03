@@ -8,20 +8,24 @@
 mod common;
 
 use std::{
+    collections::HashSet,
     fs,
     path::PathBuf,
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use baml_rt::baml::BamlRuntimeManager;
+use async_trait::async_trait;
+use baml_rt::{A2aRequestHandler, baml::BamlRuntimeManager};
 use baml_rt_core::{
+    AgentDiscoveryEntry, AgentLister,
     bus::BusWithEffects,
     ids::{AgentId, ContextId, UuidId},
 };
 use baml_rt_provenance::{
     AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent, ProvenanceWriter,
 };
+use baml_tools_system::SystemBundle;
 use common::{
     TempDirCleanup, build_agent_dir_to_temp_async, e2e_serial_gate, post_a2a_sse_collect,
     start_runner_api_server,
@@ -29,9 +33,31 @@ use common::{
 use serde_json::Value;
 use test_support::common::{
     agent_fixture, chunks_from_responses, ensure_fixture_runtime_types, message_texts_from_chunks,
-    send_stream_request,
+    require_api_key, send_stream_request,
 };
 use tokio::time::{Duration, timeout};
+
+struct EmptyAgentList;
+
+impl AgentLister for EmptyAgentList {
+    fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
+        vec![]
+    }
+}
+
+struct EmptyA2aHandler;
+
+#[async_trait]
+impl A2aRequestHandler for EmptyA2aHandler {
+    async fn handle_a2a_stream(
+        &self,
+        _request: baml_rt_core::A2aWireRequest,
+    ) -> baml_rt::Result<baml_rt_core::bus::BusStream<baml_rt_core::A2aStreamChunk>> {
+        Ok(Box::pin(futures_util::stream::empty::<
+            baml_rt_core::A2aStreamChunk,
+        >()))
+    }
+}
 
 fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
     let unique = SystemTime::now()
@@ -56,6 +82,26 @@ async fn setup_coordinator_agent() -> (baml_rt::A2aAgent, Arc<GraphqliteProvenan
     manager
         .load_schema(built.to_str().expect("path utf8"))
         .expect("load coordinator schema");
+    let allowlist: HashSet<String> = [
+        "system/internal_a2a",
+        "system/discover_agents",
+        "system/discover_tools",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    manager
+        .set_tool_allowlist(allowlist)
+        .await
+        .expect("set allowlist");
+    let registry = manager.tool_registry();
+    registry
+        .register_bundle(SystemBundle::new(
+            Arc::new(EmptyAgentList),
+            registry.clone(),
+            Arc::new(EmptyA2aHandler),
+        ))
+        .expect("register SystemBundle");
 
     let provenance = build_graphqlite_test_store();
     let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
@@ -87,6 +133,7 @@ async fn setup_coordinator_agent() -> (baml_rt::A2aAgent, Arc<GraphqliteProvenan
 /// Verifies the coordinator handles a simple math question (expects direct_answer).
 #[tokio::test]
 async fn eval_coordinator_direct_answer_math() {
+    let _openrouter_api_key = require_api_key();
     let _permit = e2e_serial_gate().acquire().await.expect("gate");
 
     let (agent, provenance, built_dir) = setup_coordinator_agent().await;
