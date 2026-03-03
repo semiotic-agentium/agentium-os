@@ -1,3 +1,5 @@
+//! Slack polling implementation for [`crate::daemon::TaskSource`].
+
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
@@ -14,12 +16,16 @@ use crate::{
 const DEFAULT_MAX_PAGES: u16 = 3;
 
 #[derive(Debug, Clone)]
+/// Slack channel selector accepted by CLI/config.
 pub enum SlackChannelSelector {
+    /// Explicit Slack channel id (`C...`, `G...`, `D...`).
     ChannelId(String),
+    /// Human channel name (with or without leading `#`).
     ChannelName(String),
 }
 
 impl SlackChannelSelector {
+    /// Parses a channel selector from CLI/config input.
     pub fn parse(raw: &str) -> Result<Self> {
         let trimmed = raw.trim().trim_start_matches('#');
         if trimmed.is_empty() {
@@ -38,6 +44,7 @@ impl SlackChannelSelector {
         }
     }
 
+    /// Stable fragment used to key persisted source state.
     pub fn state_fragment(&self) -> String {
         match self {
             SlackChannelSelector::ChannelId(id) => id.to_ascii_uppercase(),
@@ -54,6 +61,7 @@ impl SlackChannelSelector {
 }
 
 #[derive(Debug, Clone)]
+/// Runtime configuration for Slack polling.
 pub struct SlackSourceConfig {
     pub channel: SlackChannelSelector,
     pub history_limit: u16,
@@ -77,6 +85,7 @@ impl Default for SlackSourceConfig {
 }
 
 #[derive(Clone)]
+/// Slack-backed task source that emits newly observed messages.
 pub struct SlackTaskSource {
     client: SlackReadClient,
     config: SlackSourceConfig,
@@ -88,6 +97,7 @@ struct HistoryFetch {
 }
 
 impl SlackTaskSource {
+    /// Creates a Slack source with the given configuration.
     pub fn new(config: SlackSourceConfig) -> Self {
         Self {
             client: SlackReadClient::new(),

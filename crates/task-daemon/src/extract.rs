@@ -1,3 +1,5 @@
+//! Interpretation and task-derivation pipeline for Slack discussion.
+
 use std::{collections::HashMap, sync::OnceLock};
 
 use anyhow::{Result, anyhow};
@@ -88,12 +90,16 @@ fn is_ignored_slack_subtype(subtype: Option<&str>) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Interpretation backend selection.
 pub enum ExtractionMode {
+    /// Deterministic regex-based fallback.
     Heuristic,
+    /// LLM-backed interpretation (default for CLI).
     Llm,
 }
 
 #[derive(Debug, Clone)]
+/// Produces project interpretation and derived tasks from polled source messages.
 pub struct TaskExtractor {
     max_candidates: usize,
     mode: ExtractionMode,
@@ -107,6 +113,7 @@ impl Default for TaskExtractor {
 }
 
 impl TaskExtractor {
+    /// Creates an extractor in heuristic mode.
     pub fn new(max_candidates: usize) -> Self {
         Self {
             max_candidates: max_candidates.max(1),
@@ -115,6 +122,9 @@ impl TaskExtractor {
         }
     }
 
+    /// Creates an extractor with an explicit mode.
+    ///
+    /// In LLM mode this validates provider configuration from environment.
     pub fn with_mode(max_candidates: usize, mode: ExtractionMode) -> Result<Self> {
         let llm_extractor = match mode {
             ExtractionMode::Heuristic => None,
@@ -128,6 +138,7 @@ impl TaskExtractor {
         })
     }
 
+    /// Interprets a Slack message window into a [`TaskBatch`].
     pub async fn extract_slack_runtime(
         &self,
         source_label: &str,

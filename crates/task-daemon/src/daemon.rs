@@ -1,3 +1,5 @@
+//! Runtime orchestration for poll -> interpret -> deliver cycles.
+
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -15,19 +17,28 @@ use crate::{
 const ERROR_ESCALATION_THRESHOLD: u32 = 3;
 
 #[derive(Debug, Clone)]
+/// Result of one source polling operation.
 pub struct SourcePoll {
+    /// Stable key used to address source state in the state store.
     pub source_key: String,
+    /// Source kind for downstream extraction routing.
     pub source: TaskSourceKind,
+    /// Human-readable source label (for example `#agentium-eng`).
     pub source_label: String,
+    /// Raw source messages collected in this poll window.
     pub messages: Vec<SlackMessage>,
 }
 
 #[async_trait]
+/// A polling source that can emit messages incrementally.
 pub trait TaskSource: Send {
+    /// Stable state key for this source instance.
     fn source_key(&self) -> String;
+    /// Poll new data using (and mutating) persisted daemon state.
     async fn poll(&mut self, state: &mut crate::state::TaskDaemonState) -> Result<SourcePoll>;
 }
 
+/// Coordinates source polling, interpretation, sink delivery, and state persistence.
 pub struct TaskDaemon {
     source: Box<dyn TaskSource>,
     extractor: TaskExtractor,
@@ -38,6 +49,7 @@ pub struct TaskDaemon {
 }
 
 impl TaskDaemon {
+    /// Builds a daemon from one source, one extractor, and one or more sinks.
     pub fn new(
         source: Box<dyn TaskSource>,
         extractor: TaskExtractor,
@@ -55,6 +67,7 @@ impl TaskDaemon {
         }
     }
 
+    /// When enabled, batches with no derived tasks are still delivered to sinks.
     pub fn set_emit_empty_batches(&mut self, emit_empty_batches: bool) {
         self.emit_empty_batches = emit_empty_batches;
     }
@@ -129,6 +142,7 @@ impl TaskDaemon {
         Ok(batch)
     }
 
+    /// Runs [`Self::run_once`] forever with a fixed delay between iterations.
     pub async fn run_loop(&mut self, poll_interval: Duration) -> Result<()> {
         let mut consecutive_failures = 0_u32;
 

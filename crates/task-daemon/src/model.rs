@@ -1,3 +1,5 @@
+//! Core data model shared across polling, interpretation, and delivery.
+
 use std::{
     fmt,
     time::{SystemTime, UNIX_EPOCH},
@@ -7,7 +9,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// High-level source category for a batch.
 pub enum TaskSourceKind {
+    /// Slack channel polling source.
     Slack,
     /// Placeholder variant for planned support; extraction is not implemented yet.
     GithubIssues,
@@ -15,6 +19,7 @@ pub enum TaskSourceKind {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
+/// Confidence/priority tier used across interpretation and tasks.
 pub enum TaskConfidence {
     Low,
     Medium,
@@ -22,6 +27,7 @@ pub enum TaskConfidence {
 }
 
 impl TaskConfidence {
+    /// Numeric ordering helper (higher is more important/confident).
     pub fn rank(self) -> u8 {
         match self {
             TaskConfidence::Low => 1,
@@ -44,6 +50,7 @@ impl fmt::Display for TaskConfidence {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Follow-up action category for non-code next steps.
 pub enum FollowUpKind {
     StakeholderQuestion,
     DecisionRequest,
@@ -52,6 +59,7 @@ pub enum FollowUpKind {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+/// Condition for when an investigation should be executed.
 pub enum InvestigationRunCondition {
     Always,
     RepoAvailable,
@@ -59,6 +67,7 @@ pub enum InvestigationRunCondition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Evidence pointer back to source material.
 pub struct SourceReference {
     pub reference: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -72,6 +81,7 @@ pub struct SourceReference {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Normalized Slack message used by interpretation backends.
 pub struct SlackMessage {
     pub channel_name: String,
     pub channel_id: String,
@@ -89,6 +99,7 @@ pub struct SlackMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Project metadata resolved from channel config and CLI overrides.
 pub struct ProjectContext {
     pub project_key: String,
     pub repo_available: bool,
@@ -107,6 +118,7 @@ impl Default for ProjectContext {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Recorded project decision with rationale and evidence.
 pub struct DecisionItem {
     pub decision: String,
     pub rationale: String,
@@ -116,6 +128,7 @@ pub struct DecisionItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Open question extracted from discussion context.
 pub struct QuestionItem {
     pub question: String,
     #[serde(default)]
@@ -127,6 +140,7 @@ pub struct QuestionItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Risk statement with impact and mitigation detail.
 pub struct RiskItem {
     pub risk: String,
     pub impact: String,
@@ -137,6 +151,7 @@ pub struct RiskItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Follow-up action for stakeholders/decision-making.
 pub struct FollowUpItem {
     pub kind: FollowUpKind,
     pub prompt: String,
@@ -146,6 +161,7 @@ pub struct FollowUpItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Investigation node that can be handed to an agent workflow.
 pub struct InvestigationPrompt {
     pub key: String,
     pub title: String,
@@ -167,6 +183,7 @@ pub struct InvestigationPrompt {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Clarification node describing information needed before execution.
 pub struct ClarificationPrompt {
     pub key: String,
     pub question: String,
@@ -181,6 +198,7 @@ pub struct ClarificationPrompt {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Workflow handoff artifact derived from project interpretation.
 pub struct WorkflowSeed {
     pub goal: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -192,6 +210,7 @@ pub struct WorkflowSeed {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+/// Structured interpretation of a discussion window.
 pub struct ProjectInterpretation {
     pub executive_summary: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -209,6 +228,7 @@ pub struct ProjectInterpretation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+/// Task emitted to downstream systems (for example ClickUp).
 pub struct InvestigationTask {
     /// Stable key for deduplication/idempotency.
     pub key: String,
@@ -220,6 +240,7 @@ pub struct InvestigationTask {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// Full payload produced by one daemon poll cycle.
 pub struct TaskBatch {
     pub source: TaskSourceKind,
     pub source_label: String,

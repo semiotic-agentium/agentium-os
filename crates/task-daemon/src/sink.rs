@@ -1,3 +1,5 @@
+//! Delivery sinks for interpreted batches.
+
 use std::{
     fs::OpenOptions,
     io::Write,
@@ -12,16 +14,23 @@ use serde_json::json;
 use crate::model::{InvestigationTask, TaskBatch};
 
 #[async_trait]
+/// A destination for interpreted task batches.
 pub trait TaskSink: Send {
+    /// Stable sink identifier used in logs and error context.
     fn name(&self) -> &'static str;
+    /// Delivers a batch to the sink.
     async fn deliver(&mut self, batch: &TaskBatch) -> Result<()>;
 }
 
+/// Sink that prints one JSON payload per batch to stdout.
 pub struct StdoutSink {
     pretty: bool,
 }
 
 impl StdoutSink {
+    /// Creates a stdout sink.
+    ///
+    /// When `pretty` is true the output is indented JSON.
     pub fn new(pretty: bool) -> Self {
         Self { pretty }
     }
@@ -45,15 +54,18 @@ impl TaskSink for StdoutSink {
     }
 }
 
+/// Sink that appends each batch as one JSON line to a file.
 pub struct JsonlFileSink {
     path: PathBuf,
 }
 
 impl JsonlFileSink {
+    /// Creates a JSONL file sink.
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }
 
+    /// Returns the output file path.
     pub fn path(&self) -> &Path {
         self.path.as_path()
     }
@@ -86,6 +98,7 @@ impl TaskSink for JsonlFileSink {
     }
 }
 
+/// Sink that maps derived investigation tasks into ClickUp tasks.
 pub struct ClickUpSink {
     client: ClickUpClient,
     list_id: String,
@@ -93,6 +106,9 @@ pub struct ClickUpSink {
 }
 
 impl ClickUpSink {
+    /// Creates a ClickUp sink.
+    ///
+    /// When `dry_run` is true, no API writes are performed.
     pub fn new(list_id: String, dry_run: bool) -> Result<Self> {
         let list_id = list_id.trim().to_string();
         if list_id.is_empty() {

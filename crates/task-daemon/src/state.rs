@@ -1,3 +1,5 @@
+//! Persistent daemon state (cursor, channel resolution, dedupe keys).
+
 use std::{
     collections::BTreeMap,
     fs,
@@ -9,6 +11,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Per-source persisted state.
 pub struct SourceState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_id: Option<String>,
@@ -25,14 +28,17 @@ pub struct SourceState {
 }
 
 impl SourceState {
+    /// Returns true when a derived task key has already been delivered.
     pub fn has_seen_task(&self, task_key: &str) -> bool {
         self.seen_task_keys.contains_key(task_key)
     }
 
+    /// Marks a derived task key as delivered.
     pub fn mark_task_seen(&mut self, task_key: String, seen_at_unix: u64) {
         self.seen_task_keys.insert(task_key, seen_at_unix);
     }
 
+    /// Trims dedupe memory to the newest `max_entries` keys.
     pub fn prune_seen_tasks(&mut self, max_entries: usize) {
         if self.seen_task_keys.len() <= max_entries {
             return;
@@ -53,6 +59,7 @@ impl SourceState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Top-level persisted daemon state across all sources.
 pub struct TaskDaemonState {
     pub version: u8,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -69,22 +76,26 @@ impl Default for TaskDaemonState {
 }
 
 impl TaskDaemonState {
+    /// Returns mutable state for a source, creating it if missing.
     pub fn source_state_mut(&mut self, source_key: &str) -> &mut SourceState {
         self.sources.entry(source_key.to_string()).or_default()
     }
 
+    /// Returns state for a source if it exists.
     pub fn source_state(&self, source_key: &str) -> Option<&SourceState> {
         self.sources.get(source_key)
     }
 }
 
 #[derive(Debug, Clone)]
+/// Filesystem-backed state store with atomic writes.
 pub struct StateStore {
     path: PathBuf,
     pub max_seen_tasks_per_source: usize,
 }
 
 impl StateStore {
+    /// Creates a state store at `path`.
     pub fn new(path: PathBuf, max_seen_tasks_per_source: usize) -> Self {
         Self {
             path,
@@ -92,10 +103,12 @@ impl StateStore {
         }
     }
 
+    /// Returns the on-disk state file path.
     pub fn path(&self) -> &Path {
         self.path.as_path()
     }
 
+    /// Loads state from disk, returning defaults when no file exists.
     pub fn load(&self) -> Result<TaskDaemonState> {
         if !self.path.exists() {
             return Ok(TaskDaemonState::default());
@@ -108,6 +121,7 @@ impl StateStore {
         Ok(state)
     }
 
+    /// Persists state to disk via write-then-rename atomic replacement.
     pub fn save(&self, state: &TaskDaemonState) -> Result<()> {
         if let Some(parent) = self.path.parent()
             && !parent.as_os_str().is_empty()

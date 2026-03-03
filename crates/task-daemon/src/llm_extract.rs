@@ -1,3 +1,5 @@
+//! LLM-backed interpretation backend with provider fallback.
+
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, anyhow};
@@ -15,6 +17,7 @@ const DEFAULT_TASK_DAEMON_LLM_MODEL: &str = "openai/gpt-4.1-mini";
 const DEFAULT_MAX_MESSAGES: usize = 200;
 
 #[derive(Debug, Clone)]
+/// Provider-aware LLM interpretation engine for Slack message windows.
 pub struct LlmTaskExtractor {
     client: reqwest::Client,
     providers: Vec<LlmProvider>,
@@ -22,6 +25,9 @@ pub struct LlmTaskExtractor {
 }
 
 impl LlmTaskExtractor {
+    /// Builds an LLM extractor from environment variables.
+    ///
+    /// Supports a primary provider plus optional OpenAI-compatible fallback.
     pub fn from_env_required() -> Result<Self> {
         let model = optional_env_trimmed("TASK_DAEMON_LLM_MODEL")
             .unwrap_or_else(|| DEFAULT_TASK_DAEMON_LLM_MODEL.to_string());
@@ -71,6 +77,7 @@ impl LlmTaskExtractor {
         })
     }
 
+    /// Interprets source messages into a structured project interpretation.
     pub async fn extract(
         &self,
         source_label: &str,

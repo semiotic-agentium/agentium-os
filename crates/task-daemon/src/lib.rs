@@ -1,3 +1,13 @@
+//! Interpretation-first daemon for turning project-channel discussion into actionable outputs.
+//!
+//! The crate is organized around three boundaries:
+//! - source polling (`daemon::TaskSource`)
+//! - interpretation (`extract::TaskExtractor`)
+//! - delivery (`sink::TaskSink`)
+//!
+//! The main payload is [`TaskBatch`], which includes project interpretation,
+//! workflow seed data, and derived tasks for downstream systems.
+
 pub mod daemon;
 pub mod extract;
 mod llm_extract;
