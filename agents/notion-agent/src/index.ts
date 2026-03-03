@@ -424,33 +424,29 @@ async function onChatMessage(message: ChatMessageWithToken): Promise<void> {
     let lastToolOutput: NotionOutput | null = null;
 
     try {
-      for (let step = 1; step <= MAX_REACT_STEPS; step++) {
-        let result: unknown;
-        if (step === 1 && directId) {
-          try {
-            result = await executeNotionAction({
-              block_id: directId,
-              max_depth: 2,
-            });
-            if (!result) {
-              result = await ChooseNotionAction({
-                user_message: text,
-                __baml_invocation_token: token,
-              });
-            }
-          } catch (err) {
-            console.warn("Direct Notion ID lookup failed, falling back to planner", err);
-            result = await ChooseNotionAction({
-              user_message: text,
-              __baml_invocation_token: token,
-            });
-          }
-        } else {
-          result = await ChooseNotionAction({
-            user_message: text,
-            __baml_invocation_token: token,
+      // Fast path: resolve a direct Notion ID without entering the
+      // LLM-driven ReAct loop.  Only fall through when the lookup
+      // fails or returns no data.
+      if (directId) {
+        try {
+          const directResult = await executeNotionAction({
+            block_id: directId,
+            max_depth: 2,
           });
+          if (directResult) {
+            return { message: await renderNotionOutput(directResult, text) };
+          }
+        } catch (err) {
+          console.warn("Direct Notion ID lookup failed, falling back to planner", err);
+          // Fall through to the ReAct loop below.
         }
+      }
+
+      for (let step = 1; step <= MAX_REACT_STEPS; step++) {
+        const result: unknown = await ChooseNotionAction({
+          user_message: text,
+          __baml_invocation_token: token,
+        });
 
         if (isSessionPlan(result)) {
           const executedOutput = await executeNotionPlan(result);
