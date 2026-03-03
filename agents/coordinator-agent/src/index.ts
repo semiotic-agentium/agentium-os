@@ -1353,7 +1353,7 @@ async function executeWorkflowNode(
       return {
         node_id: node.id,
         status: "failed",
-        error: "foreach execution is not enabled yet (Phase 4).",
+        error: "foreach nodes must be expanded before execution.",
         started_at,
         ended_at: new Date().toISOString(),
       };
@@ -1419,27 +1419,181 @@ async function executeWave(
   return outputs;
 }
 
+function findFinalWorkflowNode(plan: WorkflowPlan): WorkflowNode | null {
+  if (plan.final_node_id) {
+    const explicit = plan.nodes.find((node) => node.id === plan.final_node_id);
+    if (explicit) return explicit;
+  }
+
+  for (let i = plan.nodes.length - 1; i >= 0; i--) {
+    if (plan.nodes[i].kind === "synthesize") {
+      return plan.nodes[i];
+    }
+  }
+
+  return plan.nodes.length > 0 ? plan.nodes[plan.nodes.length - 1] : null;
+}
+
+function collectAncestorNodeIds(plan: WorkflowPlan, startNodeId: string): Set<string> {
+  const nodeById = new Map(plan.nodes.map((node) => [node.id, node] as const));
+  const seen = new Set<string>();
+  const stack = [startNodeId];
+
+  while (stack.length > 0) {
+    const nodeId = stack.pop();
+    if (!nodeId || seen.has(nodeId)) continue;
+    seen.add(nodeId);
+    const node = nodeById.get(nodeId);
+    if (!node) continue;
+    for (const depId of node.depends_on) stack.push(depId);
+  }
+
+  return seen;
+}
+
+function buildSynthesisUserMessage(userText: string, synthesisTemplate?: string): string {
+  const normalizedTemplate = normalizeOptionalString(synthesisTemplate);
+  if (!normalizedTemplate) return userText;
+  return `${userText}\n\nSynthesis instructions:\n${normalizedTemplate}`;
+}
+
 function buildWorkflowTranscript(
   plan: WorkflowPlan,
   artifacts: Map<string, NodeArtifact>,
+  includeNodeIds?: Set<string>,
 ): string {
+  const summary = summarizeWorkflowExecution(plan, artifacts, includeNodeIds);
   const parts: string[] = [];
+  parts.push(
+    `[workflow] completed=${summary.completed} failed=${summary.failed} skipped=${summary.skipped} unresolved=${summary.unresolved}`,
+  );
+  if (summary.failed_nodes.length > 0) {
+    parts.push(
+      `[workflow] failed_nodes=${summary.failed_nodes
+        .slice(0, 8)
+        .map((entry) => `${entry.id}:${entry.error}`)
+        .join(" | ")}`,
+    );
+  }
+  if (summary.skipped_nodes.length > 0) {
+    parts.push(
+      `[workflow] skipped_nodes=${summary.skipped_nodes
+        .slice(0, 8)
+        .map((entry) => `${entry.id}:${entry.reason}`)
+        .join(" | ")}`,
+    );
+  }
+
   for (const node of plan.nodes) {
+    if (includeNodeIds && !includeNodeIds.has(node.id)) continue;
     const artifact = artifacts.get(node.id);
     if (!artifact) continue;
+    const status = artifact.status;
+    const prefix = `[${node.id}|${node.kind}|${status}]`;
     if (artifact.status === "completed" && artifact.output_text) {
-      parts.push(`[${node.id}]\n${artifact.output_text}`);
+      parts.push(`${prefix}\n${artifact.output_text}`);
       continue;
     }
     if (artifact.status === "failed") {
-      parts.push(`[${node.id}] ERROR: ${artifact.error || "unknown failure"}`);
+      parts.push(`${prefix} ERROR: ${artifact.error || "unknown failure"}`);
       continue;
     }
     if (artifact.status === "skipped") {
-      parts.push(`[${node.id}] SKIPPED: dependency failed`);
+      parts.push(`${prefix} SKIPPED: ${artifact.error || "dependency failed"}`);
+      continue;
     }
+    parts.push(`${prefix} STATUS: ${artifact.error || "no output text"}`);
   }
   return parts.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
+}
+
+type WorkflowExecutionSummary = {
+  completed: number;
+  failed: number;
+  skipped: number;
+  unresolved: number;
+  failed_nodes: Array<{ id: string; error: string }>;
+  skipped_nodes: Array<{ id: string; reason: string }>;
+};
+
+function finalizeUnresolvedNodes(plan: WorkflowPlan, artifacts: Map<string, NodeArtifact>): void {
+  const now = new Date().toISOString();
+  for (const node of plan.nodes) {
+    const existing = artifacts.get(node.id);
+    if (existing && isTerminalArtifactStatus(existing.status)) continue;
+    artifacts.set(node.id, {
+      node_id: node.id,
+      status: "skipped",
+      error: "Unresolved after execution budget.",
+      started_at: existing?.started_at || now,
+      ended_at: now,
+    });
+  }
+}
+
+function summarizeWorkflowExecution(
+  plan: WorkflowPlan,
+  artifacts: Map<string, NodeArtifact>,
+  includeNodeIds?: Set<string>,
+): WorkflowExecutionSummary {
+  const summary: WorkflowExecutionSummary = {
+    completed: 0,
+    failed: 0,
+    skipped: 0,
+    unresolved: 0,
+    failed_nodes: [],
+    skipped_nodes: [],
+  };
+
+  for (const node of plan.nodes) {
+    if (includeNodeIds && !includeNodeIds.has(node.id)) continue;
+    const artifact = artifacts.get(node.id);
+    if (!artifact) {
+      summary.unresolved += 1;
+      continue;
+    }
+    if (artifact.status === "completed") {
+      summary.completed += 1;
+      continue;
+    }
+    if (artifact.status === "failed") {
+      summary.failed += 1;
+      summary.failed_nodes.push({
+        id: node.id,
+        error: artifact.error || "unknown failure",
+      });
+      continue;
+    }
+    if (artifact.status === "skipped") {
+      summary.skipped += 1;
+      summary.skipped_nodes.push({
+        id: node.id,
+        reason: artifact.error || "dependency failed",
+      });
+      continue;
+    }
+    summary.unresolved += 1;
+  }
+
+  return summary;
+}
+
+function renderWorkflowExecutionNotes(summary: WorkflowExecutionSummary): string {
+  const lines: string[] = [];
+  lines.push("Execution Notes:");
+  lines.push(`- Completed nodes: ${summary.completed}`);
+  lines.push(`- Failed nodes: ${summary.failed}`);
+  lines.push(`- Skipped nodes: ${summary.skipped}`);
+  if (summary.unresolved > 0) {
+    lines.push(`- Unresolved nodes: ${summary.unresolved}`);
+  }
+  for (const entry of summary.failed_nodes.slice(0, 5)) {
+    lines.push(`- Failed ${entry.id}: ${entry.error}`);
+  }
+  for (const entry of summary.skipped_nodes.slice(0, 5)) {
+    lines.push(`- Skipped ${entry.id}: ${entry.reason}`);
+  }
+  return lines.join("\n");
 }
 
 async function executeWorkflowPlanPhase3(
@@ -1505,6 +1659,42 @@ async function executeWorkflowPlanPhase3(
     if (!progressed) break;
   }
 
+  finalizeUnresolvedNodes(plan, artifacts);
+  const summary = summarizeWorkflowExecution(plan, artifacts);
+
+  const appendExecutionNotes = (message: string): SessionResult => {
+    if (summary.failed > 0 || summary.skipped > 0 || summary.unresolved > 0) {
+      return { message: `${message}\n\n${renderWorkflowExecutionNotes(summary)}` };
+    }
+    return { message };
+  };
+
+  const finalNode = findFinalWorkflowNode(plan);
+  if (finalNode) {
+    const finalArtifact = artifacts.get(finalNode.id);
+    if (
+      finalArtifact?.status === "completed" &&
+      (finalNode.kind === "call_agent" || finalNode.kind === "direct_answer") &&
+      finalArtifact.output_text
+    ) {
+      return appendExecutionNotes(finalArtifact.output_text);
+    }
+
+    if (finalNode.kind === "synthesize") {
+      const scope = collectAncestorNodeIds(plan, finalNode.id);
+      scope.delete(finalNode.id);
+      const transcript = buildWorkflowTranscript(plan, artifacts, scope);
+      if (transcript) {
+        const synthesisUserMessage = buildSynthesisUserMessage(
+          userText,
+          finalNode.synthesis_template,
+        );
+        const base = await synthesize(synthesisUserMessage, transcript, conversationSummary);
+        return appendExecutionNotes(base);
+      }
+    }
+  }
+
   const directOnly = plan.nodes.every((node) => {
     if (node.kind !== "direct_answer" && node.kind !== "synthesize") return false;
     const status = artifacts.get(node.id)?.status;
@@ -1515,23 +1705,20 @@ async function executeWorkflowPlanPhase3(
       .map((node) => artifacts.get(node.id)?.output_text)
       .filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
       .join("\n");
-    return { message: message || "No direct response was produced by the workflow plan." };
-  }
-
-  const anyTerminal = plan.nodes.some((node) =>
-    isTerminalArtifactStatus(artifacts.get(node.id)?.status || "pending"),
-  );
-  if (!anyTerminal) {
-    return { message: "Workflow plan contains no executable call_agent nodes for this phase." };
+    if (!message) {
+      return { message: "No direct response was produced by the workflow plan." };
+    }
+    return appendExecutionNotes(message);
   }
 
   const transcript = buildWorkflowTranscript(plan, artifacts);
   if (!transcript) {
-    return {
-      message: "I delegated according to the workflow plan, but received no usable evidence.",
-    };
+    return appendExecutionNotes(
+      "I delegated according to the workflow plan, but received no usable evidence.",
+    );
   }
-  return { message: await synthesize(userText, transcript, conversationSummary) };
+  const base = await synthesize(userText, transcript, conversationSummary);
+  return appendExecutionNotes(base);
 }
 
 async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
