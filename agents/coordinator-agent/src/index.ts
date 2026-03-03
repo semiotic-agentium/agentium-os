@@ -1,4 +1,5 @@
 /// <reference path="./baml-runtime.d.ts" />
+import type { RunContext, SessionResult } from "./baml-runtime";
 
 type DelegatedChunk = {
   message?: {
@@ -57,6 +58,21 @@ type DiscoverAgentsOutput = {
   done?: boolean;
 };
 
+type AgentCandidate = {
+  agent_package: string;
+  agent_instance_id: string;
+  name: string;
+  description: string | null;
+  capabilities: string[];
+  tools: string[];
+};
+
+declare function RouteToSpecialists(args: {
+  user_message: string;
+  available_agents: AgentCandidate[];
+  conversation_summary?: string | null;
+}): Promise<unknown>;
+
 declare function openToolSession(
   toolName: string,
   openInput?: Record<string, unknown>,
@@ -67,9 +83,56 @@ const MAX_TRANSCRIPT_CHARS = 12_000;
 const MAX_CONVERSATION_CONTEXT_CHARS = 4_000;
 const MAX_SINGLE_SEND_CONTINUE_STEPS = 16;
 const MAX_DELEGATION_CONTINUE_STEPS = 128;
+const MAX_WORKFLOW_NODES = 30;
+const MAX_FOREACH_EXPANSIONS = 50;
 
 const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
 const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
+
+type WorkflowNodeKind =
+  | "call_agent"
+  | "foreach"
+  | "synthesize"
+  | "clarify"
+  | "direct_answer";
+
+type WorkflowForeachTemplate = {
+  id_prefix: string;
+  target: RouteTarget;
+  prompt_template: string;
+  max_items?: number;
+};
+
+type WorkflowNode = {
+  id: string;
+  kind: WorkflowNodeKind;
+  depends_on: string[];
+  target?: RouteTarget;
+  prompt_template?: string;
+  foreach_from?: string;
+  foreach_template?: WorkflowForeachTemplate;
+  synthesis_template?: string;
+  rationale?: string;
+};
+
+type WorkflowPlan = {
+  goal: string;
+  nodes: WorkflowNode[];
+  final_node_id?: string | null;
+};
+
+type NodeArtifactStatus = "pending" | "running" | "completed" | "failed" | "skipped";
+
+type NodeArtifact = {
+  node_id: string;
+  status: NodeArtifactStatus;
+  output_text?: string;
+  output_data?: unknown;
+  sources?: string[];
+  error?: string;
+  started_at?: string;
+  ended_at?: string;
+};
 
 // ---------------------------------------------------------------------------
 // Utility helpers
@@ -87,6 +150,202 @@ function normalizeOptionalString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function parseStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+function parseRouteTarget(value: unknown): RouteTarget | null {
+  if (!isObject(value)) return null;
+  if (typeof value.agent_package !== "string") return null;
+  if (typeof value.agent_instance_id !== "string") return null;
+  return {
+    agent_package: value.agent_package,
+    agent_instance_id: value.agent_instance_id,
+  };
+}
+
+function parseWorkflowNodeKind(value: unknown): WorkflowNodeKind | null {
+  if (typeof value !== "string") return null;
+  if (
+    value === "call_agent" ||
+    value === "foreach" ||
+    value === "synthesize" ||
+    value === "clarify" ||
+    value === "direct_answer"
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function parseWorkflowForeachTemplate(value: unknown): WorkflowForeachTemplate | null {
+  if (!isObject(value)) return null;
+  if (typeof value.id_prefix !== "string" || value.id_prefix.trim().length === 0) return null;
+  if (typeof value.prompt_template !== "string" || value.prompt_template.trim().length === 0) {
+    return null;
+  }
+  const target = parseRouteTarget(value.target);
+  if (!target) return null;
+
+  const maxItemsRaw =
+    typeof value.max_items === "number" ? value.max_items : Number(value.max_items);
+  const maxItems = Number.isFinite(maxItemsRaw) ? Math.floor(maxItemsRaw) : undefined;
+
+  return {
+    id_prefix: value.id_prefix.trim(),
+    target,
+    prompt_template: value.prompt_template.trim(),
+    max_items: maxItems,
+  };
+}
+
+function parseWorkflowNode(value: unknown): WorkflowNode | null {
+  if (!isObject(value)) return null;
+  const id = normalizeOptionalString(value.id);
+  const kind = parseWorkflowNodeKind(value.kind);
+  if (!id || !kind) return null;
+
+  return {
+    id,
+    kind,
+    depends_on: parseStringArray(value.depends_on),
+    target: parseRouteTarget(value.target) || undefined,
+    prompt_template: normalizeOptionalString(value.prompt_template) || undefined,
+    foreach_from: normalizeOptionalString(value.foreach_from) || undefined,
+    foreach_template: parseWorkflowForeachTemplate(value.foreach_template) || undefined,
+    synthesis_template: normalizeOptionalString(value.synthesis_template) || undefined,
+    rationale: normalizeOptionalString(value.rationale) || undefined,
+  };
+}
+
+function parseWorkflowPlan(value: unknown): WorkflowPlan | null {
+  if (!isObject(value) || !Array.isArray(value.nodes)) return null;
+  const nodes = value.nodes
+    .map((node) => parseWorkflowNode(node))
+    .filter((node): node is WorkflowNode => node != null);
+  if (nodes.length === 0) return null;
+  if (nodes.length !== value.nodes.length) return null;
+
+  return {
+    goal: normalizeOptionalString(value.goal) || "Coordinate user request",
+    nodes,
+    final_node_id: normalizeOptionalString(value.final_node_id),
+  };
+}
+
+function workflowTargetKey(target: RouteTarget): string {
+  return `${target.agent_package}/${target.agent_instance_id}`;
+}
+
+function validateWorkflowPlan(plan: WorkflowPlan, agentRegistry: Set<string>): void {
+  if (!Array.isArray(plan.nodes) || plan.nodes.length === 0) {
+    throw new Error("Workflow plan must include at least one node.");
+  }
+  if (plan.nodes.length > MAX_WORKFLOW_NODES) {
+    throw new Error(
+      `Workflow plan exceeds max node count (${plan.nodes.length} > ${MAX_WORKFLOW_NODES}).`,
+    );
+  }
+
+  const nodeById = new Map<string, WorkflowNode>();
+  for (const node of plan.nodes) {
+    if (nodeById.has(node.id)) {
+      throw new Error(`Workflow plan has duplicate node id: ${node.id}`);
+    }
+    nodeById.set(node.id, node);
+  }
+
+  if (plan.final_node_id && !nodeById.has(plan.final_node_id)) {
+    throw new Error(`Workflow final_node_id does not exist: ${plan.final_node_id}`);
+  }
+
+  for (const node of plan.nodes) {
+    for (const depId of node.depends_on) {
+      if (!nodeById.has(depId)) {
+        throw new Error(`Workflow node ${node.id} depends on unknown node ${depId}.`);
+      }
+      if (depId === node.id) {
+        throw new Error(`Workflow node ${node.id} cannot depend on itself.`);
+      }
+    }
+
+    if (node.kind === "call_agent") {
+      if (!node.target) {
+        throw new Error(`Workflow node ${node.id} (call_agent) is missing target.`);
+      }
+      if (!node.prompt_template) {
+        throw new Error(`Workflow node ${node.id} (call_agent) is missing prompt_template.`);
+      }
+      const key = workflowTargetKey(node.target);
+      if (!agentRegistry.has(key)) {
+        throw new Error(`Workflow node ${node.id} targets unknown agent ${key}.`);
+      }
+      continue;
+    }
+
+    if (node.kind === "foreach") {
+      if (!node.foreach_from) {
+        throw new Error(`Workflow node ${node.id} (foreach) is missing foreach_from.`);
+      }
+      if (!node.foreach_template) {
+        throw new Error(`Workflow node ${node.id} (foreach) is missing foreach_template.`);
+      }
+      const key = workflowTargetKey(node.foreach_template.target);
+      if (!agentRegistry.has(key)) {
+        throw new Error(`Workflow node ${node.id} foreach targets unknown agent ${key}.`);
+      }
+      const maxItems = node.foreach_template.max_items ?? MAX_FOREACH_EXPANSIONS;
+      if (maxItems < 1 || maxItems > MAX_FOREACH_EXPANSIONS) {
+        throw new Error(
+          `Workflow node ${node.id} has invalid foreach max_items=${maxItems}; max=${MAX_FOREACH_EXPANSIONS}.`,
+        );
+      }
+      continue;
+    }
+
+    if (node.kind === "clarify" || node.kind === "direct_answer") {
+      if (!node.prompt_template) {
+        throw new Error(`Workflow node ${node.id} (${node.kind}) is missing prompt_template.`);
+      }
+    }
+  }
+
+  const indegree = new Map<string, number>();
+  const dependents = new Map<string, string[]>();
+  for (const node of plan.nodes) {
+    indegree.set(node.id, node.depends_on.length);
+    for (const depId of node.depends_on) {
+      const bucket = dependents.get(depId) || [];
+      bucket.push(node.id);
+      dependents.set(depId, bucket);
+    }
+  }
+
+  const queue: string[] = [];
+  for (const [id, degree] of indegree) {
+    if (degree === 0) queue.push(id);
+  }
+
+  let visited = 0;
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    visited += 1;
+    const next = dependents.get(id) || [];
+    for (const depId of next) {
+      const current = indegree.get(depId);
+      if (current == null) continue;
+      const updated = current - 1;
+      indegree.set(depId, updated);
+      if (updated === 0) queue.push(depId);
+    }
+  }
+
+  if (visited !== plan.nodes.length) {
+    throw new Error("Workflow plan contains a dependency cycle.");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -375,14 +634,7 @@ async function delegateToAgent(target: RouteTarget, prompt: string): Promise<str
 // LLM routing
 // ---------------------------------------------------------------------------
 
-function buildAgentCandidates(agents: DiscoveredAgent[]): Array<{
-  agent_package: string;
-  agent_instance_id: string;
-  name: string;
-  description: string | null;
-  capabilities: string[];
-  tools: string[];
-}> {
+function buildAgentCandidates(agents: DiscoveredAgent[]): AgentCandidate[] {
   return agents
     .filter((a) => a.agent_package !== "coordinator-agent")
     .filter((a) => a.agent_instance_id === "default")
@@ -468,7 +720,7 @@ async function llmRoute(
 // ---------------------------------------------------------------------------
 
 function getConversationSummary(ctx: RunContext): string | null {
-  const tags = (ctx as Record<string, unknown>).tags;
+  const tags = (ctx as unknown as { tags?: unknown }).tags;
   if (!isObject(tags)) return null;
   const history = tags.conversation_history;
   if (typeof history !== "string" || history.trim().length === 0) return null;
@@ -607,14 +859,13 @@ async function collectEvidence(
 async function synthesize(
   userText: string,
   transcript: string,
-  conversationSummary: string | null,
+  _conversationSummary: string | null,
 ): Promise<string> {
   let synthesizedRaw: unknown;
   try {
     synthesizedRaw = await SynthesizeCoordinatorResponse({
       user_message: userText,
       delegated_transcript: transcript,
-      conversation_context: conversationSummary || null,
     });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
