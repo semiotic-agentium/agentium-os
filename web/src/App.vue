@@ -56,7 +56,7 @@ onMounted(() => fetchAgents());
         <div class="chat-toolbar">
           <AgentSelector :agents="agents" :selected="selectedAgent" @select="selectAgent" />
         </div>
-        
+
         <div class="app-body">
           <ReasoningPane :diagrams="diagrams" />
           <ChatWindow

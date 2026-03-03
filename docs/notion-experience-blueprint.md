@@ -94,16 +94,16 @@ with `deny_unknown_fields` per variant.
 
 ## Demo Narrative (What Teammates Should See)
 
-1. **Discovery Scene**  
-   Ask: "What are we working on right now?"  
+1. **Discovery Scene**
+   Ask: "What are we working on right now?"
    Show: planning + read-only retrieval.
 
-2. **Deterministic Scene**  
-   Ask with direct Notion ID.  
+2. **Deterministic Scene**
+   Ask with direct Notion ID.
    Show: direct-ID fast path (lower latency, fewer planner ambiguities).
 
-3. **Evidence Scene**  
-   Export Mermaid trace from captured `contextId`.  
+3. **Evidence Scene**
+   Export Mermaid trace from captured `contextId`.
    Show: same flow as protocol-level evidence, not just terminal output text.
 
 This is the "agent system story" in one run: **intent -> plan -> tool -> response -> proof**.
