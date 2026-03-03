@@ -1,5 +1,6 @@
 /// <reference path="./baml-runtime.d.ts" />
 import type { ChatMessage, RunContext, SessionEmitter, SessionResult } from "./baml-runtime";
+import { buildPlannerUserTextFromTaskDaemonHandoff } from "./task-daemon-handoff";
 
 type DelegatedChunk = {
   message?: {
@@ -1725,12 +1726,17 @@ async function executeWorkflowPlanPhase3(
 }
 
 async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
-  const baseUserText = (ctx.text || "").trim();
+  const rawUserText = (ctx.text || "").trim();
+  const plannerUserText = buildPlannerUserTextFromTaskDaemonHandoff(ctx.message, rawUserText);
+  const baseUserText = plannerUserText.userText;
   if (!baseUserText) {
     return { message: "Please share what you want me to coordinate." };
   }
 
   ctx.emit.statusChanged("TASK_STATE_WORKING");
+  if (plannerUserText.structuredHandoff) {
+    ctx.emit.message("Received structured task-daemon handoff. Planning from interpretation payload.");
+  }
   const baseConversationSummary = getConversationSummary(ctx);
   const clarificationTurns: string[] = [];
 
