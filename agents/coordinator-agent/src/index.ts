@@ -153,6 +153,15 @@ function normalizeOptionalString(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
+function isMeaningfulDelegatedText(text: string): boolean {
+  const normalized = text.trim().toLowerCase();
+  if (normalized.length === 0) return false;
+  if (normalized === "null" || normalized === "undefined" || normalized === "[object object]") {
+    return false;
+  }
+  return true;
+}
+
 function getChatMessageText(message: ChatMessage | null | undefined): string {
   if (!message) return "";
   try {
@@ -380,7 +389,7 @@ function collectMessageParts(value: unknown, out: Set<string>): void {
   for (const part of message.parts) {
     if (!isObject(part) || typeof part.text !== "string") continue;
     const text = part.text.trim();
-    if (text.length > 0) out.add(text);
+    if (isMeaningfulDelegatedText(text)) out.add(text);
   }
 }
 
@@ -417,7 +426,7 @@ function collectDelegatedTexts(value: unknown): string[] {
     for (const part of message.parts) {
       if (!part || typeof part.text !== "string") continue;
       const text = part.text.trim();
-      if (text.length > 0) out.add(text);
+      if (isMeaningfulDelegatedText(text)) out.add(text);
     }
   };
 
@@ -906,15 +915,128 @@ function isTerminalArtifactStatus(status: NodeArtifactStatus): boolean {
 
 function resolveArtifactPath(path: string, artifacts: Map<string, NodeArtifact>): unknown {
   const segments = path.split(".").filter((segment) => segment.length > 0);
-  if (segments.length < 2) return undefined;
+  if (segments.length < 1) return undefined;
 
   const [nodeId, ...rest] = segments;
   let current: unknown = artifacts.get(nodeId);
+  if (rest.length === 0) return current;
   for (const segment of rest) {
     if (!isObject(current)) return undefined;
     current = current[segment];
   }
   return current;
+}
+
+function tryParseJsonValue(text: string): unknown | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    // Try extracting the first JSON object/array from surrounding text.
+  }
+
+  for (let start = 0; start < trimmed.length; start++) {
+    const ch = trimmed[start];
+    if (ch !== "{" && ch !== "[") continue;
+
+    const stack: string[] = [ch === "{" ? "}" : "]"];
+    let inString = false;
+    let escaping = false;
+
+    for (let i = start + 1; i < trimmed.length; i++) {
+      const current = trimmed[i];
+
+      if (inString) {
+        if (escaping) {
+          escaping = false;
+          continue;
+        }
+        if (current === "\\") {
+          escaping = true;
+          continue;
+        }
+        if (current === '"') {
+          inString = false;
+        }
+        continue;
+      }
+
+      if (current === '"') {
+        inString = true;
+        continue;
+      }
+
+      if (current === "{") stack.push("}");
+      else if (current === "[") stack.push("]");
+      else if (current === "}" || current === "]") {
+        const expected = stack.pop();
+        if (!expected || expected !== current) break;
+        if (stack.length === 0) {
+          const candidate = trimmed.slice(start, i + 1);
+          try {
+            return JSON.parse(candidate);
+          } catch {
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function findFirstArray(value: unknown, depth = 0): unknown[] | null {
+  if (depth > 4) return null;
+  if (Array.isArray(value)) return value;
+  if (!isObject(value)) return null;
+
+  const preferredKeys = ["items", "results", "data", "entries", "documents", "pages"];
+  for (const key of preferredKeys) {
+    const candidate = value[key];
+    if (Array.isArray(candidate)) return candidate;
+  }
+
+  for (const nested of Object.values(value)) {
+    const found = findFirstArray(nested, depth + 1);
+    if (found) return found;
+  }
+
+  return null;
+}
+
+function resolveForeachItemsFromSource(
+  sourcePath: string,
+  artifacts: Map<string, NodeArtifact>,
+): unknown[] | null {
+  const direct = resolveArtifactPath(sourcePath, artifacts);
+  const directArray = findFirstArray(direct);
+  if (directArray) return directArray;
+
+  if (typeof direct === "string") {
+    const parsed = tryParseJsonValue(direct);
+    const parsedArray = findFirstArray(parsed);
+    if (parsedArray) return parsedArray;
+  }
+
+  const sourceSegments = sourcePath.split(".").filter((segment) => segment.length > 0);
+  if (sourceSegments.length === 1) {
+    const artifact = artifacts.get(sourceSegments[0]);
+    if (!artifact) return null;
+
+    const outputDataArray = findFirstArray(artifact.output_data);
+    if (outputDataArray) return outputDataArray;
+
+    if (typeof artifact.output_text === "string") {
+      const parsed = tryParseJsonValue(artifact.output_text);
+      const parsedArray = findFirstArray(parsed);
+      if (parsedArray) return parsedArray;
+    }
+  }
+
+  return null;
 }
 
 function interpolateTemplate(template: string, artifacts: Map<string, NodeArtifact>): string {
@@ -1036,12 +1158,12 @@ function expandForeachNodeInPlan(
     };
   }
 
-  const resolved = resolveArtifactPath(node.foreach_from, artifacts);
-  if (!Array.isArray(resolved)) {
+  const resolvedItems = resolveForeachItemsFromSource(node.foreach_from, artifacts);
+  if (!resolvedItems) {
     return {
       node_id: node.id,
       status: "failed",
-      error: `foreach source '${node.foreach_from}' did not resolve to an array.`,
+      error: `foreach source '${node.foreach_from}' did not resolve to an array-compatible value.`,
       started_at,
       ended_at: new Date().toISOString(),
     };
@@ -1051,7 +1173,7 @@ function expandForeachNodeInPlan(
     node.foreach_template.max_items ?? MAX_FOREACH_EXPANSIONS,
     MAX_FOREACH_EXPANSIONS,
   );
-  const items = resolved.slice(0, maxItems);
+  const items = resolvedItems.slice(0, maxItems);
   const existingNodeIds = new Set(plan.nodes.map((entry) => entry.id));
   const childIds: string[] = [];
   const children: WorkflowNode[] = [];
@@ -1140,10 +1262,13 @@ async function executeWorkflowNode(
         };
       }
 
+      const parsedOutputData = tryParseJsonValue(joined);
+
       return {
         node_id: node.id,
         status: "completed",
         output_text: joined,
+        output_data: parsedOutputData ?? undefined,
         started_at,
         ended_at: new Date().toISOString(),
       };
@@ -1212,9 +1337,44 @@ async function executeWave(
   artifacts: Map<string, NodeArtifact>,
   emit?: SessionEmitter,
 ): Promise<NodeArtifact[]> {
+  const targetExecutionKey = (node: WorkflowNode): string => {
+    if (node.kind === "call_agent" && node.target) {
+      return `target:${workflowTargetKey(node.target)}`;
+    }
+    return `node:${node.id}`;
+  };
+
+  const buildBatches = (nodes: WorkflowNode[]): WorkflowNode[][] => {
+    const pending = [...nodes];
+    const batches: WorkflowNode[][] = [];
+
+    while (pending.length > 0) {
+      const usedKeys = new Set<string>();
+      const batch: WorkflowNode[] = [];
+
+      for (let i = 0; i < pending.length && batch.length < MAX_FANOUT_CONCURRENCY; ) {
+        const node = pending[i];
+        const key = targetExecutionKey(node);
+        if (usedKeys.has(key)) {
+          i += 1;
+          continue;
+        }
+        usedKeys.add(key);
+        batch.push(node);
+        pending.splice(i, 1);
+      }
+
+      if (batch.length === 0) {
+        batch.push(pending.shift()!);
+      }
+      batches.push(batch);
+    }
+
+    return batches;
+  };
+
   const outputs: NodeArtifact[] = [];
-  for (let i = 0; i < wave.length; i += MAX_FANOUT_CONCURRENCY) {
-    const batch = wave.slice(i, i + MAX_FANOUT_CONCURRENCY);
+  for (const batch of buildBatches(wave)) {
     if (emit) {
       emit.message(
         `Executing ${batch.length} workflow node(s): ${batch.map((node) => node.id).join(", ")}`,
