@@ -901,6 +901,100 @@ function computeWaves(nodes) {
     }
     return waves;
 }
+function resolvePathFromObject(base, dottedPath) {
+    if (!dottedPath)
+        return base;
+    const segments = dottedPath.split(".").filter((segment) => segment.length > 0);
+    let current = base;
+    for (const segment of segments) {
+        if (!isObject(current))
+            return undefined;
+        current = current[segment];
+    }
+    return current;
+}
+function interpolateItemTemplate(template, item) {
+    return template.replace(/\{\{\s*(item(?:\.[\w]+)*)\s*\}\}/g, (match, expr) => {
+        const path = expr === "item" ? "" : expr.slice("item.".length);
+        const resolved = resolvePathFromObject(item, path);
+        if (resolved === undefined)
+            return match;
+        if (typeof resolved === "string")
+            return resolved.slice(0, MAX_INTERPOLATION_CHARS);
+        try {
+            return JSON.stringify(resolved).slice(0, MAX_INTERPOLATION_CHARS);
+        }
+        catch {
+            return String(resolved).slice(0, MAX_INTERPOLATION_CHARS);
+        }
+    });
+}
+function expandForeachNodeInPlan(plan, node, artifacts) {
+    const started_at = new Date().toISOString();
+    if (!node.foreach_from || !node.foreach_template) {
+        return {
+            node_id: node.id,
+            status: "failed",
+            error: "foreach node missing foreach_from or foreach_template.",
+            started_at,
+            ended_at: new Date().toISOString(),
+        };
+    }
+    const resolved = resolveArtifactPath(node.foreach_from, artifacts);
+    if (!Array.isArray(resolved)) {
+        return {
+            node_id: node.id,
+            status: "failed",
+            error: `foreach source '${node.foreach_from}' did not resolve to an array.`,
+            started_at,
+            ended_at: new Date().toISOString(),
+        };
+    }
+    const maxItems = Math.min(node.foreach_template.max_items ?? MAX_FOREACH_EXPANSIONS, MAX_FOREACH_EXPANSIONS);
+    const items = resolved.slice(0, maxItems);
+    const existingNodeIds = new Set(plan.nodes.map((entry) => entry.id));
+    const childIds = [];
+    const children = [];
+    for (let i = 0; i < items.length; i++) {
+        const childId = `${node.foreach_template.id_prefix}_${i}`;
+        if (existingNodeIds.has(childId)) {
+            return {
+                node_id: node.id,
+                status: "failed",
+                error: `foreach expansion produced duplicate node id: ${childId}.`,
+                started_at,
+                ended_at: new Date().toISOString(),
+            };
+        }
+        existingNodeIds.add(childId);
+        childIds.push(childId);
+        children.push({
+            id: childId,
+            kind: "call_agent",
+            depends_on: [...node.depends_on],
+            target: node.foreach_template.target,
+            prompt_template: interpolateItemTemplate(node.foreach_template.prompt_template, items[i]),
+            rationale: `Expanded from foreach node ${node.id}`,
+        });
+    }
+    plan.nodes.push(...children);
+    for (const downstream of plan.nodes) {
+        if (!downstream.depends_on.includes(node.id))
+            continue;
+        const remainingDeps = downstream.depends_on.filter((depId) => depId !== node.id);
+        downstream.depends_on = Array.from(new Set([...remainingDeps, ...childIds]));
+    }
+    return {
+        node_id: node.id,
+        status: "completed",
+        output_data: {
+            expanded_node_ids: childIds,
+            expanded_count: childIds.length,
+        },
+        started_at,
+        ended_at: new Date().toISOString(),
+    };
+}
 async function executeWorkflowNode(node, artifacts) {
     const started_at = new Date().toISOString();
     try {
@@ -1045,39 +1139,68 @@ function buildWorkflowTranscript(plan, artifacts) {
     return parts.join("\n\n---\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
 }
 async function executeWorkflowPlanPhase3(plan, userText, conversationSummary) {
-    const waves = computeWaves(plan.nodes);
     const artifacts = new Map();
-    for (const wave of waves) {
-        for (const node of wave) {
-            if (artifacts.has(node.id))
-                continue;
-            if (nodeHasFailedDependency(node, artifacts)) {
-                artifacts.set(node.id, {
-                    node_id: node.id,
-                    status: "skipped",
-                    error: "Skipped due to failed dependency.",
-                    started_at: new Date().toISOString(),
-                    ended_at: new Date().toISOString(),
-                });
+    const maxPasses = MAX_WORKFLOW_NODES + MAX_FOREACH_EXPANSIONS + 10;
+    for (let pass = 0; pass < maxPasses; pass++) {
+        let progressed = false;
+        const waves = computeWaves(plan.nodes);
+        for (const wave of waves) {
+            for (const node of wave) {
+                if (artifacts.has(node.id))
+                    continue;
+                if (nodeHasFailedDependency(node, artifacts)) {
+                    artifacts.set(node.id, {
+                        node_id: node.id,
+                        status: "skipped",
+                        error: "Skipped due to failed dependency.",
+                        started_at: new Date().toISOString(),
+                        ended_at: new Date().toISOString(),
+                    });
+                    progressed = true;
+                }
             }
+            for (const node of wave) {
+                if (artifacts.has(node.id))
+                    continue;
+                if (node.kind !== "foreach")
+                    continue;
+                if (!nodeDependenciesCompleted(node, artifacts))
+                    continue;
+                const expansionArtifact = expandForeachNodeInPlan(plan, node, artifacts);
+                artifacts.set(node.id, expansionArtifact);
+                progressed = true;
+            }
+            const ready = wave.filter((node) => {
+                if (artifacts.has(node.id))
+                    return false;
+                if (node.kind === "foreach")
+                    return false;
+                return nodeDependenciesCompleted(node, artifacts);
+            });
+            if (ready.length === 0)
+                continue;
+            const clarifyNode = ready.find((node) => node.kind === "clarify");
+            if (clarifyNode) {
+                return { message: clarifyNode.prompt_template || "Can you clarify your request?" };
+            }
+            const results = await executeWave(ready, artifacts);
+            for (const result of results) {
+                artifacts.set(result.node_id, result);
+            }
+            progressed = true;
         }
-        const ready = wave.filter((node) => {
-            if (artifacts.has(node.id))
-                return false;
-            return nodeDependenciesCompleted(node, artifacts);
-        });
-        if (ready.length === 0)
-            continue;
-        const clarifyNode = ready.find((node) => node.kind === "clarify");
-        if (clarifyNode) {
-            return { message: clarifyNode.prompt_template || "Can you clarify your request?" };
-        }
-        const results = await executeWave(ready, artifacts);
-        for (const result of results) {
-            artifacts.set(result.node_id, result);
-        }
+        const allResolved = plan.nodes.every((node) => isTerminalArtifactStatus(artifacts.get(node.id)?.status || "pending"));
+        if (allResolved)
+            break;
+        if (!progressed)
+            break;
     }
-    const directOnly = plan.nodes.every((node) => node.kind === "direct_answer" || node.kind === "synthesize");
+    const directOnly = plan.nodes.every((node) => {
+        if (node.kind !== "direct_answer" && node.kind !== "synthesize")
+            return false;
+        const status = artifacts.get(node.id)?.status;
+        return status === "completed" || status === "skipped";
+    });
     if (directOnly) {
         const message = plan.nodes
             .map((node) => artifacts.get(node.id)?.output_text)
@@ -1118,11 +1241,6 @@ async function runWorkflowCoordinator(ctx) {
     catch (err) {
         const reason = err instanceof Error ? err.message : String(err);
         return { message: `Workflow planning failed: ${reason}` };
-    }
-    const hasForeach = plan.nodes.some((node) => node.kind === "foreach");
-    if (hasForeach) {
-        // Phase 4 will add foreach expansion.
-        return runLlmCoordinator(ctx);
     }
     return executeWorkflowPlanPhase3(plan, userText, conversationSummary);
 }
