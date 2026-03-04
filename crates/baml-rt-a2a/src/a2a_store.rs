@@ -612,7 +612,7 @@ impl TaskRepository for ProvenanceTaskStore {
     }
 }
 
-fn message_role_string(role: &MessageRole) -> String {
+pub(crate) fn message_role_string(role: &MessageRole) -> String {
     role.as_wire_str().to_string()
 }
 
@@ -624,7 +624,12 @@ fn message_content(message: &Message) -> Vec<String> {
         .collect()
 }
 
-fn validated_message_content(message: &Message, operation: &str) -> Result<Vec<String>> {
+/// Text parts from the message (trimmed, empty lines dropped). Returns an empty vec for
+/// non-text or media-only messages; callers must accept empty for provenance and persistence.
+pub(crate) fn validated_message_content(
+    message: &Message,
+    _operation: &str,
+) -> Result<Vec<String>> {
     let content: Vec<String> = message
         .parts
         .iter()
@@ -632,11 +637,6 @@ fn validated_message_content(message: &Message, operation: &str) -> Result<Vec<S
         .map(|line| line.trim().to_string())
         .filter(|line| !line.is_empty())
         .collect();
-    if content.is_empty() {
-        return Err(BamlRtError::InvalidArgument(format!(
-            "message text content is required for {operation}; refusing empty message provenance"
-        )));
-    }
     Ok(content)
 }
 
@@ -661,7 +661,7 @@ fn message_to_context_item(
     }
 }
 
-fn metadata_string_map(metadata: &HashMap<String, Value>) -> HashMap<String, String> {
+pub(crate) fn metadata_string_map(metadata: &HashMap<String, Value>) -> HashMap<String, String> {
     metadata
         .iter()
         .filter_map(|(key, value)| value.as_str().map(|v| (key.clone(), v.to_string())))

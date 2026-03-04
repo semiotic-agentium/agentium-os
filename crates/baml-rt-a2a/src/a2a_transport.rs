@@ -37,10 +37,11 @@ use crate::{
     a2a,
     a2a_store::{
         ConversationContextSource, ProvenanceTaskStore, TaskChunkApplier, TaskEventRecorder,
-        TaskRepository, TaskStoreBackend, TaskUpdateEvent, TaskUpdateQueue,
+        TaskRepository, TaskStoreBackend, TaskUpdateEvent, TaskUpdateQueue, message_role_string,
+        metadata_string_map, validated_message_content,
     },
     a2a_types::{
-        JSONRPCId, Message, MessageRole, ROLE_USER, StreamChunkView, TaskArtifactUpdateEvent,
+        JSONRPCId, Message, ROLE_USER, StreamChunkView, TaskArtifactUpdateEvent,
         TaskStatusUpdateEvent,
     },
     auto_status::AutoWorkingStatusSubscriber,
@@ -103,33 +104,6 @@ impl GraphqliteRuntimeStore {
         })
     }
 
-    fn message_role_wire(role: &MessageRole) -> String {
-        role.as_wire_str().to_string()
-    }
-
-    fn message_content_strict(message: &Message, operation: &str) -> Result<Vec<String>> {
-        let content: Vec<String> = message
-            .parts
-            .iter()
-            .filter_map(|part| part.text.clone())
-            .map(|line| line.trim().to_string())
-            .filter(|line| !line.is_empty())
-            .collect();
-        if content.is_empty() {
-            return Err(BamlRtError::InvalidArgument(format!(
-                "message text content is required for {operation}; refusing empty message provenance"
-            )));
-        }
-        Ok(content)
-    }
-
-    fn metadata_string_map(metadata: &HashMap<String, Value>) -> HashMap<String, String> {
-        metadata
-            .iter()
-            .filter_map(|(key, value)| value.as_str().map(|v| (key.clone(), v.to_string())))
-            .collect()
-    }
-
     async fn add_provenance_event_required(&self, event: ProvEvent, context: &str) -> Result<()> {
         self.provenance.add_event(event).await.map_err(|source| {
             BamlRtError::InvalidArgumentWithSource {
@@ -145,9 +119,9 @@ impl GraphqliteRuntimeStore {
                 "context_id is required for {operation}; refusing implicit generation"
             ))
         })?;
-        let role = Self::message_role_wire(&message.role);
-        let content = Self::message_content_strict(message, operation)?;
-        let metadata = message.metadata.as_ref().map(Self::metadata_string_map);
+        let role = message_role_string(&message.role);
+        let content = validated_message_content(message, operation)?;
+        let metadata = message.metadata.as_ref().map(metadata_string_map);
         tracing::debug!(
             context_id = %context_id,
             message_id = %message.message_id.as_message_id(),
