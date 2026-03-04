@@ -3,7 +3,7 @@
 use std::{collections::VecDeque, sync::Arc};
 
 use async_trait::async_trait;
-use baml_rt_core::{A2aRequestHandler, A2aWireRequest, Result};
+use baml_rt_core::{A2aRequestHandler, A2aWireRequest, Result, context, ids::TaskId};
 use baml_rt_tools::{
     BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
     ToolSession, ToolSessionError, ToolStep,
@@ -81,6 +81,8 @@ impl ToolHandler for A2aSessionToolHandler {
             queue: VecDeque::new(),
             output_rx: None,
             stream_handle: None,
+            seen_output: false,
+            empty_stream_notice_emitted: false,
             closed: false,
         }))
     }
@@ -95,6 +97,8 @@ struct A2aSession {
     /// JoinHandle for the task that consumes the A2A stream. Aborted in Drop so the task
     /// does not outlive the session and trigger "context is being shutdown" panics.
     stream_handle: Option<JoinHandle<()>>,
+    seen_output: bool,
+    empty_stream_notice_emitted: bool,
     closed: bool,
 }
 
@@ -130,7 +134,12 @@ fn build_send_stream_request(
     parts: Vec<ConversationPart>,
     target: &InternalA2aTarget,
     context_id: &baml_rt_core::ids::ContextId,
+    parent_task_id: Option<&TaskId>,
 ) -> Value {
+    let child_task_id = format!("a2a-child-{}", uuid::Uuid::new_v4());
+    let reference_task_ids = parent_task_id
+        .map(|task_id| vec![task_id.as_str().to_string()])
+        .unwrap_or_default();
     serde_json::json!({
         "jsonrpc": "2.0",
         "method": "message.sendStream",
@@ -140,7 +149,9 @@ fn build_send_stream_request(
                 "messageId": format!("system-a2a-{}", uuid::Uuid::new_v4()),
                 "role": "ROLE_USER",
                 "parts": parts,
-                "contextId": context_id.as_str()
+                "contextId": context_id.as_str(),
+                "taskId": child_task_id,
+                "referenceTaskIds": reference_task_ids
             },
             "metadata": {
                 "target": {
@@ -150,6 +161,12 @@ fn build_send_stream_request(
             }
         }
     })
+}
+
+fn current_parent_task_id() -> Option<TaskId> {
+    context::current_scope()
+        .ok()
+        .and_then(|scope| scope.task_id_opt().cloned())
 }
 
 fn extract_chunk_value(value: Value) -> Value {
@@ -279,7 +296,13 @@ impl ToolSession for A2aSession {
                 "system/internal_a2a session: send only valid once after open".to_string(),
             )));
         }
-        let request = build_send_stream_request(parts, &self.target, &self.ctx.context_id);
+        let parent_task_id = current_parent_task_id();
+        let request = build_send_stream_request(
+            parts,
+            &self.target,
+            &self.ctx.context_id,
+            parent_task_id.as_ref(),
+        );
         let handler = self.handler.clone();
         let (tx, rx) = async_channel::unbounded::<InternalA2aNextOutput>();
         self.output_rx = Some(rx);
@@ -358,6 +381,7 @@ impl ToolSession for A2aSession {
             } else {
                 ToolStep::Streaming { output: value }
             };
+            self.seen_output = true;
             return Ok(step);
         }
         if let Some(rx) = &self.output_rx {
@@ -382,10 +406,39 @@ impl ToolSession for A2aSession {
                     } else {
                         ToolStep::Streaming { output: value }
                     };
+                    self.seen_output = true;
                     return Ok(step);
                 }
                 Err(_) => {
                     self.output_rx = None;
+                    if !self.seen_output && !self.empty_stream_notice_emitted {
+                        self.empty_stream_notice_emitted = true;
+                        let out = InternalA2aNextOutput {
+                            chunks: vec![ConversationChunk {
+                                message: Some(ConversationMessage {
+                                    role: None,
+                                    parts: vec![ConversationPart {
+                                        text: Some(
+                                            "system/internal_a2a stream ended without output"
+                                                .to_string(),
+                                        ),
+                                        ..Default::default()
+                                    }],
+                                }),
+                                task: None,
+                                status_update: None,
+                                artifact_update: None,
+                            }],
+                            completion: None,
+                        };
+                        let value = serde_json::to_value(&out).map_err(|e| {
+                            ToolSessionError::Tool(ToolFailure::execution_failed(format!(
+                                "Invalid A2A output: {error}",
+                                error = e
+                            )))
+                        })?;
+                        return Ok(ToolStep::Streaming { output: value });
+                    }
                 }
             }
         }
