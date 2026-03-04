@@ -167,7 +167,7 @@ async fn discover_tools_session_returns_search_results() {
                 .filter_map(|t| t.get("name").and_then(|v| v.as_str()))
                 .collect();
             assert!(
-                names.iter().any(|n| *n == "support/calculate"),
+                names.contains(&"support/calculate"),
                 "expected support/calculate in {:?}",
                 names
             );

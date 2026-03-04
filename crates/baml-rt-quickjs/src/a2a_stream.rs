@@ -206,7 +206,7 @@ async fn run_stream_same_thread(
     mut relay_rx: Option<mpsc::Receiver<Value>>,
 ) {
     let mut guard = bridge.lock().await;
-    let ready = match begin_a2a_yield_session(&mut *guard).await {
+    let ready = match begin_a2a_yield_session(&mut guard).await {
         Ok(r) => r,
         Err(e) => {
             let _ = tx_err
