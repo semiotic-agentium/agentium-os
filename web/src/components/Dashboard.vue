@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
-import type { AgentDiscoveryEntry, ContextMetricsResponse } from "../types/a2a";
+import type { AgentDiscoveryEntry, ChatMessage, ContextMetricsResponse } from "../types/a2a";
 import { useMermaidRenderer } from "../composables/useMermaidRenderer";
 import { useTheme } from "../composables/useTheme";
+import InterpretationPanel from "./InterpretationPanel.vue";
 
 const props = defineProps<{
   agents: AgentDiscoveryEntry[];
   contextMetrics: ContextMetricsResponse | null;
   provenanceDiagram: string;
+  messages: ChatMessage[];
 }>();
 
 // ── Agent inventory (fully dynamic from discovery API) ──
@@ -170,7 +172,7 @@ function shortToolName(tool: string): string {
       </div>
     </div>
 
-    <!-- ── Bottom row: agent table + session metrics ── -->
+    <!-- ── Bottom row: agent table + session metrics + interpretation ── -->
     <div class="dashboard-grid-bottom">
       <!-- Agent Inventory Table -->
       <div class="dashboard-card">
@@ -333,6 +335,8 @@ function shortToolName(tool: string): string {
           </div>
         </div>
       </div>
+      <!-- Interpretation Panel -->
+      <InterpretationPanel :messages="messages" />
     </div>
     <!-- Provenance diagram modal -->
     <Teleport to="body">

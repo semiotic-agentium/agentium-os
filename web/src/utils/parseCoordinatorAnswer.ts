@@ -4,6 +4,9 @@ export interface ParsedCoordinatorAnswer {
   sources: string[];
   actionableGoals: { goal: string; owner?: string; dueDate?: string }[];
   gaps: string[];
+  decisions: string[];
+  risks: string[];
+  followUps: string[];
   clarificationQuestion: string | null;
 }
 
@@ -58,10 +61,26 @@ export function parseCoordinatorAnswer(text: string): ParsedCoordinatorAnswer | 
     (g) => g !== "None observed" && g.length > 0,
   );
 
+  const decisions = parseBulletList(sections["decisions"] ?? "").filter(
+    (d) => !d.startsWith("None") && d.length > 0,
+  );
+
+  const risksKey = Object.keys(sections).find((k) => k.startsWith("risk"));
+  const risks = parseBulletList(sections[risksKey ?? ""] ?? "").filter(
+    (r) => !r.startsWith("None") && r.length > 0,
+  );
+
+  const followUpsKey = Object.keys(sections).find(
+    (k) => k.startsWith("follow") || k.startsWith("next steps"),
+  );
+  const followUps = parseBulletList(sections[followUpsKey ?? ""] ?? "").filter(
+    (f) => !f.startsWith("None") && f.length > 0,
+  );
+
   const clarLines = parseBulletList(sections["clarification"] ?? "");
   const clarificationQuestion = clarLines.length > 0 ? clarLines.join(" ") : null;
 
-  return { answer, confidence, sources, actionableGoals, gaps, clarificationQuestion };
+  return { answer, confidence, sources, actionableGoals, gaps, decisions, risks, followUps, clarificationQuestion };
 }
 
 function splitSections(text: string): Record<string, string> {

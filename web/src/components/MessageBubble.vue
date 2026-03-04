@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import type { ChatMessage, ContentBlock } from "../types/a2a";
+import TaskTimeline from "./TaskTimeline.vue";
 import ToolNotificationCard from "./ToolNotificationCard.vue";
 import {
   parseCoordinatorAnswer,
@@ -162,6 +163,7 @@ const showGaps = ref(false);
         </div>
       </div>
 
+      <TaskTimeline v-if="message.stateTransitions?.length" :transitions="message.stateTransitions" />
       <span class="message-time">{{ formatTime(props.message.timestamp) }}</span>
     </div>
   </div>

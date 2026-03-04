@@ -168,4 +168,27 @@ export interface ChatMessage {
   inputRequiredPrompt?: string;
   /** A2A message metadata (if present in the inbound message) */
   metadata?: Record<string, unknown>;
+  /** Task state transitions recorded during SSE streaming */
+  stateTransitions?: StateTransition[];
+}
+
+/** Workflow phase tracker — parsed from coordinator SSE progress messages */
+export type WorkflowPhaseName = "discovery" | "planning" | "execution" | "synthesis" | "idle";
+
+export interface WorkflowNodeStatus {
+  name: string;
+  status: "pending" | "running" | "completed" | "failed";
+}
+
+export interface WorkflowProgressState {
+  phase: WorkflowPhaseName;
+  iteration?: number;
+  nodes: WorkflowNodeStatus[];
+  completedNodes: string[];
+}
+
+/** State transition for task timeline */
+export interface StateTransition {
+  state: string;
+  timestamp: Date;
 }

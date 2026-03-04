@@ -16,6 +16,7 @@ const {
   isLoading,
   provenanceDiagram,
   contextMetrics,
+  workflowProgress,
   awaitingInput,
   inputRequiredPrompt,
   fetchAgents,
@@ -51,7 +52,7 @@ onMounted(() => fetchAgents());
     />
 
     <div class="app-content-area">
-      <Dashboard v-show="view === 'dashboard'" :agents="agents" :context-metrics="contextMetrics" :provenance-diagram="provenanceDiagram" />
+      <Dashboard v-show="view === 'dashboard'" :agents="agents" :context-metrics="contextMetrics" :provenance-diagram="provenanceDiagram" :messages="messages" />
 
       <div v-show="view === 'chat'" class="chat-layout">
         <div class="chat-toolbar">
@@ -66,6 +67,7 @@ onMounted(() => fetchAgents());
             :disabled="!selectedAgent"
             :awaiting-input="awaitingInput"
             :input-required-prompt="inputRequiredPrompt"
+            :workflow-progress="workflowProgress"
             @send="sendMessage"
           />
         </div>

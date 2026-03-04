@@ -9,6 +9,7 @@ import type {
   ToolCompletion,
   ToolEvent,
   ToolNotificationBlock,
+  WorkflowProgressState,
 } from "../types/a2a";
 
 let counter = 0;
@@ -154,6 +155,9 @@ export function useA2aClient() {
   // Context metrics (fetched after each response)
   const contextMetrics = ref<ContextMetricsResponse | null>(null);
 
+  // Workflow progress tracker (parsed from coordinator SSE progress messages)
+  const workflowProgress = ref<WorkflowProgressState>({ phase: "idle", nodes: [], completedNodes: [] });
+
   // Provenance diagram source (raw mermaid text fetched after each response)
   const provenanceDiagram = ref<string>("");
   /** Throttle diagram refetch during stream (ms); updated on each fetch */
@@ -175,6 +179,49 @@ export function useA2aClient() {
     taskId = undefined;
     provenanceDiagram.value = "";
     contextMetrics.value = null;
+    workflowProgress.value = { phase: "idle", nodes: [], completedNodes: [] };
+  }
+
+  function updateWorkflowPhase(text: string): void {
+    if (/discovering available/i.test(text)) {
+      workflowProgress.value = { phase: "discovery", nodes: [], completedNodes: workflowProgress.value.completedNodes };
+    } else if (/planning workflow/i.test(text)) {
+      const iterMatch = text.match(/iteration\s+(\d+)/i);
+      workflowProgress.value = {
+        phase: "planning",
+        iteration: iterMatch ? parseInt(iterMatch[1]!, 10) : undefined,
+        nodes: [],
+        completedNodes: workflowProgress.value.completedNodes,
+      };
+    } else if (/executing\s+\d+\s+workflow\s+node/i.test(text)) {
+      const nodeListMatch = text.match(/node\(s\):\s*(.+)/i);
+      const nodeNames = nodeListMatch
+        ? nodeListMatch[1]!.split(",").map((n) => n.trim()).filter((n) => n.length > 0)
+        : [];
+      const prev = workflowProgress.value;
+      workflowProgress.value = {
+        phase: "execution",
+        nodes: nodeNames.map((name) => ({
+          name,
+          status: prev.completedNodes.includes(name) ? "completed" as const : "running" as const,
+        })),
+        completedNodes: prev.completedNodes,
+      };
+    } else if (/synthesiz/i.test(text) || /compiling final/i.test(text)) {
+      workflowProgress.value = { phase: "synthesis", nodes: [], completedNodes: workflowProgress.value.completedNodes };
+    }
+  }
+
+  function markWorkflowNodeCompleted(toolName: string): void {
+    const wp = workflowProgress.value;
+    if (wp.phase !== "execution") return;
+    const node = wp.nodes.find((n) => toolName.toLowerCase().includes(n.name.toLowerCase()));
+    if (node && node.status !== "completed") {
+      node.status = "completed";
+      if (!wp.completedNodes.includes(node.name)) {
+        wp.completedNodes.push(node.name);
+      }
+    }
   }
 
   async function sendMessage(text: string): Promise<void> {
@@ -215,6 +262,7 @@ export function useA2aClient() {
     };
 
     isLoading.value = true;
+    workflowProgress.value = { phase: "idle", nodes: [], completedNodes: [] };
 
     // Placeholder for streaming agent response (contentBlocks updated incrementally from stream)
     const agentMsgId = nextId("agent-msg");
@@ -353,6 +401,9 @@ export function useA2aClient() {
         if (completion) block.completion = completion;
         block.status = deriveToolStatus(block);
       });
+      if (completion === "DONE" && baseName) {
+        markWorkflowNodeCompleted(baseName);
+      }
     } else if (result.toolStreamChunk && toolChunk) {
       // Phase chunk: toolStreamChunk true but no tool payload — statusUpdate.message only
       const statusText =
@@ -362,6 +413,7 @@ export function useA2aClient() {
       const trimmed = statusText?.trim();
       // Skip "Invoking tool: X" in the phase block — the tool has its own block; keeps order correct (phase after tool)
       if (trimmed && !trimmed.match(/^Invoking tool: /)) {
+        updateWorkflowPhase(trimmed);
         updateMessage(messages, agentMsgId, (msg) => {
           ensureContentBlocks(msg);
           const block = getOrCreatePhaseBlockForAppend(msg);
@@ -390,6 +442,19 @@ export function useA2aClient() {
 
     // Check terminal state (state can be in task.status or nested statusUpdate.status_update.status)
     const state = getStateFromChunk(chunk);
+
+    // Record state transitions for the task timeline
+    if (state) {
+      updateMessage(messages, agentMsgId, (msg) => {
+        if (!msg.stateTransitions) msg.stateTransitions = [];
+        // Avoid duplicate consecutive states
+        const last = msg.stateTransitions[msg.stateTransitions.length - 1];
+        if (!last || last.state !== state) {
+          msg.stateTransitions.push({ state, timestamp: new Date() });
+        }
+      });
+    }
+
     if (
       state === "TASK_STATE_COMPLETED" ||
       state === "TASK_STATE_FAILED" ||
@@ -399,6 +464,7 @@ export function useA2aClient() {
       updateMessage(messages, agentMsgId, (msg) => {
         msg.isStreaming = false;
       });
+      workflowProgress.value = { phase: "idle", nodes: [], completedNodes: [] };
     }
     // Input required: stream suspended (no final); agent waiting for user reply.
     if (state === "TASK_STATE_INPUT_REQUIRED") {
@@ -476,6 +542,7 @@ export function useA2aClient() {
     isLoading,
     provenanceDiagram,
     contextMetrics,
+    workflowProgress,
     contextId: computed(() => _contextId.value),
     awaitingInput,
     inputRequiredPrompt,
