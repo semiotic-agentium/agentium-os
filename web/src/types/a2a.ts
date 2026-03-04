@@ -1,9 +1,53 @@
+/** Agent card nested in discovery response */
+export interface AgentCardInfo {
+  name: string;
+  version: string;
+  agent_package: string;
+  agent_instance_id: string;
+  tools: string[];
+  description?: string | null;
+  capabilities: string[];
+}
+
 /** Agent discovery entry from GET /agents */
 export interface AgentDiscoveryEntry {
   agent_package: string;
   agent_instance_id: string;
   name: string;
   version: string;
+  agent_card: AgentCardInfo;
+}
+
+/** Token usage counts from metrics API */
+export interface TokenUsage {
+  in: number;
+  out: number;
+  total: number;
+}
+
+/** Per-turn metrics from GET /contexts/{context_id}/metrics */
+export interface TurnMetrics {
+  message_id: string;
+  user_prompt_count: number;
+  llm_call_count: number;
+  llm_duration_ms_total: number;
+  tokens: TokenUsage;
+}
+
+/** Session aggregate metrics */
+export interface SessionMetrics {
+  turns_total: number;
+  user_prompts_total: number;
+  llm_calls_total: number;
+  llm_duration_ms_total: number;
+  tokens_total: TokenUsage;
+}
+
+/** Response from GET /contexts/{context_id}/metrics */
+export interface ContextMetricsResponse {
+  context_id: string;
+  turns: TurnMetrics[];
+  session: SessionMetrics;
 }
 
 /** A2A message part */
@@ -122,4 +166,6 @@ export interface ChatMessage {
   awaitingInput?: boolean;
   /** Optional prompt from the agent (e.g. from awaitInput(prompt)); show as hint/placeholder */
   inputRequiredPrompt?: string;
+  /** A2A message metadata (if present in the inbound message) */
+  metadata?: Record<string, unknown>;
 }

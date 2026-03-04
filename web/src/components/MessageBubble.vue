@@ -1,6 +1,13 @@
 <script setup lang="ts">
+import { computed, ref } from "vue";
 import type { ChatMessage, ContentBlock } from "../types/a2a";
 import ToolNotificationCard from "./ToolNotificationCard.vue";
+import {
+  parseCoordinatorAnswer,
+  safeHostname,
+  isUrl,
+  type ParsedCoordinatorAnswer,
+} from "../utils/parseCoordinatorAnswer";
 
 const props = withDefaults(
   defineProps<{ message: ChatMessage; showInlineStreamingDots?: boolean }>(),
@@ -14,6 +21,25 @@ function formatTime(date: Date): string {
 function isToolBlock(block: ContentBlock): block is import("../types/a2a").ToolNotificationBlock {
   return block.type === "tool";
 }
+
+// Coordinator metadata parsing (only for finished agent messages)
+const coordinatorData = computed((): ParsedCoordinatorAnswer | null => {
+  if (props.message.role !== "agent") return null;
+  if (props.message.isStreaming) return null;
+  if (!props.message.text) return null;
+  return parseCoordinatorAnswer(props.message.text);
+});
+
+const confidenceClass = computed(() => {
+  const c = coordinatorData.value?.confidence;
+  if (c == null) return "";
+  if (c >= 0.7) return "confidence-high";
+  if (c >= 0.4) return "confidence-medium";
+  return "confidence-low";
+});
+
+const showGoals = ref(false);
+const showGaps = ref(false);
 </script>
 
 <template>
@@ -82,6 +108,60 @@ function isToolBlock(block: ContentBlock): block is import("../types/a2a").ToolN
           </div>
         </div>
       </template>
+      <!-- Coordinator metadata footer (parsed from structured text) -->
+      <div v-if="coordinatorData" class="coordinator-meta">
+        <div v-if="coordinatorData.confidence !== null" class="coordinator-confidence">
+          <span :class="['confidence-badge', confidenceClass]">
+            Confidence: {{ (coordinatorData.confidence * 100).toFixed(0) }}%
+          </span>
+        </div>
+
+        <div v-if="coordinatorData.sources.length > 0" class="coordinator-sources">
+          <span class="coordinator-section-label">Sources</span>
+          <div class="source-chips">
+            <template v-for="src in coordinatorData.sources" :key="src">
+              <a
+                v-if="isUrl(src)"
+                :href="src"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="source-chip"
+              >
+                {{ safeHostname(src) }}
+              </a>
+              <span v-else class="source-chip">{{ src }}</span>
+            </template>
+          </div>
+        </div>
+
+        <div v-if="coordinatorData.actionableGoals.length > 0" class="coordinator-collapsible">
+          <button class="collapsible-toggle" @click="showGoals = !showGoals">
+            {{ showGoals ? '\u25BE' : '\u25B8' }} Goals ({{ coordinatorData.actionableGoals.length }})
+          </button>
+          <ul v-if="showGoals" class="coordinator-list">
+            <li v-for="(g, i) in coordinatorData.actionableGoals" :key="i">
+              {{ g.goal }}
+              <span v-if="g.owner" class="goal-meta">Owner: {{ g.owner }}</span>
+              <span v-if="g.dueDate" class="goal-meta">Due: {{ g.dueDate }}</span>
+            </li>
+          </ul>
+        </div>
+
+        <div v-if="coordinatorData.gaps.length > 0" class="coordinator-collapsible">
+          <button class="collapsible-toggle" @click="showGaps = !showGaps">
+            {{ showGaps ? '\u25BE' : '\u25B8' }} Gaps ({{ coordinatorData.gaps.length }})
+          </button>
+          <ul v-if="showGaps" class="coordinator-list">
+            <li v-for="(gap, i) in coordinatorData.gaps" :key="i">{{ gap }}</li>
+          </ul>
+        </div>
+
+        <div v-if="coordinatorData.clarificationQuestion" class="coordinator-clarification">
+          <span class="coordinator-section-label">Clarification needed</span>
+          <p>{{ coordinatorData.clarificationQuestion }}</p>
+        </div>
+      </div>
+
       <span class="message-time">{{ formatTime(props.message.timestamp) }}</span>
     </div>
   </div>

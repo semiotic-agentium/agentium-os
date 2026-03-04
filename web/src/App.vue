@@ -15,6 +15,7 @@ const {
   messages,
   isLoading,
   provenanceDiagram,
+  contextMetrics,
   awaitingInput,
   inputRequiredPrompt,
   fetchAgents,
@@ -50,7 +51,7 @@ onMounted(() => fetchAgents());
     />
 
     <div class="app-content-area">
-      <Dashboard v-show="view === 'dashboard'" :agents="agents" />
+      <Dashboard v-show="view === 'dashboard'" :agents="agents" :context-metrics="contextMetrics" :provenance-diagram="provenanceDiagram" />
 
       <div v-show="view === 'chat'" class="chat-layout">
         <div class="chat-toolbar">

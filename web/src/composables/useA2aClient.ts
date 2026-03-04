@@ -3,6 +3,7 @@ import type {
   AgentDiscoveryEntry,
   ChatMessage,
   ContentBlock,
+  ContextMetricsResponse,
   JSONRPCResponse,
   ChunkPayload,
   ToolCompletion,
@@ -147,8 +148,11 @@ export function useA2aClient() {
   const isLoading = ref(false);
 
   // Multi-turn conversation state
-  let contextId: string | undefined;
+  const _contextId = ref<string | undefined>();
   let taskId: string | undefined;
+
+  // Context metrics (fetched after each response)
+  const contextMetrics = ref<ContextMetricsResponse | null>(null);
 
   // Provenance diagram source (raw mermaid text fetched after each response)
   const provenanceDiagram = ref<string>("");
@@ -167,9 +171,10 @@ export function useA2aClient() {
   function selectAgent(agent: AgentDiscoveryEntry): void {
     selectedAgent.value = agent;
     messages.value = [];
-    contextId = undefined;
+    _contextId.value = undefined;
     taskId = undefined;
     provenanceDiagram.value = "";
+    contextMetrics.value = null;
   }
 
   async function sendMessage(text: string): Promise<void> {
@@ -199,7 +204,7 @@ export function useA2aClient() {
       role: "user",
       parts: [{ text: text.trim() }],
     };
-    if (contextId) message.contextId = contextId;
+    if (_contextId.value) message.contextId = _contextId.value;
     if (taskId) message.taskId = taskId;
 
     const request = {
@@ -234,7 +239,7 @@ export function useA2aClient() {
       }
 
       await readSSEStream(response.body, agentMsgId);
-      await fetchProvenanceDiagram();
+      await Promise.all([fetchProvenanceDiagram(), fetchContextMetrics()]);
     } catch (err) {
       updateMessage(messages, agentMsgId, (msg) => {
         msg.text = `Error: ${err}`;
@@ -271,7 +276,7 @@ export function useA2aClient() {
             // Yield so the UI can paint incrementally as chunks arrive (not only when stream ends)
             await new Promise((resolve) => setTimeout(resolve, 0));
             // Refresh provenance diagram as tool/message updates arrive (throttled)
-            if (contextId && Date.now() - lastDiagramFetchAt >= diagramThrottleMs) {
+            if (_contextId.value && Date.now() - lastDiagramFetchAt >= diagramThrottleMs) {
               lastDiagramFetchAt = Date.now();
               await fetchProvenanceDiagram();
             }
@@ -306,7 +311,7 @@ export function useA2aClient() {
     // Track multi-turn state (task and statusUpdate both carry contextId/taskId)
     const ctx = chunk.task?.contextId ?? chunk.statusUpdate?.status_update?.contextId ?? chunk.statusUpdate?.statusUpdate?.contextId;
     const tid = chunk.task?.id ?? chunk.statusUpdate?.taskId ?? chunk.statusUpdate?.status_update?.taskId ?? chunk.statusUpdate?.statusUpdate?.taskId;
-    if (ctx) contextId = ctx;
+    if (ctx) _contextId.value = ctx;
     if (tid) taskId = tid;
 
     // Shape: toolStreamChunk chunks split into two kinds.
@@ -434,12 +439,24 @@ export function useA2aClient() {
   }
 
   async function fetchProvenanceDiagram(): Promise<void> {
-    if (!contextId) return;
+    if (!_contextId.value) return;
     try {
-      const res = await fetch(`/mermaid/context/${contextId}`);
+      const res = await fetch(`/mermaid/context/${_contextId.value}`);
       if (res.ok) provenanceDiagram.value = await res.text();
     } catch {
       // provenance endpoint not available; leave existing diagram
+    }
+  }
+
+  async function fetchContextMetrics(): Promise<void> {
+    if (!_contextId.value) return;
+    try {
+      const res = await fetch(`/contexts/${_contextId.value}/metrics`);
+      if (res.ok) {
+        contextMetrics.value = await res.json();
+      }
+    } catch {
+      // metrics endpoint not available; leave existing data
     }
   }
 
@@ -458,6 +475,8 @@ export function useA2aClient() {
     messages,
     isLoading,
     provenanceDiagram,
+    contextMetrics,
+    contextId: computed(() => _contextId.value),
     awaitingInput,
     inputRequiredPrompt,
     fetchAgents,
