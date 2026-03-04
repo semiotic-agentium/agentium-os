@@ -1174,8 +1174,9 @@ fn resolve_scope_for_outcome(
     match ctx {
         OutcomeInvocationContext::Standalone => parsed.resolved_scope.clone(),
         OutcomeInvocationContext::LiveSessionFirstTurn { context_id } => {
-            // Never use message.task_id from wire (could be coordinator's); use synthetic for first turn.
-            let task_id = TaskId::from_external(ExternalId::new(context_id.as_str().to_string()));
+            let task_id = parsed.task_id_opt().cloned().unwrap_or_else(|| {
+                TaskId::from_external(ExternalId::new(context_id.as_str().to_string()))
+            });
             RequestScope::TaskScoped {
                 context_id: context_id.clone(),
                 message_id: parsed.message_id().clone(),
@@ -1255,7 +1256,8 @@ impl A2aAgent {
         parsed: a2a::A2aRequest,
     ) -> Result<BusStream<A2aStreamChunk>> {
         let context_id = parsed.context_id().clone();
-        let session_key = LiveStreamSessionKey::from_context_id(&context_id);
+        let session_key =
+            LiveStreamSessionKey::from_context_and_task(&context_id, parsed.task_id_opt());
 
         let (response_tx, response_rx) = async_channel::unbounded::<LiveResponseChunk>();
 
