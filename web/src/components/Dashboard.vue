@@ -334,10 +334,8 @@ function shortToolName(tool: string): string {
         </div>
       </div>
     </div>
-  </div>
-
-  <!-- Provenance diagram modal -->
-  <Teleport to="body">
+    <!-- Provenance diagram modal -->
+    <Teleport to="body">
     <div
       v-if="expandedDiagram && renderedDiagrams[0] && !renderedDiagrams[0].error"
       class="diagram-modal-overlay"
@@ -363,5 +361,6 @@ function shortToolName(tool: string): string {
         <div class="diagram-modal-body" v-html="renderedDiagrams[0].svg" />
       </div>
     </div>
-  </Teleport>
+    </Teleport>
+  </div>
 </template>
