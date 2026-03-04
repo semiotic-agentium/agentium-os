@@ -396,18 +396,34 @@ impl ToolSessionExecutionHandle {
     /// Find an existing open session for this context and tool, if any.
     /// Used when the coordinator returns a continuation plan (e.g. [Send, Next]) so we reuse
     /// the same session instead of auto-inserting Open and creating a new one.
+    ///
+    /// **Task-aware:** When the scope is `TaskScope`, the match also requires the same `task_id`
+    /// to prevent parallel child branches from hijacking each other's sessions under the same
+    /// `context_id`. For `MessageScope`, existing `(context_id, tool_name)` behavior is preserved.
     async fn find_existing_session_for_scope_and_tool(
         &self,
         scope: &context::RuntimeScope,
         tool_name: &str,
     ) -> Option<ToolSessionId> {
         let context_id = scope.context_id();
+        let task_id = scope.task_id_opt();
         let scopes = self.tool_session_scopes.lock().await;
         for (sid, session_scope) in scopes.iter() {
-            if session_scope.tool_name == tool_name
-                && session_scope.scope.context_id() == context_id
-            {
-                return Some(sid.clone());
+            if session_scope.tool_name != tool_name {
+                continue;
+            }
+            if session_scope.scope.context_id() != context_id {
+                continue;
+            }
+            match task_id {
+                // TaskScope: must also match task_id to prevent cross-branch reuse
+                Some(tid) => {
+                    if session_scope.scope.task_id_opt() == Some(tid) {
+                        return Some(sid.clone());
+                    }
+                }
+                // MessageScope: existing behavior — match by context_id only
+                None => return Some(sid.clone()),
             }
         }
         None
@@ -422,6 +438,25 @@ impl ToolSessionExecutionHandle {
         scopes
             .iter()
             .filter(|(_, s)| s.scope.context_id() == context_id)
+            .map(|(sid, _)| sid.clone())
+            .collect()
+    }
+
+    /// Collect session IDs whose scope matches both `context_id` AND `task_id`.
+    /// For task-scoped teardown: only targets sessions belonging to a specific child branch,
+    /// leaving sibling branches' sessions untouched.
+    pub async fn collect_session_ids_for_task_scope(
+        &self,
+        context_id: &baml_rt_core::ids::ContextId,
+        task_id: &baml_rt_core::ids::TaskId,
+    ) -> Vec<ToolSessionId> {
+        let scopes = self.tool_session_scopes.lock().await;
+        scopes
+            .iter()
+            .filter(|(_, s)| {
+                s.scope.context_id() == context_id
+                    && s.scope.task_id_opt() == Some(task_id)
+            })
             .map(|(sid, _)| sid.clone())
             .collect()
     }
@@ -1327,15 +1362,31 @@ impl BamlRuntimeManager {
         &self,
         context_id: &baml_rt_core::ids::ContextId,
     ) -> Result<()> {
-        let to_close = self
-            .tool_session_handle()
-            .collect_session_ids_for_context(context_id)
-            .await;
+        self.close_sessions_for_scope(context_id, None).await
+    }
+
+    /// Close tool sessions scoped to a specific task branch, or all sessions for the context
+    /// when `task_id` is `None` (legacy/message-scope).
+    ///
+    /// **Task-scoped teardown:** When `task_id` is `Some`, only sessions whose scope matches
+    /// *both* `context_id` and `task_id` are closed. This prevents parallel sibling branches
+    /// from having their sessions torn down when one branch finalizes.
+    pub async fn close_sessions_for_scope(
+        &self,
+        context_id: &baml_rt_core::ids::ContextId,
+        task_id: Option<&baml_rt_core::ids::TaskId>,
+    ) -> Result<()> {
+        let handle = self.tool_session_handle();
+        let to_close = match task_id {
+            Some(tid) => handle.collect_session_ids_for_task_scope(context_id, tid).await,
+            None => handle.collect_session_ids_for_context(context_id).await,
+        };
         for id in &to_close {
             if let Err(e) = self.tool_session_finish(id).await {
                 tracing::warn!(
                     session_id = %id,
                     context_id = %context_id,
+                    task_id = ?task_id,
                     error = %e,
                     "Teardown: tool session finish failed",
                 );
@@ -1344,8 +1395,9 @@ impl BamlRuntimeManager {
         if !to_close.is_empty() {
             tracing::debug!(
                 context_id = %context_id,
+                task_id = ?task_id,
                 count = to_close.len(),
-                "Teardown: closed tool sessions for context",
+                "Teardown: closed tool sessions for scope",
             );
         }
         Ok(())

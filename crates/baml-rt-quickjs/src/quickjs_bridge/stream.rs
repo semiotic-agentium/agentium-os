@@ -208,21 +208,27 @@ impl QuickJSBridge {
 
     /// Finalize a stream invocation after chunk collection completes.
     ///
-    /// **Lifecycle:** Close session, teardown tool sessions for this context, exit its LIFO
-    /// context, remove session (drops permit) and its yield sender. Restore global JS helpers
-    /// only when no streams remain.
+    /// **Lifecycle:** Close session, teardown tool sessions for this task scope (or context),
+    /// exit its LIFO context, remove session (drops permit) and its yield sender.
+    ///
+    /// **Task-scoped teardown:** When the session's scope is `TaskScope`, only tool sessions
+    /// belonging to this specific task branch are closed. Sibling branches sharing the same
+    /// `context_id` are left untouched. For `MessageScope`, all sessions for the context are
+    /// closed (legacy behavior).
     pub(crate) async fn finalize_a2a_stream_invocation(&mut self, session_id: StreamSessionId) {
-        // --- 1. Resolve runtime context_id for teardown (read-only; don't close session yet) ---
+        // --- 1. Resolve runtime scope for teardown (read-only; don't close session yet) ---
         let invocation_context_id = self
             .stream_sessions
             .lock()
             .ok()
             .and_then(|g| g.get(&session_id).and_then(|s| s.context_id.clone()));
-        let runtime_context_id = invocation_context_id.as_ref().and_then(|id| {
+
+        // Extract the full scope from the registry so we have both context_id and task_id.
+        let runtime_scope = invocation_context_id.as_ref().and_then(|id| {
             self.invocation_context_registry
                 .lock()
                 .ok()
-                .and_then(|reg| reg.get_context_id(id))
+                .and_then(|reg| reg.get_scope(id))
         });
 
         // --- 2. Drain event-loop pending jobs so any __baml_invoke (and other) continuations
@@ -240,15 +246,18 @@ impl QuickJSBridge {
             session.cancel.cancel();
         }
 
-        // --- 4. Close all tool sessions for this context (deterministic teardown, no leak) ---
-        if let Some(ref cid) = runtime_context_id {
+        // --- 4. Close tool sessions for this task scope (or full context for message-scope) ---
+        if let Some(ref scope) = runtime_scope {
+            let cid = scope.context_id();
+            let task_id = scope.task_id_opt();
             let mgr = self.baml_manager.lock().await;
-            if let Err(e) = mgr.close_sessions_for_context(cid).await {
+            if let Err(e) = mgr.close_sessions_for_scope(cid, task_id).await {
                 tracing::warn!(
                     error = %e,
                     %session_id,
                     context_id = %cid,
-                    "finalize_a2a_stream_invocation: close_sessions_for_context failed, continuing teardown"
+                    task_id = ?task_id,
+                    "finalize_a2a_stream_invocation: close_sessions_for_scope failed, continuing teardown"
                 );
             }
         }

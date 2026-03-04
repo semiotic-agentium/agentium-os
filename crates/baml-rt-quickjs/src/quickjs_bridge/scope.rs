@@ -73,12 +73,22 @@ impl InvocationContextRegistry {
     }
 
     /// Return the runtime scope's context_id for this invocation id, if present.
-    /// Used at teardown to close tool sessions for this context before exiting.
+    /// Superseded by [`get_scope`] for task-scoped teardown but kept for potential future use.
+    #[allow(dead_code)]
     pub(crate) fn get_context_id(
         &self,
         id: &InvocationContextId,
     ) -> Option<baml_rt_core::ids::ContextId> {
         self.by_id.get(id).map(|f| f.scope.context_id().clone())
+    }
+
+    /// Return the full runtime scope for this invocation id, if present.
+    /// Used at teardown to extract both context_id and task_id for task-scoped session cleanup.
+    pub(crate) fn get_scope(
+        &self,
+        id: &InvocationContextId,
+    ) -> Option<RuntimeScope> {
+        self.by_id.get(id).map(|f| f.scope.clone())
     }
 
     /// Exit the invocation for this id. Must match the id returned from [`enter`](Self::enter).
