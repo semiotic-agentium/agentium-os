@@ -99,6 +99,9 @@ declare function openToolSession(
 
 const MAX_FANOUT_CONCURRENCY = 3;
 const MAX_TRANSCRIPT_CHARS = 12_000;
+const MAX_NODE_TRANSCRIPT_TEXT_CHARS = 1_200;
+const MAX_NODE_TRANSCRIPT_DATA_CHARS = 900;
+const MAX_NODE_TRANSCRIPT_URLS = 24;
 const MAX_CONVERSATION_CONTEXT_CHARS = 4_000;
 const MAX_SINGLE_SEND_CONTINUE_STEPS = 16;
 const MAX_DELEGATION_CONTINUE_STEPS = 128;
@@ -835,10 +838,14 @@ function collectDelegatedTexts(value: unknown): string[] {
     if (Array.isArray(typed.chunks)) {
       for (const chunk of typed.chunks) {
         if (!chunk) continue;
+        const before = out.size;
         if (chunk.message) pushMessageParts(chunk.message);
-        for (const text of extractTextsFromSerializedChunkField(chunk.task)) out.add(text);
-        for (const text of extractTextsFromSerializedChunkField(chunk.statusUpdate)) {
-          out.add(text);
+        // Avoid duplicate echoes: task/status payloads usually mirror chunk.message text.
+        if (out.size === before) {
+          for (const text of extractTextsFromSerializedChunkField(chunk.task)) out.add(text);
+          for (const text of extractTextsFromSerializedChunkField(chunk.statusUpdate)) {
+            out.add(text);
+          }
         }
       }
     }
@@ -1772,6 +1779,42 @@ function interpolateItemTemplate(template: string, item: unknown): string {
   });
 }
 
+function buildForeachChildPrompt(
+  promptTemplate: string,
+  item: unknown,
+  itemIndex: number,
+  totalItems: number,
+): string {
+  const rendered = interpolateItemTemplate(promptTemplate, item);
+  const itemContext = stringifyForPrompt(item, 2_000) || "null";
+  const guardrailBlock = [
+    "Coordinator constraints for this foreach item:",
+    `- Item index: ${itemIndex + 1} of ${totalItems}.`,
+    "- Process only this single item and do not iterate over additional items.",
+    "- Perform at most one primary action for this item, then stop.",
+    "- If completion is not possible, return a failure instead of retrying the same write repeatedly.",
+    "Item context JSON:",
+    itemContext,
+  ].join("\n");
+
+  return `${rendered}\n\n${guardrailBlock}`;
+}
+
+function extractUrlsFromText(text: string, maxUrls = MAX_NODE_TRANSCRIPT_URLS): string[] {
+  const matches = text.match(/https?:\/\/[^\s)>\]}]+/g) || [];
+  if (matches.length === 0) return [];
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of matches) {
+    const cleaned = raw.replace(/[.,;:!?]+$/g, "");
+    if (!cleaned || seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    deduped.push(cleaned);
+    if (deduped.length >= maxUrls) break;
+  }
+  return deduped;
+}
+
 async function expandForeachNodeInPlan(
   plan: WorkflowPlan,
   node: WorkflowNode,
@@ -1842,7 +1885,12 @@ async function expandForeachNodeInPlan(
       kind: "call_agent",
       depends_on: [...node.depends_on],
       target: node.foreach_template.target,
-      prompt_template: interpolateItemTemplate(node.foreach_template.prompt_template, items[i]),
+      prompt_template: buildForeachChildPrompt(
+        node.foreach_template.prompt_template,
+        items[i],
+        i,
+        items.length,
+      ),
       rationale: `Expanded from foreach node ${node.id}`,
     });
   }
@@ -2129,8 +2177,24 @@ function buildWorkflowTranscript(
     const status = artifact.status;
     const prefix = `[${node.id}|${node.kind}|${status}]`;
     if (artifact.status === "completed" && artifact.output_text) {
-      parts.push(`${prefix}\n${artifact.output_text}`);
+      const condensed = artifact.output_text.replace(/\s+/g, " ").trim();
+      parts.push(`${prefix}\n${condensed.slice(0, MAX_NODE_TRANSCRIPT_TEXT_CHARS)}`);
+      const urls = extractUrlsFromText(artifact.output_text);
+      if (urls.length > 0) {
+        parts.push(`${prefix} URLS: ${urls.join(" | ")}`);
+      }
+      const dataSnippet = stringifyForPrompt(artifact.output_data, MAX_NODE_TRANSCRIPT_DATA_CHARS);
+      if (dataSnippet) {
+        parts.push(`${prefix} DATA: ${dataSnippet}`);
+      }
       continue;
+    }
+    if (artifact.status === "completed" && artifact.output_data !== undefined) {
+      const dataSnippet = stringifyForPrompt(artifact.output_data, MAX_NODE_TRANSCRIPT_DATA_CHARS);
+      if (dataSnippet) {
+        parts.push(`${prefix} DATA: ${dataSnippet}`);
+        continue;
+      }
     }
     if (artifact.status === "failed") {
       parts.push(`${prefix} ERROR: ${artifact.error || "unknown failure"}`);
