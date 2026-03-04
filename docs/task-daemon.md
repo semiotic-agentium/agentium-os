@@ -105,6 +105,10 @@ For integration between poller, interpreter, and orchestration layers, use the
 versioned interpretation event contract:
 - [docs/task-daemon-event-contract.md](/Users/joseph/git/semiotic-agentium/agent-platform/docs/task-daemon-event-contract.md)
 
+For a leadership-focused end-to-end demo flow (Slack -> coordinator handoff ->
+provenance timeline + mermaid), see:
+- [docs/task-daemon-demo.md](/Users/joseph/git/semiotic-agentium/agent-platform/docs/task-daemon-demo.md)
+
 ## Important Behavior
 
 - LLM mode is the default. Heuristic mode is available only when explicitly requested (`--extractor heuristic`).

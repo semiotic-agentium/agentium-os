@@ -358,35 +358,42 @@ pub fn format_coordinator_prompt(batch: &TaskBatch) -> String {
         summary = batch.interpretation.executive_summary,
     ));
     lines.push(String::new());
+    if batch.derived_tasks.is_empty() {
+        lines.push("No concrete tasks were auto-derived from this poll window.".to_string());
+        lines.push(
+            "Use interpretation context to propose investigation tasks and follow-up questions."
+                .to_string(),
+        );
+    } else {
+        let task_count = batch.derived_tasks.len();
+        lines.push(format!("Tasks to create ({task_count} items):"));
 
-    let task_count = batch.derived_tasks.len();
-    lines.push(format!("Tasks to create ({task_count} items):"));
+        for (i, task) in batch.derived_tasks.iter().enumerate() {
+            let num = i + 1;
+            let refs = task
+                .sources
+                .iter()
+                .filter_map(|s| s.permalink.as_deref())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let source_line = if refs.is_empty() {
+                String::new()
+            } else {
+                format!("\n   Source: {refs}")
+            };
+            lines.push(format!(
+                "{num}. [{confidence}] {title} — {description}{source_line}",
+                confidence = task.priority,
+                title = task.title,
+                description = task.description,
+            ));
+        }
 
-    for (i, task) in batch.derived_tasks.iter().enumerate() {
-        let num = i + 1;
-        let refs = task
-            .sources
-            .iter()
-            .filter_map(|s| s.permalink.as_deref())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let source_line = if refs.is_empty() {
-            String::new()
-        } else {
-            format!("\n   Source: {refs}")
-        };
-        lines.push(format!(
-            "{num}. [{confidence}] {title} — {description}{source_line}",
-            confidence = task.priority,
-            title = task.title,
-            description = task.description,
-        ));
+        lines.push(String::new());
+        lines.push(
+            "Please create these as tasks in the appropriate project management tool.".to_string(),
+        );
     }
-
-    lines.push(String::new());
-    lines.push(
-        "Please create these as tasks in the appropriate project management tool.".to_string(),
-    );
     lines.join("\n")
 }
 
@@ -473,10 +480,6 @@ impl TaskSink for A2aSink {
     }
 
     async fn deliver(&mut self, batch: &TaskBatch) -> Result<()> {
-        if batch.derived_tasks.is_empty() {
-            return Ok(());
-        }
-
         let prompt = format_coordinator_prompt(batch);
 
         if self.dry_run {
@@ -524,15 +527,70 @@ impl TaskSink for A2aSink {
             .context("reading coordinator A2A response JSON")?;
 
         let final_text = validate_jsonrpc_responses(&responses)?;
+        let context_id = extract_context_id(&responses);
+        let task_id = extract_task_id(&responses);
         tracing::info!(
             coordinator_url = %self.coordinator_url,
             response_count = responses.len(),
             final_text_len = final_text.as_ref().map_or(0, |t| t.len()),
             "Coordinator A2A response received"
         );
+        if let Some(context_id) = context_id {
+            tracing::info!(
+                coordinator_url = %self.coordinator_url,
+                context_id = %context_id,
+                mermaid_endpoint = %format!("{}/contexts/{context_id}/mermaid", self.coordinator_url),
+                metrics_endpoint = %format!("{}/contexts/{context_id}/metrics", self.coordinator_url),
+                "Captured coordinator context id for provenance replay"
+            );
+        }
+        if let Some(task_id) = task_id {
+            tracing::info!(
+                coordinator_url = %self.coordinator_url,
+                task_id = %task_id,
+                "Captured coordinator task id"
+            );
+        }
 
         Ok(())
     }
+}
+
+fn pointer_str<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+}
+
+fn extract_context_id(responses: &[Value]) -> Option<String> {
+    const POINTERS: [&str; 6] = [
+        "/result/contextId",
+        "/result/message/contextId",
+        "/result/task/contextId",
+        "/result/chunk/contextId",
+        "/result/chunk/message/contextId",
+        "/result/chunk/task/contextId",
+    ];
+
+    responses.iter().rev().find_map(|response| {
+        POINTERS
+            .iter()
+            .find_map(|pointer| pointer_str(response, pointer))
+            .map(ToString::to_string)
+    })
+}
+
+fn extract_task_id(responses: &[Value]) -> Option<String> {
+    const POINTERS: [&str; 2] = ["/result/task/id", "/result/chunk/task/id"];
+
+    responses.iter().rev().find_map(|response| {
+        POINTERS
+            .iter()
+            .find_map(|pointer| pointer_str(response, pointer))
+            .map(ToString::to_string)
+    })
 }
 
 /// Extracts the last text content from final JSON-RPC results.
@@ -696,6 +754,29 @@ mod tests {
     }
 
     #[test]
+    fn format_coordinator_prompt_handles_empty_task_list() {
+        let batch = TaskBatch {
+            source: TaskSourceKind::Slack,
+            source_label: "#test-channel".to_string(),
+            generated_at_unix: 1735720000,
+            messages_scanned: 1,
+            project: ProjectContext {
+                project_key: "test-project".to_string(),
+                repo_available: true,
+                repo_path: Some("/repo/test".to_string()),
+            },
+            interpretation: ProjectInterpretation::default(),
+            derived_tasks: vec![],
+        };
+
+        let prompt = format_coordinator_prompt(&batch);
+
+        assert!(prompt.contains("No concrete tasks were auto-derived"));
+        assert!(prompt.contains("propose investigation tasks"));
+        assert!(!prompt.contains("Tasks to create ("));
+    }
+
+    #[test]
     fn truncate_title_respects_max_length() {
         let short = "Short title";
         assert_eq!(truncate_title(short, 240), "Short title");
@@ -755,6 +836,25 @@ mod tests {
         let text =
             validate_jsonrpc_responses(&responses).expect("expected successful protocol response");
         assert_eq!(text.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn extract_context_and_task_ids_prefers_latest_response_chunk() {
+        let responses = vec![
+            json!({
+                "jsonrpc":"2.0",
+                "id":"1",
+                "result":{"final":false,"chunk":{"contextId":"ctx-1","task":{"id":"task-1"}}}
+            }),
+            json!({
+                "jsonrpc":"2.0",
+                "id":"1",
+                "result":{"final":true,"chunk":{"contextId":"ctx-2","task":{"id":"task-2"}}}
+            }),
+        ];
+
+        assert_eq!(extract_context_id(&responses).as_deref(), Some("ctx-2"));
+        assert_eq!(extract_task_id(&responses).as_deref(), Some("task-2"));
     }
 
     #[test]

@@ -99,6 +99,14 @@ task-daemon-slack-once:
 task-daemon-slack:
     cargo run -p baml-task-daemon -- run --channel {{slack_channel}} --interval-seconds 120
 
+# Runs the leadership-oriented task-daemon demo flow (Slack -> LLM -> coordinator -> provenance).
+task-daemon-demo:
+    ./scripts/run-task-daemon-demo.sh
+
+# Stops the coordinator backend used by task-daemon-demo.
+task-daemon-demo-stop:
+    ./scripts/stop-coordinator-demo.sh
+
 # Runs coordinator + notion HTTP demo and streams one coordinated request.
 coordinator-demo:
     ./scripts/run-coordinator-demo.sh
