@@ -83,6 +83,15 @@ declare function PlanCoordinatorWorkflow(args: {
   conversation_context?: string | null;
 }): Promise<unknown>;
 
+declare function NormalizeIterableOutput(args: {
+  user_message: string;
+  producer_output_text?: string | null;
+  producer_output_data_json?: string | null;
+  consumer_action_hint?: string | null;
+  required_item_fields: string[];
+  max_items?: number | null;
+}): Promise<unknown>;
+
 declare function openToolSession(
   toolName: string,
   openInput?: Record<string, unknown>,
@@ -99,6 +108,7 @@ const MAX_WORKFLOW_ITERATIONS = 8;
 const MAX_HANDOFF_LIST_ITEMS = 12;
 const MAX_HANDOFF_FIELD_CHARS = 700;
 const MAX_HANDOFF_PROMPT_CHARS = 12_000;
+const MAX_NORMALIZATION_INPUT_CHARS = 16_000;
 
 const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
 const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
@@ -1288,6 +1298,12 @@ async function synthesize(
 
 const MAX_INTERPOLATION_CHARS = 8_000;
 
+type ForeachNormalizationResult = {
+  items: unknown[];
+  confidence: number;
+  notes: string[];
+};
+
 function isTerminalArtifactStatus(status: NodeArtifactStatus): boolean {
   return status === "completed" || status === "failed" || status === "skipped";
 }
@@ -1401,10 +1417,11 @@ function resolveForeachItemsFromSource(
   }
 
   const sourceSegments = sourcePath.split(".").filter((segment) => segment.length > 0);
-  if (sourceSegments.length === 1) {
+  if (sourceSegments.length >= 1) {
     const artifact = artifacts.get(sourceSegments[0]);
     if (!artifact) return null;
 
+    // Even when planner points to nX.output_text, prefer any structured artifact data first.
     const outputDataArray = findFirstArray(artifact.output_data);
     if (outputDataArray) return outputDataArray;
 
@@ -1416,6 +1433,222 @@ function resolveForeachItemsFromSource(
   }
 
   return null;
+}
+
+function stringifyForPrompt(value: unknown, maxChars = MAX_NORMALIZATION_INPUT_CHARS): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed.slice(0, maxChars) : null;
+  }
+  try {
+    const json = JSON.stringify(value);
+    if (!json) return null;
+    return json.slice(0, maxChars);
+  } catch {
+    const text = String(value).trim();
+    return text.length > 0 ? text.slice(0, maxChars) : null;
+  }
+}
+
+function getSourceArtifactForPath(
+  sourcePath: string,
+  artifacts: Map<string, NodeArtifact>,
+): NodeArtifact | null {
+  const sourceSegments = sourcePath.split(".").filter((segment) => segment.length > 0);
+  if (sourceSegments.length === 0) return null;
+  return artifacts.get(sourceSegments[0]) || null;
+}
+
+function collectItemFieldHints(template: string): string[] {
+  const fields = new Set<string>();
+  const placeholderMatches = template.match(/\{\{([^}]+)\}\}/g) || [];
+
+  for (const placeholder of placeholderMatches) {
+    const body = placeholder.replace(/^\{\{/, "").replace(/\}\}$/, "").trim();
+    const candidates = body.split("||").map((entry) => entry.trim());
+    for (const candidate of candidates) {
+      if (!/^item(?:\.[\w]+)*$/.test(candidate)) continue;
+      if (candidate === "item") continue;
+      fields.add(candidate.slice("item.".length));
+    }
+  }
+
+  return Array.from(fields).slice(0, 20);
+}
+
+function buildConsumerActionHint(node: WorkflowNode): string | null {
+  if (!node.foreach_template?.prompt_template) return null;
+  const normalized = normalizeText(node.foreach_template.prompt_template);
+  if (!normalized) return null;
+  return normalized.slice(0, 500);
+}
+
+function parseNormalizedItemList(
+  value: unknown,
+  maxItems: number,
+): ForeachNormalizationResult | null {
+  if (!isObject(value)) return null;
+  if (typeof value.items_json !== "string") return null;
+
+  const parsed = tryParseJsonValue(value.items_json);
+  let items: unknown[] | null = null;
+  if (Array.isArray(parsed)) {
+    items = parsed;
+  } else {
+    items = findFirstArray(parsed);
+  }
+  if (!items) return null;
+
+  const confidenceRaw =
+    typeof value.confidence === "number" ? value.confidence : Number(value.confidence);
+  const confidence = Number.isFinite(confidenceRaw)
+    ? Math.max(0, Math.min(1, confidenceRaw))
+    : 0.0;
+
+  const notes = Array.isArray(value.notes)
+    ? value.notes.filter((entry): entry is string => typeof entry === "string")
+    : [];
+
+  return {
+    items: items.slice(0, maxItems),
+    confidence,
+    notes,
+  };
+}
+
+function toMatchableText(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value.toLowerCase();
+  if (typeof value === "number" || typeof value === "boolean") return String(value).toLowerCase();
+  return "";
+}
+
+function flattenPrimitiveStrings(value: unknown, out: Set<string>, depth = 0): void {
+  if (depth > 4 || value === undefined || value === null) return;
+  if (typeof value === "string") {
+    const t = value.trim();
+    if (t.length > 0) out.add(t.toLowerCase());
+    return;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    out.add(String(value).toLowerCase());
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) flattenPrimitiveStrings(item, out, depth + 1);
+    return;
+  }
+  if (!isObject(value)) return;
+  for (const nested of Object.values(value)) {
+    flattenPrimitiveStrings(nested, out, depth + 1);
+  }
+}
+
+function dedupeItems(items: unknown[]): unknown[] {
+  const seen = new Set<string>();
+  const deduped: unknown[] = [];
+
+  for (const item of items) {
+    let key = "";
+    if (isObject(item)) {
+      const id = toMatchableText(item.id);
+      const url = toMatchableText(item.url);
+      const title = toMatchableText(item.title);
+      key = `${id}|${url}|${title}`;
+    } else {
+      key = toMatchableText(item);
+    }
+    if (!key) {
+      let fallback = "";
+      try {
+        fallback = JSON.stringify(item) || "";
+      } catch {
+        fallback = String(item);
+      }
+      key = fallback;
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(item);
+  }
+
+  return deduped;
+}
+
+function filterItemsByEvidence(items: unknown[], evidenceCorpus: string): unknown[] {
+  const corpus = evidenceCorpus.toLowerCase();
+  if (!corpus.trim()) return dedupeItems(items);
+
+  const grounded = items.filter((item) => {
+    const candidates = new Set<string>();
+    flattenPrimitiveStrings(item, candidates);
+
+    // Require at least one non-trivial field to appear in evidence.
+    for (const candidate of candidates) {
+      if (candidate.length < 4) continue;
+      if (corpus.includes(candidate)) return true;
+    }
+    return false;
+  });
+
+  return dedupeItems(grounded);
+}
+
+async function normalizeForeachItemsWithModel(
+  userText: string,
+  node: WorkflowNode,
+  artifacts: Map<string, NodeArtifact>,
+): Promise<ForeachNormalizationResult | null> {
+  if (!node.foreach_from || !node.foreach_template) return null;
+
+  const direct = resolveArtifactPath(node.foreach_from, artifacts);
+  const sourceArtifact = getSourceArtifactForPath(node.foreach_from, artifacts);
+  const producerOutputText =
+    (typeof direct === "string" ? direct : null) ||
+    sourceArtifact?.output_text ||
+    stringifyForPrompt(direct);
+  const producerOutputDataJson =
+    stringifyForPrompt((isObject(direct) || Array.isArray(direct)) ? direct : undefined) ||
+    stringifyForPrompt(sourceArtifact?.output_data);
+
+  const requiredItemFields = collectItemFieldHints(node.foreach_template.prompt_template);
+  const consumerActionHint = buildConsumerActionHint(node);
+  const maxItems = Math.min(
+    node.foreach_template.max_items ?? MAX_FOREACH_EXPANSIONS,
+    MAX_FOREACH_EXPANSIONS,
+  );
+
+  try {
+    const raw = await NormalizeIterableOutput({
+      user_message: userText,
+      producer_output_text: producerOutputText || null,
+      producer_output_data_json: producerOutputDataJson || null,
+      consumer_action_hint: consumerActionHint,
+      required_item_fields: requiredItemFields,
+      max_items: maxItems,
+    });
+    const parsed = parseNormalizedItemList(raw, maxItems);
+    if (!parsed) return null;
+
+    const evidenceCorpus = `${producerOutputText || ""}\n${producerOutputDataJson || ""}`;
+    const filtered = filterItemsByEvidence(parsed.items, evidenceCorpus).slice(0, maxItems);
+    if (filtered.length === 0) {
+      return {
+        items: [],
+        confidence: Math.min(parsed.confidence, 0.5),
+        notes: [...parsed.notes, "No normalized items were grounded in source evidence."],
+      };
+    }
+
+    return {
+      items: filtered,
+      confidence: parsed.confidence,
+      notes: parsed.notes,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function interpolateTemplate(template: string, artifacts: Map<string, NodeArtifact>): string {
@@ -1507,10 +1740,28 @@ function resolvePathFromObject(base: unknown, dottedPath: string): unknown {
   return current;
 }
 
-function interpolateItemTemplate(template: string, item: unknown): string {
-  return template.replace(/\{\{\s*(item(?:\.[\w]+)*)\s*\}\}/g, (match, expr) => {
-    const path = expr === "item" ? "" : expr.slice("item.".length);
+function resolveItemExpression(item: unknown, expression: string): unknown {
+  const candidates = expression
+    .split("||")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  for (const candidate of candidates) {
+    if (!/^item(?:\.[\w]+)*$/.test(candidate)) continue;
+    const path = candidate === "item" ? "" : candidate.slice("item.".length);
     const resolved = resolvePathFromObject(item, path);
+    if (resolved === undefined || resolved === null) continue;
+    if (typeof resolved === "string" && resolved.trim().length === 0) continue;
+    return resolved;
+  }
+
+  return undefined;
+}
+
+function interpolateItemTemplate(template: string, item: unknown): string {
+  return template.replace(/\{\{\s*([^}]+)\s*\}\}/g, (match, exprRaw) => {
+    const expr = exprRaw.trim();
+    const resolved = resolveItemExpression(item, expr);
     if (resolved === undefined) return match;
     if (typeof resolved === "string") return resolved.slice(0, MAX_INTERPOLATION_CHARS);
     try {
@@ -1521,11 +1772,12 @@ function interpolateItemTemplate(template: string, item: unknown): string {
   });
 }
 
-function expandForeachNodeInPlan(
+async function expandForeachNodeInPlan(
   plan: WorkflowPlan,
   node: WorkflowNode,
   artifacts: Map<string, NodeArtifact>,
-): NodeArtifact {
+  userText: string,
+): Promise<NodeArtifact> {
   const started_at = new Date().toISOString();
   if (!node.foreach_from || !node.foreach_template) {
     return {
@@ -1537,12 +1789,27 @@ function expandForeachNodeInPlan(
     };
   }
 
-  const resolvedItems = resolveForeachItemsFromSource(node.foreach_from, artifacts);
+  let resolvedItems = resolveForeachItemsFromSource(node.foreach_from, artifacts);
+  let normalizationMeta: {
+    confidence: number;
+    notes: string[];
+  } | null = null;
+  if (!resolvedItems) {
+    const normalized = await normalizeForeachItemsWithModel(userText, node, artifacts);
+    if (normalized) {
+      resolvedItems = normalized.items;
+      normalizationMeta = {
+        confidence: normalized.confidence,
+        notes: normalized.notes,
+      };
+    }
+  }
+
   if (!resolvedItems) {
     return {
       node_id: node.id,
       status: "failed",
-      error: `foreach source '${node.foreach_from}' did not resolve to an array-compatible value.`,
+      error: `foreach source '${node.foreach_from}' did not resolve to an array-compatible value, and coordinator normalization could not recover iterable items.`,
       started_at,
       ended_at: new Date().toISOString(),
     };
@@ -1594,6 +1861,7 @@ function expandForeachNodeInPlan(
     output_data: {
       expanded_node_ids: childIds,
       expanded_count: childIds.length,
+      normalization: normalizationMeta || undefined,
     },
     started_at,
     ended_at: new Date().toISOString(),
@@ -2001,7 +2269,12 @@ async function executeWorkflowPlanPhase3(
         if (artifacts.has(node.id)) continue;
         if (node.kind !== "foreach") continue;
         if (!nodeDependenciesCompleted(node, artifacts)) continue;
-        const expansionArtifact = expandForeachNodeInPlan(plan, node, artifacts);
+        const expansionArtifact = await expandForeachNodeInPlan(
+          plan,
+          node,
+          artifacts,
+          userText,
+        );
         artifacts.set(node.id, expansionArtifact);
         progressed = true;
       }
