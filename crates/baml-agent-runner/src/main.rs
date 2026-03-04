@@ -1002,7 +1002,7 @@ struct RunnerConfig {
     provenance_db: ProvenanceDb,
     /// If set, used as Claude workspaces root (overrides BAML_CLAUDE_WORKSPACES_BASE env).
     claude_workspaces_base: Option<PathBuf>,
-    /// Stream collector idle timeout in seconds. No yield for this long ends the stream (Timeout). Default 600 for long-running tool sessions (e.g. claude/dev).
+    /// Stream collector idle timeout in seconds. No yield for this long ends the stream (Timeout). Default 900 for long-running tool sessions (e.g. claude/dev).
     stream_idle_secs: Option<u64>,
 }
 

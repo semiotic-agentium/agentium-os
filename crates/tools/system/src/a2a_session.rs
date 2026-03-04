@@ -136,7 +136,7 @@ fn build_send_stream_request(
     context_id: &baml_rt_core::ids::ContextId,
     parent_task_id: Option<&TaskId>,
 ) -> Value {
-    let child_task_id = format!("a2a-child-{}", uuid::Uuid::new_v4());
+    let child_task_id = format!("a2a-child-{id}", id = uuid::Uuid::new_v4());
     let reference_task_ids = parent_task_id
         .map(|task_id| vec![task_id.as_str().to_string()])
         .unwrap_or_default();
@@ -146,7 +146,7 @@ fn build_send_stream_request(
         "id": serde_json::Value::Null,
         "params": {
             "message": {
-                "messageId": format!("system-a2a-{}", uuid::Uuid::new_v4()),
+                "messageId": format!("system-a2a-{id}", id = uuid::Uuid::new_v4()),
                 "role": "ROLE_USER",
                 "parts": parts,
                 "contextId": context_id.as_str(),

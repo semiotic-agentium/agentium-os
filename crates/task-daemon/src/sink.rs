@@ -515,7 +515,10 @@ impl TaskSink for A2aSink {
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
-            let body_text = resp.text().await.unwrap_or_default();
+            let body_text = match resp.text().await {
+                Ok(body) => body,
+                Err(error) => format!("<failed to read response body: {error}>"),
+            };
             return Err(anyhow!(
                 "coordinator A2A request failed with {status}: {body_text}"
             ));
@@ -685,14 +688,9 @@ fn validate_jsonrpc_responses(responses: &[Value]) -> Result<Option<String>> {
     Ok(extract_final_jsonrpc_text(responses))
 }
 
-/// Generates a UUID v4 string without pulling in the uuid crate.
+/// Generates a random UUID v4 string.
 fn uuid_v4() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    format!("{nanos:032x}")
+    uuid::Uuid::new_v4().to_string()
 }
 
 /// Generates a correlation id compatible with baml-rt temporal parser.

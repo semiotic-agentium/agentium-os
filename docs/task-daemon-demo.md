@@ -122,7 +122,7 @@ just task-daemon-demo-stop
 - `TASK_DAEMON_DEMO_EXTRACTOR` (`llm` default)
 - `TASK_DAEMON_DEMO_START_COORDINATOR` (`1` default)
 
-## Failure Plan (Tomorrow)
+## Failure Plan
 
 1. If OpenRouter is degraded, use local fallback provider (`TASK_DAEMON_LLM_FALLBACK_*`).
 2. If Slack auth fails, rerun OAuth exchange and verify channel access (`#agentium-eng`).

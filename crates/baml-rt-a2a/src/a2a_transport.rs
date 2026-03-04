@@ -1648,13 +1648,10 @@ impl A2aAgent {
             }
         }
 
-        {
-            let mut sessions = self.stream_sessions.lock().await;
-            if let Some(session) = sessions.get_mut(&session_key) {
-                session.relay_tx = None;
-            }
-        }
         let mut sessions = self.stream_sessions.lock().await;
+        if let Some(session) = sessions.get_mut(&session_key) {
+            session.relay_tx = None;
+        }
         sessions.remove(&session_key);
     }
 

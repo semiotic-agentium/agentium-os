@@ -613,16 +613,26 @@ function parseWorkflowNode(value: unknown): WorkflowNode | null {
 
 function parseWorkflowPlan(value: unknown): WorkflowPlan | null {
   if (!isObject(value) || !Array.isArray(value.nodes)) return null;
-  const nodes = value.nodes
-    .map((node) => parseWorkflowNode(node))
-    .filter((node): node is WorkflowNode => node != null);
+  const parsedNodes = value.nodes.map((node) => parseWorkflowNode(node));
+  const nodes = parsedNodes.filter((node): node is WorkflowNode => node != null);
   if (nodes.length === 0) return null;
-  if (nodes.length !== value.nodes.length) return null;
+  const droppedCount = parsedNodes.length - nodes.length;
+  if (droppedCount > 0 && typeof console !== "undefined" && typeof console.warn === "function") {
+    console.warn(
+      `[coordinator] parseWorkflowPlan dropped ${droppedCount} malformed node(s) and kept ${nodes.length} valid node(s).`,
+    );
+  }
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const sanitizedNodes = nodes.map((node) => ({
+    ...node,
+    depends_on: node.depends_on.filter((depId) => depId !== node.id && nodeIds.has(depId)),
+  }));
+  const finalNodeId = normalizeOptionalString(value.final_node_id);
 
   return {
     goal: normalizeOptionalString(value.goal) || "Coordinate user request",
-    nodes,
-    final_node_id: normalizeOptionalString(value.final_node_id),
+    nodes: sanitizedNodes,
+    final_node_id: finalNodeId && nodeIds.has(finalNodeId) ? finalNodeId : null,
   };
 }
 
@@ -1339,13 +1349,14 @@ async function collectEvidence(
 async function synthesize(
   userText: string,
   transcript: string,
-  _conversationSummary: string | null,
+  conversationSummary: string | null,
 ): Promise<string> {
   let synthesizedRaw: unknown;
   try {
     synthesizedRaw = await SynthesizeCoordinatorResponse({
       user_message: userText,
       delegated_transcript: transcript,
+      conversation_context: conversationSummary || null,
     });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
@@ -1686,7 +1697,7 @@ function filterItemsByEvidence(items: unknown[], evidenceCorpus: string): unknow
 
     // Require at least one non-trivial field to appear in evidence.
     for (const candidate of candidates) {
-      if (candidate.length < 4) continue;
+      if (candidate.length < 8) continue;
       if (corpus.includes(candidate)) return true;
     }
     return false;
