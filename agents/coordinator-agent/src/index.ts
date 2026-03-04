@@ -838,10 +838,10 @@ function collectDelegatedTexts(value: unknown): string[] {
     if (Array.isArray(typed.chunks)) {
       for (const chunk of typed.chunks) {
         if (!chunk) continue;
-        const before = out.size;
+        const hasMessage = chunk.message != null;
         if (chunk.message) pushMessageParts(chunk.message);
         // Avoid duplicate echoes: task/status payloads usually mirror chunk.message text.
-        if (out.size === before) {
+        if (!hasMessage) {
           for (const text of extractTextsFromSerializedChunkField(chunk.task)) out.add(text);
           for (const text of extractTextsFromSerializedChunkField(chunk.statusUpdate)) {
             out.add(text);
@@ -1659,7 +1659,7 @@ function dedupeItems(items: unknown[]): unknown[] {
     } else {
       key = toMatchableText(item);
     }
-    if (!key) {
+    if (!key || key === "||") {
       let fallback = "";
       try {
         fallback = JSON.stringify(item) || "";
@@ -1746,7 +1746,13 @@ async function normalizeForeachItemsWithModel(
       confidence: parsed.confidence,
       notes: parsed.notes,
     };
-  } catch {
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    if (typeof console !== "undefined" && typeof console.warn === "function") {
+      console.warn(
+        `[coordinator] NormalizeIterableOutput failed for node=${node.id} source=${node.foreach_from}: ${reason}`,
+      );
+    }
     return null;
   }
 }
