@@ -454,8 +454,7 @@ impl ToolSessionExecutionHandle {
         scopes
             .iter()
             .filter(|(_, s)| {
-                s.scope.context_id() == context_id
-                    && s.scope.task_id_opt() == Some(task_id)
+                s.scope.context_id() == context_id && s.scope.task_id_opt() == Some(task_id)
             })
             .map(|(sid, _)| sid.clone())
             .collect()
@@ -1378,7 +1377,11 @@ impl BamlRuntimeManager {
     ) -> Result<()> {
         let handle = self.tool_session_handle();
         let to_close = match task_id {
-            Some(tid) => handle.collect_session_ids_for_task_scope(context_id, tid).await,
+            Some(tid) => {
+                handle
+                    .collect_session_ids_for_task_scope(context_id, tid)
+                    .await
+            }
             None => handle.collect_session_ids_for_context(context_id).await,
         };
         for id in &to_close {

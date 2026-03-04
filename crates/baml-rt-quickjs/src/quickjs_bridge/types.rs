@@ -145,9 +145,7 @@ impl Drop for EvalLifecycleGuard {
                     let cid = scope.context_id().clone();
                     let task_id = scope.task_id_opt().cloned();
                     let mgr = baml.lock().await;
-                    let _ = mgr
-                        .close_sessions_for_scope(&cid, task_id.as_ref())
-                        .await;
+                    let _ = mgr.close_sessions_for_scope(&cid, task_id.as_ref()).await;
                 });
             }
         }

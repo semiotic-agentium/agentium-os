@@ -84,10 +84,7 @@ impl InvocationContextRegistry {
 
     /// Return the full runtime scope for this invocation id, if present.
     /// Used at teardown to extract both context_id and task_id for task-scoped session cleanup.
-    pub(crate) fn get_scope(
-        &self,
-        id: &InvocationContextId,
-    ) -> Option<RuntimeScope> {
+    pub(crate) fn get_scope(&self, id: &InvocationContextId) -> Option<RuntimeScope> {
         self.by_id.get(id).map(|f| f.scope.clone())
     }
 
