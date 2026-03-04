@@ -65,6 +65,21 @@ pub trait TaskRepository: Send + Sync {
     async fn list(&self, request: &ListTasksRequest) -> ListTasksResponse;
     async fn cancel(&self, id: &str) -> Option<Task>;
     async fn insert_message(&self, message: &Message) -> Result<()>;
+
+    /// Insert a received message (ROLE_USER) with explicit scope. Use this for all inbound
+    /// messages so provenance cannot be misattributed to the sender's (context_id, task_id).
+    /// Default: clones message with scope values and calls insert_message.
+    async fn insert_message_for_receiver(
+        &self,
+        message: &Message,
+        context_id: ContextId,
+        task_id: Option<TaskId>,
+    ) -> Result<()> {
+        let mut msg = message.clone();
+        msg.context_id = Some(context_id);
+        msg.task_id = task_id;
+        self.insert_message(&msg).await
+    }
 }
 
 #[async_trait]
@@ -283,6 +298,18 @@ impl ProvenanceTaskStore {
         }
     }
 
+    async fn record_event_required(&self, event: ProvEvent, context: &str) -> Result<()> {
+        if let Some(writer) = &self.writer {
+            writer.add_event(event).await.map_err(|source| {
+                BamlRtError::InvalidArgumentWithSource {
+                    message: format!("failed to record provenance event for {context}"),
+                    source: Box::new(source),
+                }
+            })?;
+        }
+        Ok(())
+    }
+
     fn inject_agent_id_into_chunk(
         task: Option<Task>,
         message: Option<Message>,
@@ -297,6 +324,81 @@ impl ProvenanceTaskStore {
             m
         });
         (task, message)
+    }
+
+    /// Insert received message using explicit scope. Never reads context_id/task_id from message.
+    /// Caller must pass ROLE_USER messages only.
+    async fn insert_message_with_scope(
+        &self,
+        message: &Message,
+        context_id: ContextId,
+        task_id: Option<TaskId>,
+    ) -> Result<()> {
+        let role = message_role_string(&message.role);
+        if role != ROLE_USER {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "insert_message_with_scope requires ROLE_USER, got {role}"
+            )));
+        }
+        let content = validated_message_content(message, "insert_message_with_scope")?;
+        tracing::trace!(
+            context_id = context_id.as_str(),
+            task_id = task_id.as_ref().map(|t| t.as_str()),
+            message_id = message.message_id.as_message_id().as_str(),
+            role = role.as_str(),
+            "Storing received message with explicit scope (no wire-derived context/task)",
+        );
+        let mut msg_metadata = message.metadata.clone();
+        ensure_agent_id_in_metadata(&mut msg_metadata, &self.agent_id);
+        let metadata = msg_metadata.as_ref().map(metadata_string_map);
+        if let Some(ref tid) = task_id {
+            self.record_event_required(
+                ProvEvent::task_exists(context_id.clone(), tid.clone()),
+                "insert_message_with_scope task_exists",
+            )
+            .await?;
+            self.record_event_required(
+                ProvEvent::task_execution_started(
+                    context_id.clone(),
+                    tid.clone(),
+                    self.agent_id.clone(),
+                ),
+                "insert_message_with_scope task_execution_started",
+            )
+            .await?;
+        }
+        let event = match task_id.clone() {
+            Some(tid) => ProvEvent::message_received_task(
+                context_id.clone(),
+                tid,
+                message.message_id.as_message_id().clone(),
+                role,
+                content,
+                metadata,
+                self.agent_id.clone(),
+                now_millis(),
+            ),
+            None => ProvEvent::message_received_global(
+                context_id.clone(),
+                message.message_id.as_message_id().clone(),
+                role,
+                content,
+                metadata,
+                self.agent_id.clone(),
+                now_millis(),
+            ),
+        };
+        self.record_event_required(event, "insert_message_with_scope message lifecycle")
+            .await?;
+        if task_id.is_some() {
+            let mut msg = message.clone();
+            msg.context_id = Some(context_id);
+            msg.task_id = task_id;
+            let start = Instant::now();
+            self.inner.insert_message(&msg).await?;
+            record_task_store_metrics("insert_message_with_scope", "success", start);
+        }
+        Ok(())
     }
 }
 
@@ -349,8 +451,14 @@ impl TaskRepository for ProvenanceTaskStore {
         ensure_agent_id_in_metadata(&mut task.metadata, &self.agent_id);
 
         if let Some(task_id) = task.id.clone() {
-            let event = ProvEvent::task_created(context_id, task_id, self.agent_id.clone());
-            self.record_event(event).await;
+            self.record_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+                .await;
+            self.record_event(ProvEvent::task_execution_started(
+                context_id,
+                task_id,
+                self.agent_id.clone(),
+            ))
+            .await;
         }
         let out = self.inner.upsert(task).await?;
         record_task_store_metrics("upsert", "success", start);
@@ -389,21 +497,34 @@ impl TaskRepository for ProvenanceTaskStore {
             && let Ok(context_id) = require_context_id(Some(cid), "provenance cancel")
         {
             let event = ProvEvent::task_status_changed(
-                context_id,
-                tid,
+                context_id.clone(),
+                tid.clone(),
                 None,
                 Some(TASK_STATE_CANCELED.to_string()),
             );
             self.record_event(event).await;
+            self.record_event(ProvEvent::task_execution_ended(context_id, tid))
+                .await;
         }
         out
+    }
+
+    async fn insert_message_for_receiver(
+        &self,
+        message: &Message,
+        context_id: ContextId,
+        task_id: Option<TaskId>,
+    ) -> Result<()> {
+        // Provenance: use explicit scope only; never read context_id/task_id from message.
+        self.insert_message_with_scope(message, context_id, task_id)
+            .await
     }
 
     async fn insert_message(&self, message: &Message) -> Result<()> {
         let context_id = require_context_id(message.context_id.clone(), "message insert")?;
         let task_id = message.task_id.clone();
         let role = message_role_string(&message.role);
-        let content = message_content(message);
+        let content = validated_message_content(message, "insert_message")?;
         tracing::trace!(
             context_id = context_id.as_str(),
             task_id = task_id.as_ref().map(|t| t.as_str()),
@@ -420,8 +541,20 @@ impl TaskRepository for ProvenanceTaskStore {
 
         // agent_id is always available from store level
         if let Some(task_id) = task_id.clone() {
-            let event = ProvEvent::task_created(context_id.clone(), task_id, self.agent_id.clone());
-            self.record_event(event).await;
+            self.record_event_required(
+                ProvEvent::task_exists(context_id.clone(), task_id.clone()),
+                "insert_message task_exists",
+            )
+            .await?;
+            self.record_event_required(
+                ProvEvent::task_execution_started(
+                    context_id.clone(),
+                    task_id,
+                    self.agent_id.clone(),
+                ),
+                "insert_message task_execution_started",
+            )
+            .await?;
         }
         let task_id_for_event = task_id.clone();
 
@@ -433,6 +566,7 @@ impl TaskRepository for ProvenanceTaskStore {
                 role,
                 content,
                 metadata,
+                self.agent_id.clone(),
                 now_millis(),
             ),
             (ROLE_USER, None) => ProvEvent::message_received_global(
@@ -441,6 +575,7 @@ impl TaskRepository for ProvenanceTaskStore {
                 role,
                 content,
                 metadata,
+                self.agent_id.clone(),
                 now_millis(),
             ),
             (_, Some(task_id)) => ProvEvent::message_sent_task(
@@ -450,6 +585,7 @@ impl TaskRepository for ProvenanceTaskStore {
                 role,
                 content,
                 metadata,
+                self.agent_id.clone(),
                 now_millis(),
             ),
             (_, None) => ProvEvent::message_sent_global(
@@ -458,10 +594,12 @@ impl TaskRepository for ProvenanceTaskStore {
                 role,
                 content,
                 metadata,
+                self.agent_id.clone(),
                 now_millis(),
             ),
         };
-        self.record_event(event).await;
+        self.record_event_required(event, "insert_message message lifecycle")
+            .await?;
 
         // Task-scoped backends (e.g. GraphqliteTaskSubgraphStore) require task_id; global
         // messages are only in the provenance event stream and appear in context_messages.
@@ -474,11 +612,8 @@ impl TaskRepository for ProvenanceTaskStore {
     }
 }
 
-fn message_role_string(role: &MessageRole) -> String {
-    match role {
-        MessageRole::String(value) => value.clone(),
-        MessageRole::Integer(value) => value.to_string(),
-    }
+pub(crate) fn message_role_string(role: &MessageRole) -> String {
+    role.as_wire_str().to_string()
 }
 
 fn message_content(message: &Message) -> Vec<String> {
@@ -487,6 +622,22 @@ fn message_content(message: &Message) -> Vec<String> {
         .iter()
         .filter_map(|part| part.text.clone())
         .collect()
+}
+
+/// Text parts from the message (trimmed, empty lines dropped). Returns an empty vec for
+/// non-text or media-only messages; callers must accept empty for provenance and persistence.
+pub(crate) fn validated_message_content(
+    message: &Message,
+    _operation: &str,
+) -> Result<Vec<String>> {
+    let content: Vec<String> = message
+        .parts
+        .iter()
+        .filter_map(|part| part.text.clone())
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+    Ok(content)
 }
 
 fn message_to_context_item(
@@ -510,7 +661,7 @@ fn message_to_context_item(
     }
 }
 
-fn metadata_string_map(metadata: &HashMap<String, Value>) -> HashMap<String, String> {
+pub(crate) fn metadata_string_map(metadata: &HashMap<String, Value>) -> HashMap<String, String> {
     metadata
         .iter()
         .filter_map(|(key, value)| value.as_str().map(|v| (key.clone(), v.to_string())))
@@ -537,13 +688,18 @@ impl TaskEventRecorder for ProvenanceTaskStore {
             && let (Some(tid), Some(cid)) = (ev.task_id.as_ref(), ev.context_id.as_ref())
             && let Ok(context_id) = require_context_id(Some(cid.clone()), "provenance status")
         {
+            let status_str = ev.status.as_ref().and_then(status_to_string);
             let event = ProvEvent::task_status_changed(
-                context_id,
+                context_id.clone(),
                 tid.clone(),
                 None,
-                ev.status.as_ref().and_then(status_to_string),
+                status_str.clone(),
             );
             self.record_event(event).await;
+            if status_str.as_deref().is_some_and(is_terminal_state) {
+                self.record_event(ProvEvent::task_execution_ended(context_id, tid.clone()))
+                    .await;
+            }
         }
         Ok(out)
     }
@@ -601,7 +757,7 @@ impl TaskChunkApplier for ProvenanceTaskStore {
                 "status_update or artifact_update requires task in chunk".into(),
             ));
         }
-        let task_created_prov = task.as_ref().and_then(|t| {
+        let new_task_prov = task.as_ref().and_then(|t| {
             let cid = t.context_id.clone()?;
             let tid = t.id.clone()?;
             Some((tid, cid))
@@ -615,11 +771,17 @@ impl TaskChunkApplier for ProvenanceTaskStore {
             .await?;
         record_task_store_metrics("apply_task_delta", "success", start);
         // I3: emit provenance only after store accepted the updates
-        if let Some((tid, cid)) = task_created_prov
-            && let Ok(context_id) = require_context_id(Some(cid), "provenance task_created")
+        if let Some((tid, cid)) = new_task_prov
+            && let Ok(context_id) = require_context_id(Some(cid), "provenance task_exists")
         {
-            let event = ProvEvent::task_created(context_id, tid, self.agent_id.clone());
-            self.record_event(event).await;
+            self.record_event(ProvEvent::task_exists(context_id.clone(), tid.clone()))
+                .await;
+            self.record_event(ProvEvent::task_execution_started(
+                context_id,
+                tid,
+                self.agent_id.clone(),
+            ))
+            .await;
         }
         for event in &events {
             if let Ok(context_id) =
@@ -630,13 +792,20 @@ impl TaskChunkApplier for ProvenanceTaskStore {
                         if let (Some(task_id), Some(status)) =
                             (ev.task_id.clone(), ev.status.as_ref())
                         {
+                            let status_str = status_to_string(status);
                             let prov = ProvEvent::task_status_changed(
-                                context_id,
-                                task_id,
+                                context_id.clone(),
+                                task_id.clone(),
                                 None,
-                                status_to_string(status),
+                                status_str.clone(),
                             );
                             self.record_event(prov).await;
+                            if status_str.as_deref().is_some_and(is_terminal_state) {
+                                self.record_event(ProvEvent::task_execution_ended(
+                                    context_id, task_id,
+                                ))
+                                .await;
+                            }
                         }
                     }
                     TaskUpdateEvent::Artifact(ev) => {
@@ -654,40 +823,57 @@ impl TaskChunkApplier for ProvenanceTaskStore {
                 }
             }
         }
-        // I3: emit MessageSent for agent reply when apply_task_delta receives a message chunk.
-        // (User messages go through insert_message; agent messages from stream go through here.)
-        if let Some(ref msg) = message_for_prov
-            && let Ok(context_id) = require_context_id(
+        // I3: emit message lifecycle events for any chunk message accepted by the store.
+        if let Some(ref msg) = message_for_prov {
+            let context_id = require_context_id(
                 msg.context_id.clone(),
                 "provenance message in apply_task_delta",
-            )
-        {
+            )?;
             let role = message_role_string(&msg.role);
-            let content = message_content(msg);
+            let content = validated_message_content(msg, "apply_task_delta")?;
             let metadata = msg.metadata.as_ref().map(metadata_string_map);
             let event = match (role.as_str(), msg.task_id.clone()) {
-                (ROLE_USER, _) => None,
-                (_, Some(task_id)) => Some(ProvEvent::message_sent_task(
+                (ROLE_USER, Some(task_id)) => ProvEvent::message_received_task(
                     context_id,
                     task_id,
                     msg.message_id.as_message_id().clone(),
                     role,
                     content,
                     metadata,
+                    self.agent_id.clone(),
                     now_millis(),
-                )),
-                (_, None) => Some(ProvEvent::message_sent_global(
+                ),
+                (ROLE_USER, None) => ProvEvent::message_received_global(
                     context_id,
                     msg.message_id.as_message_id().clone(),
                     role,
                     content,
                     metadata,
+                    self.agent_id.clone(),
                     now_millis(),
-                )),
+                ),
+                (_, Some(task_id)) => ProvEvent::message_sent_task(
+                    context_id,
+                    task_id,
+                    msg.message_id.as_message_id().clone(),
+                    role,
+                    content,
+                    metadata,
+                    self.agent_id.clone(),
+                    now_millis(),
+                ),
+                (_, None) => ProvEvent::message_sent_global(
+                    context_id,
+                    msg.message_id.as_message_id().clone(),
+                    role,
+                    content,
+                    metadata,
+                    self.agent_id.clone(),
+                    now_millis(),
+                ),
             };
-            if let Some(prov) = event {
-                self.record_event(prov).await;
-            }
+            self.record_event_required(event, "apply_task_delta message lifecycle")
+                .await?;
         }
         Ok(events)
     }

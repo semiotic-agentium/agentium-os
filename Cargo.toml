@@ -71,8 +71,7 @@ opentelemetry_sdk = "0.26"
 tracing-opentelemetry = "0.27"
 tokio-tungstenite = "0.28.0"
 futures-util = "0.3.31"
-graphqlite = "0.3"
-rusqlite = "0.32"
+graphqlite = { version = "0.3", default-features = false, features = ["bundled-extension"] }
 testcontainers = "0.23"
 insta = "1.46.3"
 uuid = { version = "1.10", features = ["v4", "serde"] }

@@ -35,3 +35,7 @@ Agent code uses `__chat_register({ run: async (ctx) => { ... } })` or `session(m
   ```bash
   cargo run -p baml-rt-builder --bin regen_fixtures
   ```
+
+## Known limitations
+
+- **Nested types**: The runtime type generator only emits TypeScript interfaces for types that appear as top-level function parameters or return types. Types that are referenced only as fields of other generated types (e.g. a BAML class used only inside another class’s array field) are not emitted. The generated `.d.ts` may therefore reference a type name (e.g. `PlanStep`) that is never declared, causing TS errors. **Workaround**: duplicate the missing interface in your agent code (e.g. in `index.ts`) so that `plan.steps` and similar are correctly typed, and keep it in sync with the BAML class definition until the generator is updated to emit nested types.

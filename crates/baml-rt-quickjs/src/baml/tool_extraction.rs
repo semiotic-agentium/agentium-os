@@ -211,7 +211,7 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
         .map(|s| s.to_string());
 
     let mut steps = Vec::new();
-    for step_value in steps_array {
+    for (step_index, step_value) in steps_array.iter().enumerate() {
         let step_obj = step_value.as_object().ok_or_else(|| {
             BamlRtError::InvalidArgument("ToolSessionPlan step must be an object".to_string())
         })?;
@@ -223,13 +223,19 @@ pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSes
         }
 
         let step_type = step_obj.get("__type").and_then(|v| v.as_str());
-        let op_str = step_obj
-            .get("op")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                BamlRtError::InvalidArgument("ToolSessionPlan step missing op".to_string())
-            })?
-            .to_ascii_lowercase();
+        let op_str = match step_obj.get("op").and_then(|v| v.as_str()) {
+            Some(s) => s.to_ascii_lowercase(),
+            None => {
+                tracing::warn!(
+                    step_index,
+                    raw_step = ?step_obj,
+                    "ToolSessionPlan step missing op"
+                );
+                return Err(BamlRtError::InvalidArgument(
+                    "ToolSessionPlan step missing op".to_string(),
+                ));
+            }
+        };
 
         let reason = step_obj
             .get("reason")

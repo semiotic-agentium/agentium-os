@@ -95,6 +95,23 @@ fn tool_session_trace(message: &str) {
     }
 }
 
+/// Extract target.agent_package from open_input for delegation tools.
+/// Supports system/internal_a2a, system/a2a, and support/a2aRelay (same Open shape).
+fn extract_delegation_target_from_open_input(
+    tool_name: &str,
+    open_input: &Value,
+) -> Option<String> {
+    const A2A_TOOLS: [&str; 3] = ["system/internal_a2a", "system/a2a", "support/a2aRelay"];
+    if !A2A_TOOLS.contains(&tool_name) {
+        return None;
+    }
+    let target = open_input
+        .get("target")
+        .and_then(|t| t.get("agent_package"))
+        .and_then(Value::as_str)?;
+    Some(target.to_string())
+}
+
 /// Map from BAML function name to session plan type name (from builder-generated session_plan_functions.json).
 /// When set, the runtime resolves the tool from the invoking function name instead of requiring __type in the JSON.
 pub type SessionPlanFunctionsMap = std::collections::HashMap<String, String>;
@@ -126,6 +143,8 @@ struct ToolCallSessionState {
 struct ToolSessionScope {
     tool_name: String,
     scope: context::RuntimeScope,
+    /// Open-phase input; used to extract delegation_target for system/internal_a2a.
+    open_input: serde_json::Value,
 }
 
 #[derive(Clone)]
@@ -170,6 +189,7 @@ impl ToolExecutionHandle {
 
         let start = Instant::now();
         let context_id = scope.context_id().clone();
+        let agent_id = scope.agent_id().clone();
         let metadata = build_metadata_map_with_phase(&scope, Some("execute"));
 
         // Build context for interceptors
@@ -179,6 +199,7 @@ impl ToolExecutionHandle {
             args: args.clone(),
             metadata: metadata.clone(),
             runtime_scope: scope.clone(),
+            delegation_target: None,
         };
 
         // Start effect and get token (type-safe start/complete pairing)
@@ -187,6 +208,7 @@ impl ToolExecutionHandle {
             function_name: None,
             args: args.clone(),
             metadata: metadata.clone(),
+            delegation_target: None,
         };
         let effect_token = if let Some(emitter) = self.effect_emitter.as_ref() {
             match emitter
@@ -233,10 +255,10 @@ impl ToolExecutionHandle {
         // If we get here, the decision is Allow (blocking would have returned Err)
         let final_args = args;
 
-        // Execute the tool (context_id required)
+        // Execute the tool (context_id and agent_id from scope)
         let result = self
             .tool_registry
-            .execute(name, final_args, &context_id)
+            .execute(name, final_args, &context_id, &agent_id)
             .await;
 
         // Calculate duration
@@ -289,15 +311,18 @@ impl ToolSessionExecutionHandle {
     ) -> Result<ToolSessionId> {
         let scope = scope.clone();
         let context_id = scope.context_id().clone();
+        let agent_id = scope.agent_id().clone();
 
         let start = Instant::now();
         let metadata = build_metadata_map_with_phase(&scope, Some("open"));
+        let delegation_target = extract_delegation_target_from_open_input(tool_name, &open_input);
         let context = ToolCallContext {
             tool_name: tool_name.to_string(),
             function_name: None,
             args: open_input.clone(),
             metadata,
             runtime_scope: scope.clone(),
+            delegation_target,
         };
 
         tracing::info!(
@@ -313,7 +338,7 @@ impl ToolSessionExecutionHandle {
 
         let result = self
             .tool_registry
-            .open_session(tool_name, open_input, &context_id)
+            .open_session(tool_name, open_input.clone(), &context_id, &agent_id)
             .await;
         let duration_ms = start.elapsed().as_millis() as u64;
         let completion_result: Result<Value> = match &result {
@@ -355,6 +380,7 @@ impl ToolSessionExecutionHandle {
             ToolSessionScope {
                 tool_name: tool_name.to_string(),
                 scope,
+                open_input: open_input.clone(),
             },
         );
         if tool_session_trace_enabled() {
@@ -445,12 +471,18 @@ impl ToolSessionExecutionHandle {
             let start = Instant::now();
             let metadata = build_metadata_map_with_phase(&session_scope.scope, Some("send"));
 
+            let delegation_target = extract_delegation_target_from_open_input(
+                &session_scope.tool_name,
+                &session_scope.open_input,
+            );
+
             let context = ToolCallContext {
                 tool_name: session_scope.tool_name.clone(),
                 function_name: None,
                 args: input.clone(),
                 metadata,
                 runtime_scope: session_scope.scope.clone(),
+                delegation_target,
             };
 
             let interceptor_registry = self.interceptor_registry.lock().await;
@@ -477,12 +509,16 @@ impl ToolSessionExecutionHandle {
             // Emit ToolStarted so relay can send TASK_STATE_WORKING (session path does not use execute_tool).
             if is_new_send {
                 if let Some(emitter) = self.effect_emitter.as_ref() {
-                    let effect_metadata = ToolEffectMetadata {
+                    let mut effect_metadata = ToolEffectMetadata {
                         tool_name: session_scope.tool_name.clone(),
                         function_name: None,
                         args: input.clone(),
                         metadata: context.metadata.clone(),
+                        delegation_target: None,
                     };
+                    if let Some(ref target) = context.delegation_target {
+                        effect_metadata.delegation_target = Some(target.clone());
+                    }
                     if let Ok(token) = emitter
                         .start_tool(session_scope.scope.context_id().clone(), effect_metadata)
                         .await
@@ -882,6 +918,11 @@ impl BamlRuntimeManager {
         }
     }
 
+    /// Set the session plan function map (for tests). Normally loaded from `session_plan_functions.json` when loading BAML.
+    pub fn set_session_plan_functions(&mut self, map: Option<SessionPlanFunctionsMap>) {
+        self.session_plan_functions = map;
+    }
+
     pub(crate) fn tool_execution_handle(&self) -> ToolExecutionHandle {
         ToolExecutionHandle {
             tool_registry: self.tool_registry.clone(),
@@ -1039,12 +1080,27 @@ impl BamlRuntimeManager {
 
         // Pass tool registry and interceptor registry to executor
         let interceptor_registry = Some(self.interceptor_registry.clone());
-        let result = executor
+        let (result, completion) = executor
             .execute_function(scope, function_name, args, interceptor_registry)
             .await?;
         // If the BAML function returned a session plan (e.g. GetDiscoverAgentsPlan) or tool call, execute it and return the tool output so JS gets e.g. { agents, done } not the raw plan.
-        self.execute_tool_from_baml_result_or_value(scope, result, Some(function_name))
+        match self
+            .execute_tool_from_baml_result_or_value(scope, result, Some(function_name))
             .await
+        {
+            Ok(v) => {
+                if let Some(h) = completion {
+                    h.complete(Outcome::Success, None).await;
+                }
+                Ok(v)
+            }
+            Err(e) => {
+                if let Some(h) = completion {
+                    h.complete(Outcome::Failure, Some(e.to_string())).await;
+                }
+                Err(e)
+            }
+        }
     }
 
     /// Invoke a BAML function with streaming support
@@ -1400,7 +1456,15 @@ impl BamlRuntimeManager {
         baml_result: Value,
         source_baml_function: Option<&str>,
     ) -> Result<Value> {
-        if let Some(plan) = extract_tool_session_plan(&baml_result)? {
+        let plan_result = extract_tool_session_plan(&baml_result).map_err(|e| {
+            tracing::warn!(
+                error = %e,
+                source_function = ?source_baml_function,
+                "Tool session plan extraction failed; LLM effect completed with rejection_reason and PromptRejected emitted in provenance"
+            );
+            e
+        })?;
+        if let Some(plan) = plan_result {
             let tool_name = if let (Some(func_name), Some(map)) =
                 (source_baml_function, &self.session_plan_functions)
             {
@@ -1507,6 +1571,8 @@ impl BamlRuntimeManager {
         let mut last_output: Option<Value> = None;
         let mut streaming_outputs: Vec<Value> = Vec::new();
         let mut suspended = false;
+        // True after an explicit Next step returned Done; prevents the trailing implicit-Next block from running.
+        let mut next_returned_done = false;
 
         let total_steps = steps.len();
         for (index, step) in steps.into_iter().enumerate() {
@@ -1605,10 +1671,11 @@ impl BamlRuntimeManager {
                             }
                             ToolStep::Done { output } => {
                                 last_output = output;
-                                // Do not close the session here: the coordinator may return another
-                                // plan (e.g. [Send, Next]) for the same session. Only explicit
-                                // Finish or Abort steps close the session.
-                                session_id = None;
+                                next_returned_done = true;
+                                // Do not clear session_id here: a subsequent step in this plan may be
+                                // Finish or Abort, which must call tool_session_finish/abort. Only
+                                // those steps clear session_id. Continuation plans ([Send, Next]
+                                // without Open) reuse the session via find_existing_session_for_scope_and_tool.
                                 break;
                             }
                             ToolStep::Error { error } => {
@@ -1655,10 +1722,10 @@ impl BamlRuntimeManager {
         }
 
         // If session is still open and no explicit Next was called, call Next to get result.
-        // Skip when we broke on Suspended (session left open for resume).
+        // Skip when we broke on Suspended (session left open for resume) or when an explicit Next already returned Done.
         if suspended {
             // Leave session open; streaming_outputs already has the suspended output.
-        } else if let Some(session) = session_id.as_ref() {
+        } else if !next_returned_done && let Some(session) = session_id.as_ref() {
             loop {
                 match self.tool_session_next(session).await? {
                     ToolStep::Streaming { output } => {

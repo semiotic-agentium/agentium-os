@@ -25,15 +25,18 @@ impl ProvVocabularyType for LlmCallActivityId {
     const VOCAB_TYPE: &'static str = a2a_types::LLM_CALL;
 }
 
+/// Deterministic composite from operational identifiers: (context_id, scope_id, agent_id, ordinal).
+/// Scope_id is message_id (Message scope) or task_id (Task scope). Ordinal is call index within scope.
 pub struct LlmCallActivityInput<'a> {
-    pub event_id: &'a EventId,
+    pub scope_key: &'a str,
+    pub ordinal: u64,
 }
 
 impl ProvDerivedIdTemplate for LlmCallActivityId {
     type Input<'a> = LlmCallActivityInput<'a>;
 
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
-        DerivedId::from_parts("llm_call", [input.event_id.as_str()])
+        DerivedId::from_parts("llm_call", [input.scope_key, &input.ordinal.to_string()])
     }
 }
 
@@ -49,15 +52,46 @@ impl ProvVocabularyType for LlmPromptEntityId {
     const VOCAB_TYPE: &'static str = a2a_types::LLM_PROMPT;
 }
 
+/// Same composite as LlmCallActivityId: one prompt entity per LLM call.
 pub struct LlmPromptEntityInput<'a> {
-    pub event_id: &'a EventId,
+    pub scope_key: &'a str,
+    pub ordinal: u64,
 }
 
 impl ProvDerivedIdTemplate for LlmPromptEntityId {
     type Input<'a> = LlmPromptEntityInput<'a>;
 
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
-        DerivedId::from_parts("llm_prompt", [input.event_id.as_str()])
+        DerivedId::from_parts("llm_prompt", [input.scope_key, &input.ordinal.to_string()])
+    }
+}
+
+/// Activity representing an instantaneous rejection of an LLM prompt's output (e.g. plan extraction failure).
+pub struct PromptRejectedActivityId;
+impl DerivedConstructible for PromptRejectedActivityId {}
+impl ProvIdSemantics for PromptRejectedActivityId {
+    const KIND: ProvKind = ProvKind::Activity;
+}
+impl ProvActivitySemantics for PromptRejectedActivityId {}
+impl ProvDerivedActivitySemantics for PromptRejectedActivityId {}
+impl ProvVocabularyType for PromptRejectedActivityId {
+    const VOCAB_TYPE: &'static str = a2a_types::PROMPT_REJECTED;
+}
+
+/// Same composite as LlmCallActivityId: one rejection per LLM call (rejects that call's output).
+pub struct PromptRejectedActivityInput<'a> {
+    pub scope_key: &'a str,
+    pub ordinal: u64,
+}
+
+impl ProvDerivedIdTemplate for PromptRejectedActivityId {
+    type Input<'a> = PromptRejectedActivityInput<'a>;
+
+    fn build<'a>(input: Self::Input<'a>) -> DerivedId {
+        DerivedId::from_parts(
+            "prompt_rejected",
+            [input.scope_key, &input.ordinal.to_string()],
+        )
     }
 }
 
@@ -73,15 +107,17 @@ impl ProvVocabularyType for ToolCallActivityId {
     const VOCAB_TYPE: &'static str = a2a_types::TOOL_CALL;
 }
 
+/// Deterministic composite from operational identifiers: (context_id, scope_id, agent_id, ordinal).
 pub struct ToolCallActivityInput<'a> {
-    pub event_id: &'a EventId,
+    pub scope_key: &'a str,
+    pub ordinal: u64,
 }
 
 impl ProvDerivedIdTemplate for ToolCallActivityId {
     type Input<'a> = ToolCallActivityInput<'a>;
 
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
-        DerivedId::from_parts("tool_call", [input.event_id.as_str()])
+        DerivedId::from_parts("tool_call", [input.scope_key, &input.ordinal.to_string()])
     }
 }
 
@@ -97,15 +133,46 @@ impl ProvVocabularyType for ToolArgsEntityId {
     const VOCAB_TYPE: &'static str = a2a_types::TOOL_ARGS;
 }
 
+/// Same composite as ToolCallActivityId: one args entity per tool call.
 pub struct ToolArgsEntityInput<'a> {
-    pub event_id: &'a EventId,
+    pub scope_key: &'a str,
+    pub ordinal: u64,
 }
 
 impl ProvDerivedIdTemplate for ToolArgsEntityId {
     type Input<'a> = ToolArgsEntityInput<'a>;
 
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
-        DerivedId::from_parts("tool_args", [input.event_id.as_str()])
+        DerivedId::from_parts("tool_args", [input.scope_key, &input.ordinal.to_string()])
+    }
+}
+
+/// Entity representing the delegated-to agent for system/internal_a2a (write-time provenance).
+pub struct DelegationTargetEntityId;
+impl DerivedConstructible for DelegationTargetEntityId {}
+impl ProvIdSemantics for DelegationTargetEntityId {
+    const KIND: ProvKind = ProvKind::Entity;
+}
+impl ProvEntitySemantics for DelegationTargetEntityId {}
+impl ProvDerivedEntitySemantics for DelegationTargetEntityId {}
+impl ProvVocabularyType for DelegationTargetEntityId {
+    const VOCAB_TYPE: &'static str = a2a_types::DELEGATION_TARGET;
+}
+
+/// Same composite as ToolCallActivityId: one delegation target per tool call.
+pub struct DelegationTargetEntityInput<'a> {
+    pub scope_key: &'a str,
+    pub ordinal: u64,
+}
+
+impl ProvDerivedIdTemplate for DelegationTargetEntityId {
+    type Input<'a> = DelegationTargetEntityInput<'a>;
+
+    fn build<'a>(input: Self::Input<'a>) -> DerivedId {
+        DerivedId::from_parts(
+            "delegation_target",
+            [input.scope_key, &input.ordinal.to_string()],
+        )
     }
 }
 
@@ -133,7 +200,7 @@ impl ProvDerivedIdTemplate for TaskEntityId {
     }
 }
 
-/// Entity representing a task state snapshot.
+/// Entity representing a task state. One node per (task_id, status). Idempotent MERGE.
 pub struct TaskStateEntityId;
 impl DerivedConstructible for TaskStateEntityId {}
 impl ProvIdSemantics for TaskStateEntityId {
@@ -147,46 +214,21 @@ impl ProvVocabularyType for TaskStateEntityId {
 
 pub struct TaskStateEntityInput<'a> {
     pub task_id: &'a TaskId,
-    pub timestamp_ms: u64,
+    pub status: &'a str,
+}
+
+/// Canonical TaskState entity ID. One node per (task_id, status). Idempotent MERGE.
+pub fn task_state_entity_id_string(task_id: &str, status: &str) -> String {
+    format!("task_state:{task_id}:{status}")
 }
 
 impl ProvDerivedIdTemplate for TaskStateEntityId {
     type Input<'a> = TaskStateEntityInput<'a>;
 
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
-        DerivedId::new(format!(
-            "task_state:{}:{}",
+        DerivedId::new(task_state_entity_id_string(
             input.task_id.as_str(),
-            input.timestamp_ms
-        ))
-    }
-}
-
-/// Entity representing the previous task state snapshot.
-pub struct TaskStatePrevEntityId;
-impl DerivedConstructible for TaskStatePrevEntityId {}
-impl ProvIdSemantics for TaskStatePrevEntityId {
-    const KIND: ProvKind = ProvKind::Entity;
-}
-impl ProvEntitySemantics for TaskStatePrevEntityId {}
-impl ProvDerivedEntitySemantics for TaskStatePrevEntityId {}
-impl ProvVocabularyType for TaskStatePrevEntityId {
-    const VOCAB_TYPE: &'static str = a2a_types::TASK_STATE;
-}
-
-pub struct TaskStatePrevEntityInput<'a> {
-    pub task_id: &'a TaskId,
-    pub timestamp_ms: u64,
-}
-
-impl ProvDerivedIdTemplate for TaskStatePrevEntityId {
-    type Input<'a> = TaskStatePrevEntityInput<'a>;
-
-    fn build<'a>(input: Self::Input<'a>) -> DerivedId {
-        DerivedId::new(format!(
-            "task_state:{}:{}:old",
-            input.task_id.as_str(),
-            input.timestamp_ms
+            input.status,
         ))
     }
 }
@@ -207,11 +249,16 @@ pub struct TaskExecutionActivityInput<'a> {
     pub task_id: &'a TaskId,
 }
 
+/// Canonical TaskExecution activity ID. One activity per task.
+pub fn task_execution_activity_id_string(task_id: &str) -> String {
+    format!("task_execution_{task_id}")
+}
+
 impl ProvDerivedIdTemplate for TaskExecutionActivityId {
     type Input<'a> = TaskExecutionActivityInput<'a>;
 
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
-        DerivedId::new(format!("task_execution_{}", input.task_id.as_str()))
+        DerivedId::new(task_execution_activity_id_string(input.task_id.as_str()))
     }
 }
 
@@ -284,11 +331,7 @@ impl ProvDerivedIdTemplate for ArtifactByTypeEntityId {
     type Input<'a> = ArtifactByTypeEntityInput<'a>;
 
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
-        DerivedId::new(format!(
-            "artifact:{}:{}",
-            input.task_id.as_str(),
-            input.artifact_type
-        ))
+        DerivedId::from_parts("artifact", [input.task_id.as_str(), input.artifact_type])
     }
 }
 
@@ -313,11 +356,10 @@ impl ProvDerivedIdTemplate for ArtifactByEventEntityId {
     type Input<'a> = ArtifactByEventEntityInput<'a>;
 
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
-        DerivedId::new(format!(
-            "artifact:{}:{}",
-            input.task_id.as_str(),
-            input.event_id.as_str()
-        ))
+        DerivedId::from_parts(
+            "artifact",
+            [input.task_id.as_str(), input.event_id.as_str()],
+        )
     }
 }
 
@@ -373,14 +415,16 @@ pub struct ArchiveEntityInput<'a> {
     pub archive_path: &'a str,
 }
 
+fn sanitize_archive_path(path: &str) -> String {
+    path.replace(['/', '\\'], "_")
+}
+
 impl ProvDerivedIdTemplate for ArchiveEntityId {
     type Input<'a> = ArchiveEntityInput<'a>;
 
     fn build<'a>(input: Self::Input<'a>) -> DerivedId {
-        DerivedId::new(format!(
-            "archive:{}",
-            input.archive_path.replace(['/', '\\'], "_")
-        ))
+        let sanitized = sanitize_archive_path(input.archive_path);
+        DerivedId::from_parts("archive", [sanitized.as_str()])
     }
 }
 

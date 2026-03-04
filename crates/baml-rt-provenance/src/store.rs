@@ -50,7 +50,7 @@ pub trait ProvenanceWriter: ProvenanceContextReader + Send + Sync {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProvenanceContextMessage {
     pub message_id: MessageId,
     pub timestamp_ms: u64,
@@ -58,7 +58,7 @@ pub struct ProvenanceContextMessage {
     pub content: Vec<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProvenanceConversationContextItem {
     pub timestamp_ms: u64,
     pub event_id: EventId,

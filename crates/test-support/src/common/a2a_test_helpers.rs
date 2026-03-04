@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
 use baml_rt::a2a_types::{
-    A2aMessageId, JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER,
-    SendMessageRequest,
+    A2aMessageId, JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, SendMessageRequest,
 };
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
 use serde_json::Value;
@@ -20,7 +19,7 @@ pub fn user_message_with_task(
 ) -> Message {
     Message {
         message_id: A2aMessageId::incoming(ExternalId::new(message_id)),
-        role: MessageRole::String(ROLE_USER.to_string()),
+        role: MessageRole::User,
         parts: vec![Part {
             text: Some(text.to_string()),
             ..Part::default()

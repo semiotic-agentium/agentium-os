@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use baml_rt_a2a::{
     a2a_store::{ConversationContextSource, TaskRepository, TaskStore},
-    a2a_types::{Message, MessageRole, Part, ROLE_USER},
+    a2a_types::{Message, MessageRole, Part},
 };
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
 use serde_json::Value;
@@ -26,7 +26,7 @@ fn make_message(
 ) -> Message {
     Message {
         message_id: baml_rt_a2a::a2a_types::A2aMessageId::incoming(ExternalId::new(message_id)),
-        role: MessageRole::String(ROLE_USER.to_string()),
+        role: MessageRole::User,
         parts: vec![Part {
             text: Some(text.to_string()),
             ..Default::default()

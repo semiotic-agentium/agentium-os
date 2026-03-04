@@ -1,6 +1,6 @@
 use baml_rt_core::{
     Outcome,
-    ids::{ContextId, ExternalId, MessageId, TaskId},
+    ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
     A2aRelationType, LlmUsage, ProvEvent, normalize_event, vocabulary::a2a_roles,
@@ -34,9 +34,14 @@ fn normalize_tool_call_completed_keeps_args_role_contract() {
         "support/clickup".to_string(),
         None,
         serde_json::json!({"task_id":"task-901"}),
-        serde_json::json!({"phase":"send","result":{"tasks":[]}}),
+        serde_json::json!({
+            "agent_id": "00000000-0000-0000-0000-000000000001",
+            "phase": "send",
+            "result": {"tasks": []}
+        }),
         15,
         Outcome::Success,
+        None,
     );
     let normalized = normalize_event(&event).expect("normalize tool call completed");
 
@@ -51,6 +56,48 @@ fn normalize_tool_call_completed_keeps_args_role_contract() {
 }
 
 #[test]
+fn normalize_tool_call_completed_with_delegation_target_creates_was_delegated_to() {
+    let context_id = ContextId::new(8, 1);
+    let task_id = TaskId::from_external(ExternalId::new("task-delegation"));
+    let event = ProvEvent::tool_call_completed_task(
+        context_id,
+        task_id,
+        "system/internal_a2a".to_string(),
+        None,
+        serde_json::json!({"text": "hello"}),
+        serde_json::json!({
+            "phase": "send",
+            "agent_id": "00000000-0000-0000-0000-000000000001",
+            "task_id": "task-delegation",
+            "message_id": "msg-1",
+            "result": {"chunks": []}
+        }),
+        100,
+        Outcome::Success,
+        Some("claude-session-demo".to_string()),
+    );
+    let normalized = normalize_event(&event).expect("normalize tool call with delegation target");
+
+    let has_delegation_role = normalized
+        .document
+        .used()
+        .any(|(_, rel)| rel.role.as_deref() == Some(a2a_roles::DELEGATION_TARGET));
+    assert!(
+        has_delegation_role,
+        "normalized internal_a2a with delegation_target must include USED relation with role a2a:delegation_target"
+    );
+
+    let has_delegation_entity = normalized
+        .document
+        .entities()
+        .any(|(id, _)| id.as_str().contains("delegation_target"));
+    assert!(
+        has_delegation_entity,
+        "normalized internal_a2a with delegation_target must create DelegationTarget entity"
+    );
+}
+
+#[test]
 fn normalize_task_scoped_call_with_metadata_message_id_attaches_message_context() {
     let event = ProvEvent::llm_call_completed_task(
         ContextId::new(9, 1),
@@ -59,7 +106,10 @@ fn normalize_task_scoped_call_with_metadata_message_id_attaches_message_context(
         "model-x".to_string(),
         "ChooseAction".to_string(),
         serde_json::json!({"messages": []}),
-        serde_json::json!({"message_id": "cli-msg-1"}),
+        serde_json::json!({
+            "agent_id": "00000000-0000-0000-0000-000000000001",
+            "message_id": "cli-msg-1"
+        }),
         LlmUsage::Known {
             prompt_tokens: 1,
             completion_tokens: 2,
@@ -82,6 +132,8 @@ fn normalize_task_scoped_call_with_metadata_message_id_attaches_message_context(
 #[test]
 fn normalize_same_message_id_in_different_contexts_produces_distinct_message_nodes() {
     let message_id = MessageId::from_external(ExternalId::new("cli-msg-1"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap());
 
     let event_a = ProvEvent::message_received_global(
         ContextId::new(100, 1),
@@ -89,6 +141,7 @@ fn normalize_same_message_id_in_different_contexts_produces_distinct_message_nod
         "ROLE_USER".to_string(),
         vec!["hello".to_string()],
         None,
+        agent_id.clone(),
         1,
     );
     let event_b = ProvEvent::message_received_global(
@@ -97,6 +150,7 @@ fn normalize_same_message_id_in_different_contexts_produces_distinct_message_nod
         "ROLE_USER".to_string(),
         vec!["hello".to_string()],
         None,
+        agent_id,
         2,
     );
 
@@ -135,5 +189,59 @@ fn normalize_same_message_id_in_different_contexts_produces_distinct_message_nod
     assert_ne!(
         proc_a, proc_b,
         "message processing activity id must be context-scoped to avoid cross-context collisions"
+    );
+}
+
+#[test]
+fn normalize_message_role_aliases_to_wire_constants() {
+    let message_id = MessageId::from_external(ExternalId::new("role-alias-1"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap());
+    let event = ProvEvent::message_sent_global(
+        ContextId::new(111, 1),
+        message_id,
+        "assistant".to_string(),
+        vec!["hello".to_string()],
+        None,
+        agent_id,
+        1,
+    );
+
+    let normalized = normalize_event(&event).expect("normalize message role alias");
+    let role_values: Vec<String> = normalized
+        .document
+        .entities()
+        .filter(|(id, _)| id.as_str().starts_with("message:"))
+        .filter_map(|(_, entity)| entity.attributes.get("a2a:role"))
+        .filter_map(serde_json::Value::as_str)
+        .map(ToString::to_string)
+        .collect();
+
+    assert!(
+        role_values.iter().any(|role| role == "ROLE_AGENT"),
+        "message entity role must be canonical ROLE_AGENT"
+    );
+}
+
+#[test]
+fn normalize_rejects_empty_message_role() {
+    let message_id = MessageId::from_external(ExternalId::new("role-empty-1"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap());
+    let event = ProvEvent::message_received_global(
+        ContextId::new(112, 1),
+        message_id,
+        "".to_string(),
+        vec!["hello".to_string()],
+        None,
+        agent_id,
+        1,
+    );
+
+    let err = normalize_event(&event).expect_err("empty role must fail normalization");
+    let err_text = err.to_string();
+    assert!(
+        err_text.contains("message role must be non-empty"),
+        "expected empty role rejection, got: {err_text}"
     );
 }

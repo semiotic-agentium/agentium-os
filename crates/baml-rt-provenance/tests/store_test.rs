@@ -32,6 +32,7 @@ async fn test_normalize_event_snapshot_for_tool_call_started() {
         None,
         json!({"input": "value"}),
         json!({"message_id": "msg-1", "agent_id": "00000000-0000-0000-0000-000000000010"}),
+        None,
     );
 
     assert_eq!(event.context_id(), &ContextId::new(1, 1));
@@ -61,7 +62,6 @@ async fn test_snapshot_exemplary_mermaid_agent_flow() {
 
     store
         .add_event(ProvEvent::agent_booted(
-            context_id.clone(),
             agent_id.clone(),
             AgentType::new("clickup_agent").expect("agent_type"),
             "1.0.0".to_string(),
@@ -70,13 +70,17 @@ async fn test_snapshot_exemplary_mermaid_agent_flow() {
         .await
         .expect("agent_booted");
     store
-        .add_event(ProvEvent::task_created(
+        .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+        .await
+        .expect("task_exists");
+    store
+        .add_event(ProvEvent::task_execution_started(
             context_id.clone(),
             task_id.clone(),
-            agent_id,
+            agent_id.clone(),
         ))
         .await
-        .expect("task_created");
+        .expect("task_execution_started");
     store
         .add_event(ProvEvent::message_received_task(
             context_id.clone(),
@@ -85,6 +89,7 @@ async fn test_snapshot_exemplary_mermaid_agent_flow() {
             "user".to_string(),
             vec!["how many tasks are in to do?".to_string()],
             None,
+            agent_id.clone(),
             1_771_470_000_001,
         ))
         .await
@@ -129,6 +134,7 @@ async fn test_snapshot_exemplary_mermaid_agent_flow() {
             }),
             976,
             Outcome::Success,
+            None,
         ))
         .await
         .expect("tool_call_completed");
@@ -140,6 +146,7 @@ async fn test_snapshot_exemplary_mermaid_agent_flow() {
             "ROLE_AGENT".to_string(),
             vec!["Found 1 team(s)".to_string()],
             None,
+            agent_id.clone(),
             1_771_470_000_010,
         ))
         .await
@@ -166,7 +173,6 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
 
     store
         .add_event(ProvEvent::agent_booted(
-            context_id.clone(),
             agent_id.clone(),
             AgentType::new("clickup_agent").expect("agent_type"),
             "1.0.0".to_string(),
@@ -175,13 +181,17 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
         .await
         .expect("agent_booted");
     store
-        .add_event(ProvEvent::task_created(
+        .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+        .await
+        .expect("task_exists");
+    store
+        .add_event(ProvEvent::task_execution_started(
             context_id.clone(),
             task_id.clone(),
-            agent_id,
+            agent_id.clone(),
         ))
         .await
-        .expect("task_created");
+        .expect("task_execution_started");
     store
         .add_event(ProvEvent::message_received_task(
             context_id.clone(),
@@ -190,6 +200,7 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
             "user".to_string(),
             vec!["Draft a weekly status update".to_string()],
             None,
+            agent_id.clone(),
             1_771_470_111_001,
         ))
         .await
@@ -203,6 +214,7 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
         ))
         .await
         .expect("status_submitted");
+
     store
         .add_event(ProvEvent::message_sent_task(
             context_id.clone(),
@@ -211,6 +223,7 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
             "ROLE_AGENT".to_string(),
             vec!["Need project scope before I can proceed.".to_string()],
             None,
+            agent_id.clone(),
             1_771_470_111_003,
         ))
         .await
@@ -232,6 +245,7 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
             "user".to_string(),
             vec!["Use the platform project context.".to_string()],
             None,
+            agent_id.clone(),
             1_771_470_111_005,
         ))
         .await
@@ -260,6 +274,7 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
             }),
             145,
             Outcome::Success,
+            None,
         ))
         .await
         .expect("tool_call_completed");
@@ -282,6 +297,7 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
             "ROLE_AGENT".to_string(),
             vec!["Draft is ready and attached.".to_string()],
             None,
+            agent_id.clone(),
             1_771_470_111_010,
         ))
         .await
@@ -296,10 +312,11 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
         .await
         .expect("status_completed");
 
-    let exported = GraphExporter::new(store)
+    let exported = GraphExporter::new(store.clone())
         .export_by_context(context_id.as_str())
         .await
         .expect("export graph by context");
+
     let simplified = simplify_graph(&exported);
     let mermaid = render_sequence_diagram(&simplified);
 
@@ -308,16 +325,89 @@ async fn test_snapshot_exemplary_multiturn_lifecycle_mermaid() {
             && mermaid.contains("Use the platform project context."),
         "expected both user turns in mermaid: {mermaid}"
     );
-    assert!(
-        mermaid.contains("status submitted")
-            && mermaid.contains("input-required")
-            && mermaid.contains("status working"),
-        "expected status lifecycle notes in mermaid: {mermaid}"
-    );
+    // TaskState notes removed from sequence diagram (LLM/tool arrows are more useful).
     assert!(
         mermaid.contains("Artifact application/markdown"),
         "expected artifact note in mermaid: {mermaid}"
     );
 
     assert_snapshot!("exemplary_multiturn_lifecycle_mermaid", mermaid);
+}
+
+#[tokio::test]
+async fn task_scoped_messages_without_agent_metadata_still_render_sequence_activity() {
+    let store = build_isolated_store("task-scoped-message-agent-link");
+
+    let context_id = ContextId::new(1_771_470_222_000, 1);
+    let task_id = TaskId::from_external(ExternalId::new("task-message-link-1"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000079").unwrap());
+
+    store
+        .add_event(ProvEvent::agent_booted(
+            agent_id.clone(),
+            AgentType::new("clickup_agent").expect("agent_type"),
+            "1.0.0".to_string(),
+            "clickup@1.0.0".to_string(),
+        ))
+        .await
+        .expect("agent_booted");
+    store
+        .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+        .await
+        .expect("task_exists");
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            agent_id.clone(),
+        ))
+        .await
+        .expect("task_execution_started");
+    store
+        .add_event(ProvEvent::message_received_task(
+            context_id.clone(),
+            task_id.clone(),
+            MessageId::from_external(ExternalId::new("msg-user-no-meta")),
+            "user".to_string(),
+            vec!["hello strict provenance".to_string()],
+            None,
+            agent_id.clone(),
+            1_771_470_222_001,
+        ))
+        .await
+        .expect("message_received");
+    store
+        .add_event(ProvEvent::message_sent_task(
+            context_id.clone(),
+            task_id,
+            MessageId::from_external(ExternalId::new("msg-agent-no-meta")),
+            "ROLE_AGENT".to_string(),
+            vec!["acknowledged".to_string()],
+            None,
+            agent_id.clone(),
+            1_771_470_222_002,
+        ))
+        .await
+        .expect("message_sent");
+
+    let exported = GraphExporter::new(store)
+        .export_by_context(context_id.as_str())
+        .await
+        .expect("export graph by context");
+    let simplified = simplify_graph(&exported);
+    let mermaid = render_sequence_diagram(&simplified);
+
+    assert!(
+        mermaid.contains("participant clickup_1_0_0"),
+        "expected named agent participant: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("User->>+clickup_1_0_0: hello strict provenance"),
+        "expected user message activity line with strict graph semantics: {mermaid}"
+    );
+    assert!(
+        mermaid.contains("clickup_1_0_0->>-User: acknowledged"),
+        "expected agent response activity line with strict graph semantics: {mermaid}"
+    );
 }

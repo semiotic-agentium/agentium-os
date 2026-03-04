@@ -145,7 +145,6 @@ async fn setup_slack_agent_with_provenance()
     let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
     provenance
         .add_event(ProvEvent::agent_booted(
-            ContextId::new(99, 1),
             agent_id.clone(),
             AgentType::new("slack-agent").expect("agent type"),
             "1.0.0".to_string(),

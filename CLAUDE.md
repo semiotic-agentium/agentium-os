@@ -77,6 +77,8 @@ JS code → `QuickJSBridge` → checks `globalThis` for JS function → if missi
 
 Host tools are session-based. BAML returns a declarative `ToolSessionPlan` describing FSM steps (Open → Send* → Next → Finish/Abort). The Rust runtime executes these steps; JavaScript never mediates host tool execution.
 
+**BAML return shape and session plans:** Any BAML result with a top-level `"steps"` array is parsed as a `ToolSessionPlan` (steps must have `op`: Open/Send/Next/Finish/Abort). BAML functions that return a *product* plan (e.g. ordered steps for a coordinator) must use a different key (e.g. `plan_steps`) so the runtime does not treat the result as an executable session plan. Only functions that are intended to return a session plan (and are listed in the builder-generated `session_plan_functions.json`) should emit `steps`.
+
 ### Conversation Handling (A2A DSL) — Reference Example
 
 The **best example** of multi-turn conversation and task lifecycle is the **task-lifecycle-demo** fixture: `tests/fixtures/agents/task-lifecycle-demo/src/index.ts`.

@@ -67,4 +67,3 @@ Before shipping an agent:
 2. Agent owns formatting and UX.
 3. LLM prompt avoids formatting instructions unless required by schema.
 4. Agent has a deterministic path for obvious inputs (IDs, links).
-

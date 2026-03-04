@@ -5,10 +5,10 @@ miss when refactoring. It is intended for coding agents and maintainers.
 
 ## HTTP A2A Endpoints
 
-- `POST /agents/{agent}/default/a2a`  
+- `POST /agents/{agent}/default/a2a`
   Collects the full A2A stream and returns JSON-RPC responses.
 
-- `POST /agents/{agent}/default/a2a/sse`  
+- `POST /agents/{agent}/default/a2a/sse`
   Streams JSON-RPC responses over Server-Sent Events (SSE).
 
 ## SSE Stream Lifetime (Important)
@@ -37,4 +37,3 @@ Run `handle_a2a_stream` directly on the existing runtime:
 | Symptom | Likely Cause | Fix |
 |---|---|---|
 | SSE returns only keep-alives | stream tasks dropped when short-lived runtime exits | run stream handler on host runtime |
-

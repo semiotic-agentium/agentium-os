@@ -1,6 +1,10 @@
 //! A2A request handler interface for non-standard transports.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use async_trait::async_trait;
 use baml_rt_core::{
@@ -14,10 +18,12 @@ use baml_rt_core::{
 use baml_rt_observability::{metrics, spans};
 use baml_rt_provenance::{
     A2aGraphStore, ProvEvent, ProvenanceContextMessage, ProvenanceContextReader,
-    ProvenanceConversationContextItem, ProvenanceInterceptor, ProvenanceWriter,
+    ProvenanceConversationContextItem, ProvenanceEffectSubscriber, ProvenanceInterceptor,
+    ProvenanceWriter,
 };
 use baml_rt_quickjs::{
     BamlRuntimeManager, QuickJSBridge, QuickJSConfig, baml_execution::ConversationContextProvider,
+    invoke_tool_handover,
 };
 use baml_rt_tools::{
     ToolFailure, ToolHandler, ToolName, ToolRegistry, ToolSession, ToolSessionError, ToolTypeSpec,
@@ -32,9 +38,13 @@ use crate::{
     a2a,
     a2a_store::{
         ConversationContextSource, ProvenanceTaskStore, TaskChunkApplier, TaskEventRecorder,
-        TaskRepository, TaskStoreBackend, TaskUpdateEvent, TaskUpdateQueue,
+        TaskRepository, TaskStoreBackend, TaskUpdateEvent, TaskUpdateQueue, message_role_string,
+        metadata_string_map, validated_message_content,
     },
-    a2a_types::{JSONRPCId, StreamChunkView, TaskArtifactUpdateEvent, TaskStatusUpdateEvent},
+    a2a_types::{
+        JSONRPCId, Message, ROLE_USER, StreamChunkView, TaskArtifactUpdateEvent,
+        TaskStatusUpdateEvent,
+    },
     auto_status::AutoWorkingStatusSubscriber,
     error_classifier::{A2aErrorClassifier, ErrorClassifier},
     events::{BroadcastEventEmitter, EventEmitter},
@@ -63,12 +73,24 @@ type LiveStreamSpawnPayload = (
 struct GraphqliteRuntimeStore {
     task_store: Arc<crate::graphqlite_task_subgraph_store::GraphqliteTaskSubgraphStore>,
     provenance: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+    agent_id: baml_rt_core::ids::AgentId,
 }
 
 impl GraphqliteRuntimeStore {
+    fn now_millis() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
     /// Single construction point: one GraphqliteTaskSubgraphStore over the same provenance Arc,
-    /// so pipeline and handler share the same graph/connection.
-    fn new(provenance: Arc<baml_rt_provenance::GraphqliteProvenanceStore>) -> Arc<Self> {
+    /// so pipeline and handler share the same graph/connection. agent_id is required for
+    /// message provenance (a message is always sent to/from an agent).
+    fn new(
+        provenance: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+        agent_id: baml_rt_core::ids::AgentId,
+    ) -> Arc<Self> {
         let graph: Arc<dyn A2aGraphStore> = provenance.clone();
         let context_reader: Arc<dyn ProvenanceContextReader> = provenance.clone();
         Arc::new(Self {
@@ -79,7 +101,75 @@ impl GraphqliteRuntimeStore {
                 ),
             ),
             provenance,
+            agent_id,
         })
+    }
+
+    async fn add_provenance_event_required(&self, event: ProvEvent, context: &str) -> Result<()> {
+        self.provenance.add_event(event).await.map_err(|source| {
+            BamlRtError::InvalidArgumentWithSource {
+                message: format!("failed to record provenance event for {context}"),
+                source: Box::new(source),
+            }
+        })
+    }
+
+    async fn emit_message_lifecycle_event(&self, message: &Message, operation: &str) -> Result<()> {
+        let context_id = message.context_id.clone().ok_or_else(|| {
+            BamlRtError::InvalidArgument(format!(
+                "context_id is required for {operation}; refusing implicit generation"
+            ))
+        })?;
+        let role = message_role_string(&message.role);
+        let content = validated_message_content(message, operation)?;
+        let metadata = message.metadata.as_ref().map(metadata_string_map);
+        tracing::debug!(
+            context_id = %context_id,
+            message_id = %message.message_id.as_message_id(),
+            role = %role,
+            "emit_message_lifecycle_event: emitting MessageReceived/MessageSent"
+        );
+        let event = match (role.as_str(), message.task_id.clone()) {
+            (ROLE_USER, Some(task_id)) => ProvEvent::message_received_task(
+                context_id,
+                task_id,
+                message.message_id.as_message_id().clone(),
+                role,
+                content,
+                metadata,
+                self.agent_id.clone(),
+                Self::now_millis(),
+            ),
+            (ROLE_USER, None) => ProvEvent::message_received_global(
+                context_id,
+                message.message_id.as_message_id().clone(),
+                role,
+                content,
+                metadata,
+                self.agent_id.clone(),
+                Self::now_millis(),
+            ),
+            (_, Some(task_id)) => ProvEvent::message_sent_task(
+                context_id,
+                task_id,
+                message.message_id.as_message_id().clone(),
+                role,
+                content,
+                metadata,
+                self.agent_id.clone(),
+                Self::now_millis(),
+            ),
+            (_, None) => ProvEvent::message_sent_global(
+                context_id,
+                message.message_id.as_message_id().clone(),
+                role,
+                content,
+                metadata,
+                self.agent_id.clone(),
+                Self::now_millis(),
+            ),
+        };
+        self.add_provenance_event_required(event, operation).await
     }
 }
 
@@ -110,6 +200,8 @@ impl TaskRepository for GraphqliteRuntimeStore {
         self.task_store.cancel(id).await
     }
     async fn insert_message(&self, message: &crate::a2a_types::Message) -> Result<()> {
+        self.emit_message_lifecycle_event(message, "graphqlite insert_message")
+            .await?;
         self.task_store.insert_message(message).await
     }
 }
@@ -894,7 +986,7 @@ impl A2aAgentBuilderWithEffectEmitter {
             | (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Graphqlite(store)) => {
                 // Single construction: one GraphqliteRuntimeStore from the provided store Arc;
                 // same instance used as TaskStoreBackend and ProvenanceWriter for pipeline and handler.
-                let runtime_store = GraphqliteRuntimeStore::new(store);
+                let runtime_store = GraphqliteRuntimeStore::new(store, agent_id.clone());
                 let provenance_writer: Arc<dyn ProvenanceWriter> = runtime_store.clone();
                 let task_store: Arc<dyn TaskStoreBackend> =
                     Arc::new(ProvenanceTaskStore::with_backend(
@@ -942,6 +1034,16 @@ impl A2aAgentBuilderWithEffectEmitter {
         effect_emitter
             .subscribe_effect_subscriber(relay.clone())
             .await;
+        // Provenance: effect bus is the source of truth for LLM/tool completion (including deferred
+        // plan failures). Interceptors only see trace-based completion; when execute_tool_from_baml_result
+        // fails (e.g. empty steps), handle.complete(Failure) emits via effect bus.
+        if let Some(ref writer) = provenance_writer {
+            effect_emitter
+                .subscribe_effect_subscriber(Arc::new(ProvenanceEffectSubscriber::new(
+                    writer.clone(),
+                )))
+                .await;
+        }
         let request_router: Arc<dyn RequestRouter> = Arc::new(MethodBasedRouter::new(
             task_handler.clone(),
             js_invoker,
@@ -1060,17 +1162,26 @@ fn build_stream_sessions_and_relay(
 }
 
 /// Scope resolution for outcome handling. No optionality; branching is on the typed invocation context.
+///
+/// **Provenance invariant (agent,task) not shared:** For LiveSessionFirstTurn, when the message
+/// carries a task_id (e.g. delegated worker task from internal_a2a), use it. Otherwise fall back
+/// to context_id-based task for direct first-turn. This ensures MessageReceived is attributed to
+/// the receiver's (agent_id, task_id), never the sender's.
 fn resolve_scope_for_outcome(
     parsed: &a2a::A2aRequest,
     ctx: &OutcomeInvocationContext,
 ) -> RequestScope {
     match ctx {
         OutcomeInvocationContext::Standalone => parsed.resolved_scope.clone(),
-        OutcomeInvocationContext::LiveSessionFirstTurn { context_id } => RequestScope::TaskScoped {
-            context_id: context_id.clone(),
-            message_id: parsed.message_id().clone(),
-            task_id: TaskId::from_external(ExternalId::new(context_id.as_str().to_string())),
-        },
+        OutcomeInvocationContext::LiveSessionFirstTurn { context_id } => {
+            // Never use message.task_id from wire (could be coordinator's); use synthetic for first turn.
+            let task_id = TaskId::from_external(ExternalId::new(context_id.as_str().to_string()));
+            RequestScope::TaskScoped {
+                context_id: context_id.clone(),
+                message_id: parsed.message_id().clone(),
+                task_id,
+            }
+        }
         OutcomeInvocationContext::LiveSessionResume {
             context_id,
             task_id,
@@ -1270,7 +1381,15 @@ impl A2aAgent {
                                         "live session missing".to_string(),
                                     ),
                                 );
-                                let _ = response_tx.send(LiveResponseChunk(formatted)).await;
+                                if response_tx
+                                    .send(LiveResponseChunk(formatted))
+                                    .await
+                                    .is_err()
+                                {
+                                    tracing::debug!(
+                                        "live stream error/synthetic-final send failed (receiver dropped)"
+                                    );
+                                }
                                 break;
                             }
                         };
@@ -1347,14 +1466,14 @@ impl A2aAgent {
             );
             let mut completion = None;
             let mut last_task_id: Option<String> = None;
-            let mut seen_non_completed_terminal = false;
             let mut resume_chunk_count: u32 = 0;
 
             loop {
                 let outcome_msg = rx.recv().await;
 
                 let Some(outcome_msg) = outcome_msg else {
-                    // rx closed without terminal completion; emit synthetic final so client gets exactly one final: true.
+                    // rx closed without terminal completion (collector dropped before finalizing).
+                    // Emit completion chunk for client and store for provenance so task lifecycle completes.
                     let tid = last_task_id
                         .clone()
                         .or(session_task_id_str.clone())
@@ -1364,7 +1483,7 @@ impl A2aAgent {
                                 .and_then(|p| p.task_id_opt().map(|t| t.as_str().to_string()))
                         })
                         .unwrap_or_else(|| format!("stream-{}", session_context_id));
-                    let synthetic = json!({
+                    let completion_chunk = json!({
                         "task": {
                             "id": tid,
                             "contextId": session_context_id.as_str(),
@@ -1372,13 +1491,31 @@ impl A2aAgent {
                             "final": true
                         }
                     });
+                    if let Err(e) = self
+                        .live_result_pipeline
+                        .store_result(&completion_chunk)
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %e,
+                            "live stream: store_result for rx-closed completion failed (provenance may show Running)"
+                        );
+                    }
                     let formatted = self.response_formatter.format_stream_chunk(
                         request_id.clone(),
-                        synthetic,
+                        completion_chunk,
                         0_usize,
                         true,
                     );
-                    let _ = response_tx.send(LiveResponseChunk(formatted)).await;
+                    if response_tx
+                        .send(LiveResponseChunk(formatted))
+                        .await
+                        .is_err()
+                    {
+                        tracing::debug!(
+                            "live stream synthetic-final send failed (receiver dropped)"
+                        );
+                    }
                     break;
                 };
                 let (chunk, index, comp) = outcome_msg;
@@ -1388,9 +1525,6 @@ impl A2aAgent {
                 if !view.is_null() {
                     if let Some(tid) = view.task_id() {
                         last_task_id = Some(tid.as_str().to_string());
-                    }
-                    if view.is_non_completed_terminal() {
-                        seen_non_completed_terminal = true;
                     }
                     let store_span =
                         spans::live_stream_store_result(index, view.has_storable_payload());
@@ -1443,49 +1577,6 @@ impl A2aAgent {
                         );
                     }
                     break;
-                }
-                let effective_task_id = last_task_id
-                    .clone()
-                    .or(session_task_id_str.clone())
-                    .or_else(|| {
-                        a2a::A2aRequest::from_value(request_value.clone())
-                            .ok()
-                            .and_then(|p| p.task_id_opt().map(|t| t.as_str().to_string()))
-                    });
-                let emit_synthetic_completed = effective_task_id.as_ref().is_some()
-                    && !seen_non_completed_terminal
-                    && view.is_null()
-                    && comp.as_ref().is_some_and(|c| {
-                        matches!(
-                            c,
-                            StreamCompletion::SemanticFinal | StreamCompletion::ChannelClosed
-                        )
-                    });
-                if let Some(tid) = effective_task_id
-                    .as_ref()
-                    .filter(|_| emit_synthetic_completed)
-                {
-                    let synthetic = json!({
-                        "task": {
-                            "id": tid,
-                            "contextId": session_context_id.as_str(),
-                            "status": { "state": "TASK_STATE_COMPLETED" },
-                            "final": true
-                        }
-                    });
-                    let formatted_synthetic = self.response_formatter.format_stream_chunk(
-                        request_id.clone(),
-                        synthetic,
-                        index,
-                        false,
-                    );
-                    if response_tx
-                        .send(LiveResponseChunk(formatted_synthetic))
-                        .await
-                        .is_err()
-                    {
-                        tracing::debug!("live stream chunk send failed (receiver dropped)");
-                    }
                 }
                 let is_final = comp.is_some_and(StreamCompletion::is_wire_final);
                 let mut chunk_for_format = view.raw.clone();
@@ -1586,61 +1677,11 @@ impl A2aAgent {
             }
             a2a::A2aOutcome::Stream(handle) => {
                 let mut rx = handle.receiver;
-                let mut last_task_id: Option<String> = None;
-                let mut seen_non_completed_terminal = false;
                 // Stream in real time: receive → format → send immediately. No buffering.
                 while let Some((chunk, index, comp)) = rx.recv().await {
                     let view = StreamChunkView::new(chunk);
-                    if !view.is_null() {
-                        if let Some(tid) = view.task_id() {
-                            last_task_id = Some(tid.as_str().to_string());
-                        }
-                        if view.is_non_completed_terminal() {
-                            seen_non_completed_terminal = true;
-                        }
-                    }
                     if comp == Some(StreamCompletion::InputRequired) && view.is_null() {
                         break;
-                    }
-                    let effective_task_id = last_task_id.clone().or_else(|| {
-                        a2a::A2aRequest::from_value(request.clone())
-                            .ok()
-                            .and_then(|p| p.task_id_opt().map(|t| t.as_str().to_string()))
-                    });
-                    let emit_synthetic_completed = effective_task_id.as_ref().is_some()
-                        && !seen_non_completed_terminal
-                        && view.is_null()
-                        && comp.as_ref().is_some_and(|c| {
-                            matches!(
-                                c,
-                                StreamCompletion::SemanticFinal | StreamCompletion::ChannelClosed
-                            )
-                        });
-                    if let Some(tid) = effective_task_id
-                        .as_ref()
-                        .filter(|_| emit_synthetic_completed)
-                    {
-                        let context_id_str = a2a::A2aRequest::from_value(request.clone())
-                            .ok()
-                            .map(|p| p.context_id().as_str().to_string())
-                            .unwrap_or_else(|| "ctx-0-0".to_string());
-                        let synthetic = json!({
-                            "task": {
-                                "id": tid,
-                                "contextId": context_id_str,
-                                "status": { "state": "TASK_STATE_COMPLETED" },
-                                "final": true
-                            }
-                        });
-                        let formatted = self.response_formatter.format_stream_chunk(
-                            request_id.clone(),
-                            synthetic,
-                            index,
-                            false,
-                        );
-                        if stream_tx.send(formatted).await.is_err() {
-                            break;
-                        }
                     }
                     let is_final = comp.is_some_and(StreamCompletion::is_wire_final);
                     let mut chunk_for_format = view.raw.clone();
@@ -1743,24 +1784,31 @@ impl A2aAgent {
             let invocation_scope = InvocationScope::new(scope.clone());
             context::with_scope(scope, async move {
                 if let a2a::A2aParams::MessageSendStream(params) = &parsed_request.params {
-                    // When the inbound message carries a task_id, ensure the parent task row exists.
-                    if let Some(task_id) = params.message.task_id.clone() {
+                    let canonical_context_id = invocation_scope.context_id().clone();
+                    // Provenance invariant: use RECEIVER's (context_id, task_id), never sender's.
+                    // Scope is resolved from invocation_ctx; for delegation, message carries
+                    // worker's task_id; we override from scope so misattribution is impossible.
+                    let receiver_task_id = invocation_scope.task_id_opt().cloned();
+                    if let Some(ref task_id) = receiver_task_id {
                         self.task_store
-                            .ensure_task_exists(&task_id, params.message.context_id.as_ref())
+                            .ensure_task_exists(task_id, Some(&canonical_context_id))
                             .await?;
                     }
                     // Persist user message for conversation context (first turn has no task_id →
                     // message_received_global; resume has task_id → message_received_task).
                     // INVARIANT (read-after-write): insert_message completes before route() so
                     // conversation_context(context_id, limit) read in BAML sees this message.
-                    if params.message.context_id.is_some() {
-                        tracing::debug!(
-                            context_id = ?params.message.context_id,
-                            task_id = ?params.message.task_id,
-                            "MessageSendStream: insert_message before route"
-                        );
-                        self.task_store.insert_message(&params.message).await?;
-                    }
+                    //
+                    // Use scope's context_id and task_id so MessageReceived lands in receiver's
+                    // (agent_id, task_id). INVARIANT: (agent,task) is not shared; never use
+                    // message.task_id from the wire—it may be the sender's (coordinator's).
+                    self.task_store
+                        .insert_message_for_receiver(
+                            &params.message,
+                            canonical_context_id,
+                            receiver_task_id,
+                        )
+                        .await?;
                 }
                 let route_span = spans::a2a_route(
                     parsed_request.method().as_str(),
@@ -1863,26 +1911,13 @@ impl ToolSession for JsToolSession {
                 session_id = self.ctx.session_id
             )))
         })?;
-        // Handover to QuickJS on a blocking thread so the ToolSession future stays Send (design: spawn_blocking only at direct handover to QuickJS).
-        let scope = self.scope.clone();
-        let bridge = self.bridge.clone();
-        let tool_name = self.tool_name.clone();
-        let handle = tokio::runtime::Handle::current();
-        let result = tokio::task::spawn_blocking(move || {
-            handle.block_on(async move {
-                let mut bridge = bridge.lock().await;
-                bridge
-                    .invoke_js_tool_with_scope(&scope, &tool_name, input)
-                    .await
-            })
-        })
+        let result: Value = invoke_tool_handover(
+            self.bridge.clone(),
+            self.scope.clone(),
+            self.tool_name.clone(),
+            input,
+        )
         .await
-        .map_err(|err| {
-            ToolSessionError::Transport(BamlRtError::QuickJsWithSource {
-                context: "js tool join error".to_string(),
-                source: Box::new(err),
-            })
-        })?
         .map_err(ToolSessionError::Transport)?;
         if let Some(error) = result.get("error").and_then(Value::as_str) {
             self.completed = true;
@@ -1914,10 +1949,15 @@ impl ToolSession for JsToolSession {
 mod tests {
     use std::sync::Arc;
 
-    use baml_rt_core::context::InvocationScope;
+    use baml_rt_core::{
+        context::InvocationScope,
+        ids::{ContextId, ExternalId, TaskId},
+    };
+    use baml_rt_provenance::ProvenanceContextReader;
     use serde_json::json;
 
-    use super::A2aAgent;
+    use super::{A2aAgent, GraphqliteRuntimeStore, TaskRepository};
+    use crate::a2a_types::{A2aMessageId, Message, MessageRole, Part};
 
     #[tokio::test]
     async fn js_tool_can_be_called_via_baml_tool_registry() {
@@ -1958,5 +1998,54 @@ mod tests {
         };
 
         assert_eq!(result.get("sum").and_then(|v| v.as_i64()), Some(5));
+    }
+
+    #[tokio::test]
+    async fn graphqlite_runtime_store_insert_message_records_provenance_message_event() {
+        let provenance = baml_rt_provenance::GraphqliteStoreBuilder::in_memory()
+            .build()
+            .expect("build store");
+        let agent_id = baml_rt_core::ids::AgentId::from_uuid(
+            baml_rt_core::ids::UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
+        );
+        let runtime_store = GraphqliteRuntimeStore::new(provenance.clone(), agent_id);
+        let context_id = ContextId::new(99, 1);
+        let task_id = TaskId::from_external(ExternalId::new("task-ctx-99-1"));
+        runtime_store
+            .ensure_task_exists(&task_id, Some(&context_id))
+            .await
+            .expect("ensure task exists");
+
+        let message = Message {
+            message_id: A2aMessageId::incoming(ExternalId::new("ui-msg-99-1")),
+            role: MessageRole::User,
+            parts: vec![Part {
+                text: Some("hello machine".to_string()),
+                ..Default::default()
+            }],
+            context_id: Some(context_id.clone()),
+            task_id: Some(task_id),
+            reference_task_ids: Vec::new(),
+            extensions: Vec::new(),
+            metadata: None,
+            extra: Default::default(),
+        };
+        runtime_store
+            .insert_message(&message)
+            .await
+            .expect("insert message");
+
+        let messages = provenance
+            .context_messages(&context_id, None)
+            .await
+            .expect("context messages");
+        assert!(
+            messages.iter().any(|m| {
+                m.message_id.as_str() == "ui-msg-99-1"
+                    && m.role == "ROLE_USER"
+                    && m.content.iter().any(|line| line.contains("hello machine"))
+            }),
+            "expected persisted ROLE_USER message in provenance context history"
+        );
     }
 }

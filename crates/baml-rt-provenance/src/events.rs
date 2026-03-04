@@ -116,6 +116,9 @@ pub enum ProvEventData {
         function_name: Option<String>,
         args: Value,
         metadata: JsonValue,
+        /// For system/internal_a2a: the delegated-to agent package (write-time provenance).
+        /// Emitted on start so WAS_DELEGATED_TO exists during delegation (before completion).
+        delegation_target: Option<String>,
     },
     ToolCallCompleted {
         scope: CallScope,
@@ -125,6 +128,8 @@ pub enum ProvEventData {
         metadata: JsonValue,
         duration_ms: u64,
         outcome: Outcome,
+        /// For system/internal_a2a: the delegated-to agent package (write-time provenance).
+        delegation_target: Option<String>,
     },
     AgentBooted {
         agent_id: AgentId,
@@ -132,9 +137,21 @@ pub enum ProvEventData {
         agent_version: String,
         archive_path: String,
     },
-    TaskCreated {
+    /// Existential only: task entity exists. Idempotent. No agent, no execution.
+    TaskExists {
+        task_id: TaskId,
+        context_id: ContextId,
+    },
+    /// Agent begins executing the task. Deterministic: task_id, agent_id, context_id.
+    TaskExecutionStarted {
         task_id: TaskId,
         agent_id: AgentId,
+        context_id: ContextId,
+    },
+    /// Agent finishes (or abandons). May not occur.
+    TaskExecutionEnded {
+        task_id: TaskId,
+        context_id: ContextId,
     },
     TaskStatusChanged {
         task_id: TaskId,
@@ -151,12 +168,23 @@ pub enum ProvEventData {
         role: String,
         content: Vec<String>,
         metadata: Option<HashMap<String, String>>,
+        /// Agent that receives the message. Required: a message is always sent to an agent.
+        agent_id: AgentId,
     },
     MessageSent {
         id: MessageId,
         role: String,
         content: Vec<String>,
         metadata: Option<HashMap<String, String>>,
+        /// Agent that sent the message. Required: a message is always sent from an agent.
+        agent_id: AgentId,
+    },
+    /// Instantaneous event: output of an LLM prompt was rejected (e.g. ToolSessionPlan step missing op).
+    /// Linked to the prompt entity via the LLM call completion event id.
+    PromptRejected {
+        scope: CallScope,
+        llm_call_event_id: EventId,
+        reason: String,
     },
 }
 
@@ -177,10 +205,20 @@ pub struct GlobalEvent {
     pub data: ProvEventData,
 }
 
+/// AgentBooted has no context by design—it is a global event before any conversation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentBootedEvent {
+    pub id: EventId,
+    pub timestamp_ms: u64,
+    pub data: ProvEventData,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ProvEvent {
     Task(TaskScopedEvent),
     Global(GlobalEvent),
+    /// Context-free: agent boot precedes any conversation.
+    AgentBooted(AgentBootedEvent),
 }
 
 impl ProvEvent {
@@ -188,20 +226,29 @@ impl ProvEvent {
         match self {
             ProvEvent::Task(event) => &event.id,
             ProvEvent::Global(event) => &event.id,
+            ProvEvent::AgentBooted(event) => &event.id,
         }
     }
 
-    pub fn context_id(&self) -> &ContextId {
+    /// Context for scoped events. AgentBooted has no context by design.
+    pub fn context_id_opt(&self) -> Option<&ContextId> {
         match self {
-            ProvEvent::Task(event) => &event.context_id,
-            ProvEvent::Global(event) => &event.context_id,
+            ProvEvent::Task(event) => Some(&event.context_id),
+            ProvEvent::Global(event) => Some(&event.context_id),
+            ProvEvent::AgentBooted(_) => None,
         }
+    }
+
+    /// Panics if called on AgentBooted (which has no context).
+    pub fn context_id(&self) -> &ContextId {
+        self.context_id_opt()
+            .expect("AgentBooted has no context; use context_id_opt()")
     }
 
     pub fn task_id(&self) -> Option<&TaskId> {
         match self {
             ProvEvent::Task(event) => Some(&event.task_id),
-            ProvEvent::Global(_) => None,
+            ProvEvent::Global(_) | ProvEvent::AgentBooted(_) => None,
         }
     }
 
@@ -209,6 +256,7 @@ impl ProvEvent {
         match self {
             ProvEvent::Task(event) => event.timestamp_ms,
             ProvEvent::Global(event) => event.timestamp_ms,
+            ProvEvent::AgentBooted(event) => event.timestamp_ms,
         }
     }
 
@@ -216,6 +264,16 @@ impl ProvEvent {
         match self {
             ProvEvent::Task(event) => &event.data,
             ProvEvent::Global(event) => &event.data,
+            ProvEvent::AgentBooted(event) => &event.data,
+        }
+    }
+
+    /// Agent for MessageReceived/MessageSent. A message is always sent to/from an agent.
+    pub fn message_agent_id(&self) -> Option<&AgentId> {
+        match self.data() {
+            ProvEventData::MessageReceived { agent_id, .. }
+            | ProvEventData::MessageSent { agent_id, .. } => Some(agent_id),
+            _ => None,
         }
     }
 
@@ -331,6 +389,43 @@ impl ProvEvent {
         })
     }
 
+    pub fn prompt_rejected_global(
+        context_id: ContextId,
+        message_id: MessageId,
+        llm_call_event_id: EventId,
+        reason: String,
+    ) -> Self {
+        ProvEvent::Global(GlobalEvent {
+            id: next_event_id(),
+            context_id,
+            timestamp_ms: now_millis(),
+            data: ProvEventData::PromptRejected {
+                scope: CallScope::Message { message_id },
+                llm_call_event_id,
+                reason,
+            },
+        })
+    }
+
+    pub fn prompt_rejected_task(
+        context_id: ContextId,
+        task_id: TaskId,
+        llm_call_event_id: EventId,
+        reason: String,
+    ) -> Self {
+        ProvEvent::Task(TaskScopedEvent {
+            id: next_event_id(),
+            context_id,
+            task_id: task_id.clone(),
+            timestamp_ms: now_millis(),
+            data: ProvEventData::PromptRejected {
+                scope: CallScope::Task { task_id },
+                llm_call_event_id,
+                reason,
+            },
+        })
+    }
+
     pub fn tool_call_started_global(
         context_id: ContextId,
         message_id: MessageId,
@@ -338,6 +433,7 @@ impl ProvEvent {
         function_name: Option<String>,
         args: Value,
         metadata: JsonValue,
+        delegation_target: Option<String>,
     ) -> Self {
         ProvEvent::Global(GlobalEvent {
             id: next_event_id(),
@@ -349,6 +445,7 @@ impl ProvEvent {
                 function_name,
                 args,
                 metadata,
+                delegation_target,
             },
         })
     }
@@ -360,6 +457,7 @@ impl ProvEvent {
         function_name: Option<String>,
         args: Value,
         metadata: JsonValue,
+        delegation_target: Option<String>,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
             id: next_event_id(),
@@ -372,6 +470,7 @@ impl ProvEvent {
                 function_name,
                 args,
                 metadata,
+                delegation_target,
             },
         })
     }
@@ -386,6 +485,7 @@ impl ProvEvent {
         metadata: JsonValue,
         duration_ms: u64,
         outcome: Outcome,
+        delegation_target: Option<String>,
     ) -> Self {
         ProvEvent::Global(GlobalEvent {
             id: next_event_id(),
@@ -399,6 +499,7 @@ impl ProvEvent {
                 metadata,
                 duration_ms,
                 outcome,
+                delegation_target,
             },
         })
     }
@@ -413,6 +514,7 @@ impl ProvEvent {
         metadata: JsonValue,
         duration_ms: u64,
         outcome: Outcome,
+        delegation_target: Option<String>,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
             id: next_event_id(),
@@ -427,20 +529,19 @@ impl ProvEvent {
                 metadata,
                 duration_ms,
                 outcome,
+                delegation_target,
             },
         })
     }
 
     pub fn agent_booted(
-        context_id: ContextId,
         agent_id: AgentId,
         agent_type: AgentType,
         agent_version: String,
         archive_path: String,
     ) -> Self {
-        ProvEvent::Global(GlobalEvent {
+        ProvEvent::AgentBooted(AgentBootedEvent {
             id: next_event_id(),
-            context_id,
             timestamp_ms: now_millis(),
             data: ProvEventData::AgentBooted {
                 agent_id,
@@ -451,13 +552,50 @@ impl ProvEvent {
         })
     }
 
-    pub fn task_created(context_id: ContextId, task_id: TaskId, agent_id: AgentId) -> Self {
+    /// Existential only. Idempotent.
+    pub fn task_exists(context_id: ContextId, task_id: TaskId) -> Self {
         ProvEvent::Task(TaskScopedEvent {
             id: next_event_id(),
-            context_id,
+            context_id: context_id.clone(),
             task_id: task_id.clone(),
             timestamp_ms: now_millis(),
-            data: ProvEventData::TaskCreated { task_id, agent_id },
+            data: ProvEventData::TaskExists {
+                task_id,
+                context_id,
+            },
+        })
+    }
+
+    /// Agent begins executing. Emit after TaskExists.
+    pub fn task_execution_started(
+        context_id: ContextId,
+        task_id: TaskId,
+        agent_id: AgentId,
+    ) -> Self {
+        ProvEvent::Task(TaskScopedEvent {
+            id: next_event_id(),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: now_millis(),
+            data: ProvEventData::TaskExecutionStarted {
+                task_id,
+                agent_id,
+                context_id,
+            },
+        })
+    }
+
+    /// Agent finishes. Emit when status becomes COMPLETED or terminal.
+    pub fn task_execution_ended(context_id: ContextId, task_id: TaskId) -> Self {
+        ProvEvent::Task(TaskScopedEvent {
+            id: next_event_id(),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: now_millis(),
+            data: ProvEventData::TaskExecutionEnded {
+                task_id,
+                context_id,
+            },
         })
     }
 
@@ -499,6 +637,7 @@ impl ProvEvent {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn message_received_task(
         context_id: ContextId,
         task_id: TaskId,
@@ -506,6 +645,7 @@ impl ProvEvent {
         role: String,
         content: Vec<String>,
         metadata: Option<HashMap<String, String>>,
+        agent_id: AgentId,
         timestamp_ms: u64,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
@@ -518,6 +658,7 @@ impl ProvEvent {
                 role,
                 content,
                 metadata,
+                agent_id,
             },
         })
     }
@@ -528,6 +669,7 @@ impl ProvEvent {
         role: String,
         content: Vec<String>,
         metadata: Option<HashMap<String, String>>,
+        agent_id: AgentId,
         timestamp_ms: u64,
     ) -> Self {
         ProvEvent::Global(GlobalEvent {
@@ -539,10 +681,12 @@ impl ProvEvent {
                 role,
                 content,
                 metadata,
+                agent_id,
             },
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn message_sent_task(
         context_id: ContextId,
         task_id: TaskId,
@@ -550,6 +694,7 @@ impl ProvEvent {
         role: String,
         content: Vec<String>,
         metadata: Option<HashMap<String, String>>,
+        agent_id: AgentId,
         timestamp_ms: u64,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
@@ -562,6 +707,7 @@ impl ProvEvent {
                 role,
                 content,
                 metadata,
+                agent_id,
             },
         })
     }
@@ -572,6 +718,7 @@ impl ProvEvent {
         role: String,
         content: Vec<String>,
         metadata: Option<HashMap<String, String>>,
+        agent_id: AgentId,
         timestamp_ms: u64,
     ) -> Self {
         ProvEvent::Global(GlobalEvent {
@@ -583,6 +730,7 @@ impl ProvEvent {
                 role,
                 content,
                 metadata,
+                agent_id,
             },
         })
     }

@@ -23,13 +23,13 @@ use async_trait::async_trait;
 use baml_rt_a2a::{
     A2aAgent, A2aRequestHandler, AgentRegistry, a2a,
     a2a_types::{
-        A2aMessageId, JSONRPCId, JSONRPCRequest, Message, MessageRole, Part, ROLE_USER,
+        A2aMessageId, JSONRPCId, JSONRPCRequest, Message, MessageRole, Part,
         SendMessageConfiguration, SendMessageRequest,
     },
 };
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentLister,
-    AgentManifest, AgentPackageName, AgentRouteKey, BamlRtError, ContextId, Result,
+    AgentManifest, AgentPackageName, AgentRouteKey, BamlRtError, ContextId, Result, RuntimeScope,
     bus::BusStream,
     collect_a2a_stream,
     context::{self, InvocationScope},
@@ -203,8 +203,7 @@ impl AgentPackage {
             .with_baml_helpers(true)
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
 
-        let ProvenanceConfig::Graphqlite(store) = provenance_config;
-        agent_builder = agent_builder.with_graphqlite_store(store.clone());
+        agent_builder = agent_builder.with_graphqlite_store(provenance_config.store().clone());
 
         let agent = agent_builder.build().await?;
         Ok(JsInitialized {
@@ -289,15 +288,12 @@ impl AgentPackage {
         let agent_id = agent.agent_id().clone();
 
         // Emit AgentBooted provenance event (provenance store is always present).
-        let ProvenanceConfig::Graphqlite(store) = provenance_config;
-        let writer = store.clone() as Arc<dyn ProvenanceWriter>;
+        let writer = provenance_config.store().clone() as Arc<dyn ProvenanceWriter>;
         let archive_path = self.manifest.signature.clone();
-        let context_id = context::generate_context_id();
         let agent_type_parsed = AgentType::new(self.manifest.name.clone()).ok_or_else(|| {
             BamlRtError::InvalidArgument("agent_type cannot be empty".to_string())
         })?;
         let boot_event = ProvEvent::agent_booted(
-            context_id,
             agent_id.clone(),
             agent_type_parsed,
             self.version().to_string(),
@@ -488,6 +484,10 @@ impl AgentRunner {
     }
 
     /// Handle A2A request by route key (for HTTP POST /agents/.../a2a).
+    ///
+    /// Uses scope derived from the request's context_id so coordinator and delegated flow
+    /// share one context. Avoids synthetic_message which generates a fresh context_id and
+    /// would cause the initial user message to land in a different context than the agent's.
     pub(crate) async fn handle_a2a_by_key(
         &self,
         key: &AgentRouteKey,
@@ -503,7 +503,7 @@ impl AgentRunner {
                 ))
             })?
         };
-        let scope = InvocationScope::synthetic_message(routed_agent.agent_id().clone());
+        let scope = scope_from_request(request.as_ref(), routed_agent.agent_id().clone());
         context::with_scope(scope.as_scope().clone(), async move {
             routed_agent.handle_a2a_stream(request).await
         })
@@ -803,7 +803,11 @@ impl InternalA2aRouter {
             })?
         };
 
-        let scope = InvocationScope::synthetic_message(routed_agent.agent_id().clone());
+        // INVARIANT: internal_a2a must NEVER set its own context. The request carries the
+        // caller's context_id (from build_send_stream_request); the child agent parses it
+        // and sets scope from the request. Wrap in scope_from_request so the child runs
+        // with the request's context_id even if any code path reads the thread-local scope.
+        let scope = scope_from_request(request.as_ref(), routed_agent.agent_id().clone());
         context::with_scope(scope.as_scope().clone(), async move {
             routed_agent.handle_a2a_stream(request).await
         })
@@ -820,6 +824,18 @@ pub(crate) struct ScopedInternalA2aRouter {
 impl ScopedInternalA2aRouter {
     pub(crate) fn new(caller: AgentRouteKey, router: Arc<InternalA2aRouter>) -> Self {
         Self { caller, router }
+    }
+}
+
+/// Build scope from request so coordinator and delegated flow share one context_id.
+/// Uses request's context_id when parseable; falls back to synthetic for non-A2A or malformed requests.
+fn scope_from_request(request: &serde_json::Value, agent_id: AgentId) -> InvocationScope {
+    match a2a::A2aRequest::from_value(request.clone()) {
+        Ok(parsed) => InvocationScope::new(RuntimeScope::from_request_scope(
+            &parsed.resolved_scope,
+            agent_id,
+        )),
+        Err(_) => InvocationScope::synthetic_message(agent_id),
     }
 }
 
@@ -937,7 +953,7 @@ fn wrap_plaintext_message(text: &str) -> Result<Value> {
     let message_id = A2aMessageId::outgoing(DerivedId::new(format!("cli-msg-{seq}")));
     let message = Message {
         message_id,
-        role: MessageRole::String(ROLE_USER.to_string()),
+        role: MessageRole::User,
         parts: vec![Part {
             text: Some(text.to_string()),
             ..Part::default()
@@ -952,7 +968,7 @@ fn wrap_plaintext_message(text: &str) -> Result<Value> {
     let params = SendMessageRequest {
         message,
         configuration: Some(SendMessageConfiguration {
-            blocking: Some(true),
+            blocking: Some(false),
             ..Default::default()
         }),
         metadata: None,
@@ -1055,34 +1071,93 @@ impl Cli {
 
 /// Provenance configuration: GraphQLite store
 pub(crate) enum ProvenanceConfig {
-    Graphqlite(Arc<baml_rt_provenance::GraphqliteProvenanceStore>),
+    Graphqlite {
+        store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+        mermaid_cache: Option<Arc<baml_rt_provenance::MermaidCache>>,
+    },
+}
+
+impl ProvenanceConfig {
+    pub(crate) fn store(&self) -> &Arc<baml_rt_provenance::GraphqliteProvenanceStore> {
+        let ProvenanceConfig::Graphqlite { store, .. } = self;
+        store
+    }
+
+    pub(crate) fn mermaid_cache(&self) -> Option<Arc<baml_rt_provenance::MermaidCache>> {
+        let ProvenanceConfig::Graphqlite { mermaid_cache, .. } = self;
+        mermaid_cache.clone()
+    }
 }
 
 fn build_provenance_config(db: &ProvenanceDb) -> Result<ProvenanceConfig> {
-    let arc = match db {
-        ProvenanceDb::InMemory => GraphqliteStoreBuilder::in_memory().build().map_err(|e| {
-            BamlRtError::InvalidArgument(
-                format!("Provenance in-memory store failed to build: {e}",),
-            )
-        })?,
-        ProvenanceDb::File(path) => GraphqliteStoreBuilder::file(path).build().map_err(|e| {
-            BamlRtError::InvalidArgument(format!(
-                "Provenance file store failed to build at {path}: {e}",
-                path = path.display(),
-            ))
-        })?,
-    };
-    Ok(ProvenanceConfig::Graphqlite(arc))
+    match db {
+        ProvenanceDb::InMemory => {
+            let store = GraphqliteStoreBuilder::in_memory().build().map_err(|e| {
+                BamlRtError::InvalidArgument(format!(
+                    "Provenance in-memory store failed to build: {e}",
+                ))
+            })?;
+            Ok(ProvenanceConfig::Graphqlite {
+                store,
+                mermaid_cache: None,
+            })
+        }
+        ProvenanceDb::File(path) => {
+            let cache = baml_rt_provenance::MermaidCache::new();
+            let store = GraphqliteStoreBuilder::file(path)
+                .with_mermaid_cache(cache.clone())
+                .build()
+                .map_err(|e| {
+                    BamlRtError::InvalidArgument(format!(
+                        "Provenance file store failed to build at {}: {:#}",
+                        path.display(),
+                        anyhow::Error::from(e),
+                    ))
+                })?;
+            Ok(ProvenanceConfig::Graphqlite {
+                store,
+                mermaid_cache: Some(cache),
+            })
+        }
+    }
 }
 
 /// Mermaid diagram service backed by GraphQLite provenance. Exported when runner serves HTTP with GraphQLite.
+/// Uses in-process GraphExporter; GraphQLite fork has reentrant parser so no broker IPC needed.
+/// Cache avoids repeated Cypher export + simplify + render on repeat requests for the same context.
 struct MermaidServiceImpl {
     store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+    cache: Option<Arc<baml_rt_provenance::MermaidCache>>,
 }
 
 impl MermaidServiceImpl {
-    fn new(store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>) -> Self {
-        Self { store }
+    fn new(
+        store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+        cache: Option<Arc<baml_rt_provenance::MermaidCache>>,
+    ) -> Self {
+        Self { store, cache }
+    }
+
+    async fn export_by_context(
+        &self,
+        context_id: &str,
+    ) -> std::result::Result<baml_rt_provenance::ExportedGraph, baml_rt_api::MermaidError> {
+        let exporter = GraphExporter::new(self.store.clone());
+        exporter
+            .export_by_context(context_id)
+            .await
+            .map_err(|e| baml_rt_api::MermaidError::Other(Box::new(e)))
+    }
+
+    async fn export_by_task(
+        &self,
+        task_id: &str,
+    ) -> std::result::Result<baml_rt_provenance::ExportedGraph, baml_rt_api::MermaidError> {
+        let exporter = GraphExporter::new(self.store.clone());
+        exporter
+            .export_by_task(task_id)
+            .await
+            .map_err(|e| baml_rt_api::MermaidError::Other(Box::new(e)))
     }
 }
 
@@ -1092,32 +1167,87 @@ impl baml_rt_api::MermaidService for MermaidServiceImpl {
         &self,
         context_id: &str,
     ) -> std::result::Result<String, baml_rt_api::MermaidError> {
-        let exporter = GraphExporter::new(self.store.clone());
-        let graph = exporter
-            .export_by_context(context_id)
-            .await
-            .map_err(|e| baml_rt_api::MermaidError::Other(Box::new(e)))?;
+        if let Some(ref cache) = self.cache {
+            if let Some(cached) = cache.get(context_id) {
+                tracing::debug!(context_id = %context_id, "mermaid: cache HIT");
+                return Ok(cached);
+            }
+        }
+        tracing::info!(context_id = %context_id, "mermaid: START export_by_context");
+        let t0 = std::time::Instant::now();
+        let graph = self.export_by_context(context_id).await?;
+        tracing::info!(
+            context_id = %context_id,
+            export_ms = t0.elapsed().as_millis(),
+            nodes = graph.nodes.len(),
+            edges = graph.edges.len(),
+            "mermaid: DONE export_by_context"
+        );
         if graph.nodes.is_empty() {
             return Err(baml_rt_api::MermaidError::NotFound);
         }
+        tracing::info!(context_id = %context_id, "mermaid: START simplify_graph");
+        let t1 = std::time::Instant::now();
         let simplified = simplify_graph(&graph);
-        Ok(render_sequence_diagram(&simplified))
+        tracing::info!(
+            context_id = %context_id,
+            simplify_ms = t1.elapsed().as_millis(),
+            nodes = simplified.nodes.len(),
+            edges = simplified.edges.len(),
+            "mermaid: DONE simplify_graph"
+        );
+        tracing::info!(context_id = %context_id, "mermaid: START render_sequence_diagram");
+        let t2 = std::time::Instant::now();
+        let mermaid = render_sequence_diagram(&simplified);
+        tracing::info!(
+            context_id = %context_id,
+            render_ms = t2.elapsed().as_millis(),
+            bytes = mermaid.len(),
+            "mermaid: DONE render_sequence_diagram"
+        );
+        if let Some(ref cache) = self.cache {
+            cache.insert(context_id, mermaid.clone());
+        }
+        Ok(mermaid)
     }
 
     async fn mermaid_for_task(
         &self,
         task_id: &str,
     ) -> std::result::Result<String, baml_rt_api::MermaidError> {
-        let exporter = GraphExporter::new(self.store.clone());
-        let graph = exporter
-            .export_by_task(task_id)
-            .await
-            .map_err(|e| baml_rt_api::MermaidError::Other(Box::new(e)))?;
+        tracing::info!(task_id = %task_id, "mermaid: START export_by_task");
+        let t0 = std::time::Instant::now();
+        let graph = self.export_by_task(task_id).await?;
+        tracing::info!(
+            task_id = %task_id,
+            export_ms = t0.elapsed().as_millis(),
+            nodes = graph.nodes.len(),
+            edges = graph.edges.len(),
+            "mermaid: DONE export_by_task"
+        );
         if graph.nodes.is_empty() {
             return Err(baml_rt_api::MermaidError::NotFound);
         }
+        tracing::info!(task_id = %task_id, "mermaid: START simplify_graph");
+        let t1 = std::time::Instant::now();
         let simplified = simplify_graph(&graph);
-        Ok(render_sequence_diagram(&simplified))
+        tracing::info!(
+            task_id = %task_id,
+            simplify_ms = t1.elapsed().as_millis(),
+            nodes = simplified.nodes.len(),
+            edges = simplified.edges.len(),
+            "mermaid: DONE simplify_graph"
+        );
+        tracing::info!(task_id = %task_id, "mermaid: START render_sequence_diagram");
+        let t2 = std::time::Instant::now();
+        let mermaid = render_sequence_diagram(&simplified);
+        tracing::info!(
+            task_id = %task_id,
+            render_ms = t2.elapsed().as_millis(),
+            bytes = mermaid.len(),
+            "mermaid: DONE render_sequence_diagram"
+        );
+        Ok(mermaid)
     }
 }
 
@@ -1386,13 +1516,18 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let http_handle = if let Some(bind) = config.serve_http.clone() {
-        let (mermaid, context_metrics) = match ready.runner().provenance_config() {
-            ProvenanceConfig::Graphqlite(store) => (
-                Some(Arc::new(MermaidServiceImpl::new(store.clone()))
-                    as Arc<dyn baml_rt_api::MermaidService>),
-                Some(Arc::new(ContextMetricsServiceImpl::new(store.clone()))
+        let (mermaid, context_metrics) = {
+            let runner = ready.runner();
+            let prov = runner.provenance_config();
+            let store = prov.store().clone();
+            (
+                Some(
+                    Arc::new(MermaidServiceImpl::new(store.clone(), prov.mermaid_cache()))
+                        as Arc<dyn baml_rt_api::MermaidService>,
+                ),
+                Some(Arc::new(ContextMetricsServiceImpl::new(store))
                     as Arc<dyn baml_rt_api::ContextMetricsService>),
-            ),
+            )
         };
         let registry_impl = ready.registry();
         let web_dir = config.web_dir.clone();
@@ -1470,7 +1605,10 @@ mod tests {
         let store = GraphqliteStoreBuilder::in_memory()
             .build()
             .expect("in-memory provenance store for test");
-        ProvenanceConfig::Graphqlite(store)
+        ProvenanceConfig::Graphqlite {
+            store,
+            mermaid_cache: None,
+        }
     }
 
     async fn build_test_agent() -> A2aAgent {

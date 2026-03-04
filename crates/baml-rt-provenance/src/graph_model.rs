@@ -19,6 +19,7 @@ pub enum GraphNodeLabel {
     AgentBoot,
     AgentArchive,
     AgentRuntimeInstance,
+    PromptRejected,
 }
 
 impl GraphNodeLabel {
@@ -37,6 +38,7 @@ impl GraphNodeLabel {
             Self::AgentBoot => "AgentBoot",
             Self::AgentArchive => "AgentArchive",
             Self::AgentRuntimeInstance => "AgentRuntimeInstance",
+            Self::PromptRejected => "PromptRejected",
         }
     }
 
@@ -55,6 +57,7 @@ impl GraphNodeLabel {
             "AgentBoot" => Some(Self::AgentBoot),
             "AgentArchive" => Some(Self::AgentArchive),
             "AgentRuntimeInstance" => Some(Self::AgentRuntimeInstance),
+            "PromptRejected" => Some(Self::PromptRejected),
             _ => None,
         }
     }
@@ -70,29 +73,37 @@ pub const EDGE_WAS_CREATED_BY: &str = semantic_labels::WAS_CREATED_BY;
 pub const EDGE_WAS_UPDATED_BY: &str = semantic_labels::WAS_UPDATED_BY;
 pub const EDGE_WAS_TRANSITIONED_FROM: &str = semantic_labels::WAS_TRANSITIONED_FROM;
 pub const EDGE_WAS_SPAWNED_BY: &str = semantic_labels::WAS_SPAWNED_BY;
+pub const EDGE_TASK_TRIGGERED_BY_MESSAGE: &str = semantic_labels::TASK_TRIGGERED_BY_MESSAGE;
+pub const EDGE_TASK_EMITTED_MESSAGE: &str = semantic_labels::TASK_EMITTED_MESSAGE;
 
 /// Event kinds mapped to graph relations/properties.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventGraphKind {
     LlmCallStarted,
     LlmCallCompleted,
+    PromptRejected,
     ToolCallStarted,
     ToolCallCompleted,
     AgentBooted,
-    TaskCreated,
+    TaskExists,
+    TaskExecutionStarted,
+    TaskExecutionEnded,
     TaskStatusChanged,
     TaskArtifactGenerated,
     MessageReceived,
     MessageSent,
 }
 
-pub const ALL_EVENT_KINDS: [EventGraphKind; 10] = [
+pub const ALL_EVENT_KINDS: [EventGraphKind; 13] = [
     EventGraphKind::LlmCallStarted,
     EventGraphKind::LlmCallCompleted,
+    EventGraphKind::PromptRejected,
     EventGraphKind::ToolCallStarted,
     EventGraphKind::ToolCallCompleted,
     EventGraphKind::AgentBooted,
-    EventGraphKind::TaskCreated,
+    EventGraphKind::TaskExists,
+    EventGraphKind::TaskExecutionStarted,
+    EventGraphKind::TaskExecutionEnded,
     EventGraphKind::TaskStatusChanged,
     EventGraphKind::TaskArtifactGenerated,
     EventGraphKind::MessageReceived,
@@ -141,8 +152,15 @@ const MAPPING_LLM_CALL_COMPLETED: EventGraphMapping = EventGraphMapping {
         a2a::FUNCTION_NAME,
         a2a::METADATA,
         a2a::DURATION_MS,
-        a2a::SUCCESS,
+        a2a::ACTIVITY_OUTCOME,
     ],
+};
+
+const MAPPING_PROMPT_REJECTED: EventGraphMapping = EventGraphMapping {
+    kind: EventGraphKind::PromptRejected,
+    primary_node: GraphNodeLabel::PromptRejected,
+    expected_edges: &[EDGE_WAS_USED_BY],
+    required_properties: &[a2a::REASON],
 };
 
 const MAPPING_TOOL_CALL_STARTED: EventGraphMapping = EventGraphMapping {
@@ -160,7 +178,7 @@ const MAPPING_TOOL_CALL_COMPLETED: EventGraphMapping = EventGraphMapping {
         a2a::TOOL_NAME,
         a2a::METADATA,
         a2a::DURATION_MS,
-        a2a::SUCCESS,
+        a2a::ACTIVITY_OUTCOME,
     ],
 };
 
@@ -171,11 +189,25 @@ const MAPPING_AGENT_BOOTED: EventGraphMapping = EventGraphMapping {
     required_properties: &[a2a::AGENT_ID, a2a::AGENT_TYPE, a2a::AGENT_VERSION],
 };
 
-const MAPPING_TASK_CREATED: EventGraphMapping = EventGraphMapping {
-    kind: EventGraphKind::TaskCreated,
+const MAPPING_TASK_EXISTS: EventGraphMapping = EventGraphMapping {
+    kind: EventGraphKind::TaskExists,
     primary_node: GraphNodeLabel::Task,
+    expected_edges: &[],
+    required_properties: &[a2a::TASK_ID, a2a::CONTEXT_ID],
+};
+
+const MAPPING_TASK_EXECUTION_STARTED: EventGraphMapping = EventGraphMapping {
+    kind: EventGraphKind::TaskExecutionStarted,
+    primary_node: GraphNodeLabel::TaskExecution,
     expected_edges: &[EDGE_WAS_CREATED_BY, EDGE_WAS_EXECUTED_BY],
-    required_properties: &[a2a::TASK_ID, a2a::AGENT_ID],
+    required_properties: &[a2a::TASK_ID, a2a::AGENT_ID, a2a::CONTEXT_ID],
+};
+
+const MAPPING_TASK_EXECUTION_ENDED: EventGraphMapping = EventGraphMapping {
+    kind: EventGraphKind::TaskExecutionEnded,
+    primary_node: GraphNodeLabel::TaskExecution,
+    expected_edges: &[EDGE_WAS_CREATED_BY],
+    required_properties: &[a2a::TASK_ID, a2a::CONTEXT_ID],
 };
 
 const MAPPING_TASK_STATUS_CHANGED: EventGraphMapping = EventGraphMapping {
@@ -195,14 +227,14 @@ const MAPPING_TASK_ARTIFACT_GENERATED: EventGraphMapping = EventGraphMapping {
 const MAPPING_MESSAGE_RECEIVED: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::MessageReceived,
     primary_node: GraphNodeLabel::Message,
-    expected_edges: &[EDGE_WAS_RECEIVED_BY, EDGE_WAS_SPAWNED_BY],
+    expected_edges: &[EDGE_WAS_RECEIVED_BY, EDGE_TASK_TRIGGERED_BY_MESSAGE],
     required_properties: &[a2a::MESSAGE_ID, a2a::ROLE, a2a::CONTENT, a2a::DIRECTION],
 };
 
 const MAPPING_MESSAGE_SENT: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::MessageSent,
     primary_node: GraphNodeLabel::Message,
-    expected_edges: &[EDGE_WAS_EMITTED_BY, EDGE_WAS_SPAWNED_BY],
+    expected_edges: &[EDGE_WAS_EMITTED_BY, EDGE_TASK_EMITTED_MESSAGE],
     required_properties: &[a2a::MESSAGE_ID, a2a::ROLE, a2a::CONTENT, a2a::DIRECTION],
 };
 
@@ -210,10 +242,13 @@ pub fn event_kind_from_data(data: &ProvEventData) -> EventGraphKind {
     match data {
         ProvEventData::LlmCallStarted { .. } => EventGraphKind::LlmCallStarted,
         ProvEventData::LlmCallCompleted { .. } => EventGraphKind::LlmCallCompleted,
+        ProvEventData::PromptRejected { .. } => EventGraphKind::PromptRejected,
         ProvEventData::ToolCallStarted { .. } => EventGraphKind::ToolCallStarted,
         ProvEventData::ToolCallCompleted { .. } => EventGraphKind::ToolCallCompleted,
         ProvEventData::AgentBooted { .. } => EventGraphKind::AgentBooted,
-        ProvEventData::TaskCreated { .. } => EventGraphKind::TaskCreated,
+        ProvEventData::TaskExists { .. } => EventGraphKind::TaskExists,
+        ProvEventData::TaskExecutionStarted { .. } => EventGraphKind::TaskExecutionStarted,
+        ProvEventData::TaskExecutionEnded { .. } => EventGraphKind::TaskExecutionEnded,
         ProvEventData::TaskStatusChanged { .. } => EventGraphKind::TaskStatusChanged,
         ProvEventData::TaskArtifactGenerated { .. } => EventGraphKind::TaskArtifactGenerated,
         ProvEventData::MessageReceived { .. } => EventGraphKind::MessageReceived,
@@ -225,10 +260,13 @@ pub fn mapping_for_event_kind(kind: EventGraphKind) -> &'static EventGraphMappin
     match kind {
         EventGraphKind::LlmCallStarted => &MAPPING_LLM_CALL_STARTED,
         EventGraphKind::LlmCallCompleted => &MAPPING_LLM_CALL_COMPLETED,
+        EventGraphKind::PromptRejected => &MAPPING_PROMPT_REJECTED,
         EventGraphKind::ToolCallStarted => &MAPPING_TOOL_CALL_STARTED,
         EventGraphKind::ToolCallCompleted => &MAPPING_TOOL_CALL_COMPLETED,
         EventGraphKind::AgentBooted => &MAPPING_AGENT_BOOTED,
-        EventGraphKind::TaskCreated => &MAPPING_TASK_CREATED,
+        EventGraphKind::TaskExists => &MAPPING_TASK_EXISTS,
+        EventGraphKind::TaskExecutionStarted => &MAPPING_TASK_EXECUTION_STARTED,
+        EventGraphKind::TaskExecutionEnded => &MAPPING_TASK_EXECUTION_ENDED,
         EventGraphKind::TaskStatusChanged => &MAPPING_TASK_STATUS_CHANGED,
         EventGraphKind::TaskArtifactGenerated => &MAPPING_TASK_ARTIFACT_GENERATED,
         EventGraphKind::MessageReceived => &MAPPING_MESSAGE_RECEIVED,
@@ -275,7 +313,7 @@ impl ConversationReadModel {
             "MATCH (t:{tool_call_label}) \
              WHERE t.`a2a:context_id` = \"{context}\" \
              MATCH (t)-[used:{tool_args_edge}]->(args:{tool_args_label}) \
-             RETURN DISTINCT t.`a2a:event_id`, t.`a2a:tool_name`, t.`a2a:metadata`, args.`a2a:args`, used.`{tool_args_role}`, args.`{tool_args_type}`, t.`a2a:success` \
+             RETURN DISTINCT t.`a2a:event_id`, t.`a2a:tool_name`, t.`a2a:metadata`, args.`a2a:args`, used.`{tool_args_role}`, args.`{tool_args_type}`, t.`a2a:activity_outcome` \
              ORDER BY t.`a2a:event_id`"
         )
     }
@@ -293,13 +331,11 @@ impl ConversationReadModel {
     }
 
     /// Typed parameterised message query for cypher_builder().params().run().
-    /// Property names use underscore form to match [crate::cypher_build::KeyStyle::StorageSafeUnderscore] (literal MERGE).
-    pub fn message_query_storage_safe_params(context: &str) -> (&'static str, serde_json::Value) {
-        const QUERY: &str = "MATCH (m:Message) WHERE m.a2a_context_id = $context \
+    pub fn message_query_storage_safe_params(context: &str) -> (String, serde_json::Value) {
+        let query = "MATCH (m:Message) WHERE m.a2a_context_id = $context \
              RETURN m.a2a_event_id, m.a2a_message_id, m.a2a_direction, m.a2a_role, m.a2a_content \
              ORDER BY m.a2a_event_id";
-        let params = serde_json::json!({ "context": context });
-        (QUERY, params)
+        (query.to_string(), serde_json::json!({ "context": context }))
     }
 
     /// Tool query using storage-safe property names (underscore form). Use for GraphQLite.
@@ -311,19 +347,17 @@ impl ConversationReadModel {
             "MATCH (t:{tool_call_label}) \
              WHERE t.a2a_context_id = \"{context}\" \
              MATCH (t)-[used:{tool_args_edge}]->(args:{tool_args_label}) \
-             RETURN DISTINCT t.a2a_event_id, t.a2a_tool_name, t.a2a_metadata, args.a2a_args, used.prov_role, args.prov_type, t.a2a_success \
+             RETURN DISTINCT t.a2a_event_id, t.a2a_tool_name, t.a2a_metadata, args.a2a_args, used.prov_role, args.prov_type, t.a2a_activity_outcome \
              ORDER BY t.a2a_event_id"
         )
     }
 
     /// Typed parameterised tool query for cypher_builder().params().run().
-    /// Property names use underscore form to match [crate::cypher_build::KeyStyle::StorageSafeUnderscore].
-    pub fn tool_query_storage_safe_params(context: &str) -> (&'static str, serde_json::Value) {
-        const QUERY: &str = "MATCH (t:ToolCall) WHERE t.a2a_context_id = $context \
+    pub fn tool_query_storage_safe_params(context: &str) -> (String, serde_json::Value) {
+        let query = "MATCH (t:ToolCall) WHERE t.a2a_context_id = $context \
              MATCH (t)-[used:WAS_USED_BY]->(args:ToolArgs) \
-             RETURN DISTINCT t.a2a_event_id, t.a2a_tool_name, t.a2a_metadata, args.a2a_args, used.prov_role, args.prov_type, t.a2a_success \
+             RETURN DISTINCT t.a2a_event_id, t.a2a_tool_name, t.a2a_metadata, args.a2a_args, used.prov_role, args.prov_type, t.a2a_activity_outcome \
              ORDER BY t.a2a_event_id";
-        let params = serde_json::json!({ "context": context });
-        (QUERY, params)
+        (query.to_string(), serde_json::json!({ "context": context }))
     }
 }

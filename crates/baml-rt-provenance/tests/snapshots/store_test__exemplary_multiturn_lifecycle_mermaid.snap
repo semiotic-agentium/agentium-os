@@ -5,17 +5,20 @@ expression: mermaid
 sequenceDiagram
     autonumber
     actor User
-    participant clickup_agent
+    participant clickup_1_0_0
     participant notion
 
-    User->>clickup_agent: Draft a weekly status update
-    Note over clickup_agent: status submitted
-    clickup_agent->>User: Need project scope before I can proceed.
-    Note over clickup_agent: status submitted -› input-required
-    User->>clickup_agent: Use the platform project context.
-    Note over clickup_agent: status input-required -› working
-    clickup_agent->>notion: action=CreatePage title=Weekly Status
-    notion-->>clickup_agent: 145ms
-    Note over clickup_agent: Artifact application/markdown (artifact-weekly-status)
-    clickup_agent->>User: Draft is ready and attached.
-    Note over clickup_agent: status working -› completed
+    User->>+clickup_1_0_0: Draft a weekly status update
+    rect rgb(220, 230, 241)
+    Note over clickup_1_0_0,notion: "Completed"
+    clickup_1_0_0->>-User: Need project scope before I can proceed.
+    activate clickup_1_0_0
+    Note over clickup_1_0_0: "Artifact application/markdown (artifact-weekly-status)"
+    User->>+clickup_1_0_0: Use the platform project context.
+    end
+    rect rgb(220, 230, 241)
+    Note over clickup_1_0_0,notion: "Completed"
+    clickup_1_0_0->>+notion: action=CreatePage title=Weekly Status
+    notion-->>-clickup_1_0_0: 145ms ✓
+    clickup_1_0_0->>-User: Draft is ready and attached.
+    end

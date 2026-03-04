@@ -1,4 +1,4 @@
-//! OpenTelemetry span helpers for provenance Cypher execution.
+//! OpenTelemetry span helpers for provenance.
 //!
 //! Follows the OTel instrumentation guide: static span names, structured fields.
 //! Caller should enter the span and then emit a debug log with query_text and
@@ -19,5 +19,19 @@ pub(crate) fn cypher_execute(query: &str, params: &Value) -> Span {
         db.operation = "cypher",
         db.query.text = query,
         cypher.params = %params_str,
+    )
+}
+
+/// Create span for sequence diagram rendering (graph → Mermaid string).
+///
+/// Level: debug — business operation (graph transform), not HTTP or low-level protocol.
+/// Parent: typically export_by_context or mermaid cache lookup.
+#[inline]
+pub(crate) fn sequence_render(nodes_count: usize, edges_count: usize, scope: &str) -> Span {
+    tracing::debug_span!(
+        "baml_rt_provenance.sequence.render",
+        provenance.sequence.nodes_count = nodes_count,
+        provenance.sequence.edges_count = edges_count,
+        provenance.sequence.scope = scope,
     )
 }

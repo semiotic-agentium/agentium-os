@@ -32,4 +32,3 @@ Use this checklist before merging a new host tool.
 - Action validation unit tests.
 - Error mapping test for a failed API call (mock or fixture).
 - Snapshot / interface generation test if schema changes.
-

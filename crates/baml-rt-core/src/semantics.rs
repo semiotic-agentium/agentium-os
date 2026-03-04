@@ -31,7 +31,8 @@ pub enum Outcome {
     Failure,
 }
 
-/// State of an activity (e.g. tool call). No optional completion: either still running or one of success/fail.
+/// State of an activity (e.g. tool call). Inferred from (1) activity having an end time and (2) outcome.
+/// InProgress when no end time; Success | Failed when completed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ActivityOutcome {
     InProgress,

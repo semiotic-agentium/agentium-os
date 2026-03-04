@@ -23,8 +23,7 @@
 //! ## KeyStyle and backends
 //!
 //! - **[KeyStyle::StorageSafeUnderscore]** (GraphQLite): property names like `a2a_context_id`;
-//!   node identity in MERGE uses an **inline Cypher string literal** (not `$id`) so the extension
-//!   matches correctly; edges are split into MERGE-from, MERGE-to, MATCH+CREATE edge.
+//!   all values bound via params; edges are split into MERGE-from, MERGE-to, MATCH+CREATE edge.
 //! - **[KeyStyle::Backtick]**: property names like `` `a2a:context_id` ``; single MERGE path per
 //!   edge; params used for identity where needed.
 //!
@@ -33,8 +32,7 @@
 //! - **One statement, one execution**: ∀ statement s ∈ output: s is run separately; order matters
 //!   (nodes before edges that reference them).
 //! - **Node identity**: ∀ node MERGE: identity key is unique per document (e.g. entity/activity id).
-//! - **No inline values in StorageSafeUnderscore except node id**: All other values are bound via
-//!   params so the driver handles escaping; node id is inlined as a Cypher literal for GraphQLite.
+//! - **All values bound via params**: Use `$p0`, `$id`, etc.; never inline literals.
 //!
 //! ## Usage
 //!
@@ -54,8 +52,8 @@ use crate::{
         Used, WasAssociatedWith, WasDerivedFrom, WasGeneratedBy,
     },
     vocabulary::{
-        a2a, a2a_relation_types, a2a_relations, a2a_roles, base_types, graph, message_directions,
-        prov, prov_relations, prov_roles, semantic_labels, storage_safe,
+        a2a, a2a_relation_types, a2a_relations, a2a_roles, base_types, context_scope, graph,
+        message_directions, prov, prov_relations, prov_roles, semantic_labels, storage_safe,
     },
 };
 
@@ -100,7 +98,7 @@ impl ParamCollector {
     }
 }
 
-/// Escape a string for use inside a Cypher single-quoted string literal (double single quotes).
+/// Escape a string for use inside a Cypher single-quoted literal (double single quotes).
 fn escape_cypher_string(s: &str) -> String {
     s.replace('\'', "''")
 }
@@ -132,9 +130,12 @@ pub type TypedCypherStatement = (String, Value);
 ///
 /// One statement per node (entity, activity, agent) and one or more per edge (see
 /// [merge_edge_statements]). Execute in order: nodes before edges that reference them.
+/// When `context_id` is `Some`, appends statements to create a Context node and SCOPED_TO
+/// edges for indexed traversal (avoids property-based filtering on export).
 pub fn build_queries_with_key_style_params(
     normalized: &NormalizedProv,
     key_style: KeyStyle,
+    context_id: Option<&str>,
 ) -> Vec<CypherStatement> {
     let mut queries = Vec::new();
 
@@ -354,7 +355,101 @@ pub fn build_queries_with_key_style_params(
         ));
     }
 
+    if let Some(ctx_id) = context_id {
+        let scoped_node_ids: Vec<String> = normalized
+            .document
+            .entities()
+            .map(|(id, _)| {
+                (
+                    id.as_str().to_string(),
+                    label_for_entity(&entity_labels, id.as_str()).to_string(),
+                )
+            })
+            .chain(normalized.document.activities().map(|(id, _)| {
+                (
+                    id.as_str().to_string(),
+                    label_for_activity(&activity_labels, id.as_str()).to_string(),
+                )
+            }))
+            .chain(normalized.document.agents().map(|(id, _)| {
+                (
+                    id.as_str().to_string(),
+                    label_for_agent(&agent_labels, id.as_str()).to_string(),
+                )
+            }))
+            .filter(|(_, label)| !context_scope::SCOPE_EXEMPT_LABELS.contains(&label.as_str()))
+            .map(|(id, _)| id)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        if !scoped_node_ids.is_empty() {
+            queries.extend(build_context_scope_statements(
+                ctx_id,
+                &scoped_node_ids,
+                key_style,
+            ));
+        }
+    }
+
     queries
+}
+
+/// Build statements to MERGE a Context node and MERGE SCOPED_TO edges to each node.
+/// Enables export via traversal from Context by id (indexed) instead of property filters.
+fn build_context_scope_statements(
+    context_id: &str,
+    node_ids: &[String],
+    key_style: KeyStyle,
+) -> Vec<CypherStatement> {
+    let id_key = cypher_key(graph::NODE_ID, key_style);
+    match key_style {
+        KeyStyle::Backtick => {
+            let mut collector = ParamCollector::new();
+            let ctx_param = collector.add_named("context", Value::String(context_id.to_string()));
+            let ids_param = collector.add(Value::Array(
+                node_ids
+                    .iter()
+                    .map(|s| Value::String(s.clone()))
+                    .collect::<Vec<_>>(),
+            ));
+            let query = format!(
+                "MERGE (ctx:{label} {{{id_key}: {ctx_param}}}) \
+                 WITH ctx \
+                 UNWIND ${ids_param} AS nid \
+                 MATCH (n) WHERE n.{id_key} = nid \
+                 MERGE (ctx)-[:{rel}]->(n)",
+                label = context_scope::LABEL,
+                rel = context_scope::SCOPED_TO,
+            );
+            vec![CypherStatement {
+                query,
+                params: collector.into_value(),
+            }]
+        }
+        KeyStyle::StorageSafeUnderscore => {
+            let ctx_lit = format!("'{}'", escape_cypher_string(context_id));
+            let mut stmts = vec![CypherStatement {
+                query: format!(
+                    "MERGE (ctx:{label} {{{id_key}: {ctx_lit}}})",
+                    label = context_scope::LABEL,
+                ),
+                params: Value::Object(Map::new()),
+            }];
+            for node_id in node_ids {
+                let n_lit = format!("'{}'", escape_cypher_string(node_id));
+                stmts.push(CypherStatement {
+                    query: format!(
+                        "MATCH (ctx:{ctx_label} {{{id_key}: {ctx_lit}}}), (n {{{id_key}: {n_lit}}}) \
+                         MERGE (ctx)-[:{rel}]->(n)",
+                        ctx_label = context_scope::LABEL,
+                        rel = context_scope::SCOPED_TO,
+                    ),
+                    params: Value::Object(Map::new()),
+                });
+            }
+            stmts
+        }
+    }
 }
 
 /// Emit placeholder and bind value via params. No inline escaping—extension binds as agtype.
@@ -369,31 +464,7 @@ fn cypher_value_param(value: &Value, collector: &mut ParamCollector) -> String {
     }
 }
 
-fn cypher_map_param(
-    map: &HashMap<String, Value>,
-    key_style: KeyStyle,
-    collector: &mut ParamCollector,
-) -> String {
-    if map.is_empty() {
-        return "{}".to_string();
-    }
-    let mut entries: Vec<(&String, &Value)> = map.iter().collect();
-    entries.sort_by_key(|(a, _)| *a);
-    let parts: Vec<String> = entries
-        .iter()
-        .map(|(key, value)| {
-            format!(
-                "{}: {}",
-                cypher_key(key, key_style),
-                cypher_value_param(value, collector)
-            )
-        })
-        .collect();
-    format!("{{{}}}", parts.join(", "))
-}
-
-/// Build SET n.key = $pN, ... for node properties (excluding id). Used so MERGE map has only one
-/// placeholder; GraphQLite's parser accepts MERGE (n:Label {id: $id}) SET n.x = $p0, ...
+/// Build SET n.key = $pN, ... for node properties (excluding id). All values bound via params.
 fn node_set_clause_param(
     props: &HashMap<String, Value>,
     key_style: KeyStyle,
@@ -405,11 +476,9 @@ fn node_set_clause_param(
     let parts: Vec<String> = entries
         .iter()
         .map(|(key, value)| {
-            format!(
-                "n.{} = {}",
-                cypher_key(key, key_style),
-                cypher_value_param(value, collector)
-            )
+            let ckey = cypher_key(key, key_style);
+            let cval = cypher_value_param(value, collector);
+            format!("n.{} = {}", ckey, cval)
         })
         .collect();
     parts.join(", ")
@@ -417,8 +486,9 @@ fn node_set_clause_param(
 
 /// Builds a single node MERGE clause (one statement per node).
 ///
-/// **StorageSafeUnderscore:** Inlines node id as a Cypher string literal so GraphQLite matches
-/// correctly; other props in ON CREATE SET. **Backtick:** Uses params for identity and SET n += {…}.
+/// **StorageSafeUnderscore (GraphQLite):** MERGE pattern identity (id) must be inlined—GraphQLite
+/// does not bind params in MERGE `{id: $p0}`, so both nodes would match the same placeholder.
+/// ON CREATE SET / ON MATCH SET use params (those bind correctly).
 fn merge_node_param(
     label: &str,
     id: &str,
@@ -426,38 +496,31 @@ fn merge_node_param(
     key_style: KeyStyle,
     collector: &mut ParamCollector,
 ) -> String {
-    let id_value = Value::String(id.to_string());
-    match key_style {
+    let mut set_props = props.clone();
+    if let Some(Value::Array(arr)) = set_props.get(a2a::CONTENT) {
+        let s: String = arr
+            .iter()
+            .filter_map(Value::as_str)
+            .map(String::from)
+            .collect::<Vec<_>>()
+            .join("\n");
+        set_props.insert(a2a::CONTENT.to_string(), Value::String(s));
+    }
+    let id_key = cypher_key(graph::NODE_ID, key_style);
+    let set_clause = node_set_clause_param(&set_props, key_style, collector);
+    let id_in_pattern = match key_style {
         KeyStyle::StorageSafeUnderscore => {
-            let mut set_props = props.clone();
-            if let Some(Value::Array(arr)) = set_props.get(a2a::CONTENT) {
-                let s: String = arr
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(String::from)
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                set_props.insert(a2a::CONTENT.to_string(), Value::String(s));
-            }
-            // Inline id as Cypher string literal so MERGE pattern matches correctly (GraphQLite may not bind $id in MERGE).
-            let id_literal = format!("'{}'", escape_cypher_string(id));
-            let id_key = cypher_key(graph::NODE_ID, key_style);
-            let set_clause = node_set_clause_param(&set_props, key_style, collector);
-            if set_clause.is_empty() {
-                format!("MERGE (n:{label} {{{id_key}: {id_literal}}})")
-            } else {
-                format!(
-                    "MERGE (n:{label} {{{id_key}: {id_literal}}}) ON CREATE SET {set_clause}",
-                    set_clause = set_clause
-                )
-            }
+            format!("'{}'", escape_cypher_string(id))
         }
-        KeyStyle::Backtick => format!(
-            "MERGE (n:{label} {{{id_key}: {id_ph}}}) SET n += {props}",
-            id_key = graph::NODE_ID,
-            id_ph = cypher_value_param(&id_value, collector),
-            props = cypher_map_param(props, key_style, collector)
-        ),
+        KeyStyle::Backtick => cypher_value_param(&Value::String(id.to_string()), collector),
+    };
+    if set_clause.is_empty() {
+        format!("MERGE (n:{label} {{{id_key}: {id_in_pattern}}})")
+    } else {
+        format!(
+            "MERGE (n:{label} {{{id_key}: {id_in_pattern}}}) ON CREATE SET {set_clause} ON MATCH SET {set_clause}",
+            set_clause = set_clause
+        )
     }
 }
 
@@ -546,16 +609,8 @@ fn merge_edge_param(
 /// **Backtick:** Returns a single statement: one combined MERGE for both nodes and
 /// the relationship (params used for identity).
 ///
-/// **StorageSafeUnderscore (GraphQLite):** Returns exactly three statements, in order:
-///
-/// 1. **MERGE from-node** – ensure source node exists
-///    `MERGE (a:FromLabel {id: $id})`
-/// 2. **MERGE to-node** – ensure target node exists
-///    `MERGE (b:ToLabel {id: $id})`
-/// 3. **MATCH + CREATE edge** – link them (no MERGE on relationship; SET after CREATE leaves `r` unbound, so props go in CREATE map)
-///    `MATCH (a:...), (b:...) CREATE (a)-[r:RelType {…}]->(b)`
-///
-/// **Invariant:** Execution order must be 1 → 2 → 3 so nodes exist before the MATCH.
+/// **StorageSafeUnderscore (GraphQLite):** Returns three statements (GraphQLite does not
+/// accept MERGE path for nodes+relationship). Ensure from/to nodes exist, then CREATE edge.
 fn merge_edge_statements(
     from_label: &str,
     from_id: &str,
@@ -585,44 +640,33 @@ fn merge_edge_statements(
         }
         KeyStyle::StorageSafeUnderscore => {
             let id_key = cypher_key(graph::NODE_ID, key_style);
-            let from_id_value = Value::String(from_id.to_string());
-            let to_id_value = Value::String(to_id.to_string());
-
-            let mut stmts = Vec::with_capacity(3);
-
-            let mut c1 = ParamCollector::new();
-            let ph1 = c1.add_named("id", from_id_value.clone());
-            stmts.push(CypherStatement {
-                query: format!("MERGE (a:{from_label} {{{id_key}: {ph1}}})"),
-                params: c1.into_value(),
-            });
-
-            let mut c2 = ParamCollector::new();
-            let ph2 = c2.add_named("id", to_id_value.clone());
-            stmts.push(CypherStatement {
-                query: format!("MERGE (b:{to_label} {{{id_key}: {ph2}}})"),
-                params: c2.into_value(),
-            });
+            let from_lit = format!("'{}'", escape_cypher_string(from_id));
+            let to_lit = format!("'{}'", escape_cypher_string(to_id));
 
             let mut c3 = ParamCollector::new();
-            let from_ph = c3.add_named("from_id", from_id_value);
-            let to_ph = c3.add_named("to_id", to_id_value);
-            let path = if props.is_empty() {
-                format!(
-                    "MATCH (a:{from_label} {{{id_key}: {from_ph}}}), (b:{to_label} {{{id_key}: {to_ph}}}) CREATE (a)-[r:{rel_type}]->(b)"
-                )
+            let rel_map = edge_props_map_param(props, key_style, &mut c3);
+            let create_clause = if props.is_empty() {
+                format!("CREATE (a)-[r:{rel_type}]->(b)")
             } else {
-                let rel_map = edge_props_map_param(props, key_style, &mut c3);
-                format!(
-                    "MATCH (a:{from_label} {{{id_key}: {from_ph}}}), (b:{to_label} {{{id_key}: {to_ph}}}) CREATE (a)-[r:{rel_type} {rel_map}]->(b)"
-                )
+                format!("CREATE (a)-[r:{rel_type} {rel_map}]->(b)")
             };
-            stmts.push(CypherStatement {
-                query: path,
-                params: c3.into_value(),
-            });
 
-            stmts
+            vec![
+                CypherStatement {
+                    query: format!("MERGE (a:{from_label} {{{id_key}: {from_lit}}})"),
+                    params: Value::Object(Map::new()),
+                },
+                CypherStatement {
+                    query: format!("MERGE (b:{to_label} {{{id_key}: {to_lit}}})"),
+                    params: Value::Object(Map::new()),
+                },
+                CypherStatement {
+                    query: format!(
+                        "MATCH (a:{from_label} {{{id_key}: {from_lit}}}), (b:{to_label} {{{id_key}: {to_lit}}}) {create_clause}"
+                    ),
+                    params: c3.into_value(),
+                },
+            ]
         }
     }
 }
@@ -826,6 +870,8 @@ fn semantic_used(
         Some(a2a_roles::PROMPT) => Some(semantic_labels::WAS_USED_BY),
         Some(a2a_roles::ARGS) => Some(semantic_labels::WAS_USED_BY),
         Some(a2a_roles::ARCHIVE) => Some(semantic_labels::WAS_BOOTSTRAPPED_BY),
+        Some(a2a_roles::REJECTED_OUTPUT) => Some(semantic_labels::WAS_USED_BY),
+        Some(a2a_roles::DELEGATION_TARGET) => Some(semantic_labels::WAS_DELEGATED_TO),
         _ => None,
     }
 }
@@ -913,6 +959,9 @@ fn derived_relation_label(
             label if label == GraphNodeLabel::ToolCall.as_str() => {
                 Some(semantic_labels::WAS_EXECUTED_BY)
             }
+            label if label == GraphNodeLabel::PromptRejected.as_str() => {
+                Some(semantic_labels::WAS_INVOKED_BY)
+            }
             _ => None,
         },
         a2a_relations::MESSAGE_CALL => match to_label {
@@ -922,11 +971,14 @@ fn derived_relation_label(
             label if label == GraphNodeLabel::ToolCall.as_str() => {
                 Some(semantic_labels::WAS_EXECUTED_BY)
             }
+            label if label == GraphNodeLabel::PromptRejected.as_str() => {
+                Some(semantic_labels::WAS_INVOKED_BY)
+            }
             _ => None,
         },
         a2a_relations::TASK_MESSAGE => match props.get(a2a::DIRECTION).and_then(Value::as_str) {
-            Some(message_directions::RECEIVED) => Some(semantic_labels::WAS_SPAWNED_BY),
-            Some(message_directions::SENT) => Some(semantic_labels::WAS_EMITTED_BY),
+            Some(message_directions::RECEIVED) => Some(semantic_labels::TASK_TRIGGERED_BY_MESSAGE),
+            Some(message_directions::SENT) => Some(semantic_labels::TASK_EMITTED_MESSAGE),
             _ => Some(semantic_labels::WAS_RELATED_TO),
         },
         a2a_relations::TASK_ARTIFACT => Some(semantic_labels::WAS_GENERATED_BY),
@@ -993,7 +1045,6 @@ fn storage_safe_key(key: &str) -> String {
         a2a::TASK_STATE => storage_safe::A2A_TASK_STATE,
         a2a::TASK_STATE_TIME => storage_safe::A2A_TASK_STATE_TIME,
         a2a::OLD_STATUS => storage_safe::A2A_OLD_STATUS,
-        a2a::IS_PREVIOUS => storage_safe::A2A_IS_PREVIOUS,
         a2a::MESSAGE_ID => storage_safe::A2A_MESSAGE_ID,
         a2a::ROLE => storage_safe::A2A_ROLE,
         a2a::CONTENT => storage_safe::A2A_CONTENT,
@@ -1011,7 +1062,7 @@ fn storage_safe_key(key: &str) -> String {
         a2a::USAGE_COMPLETION_TOKENS => storage_safe::A2A_USAGE_COMPLETION_TOKENS,
         a2a::USAGE_TOTAL_TOKENS => storage_safe::A2A_USAGE_TOTAL_TOKENS,
         a2a::DURATION_MS => storage_safe::A2A_DURATION_MS,
-        a2a::SUCCESS => storage_safe::A2A_SUCCESS,
+        a2a::ACTIVITY_OUTCOME => storage_safe::A2A_ACTIVITY_OUTCOME,
         a2a::TOOL_NAME => storage_safe::A2A_TOOL_NAME,
         a2a::ARGS => storage_safe::A2A_ARGS,
         a2a::ARCHIVE_PATH => storage_safe::A2A_ARCHIVE_PATH,

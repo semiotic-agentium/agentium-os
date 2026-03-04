@@ -1,0 +1,31 @@
+---
+source: crates/baml-rt-provenance/src/graphqlite_store.rs
+expression: mermaid
+---
+sequenceDiagram
+    autonumber
+    actor User
+    participant runner_1_0_0
+    participant LLM_openai_generic
+    participant weather
+    participant calculator
+
+    User->>+runner_1_0_0: Run B
+    rect rgb(220, 230, 241)
+    Note over runner_1_0_0,weather: "task-interleave-b"
+    runner_1_0_0->>+weather: city=NYC
+    weather-->>-runner_1_0_0: 50ms ✓
+    User->>+runner_1_0_0: Run A
+    end
+    rect rgb(220, 230, 241)
+    Note over runner_1_0_0,calculator: "task-interleave-a"
+    runner_1_0_0->>+LLM_openai_generic: StepA
+    LLM_openai_generic-->>-runner_1_0_0: 100ms ✓
+    runner_1_0_0->>+calculator: op=add a=1 b=2
+    calculator-->>-runner_1_0_0: 20ms ✓
+    runner_1_0_0->>-User: A done (3)
+    end
+    rect rgb(220, 230, 241)
+    Note over runner_1_0_0,weather: "task-interleave-b"
+    runner_1_0_0->>User: B done (72°F)
+    end

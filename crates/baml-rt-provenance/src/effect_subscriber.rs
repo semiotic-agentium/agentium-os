@@ -126,6 +126,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                         metadata.function_name.clone(),
                         metadata.args.clone(),
                         metadata.metadata.clone(),
+                        metadata.delegation_target.clone(),
                     )
                 },
                 |ctx_id, msg_id| {
@@ -136,6 +137,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                         metadata.function_name.clone(),
                         metadata.args.clone(),
                         metadata.metadata.clone(),
+                        metadata.delegation_target.clone(),
                     )
                 },
             )?,
@@ -159,6 +161,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             metadata.metadata.clone(),
                             *duration_ms,
                             *outcome,
+                            metadata.delegation_target.clone(),
                         )
                     },
                     |ctx_id, msg_id| {
@@ -171,6 +174,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             metadata.metadata.clone(),
                             *duration_ms,
                             *outcome,
+                            metadata.delegation_target.clone(),
                         )
                     },
                 ) {
@@ -217,6 +221,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 usage,
                 duration_ms,
                 outcome,
+                rejection_reason,
             } => {
                 let prov_usage = match usage {
                     Some(baml_rt_core::bus::LlmUsage::Known {
@@ -232,7 +237,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 };
                 let prov_usage_clone = prov_usage.clone();
                 let prompt = normalized_prompt(&metadata.prompt);
-                match build_prov_event_completion(
+                let Some(completed_event) = build_prov_event_completion(
                     context_id,
                     &metadata.metadata,
                     ProvenanceEventType::LlmCall,
@@ -264,10 +269,45 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             *outcome,
                         )
                     },
-                ) {
-                    Some(event) => event,
-                    None => return Ok(()), // Skip on missing message_id
+                ) else {
+                    return Ok(()); // Skip on missing message_id
+                };
+                let completed_id = completed_event.id().clone();
+                self.writer
+                    .add_event_with_logging(completed_event, "effect subscriber")
+                    .await;
+                if !bool::from(*outcome) && rejection_reason.as_deref().is_some() {
+                    let reason = rejection_reason.clone().unwrap_or_default();
+                    tracing::warn!(
+                        reason = %reason,
+                        "Prompt output rejected; emitting PromptRejected in provenance"
+                    );
+                    let rejected_event = build_prov_event(
+                        context_id,
+                        &metadata.metadata,
+                        ProvenanceEventType::LlmCall,
+                        |ctx_id, task_id| {
+                            ProvEvent::prompt_rejected_task(
+                                ctx_id,
+                                task_id,
+                                completed_id.clone(),
+                                reason.clone(),
+                            )
+                        },
+                        |ctx_id, msg_id| {
+                            ProvEvent::prompt_rejected_global(
+                                ctx_id,
+                                msg_id,
+                                completed_id.clone(),
+                                reason.clone(),
+                            )
+                        },
+                    )?;
+                    self.writer
+                        .add_event_with_logging(rejected_event, "effect subscriber")
+                        .await;
                 }
+                return Ok(());
             }
             // A2A effects are primarily for liveness gating, not provenance
             // Skip provenance emission for A2A events

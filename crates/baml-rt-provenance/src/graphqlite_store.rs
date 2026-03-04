@@ -42,24 +42,29 @@ use std::{
 };
 
 use async_trait::async_trait;
-use baml_rt_core::ids::{ContextId, EventId, MessageId};
+use baml_rt_core::ids::{AgentId, ContextId, EventId, MessageId, TaskId, UuidId};
 use graphqlite::{Connection, CypherResult, Graph, Row, Value as GraphqliteValue};
 use serde_json::{Map, Value};
 use tokio::sync::{Mutex as TokioMutex, oneshot};
 
+#[allow(unused_imports)] // AgentBootedEvent used in #[cfg(test)] mod tests
 use crate::{
     cypher_build::{self, KeyStyle},
     error::{ProvenanceError, Result},
-    events::ProvEventData,
-    graph_model::{ConversationReadModel, TOOL_CALL_ARGS_EDGE},
+    events::{AgentBootedEvent, ProvEventData},
+    graph_export::activity_outcome::NodeActivityOutcome,
+    graph_model::{ConversationReadModel, GraphNodeLabel, TOOL_CALL_ARGS_EDGE},
     graphqlite_config::GraphqliteStoreConfig,
-    normalizer::{DefaultProvNormalizer, ProvNormalizer, validate_event},
+    mermaid_cache::MermaidCache,
+    normalizer::{
+        DefaultProvNormalizer, NormalizeContext, ProvNormalizer, task_entity_id_string,
+        validate_event,
+    },
     spans,
     store::{
         ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
         ProvenanceQueryApi, ProvenanceWriter, ToolSessionPhase,
     },
-    vocabulary::message_directions,
 };
 
 // Column names from ConversationReadModel RETURN clauses (storage-safe underscore form).
@@ -78,7 +83,7 @@ const TOOL_COL_EVENT_ID: &str = "t.a2a_event_id";
 const TOOL_COL_TOOL_NAME: &str = "t.a2a_tool_name";
 const TOOL_COL_METADATA: &str = "t.a2a_metadata";
 const TOOL_COL_ARGS: &str = "args.a2a_args";
-const TOOL_COL_SUCCESS: &str = "t.a2a_success";
+const TOOL_COL_ACTIVITY_OUTCOME: &str = "t.a2a_activity_outcome";
 const TOOL_COL_EVENT_ID_ALT: &str = "t.`a2a:event_id`";
 const TOOL_COL_TOOL_NAME_ALT: &str = "t.`a2a:tool_name`";
 const TOOL_COL_METADATA_ALT: &str = "t.`a2a:metadata`";
@@ -87,7 +92,7 @@ const TOOL_COL_ROLE: &str = "used.prov_role";
 const TOOL_COL_ROLE_ALT: &str = "used.`prov:role`";
 const TOOL_COL_TARGET_TYPE: &str = "args.prov_type";
 const TOOL_COL_TARGET_TYPE_ALT: &str = "args.`prov:type`";
-const TOOL_COL_SUCCESS_ALT: &str = "t.`a2a:success`";
+const TOOL_COL_ACTIVITY_OUTCOME_ALT: &str = "t.`a2a:activity_outcome`";
 
 const TOOL_PAYLOAD_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS provenance_tool_payload (
     event_id TEXT PRIMARY KEY,
@@ -137,12 +142,14 @@ enum WorkerRequest {
 pub struct GraphqliteProvenanceStore {
     request_tx: mpsc::SyncSender<WorkerRequest>,
     normalizer: Arc<dyn ProvNormalizer>,
+    mermaid_cache: Option<Arc<MermaidCache>>,
 }
 
 /// Strong-typed message row from GraphQLite result. No parsing; use Row::get.
 struct MessageRow {
     event_id: String,
     message_id: String,
+    #[allow(dead_code)] // Part of query result; reserved for future filtering or display.
     direction: String,
     role: String,
     content: Value,
@@ -263,45 +270,29 @@ struct ToolCallRow {
     args: Value,
     role: String,
     target_type: String,
-    success: Option<bool>,
+    activity_outcome: Option<NodeActivityOutcome>,
 }
 
-fn parse_bool_string(raw: &str) -> Option<bool> {
-    match raw.trim().to_ascii_lowercase().as_str() {
-        "true" | "t" | "1" | "yes" | "y" => Some(true),
-        "false" | "f" | "0" | "no" | "n" => Some(false),
-        _ => None,
-    }
-}
-
-fn decode_optional_bool(row: &Row, primary_col: &str, alt_col: &str) -> Option<bool> {
-    if let Ok(v) = row
-        .get::<bool>(primary_col)
-        .or_else(|_| row.get::<bool>(alt_col))
-    {
-        return Some(v);
-    }
-    if let Ok(v) = row
-        .get::<i64>(primary_col)
-        .or_else(|_| row.get::<i64>(alt_col))
-    {
-        return Some(v != 0);
-    }
-    if let Ok(raw) = row
-        .get::<String>(primary_col)
-        .or_else(|_| row.get::<String>(alt_col))
-    {
-        if let Some(parsed) = parse_bool_string(&raw) {
-            return Some(parsed);
+fn decode_activity_outcome(
+    row: &Row,
+    primary_col: &str,
+    alt_col: &str,
+) -> Option<NodeActivityOutcome> {
+    let raw: String = row.get(primary_col).or_else(|_| row.get(alt_col)).ok()?;
+    match raw.trim() {
+        "Success" => Some(NodeActivityOutcome::Success),
+        "Failed" => Some(NodeActivityOutcome::Failed),
+        "InProgress" => Some(NodeActivityOutcome::InProgress),
+        _ => {
+            tracing::debug!(
+                column = %primary_col,
+                alt_column = %alt_col,
+                value = %raw,
+                "unable to parse activity_outcome from string"
+            );
+            None
         }
-        tracing::debug!(
-            column = %primary_col,
-            alt_column = %alt_col,
-            value = %raw,
-            "unable to parse optional bool field from string"
-        );
     }
-    None
 }
 
 impl ToolCallRow {
@@ -322,7 +313,11 @@ impl ToolCallRow {
             .get(TOOL_COL_TARGET_TYPE)
             .or_else(|_| row.get(TOOL_COL_TARGET_TYPE_ALT))
             .unwrap_or_default();
-        let success = decode_optional_bool(row, TOOL_COL_SUCCESS, TOOL_COL_SUCCESS_ALT);
+        let activity_outcome = decode_activity_outcome(
+            row,
+            TOOL_COL_ACTIVITY_OUTCOME,
+            TOOL_COL_ACTIVITY_OUTCOME_ALT,
+        );
         Ok(Self {
             event_id,
             tool_name,
@@ -330,12 +325,14 @@ impl ToolCallRow {
             args,
             role,
             target_type,
-            success,
+            activity_outcome,
         })
     }
 
     fn is_completed(&self) -> bool {
-        self.success.is_some()
+        self.activity_outcome
+            .map(NodeActivityOutcome::is_completed)
+            .unwrap_or(false)
     }
 
     fn contract_holds(&self) -> bool {
@@ -419,9 +416,34 @@ fn require_object_params(params: &Value) -> Result<QueryParams> {
     }
 }
 
+/// Ensure GRAPHQLITE_EXTENSION_PATH is set. When using the submodule build, the extension
+/// is copied next to the binary; we set the env var so graphqlite's find_extension finds it.
+pub(crate) fn ensure_extension_path() {
+    if std::env::var("GRAPHQLITE_EXTENSION_PATH").is_ok() {
+        return;
+    }
+    let ext_name = if cfg!(target_os = "macos") {
+        "graphqlite.dylib"
+    } else if cfg!(target_os = "windows") {
+        "graphqlite.dll"
+    } else {
+        "graphqlite.so"
+    };
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let path = dir.join(ext_name);
+        if path.exists() {
+            // SAFETY: Single-threaded init before any graphqlite connection; no other thread reads this env.
+            unsafe { std::env::set_var("GRAPHQLITE_EXTENSION_PATH", path) };
+        }
+    }
+}
+
 impl GraphqliteProvenanceStore {
     /// Open a graph from config and enable WAL if requested.
     fn open_graph(config: &GraphqliteStoreConfig) -> std::result::Result<Graph, graphqlite::Error> {
+        ensure_extension_path();
         let conn = match &config.path {
             crate::graphqlite_config::StorePath::InMemory => Connection::open_in_memory()?,
             crate::graphqlite_config::StorePath::File(path) => Connection::open(path.as_path())?,
@@ -456,7 +478,11 @@ impl GraphqliteBackend {
     }
 
     /// Build a store. File: one shared store per path (one connection/worker). InMemoryShared: shared store, cloned.
-    pub fn build_store(&self) -> Result<Arc<GraphqliteProvenanceStore>> {
+    /// `mermaid_cache` is applied to file-backed config for add_event invalidation.
+    pub fn build_store(
+        &self,
+        mermaid_cache: Option<Arc<MermaidCache>>,
+    ) -> Result<Arc<GraphqliteProvenanceStore>> {
         match self {
             GraphqliteBackend::File(config) => {
                 let path =
@@ -467,7 +493,11 @@ impl GraphqliteBackend {
                             event_id: String::new(),
                             reason: "file backend requires a file path".to_string(),
                         })?;
-                get_or_init_file_store(path, config.clone())
+                let mut config = config.clone();
+                if let Some(ref cache) = mermaid_cache {
+                    config = config.with_mermaid_cache(cache.clone());
+                }
+                get_or_init_file_store(path, config)
             }
             GraphqliteBackend::InMemoryShared => get_or_init_shared_in_memory_store(),
         }
@@ -617,6 +647,7 @@ fn build_store_from_config(
     let store = GraphqliteProvenanceStore {
         request_tx,
         normalizer: Arc::new(DefaultProvNormalizer::default()),
+        mermaid_cache: config.mermaid_cache.clone(),
     };
     Ok(Arc::new(store))
 }
@@ -712,6 +743,39 @@ impl GraphqliteProvenanceStore {
             .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
         result.map_err(map_graphqlite_error)
     }
+
+    /// Look up the task's agent by traversal: Task -[WAS_CREATED_BY]-> TaskExecution
+    /// -[WAS_EXECUTED_BY]-> AgentRuntimeInstance. Parse agent_id from instance id.
+    /// Returns None if the path is missing (e.g. TaskExecutionStarted not yet persisted).
+    async fn get_task_agent_id(&self, task_id: &TaskId) -> Result<Option<AgentId>> {
+        let task_entity_id = task_entity_id_string(task_id);
+        let id_escaped = task_entity_id.replace('\'', "''");
+        let task_label = GraphNodeLabel::Task.as_str();
+        let agent_label = GraphNodeLabel::AgentRuntimeInstance.as_str();
+        let query = format!(
+            "MATCH (t:{task_label} {{id: '{id_escaped}'}})-[:WAS_CREATED_BY]->(te)-[:WAS_EXECUTED_BY]->(a) \
+             WHERE a:{agent_label} RETURN a.id AS instance_id LIMIT 1"
+        );
+        let params = Map::new();
+        let result = self.run_cypher_with_params(&query, &params).await?;
+        let Some(row) = result.iter().next() else {
+            return Ok(None);
+        };
+        let instance_id: String = row.get("instance_id").unwrap_or_default();
+        let Some(agent_id_str) = instance_id.strip_prefix("agent_instance:") else {
+            return Ok(None);
+        };
+        if agent_id_str.trim().is_empty() {
+            return Ok(None);
+        }
+        UuidId::parse_str(agent_id_str)
+            .map(AgentId::from_uuid)
+            .map(Some)
+            .map_err(|_| ProvenanceError::InvalidEvent {
+                event_id: String::new(),
+                reason: format!("task agent instance id invalid UUID: {agent_id_str:?}"),
+            })
+    }
 }
 
 #[async_trait]
@@ -720,10 +784,21 @@ impl ProvenanceWriter for GraphqliteProvenanceStore {
         let _start = Instant::now();
         validate_event(&event)?;
         let tool_payload = tool_payload_record_from_event(&event);
-        let normalized = self.normalizer.normalize(&event)?;
+        let context = match event.task_id() {
+            Some(tid) => {
+                let task_agent_id = self.get_task_agent_id(tid).await?;
+                NormalizeContext { task_agent_id }
+            }
+            None => NormalizeContext::default(),
+        };
+        let normalized = self
+            .normalizer
+            .normalize_with_context(&event, Some(&context))?;
+        let context_id_opt = event.context_id_opt().map(|c| c.as_str());
         let statements = cypher_build::build_queries_with_key_style_params(
             &normalized,
             KeyStyle::StorageSafeUnderscore,
+            context_id_opt,
         );
         for stmt in &statements {
             let params = require_object_params(&stmt.params)?;
@@ -731,6 +806,9 @@ impl ProvenanceWriter for GraphqliteProvenanceStore {
         }
         if let Some(payload) = tool_payload {
             self.upsert_tool_payload(payload).await?;
+        }
+        if let (Some(cache), Some(ctx)) = (&self.mermaid_cache, context_id_opt) {
+            cache.invalidate(ctx);
         }
         Ok(())
     }
@@ -746,18 +824,15 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
         let context = context_id.as_str();
         let (query, params) = ConversationReadModel::message_query_storage_safe_params(context);
         let params = require_object_params(&params)?;
-        let results = self.run_cypher_with_params(query, &params).await?;
+        let results = self.run_cypher_with_params(&query, &params).await?;
         let mut messages: Vec<ProvenanceContextMessage> = Vec::new();
         for row in results.iter() {
             let msg = match MessageRow::from_row(row) {
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            let role = if msg.direction == message_directions::RECEIVED {
-                "user".to_string()
-            } else {
-                msg.role
-            };
+            // Role is stored in the graph in canonical enum form (ROLE_USER, ROLE_AGENT); use as-is.
+            let role = msg.role;
             let content = normalize_message_content(&msg.content);
             if content.trim().is_empty() {
                 continue;
@@ -796,10 +871,10 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
         let tool_params = require_object_params(&tool_params)?;
 
         let message_results = self
-            .run_cypher_with_params(message_query, &message_params)
+            .run_cypher_with_params(&message_query, &message_params)
             .await?;
         let tool_results = self
-            .run_cypher_with_params(tool_query, &tool_params)
+            .run_cypher_with_params(&tool_query, &tool_params)
             .await?;
 
         let mut items: Vec<ProvenanceConversationContextItem> = Vec::new();
@@ -809,11 +884,8 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
                 Ok(m) => m,
                 Err(_) => continue,
             };
-            let role = if msg.direction == message_directions::RECEIVED {
-                "user".to_string()
-            } else {
-                msg.role
-            };
+            // Role is stored in the graph in canonical enum form (ROLE_USER, ROLE_AGENT); use as-is.
+            let role = msg.role;
             let content = normalize_message_content(&msg.content);
             if content.trim().is_empty() {
                 continue;
@@ -938,17 +1010,22 @@ impl ProvenanceQueryApi for GraphqliteProvenanceStore {
 /// Builder for the GraphQLite provenance store. Configure via [GraphqliteBackend]: file (own connection per agent) or in-memory shared (one connection, serialized).
 pub struct GraphqliteStoreBuilder {
     backend: Option<GraphqliteBackend>,
+    mermaid_cache: Option<Arc<MermaidCache>>,
 }
 
 impl GraphqliteStoreBuilder {
     pub fn new() -> Self {
-        Self { backend: None }
+        Self {
+            backend: None,
+            mermaid_cache: None,
+        }
     }
 
     /// File-backed store. Each [build] opens a new connection to the path; each agent gets its own connection. Concurrent.
     pub fn file(path: impl AsRef<Path>) -> Self {
         Self {
             backend: Some(GraphqliteBackend::file(path)),
+            mermaid_cache: None,
         }
     }
 
@@ -956,6 +1033,7 @@ impl GraphqliteStoreBuilder {
     pub fn in_memory() -> Self {
         Self {
             backend: Some(GraphqliteBackend::in_memory_shared()),
+            mermaid_cache: None,
         }
     }
 
@@ -963,7 +1041,14 @@ impl GraphqliteStoreBuilder {
     pub fn backend(backend: GraphqliteBackend) -> Self {
         Self {
             backend: Some(backend),
+            mermaid_cache: None,
         }
+    }
+
+    /// Attach Mermaid cache for context-scoped invalidation on add_event. File-backed only.
+    pub fn with_mermaid_cache(mut self, cache: Arc<MermaidCache>) -> Self {
+        self.mermaid_cache = Some(cache);
+        self
     }
 
     /// Build the store. File: new connection per call. In-memory shared: shared store, cloned.
@@ -972,7 +1057,7 @@ impl GraphqliteStoreBuilder {
             event_id: String::new(),
             reason: "GraphqliteStoreBuilder: no backend set".to_string(),
         })?;
-        backend.build_store()
+        backend.build_store(self.mermaid_cache)
     }
 }
 
@@ -984,10 +1069,20 @@ impl Default for GraphqliteStoreBuilder {
 
 #[cfg(test)]
 mod tests {
-    use baml_rt_core::ids::{AgentId, EventId, ExternalId, MessageId, TaskId, UuidId};
+    use baml_rt_core::{
+        Outcome,
+        ids::{AgentId, ArtifactId, EventId, ExternalId, MessageId, TaskId, UuidId},
+    };
+    use insta::{assert_json_snapshot, assert_snapshot};
+    use serde_json::json;
 
     use super::*;
-    use crate::{AgentType, GlobalEvent, ProvEvent, ProvEventData, TaskScopedEvent};
+    use crate::{
+        AgentType, CallScope, LlmUsage, ProvEvent, ProvEventData, TaskScopedEvent,
+        graph_export::{
+            GraphExporter, sequence::render_sequence_diagram, simplify::simplify_graph,
+        },
+    };
 
     /// Build a store backed by a unique temp path so tests can run concurrently.
     fn build_test_store() -> Arc<GraphqliteProvenanceStore> {
@@ -996,6 +1091,32 @@ mod tests {
         GraphqliteStoreBuilder::file(path)
             .build()
             .expect("build store")
+    }
+
+    /// Regression: GraphQLite does not apply plain SET after MERGE; ON CREATE SET / ON MATCH SET work.
+    #[tokio::test]
+    async fn graphqlite_on_create_match_set_required() {
+        let store = build_test_store();
+        store
+            .run_cypher_execute(
+                "MERGE (n:Message {id: 'test-msg-1'}) ON CREATE SET n.a2a_context_id = 'ctx-1-1' ON MATCH SET n.a2a_context_id = 'ctx-1-1'",
+                &serde_json::Map::new(),
+            )
+            .await
+            .expect("merge");
+        let (query, params) = ConversationReadModel::message_query_storage_safe_params("ctx-1-1");
+        let params = match &params {
+            Value::Object(m) => m.clone(),
+            _ => panic!("expected object"),
+        };
+        let results = store
+            .run_cypher_for_test_with_params(&query, &params)
+            .await
+            .expect("match");
+        assert!(
+            !results.is_empty(),
+            "ON CREATE/ON MATCH SET must persist props for MATCH to find"
+        );
     }
 
     #[tokio::test]
@@ -1007,9 +1128,8 @@ mod tests {
             AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000010").unwrap());
 
         let events = [
-            ProvEvent::Global(GlobalEvent {
+            ProvEvent::AgentBooted(AgentBootedEvent {
                 id: EventId::from_counter(0),
-                context_id: context_id.clone(),
                 timestamp_ms: 1_700_000_000_000,
                 data: ProvEventData::AgentBooted {
                     agent_id: agent_id.clone(),
@@ -1023,13 +1143,24 @@ mod tests {
                 context_id: context_id.clone(),
                 task_id: task_id.clone(),
                 timestamp_ms: 1_700_000_000_001,
-                data: ProvEventData::TaskCreated {
+                data: ProvEventData::TaskExists {
                     task_id: task_id.clone(),
-                    agent_id: agent_id.clone(),
+                    context_id: context_id.clone(),
                 },
             }),
             ProvEvent::Task(TaskScopedEvent {
                 id: EventId::from_counter(2),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_000_002,
+                data: ProvEventData::TaskExecutionStarted {
+                    task_id: task_id.clone(),
+                    agent_id: agent_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(3),
                 context_id: context_id.clone(),
                 task_id: task_id.clone(),
                 timestamp_ms: 1_700_000_000_002,
@@ -1038,6 +1169,7 @@ mod tests {
                     role: "user".to_string(),
                     content: vec!["Hello".to_string()],
                     metadata: None,
+                    agent_id: agent_id.clone(),
                 },
             }),
         ];
@@ -1052,13 +1184,85 @@ mod tests {
             _ => panic!("expected object params"),
         };
         let results = store
-            .run_cypher_for_test_with_params(query, &params)
+            .run_cypher_for_test_with_params(&query, &params)
             .await
             .expect("run_cypher");
         assert!(
             !results.is_empty(),
             "expected at least one Message row; columns = {:?}",
             results.columns()
+        );
+    }
+
+    /// Verifies that WAS_EXECUTED_BY edges are created and readable after add_event.
+    #[tokio::test]
+    async fn graphqlite_was_executed_by_edges_exist_after_message_sent() {
+        let store = build_test_store();
+        let context_id = ContextId::new(77, 1);
+        let task_id = TaskId::from_external(ExternalId::new("task-was-exec-1"));
+        let agent_id =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000077").unwrap());
+
+        let events = [
+            ProvEvent::AgentBooted(AgentBootedEvent {
+                id: EventId::from_counter(700),
+                timestamp_ms: 1_700_000_700_000,
+                data: ProvEventData::AgentBooted {
+                    agent_id: agent_id.clone(),
+                    agent_type: AgentType::new("test").expect("agent_type"),
+                    agent_version: "1.0.0".to_string(),
+                    archive_path: "test@1.0.0".to_string(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(701),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_700_001,
+                data: ProvEventData::TaskExists {
+                    task_id: task_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(702),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_700_002,
+                data: ProvEventData::TaskExecutionStarted {
+                    task_id: task_id.clone(),
+                    agent_id: agent_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(703),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_700_003,
+                data: ProvEventData::MessageSent {
+                    id: MessageId::from_external(ExternalId::new("msg-was-exec-1")),
+                    role: "ROLE_AGENT".to_string(),
+                    content: vec!["Test".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+        ];
+        for event in &events {
+            store.add_event(event.clone()).await.expect("add_event");
+        }
+
+        let query =
+            "MATCH (a)-[r]->(b) WHERE type(r) = 'WAS_EXECUTED_BY' RETURN a.id AS src, b.id AS tgt";
+        let results = store
+            .run_cypher_for_test_with_params(query, &Map::new())
+            .await
+            .expect("run_cypher");
+        assert!(
+            !results.is_empty(),
+            "expected at least one WAS_EXECUTED_BY edge; got {} rows",
+            results.len()
         );
     }
 
@@ -1071,9 +1275,8 @@ mod tests {
             AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000010").unwrap());
 
         let events = [
-            ProvEvent::Global(GlobalEvent {
+            ProvEvent::AgentBooted(AgentBootedEvent {
                 id: EventId::from_counter(0),
-                context_id: context_id.clone(),
                 timestamp_ms: 1_700_000_000_000,
                 data: ProvEventData::AgentBooted {
                     agent_id: agent_id.clone(),
@@ -1087,9 +1290,20 @@ mod tests {
                 context_id: context_id.clone(),
                 task_id: task_id.clone(),
                 timestamp_ms: 1_700_000_000_001,
-                data: ProvEventData::TaskCreated {
+                data: ProvEventData::TaskExists {
+                    task_id: task_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(2),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_000_002,
+                data: ProvEventData::TaskExecutionStarted {
                     task_id: task_id.clone(),
                     agent_id: agent_id.clone(),
+                    context_id: context_id.clone(),
                 },
             }),
             ProvEvent::Task(TaskScopedEvent {
@@ -1102,6 +1316,7 @@ mod tests {
                     role: "user".to_string(),
                     content: vec!["Hello".to_string()],
                     metadata: None,
+                    agent_id: agent_id.clone(),
                 },
             }),
             ProvEvent::Task(TaskScopedEvent {
@@ -1114,6 +1329,7 @@ mod tests {
                     role: "assistant".to_string(),
                     content: vec!["Hi there.".to_string()],
                     metadata: None,
+                    agent_id: agent_id.clone(),
                 },
             }),
         ];
@@ -1124,8 +1340,1508 @@ mod tests {
             .context_messages(&context_id, None)
             .await
             .expect("context_messages");
-        assert_eq!(messages.len(), 2, "expect user + assistant message");
-        assert_eq!(messages[0].role, "user");
-        assert_eq!(messages[1].role, "assistant");
+        let snapshot: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| {
+                json!({
+                    "message_id": m.message_id.as_str(),
+                    "timestamp_ms": m.timestamp_ms,
+                    "role": m.role,
+                    "content": m.content,
+                })
+            })
+            .collect();
+        assert_json_snapshot!(snapshot);
+
+        let exported = GraphExporter::new(store.clone())
+            .export_by_context(context_id.as_str())
+            .await
+            .expect("export graph by context");
+        let simplified = simplify_graph(&exported);
+        let mermaid = render_sequence_diagram(&simplified);
+        assert_snapshot!(mermaid);
+    }
+
+    #[tokio::test]
+    async fn graphqlite_sequence_rendering_covers_lifecycle_errors_and_multi_agent() {
+        let store = build_test_store();
+        let context_id = ContextId::new(7, 1);
+        let planner_task_id = TaskId::from_external(ExternalId::new("task-planner-1"));
+        let worker_task_id = TaskId::from_external(ExternalId::new("task-worker-1"));
+        let planner_agent =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000101").unwrap());
+        let worker_agent =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000102").unwrap());
+
+        let events = [
+            ProvEvent::AgentBooted(AgentBootedEvent {
+                id: EventId::from_counter(10),
+                timestamp_ms: 1_700_000_100_000,
+                data: ProvEventData::AgentBooted {
+                    agent_id: planner_agent.clone(),
+                    agent_type: AgentType::new("planner_agent").expect("agent_type"),
+                    agent_version: "1.0.0".to_string(),
+                    archive_path: "planner@1.0.0".to_string(),
+                },
+            }),
+            ProvEvent::AgentBooted(AgentBootedEvent {
+                id: EventId::from_counter(11),
+                timestamp_ms: 1_700_000_100_001,
+                data: ProvEventData::AgentBooted {
+                    agent_id: worker_agent.clone(),
+                    agent_type: AgentType::new("worker_agent").expect("agent_type"),
+                    agent_version: "1.0.0".to_string(),
+                    archive_path: "worker@1.0.0".to_string(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(12),
+                context_id: context_id.clone(),
+                task_id: planner_task_id.clone(),
+                timestamp_ms: 1_700_000_100_002,
+                data: ProvEventData::TaskExists {
+                    task_id: planner_task_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(12),
+                context_id: context_id.clone(),
+                task_id: planner_task_id.clone(),
+                timestamp_ms: 1_700_000_100_003,
+                data: ProvEventData::TaskExecutionStarted {
+                    task_id: planner_task_id.clone(),
+                    agent_id: planner_agent.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(13),
+                context_id: context_id.clone(),
+                task_id: planner_task_id.clone(),
+                timestamp_ms: 1_700_000_100_003,
+                data: ProvEventData::MessageReceived {
+                    id: MessageId::from_external(ExternalId::new("msg-user-1")),
+                    role: "user".to_string(),
+                    content: vec!["Plan and delegate work".to_string()],
+                    metadata: None,
+                    agent_id: planner_agent.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(14),
+                context_id: context_id.clone(),
+                task_id: planner_task_id.clone(),
+                timestamp_ms: 1_700_000_100_004,
+                data: ProvEventData::TaskStatusChanged {
+                    task_id: planner_task_id.clone(),
+                    old_status: None,
+                    new_status: Some("submitted".to_string()),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(15),
+                context_id: context_id.clone(),
+                task_id: planner_task_id.clone(),
+                timestamp_ms: 1_700_000_100_005,
+                data: ProvEventData::LlmCallCompleted {
+                    scope: CallScope::Task {
+                        task_id: planner_task_id.clone(),
+                    },
+                    client: "DefaultClient".to_string(),
+                    model: "openai-generic".to_string(),
+                    function_name: "PlannerStep".to_string(),
+                    prompt: serde_json::json!({"messages":[{"role":"system","content":"plan"}]}),
+                    metadata: serde_json::json!({
+                        "agent_id": planner_agent.as_str(),
+                        "task_id": planner_task_id.as_str(),
+                        "message_id": "msg-user-1"
+                    }),
+                    usage: LlmUsage::Unknown,
+                    duration_ms: 3200,
+                    outcome: Outcome::Success,
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(16),
+                context_id: context_id.clone(),
+                task_id: planner_task_id.clone(),
+                timestamp_ms: 1_700_000_100_006,
+                data: ProvEventData::ToolCallCompleted {
+                    scope: CallScope::Task {
+                        task_id: planner_task_id.clone(),
+                    },
+                    tool_name: "support/a2aRelay".to_string(),
+                    function_name: None,
+                    args: serde_json::json!({"target":"worker_agent","action":"delegate"}),
+                    metadata: serde_json::json!({
+                        "phase":"send",
+                        "agent_id": planner_agent.as_str(),
+                        "task_id": planner_task_id.as_str(),
+                        "message_id":"msg-user-1",
+                        "result":{"forwarded":true}
+                    }),
+                    duration_ms: 450,
+                    outcome: Outcome::Success,
+                    delegation_target: None,
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(17),
+                context_id: context_id.clone(),
+                task_id: planner_task_id.clone(),
+                timestamp_ms: 1_700_000_100_008,
+                data: ProvEventData::MessageSent {
+                    id: MessageId::from_external(ExternalId::new("msg-planner-1")),
+                    role: "ROLE_AGENT".to_string(),
+                    content: vec!["Delegated to worker".to_string()],
+                    metadata: None,
+                    agent_id: planner_agent.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(18),
+                context_id: context_id.clone(),
+                task_id: worker_task_id.clone(),
+                timestamp_ms: 1_700_000_100_009,
+                data: ProvEventData::TaskExists {
+                    task_id: worker_task_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(18),
+                context_id: context_id.clone(),
+                task_id: worker_task_id.clone(),
+                timestamp_ms: 1_700_000_100_010,
+                data: ProvEventData::TaskExecutionStarted {
+                    task_id: worker_task_id.clone(),
+                    agent_id: worker_agent.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(19),
+                context_id: context_id.clone(),
+                task_id: worker_task_id.clone(),
+                timestamp_ms: 1_700_000_100_010,
+                data: ProvEventData::MessageReceived {
+                    id: MessageId::from_external(ExternalId::new("msg-worker-internal-1")),
+                    role: "user".to_string(),
+                    content: vec!["Perform delegated action".to_string()],
+                    metadata: None,
+                    agent_id: worker_agent.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(20),
+                context_id: context_id.clone(),
+                task_id: worker_task_id.clone(),
+                timestamp_ms: 1_700_000_100_011,
+                data: ProvEventData::LlmCallCompleted {
+                    scope: CallScope::Task {
+                        task_id: worker_task_id.clone(),
+                    },
+                    client: "DefaultClient".to_string(),
+                    model: "openai-generic".to_string(),
+                    function_name: "WorkerStep".to_string(),
+                    prompt: serde_json::json!({"messages":[{"role":"system","content":"execute"}]}),
+                    metadata: serde_json::json!({
+                        "agent_id": worker_agent.as_str(),
+                        "task_id": worker_task_id.as_str(),
+                        "message_id": "msg-worker-internal-1",
+                        "error":"rate limited"
+                    }),
+                    usage: LlmUsage::Unknown,
+                    duration_ms: 2100,
+                    outcome: Outcome::Failure,
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(21),
+                context_id: context_id.clone(),
+                task_id: worker_task_id.clone(),
+                timestamp_ms: 1_700_000_100_012,
+                data: ProvEventData::ToolCallCompleted {
+                    scope: CallScope::Task {
+                        task_id: worker_task_id.clone(),
+                    },
+                    tool_name: "support/clickup".to_string(),
+                    function_name: None,
+                    args: serde_json::json!({"action":"CreateTask","name":"demo"}),
+                    metadata: serde_json::json!({
+                        "phase":"send",
+                        "agent_id": worker_agent.as_str(),
+                        "task_id": worker_task_id.as_str(),
+                        "message_id":"msg-worker-internal-1",
+                        "error":"permission denied"
+                    }),
+                    duration_ms: 600,
+                    outcome: Outcome::Failure,
+                    delegation_target: None,
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(22),
+                context_id: context_id.clone(),
+                task_id: worker_task_id.clone(),
+                timestamp_ms: 1_700_000_100_013,
+                data: ProvEventData::TaskStatusChanged {
+                    task_id: worker_task_id.clone(),
+                    old_status: Some("working".to_string()),
+                    new_status: Some("failed".to_string()),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(23),
+                context_id: context_id.clone(),
+                task_id: worker_task_id,
+                timestamp_ms: 1_700_000_100_014,
+                data: ProvEventData::MessageSent {
+                    id: MessageId::from_external(ExternalId::new("msg-worker-1")),
+                    role: "ROLE_AGENT".to_string(),
+                    content: vec!["Worker failed: permission denied".to_string()],
+                    metadata: None,
+                    agent_id: worker_agent.clone(),
+                },
+            }),
+        ];
+
+        for event in &events {
+            store.add_event(event.clone()).await.expect("add_event");
+        }
+
+        let exported = GraphExporter::new(store.clone())
+            .export_by_context(context_id.as_str())
+            .await
+            .expect("export graph by context");
+        let simplified = simplify_graph(&exported);
+        let mermaid = render_sequence_diagram(&simplified);
+        assert_snapshot!(
+            "graphqlite_sequence_rendering_covers_lifecycle_errors_and_multi_agent_mermaid",
+            mermaid
+        );
+    }
+
+    #[tokio::test]
+    async fn graphqlite_sequence_rendering_documents_tool_failure_mermaid() {
+        let store = build_test_store();
+        let context_id = ContextId::new(8, 1);
+        let task_id = TaskId::from_external(ExternalId::new("task-tool-failure-1"));
+        let agent_id =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000111").unwrap());
+
+        let events = [
+            ProvEvent::AgentBooted(AgentBootedEvent {
+                id: EventId::from_counter(200),
+                timestamp_ms: 1_700_000_200_000,
+                data: ProvEventData::AgentBooted {
+                    agent_id: agent_id.clone(),
+                    agent_type: AgentType::new("ops_agent").expect("agent_type"),
+                    agent_version: "1.0.0".to_string(),
+                    archive_path: "ops@1.0.0".to_string(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(201),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_200_001,
+                data: ProvEventData::TaskExists {
+                    task_id: task_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(201),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_200_002,
+                data: ProvEventData::TaskExecutionStarted {
+                    task_id: task_id.clone(),
+                    agent_id: agent_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(202),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_200_002,
+                data: ProvEventData::MessageReceived {
+                    id: MessageId::from_external(ExternalId::new("msg-user-tool-fail")),
+                    role: "user".to_string(),
+                    content: vec!["Delete stale objects".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(203),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_200_003,
+                data: ProvEventData::ToolCallCompleted {
+                    scope: CallScope::Task {
+                        task_id: task_id.clone(),
+                    },
+                    tool_name: "support/storage".to_string(),
+                    function_name: None,
+                    args: serde_json::json!({"action":"Delete","bucket":"prod-artifacts"}),
+                    metadata: serde_json::json!({
+                        "phase":"send",
+                        "agent_id": agent_id.as_str(),
+                        "task_id": task_id.as_str(),
+                        "message_id":"msg-user-tool-fail",
+                        "error":"permission denied"
+                    }),
+                    duration_ms: 780,
+                    outcome: Outcome::Failure,
+                    delegation_target: None,
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(204),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_200_005,
+                data: ProvEventData::TaskStatusChanged {
+                    task_id: task_id.clone(),
+                    old_status: Some("working".to_string()),
+                    new_status: Some("failed".to_string()),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(205),
+                context_id: context_id.clone(),
+                task_id,
+                timestamp_ms: 1_700_000_200_006,
+                data: ProvEventData::MessageSent {
+                    id: MessageId::from_external(ExternalId::new("msg-agent-tool-fail")),
+                    role: "ROLE_AGENT".to_string(),
+                    content: vec!["Storage delete failed: permission denied".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+        ];
+
+        for event in &events {
+            store.add_event(event.clone()).await.expect("add_event");
+        }
+
+        let exported = GraphExporter::new(store.clone())
+            .export_by_context(context_id.as_str())
+            .await
+            .expect("export graph by context");
+        let simplified = simplify_graph(&exported);
+        let mermaid = render_sequence_diagram(&simplified);
+        assert_snapshot!(
+            "graphqlite_sequence_rendering_documents_tool_failure_mermaid",
+            mermaid
+        );
+    }
+
+    #[tokio::test]
+    async fn graphqlite_sequence_rendering_documents_baml_rejection_mermaid() {
+        let store = build_test_store();
+        let context_id = ContextId::new(9, 1);
+        let task_id = TaskId::from_external(ExternalId::new("task-baml-reject-1"));
+        let agent_id =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000112").unwrap());
+
+        let events = [
+            ProvEvent::AgentBooted(AgentBootedEvent {
+                id: EventId::from_counter(300),
+                timestamp_ms: 1_700_000_300_000,
+                data: ProvEventData::AgentBooted {
+                    agent_id: agent_id.clone(),
+                    agent_type: AgentType::new("planner_agent").expect("agent_type"),
+                    agent_version: "1.0.0".to_string(),
+                    archive_path: "planner@1.0.0".to_string(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(301),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_300_001,
+                data: ProvEventData::TaskExists {
+                    task_id: task_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(301),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_300_002,
+                data: ProvEventData::TaskExecutionStarted {
+                    task_id: task_id.clone(),
+                    agent_id: agent_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(302),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_300_002,
+                data: ProvEventData::MessageReceived {
+                    id: MessageId::from_external(ExternalId::new("msg-user-baml-fail")),
+                    role: "user".to_string(),
+                    content: vec!["Produce structured plan output".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(303),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_300_003,
+                data: ProvEventData::LlmCallCompleted {
+                    scope: CallScope::Task {
+                        task_id: task_id.clone(),
+                    },
+                    client: "DefaultClient".to_string(),
+                    model: "openai-generic".to_string(),
+                    function_name: "PlannerStep".to_string(),
+                    prompt: serde_json::json!({"messages":[{"role":"system","content":"plan"}]}),
+                    metadata: serde_json::json!({
+                        "agent_id": agent_id.as_str(),
+                        "task_id": task_id.as_str(),
+                        "message_id":"msg-user-baml-fail"
+                    }),
+                    usage: LlmUsage::Unknown,
+                    duration_ms: 1800,
+                    outcome: Outcome::Success,
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(304),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_300_004,
+                data: ProvEventData::PromptRejected {
+                    scope: CallScope::Task {
+                        task_id: task_id.clone(),
+                    },
+                    llm_call_event_id: EventId::from_counter(303),
+                    reason: "BAML validation failed: missing field plan_steps".to_string(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(305),
+                context_id: context_id.clone(),
+                task_id,
+                timestamp_ms: 1_700_000_300_005,
+                data: ProvEventData::MessageSent {
+                    id: MessageId::from_external(ExternalId::new("msg-agent-baml-fail")),
+                    role: "ROLE_AGENT".to_string(),
+                    content: vec!["Model output rejected by BAML validator.".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+        ];
+
+        for event in &events {
+            store.add_event(event.clone()).await.expect("add_event");
+        }
+
+        let exported = GraphExporter::new(store.clone())
+            .export_by_context(context_id.as_str())
+            .await
+            .expect("export graph by context");
+        let simplified = simplify_graph(&exported);
+        let mermaid = render_sequence_diagram(&simplified);
+        assert_snapshot!(
+            "graphqlite_sequence_rendering_documents_baml_rejection_mermaid",
+            mermaid
+        );
+    }
+
+    #[tokio::test]
+    async fn graphqlite_sequence_rendering_documents_cross_agent_return_handoff_mermaid() {
+        let store = build_test_store();
+        let context_id = ContextId::new(10, 1);
+        let planner_task_id = TaskId::from_external(ExternalId::new("task-planner-handoff-1"));
+        let worker_task_id = TaskId::from_external(ExternalId::new("task-worker-handoff-1"));
+        let planner_agent =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000121").unwrap());
+        let worker_agent =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000122").unwrap());
+
+        let events = [
+            ProvEvent::AgentBooted(AgentBootedEvent {
+                id: EventId::from_counter(400),
+                timestamp_ms: 1_700_000_400_000,
+                data: ProvEventData::AgentBooted {
+                    agent_id: planner_agent.clone(),
+                    agent_type: AgentType::new("planner_agent").expect("agent_type"),
+                    agent_version: "1.0.0".to_string(),
+                    archive_path: "planner@1.0.0".to_string(),
+                },
+            }),
+            ProvEvent::AgentBooted(AgentBootedEvent {
+                id: EventId::from_counter(401),
+                timestamp_ms: 1_700_000_400_001,
+                data: ProvEventData::AgentBooted {
+                    agent_id: worker_agent.clone(),
+                    agent_type: AgentType::new("worker_agent").expect("agent_type"),
+                    agent_version: "1.0.0".to_string(),
+                    archive_path: "worker@1.0.0".to_string(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(402),
+                context_id: context_id.clone(),
+                task_id: planner_task_id.clone(),
+                timestamp_ms: 1_700_000_400_002,
+                data: ProvEventData::TaskExists {
+                    task_id: planner_task_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(402),
+                context_id: context_id.clone(),
+                task_id: planner_task_id.clone(),
+                timestamp_ms: 1_700_000_400_003,
+                data: ProvEventData::TaskExecutionStarted {
+                    task_id: planner_task_id.clone(),
+                    agent_id: planner_agent.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(403),
+                context_id: context_id.clone(),
+                task_id: planner_task_id.clone(),
+                timestamp_ms: 1_700_000_400_003,
+                data: ProvEventData::MessageReceived {
+                    id: MessageId::from_external(ExternalId::new("msg-user-handoff-1")),
+                    role: "user".to_string(),
+                    content: vec!["Coordinate with worker and return summary".to_string()],
+                    metadata: None,
+                    agent_id: planner_agent.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(404),
+                context_id: context_id.clone(),
+                task_id: planner_task_id.clone(),
+                timestamp_ms: 1_700_000_400_004,
+                data: ProvEventData::ToolCallCompleted {
+                    scope: CallScope::Task {
+                        task_id: planner_task_id.clone(),
+                    },
+                    tool_name: "support/a2aRelay".to_string(),
+                    function_name: None,
+                    args: serde_json::json!({"target":"worker_agent","action":"prepare_report"}),
+                    metadata: serde_json::json!({
+                        "phase":"send",
+                        "agent_id": planner_agent.as_str(),
+                        "task_id": planner_task_id.as_str(),
+                        "message_id":"msg-user-handoff-1",
+                        "result":{"forwarded":true}
+                    }),
+                    duration_ms: 120,
+                    outcome: Outcome::Success,
+                    delegation_target: None,
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(405),
+                context_id: context_id.clone(),
+                task_id: worker_task_id.clone(),
+                timestamp_ms: 1_700_000_400_005,
+                data: ProvEventData::TaskExists {
+                    task_id: worker_task_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(405),
+                context_id: context_id.clone(),
+                task_id: worker_task_id.clone(),
+                timestamp_ms: 1_700_000_400_006,
+                data: ProvEventData::TaskExecutionStarted {
+                    task_id: worker_task_id.clone(),
+                    agent_id: worker_agent.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(406),
+                context_id: context_id.clone(),
+                task_id: worker_task_id.clone(),
+                timestamp_ms: 1_700_000_400_006,
+                data: ProvEventData::MessageReceived {
+                    id: MessageId::from_external(ExternalId::new("msg-worker-in-1")),
+                    role: "user".to_string(),
+                    content: vec!["prepare_report".to_string()],
+                    metadata: None,
+                    agent_id: worker_agent.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(407),
+                context_id: context_id.clone(),
+                task_id: worker_task_id.clone(),
+                timestamp_ms: 1_700_000_400_007,
+                data: ProvEventData::ToolCallCompleted {
+                    scope: CallScope::Task {
+                        task_id: worker_task_id.clone(),
+                    },
+                    tool_name: "support/clickup".to_string(),
+                    function_name: None,
+                    args: serde_json::json!({"action":"ListTasks","list_id":"abc"}),
+                    metadata: serde_json::json!({
+                        "phase":"send",
+                        "agent_id": worker_agent.as_str(),
+                        "task_id": worker_task_id.as_str(),
+                        "message_id":"msg-worker-in-1",
+                        "result":{"count":3}
+                    }),
+                    duration_ms: 250,
+                    outcome: Outcome::Success,
+                    delegation_target: None,
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(408),
+                context_id: context_id.clone(),
+                task_id: worker_task_id.clone(),
+                timestamp_ms: 1_700_000_400_008,
+                data: ProvEventData::MessageSent {
+                    id: MessageId::from_external(ExternalId::new("msg-worker-out-1")),
+                    role: "ROLE_AGENT".to_string(),
+                    content: vec!["Worker summary ready (3 items).".to_string()],
+                    metadata: None,
+                    agent_id: worker_agent.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(409),
+                context_id: context_id.clone(),
+                task_id: planner_task_id,
+                timestamp_ms: 1_700_000_400_009,
+                data: ProvEventData::MessageSent {
+                    id: MessageId::from_external(ExternalId::new("msg-planner-out-1")),
+                    role: "ROLE_AGENT".to_string(),
+                    content: vec!["Final summary from worker: 3 items.".to_string()],
+                    metadata: None,
+                    agent_id: planner_agent.clone(),
+                },
+            }),
+        ];
+
+        for event in &events {
+            store.add_event(event.clone()).await.expect("add_event");
+        }
+
+        let exported = GraphExporter::new(store.clone())
+            .export_by_context(context_id.as_str())
+            .await
+            .expect("export graph by context");
+
+        // Assert "Final summary" message is attributed to planner in the graph (WAS_EXECUTED_BY).
+        let final_msg_id = exported
+            .nodes
+            .iter()
+            .filter(|n| n.label == GraphNodeLabel::Message.as_str())
+            .find(|n| {
+                let c = n.properties.get(crate::vocabulary::a2a::CONTENT);
+                let s = c.and_then(|v| v.as_str()).or_else(|| {
+                    c.and_then(|v| v.as_array())
+                        .and_then(|a| a.first())
+                        .and_then(|v| v.as_str())
+                });
+                s.is_some_and(|s| s.contains("Final summary from worker"))
+            })
+            .map(|n| n.id.as_str())
+            .expect("Final summary message node");
+        let mp_id = exported
+            .edges
+            .iter()
+            .find(|e| {
+                e.from == final_msg_id && e.relation == crate::graph_model::EDGE_WAS_EMITTED_BY
+            })
+            .map(|e| e.to.as_str())
+            .expect("MessageProcessing for Final summary");
+        let executing_agent = exported
+            .edges
+            .iter()
+            .find(|e| e.from == mp_id && e.relation == crate::graph_model::EDGE_WAS_EXECUTED_BY)
+            .map(|e| e.to.as_str())
+            .expect("WAS_EXECUTED_BY agent for Final summary MP");
+        let planner_instance_id = format!("agent_instance:{}", planner_agent.as_str());
+        assert_eq!(
+            executing_agent, planner_instance_id,
+            "Final summary should be attributed to planner (task_id was planner task)"
+        );
+
+        let simplified = simplify_graph(&exported);
+        // Re-assert on simplified graph: agent for "Final summary" should still be planner.
+        let final_msg_id_simp = simplified
+            .nodes
+            .iter()
+            .filter(|n| n.label == GraphNodeLabel::Message.as_str())
+            .find(|n| {
+                let c = n.properties.get(crate::vocabulary::a2a::CONTENT);
+                let s = c.and_then(|v| v.as_str()).or_else(|| {
+                    c.and_then(|v| v.as_array())
+                        .and_then(|a| a.first())
+                        .and_then(|v| v.as_str())
+                });
+                s.is_some_and(|s| s.contains("Final summary from worker"))
+            })
+            .map(|n| n.id.as_str())
+            .expect("Final summary message in simplified");
+        let mp_id_simp = simplified
+            .edges
+            .iter()
+            .find(|e| {
+                e.from == final_msg_id_simp && e.relation == crate::graph_model::EDGE_WAS_EMITTED_BY
+            })
+            .map(|e| e.to.as_str())
+            .expect("MP for Final summary in simplified");
+        let exec_agent_simp = simplified
+            .edges
+            .iter()
+            .find(|e| {
+                e.from == mp_id_simp && e.relation == crate::graph_model::EDGE_WAS_EXECUTED_BY
+            })
+            .map(|e| e.to.as_str());
+        assert_eq!(
+            exec_agent_simp,
+            Some(planner_instance_id.as_str()),
+            "simplified graph: Final summary MP should have WAS_EXECUTED_BY to planner, got {:?}",
+            exec_agent_simp
+        );
+
+        let mermaid = render_sequence_diagram(&simplified);
+        assert_snapshot!(
+            "graphqlite_sequence_rendering_documents_cross_agent_return_handoff_mermaid",
+            mermaid
+        );
+    }
+
+    /// Interleaved parallel tasks in one context: task A and task B events
+    /// ordered by timestamp so diagram stresses rect grouping and ordering.
+    #[tokio::test]
+    async fn graphqlite_sequence_rendering_interleaved_parallel_tasks_mermaid() {
+        let store = build_test_store();
+        let context_id = ContextId::new(11, 1);
+        let task_a = TaskId::from_external(ExternalId::new("task-interleave-a"));
+        let task_b = TaskId::from_external(ExternalId::new("task-interleave-b"));
+        let agent_id =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000131").unwrap());
+
+        let events = [
+            ProvEvent::AgentBooted(AgentBootedEvent {
+                id: EventId::from_counter(500),
+                timestamp_ms: 1_700_000_500_000,
+                data: ProvEventData::AgentBooted {
+                    agent_id: agent_id.clone(),
+                    agent_type: AgentType::new("runner_agent").expect("agent_type"),
+                    agent_version: "1.0.0".to_string(),
+                    archive_path: "runner@1.0.0".to_string(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(501),
+                context_id: context_id.clone(),
+                task_id: task_a.clone(),
+                timestamp_ms: 1_700_000_500_001,
+                data: ProvEventData::TaskExists {
+                    task_id: task_a.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(501),
+                context_id: context_id.clone(),
+                task_id: task_a.clone(),
+                timestamp_ms: 1_700_000_500_002,
+                data: ProvEventData::TaskExecutionStarted {
+                    task_id: task_a.clone(),
+                    agent_id: agent_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(503),
+                context_id: context_id.clone(),
+                task_id: task_b.clone(),
+                timestamp_ms: 1_700_000_500_002,
+                data: ProvEventData::TaskExists {
+                    task_id: task_b.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(503),
+                context_id: context_id.clone(),
+                task_id: task_b.clone(),
+                timestamp_ms: 1_700_000_500_003,
+                data: ProvEventData::TaskExecutionStarted {
+                    task_id: task_b.clone(),
+                    agent_id: agent_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(505),
+                context_id: context_id.clone(),
+                task_id: task_a.clone(),
+                timestamp_ms: 1_700_000_500_003,
+                data: ProvEventData::MessageReceived {
+                    id: MessageId::from_external(ExternalId::new("msg-a-in")),
+                    role: "user".to_string(),
+                    content: vec!["Run A".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(504),
+                context_id: context_id.clone(),
+                task_id: task_b.clone(),
+                timestamp_ms: 1_700_000_500_004,
+                data: ProvEventData::MessageReceived {
+                    id: MessageId::from_external(ExternalId::new("msg-b-in")),
+                    role: "user".to_string(),
+                    content: vec!["Run B".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(505),
+                context_id: context_id.clone(),
+                task_id: task_a.clone(),
+                timestamp_ms: 1_700_000_500_005,
+                data: ProvEventData::LlmCallCompleted {
+                    scope: CallScope::Task {
+                        task_id: task_a.clone(),
+                    },
+                    client: "DefaultClient".to_string(),
+                    model: "openai-generic".to_string(),
+                    function_name: "StepA".to_string(),
+                    prompt: serde_json::json!({"messages":[]}),
+                    metadata: serde_json::json!({
+                        "agent_id": agent_id.as_str(),
+                        "task_id": task_a.as_str(),
+                        "message_id": "msg-a-in"
+                    }),
+                    usage: LlmUsage::Unknown,
+                    duration_ms: 100,
+                    outcome: Outcome::Success,
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(506),
+                context_id: context_id.clone(),
+                task_id: task_b.clone(),
+                timestamp_ms: 1_700_000_500_006,
+                data: ProvEventData::ToolCallCompleted {
+                    scope: CallScope::Task {
+                        task_id: task_b.clone(),
+                    },
+                    tool_name: "support/weather".to_string(),
+                    function_name: None,
+                    args: serde_json::json!({"city":"NYC"}),
+                    metadata: serde_json::json!({
+                        "phase":"send",
+                        "agent_id": agent_id.as_str(),
+                        "task_id": task_b.as_str(),
+                        "message_id": "msg-b-in",
+                        "result":{"temp":72}
+                    }),
+                    duration_ms: 50,
+                    outcome: Outcome::Success,
+                    delegation_target: None,
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(507),
+                context_id: context_id.clone(),
+                task_id: task_a.clone(),
+                timestamp_ms: 1_700_000_500_007,
+                data: ProvEventData::ToolCallCompleted {
+                    scope: CallScope::Task {
+                        task_id: task_a.clone(),
+                    },
+                    tool_name: "support/calculator".to_string(),
+                    function_name: None,
+                    args: serde_json::json!({"op":"add","a":1,"b":2}),
+                    metadata: serde_json::json!({
+                        "phase":"send",
+                        "agent_id": agent_id.as_str(),
+                        "task_id": task_a.as_str(),
+                        "message_id": "msg-a-in",
+                        "result":3
+                    }),
+                    duration_ms: 20,
+                    outcome: Outcome::Success,
+                    delegation_target: None,
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(508),
+                context_id: context_id.clone(),
+                task_id: task_a.clone(),
+                timestamp_ms: 1_700_000_500_008,
+                data: ProvEventData::MessageSent {
+                    id: MessageId::from_external(ExternalId::new("msg-a-out")),
+                    role: "ROLE_AGENT".to_string(),
+                    content: vec!["A done (3)".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(509),
+                context_id: context_id.clone(),
+                task_id: task_b.clone(),
+                timestamp_ms: 1_700_000_500_009,
+                data: ProvEventData::MessageSent {
+                    id: MessageId::from_external(ExternalId::new("msg-b-out")),
+                    role: "ROLE_AGENT".to_string(),
+                    content: vec!["B done (72°F)".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+        ];
+
+        for event in &events {
+            store.add_event(event.clone()).await.expect("add_event");
+        }
+
+        let exported = GraphExporter::new(store.clone())
+            .export_by_context(context_id.as_str())
+            .await
+            .expect("export graph by context");
+        let simplified = simplify_graph(&exported);
+        let mermaid = render_sequence_diagram(&simplified);
+        assert_snapshot!(
+            "graphqlite_sequence_rendering_interleaved_parallel_tasks_mermaid",
+            mermaid
+        );
+    }
+
+    /// Rejection + recovery: PromptRejected followed by successful LLM retry.
+    #[tokio::test]
+    async fn graphqlite_sequence_rendering_rejection_recovery_mermaid() {
+        let store = build_test_store();
+        let context_id = ContextId::new(12, 1);
+        let task_id = TaskId::from_external(ExternalId::new("task-reject-retry-1"));
+        let agent_id =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000132").unwrap());
+
+        let events = [
+            ProvEvent::AgentBooted(AgentBootedEvent {
+                id: EventId::from_counter(600),
+                timestamp_ms: 1_700_000_600_000,
+                data: ProvEventData::AgentBooted {
+                    agent_id: agent_id.clone(),
+                    agent_type: AgentType::new("validator_agent").expect("agent_type"),
+                    agent_version: "1.0.0".to_string(),
+                    archive_path: "validator@1.0.0".to_string(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(601),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_600_001,
+                data: ProvEventData::TaskExists {
+                    task_id: task_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(601),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_600_002,
+                data: ProvEventData::TaskExecutionStarted {
+                    task_id: task_id.clone(),
+                    agent_id: agent_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(602),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_600_002,
+                data: ProvEventData::MessageReceived {
+                    id: MessageId::from_external(ExternalId::new("msg-user-retry")),
+                    role: "user".to_string(),
+                    content: vec!["Return valid JSON".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(603),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_600_003,
+                data: ProvEventData::LlmCallCompleted {
+                    scope: CallScope::Task {
+                        task_id: task_id.clone(),
+                    },
+                    client: "DefaultClient".to_string(),
+                    model: "openai-generic".to_string(),
+                    function_name: "FirstAttempt".to_string(),
+                    prompt: serde_json::json!({"messages":[]}),
+                    metadata: serde_json::json!({
+                        "agent_id": agent_id.as_str(),
+                        "task_id": task_id.as_str(),
+                        "message_id": "msg-user-retry"
+                    }),
+                    usage: LlmUsage::Unknown,
+                    duration_ms: 800,
+                    outcome: Outcome::Success,
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(604),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_600_004,
+                data: ProvEventData::PromptRejected {
+                    scope: CallScope::Task {
+                        task_id: task_id.clone(),
+                    },
+                    llm_call_event_id: EventId::from_counter(603),
+                    reason: "invalid schema: missing required field".to_string(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(605),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_600_005,
+                data: ProvEventData::LlmCallCompleted {
+                    scope: CallScope::Task {
+                        task_id: task_id.clone(),
+                    },
+                    client: "DefaultClient".to_string(),
+                    model: "openai-generic".to_string(),
+                    function_name: "RetryAttempt".to_string(),
+                    prompt: serde_json::json!({"messages":[]}),
+                    metadata: serde_json::json!({
+                        "agent_id": agent_id.as_str(),
+                        "task_id": task_id.as_str(),
+                        "message_id": "msg-user-retry"
+                    }),
+                    usage: LlmUsage::Unknown,
+                    duration_ms: 600,
+                    outcome: Outcome::Success,
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(606),
+                context_id: context_id.clone(),
+                task_id,
+                timestamp_ms: 1_700_000_600_006,
+                data: ProvEventData::MessageSent {
+                    id: MessageId::from_external(ExternalId::new("msg-agent-retry")),
+                    role: "ROLE_AGENT".to_string(),
+                    content: vec!["Valid JSON after retry.".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+        ];
+
+        for event in &events {
+            store.add_event(event.clone()).await.expect("add_event");
+        }
+
+        let exported = GraphExporter::new(store.clone())
+            .export_by_context(context_id.as_str())
+            .await
+            .expect("export graph by context");
+        let simplified = simplify_graph(&exported);
+        let mermaid = render_sequence_diagram(&simplified);
+        assert_snapshot!(
+            "graphqlite_sequence_rendering_rejection_recovery_mermaid",
+            mermaid
+        );
+    }
+
+    /// Multi-tool chain: first tool success, second tool failure, terminal synthesis message.
+    #[tokio::test]
+    async fn graphqlite_sequence_rendering_multi_tool_mixed_outcomes_mermaid() {
+        let store = build_test_store();
+        let context_id = ContextId::new(13, 1);
+        let task_id = TaskId::from_external(ExternalId::new("task-multi-tool-1"));
+        let agent_id =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000133").unwrap());
+
+        let events = [
+            ProvEvent::AgentBooted(AgentBootedEvent {
+                id: EventId::from_counter(700),
+                timestamp_ms: 1_700_000_700_000,
+                data: ProvEventData::AgentBooted {
+                    agent_id: agent_id.clone(),
+                    agent_type: AgentType::new("chain_agent").expect("agent_type"),
+                    agent_version: "1.0.0".to_string(),
+                    archive_path: "chain@1.0.0".to_string(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(701),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_700_001,
+                data: ProvEventData::TaskExists {
+                    task_id: task_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(701),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_700_002,
+                data: ProvEventData::TaskExecutionStarted {
+                    task_id: task_id.clone(),
+                    agent_id: agent_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(702),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_700_002,
+                data: ProvEventData::MessageReceived {
+                    id: MessageId::from_external(ExternalId::new("msg-user-chain")),
+                    role: "user".to_string(),
+                    content: vec!["Fetch then mutate".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(703),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_700_003,
+                data: ProvEventData::ToolCallCompleted {
+                    scope: CallScope::Task {
+                        task_id: task_id.clone(),
+                    },
+                    tool_name: "support/weather".to_string(),
+                    function_name: None,
+                    args: serde_json::json!({"city":"LA"}),
+                    metadata: serde_json::json!({
+                        "phase":"send",
+                        "agent_id": agent_id.as_str(),
+                        "task_id": task_id.as_str(),
+                        "message_id": "msg-user-chain",
+                        "result":{"temp":68}
+                    }),
+                    duration_ms: 100,
+                    outcome: Outcome::Success,
+                    delegation_target: None,
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(704),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_700_004,
+                data: ProvEventData::ToolCallCompleted {
+                    scope: CallScope::Task {
+                        task_id: task_id.clone(),
+                    },
+                    tool_name: "support/clickup".to_string(),
+                    function_name: None,
+                    args: serde_json::json!({"action":"CreateTask","name":"from-chain"}),
+                    metadata: serde_json::json!({
+                        "phase":"send",
+                        "agent_id": agent_id.as_str(),
+                        "task_id": task_id.as_str(),
+                        "message_id": "msg-user-chain",
+                        "error":"API rate limit"
+                    }),
+                    duration_ms: 400,
+                    outcome: Outcome::Failure,
+                    delegation_target: None,
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(705),
+                context_id: context_id.clone(),
+                task_id,
+                timestamp_ms: 1_700_000_700_005,
+                data: ProvEventData::MessageSent {
+                    id: MessageId::from_external(ExternalId::new("msg-agent-chain")),
+                    role: "ROLE_AGENT".to_string(),
+                    content: vec!["Weather 68°F; CreateTask failed: API rate limit".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+        ];
+
+        for event in &events {
+            store.add_event(event.clone()).await.expect("add_event");
+        }
+
+        let exported = GraphExporter::new(store.clone())
+            .export_by_context(context_id.as_str())
+            .await
+            .expect("export graph by context");
+        let simplified = simplify_graph(&exported);
+        let mermaid = render_sequence_diagram(&simplified);
+        assert_snapshot!(
+            "graphqlite_sequence_rendering_multi_tool_mixed_outcomes_mermaid",
+            mermaid
+        );
+    }
+
+    /// Status-only transitions and artifact-heavy completion (no LLM/tool in between).
+    #[tokio::test]
+    async fn graphqlite_sequence_rendering_status_and_artifacts_mermaid() {
+        let store = build_test_store();
+        let context_id = ContextId::new(14, 1);
+        let task_id = TaskId::from_external(ExternalId::new("task-status-artifacts-1"));
+        let agent_id =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000134").unwrap());
+
+        let events = [
+            ProvEvent::AgentBooted(AgentBootedEvent {
+                id: EventId::from_counter(800),
+                timestamp_ms: 1_700_000_800_000,
+                data: ProvEventData::AgentBooted {
+                    agent_id: agent_id.clone(),
+                    agent_type: AgentType::new("report_agent").expect("agent_type"),
+                    agent_version: "1.0.0".to_string(),
+                    archive_path: "report@1.0.0".to_string(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(801),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_800_001,
+                data: ProvEventData::TaskExists {
+                    task_id: task_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(801),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_800_002,
+                data: ProvEventData::TaskExecutionStarted {
+                    task_id: task_id.clone(),
+                    agent_id: agent_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(802),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_800_002,
+                data: ProvEventData::MessageReceived {
+                    id: MessageId::from_external(ExternalId::new("msg-user-report")),
+                    role: "user".to_string(),
+                    content: vec!["Generate report".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(803),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_800_003,
+                data: ProvEventData::TaskStatusChanged {
+                    task_id: task_id.clone(),
+                    old_status: None,
+                    new_status: Some("submitted".to_string()),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(804),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_800_004,
+                data: ProvEventData::TaskStatusChanged {
+                    task_id: task_id.clone(),
+                    old_status: Some("submitted".to_string()),
+                    new_status: Some("working".to_string()),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(805),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_800_005,
+                data: ProvEventData::TaskArtifactGenerated {
+                    task_id: task_id.clone(),
+                    artifact_id: Some(ArtifactId::from_external(ExternalId::new("art-report-1"))),
+                    artifact_type: Some("report".to_string()),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(806),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_800_006,
+                data: ProvEventData::TaskArtifactGenerated {
+                    task_id: task_id.clone(),
+                    artifact_id: Some(ArtifactId::from_external(ExternalId::new("art-chart-1"))),
+                    artifact_type: Some("chart".to_string()),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(807),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_800_007,
+                data: ProvEventData::TaskStatusChanged {
+                    task_id: task_id.clone(),
+                    old_status: Some("working".to_string()),
+                    new_status: Some("completed".to_string()),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(808),
+                context_id: context_id.clone(),
+                task_id,
+                timestamp_ms: 1_700_000_800_008,
+                data: ProvEventData::MessageSent {
+                    id: MessageId::from_external(ExternalId::new("msg-agent-report")),
+                    role: "ROLE_AGENT".to_string(),
+                    content: vec!["Report and chart ready.".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+        ];
+
+        for event in &events {
+            store.add_event(event.clone()).await.expect("add_event");
+        }
+
+        let exported = GraphExporter::new(store.clone())
+            .export_by_context(context_id.as_str())
+            .await
+            .expect("export graph by context");
+        let simplified = simplify_graph(&exported);
+        let mermaid = render_sequence_diagram(&simplified);
+        assert_snapshot!(
+            "graphqlite_sequence_rendering_status_and_artifacts_mermaid",
+            mermaid
+        );
+    }
+
+    /// Determinism guard: same context exported and rendered twice yields identical Mermaid.
+    /// Scenario uses explicit event IDs (from_counter) and timestamps so ordering is stable.
+    #[tokio::test]
+    async fn graphqlite_sequence_rendering_deterministic_for_fixed_events() {
+        let store = build_test_store();
+        let context_id = ContextId::new(15, 1);
+        let task_id = TaskId::from_external(ExternalId::new("task-determinism-1"));
+        let agent_id =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000135").unwrap());
+
+        let events = [
+            ProvEvent::AgentBooted(AgentBootedEvent {
+                id: EventId::from_counter(900),
+                timestamp_ms: 1_700_000_900_000,
+                data: ProvEventData::AgentBooted {
+                    agent_id: agent_id.clone(),
+                    agent_type: AgentType::new("det_agent").expect("agent_type"),
+                    agent_version: "1.0.0".to_string(),
+                    archive_path: "det@1.0.0".to_string(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(901),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_900_001,
+                data: ProvEventData::TaskExists {
+                    task_id: task_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(901),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_900_002,
+                data: ProvEventData::TaskExecutionStarted {
+                    task_id: task_id.clone(),
+                    agent_id: agent_id.clone(),
+                    context_id: context_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(902),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: 1_700_000_900_002,
+                data: ProvEventData::MessageReceived {
+                    id: MessageId::from_external(ExternalId::new("msg-det-in")),
+                    role: "user".to_string(),
+                    content: vec!["Stable input".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+            ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(903),
+                context_id: context_id.clone(),
+                task_id,
+                timestamp_ms: 1_700_000_900_003,
+                data: ProvEventData::MessageSent {
+                    id: MessageId::from_external(ExternalId::new("msg-det-out")),
+                    role: "ROLE_AGENT".to_string(),
+                    content: vec!["Stable output".to_string()],
+                    metadata: None,
+                    agent_id: agent_id.clone(),
+                },
+            }),
+        ];
+
+        for event in &events {
+            store.add_event(event.clone()).await.expect("add_event");
+        }
+
+        let export_once = GraphExporter::new(store.clone())
+            .export_by_context(context_id.as_str())
+            .await
+            .expect("export graph by context");
+        let simplified_once = simplify_graph(&export_once);
+        let mermaid_once = render_sequence_diagram(&simplified_once);
+
+        let export_twice = GraphExporter::new(store.clone())
+            .export_by_context(context_id.as_str())
+            .await
+            .expect("export graph by context");
+        let simplified_twice = simplify_graph(&export_twice);
+        let mermaid_twice = render_sequence_diagram(&simplified_twice);
+
+        assert_eq!(
+            mermaid_once, mermaid_twice,
+            "sequence diagram must be deterministic for fixed event IDs and timestamps"
+        );
     }
 }

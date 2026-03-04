@@ -1,0 +1,34 @@
+---
+source: crates/baml-rt-provenance/src/graphqlite_store.rs
+expression: mermaid
+---
+sequenceDiagram
+    autonumber
+    actor User
+    participant planner_1_0_0
+    participant worker_1_0_0
+    participant LLM_openai_generic
+    participant a2aRelay
+    participant clickup
+
+    User->>+planner_1_0_0: Plan and delegate work
+    rect rgb(220, 230, 241)
+    Note over planner_1_0_0,a2aRelay: "Submitted"
+    planner_1_0_0->>+LLM_openai_generic: PlannerStep
+    LLM_openai_generic-->>-planner_1_0_0: 3200ms ✓
+    planner_1_0_0->>+a2aRelay: target=worker_agent action=delegate
+    a2aRelay-->>-planner_1_0_0: 450ms ✓
+    planner_1_0_0->>-User: Delegated to worker
+    User->>+worker_1_0_0: Perform delegated action
+    end
+    rect rgb(220, 230, 241)
+    Note over worker_1_0_0,clickup: "Failed"
+    worker_1_0_0->>+LLM_openai_generic: WorkerStep
+    LLM_openai_generic--xworker_1_0_0: 2100ms ✗ rate limited
+    deactivate LLM_openai_generic
+    worker_1_0_0->>+clickup: action=CreateTask name=demo
+    clickup--xworker_1_0_0: 600ms ✗ permission denied
+    deactivate clickup
+    Note over clickup,worker_1_0_0: ✗ "permission denied"
+    worker_1_0_0->>-User: Worker failed: permission denied
+    end

@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    BamlRtError, Outcome, Result,
+    Outcome, Result,
     bus::{A2aEffectMetadata, A2aLivenessRole, EffectEmitter, EffectEvent},
     context::InvocationScope,
     ids::AgentId,
@@ -11,7 +11,7 @@ use baml_rt_core::{
 use baml_rt_observability::{metrics, spans};
 use baml_rt_quickjs::{
     QuickJSBridge,
-    a2a_stream::{StreamOutput, spawn_stream_handover},
+    a2a_stream::{StreamOutput, invoke_handler_handover, spawn_stream_handover},
 };
 use serde_json::Value;
 use tokio::sync::{Mutex, mpsc};
@@ -43,7 +43,7 @@ fn task_id_from_chunk(value: &Value) -> Option<String> {
 
 /// Builds a stream chunk for TASK_STATE_SUBMITTED so the client FSM sees SUBMITTED before WORKING.
 /// This chunk is applied through the same pipeline as agent yields (store_result → apply_task_delta):
-/// the task is created/recorded and SUBMITTED is written to the store and to provenance (task_created,
+/// the task is created/recorded and SUBMITTED is written to the store and to provenance (task_exists + task_execution_started,
 /// task_status_changed). So the wire and PROV stay aligned—we record the task.
 fn make_submitted_chunk(context_id: &str, task_id: &str) -> Value {
     serde_json::json!({
@@ -103,22 +103,8 @@ impl JsInvoker for QuickJsInvoker {
         request: &a2a::A2aRequest,
         scope: &InvocationScope,
     ) -> Result<Value> {
-        let request = request.clone();
-        let scope = scope.clone();
-        let bridge = self.bridge.clone();
-        let handle = tokio::runtime::Handle::current();
-        tokio::task::spawn_blocking(move || {
-            handle.block_on(async move {
-                // If params serialization fails, surface the error instead of sending an empty payload.
-                let js_request = a2a::request_to_js_value(&request)?;
-                let mut bridge = bridge.lock().await;
-                bridge
-                    .invoke_js_function(&scope, "onChatMessage", js_request)
-                    .await
-            })
-        })
-        .await
-        .map_err(|e| BamlRtError::InvalidArgument(e.to_string()))?
+        let js_request = a2a::request_to_js_value(request)?;
+        invoke_handler_handover(self.bridge.clone(), scope.clone(), js_request).await
     }
 
     async fn invoke_stream_incremental(
@@ -427,7 +413,9 @@ mod tests {
     // to compile.
 
     use async_trait::async_trait;
-    use baml_rt_core::{InvocationKind, bus::BusWithEffects, stream_completion::StreamCompletion};
+    use baml_rt_core::{
+        BamlRtError, InvocationKind, bus::BusWithEffects, stream_completion::StreamCompletion,
+    };
     use serde_json::json;
 
     use super::*;

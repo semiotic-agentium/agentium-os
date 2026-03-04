@@ -8,7 +8,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, Result, context};
+use baml_rt_core::{BamlRtError, Result};
 use baml_rt_tools::{
     BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
     ToolSession, ToolSessionError, ToolStep,
@@ -269,8 +269,8 @@ impl ClaudeStreamSource for ClaudeSdkSource {
 /// Max chars per thinking chunk so we stream to the client instead of one huge block.
 const THINKING_CHUNK_CHARS: usize = 500;
 
-/// Max events per ToolStep::Streaming so we don't batch the whole queue into one step.
-const MAX_EVENTS_PER_STEP: usize = 5;
+/// Emit each event immediately; no batching (was 5, caused heavy buffering).
+const MAX_EVENTS_PER_STEP: usize = 1;
 
 fn chunk_thinking(thinking: String) -> Vec<ClaudeEventDto> {
     if thinking.len() <= THINKING_CHUNK_CHARS {
@@ -523,8 +523,7 @@ impl ToolHandler for ClaudeSessionToolHandler {
         let open: ClaudeToolOpenInput =
             serde_json::from_value(open_input).map_err(baml_rt_core::BamlRtError::Json)?;
 
-        let scope = context::current_scope()?;
-        let agent_id = scope.agent_id().as_str().to_string();
+        let agent_id = ctx.agent_id.as_str().to_string();
         let (workspace_name, cwd) = self
             .workspace_registry
             .resolve_workspace(&agent_id, open.workspace.as_deref())

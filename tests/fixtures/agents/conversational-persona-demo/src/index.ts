@@ -3,12 +3,24 @@
  * Fixture: conversational-persona-demo (agent-discovery demo)
  * ----------------------------------------------------------
  * Orkemedies persona that routes via agent discovery: lists capabilities or
- * delegates to a suitable agent via system/internal_a2a, then replies in persona.
+ * delegates via a structured plan (one or multiple agent chats), then replies in persona.
  *
  * Flow: RouteIntent → GetDiscoverAgentsPlan → FormatCapabilities or
- *       SelectAgentForMessage → BuildDelegatePlan → SummarizeDelegatedResult.
+ *       MakeStructuredPlan → for each step BuildDelegatePlan (BAML) → merge chunks → SummarizeDelegatedResult.
+ * MakeStructuredPlan returns StructuredPlan with plan_steps (not "steps") so the runtime does not
+ * treat it as a ToolSessionPlan; only BuildDelegatePlan/GetDiscoverAgentsPlan return executable plans.
+ * This file never constructs or parses session plan JSON (prompt + session tool is LLM-driven; TS just calls BAML and gets the execution result).
  */
-import type { AgentCardDto, InternalA2aNextOutput, SessionResult } from "./baml-runtime";
+import type { AgentCardDto, InternalA2aNextOutput, SessionResult, StructuredPlan } from "./baml-runtime";
+
+/** Duplicate of BAML PlanStep: generator does not emit nested types (see baml-rt-builder README). Keep in sync with persona_prompt.baml PlanStep. */
+declare global {
+  interface PlanStep {
+    agent_package: string;
+    agent_instance_id: string;
+    sub_message: string;
+  }
+}
 
 function mergeA2aOutput(value: unknown): InternalA2aNextOutput {
   if (value == null) return { chunks: [] };
@@ -43,18 +55,27 @@ __chat_register({
         return { message: String(message) };
       }
 
-      const selected = await SelectAgentForMessage({ user_message: text, agents });
-      if (!selected?.agent_package || !selected?.agent_instance_id) {
+      const plan = await MakeStructuredPlan({ user_message: text, agents });
+      const steps = Array.isArray(plan?.plan_steps) ? plan.plan_steps : [];
+      if (steps.length === 0) {
         const message = await FormatCapabilities({ user_message: text, agents });
         return { message: String(message) };
       }
 
-      const a2aOutput = await BuildDelegatePlan({
-        agent_package: selected.agent_package,
-        agent_instance_id: selected.agent_instance_id,
-        user_message: text,
-      });
-      const merged = mergeA2aOutput(a2aOutput);
+      const allChunks: InternalA2aNextOutput["chunks"] = [];
+      for (const step of steps as PlanStep[]) {
+        if (
+          typeof step.agent_package !== "string" ||
+          typeof step.agent_instance_id !== "string" ||
+          !step.agent_package ||
+          !step.agent_instance_id
+        )
+          continue;
+        const stepOutput = await BuildDelegatePlan({ plan, step });
+        const stepMerged = mergeA2aOutput(stepOutput);
+        if (Array.isArray(stepMerged.chunks)) allChunks.push(...stepMerged.chunks);
+      }
+      const merged = { chunks: allChunks };
       const message = await SummarizeDelegatedResult({ a2a_output: merged });
       return { message: String(message) };
     } catch (e) {

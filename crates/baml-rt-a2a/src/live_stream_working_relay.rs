@@ -117,6 +117,7 @@ mod tests {
             function_name: None,
             args: serde_json::json!({}),
             metadata: serde_json::json!({}),
+            delegation_target: None,
         };
         bus.emit(EffectEvent::ToolStarted {
             context_id: context_id.clone(),

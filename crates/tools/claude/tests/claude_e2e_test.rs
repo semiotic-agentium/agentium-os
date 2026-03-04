@@ -31,6 +31,7 @@ async fn claude_e2e_smoke_query() {
                 "claude/dev",
                 serde_json::json!({}),
                 scope.as_scope().context_id(),
+                scope.as_scope().agent_id(),
             )
             .await
             .expect("open");

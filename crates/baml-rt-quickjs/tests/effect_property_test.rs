@@ -137,6 +137,7 @@ async fn test_liveness_gating_timeout_inner() {
         function_name: None,
         args: json!({}),
         metadata: json!({"message_id": "msg-2"}),
+        delegation_target: None,
     };
     bus.emit(EffectEvent::ToolStarted {
         context_id: context_id.clone(),
@@ -177,6 +178,7 @@ async fn test_simulated_hang_started_without_completed() {
         function_name: None,
         args: json!({}),
         metadata: json!({"message_id": "msg-hang"}),
+        delegation_target: None,
     };
     bus.emit(EffectEvent::ToolStarted {
         context_id: context_id.clone(),
@@ -296,6 +298,7 @@ async fn test_timeout_monotonicity_effect_completion() {
         function_name: None,
         args: json!({}),
         metadata: json!({"message_id": "msg-mono"}),
+        delegation_target: None,
     };
     bus.emit(EffectEvent::ToolStarted {
         context_id: context_id.clone(),
@@ -399,6 +402,7 @@ async fn test_effect_token_drop_leaves_in_flight() {
         function_name: None,
         args: json!({}),
         metadata: json!({"message_id": "msg-leak"}),
+        delegation_target: None,
     };
     let token = bus
         .as_ref()
@@ -438,6 +442,7 @@ proptest! {
                             function_name: None,
                             args: json!({}),
                             metadata: json!({"message_id": format!("msg-{}", i)}),
+                            delegation_target: None,
                         };
                         bus.emit(EffectEvent::ToolStarted {
                             context_id: context_id.clone(),
@@ -455,6 +460,7 @@ proptest! {
                                 function_name: None,
                                 args: json!({}),
                                 metadata: json!({"message_id": format!("msg-{}", i)}),
+                                delegation_target: None,
                             };
                             bus.emit(EffectEvent::ToolCompleted {
                                 context_id: context_id.clone(),
@@ -474,6 +480,7 @@ proptest! {
                             function_name: None,
                             args: json!({}),
                             metadata: json!({"message_id": format!("msg-orphan-{}", i)}),
+                            delegation_target: None,
                         };
                         bus.emit(EffectEvent::ToolCompleted {
                             context_id: context_id.clone(),
