@@ -86,7 +86,8 @@ function NormalizeIterableOutput(
   required_item_fields: string[],
   max_items: int?
 ) -> NormalizedIterableOutput {
-  client OpenRouterGPT
+  // client OpenRouterGPT
+  client OpenRouterNormalizer
   prompt #"
     You normalize mixed specialist output into machine-usable iterable items.
     Return strict JSON matching NormalizedIterableOutput.
@@ -133,6 +134,16 @@ client OpenRouterGPT {
   provider openai-generic
   options {
     model "x-ai/grok-4.1-fast"
+    base_url "https://openrouter.ai/api/v1"
+    api_key env.OPENROUTER_API_KEY
+  }
+}
+
+// Separate client for normalization (no <think> tags)
+client OpenRouterNormalizer {
+  provider openai-generic
+  options {
+    model "openai/gpt-4.1-mini"
     base_url "https://openrouter.ai/api/v1"
     api_key env.OPENROUTER_API_KEY
   }
