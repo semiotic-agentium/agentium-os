@@ -922,6 +922,73 @@ function parseDiscoverAgentsOutput(value: unknown): DiscoverAgentsOutput | null 
   };
 }
 
+function extractTextFromMessagePayload(value: unknown): string | null {
+  if (!isObject(value) || !Array.isArray(value.parts)) return null;
+  const texts: string[] = [];
+  for (const part of value.parts) {
+    if (!isObject(part) || typeof part.text !== "string") continue;
+    const text = part.text.trim();
+    if (!isMeaningfulDelegatedText(text)) continue;
+    texts.push(text);
+  }
+  if (texts.length === 0) return null;
+  return normalizeText(texts.join(" "));
+}
+
+function detectDelegatedTaskFailure(value: unknown): string | null {
+  const queue: unknown[] = [value];
+  const visited = new WeakSet<object>();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current === undefined || current === null) continue;
+
+    if (typeof current === "string") {
+      const parsed = tryParseJsonValue(current);
+      if (parsed) {
+        queue.push(parsed);
+      }
+      continue;
+    }
+
+    if (Array.isArray(current)) {
+      if (visited.has(current)) continue;
+      visited.add(current);
+      for (const entry of current) queue.push(entry);
+      continue;
+    }
+
+    if (!isObject(current)) continue;
+    if (visited.has(current)) continue;
+    visited.add(current);
+
+    const state = normalizeOptionalString(current.state);
+    if (state && state.toUpperCase() === "TASK_STATE_FAILED") {
+      return (
+        extractTextFromMessagePayload(current.message) ||
+        "Delegated task reported TASK_STATE_FAILED."
+      );
+    }
+
+    const statusCandidates = [current.status, current.status_update, current.statusUpdate];
+    for (const status of statusCandidates) {
+      if (!isObject(status)) continue;
+      const statusState = normalizeOptionalString(status.state);
+      if (!statusState || statusState.toUpperCase() !== "TASK_STATE_FAILED") continue;
+      const nestedStatus = isObject(status.status) ? status.status : null;
+      return (
+        extractTextFromMessagePayload(status.message) ||
+        extractTextFromMessagePayload(nestedStatus?.message) ||
+        "Delegated task reported TASK_STATE_FAILED."
+      );
+    }
+
+    for (const nested of Object.values(current)) queue.push(nested);
+  }
+
+  return null;
+}
+
 type ToolSessionStepStatus = "streaming" | "suspended" | "done" | "error" | "unknown";
 
 type ParsedToolSessionStep = {
@@ -950,6 +1017,11 @@ function parseToolSessionStep(step: unknown): ParsedToolSessionStep {
       : "unknown";
 
   const output = "output" in step ? step.output : step;
+  const delegatedFailure = detectDelegatedTaskFailure(output);
+  if (delegatedFailure) {
+    return { status: "error", output, errorMessage: delegatedFailure };
+  }
+
   const errObj = isObject(step.error) ? step.error : null;
   const errorMessage =
     errObj && typeof errObj.message === "string"
@@ -1031,18 +1103,39 @@ async function delegateToAgent(target: RouteTarget, prompt: string): Promise<str
     });
     await sessionHandle.send({ parts: [{ text: prompt }] });
     const drained = await drainToolSession(sessionHandle, MAX_DELEGATION_CONTINUE_STEPS);
-    if (drained.hitStepLimit) {
+    const allOutputs = drained.steps.map((step) => step.output);
+    const terminal = drained.steps[drained.steps.length - 1] || null;
+    const isTerminalError = terminal?.status === "error";
+
+    if (drained.hitStepLimit || isTerminalError) {
+      // Attempt to salvage useful output from steps collected before the
+      // terminal failure.  If any meaningful text was streamed by the child
+      // agent, return it rather than discarding everything.
+      const partial = collectDelegatedTexts(allOutputs);
+      if (partial.length > 0) {
+        try {
+          await sessionHandle.finish();
+        } catch {
+          try {
+            await sessionHandle.abort("Partial output salvaged after terminal error");
+          } catch {
+            // Ignore cleanup errors.
+          }
+        }
+        sessionHandle = null;
+        return partial;
+      }
+      if (isTerminalError) {
+        throw new Error(terminal.errorMessage || "Delegated session returned error status.");
+      }
       throw new Error(
         `Delegated session did not reach terminal status within ${MAX_DELEGATION_CONTINUE_STEPS} continue steps.`,
       );
     }
-    const terminal = drained.steps[drained.steps.length - 1] || null;
-    if (terminal?.status === "error") {
-      throw new Error(terminal.errorMessage || "Delegated session returned error status.");
-    }
+
     await sessionHandle.finish();
     sessionHandle = null;
-    return collectDelegatedTexts(drained.steps.map((step) => step.output));
+    return collectDelegatedTexts(allOutputs);
   } catch (err) {
     if (sessionHandle) {
       const reason = err instanceof Error ? err.message : String(err);

@@ -82,7 +82,11 @@ function PlanCoordinatorWorkflow(
     - `clarify` and `direct_answer` require prompt_template.
     - Prefer foreach sources that are machine-readable (`nX`, `nX.output_data`, `nX.output_data.items`).
     - Avoid `nX.output_text` as foreach source unless no structured path is plausible.
-    - If a call_agent is expected to feed foreach, ask that agent for a machine-readable list (JSON array, optionally under `items`) in addition to any prose.
+    - If a call_agent is expected to feed foreach, make the source prompt request strict JSON only in this shape:
+      {"items":[{...}]}
+    - If a call_agent feeds foreach, ensure source items include fields required by foreach placeholders (for example `item.title` requires `title`).
+    - If a call_agent feeds foreach, do not require prose in the same response; prioritize machine-readable payloads.
+    - For source retrieval prompts that feed foreach, explicitly instruct the specialist to stop after returning the JSON payload (no extra planning turns).
     - Foreach templates must use simple placeholders only (item-dot-field format, e.g. item.title); do not use operators/expressions like `||`, conditionals, or arithmetic.
     - Use references like n1.output_data.items only when there is a dependency on n1.
 
@@ -146,7 +150,11 @@ function PlanCoordinatorWorkflowBestEffort(
     - `clarify` and `direct_answer` require prompt_template.
     - Prefer foreach sources that are machine-readable (`nX`, `nX.output_data`, `nX.output_data.items`).
     - Avoid `nX.output_text` as foreach source unless no structured path is plausible.
-    - If a call_agent is expected to feed foreach, ask that agent for a machine-readable list (JSON array, optionally under `items`) in addition to any prose.
+    - If a call_agent is expected to feed foreach, make the source prompt request strict JSON only in this shape:
+      {"items":[{...}]}
+    - If a call_agent feeds foreach, ensure source items include fields required by foreach placeholders (for example `item.title` requires `title`).
+    - If a call_agent feeds foreach, do not require prose in the same response; prioritize machine-readable payloads.
+    - For source retrieval prompts that feed foreach, explicitly instruct the specialist to stop after returning the JSON payload (no extra planning turns).
     - Foreach templates must use simple placeholders only (item-dot-field format, e.g. item.title); do not use operators/expressions like `||`, conditionals, or arithmetic.
     - Use references like n1.output_data.items only when there is a dependency on n1.
 

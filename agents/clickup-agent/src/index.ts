@@ -74,13 +74,17 @@ function isToolOutput(v: unknown): v is ClickUpOutput {
 }
 
 function isSessionPlan(v: unknown): v is SupportClickupSessionPlan {
-  if (!isObject(v) || !Array.isArray(v.steps)) return false;
+  if (!isObject(v) || !Array.isArray(v.steps) || v.steps.length === 0) return false;
   return v.steps.every(
     (step) =>
       isObject(step) &&
       typeof step.op === "string" &&
       (step.op !== "Send" || isObject(step.input))
   );
+}
+
+function isExplicitlyEmptySessionPlan(v: unknown): boolean {
+  return isObject(v) && Array.isArray(v.steps) && v.steps.length === 0;
 }
 
 function extractToolOutput(v: unknown): ClickUpOutput | null {
@@ -178,10 +182,24 @@ async function onChatMessage(
 
     try {
       for (let step = 1; step <= MAX_REACT_STEPS; step++) {
-        let result: unknown = await ChooseClickUpAction({
-          user_message: text,
-          __baml_invocation_token: token,
-        });
+        let result: unknown;
+        try {
+          result = await ChooseClickUpAction({
+            user_message: text,
+            __baml_invocation_token: token,
+          });
+        } catch (planErr) {
+          // If the planner call fails (e.g. LLM returns empty/invalid
+          // response) but we already accumulated output from a prior
+          // step, return that output rather than losing the data.
+          if (lastToolOutput) return { message: formatOutput(lastToolOutput) };
+          throw planErr;
+        }
+
+        if (isExplicitlyEmptySessionPlan(result)) {
+          if (lastToolOutput) return { message: formatOutput(lastToolOutput) };
+          return { message: "ClickUp planner returned an empty session plan." };
+        }
 
         if (isSessionPlan(result)) {
           const executedOutput = await executeClickUpPlan(result);
@@ -231,6 +249,10 @@ async function onChatMessage(
         message: `Unable to complete the request within ${MAX_REACT_STEPS} planning steps.`,
       };
     } catch (e) {
+      // Preserve accumulated output even when a later step fails.
+      if (lastToolOutput) {
+        return { message: formatOutput(lastToolOutput) };
+      }
       const errMsg = e instanceof Error ? e.message : String(e);
       return { error: `Error: ${errMsg}` };
     }

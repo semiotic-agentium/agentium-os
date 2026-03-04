@@ -143,12 +143,16 @@ function isNotionOutput(value: unknown): value is NotionOutput {
 }
 
 function isSessionPlan(value: unknown): value is SupportNotionSessionPlan {
-  if (!isObject(value) || !Array.isArray(value.steps)) return false;
+  if (!isObject(value) || !Array.isArray(value.steps) || value.steps.length === 0) return false;
   return value.steps.every((step) => {
     if (!isObject(step) || typeof step.op !== "string") return false;
     if (step.op === "Send") return isObject(step.input);
     return true;
   });
+}
+
+function isExplicitlyEmptySessionPlan(value: unknown): boolean {
+  return isObject(value) && Array.isArray(value.steps) && value.steps.length === 0;
 }
 
 function extractNotionOutput(value: unknown): NotionOutput | null {
@@ -443,10 +447,28 @@ async function onChatMessage(message: ChatMessageWithToken): Promise<void> {
       }
 
       for (let step = 1; step <= MAX_REACT_STEPS; step++) {
-        const result: unknown = await ChooseNotionAction({
-          user_message: text,
-          __baml_invocation_token: token,
-        });
+        let result: unknown;
+        try {
+          result = await ChooseNotionAction({
+            user_message: text,
+            __baml_invocation_token: token,
+          });
+        } catch (planErr) {
+          // If the planner call fails (e.g. LLM returns empty/invalid
+          // response) but we already accumulated output from a prior
+          // step, return that output rather than losing the data.
+          if (lastToolOutput) {
+            return { message: await renderNotionOutput(lastToolOutput, text) };
+          }
+          throw planErr;
+        }
+
+        if (isExplicitlyEmptySessionPlan(result)) {
+          if (lastToolOutput) {
+            return { message: await renderNotionOutput(lastToolOutput, text) };
+          }
+          return { message: "Notion planner returned an empty session plan." };
+        }
 
         if (isSessionPlan(result)) {
           const executedOutput = await executeNotionPlan(result);
@@ -499,6 +521,14 @@ async function onChatMessage(message: ChatMessageWithToken): Promise<void> {
         message: `Unable to complete the request within ${MAX_REACT_STEPS} planning steps.`,
       };
     } catch (e) {
+      // Preserve accumulated output even when a later step fails.
+      if (lastToolOutput) {
+        try {
+          return { message: await renderNotionOutput(lastToolOutput, text) };
+        } catch {
+          // Fall through to the original error path.
+        }
+      }
       const errMsg = e instanceof Error ? e.message : String(e);
       return { error: `Error: ${errMsg}` };
     }
