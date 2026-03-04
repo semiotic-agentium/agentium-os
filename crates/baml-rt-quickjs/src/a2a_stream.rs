@@ -1,34 +1,8 @@
-//! A2A stream handover and pump for interleaved execution.
+//! A2A stream: same-thread session (begin → invoke → collect) on a dedicated lane.
 //!
-//! Stream routing follows one production path:
-//! `spawn_stream_handover` → `collect_into_channel_owned` (pump with server-side idle timeout).
-//! The pump forwards chunks until terminal state (final/input_required), channel close, or
-//! idle timeout. Idle timeout is reset on every yield; configurable via `stream_collector_idle_secs`.
-//!
-//! ## Interleaved streaming invariants (canonical)
-//!
-//! 1. Single handover path.
-//!    Every streaming request starts with `spawn_stream_handover` and is drained by
-//!    `collect_into_channel_owned`; no alternate collector path is used in production.
-//!
-//! 2. Context routing discipline.
-//!    Stream yield routing is resolved from
-//!    active invocation context and stream session state, not mutable global runtime state.
-//!
-//! 3. Single advancement lane.
-//!    At most one collector may advance QuickJS pending jobs at a time
-//!    via the coordinator; all other steps are short per-iteration operations.
-//!
-//! 4. Progress loop discipline.
-//!    Each iteration is bounded: advance jobs, read/drain chunks,
-//!    evaluate terminal state, and yield before retrying.
-//!
-//! 5. Single terminalization.
-//!    Completion happens only via one terminal reason
-//!    (`final`, completed/failed, input required, channel close, idle timeout) and a single
-//!    idempotent finalization path.
-//!
-//! Formalized stream architecture and invariants are documented in this crate's `README.md`.
+//! Stream path: `spawn_stream_handover` enqueues to a single-thread handover lane that runs
+//! begin → invoke → `collect_into_channel_owned` (main-style). The bridge is !Send so the lane
+//! runs on one OS thread with `spawn_local`; no thread-pool blocking.
 
 use std::{
     sync::{Arc, OnceLock},
@@ -39,10 +13,7 @@ use async_channel as achan;
 use baml_rt_core::{Result, context::InvocationScope, stream_completion::StreamCompletion};
 use serde_json::{Value, json};
 use tokio::{
-    sync::{
-        Mutex, Semaphore, mpsc,
-        mpsc::{UnboundedReceiver, error::TryRecvError},
-    },
+    sync::{Mutex, mpsc, mpsc::UnboundedReceiver},
     time::sleep,
 };
 
@@ -59,7 +30,73 @@ pub enum StreamOutput {
     Terminal(Value, StreamCompletion),
 }
 
-static STREAM_PENDING_JOB_COORDINATOR: OnceLock<Semaphore> = OnceLock::new();
+/// Resume channel: transport sends the next turn request (Value) so the collector can deliver it
+/// into the same JS run. Only used for live stream sessions that may suspend on InputRequired.
+pub type ResumeTx = mpsc::Sender<Value>;
+pub type ResumeRx = mpsc::Receiver<Value>;
+
+// --- Same-thread session (main-style): begin → invoke → collect ---
+
+/// Session after yield buffer is ready; invoke not yet called.
+pub struct A2aYieldSessionReady<'a> {
+    bridge: &'a mut QuickJSBridge,
+}
+
+/// Session after stream invoked; ready for collect.
+pub struct A2aYieldSessionComplete<'a> {
+    #[allow(dead_code)]
+    bridge: &'a mut QuickJSBridge,
+    pub session_id: StreamSessionId,
+    pub yield_rx: UnboundedReceiver<Value>,
+}
+
+/// Begins a stream session (setup yield buffer). Caller must then call [`A2aYieldSessionReady::invoke`].
+pub async fn begin_a2a_yield_session(
+    bridge: &mut QuickJSBridge,
+) -> Result<A2aYieldSessionReady<'_>> {
+    bridge.setup_a2a_yield_buffer().await?;
+    Ok(A2aYieldSessionReady { bridge })
+}
+
+impl<'a> A2aYieldSessionReady<'a> {
+    /// Invokes `onChatMessage` with the given request. Caller must then run collect (e.g. [`collect_into_channel_owned`]).
+    pub async fn invoke(
+        self,
+        scope: &InvocationScope,
+        request: Value,
+    ) -> Result<A2aYieldSessionComplete<'a>> {
+        let (session_id, yield_rx) = self
+            .bridge
+            .invoke_js_function_stream(scope, "onChatMessage", request)
+            .await?;
+        Ok(A2aYieldSessionComplete {
+            bridge: self.bridge,
+            session_id,
+            yield_rx,
+        })
+    }
+}
+
+/// Job for the single-thread handover lane: stream (begin→invoke→collect), one-shot invoke, or tool call.
+enum HandoverJob {
+    Stream(StreamHandoverRequest),
+    Invoke {
+        bridge: Arc<Mutex<QuickJSBridge>>,
+        scope: InvocationScope,
+        request: Value,
+        tx_result:
+            tokio::sync::oneshot::Sender<std::result::Result<Value, baml_rt_core::BamlRtError>>,
+    },
+    ToolInvoke {
+        bridge: Arc<Mutex<QuickJSBridge>>,
+        scope: InvocationScope,
+        tool_name: String,
+        input: Value,
+        tx_result:
+            tokio::sync::oneshot::Sender<std::result::Result<Value, baml_rt_core::BamlRtError>>,
+    },
+}
+
 struct StreamHandoverRequest {
     bridge: Arc<Mutex<QuickJSBridge>>,
     scope: InvocationScope,
@@ -70,95 +107,123 @@ struct StreamHandoverRequest {
     relay_rx: Option<mpsc::Receiver<Value>>,
 }
 
-static STREAM_HANDOVER_LANE: OnceLock<achan::Sender<StreamHandoverRequest>> = OnceLock::new();
+static HANDOVER_LANE: OnceLock<achan::Sender<HandoverJob>> = OnceLock::new();
 
-fn stream_pending_job_coordinator() -> &'static Semaphore {
-    STREAM_PENDING_JOB_COORDINATOR.get_or_init(|| Semaphore::new(1))
-}
-
-fn stream_handover_lane() -> &'static achan::Sender<StreamHandoverRequest> {
-    STREAM_HANDOVER_LANE.get_or_init(|| {
-        let (tx, rx) = achan::unbounded::<StreamHandoverRequest>();
+fn handover_lane() -> &'static achan::Sender<HandoverJob> {
+    HANDOVER_LANE.get_or_init(|| {
+        let (tx, rx) = achan::unbounded::<HandoverJob>();
         std::thread::Builder::new()
-            .name("baml-stream-handover-lane".to_string())
+            .name("baml-a2a-handover-lane".to_string())
             .spawn(move || {
-                tracing::info!("stream handover lane: thread started");
+                tracing::info!("a2a handover lane: thread started");
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .expect("failed to build stream handover runtime");
+                    .expect("failed to build handover runtime");
                 let local = tokio::task::LocalSet::new();
                 runtime.block_on(local.run_until(async move {
                     while let Ok(job) = rx.recv().await {
                         tokio::task::spawn_local(async move {
-                            run_stream_on_js_thread(
-                                job.bridge,
-                                job.scope,
-                                job.request,
-                                job.tx_err,
-                                job.tx_stream,
-                                job.resume_rx,
-                                job.relay_rx,
-                            )
-                            .await;
+                            match job {
+                                HandoverJob::Stream(s) => {
+                                    run_stream_same_thread(
+                                        s.bridge,
+                                        s.scope,
+                                        s.request,
+                                        s.tx_err,
+                                        s.tx_stream,
+                                        s.resume_rx,
+                                        s.relay_rx,
+                                    )
+                                    .await;
+                                }
+                                HandoverJob::Invoke {
+                                    bridge,
+                                    scope,
+                                    request,
+                                    tx_result,
+                                } => {
+                                    let out = run_invoke_same_thread(bridge, scope, request).await;
+                                    let _ = tx_result.send(out);
+                                }
+                                HandoverJob::ToolInvoke {
+                                    bridge,
+                                    scope,
+                                    tool_name,
+                                    input,
+                                    tx_result,
+                                } => {
+                                    let out = run_tool_invoke_same_thread(
+                                        bridge, scope, &tool_name, input,
+                                    )
+                                    .await;
+                                    let _ = tx_result.send(out);
+                                }
+                            }
                         });
                     }
                 }));
-                tracing::warn!("stream handover lane: receiver closed, thread exiting");
+                tracing::warn!("a2a handover lane: receiver closed, thread exiting");
             })
-            .expect("failed to spawn stream handover lane thread");
+            .expect("failed to spawn a2a handover lane thread");
         tx
     })
 }
 
-/// Resume channel: transport sends the next turn request (Value) so the collector can deliver it
-/// into the same JS run. Only used for live stream sessions that may suspend on InputRequired.
-pub type ResumeTx = mpsc::Sender<Value>;
-pub type ResumeRx = mpsc::Receiver<Value>;
+/// Runs a single onChatMessage invoke on the bridge (same thread as stream lane). No blocking.
+async fn run_invoke_same_thread(
+    bridge: Arc<Mutex<QuickJSBridge>>,
+    scope: InvocationScope,
+    request: Value,
+) -> std::result::Result<Value, baml_rt_core::BamlRtError> {
+    let mut guard = bridge.lock().await;
+    guard
+        .invoke_js_function(&scope, "onChatMessage", request)
+        .await
+}
 
-/// Runs the stream handover on the dedicated QuickJS worker thread.
-///
-/// Runs start + collector path for one stream session.
-async fn run_stream_on_js_thread(
+/// Runs a single JS tool invoke on the bridge (same thread as stream lane). No blocking.
+async fn run_tool_invoke_same_thread(
+    bridge: Arc<Mutex<QuickJSBridge>>,
+    scope: InvocationScope,
+    tool_name: &str,
+    input: Value,
+) -> std::result::Result<Value, baml_rt_core::BamlRtError> {
+    let mut guard = bridge.lock().await;
+    guard
+        .invoke_js_tool_with_scope(&scope, tool_name, input)
+        .await
+}
+
+/// Runs begin → invoke → collect. Align with main: when no resume, hold bridge lock for entire collect.
+async fn run_stream_same_thread(
     bridge: Arc<Mutex<QuickJSBridge>>,
     scope: InvocationScope,
     request: Value,
     tx_err: mpsc::Sender<StreamOutput>,
     tx: mpsc::Sender<StreamOutput>,
     resume_rx: Option<ResumeRx>,
-    relay_rx: Option<mpsc::Receiver<Value>>,
+    mut relay_rx: Option<mpsc::Receiver<Value>>,
 ) {
-    tracing::debug!(
-        context_id = %scope.context_id(),
-        has_resume_rx = resume_rx.is_some(),
-        has_relay_rx = relay_rx.is_some(),
-        "stream handover: run_stream_on_js_thread start"
-    );
-    let start = {
-        let mut guard = bridge.lock().await;
-        guard
-            .invoke_js_function_stream(&scope, "onChatMessage", request)
-            .await
-    };
-
-    let (session_id, yield_rx) = match start {
-        Ok(ok) => {
-            tracing::debug!(
-                context_id = %scope.context_id(),
-                session_id = %ok.0,
-                "stream handover: stream invocation started"
-            );
-            ok
-        }
+    let mut guard = bridge.lock().await;
+    let ready = match begin_a2a_yield_session(&mut *guard).await {
+        Ok(r) => r,
         Err(e) => {
-            tracing::warn!(
-                context_id = %scope.context_id(),
-                error = %e,
-                "stream handover: stream invocation failed"
-            );
             let _ = tx_err
                 .send(StreamOutput::Terminal(
-                    serde_json::json!({ "error": e.to_string() }),
+                    json!({ "error": e.to_string() }),
+                    StreamCompletion::SemanticFinal,
+                ))
+                .await;
+            return;
+        }
+    };
+    let (session_id, mut yield_rx) = match ready.invoke(&scope, request).await {
+        Ok(complete) => (complete.session_id, complete.yield_rx),
+        Err(e) => {
+            let _ = tx_err
+                .send(StreamOutput::Terminal(
+                    json!({ "error": e.to_string() }),
                     StreamCompletion::SemanticFinal,
                 ))
                 .await;
@@ -166,28 +231,115 @@ async fn run_stream_on_js_thread(
         }
     };
 
-    if let Err(e) =
-        collect_into_channel_owned(bridge, session_id, yield_rx, tx, resume_rx, relay_rx, scope)
-            .await
-    {
-        let _ = tx_err
-            .send(StreamOutput::Terminal(
-                serde_json::json!({ "error": e.to_string() }),
-                StreamCompletion::SemanticFinal,
-            ))
-            .await;
+    if resume_rx.is_some() {
+        // Resume path: release lock and use incremental collect (locks per iteration).
+        drop(guard);
+        if let Err(e) =
+            collect_into_channel_owned(bridge, session_id, yield_rx, tx, resume_rx, relay_rx, scope)
+                .await
+        {
+            let _ = tx_err
+                .send(StreamOutput::Terminal(
+                    json!({ "error": e.to_string() }),
+                    StreamCompletion::SemanticFinal,
+                ))
+                .await;
+        }
+        return;
+    }
+
+    // No resume: hold lock for entire collect (align with main).
+    let idle_timeout_secs = guard.stream_collector_idle_secs();
+    let interval = Duration::from_millis(50);
+    let mut last_yield_at = Instant::now();
+    let mut all: Vec<Value> = Vec::new();
+
+    loop {
+        if let Some(ref mut relay_rx) = relay_rx {
+            while let Ok(value) = relay_rx.try_recv() {
+                if tx.send(StreamOutput::RelayChunk(value)).await.is_err() {
+                    return;
+                }
+            }
+        }
+
+        let drain = match guard.drain_yield_buffer(&mut yield_rx).await {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::error!(error = ?e, "collect (holding lock): drain failed");
+                let _ = tx_err
+                    .send(StreamOutput::Terminal(
+                        json!({ "error": e.to_string() }),
+                        StreamCompletion::SemanticFinal,
+                    ))
+                    .await;
+                return;
+            }
+        };
+
+        for value in drain.chunks {
+            last_yield_at = Instant::now();
+            all.push(value.clone());
+            let has_input_req = chunk_has_input_required_state(&value);
+            let has_final = chunk_has_final_state(&value);
+            if tx.send(StreamOutput::Chunk(value)).await.is_err() {
+                return;
+            }
+            if has_input_req {
+                guard.finalize_a2a_stream_invocation(session_id).await;
+                let _ = tx
+                    .send(StreamOutput::Terminal(
+                        Value::Null,
+                        StreamCompletion::InputRequired,
+                    ))
+                    .await;
+                return;
+            }
+            if has_final {
+                guard.finalize_a2a_stream_invocation(session_id).await;
+                let _ = tx
+                    .send(StreamOutput::Terminal(
+                        Value::Null,
+                        StreamCompletion::SemanticFinal,
+                    ))
+                    .await;
+                return;
+            }
+        }
+
+        if drain.channel_closed {
+            guard.finalize_a2a_stream_invocation(session_id).await;
+            let payload = make_channel_closed_completion_chunk(
+                all.last(),
+                &scope,
+                StreamCompletion::ChannelClosed,
+            );
+            let _ = tx
+                .send(StreamOutput::Terminal(
+                    payload,
+                    StreamCompletion::ChannelClosed,
+                ))
+                .await;
+            return;
+        }
+
+        if idle_timeout_secs > 0
+            && last_yield_at.elapsed() >= Duration::from_secs(idle_timeout_secs)
+        {
+            guard.finalize_a2a_stream_invocation(session_id).await;
+            let payload =
+                make_channel_closed_completion_chunk(all.last(), &scope, StreamCompletion::Timeout);
+            let _ = tx
+                .send(StreamOutput::Terminal(payload, StreamCompletion::Timeout))
+                .await;
+            return;
+        }
+
+        sleep(interval).await;
     }
 }
 
-/// Unified incremental handover entrypoint.
-///
-/// Starts `onChatMessage` stream invocation and spawns the single collector path that forwards
-/// `(chunk, completion)` items to the returned receiver. When `resume_rx` is `Some`, the stream
-/// emitting InputRequired will block on it and deliver the next message into the same JS run
-/// (true resume). When `resume_rx` is `None` (standalone/test), the collector returns Done on
-/// InputRequired so the stream completes and no one blocks.
-/// When `relay_rx` is `Some`, the collector drains it each iteration (after yield_rx) and emits
-/// those chunks as `StreamOutput::RelayChunk` so tool/status chunks stay in order with message chunks.
+/// Enqueues stream to handover lane (same-thread begin → invoke → collect). Returns immediately; no blocking.
 pub async fn spawn_stream_handover(
     bridge: Arc<Mutex<QuickJSBridge>>,
     scope: InvocationScope,
@@ -198,8 +350,8 @@ pub async fn spawn_stream_handover(
     let (tx, rx) = mpsc::channel(64);
     let tx_err = tx.clone();
     let tx_stream = tx.clone();
-    let enqueue = stream_handover_lane()
-        .send(StreamHandoverRequest {
+    let enqueue = handover_lane()
+        .send(HandoverJob::Stream(StreamHandoverRequest {
             bridge,
             scope,
             request,
@@ -207,17 +359,64 @@ pub async fn spawn_stream_handover(
             tx_stream,
             resume_rx,
             relay_rx,
-        })
+        }))
         .await;
     if enqueue.is_err() {
         tracing::error!("stream handover: enqueue failed (lane unavailable)");
         let _ = tx.try_send(StreamOutput::Terminal(
-            serde_json::json!({ "error": "stream handover lane unavailable" }),
+            json!({ "error": "stream handover lane unavailable" }),
             StreamCompletion::SemanticFinal,
         ));
     }
-
     rx
+}
+
+/// Enqueues a single onChatMessage invoke to the handover lane and waits for the result. No blocking thread-pool; same lane as streams.
+pub async fn invoke_handler_handover(
+    bridge: Arc<Mutex<QuickJSBridge>>,
+    scope: InvocationScope,
+    request: Value,
+) -> Result<Value> {
+    let (tx_result, rx_result) = tokio::sync::oneshot::channel();
+    handover_lane()
+        .send(HandoverJob::Invoke {
+            bridge,
+            scope,
+            request,
+            tx_result,
+        })
+        .await
+        .map_err(|_| {
+            baml_rt_core::BamlRtError::InvalidArgument("handover lane unavailable".to_string())
+        })?;
+    rx_result.await.map_err(|_| {
+        baml_rt_core::BamlRtError::InvalidArgument("handover invoke dropped".to_string())
+    })?
+}
+
+/// Enqueues a single JS tool invoke to the handover lane and waits for the result. No blocking; same lane as streams.
+pub async fn invoke_tool_handover(
+    bridge: Arc<Mutex<QuickJSBridge>>,
+    scope: InvocationScope,
+    tool_name: String,
+    input: Value,
+) -> Result<Value> {
+    let (tx_result, rx_result) = tokio::sync::oneshot::channel();
+    handover_lane()
+        .send(HandoverJob::ToolInvoke {
+            bridge,
+            scope,
+            tool_name,
+            input,
+            tx_result,
+        })
+        .await
+        .map_err(|_| {
+            baml_rt_core::BamlRtError::InvalidArgument("handover lane unavailable".to_string())
+        })?;
+    rx_result.await.map_err(|_| {
+        baml_rt_core::BamlRtError::InvalidArgument("handover tool invoke dropped".to_string())
+    })?
 }
 
 /// Reads task state from a stream chunk. Supports object and stringified JSON shapes;
@@ -443,9 +642,24 @@ impl StreamCollectorContext {
     }
 
     async fn next_iteration(&mut self) -> Result<CollectIteration> {
-        run_stream_pending_jobs(&self.bridge).await;
+        // Align with main: drain_yield_buffer runs pending JS jobs then drains (single lock hold).
+        let drain = {
+            let mut guard = self.bridge.lock().await;
+            guard.drain_yield_buffer(&mut self.yield_rx).await
+        };
+        let drain = match drain {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::error!(
+                    error = ?e,
+                    "collect: drain_yield_buffer failed; finalizing stream invocation"
+                );
+                self.finalize_once(None).await;
+                return Err(e);
+            }
+        };
 
-        // Relay tool/status chunks first (causal order). Forward each immediately; do not buffer.
+        // Relay tool/status chunks first (causal order).
         let mut saw_relay = false;
         if let Some(ref mut relay_rx) = self.relay_rx {
             while let Ok(value) = relay_rx.try_recv() {
@@ -456,46 +670,34 @@ impl StreamCollectorContext {
             }
         }
 
-        // Forward yield chunks one-by-one. Do not buffer: receive → forward immediately.
-        let mut channel_closed = false;
         let mut saw_yield = false;
-        loop {
-            match self.yield_rx.try_recv() {
-                Ok(value) => {
-                    saw_yield = true;
-                    let has_input_req = chunk_has_input_required_state(&value);
-                    let has_final = chunk_has_final_state(&value);
-                    if self
-                        .tx
-                        .send(StreamOutput::Chunk(value.clone()))
-                        .await
-                        .is_err()
-                    {
-                        self.finalize_once(None).await;
-                        return Ok(CollectIteration::Done);
-                    }
-                    self.all.push(value);
-                    if has_input_req {
-                        return self.handle_input_required_resume().await;
-                    }
-                    if has_final {
-                        self.finalize_once(Some(StreamCompletion::SemanticFinal))
-                            .await;
-                        return Ok(CollectIteration::Done);
-                    }
-                }
-                Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => {
-                    channel_closed = true;
-                    break;
-                }
+        for value in drain.chunks {
+            saw_yield = true;
+            let has_input_req = chunk_has_input_required_state(&value);
+            let has_final = chunk_has_final_state(&value);
+            if self
+                .tx
+                .send(StreamOutput::Chunk(value.clone()))
+                .await
+                .is_err()
+            {
+                self.finalize_once(None).await;
+                return Ok(CollectIteration::Done);
+            }
+            self.all.push(value);
+            if has_input_req {
+                return self.handle_input_required_resume().await;
+            }
+            if has_final {
+                self.finalize_once(Some(StreamCompletion::SemanticFinal))
+                    .await;
+                return Ok(CollectIteration::Done);
             }
         }
         if saw_yield {
             self.last_yield_at = Instant::now();
         }
 
-        // Relay any remaining tool/status when there were no yield chunks this iteration.
         if let Some(ref mut relay_rx) = self.relay_rx {
             while let Ok(value) = relay_rx.try_recv() {
                 saw_relay = true;
@@ -505,7 +707,7 @@ impl StreamCollectorContext {
             }
         }
 
-        if channel_closed {
+        if drain.channel_closed {
             self.finalize_once(Some(StreamCompletion::ChannelClosed))
                 .await;
             return Ok(CollectIteration::Done);
@@ -528,20 +730,6 @@ impl StreamCollectorContext {
             had_chunks: saw_yield || saw_relay,
         })
     }
-}
-
-async fn run_stream_pending_jobs(bridge: &Arc<Mutex<QuickJSBridge>>) {
-    let coordinator = stream_pending_job_coordinator();
-    let Ok(_coordinator_permit) = coordinator.try_acquire() else {
-        return;
-    };
-
-    let guard = match tokio::time::timeout(Duration::from_millis(50), bridge.lock()).await {
-        Ok(guard) => guard,
-        Err(_) => return,
-    };
-
-    guard.advance_pending_jobs();
 }
 
 pub async fn collect_into_channel_owned(

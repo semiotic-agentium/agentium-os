@@ -727,8 +727,8 @@ impl QuickJSBridge {
 
     /// Invoke a JavaScript tool with an explicit scope.
     ///
-    /// Use when scope is not task-local (e.g. when running inside `spawn_blocking` after
-    /// capturing scope on the original task). Same behavior as [`invoke_js_tool`](Self::invoke_js_tool).
+    /// Use when scope is not task-local (e.g. when running on the A2A handover lane after
+    /// capturing scope). Same behavior as [`invoke_js_tool`](Self::invoke_js_tool).
     pub async fn invoke_js_tool_with_scope(
         &mut self,
         invocation_scope: &InvocationScope,

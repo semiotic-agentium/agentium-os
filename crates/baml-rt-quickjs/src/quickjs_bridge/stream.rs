@@ -157,14 +157,24 @@ impl QuickJSBridge {
         Ok(())
     }
 
+    /// Set up for stream requests. With per-session yield channels this is a no-op;
+    /// each stream creates its own channel in the session. Used by [`crate::a2a_stream::begin_a2a_yield_session`].
+    pub async fn setup_a2a_yield_buffer(&mut self) -> Result<()> {
+        Ok(())
+    }
+
     /// Drain the yield buffer for one stream. Call in a loop from the collector.
     ///
-    /// **INVARIANT (stream progress):** Callers are responsible for running pending JS jobs
-    /// at the same phase boundary before each drain so lock ownership stays minimal.
+    /// **INVARIANT (stream progress):** Before every drain we run pending JS jobs once so
+    /// async stream continuations can produce chunks (align with main).
     pub async fn drain_yield_buffer(
         &mut self,
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<Value>,
     ) -> Result<BufferDrain> {
+        self.runtime.exe_rt_task_in_event_loop(|rt| {
+            rt.run_pending_jobs_if_any();
+        });
+
         let mut chunks = Vec::new();
         let mut channel_closed = false;
         loop {
@@ -187,6 +197,8 @@ impl QuickJSBridge {
     /// Advance QuickJS pending work without draining the yield receiver.
     ///
     /// Keep this separated from [`drain_yield_buffer`] to allow callers to control lock scope.
+    /// Reserved for future use when a caller needs to advance without draining.
+    #[allow(dead_code)]
     #[inline]
     pub(crate) fn advance_pending_jobs(&self) {
         self.runtime.exe_rt_task_in_event_loop(|rt| {

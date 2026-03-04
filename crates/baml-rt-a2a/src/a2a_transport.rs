@@ -23,6 +23,7 @@ use baml_rt_provenance::{
 };
 use baml_rt_quickjs::{
     BamlRuntimeManager, QuickJSBridge, QuickJSConfig, baml_execution::ConversationContextProvider,
+    invoke_tool_handover,
 };
 use baml_rt_tools::{
     ToolFailure, ToolHandler, ToolName, ToolRegistry, ToolSession, ToolSessionError, ToolTypeSpec,
@@ -1910,26 +1911,13 @@ impl ToolSession for JsToolSession {
                 session_id = self.ctx.session_id
             )))
         })?;
-        // Handover to QuickJS on a blocking thread so the ToolSession future stays Send (design: spawn_blocking only at direct handover to QuickJS).
-        let scope = self.scope.clone();
-        let bridge = self.bridge.clone();
-        let tool_name = self.tool_name.clone();
-        let handle = tokio::runtime::Handle::current();
-        let result = tokio::task::spawn_blocking(move || {
-            handle.block_on(async move {
-                let mut bridge = bridge.lock().await;
-                bridge
-                    .invoke_js_tool_with_scope(&scope, &tool_name, input)
-                    .await
-            })
-        })
+        let result: Value = invoke_tool_handover(
+            self.bridge.clone(),
+            self.scope.clone(),
+            self.tool_name.clone(),
+            input,
+        )
         .await
-        .map_err(|err| {
-            ToolSessionError::Transport(BamlRtError::QuickJsWithSource {
-                context: "js tool join error".to_string(),
-                source: Box::new(err),
-            })
-        })?
         .map_err(ToolSessionError::Transport)?;
         if let Some(error) = result.get("error").and_then(Value::as_str) {
             self.completed = true;

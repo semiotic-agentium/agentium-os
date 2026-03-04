@@ -968,7 +968,7 @@ fn wrap_plaintext_message(text: &str) -> Result<Value> {
     let params = SendMessageRequest {
         message,
         configuration: Some(SendMessageConfiguration {
-            blocking: Some(true),
+            blocking: Some(false),
             ..Default::default()
         }),
         metadata: None,

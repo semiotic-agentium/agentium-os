@@ -13,7 +13,11 @@ pub mod quickjs_bridge;
 pub mod runtime;
 pub mod traits;
 
-pub use a2a_stream::{StreamOutput, collect_into_channel_owned, spawn_stream_handover};
+pub use a2a_stream::{
+    A2aYieldSessionComplete, A2aYieldSessionReady, StreamOutput, begin_a2a_yield_session,
+    collect_into_channel_owned, invoke_handler_handover, invoke_tool_handover,
+    spawn_stream_handover,
+};
 pub use baml::{BamlRuntimeManager, ToolSessionExecutionHandle};
 pub use context::{BamlContext, ContextMetadata};
 pub use quickjs_bridge::QuickJSBridge;
