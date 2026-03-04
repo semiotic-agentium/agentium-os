@@ -242,6 +242,19 @@ function truncateForPrompt(text: string, maxChars: number = MAX_HANDOFF_FIELD_CH
   return `${text.slice(0, Math.max(0, maxChars - 3))}...`;
 }
 
+function truncateOptionalForPrompt(
+  value: string | null | undefined,
+  maxChars: number = MAX_HANDOFF_FIELD_CHARS,
+): string | null {
+  if (!value) return null;
+  return truncateForPrompt(value, maxChars);
+}
+
+function foreachSourceNodeId(foreachFrom: string): string | null {
+  const root = foreachFrom.trim().split(".")[0];
+  return /^[A-Za-z0-9_-]+$/.test(root) ? root : null;
+}
+
 function appendNumberedSection(lines: string[], title: string, entries: string[]): void {
   if (entries.length === 0) return;
   lines.push(`${title}:`);
@@ -312,13 +325,17 @@ function renderHandoffPrompt(
   const workflowSeed =
     interpretation != null ? parseObjectField(interpretation, "workflow_seed") : null;
 
-  const projectKey = project != null ? normalizeOptionalString(project.project_key) : null;
+  const projectKey =
+    project != null ? truncateOptionalForPrompt(normalizeOptionalString(project.project_key), 200) : null;
   const repoAvailable = project != null ? parseOptionalBoolean(project.repo_available) : null;
-  const repoPath = project != null ? normalizeOptionalString(project.repo_path) : null;
-  const sourceLabel = normalizeOptionalString(batch.source_label);
+  const repoPath =
+    project != null ? truncateOptionalForPrompt(normalizeOptionalString(project.repo_path), 260) : null;
+  const sourceLabel = truncateOptionalForPrompt(normalizeOptionalString(batch.source_label), 200);
   const messagesScanned = parseOptionalFiniteNumber(batch.messages_scanned);
   const summary =
-    interpretation != null ? normalizeOptionalString(interpretation.executive_summary) : null;
+    interpretation != null
+      ? truncateOptionalForPrompt(normalizeOptionalString(interpretation.executive_summary), 1_200)
+      : null;
 
   const objectives =
     interpretation != null
@@ -331,10 +348,19 @@ function renderHandoffPrompt(
     interpretation != null
       ? parseObjectArray(interpretation.decisions_made)
           .map((decision) => {
-            const decisionText = normalizeOptionalString(decision.decision);
+            const decisionText = truncateOptionalForPrompt(
+              normalizeOptionalString(decision.decision),
+              420,
+            );
             if (!decisionText) return null;
-            const rationale = normalizeOptionalString(decision.rationale);
-            const confidence = normalizeOptionalString(decision.confidence);
+            const rationale = truncateOptionalForPrompt(
+              normalizeOptionalString(decision.rationale),
+              320,
+            );
+            const confidence = truncateOptionalForPrompt(
+              normalizeOptionalString(decision.confidence),
+              120,
+            );
             const parts = [decisionText];
             if (rationale) parts.push(`rationale: ${rationale}`);
             if (confidence) parts.push(`confidence: ${confidence}`);
@@ -347,10 +373,13 @@ function renderHandoffPrompt(
     interpretation != null
       ? parseObjectArray(interpretation.open_questions)
           .map((question) => {
-            const text = normalizeOptionalString(question.question);
+            const text = truncateOptionalForPrompt(normalizeOptionalString(question.question), 420);
             if (!text) return null;
             const blocking = parseOptionalBoolean(question.blocking);
-            const owner = normalizeOptionalString(question.suggested_owner);
+            const owner = truncateOptionalForPrompt(
+              normalizeOptionalString(question.suggested_owner),
+              120,
+            );
             const parts = [text];
             if (blocking === true) parts.push("blocking");
             if (owner) parts.push(`owner: ${owner}`);
@@ -363,11 +392,17 @@ function renderHandoffPrompt(
     interpretation != null
       ? parseObjectArray(interpretation.risks)
           .map((risk) => {
-            const riskText = normalizeOptionalString(risk.risk);
+            const riskText = truncateOptionalForPrompt(normalizeOptionalString(risk.risk), 420);
             if (!riskText) return null;
-            const impact = normalizeOptionalString(risk.impact);
-            const mitigation = normalizeOptionalString(risk.mitigation);
-            const confidence = normalizeOptionalString(risk.confidence);
+            const impact = truncateOptionalForPrompt(normalizeOptionalString(risk.impact), 240);
+            const mitigation = truncateOptionalForPrompt(
+              normalizeOptionalString(risk.mitigation),
+              240,
+            );
+            const confidence = truncateOptionalForPrompt(
+              normalizeOptionalString(risk.confidence),
+              120,
+            );
             const parts = [riskText];
             if (impact) parts.push(`impact: ${impact}`);
             if (mitigation) parts.push(`mitigation: ${mitigation}`);
@@ -381,10 +416,13 @@ function renderHandoffPrompt(
     interpretation != null
       ? parseObjectArray(interpretation.follow_ups)
           .map((followUp) => {
-            const prompt = normalizeOptionalString(followUp.prompt);
+            const prompt = truncateOptionalForPrompt(normalizeOptionalString(followUp.prompt), 420);
             if (!prompt) return null;
-            const kind = normalizeOptionalString(followUp.kind);
-            const urgency = normalizeOptionalString(followUp.urgency);
+            const kind = truncateOptionalForPrompt(normalizeOptionalString(followUp.kind), 120);
+            const urgency = truncateOptionalForPrompt(
+              normalizeOptionalString(followUp.urgency),
+              120,
+            );
             const parts = [prompt];
             if (kind) parts.push(`kind: ${kind}`);
             if (urgency) parts.push(`urgency: ${urgency}`);
@@ -393,18 +431,26 @@ function renderHandoffPrompt(
           .filter((entry): entry is string => entry != null)
       : [];
 
-  const workflowGoal = workflowSeed != null ? normalizeOptionalString(workflowSeed.goal) : null;
+  const workflowGoal =
+    workflowSeed != null
+      ? truncateOptionalForPrompt(normalizeOptionalString(workflowSeed.goal), 1_000)
+      : null;
 
   const investigationNodes =
     workflowSeed != null
       ? parseObjectArray(workflowSeed.investigation_nodes)
           .map((node) => {
-            const title = normalizeOptionalString(node.title);
-            const key = normalizeOptionalString(node.key);
-            const prompt = normalizeOptionalString(node.prompt);
-            const goal = normalizeOptionalString(node.goal);
-            const runCondition = normalizeOptionalString(node.when_to_run);
-            const dependencies = parseStringArray(node.depends_on);
+            const title = truncateOptionalForPrompt(normalizeOptionalString(node.title), 220);
+            const key = truncateOptionalForPrompt(normalizeOptionalString(node.key), 120);
+            const prompt = truncateOptionalForPrompt(normalizeOptionalString(node.prompt), 420);
+            const goal = truncateOptionalForPrompt(normalizeOptionalString(node.goal), 240);
+            const runCondition = truncateOptionalForPrompt(
+              normalizeOptionalString(node.when_to_run),
+              220,
+            );
+            const dependencies = parseStringArray(node.depends_on)
+              .map((entry) => truncateForPrompt(entry, 80))
+              .filter((entry) => entry.length > 0);
             const parts = [title || key];
             if (goal) parts.push(`goal: ${goal}`);
             if (runCondition) parts.push(`when: ${runCondition}`);
@@ -419,12 +465,17 @@ function renderHandoffPrompt(
     workflowSeed != null
       ? parseObjectArray(workflowSeed.clarification_nodes)
           .map((node) => {
-            const question = normalizeOptionalString(node.question);
+            const question = truncateOptionalForPrompt(normalizeOptionalString(node.question), 420);
             if (!question) return null;
-            const key = normalizeOptionalString(node.key);
-            const owner = normalizeOptionalString(node.suggested_owner);
+            const key = truncateOptionalForPrompt(normalizeOptionalString(node.key), 120);
+            const owner = truncateOptionalForPrompt(
+              normalizeOptionalString(node.suggested_owner),
+              120,
+            );
             const blocking = parseOptionalBoolean(node.blocking);
-            const dependencies = parseStringArray(node.depends_on);
+            const dependencies = parseStringArray(node.depends_on)
+              .map((entry) => truncateForPrompt(entry, 80))
+              .filter((entry) => entry.length > 0);
             const parts = [question];
             if (key) parts.push(`key: ${key}`);
             if (blocking === true) parts.push("blocking");
@@ -439,10 +490,13 @@ function renderHandoffPrompt(
     workflowSeed != null
       ? parseObjectArray(workflowSeed.follow_up_nodes)
           .map((node) => {
-            const prompt = normalizeOptionalString(node.prompt);
+            const prompt = truncateOptionalForPrompt(normalizeOptionalString(node.prompt), 420);
             if (!prompt) return null;
-            const kind = normalizeOptionalString(node.kind);
-            const urgency = normalizeOptionalString(node.urgency);
+            const kind = truncateOptionalForPrompt(normalizeOptionalString(node.kind), 120);
+            const urgency = truncateOptionalForPrompt(
+              normalizeOptionalString(node.urgency),
+              120,
+            );
             const parts = [prompt];
             if (kind) parts.push(`kind: ${kind}`);
             if (urgency) parts.push(`urgency: ${urgency}`);
@@ -453,11 +507,14 @@ function renderHandoffPrompt(
 
   const derivedTasks = parseObjectArray(batch.derived_tasks)
     .map((task) => {
-      const title = normalizeOptionalString(task.title);
+      const title = truncateOptionalForPrompt(normalizeOptionalString(task.title), 220);
       if (!title) return null;
-      const key = normalizeOptionalString(task.key);
-      const description = normalizeOptionalString(task.description);
-      const priority = normalizeOptionalString(task.priority);
+      const key = truncateOptionalForPrompt(normalizeOptionalString(task.key), 120);
+      const description = truncateOptionalForPrompt(
+        normalizeOptionalString(task.description),
+        420,
+      );
+      const priority = truncateOptionalForPrompt(normalizeOptionalString(task.priority), 120);
       const parts = [title];
       if (priority) parts.push(`priority: ${priority}`);
       if (key) parts.push(`key: ${key}`);
@@ -718,6 +775,22 @@ function validateWorkflowPlan(plan: WorkflowPlan, agentRegistry: Set<string>): v
     if (node.kind === "foreach") {
       if (!node.foreach_from) {
         throw new Error(`Workflow node ${node.id} (foreach) is missing foreach_from.`);
+      }
+      const foreachSource = foreachSourceNodeId(node.foreach_from);
+      if (!foreachSource) {
+        throw new Error(
+          `Workflow node ${node.id} (foreach) has invalid foreach_from expression '${node.foreach_from}'.`,
+        );
+      }
+      if (!nodeById.has(foreachSource)) {
+        throw new Error(
+          `Workflow node ${node.id} (foreach) references unknown foreach source node ${foreachSource}.`,
+        );
+      }
+      if (!node.depends_on.includes(foreachSource)) {
+        throw new Error(
+          `Workflow node ${node.id} (foreach) must include foreach source node ${foreachSource} in depends_on.`,
+        );
       }
       if (!node.foreach_template) {
         throw new Error(`Workflow node ${node.id} (foreach) is missing foreach_template.`);
@@ -1904,7 +1977,9 @@ function buildForeachChildPrompt(
     "- Perform at most one primary action for this item, then stop.",
     "- If completion is not possible, return a failure instead of retrying the same write repeatedly.",
     "Item context JSON:",
+    "---BEGIN UNTRUSTED DATA---",
     itemContext,
+    "---END UNTRUSTED DATA---",
   ].join("\n");
 
   return `${rendered}\n\n${guardrailBlock}`;
@@ -1993,7 +2068,7 @@ async function expandForeachNodeInPlan(
     children.push({
       id: childId,
       kind: "call_agent",
-      depends_on: [...node.depends_on],
+      depends_on: [],
       target: node.foreach_template.target,
       prompt_template: buildForeachChildPrompt(
         node.foreach_template.prompt_template,

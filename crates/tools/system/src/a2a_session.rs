@@ -174,18 +174,10 @@ fn extract_chunk_value(value: Value) -> Value {
         return value;
     };
 
-    if let Some(result) = obj.get("result").and_then(|v| v.as_object()) {
-        if let Some(chunk) = result.get("chunk") {
-            return chunk.clone();
-        }
-        if result
-            .get("stream")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-            && let Some(chunk) = result.get("chunk")
-        {
-            return chunk.clone();
-        }
+    if let Some(result) = obj.get("result").and_then(|v| v.as_object())
+        && let Some(chunk) = result.get("chunk")
+    {
+        return chunk.clone();
     }
 
     if let Some(chunk) = obj.get("chunk") {
@@ -291,10 +283,21 @@ impl ToolSession for A2aSession {
         }
         let parts = parse_send_input(input)
             .map_err(|msg| ToolSessionError::Tool(ToolFailure::invalid_input(msg)))?;
+        if let Some(rx) = &self.output_rx
+            && rx.is_closed()
+            && rx.is_empty()
+        {
+            self.output_rx = None;
+        }
         if self.output_rx.is_some() {
             return Err(ToolSessionError::Tool(ToolFailure::invalid_input(
                 "system/internal_a2a session: send only valid once after open".to_string(),
             )));
+        }
+        if let Some(handle) = self.stream_handle.take()
+            && !handle.is_finished()
+        {
+            handle.abort();
         }
         let parent_task_id = current_parent_task_id();
         let request = build_send_stream_request(
@@ -377,6 +380,7 @@ impl ToolSession for A2aSession {
                 merged.completion,
                 Some(InternalA2aCompletion::InputRequired)
             ) {
+                self.output_rx = None;
                 ToolStep::Suspended { output: value }
             } else {
                 ToolStep::Streaming { output: value }
@@ -402,6 +406,7 @@ impl ToolSession for A2aSession {
                         merged.completion,
                         Some(InternalA2aCompletion::InputRequired)
                     ) {
+                        self.output_rx = None;
                         ToolStep::Suspended { output: value }
                     } else {
                         ToolStep::Streaming { output: value }

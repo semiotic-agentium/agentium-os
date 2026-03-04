@@ -14,13 +14,11 @@ use std::{
 use async_trait::async_trait;
 use baml_rt::{A2aRequestHandler, baml::BamlRuntimeManager, tools::BamlTool};
 use baml_rt_a2a::RegistrationMode;
-#[cfg(feature = "llm-tests")]
-use baml_rt_core::ids::{ExternalId, TaskId};
 use baml_rt_core::{
     BamlRtError,
     bus::BusWithEffects,
     context::{self, InvocationScope},
-    ids::{AgentId, ContextId, UuidId},
+    ids::{AgentId, ContextId, ExternalId, TaskId, UuidId},
 };
 #[cfg(feature = "llm-tests")]
 use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceContextMessage, ProvenanceWriter};
@@ -87,10 +85,9 @@ impl A2aRequestHandler for EmptyA2aHandler {
 use common::e2e_serial_gate;
 use test_support::common::{
     CalculatorTool, chunks_from_responses, ensure_baml_src_exists, ensure_fixture_runtime_types,
-    message_texts_from_chunks, user_message, workspace_root,
+    first_task_id_from_stream, message_texts_from_chunks, user_message, user_message_with_task,
+    workspace_root,
 };
-#[cfg(feature = "llm-tests")]
-use test_support::common::{first_task_id_from_stream, user_message_with_task};
 
 async fn build_fixture_to_temp_async(fixture_name: &str) -> std::path::PathBuf {
     test_support::common::build_fixture_package_to_temp(fixture_name).await
@@ -1831,9 +1828,17 @@ async fn test_e2e_task_lifecycle_demo() {
         "Expected startup message in first stream; texts: {:?}",
         first_texts
     );
+    let lifecycle_task_id = first_task_id_from_stream(&first_responses)
+        .map(|task_id| TaskId::from_external(ExternalId::new(task_id)))
+        .expect("Expected task id in first stream for resume turns");
 
     let second_params = SendMessageRequest {
-        message: user_message("vox-2", "review-path", Some(ContextId::new(1, 1))),
+        message: user_message_with_task(
+            "vox-2",
+            "review-path",
+            Some(ContextId::new(1, 1)),
+            Some(lifecycle_task_id.clone()),
+        ),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -1867,7 +1872,12 @@ async fn test_e2e_task_lifecycle_demo() {
     );
 
     let third_params = SendMessageRequest {
-        message: user_message("vox-3", "revise", Some(ContextId::new(1, 1))),
+        message: user_message_with_task(
+            "vox-3",
+            "revise",
+            Some(ContextId::new(1, 1)),
+            Some(lifecycle_task_id.clone()),
+        ),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -1899,10 +1909,11 @@ async fn test_e2e_task_lifecycle_demo() {
     );
 
     let fourth_params = SendMessageRequest {
-        message: user_message(
+        message: user_message_with_task(
             "vox-4",
             "apply redaction and tighten summary",
             Some(ContextId::new(1, 1)),
+            Some(lifecycle_task_id.clone()),
         ),
         configuration: None,
         metadata: None,
@@ -1931,7 +1942,12 @@ async fn test_e2e_task_lifecycle_demo() {
 
     // Turn 5: approve review -> exits review loop, enters sign-off loop (INPUT_REQUIRED).
     let fifth_params = SendMessageRequest {
-        message: user_message("vox-5", "approve", Some(ContextId::new(1, 1))),
+        message: user_message_with_task(
+            "vox-5",
+            "approve",
+            Some(ContextId::new(1, 1)),
+            Some(lifecycle_task_id.clone()),
+        ),
         configuration: None,
         metadata: None,
         tenant: None,
@@ -1959,7 +1975,12 @@ async fn test_e2e_task_lifecycle_demo() {
 
     // Turn 6: confirm sign-off -> COMPLETED.
     let sixth_params = SendMessageRequest {
-        message: user_message("vox-6", "confirm", Some(ContextId::new(1, 1))),
+        message: user_message_with_task(
+            "vox-6",
+            "confirm",
+            Some(ContextId::new(1, 1)),
+            Some(lifecycle_task_id),
+        ),
         configuration: None,
         metadata: None,
         tenant: None,

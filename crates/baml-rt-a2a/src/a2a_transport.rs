@@ -1262,8 +1262,9 @@ impl A2aAgent {
         parsed: a2a::A2aRequest,
     ) -> Result<BusStream<A2aStreamChunk>> {
         let context_id = parsed.context_id().clone();
-        let session_key =
+        let requested_session_key =
             LiveStreamSessionKey::from_context_and_task(&context_id, parsed.task_id_opt());
+        let context_session_key = LiveStreamSessionKey::from_context_id(&context_id);
 
         let (response_tx, response_rx) = async_channel::unbounded::<LiveResponseChunk>();
 
@@ -1273,18 +1274,28 @@ impl A2aAgent {
         // can run (and take the lock if needed) without deadlocking the handler.
         let turn_tx_to_send = {
             let mut sessions = self.stream_sessions.lock().await;
-            if let Some(session) = sessions.get(&session_key) {
+            if let Some(session) = sessions.get(&requested_session_key) {
+                Some(session.turn_tx.clone())
+            } else if parsed.task_id_opt().is_some()
+                && let Some(session) = sessions.get(&context_session_key)
+            {
+                tracing::debug!(
+                    context_id = %context_id,
+                    requested_key = %requested_session_key,
+                    context_key = %context_session_key,
+                    "live stream resume matched context-scoped session key"
+                );
                 Some(session.turn_tx.clone())
             } else {
                 let (turn_tx, turn_rx) = async_channel::unbounded::<TurnInput>();
                 sessions.insert(
-                    session_key.clone(),
+                    requested_session_key.clone(),
                     LiveStreamSession {
                         turn_tx: turn_tx.clone(),
                         relay_tx: None,
                     },
                 );
-                spawn_payload = Some((session_key.clone(), context_id.clone(), turn_rx));
+                spawn_payload = Some((requested_session_key.clone(), context_id.clone(), turn_rx));
                 Some(turn_tx)
             }
         };
@@ -1355,7 +1366,14 @@ impl A2aAgent {
                         Some(resume_tx),
                         response_tx,
                         request_id,
-                        session_task_id.as_ref().map(|t| t.as_str().to_string()),
+                        session_task_id
+                            .as_ref()
+                            .map(|t| t.as_str().to_string())
+                            .or_else(|| {
+                                a2a::A2aRequest::from_value(request_value.clone())
+                                    .ok()
+                                    .and_then(|p| p.task_id_opt().map(|t| t.as_str().to_string()))
+                            }),
                         true,
                     )
                 } else {
@@ -1368,6 +1386,14 @@ impl A2aAgent {
                             task_id,
                         },
                     };
+                    let resolved_session_task_id =
+                        a2a::A2aRequest::from_value(request_value.clone())
+                            .ok()
+                            .and_then(|parsed_request| {
+                                resolve_scope_for_outcome(&parsed_request, &invocation_ctx)
+                                    .task_id_opt()
+                                    .map(|task_id| task_id.as_str().to_string())
+                            });
 
                     // Allow short resume bursts without stalling the turn pump.
                     let (resume_tx, resume_rx) = mpsc::channel(16);
@@ -1427,6 +1453,12 @@ impl A2aAgent {
                             {
                                 tracing::debug!("live stream error send failed (receiver dropped)");
                             }
+                            {
+                                let mut sessions = self.stream_sessions.lock().await;
+                                if let Some(session) = sessions.get_mut(&session_key) {
+                                    session.relay_tx = None;
+                                }
+                            }
                             break;
                         }
                     };
@@ -1446,22 +1478,14 @@ impl A2aAgent {
                             }
                             break;
                         }
-                        a2a::A2aOutcome::Stream(handle) => {
-                            let session_task_id_str = match &invocation_ctx {
-                                OutcomeInvocationContext::LiveSessionResume { task_id, .. } => {
-                                    Some(task_id.as_str().to_string())
-                                }
-                                _ => None,
-                            };
-                            (
-                                handle.receiver,
-                                handle.resume_tx,
-                                response_tx,
-                                request_id,
-                                session_task_id_str,
-                                false,
-                            )
-                        }
+                        a2a::A2aOutcome::Stream(handle) => (
+                            handle.receiver,
+                            handle.resume_tx,
+                            response_tx,
+                            request_id,
+                            resolved_session_task_id,
+                            false,
+                        ),
                     }
                 };
 
@@ -1629,7 +1653,9 @@ impl A2aAgent {
                 }
             }
 
-            session_task_id = last_task_id.map(|s| TaskId::from_external(ExternalId::new(s)));
+            session_task_id = last_task_id
+                .or(session_task_id_str)
+                .map(|task_id| TaskId::from_external(ExternalId::new(task_id)));
 
             match completion {
                 Some(StreamCompletion::InputRequired) => {

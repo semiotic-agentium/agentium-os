@@ -117,6 +117,8 @@ function PlanCoordinatorWorkflow(
   "#
 }
 
+// Intentionally retained for planner quality experiments and offline eval baselines.
+// Runtime currently calls PlanCoordinatorWorkflow only.
 function PlanCoordinatorWorkflowBestEffort(
   user_message: string,
   available_agents: AgentCandidate[],

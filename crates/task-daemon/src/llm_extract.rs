@@ -262,10 +262,16 @@ fn response_format_unsupported(status: reqwest::StatusCode, response_body: &str)
     }
 
     let lower = response_body.to_ascii_lowercase();
-    lower.contains("response_format")
+    let mentions_json_mode = lower.contains("response_format")
         || lower.contains("json_object")
         || lower.contains("json mode")
-        || lower.contains("unsupported")
+        || lower.contains("json schema");
+    let mentions_unsupported = lower.contains("unsupported")
+        || lower.contains("not supported")
+        || lower.contains("not allowed")
+        || lower.contains("unknown parameter")
+        || lower.contains("invalid parameter");
+    mentions_json_mode && mentions_unsupported
 }
 
 #[derive(Debug, Clone)]
@@ -966,5 +972,17 @@ mod tests {
     #[test]
     fn custom_base_without_key_is_usable_primary_provider() {
         assert!(primary_provider_usable("http://localhost:1234/v1", None));
+    }
+
+    #[test]
+    fn response_format_retry_only_triggers_for_json_mode_errors() {
+        assert!(response_format_unsupported(
+            reqwest::StatusCode::BAD_REQUEST,
+            "response_format is not supported by this model",
+        ));
+        assert!(!response_format_unsupported(
+            reqwest::StatusCode::BAD_REQUEST,
+            "unsupported model name",
+        ));
     }
 }

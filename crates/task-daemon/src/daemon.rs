@@ -74,9 +74,9 @@ impl TaskDaemon {
 
     /// Runs one poll/extract/deliver cycle.
     ///
-    /// Delivery is intentionally at-most-once for successfully interpreted polls:
-    /// source cursor state is persisted after extraction and before sink delivery.
-    /// If sink delivery fails, those source messages are not re-polled on the next run.
+    /// Delivery is best-effort at-least-once for successfully interpreted polls:
+    /// source cursor/task state is persisted only after sink delivery succeeds.
+    /// If sink delivery fails, source state is not committed so the poll window can be retried.
     pub async fn run_once(&mut self) -> Result<TaskBatch> {
         let mut state = self.state_store.load().context("loading daemon state")?;
         let poll = self
@@ -115,10 +115,6 @@ impl TaskDaemon {
                 .retain(|task| !source_state.has_seen_task(&task.key));
         }
 
-        self.state_store
-            .save(&state)
-            .context("saving daemon cursor state")?;
-
         if !batch.derived_tasks.is_empty() || self.emit_empty_batches {
             for sink in &mut self.sinks {
                 let sink_name = sink.name();
@@ -139,7 +135,7 @@ impl TaskDaemon {
 
         self.state_store
             .save(&state)
-            .context("saving daemon task state")?;
+            .context("saving daemon state")?;
         Ok(batch)
     }
 
@@ -289,7 +285,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persists_cursor_when_sink_delivery_fails() {
+    async fn does_not_persist_cursor_when_sink_delivery_fails() {
         let temp = tempdir().expect("create temp directory");
         let state_path = temp.path().join("task-daemon-state.json");
         let store_for_daemon = StateStore::new(state_path.clone(), 100);
@@ -312,10 +308,10 @@ mod tests {
         let persisted_state = StateStore::new(state_path, 100)
             .load()
             .expect("load persisted state");
-        let source_state = persisted_state
-            .source_state(SOURCE_KEY)
-            .expect("state should include source entry");
-        assert_eq!(source_state.last_seen_ts.as_deref(), Some(CURSOR_TS));
+        assert!(
+            persisted_state.source_state(SOURCE_KEY).is_none(),
+            "cursor state must not be persisted when sink delivery fails"
+        );
     }
 
     #[tokio::test]
