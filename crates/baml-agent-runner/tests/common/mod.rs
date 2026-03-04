@@ -46,13 +46,6 @@ use baml_rt_provenance::{
     feature = "llm-tests"
 ))]
 use serde_json::Value;
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
-pub use test_support::common::TempEnvVar;
 use tokio::sync::Semaphore;
 
 pub fn init_test_tracing() {
