@@ -15,6 +15,7 @@ use crate::model::{
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 const DEFAULT_TASK_DAEMON_LLM_MODEL: &str = "openai/gpt-4.1-mini";
 const DEFAULT_MAX_MESSAGES: usize = 200;
+const DEFAULT_MAX_OUTPUT_TOKENS: u16 = 3_200;
 
 #[derive(Debug, Clone)]
 /// Provider-aware LLM interpretation engine for Slack message windows.
@@ -22,6 +23,7 @@ pub struct LlmTaskExtractor {
     client: reqwest::Client,
     providers: Vec<LlmProvider>,
     max_messages: usize,
+    max_output_tokens: u16,
 }
 
 impl LlmTaskExtractor {
@@ -37,6 +39,11 @@ impl LlmTaskExtractor {
             .and_then(|value| value.trim().parse::<usize>().ok())
             .filter(|value| *value > 0)
             .unwrap_or(DEFAULT_MAX_MESSAGES);
+        let max_output_tokens = std::env::var("TASK_DAEMON_LLM_MAX_OUTPUT_TOKENS")
+            .ok()
+            .and_then(|value| value.trim().parse::<u16>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS);
 
         let primary_base_url = optional_env_url("TASK_DAEMON_LLM_BASE_URL")
             .or_else(|| optional_env_url("OPENROUTER_BASE_URL"))
@@ -74,6 +81,7 @@ impl LlmTaskExtractor {
             client: reqwest::Client::new(),
             providers,
             max_messages,
+            max_output_tokens,
         })
     }
 
@@ -140,61 +148,115 @@ impl LlmTaskExtractor {
         prompt_messages: &[PromptSlackMessage<'_>],
         max_prompts: usize,
     ) -> Result<LlmInterpretationEnvelope> {
-        let body = json!({
-            "model": provider.model,
-            "temperature": 0,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": system_prompt(max_prompts),
-                },
-                {
-                    "role": "user",
-                    "content": json!({
-                        "source_label": source_label,
-                        "project": {
-                            "project_key": project.project_key,
-                            "repo_available": project.repo_available,
-                            "repo_path": project.repo_path,
-                        },
-                        "messages": prompt_messages,
-                    }).to_string(),
-                }
-            ]
-        });
-
         let endpoint = format!("{}/chat/completions", provider.base_url);
-        let mut request = self.client.post(&endpoint);
-        if let Some(api_key) = provider.api_key.as_deref() {
-            request = request.bearer_auth(api_key);
+        let user_payload = json!({
+            "source_label": source_label,
+            "project": {
+                "project_key": project.project_key,
+                "repo_available": project.repo_available,
+                "repo_path": project.repo_path,
+            },
+            "messages": prompt_messages,
+        })
+        .to_string();
+
+        // Prefer strict JSON mode for reliability, but degrade gracefully for
+        // OpenAI-compatible local providers that do not implement response_format.
+        let mut include_response_format = true;
+        loop {
+            let body = chat_completion_request_body(
+                &provider.model,
+                &user_payload,
+                self.max_output_tokens,
+                max_prompts,
+                include_response_format,
+            );
+            let mut request = self.client.post(&endpoint);
+            if let Some(api_key) = provider.api_key.as_deref() {
+                request = request.bearer_auth(api_key);
+            }
+
+            let response =
+                request.json(&body).send().await.with_context(|| {
+                    format!("sending extraction request to {}", provider.base_url)
+                })?;
+
+            let status = response.status();
+            if !status.is_success() {
+                let response_body = response.text().await.unwrap_or_default();
+                if include_response_format && response_format_unsupported(status, &response_body) {
+                    include_response_format = false;
+                    tracing::info!(
+                        provider = %provider.name,
+                        base_url = %provider.base_url,
+                        model = %provider.model,
+                        "LLM provider rejected response_format; retrying without JSON mode",
+                    );
+                    continue;
+                }
+
+                return Err(anyhow!(
+                    "LLM extraction request failed with status {status}: {response_body}"
+                ));
+            }
+
+            let payload: OpenRouterResponse = response
+                .json()
+                .await
+                .context("parsing extraction response")?;
+            let content = payload
+                .choices
+                .first()
+                .and_then(|choice| choice.message.content.as_ref())
+                .ok_or_else(|| anyhow!("LLM response did not include a message content payload"))?;
+
+            return parse_interpretation_content(content);
         }
-
-        let response = request
-            .json(&body)
-            .send()
-            .await
-            .with_context(|| format!("sending extraction request to {}", provider.base_url))?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let response_body = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "LLM extraction request failed with status {status}: {response_body}"
-            ));
-        }
-
-        let payload: OpenRouterResponse = response
-            .json()
-            .await
-            .context("parsing extraction response")?;
-        let content = payload
-            .choices
-            .first()
-            .and_then(|choice| choice.message.content.as_ref())
-            .ok_or_else(|| anyhow!("LLM response did not include a message content payload"))?;
-
-        parse_interpretation_content(content)
     }
+}
+
+fn chat_completion_request_body(
+    model: &str,
+    user_payload: &str,
+    max_output_tokens: u16,
+    max_prompts: usize,
+    include_response_format: bool,
+) -> serde_json::Value {
+    let mut body = json!({
+        "model": model,
+        "temperature": 0,
+        "max_tokens": max_output_tokens,
+        "messages": [
+            {
+                "role": "system",
+                "content": system_prompt(max_prompts),
+            },
+            {
+                "role": "user",
+                "content": user_payload,
+            }
+        ]
+    });
+
+    if include_response_format {
+        body["response_format"] = json!({ "type": "json_object" });
+    }
+
+    body
+}
+
+fn response_format_unsupported(status: reqwest::StatusCode, response_body: &str) -> bool {
+    if status != reqwest::StatusCode::BAD_REQUEST
+        && status != reqwest::StatusCode::UNPROCESSABLE_ENTITY
+    {
+        return false;
+    }
+
+    let lower = response_body.to_ascii_lowercase();
+    lower.contains("response_format")
+        || lower.contains("json_object")
+        || lower.contains("json mode")
+        || lower.contains("unsupported")
 }
 
 #[derive(Debug, Clone)]
@@ -256,17 +318,17 @@ struct LlmInterpretationEnvelope {
     #[serde(default)]
     current_objectives: Vec<String>,
     #[serde(default)]
-    decisions_made: Vec<LlmDecisionItem>,
+    decisions_made: Vec<LlmDecisionItemWire>,
     #[serde(default)]
-    open_questions: Vec<LlmQuestionItem>,
+    open_questions: Vec<LlmQuestionItemWire>,
     #[serde(default)]
-    risks: Vec<LlmRiskItem>,
+    risks: Vec<LlmRiskItemWire>,
     #[serde(default)]
-    follow_ups: Vec<LlmFollowUpItem>,
+    follow_ups: Vec<LlmFollowUpItemWire>,
     #[serde(default)]
     workflow_seed: LlmWorkflowSeed,
     #[serde(default)]
-    investigation_prompts: Vec<LlmInvestigationPrompt>,
+    investigation_prompts: Vec<LlmInvestigationPromptWire>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -274,11 +336,130 @@ struct LlmWorkflowSeed {
     #[serde(default)]
     goal: String,
     #[serde(default)]
-    investigation_nodes: Vec<LlmInvestigationPrompt>,
+    investigation_nodes: Vec<LlmInvestigationPromptWire>,
     #[serde(default)]
-    clarification_nodes: Vec<LlmClarificationPrompt>,
+    clarification_nodes: Vec<LlmClarificationPromptWire>,
     #[serde(default)]
-    follow_up_nodes: Vec<LlmFollowUpItem>,
+    follow_up_nodes: Vec<LlmFollowUpItemWire>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum LlmDecisionItemWire {
+    Structured(LlmDecisionItem),
+    Text(String),
+}
+
+impl LlmDecisionItemWire {
+    fn into_item(self) -> LlmDecisionItem {
+        match self {
+            Self::Structured(item) => item,
+            Self::Text(decision) => LlmDecisionItem {
+                decision,
+                ..LlmDecisionItem::default()
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum LlmQuestionItemWire {
+    Structured(LlmQuestionItem),
+    Text(String),
+}
+
+impl LlmQuestionItemWire {
+    fn into_item(self) -> LlmQuestionItem {
+        match self {
+            Self::Structured(item) => item,
+            Self::Text(question) => LlmQuestionItem {
+                question,
+                ..LlmQuestionItem::default()
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum LlmRiskItemWire {
+    Structured(LlmRiskItem),
+    Text(String),
+}
+
+impl LlmRiskItemWire {
+    fn into_item(self) -> LlmRiskItem {
+        match self {
+            Self::Structured(item) => item,
+            Self::Text(risk) => LlmRiskItem {
+                risk,
+                ..LlmRiskItem::default()
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum LlmFollowUpItemWire {
+    Structured(LlmFollowUpItem),
+    Text(String),
+}
+
+impl LlmFollowUpItemWire {
+    fn into_item(self) -> LlmFollowUpItem {
+        match self {
+            Self::Structured(item) => item,
+            Self::Text(prompt) => LlmFollowUpItem {
+                prompt,
+                ..LlmFollowUpItem::default()
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum LlmClarificationPromptWire {
+    Structured(LlmClarificationPrompt),
+    Text(String),
+}
+
+impl LlmClarificationPromptWire {
+    fn into_item(self) -> LlmClarificationPrompt {
+        match self {
+            Self::Structured(item) => item,
+            Self::Text(question) => LlmClarificationPrompt {
+                question,
+                ..LlmClarificationPrompt::default()
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum LlmInvestigationPromptWire {
+    Structured(Box<LlmInvestigationPrompt>),
+    Text(String),
+}
+
+impl LlmInvestigationPromptWire {
+    fn into_item(self) -> LlmInvestigationPrompt {
+        match self {
+            Self::Structured(item) => *item,
+            Self::Text(text) => {
+                let trimmed = text.trim().to_string();
+                LlmInvestigationPrompt {
+                    title: trimmed.clone(),
+                    goal: trimmed.clone(),
+                    prompt: trimmed,
+                    ..LlmInvestigationPrompt::default()
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -382,6 +563,7 @@ fn build_interpretation(
         .decisions_made
         .into_iter()
         .filter_map(|item| {
+            let item = item.into_item();
             let decision = item.decision.trim().to_string();
             if decision.is_empty() {
                 return None;
@@ -399,6 +581,7 @@ fn build_interpretation(
         .open_questions
         .into_iter()
         .filter_map(|item| {
+            let item = item.into_item();
             let question = item.question.trim().to_string();
             if question.is_empty() {
                 return None;
@@ -419,6 +602,7 @@ fn build_interpretation(
         .risks
         .into_iter()
         .filter_map(|item| {
+            let item = item.into_item();
             let risk = item.risk.trim().to_string();
             if risk.is_empty() {
                 return None;
@@ -435,8 +619,9 @@ fn build_interpretation(
 
     let follow_ups: Vec<FollowUpItem> = envelope
         .follow_ups
-        .iter()
+        .into_iter()
         .filter_map(|item| {
+            let item = item.into_item();
             let prompt = item.prompt.trim().to_string();
             if prompt.is_empty() {
                 return None;
@@ -459,6 +644,7 @@ fn build_interpretation(
     let investigation_nodes = raw_investigation_nodes
         .into_iter()
         .filter_map(|item| {
+            let item = item.into_item();
             let title = item.title.trim().to_string();
             let goal = item.goal.trim().to_string();
             if title.is_empty() || goal.is_empty() {
@@ -494,6 +680,7 @@ fn build_interpretation(
         .clarification_nodes
         .into_iter()
         .filter_map(|item| {
+            let item = item.into_item();
             let question = item.question.trim().to_string();
             if question.is_empty() {
                 return None;
@@ -534,6 +721,7 @@ fn build_interpretation(
             .follow_up_nodes
             .into_iter()
             .filter_map(|item| {
+                let item = item.into_item();
                 let prompt = item.prompt.trim().to_string();
                 if prompt.is_empty() {
                     return None;
@@ -618,7 +806,7 @@ fn normalize_string_list(values: Vec<String>) -> Vec<String> {
 
 fn system_prompt(max_prompts: usize) -> String {
     format!(
-        "You interpret Slack discussions as project-state updates and produce a workflow seed for downstream orchestration. Return STRICT JSON only (no markdown) with keys: executive_summary, current_objectives, decisions_made, open_questions, risks, follow_ups, workflow_seed. The workflow_seed object must include: goal, investigation_nodes, clarification_nodes, follow_up_nodes. Each investigation node must include title, goal, prompt, when_to_run (always|repo_available|repo_unavailable), depends_on (array of investigation node keys or empty), suggested_steps, search_queries, expected_artifacts, confidence (low|medium|high), message_ts. clarification_nodes entries require question, blocking, suggested_owner, depends_on, message_ts. follow_up_nodes entries require kind (stakeholder_question|decision_request|clarification), prompt, urgency, message_ts. Do not invent repository facts. If uncertain, emit clarification_nodes or open_questions. Generate at most {max_prompts} investigation nodes.",
+        "You interpret Slack discussions as project-state updates and produce a workflow seed for downstream orchestration. Return STRICT JSON only (no markdown) with keys: executive_summary, current_objectives, decisions_made, open_questions, risks, follow_ups, workflow_seed. The workflow_seed object must include: goal, investigation_nodes, clarification_nodes, follow_up_nodes. Each investigation node must include title, goal, prompt, when_to_run (always|repo_available|repo_unavailable), depends_on (array of investigation node keys or empty), suggested_steps, search_queries, expected_artifacts, confidence (low|medium|high), message_ts. clarification_nodes entries require question, blocking, suggested_owner, depends_on, message_ts. follow_up_nodes entries require kind (stakeholder_question|decision_request|clarification), prompt, urgency, message_ts. Keep text concise: executive_summary <= 3 short sentences; list item fields <= 1 sentence. Do not invent repository facts. If uncertain, emit clarification_nodes or open_questions. Generate at most {max_prompts} investigation nodes.",
     )
 }
 
@@ -677,18 +865,24 @@ fn content_as_text(content: &serde_json::Value) -> Option<String> {
 }
 
 fn parse_interpretation_text(text: &str) -> Result<LlmInterpretationEnvelope> {
-    if let Ok(parsed) = serde_json::from_str::<LlmInterpretationEnvelope>(text) {
-        return Ok(parsed);
+    let mut parse_errors: Vec<String> = Vec::new();
+    match serde_json::from_str::<LlmInterpretationEnvelope>(text) {
+        Ok(parsed) => return Ok(parsed),
+        Err(error) => parse_errors.push(format!("direct parse failed: {error}")),
     }
 
-    if let Some(json_slice) = extract_json_slice(text)
-        && let Ok(parsed) = serde_json::from_str::<LlmInterpretationEnvelope>(json_slice)
-    {
-        return Ok(parsed);
+    if let Some(json_slice) = extract_json_slice(text) {
+        match serde_json::from_str::<LlmInterpretationEnvelope>(json_slice) {
+            Ok(parsed) => return Ok(parsed),
+            Err(error) => parse_errors.push(format!("json-slice parse failed: {error}")),
+        }
+    } else {
+        parse_errors.push("json-slice extraction failed".to_string());
     }
 
     Err(anyhow!(
-        "model output was not valid interpretation JSON; got: {}",
+        "model output was not valid interpretation JSON ({}) ; got: {}",
+        parse_errors.join(" | "),
         truncate_for_error(text)
     ))
 }

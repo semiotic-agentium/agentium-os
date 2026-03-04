@@ -444,7 +444,7 @@ impl A2aSink {
         json!({
             "jsonrpc": "2.0",
             "method": "message.sendStream",
-            "id": uuid_v4(),
+            "id": correlation_id(),
             "params": {
                 "message": {
                     "messageId": format!("task-daemon-{}", uuid_v4()),
@@ -695,6 +695,17 @@ fn uuid_v4() -> String {
     format!("{nanos:032x}")
 }
 
+/// Generates a correlation id compatible with baml-rt temporal parser.
+fn correlation_id() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let millis = duration.as_millis();
+    let counter = (duration.as_nanos() % 1_000_000) as u64;
+    format!("corr-{millis}-{counter}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -884,6 +895,12 @@ mod tests {
         assert_eq!(
             body.pointer("/method").and_then(Value::as_str),
             Some("message.sendStream")
+        );
+        assert!(
+            body.pointer("/id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with("corr-")),
+            "jsonrpc id must be correlation-id formatted for coordinator runtime"
         );
         assert!(
             body.pointer("/params/message/messageId")
