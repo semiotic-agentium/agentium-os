@@ -194,7 +194,7 @@ async fn test_full_integration_package_load_execute() {
             .expect("invoke onChatMessage")
     };
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-    collect_into_channel_owned(bridge.clone(), session_id, yield_rx, tx, None, None)
+    collect_into_channel_owned(bridge.clone(), session_id, yield_rx, tx, None, None, scope)
         .await
         .expect("collect yielded chunks");
     let mut chunks = Vec::new();
