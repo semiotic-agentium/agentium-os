@@ -255,6 +255,32 @@ function workflowTargetKey(target: RouteTarget): string {
   return `${target.agent_package}/${target.agent_instance_id}`;
 }
 
+function tryEvaluateSimpleArithmetic(text: string): string | null {
+  const match = text.match(/(-?\d+(?:\.\d+)?)\s*([+\-*/])\s*(-?\d+(?:\.\d+)?)/);
+  if (!match) return null;
+
+  const left = Number(match[1]);
+  const op = match[2];
+  const right = Number(match[3]);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return null;
+
+  let result: number;
+  if (op === "+") result = left + right;
+  else if (op === "-") result = left - right;
+  else if (op === "*") result = left * right;
+  else {
+    if (right === 0) return null;
+    result = left / right;
+  }
+
+  if (!Number.isFinite(result)) return null;
+  if (Math.abs(result - Math.round(result)) < 1e-9) {
+    return String(Math.round(result));
+  }
+
+  return String(result);
+}
+
 function validateWorkflowPlan(plan: WorkflowPlan, agentRegistry: Set<string>): void {
   if (!Array.isArray(plan.nodes) || plan.nodes.length === 0) {
     throw new Error("Workflow plan must include at least one node.");
@@ -1162,10 +1188,11 @@ async function executeWorkflowNode(
 
     if (node.kind === "direct_answer") {
       const rendered = interpolateTemplate(node.prompt_template || "", artifacts);
+      const arithmeticAnswer = tryEvaluateSimpleArithmetic(rendered);
       return {
         node_id: node.id,
         status: "completed",
-        output_text: rendered,
+        output_text: arithmeticAnswer || rendered,
         started_at,
         ended_at: new Date().toISOString(),
       };
@@ -1620,7 +1647,20 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
       );
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
-      return { message: `Workflow planning failed: ${reason}` };
+      ctx.emit.message("Planner returned an invalid workflow; using direct-answer fallback.");
+      plan = {
+        goal: "Fallback direct response",
+        nodes: [
+          {
+            id: "fallback_direct_answer",
+            kind: "direct_answer",
+            depends_on: [],
+            prompt_template: effectiveUserText,
+            rationale: `Fallback after planner error: ${reason}`,
+          },
+        ],
+        final_node_id: "fallback_direct_answer",
+      };
     }
 
     const outcome = await executeWorkflowPlanPhase3(

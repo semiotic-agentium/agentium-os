@@ -60,6 +60,9 @@ function PlanCoordinatorWorkflow(
     - Use foreach only when the user asks to apply an action to each item from upstream output.
     - Use clarify only when routing is genuinely ambiguous.
     - Use direct_answer for simple meta/system questions.
+    - Use ONLY agent_package/agent_instance_id pairs that appear in AVAILABLE AGENTS.
+    - If no suitable specialist exists, use direct_answer or clarify instead of inventing a target.
+    - For direct_answer, prompt_template must be the literal final user-facing answer text, not instructions.
     - Include a synthesize node as the final aggregation step when multiple call_agent nodes are present.
     - Nodes with empty depends_on run in parallel.
     - Never target the coordinator itself.
