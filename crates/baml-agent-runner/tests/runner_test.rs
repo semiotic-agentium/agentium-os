@@ -23,9 +23,7 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, UuidId},
 };
 #[cfg(feature = "llm-tests")]
-use baml_rt_provenance::{
-    AgentType, ProvEvent, ProvenanceContextMessage, ProvenanceContextReader, ProvenanceWriter,
-};
+use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceContextMessage, ProvenanceWriter};
 use baml_rt_provenance::{
     GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvenanceContextReader,
 };
