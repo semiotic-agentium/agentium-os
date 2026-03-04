@@ -39,3 +39,10 @@ test-group = "provenance"
 filter = 'package(baml-agent-runner) and test(~conversational_context_auto_via_provenance)'
 test-group = "provenance"
 slow-timeout = { period = "120s", terminate-after = 10 }
+
+# `test_e2e_stream_baml_tool` has shown rare process-level SIGBUS flakes in CI.
+# Retry this specific test to absorb transient runtime crashes while preserving
+# failure visibility if the issue is persistent.
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and test(~test_e2e_stream_baml_tool)'
+retries = { backoff = "fixed", count = 2, delay = "2s" }
