@@ -117,7 +117,11 @@ async fn next_until_suspended_or_done(
     session_id: &ToolSessionId,
 ) -> ToolStep {
     for _ in 0..16 {
-        match registry.session_next(session_id).await.expect("session_next") {
+        match registry
+            .session_next(session_id)
+            .await
+            .expect("session_next")
+        {
             ToolStep::Streaming { .. } => continue,
             step => return step,
         }
