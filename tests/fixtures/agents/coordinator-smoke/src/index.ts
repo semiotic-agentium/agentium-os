@@ -31,16 +31,6 @@ type CoordinatorGoal = {
   due_date?: string | null;
 };
 
-type TaskDaemonCoordinatorHandoff = {
-  schema_version: string;
-  batch: Record<string, unknown>;
-};
-
-type PlannerUserTextFromHandoff = {
-  userText: string;
-  structuredHandoff: boolean;
-};
-
 type ToolSessionHandle = {
   send(args: Record<string, unknown>): Promise<unknown>;
   continue(): Promise<unknown>;
@@ -96,13 +86,9 @@ const MAX_DELEGATION_CONTINUE_STEPS = 128;
 const MAX_WORKFLOW_NODES = 30;
 const MAX_FOREACH_EXPANSIONS = 50;
 const MAX_WORKFLOW_ITERATIONS = 8;
-const MAX_HANDOFF_LIST_ITEMS = 12;
-const MAX_HANDOFF_FIELD_CHARS = 700;
-const MAX_HANDOFF_PROMPT_CHARS = 12_000;
 
 const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
 const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
-const TASK_DAEMON_COORDINATOR_HANDOFF_SCHEMA_VERSION = "task-daemon.coordinator-handoff.v1";
 
 type WorkflowNodeKind =
   | "call_agent"
@@ -167,15 +153,6 @@ function normalizeOptionalString(value: unknown): string | null {
   return normalized.length > 0 ? normalized : null;
 }
 
-function isMeaningfulDelegatedText(text: string): boolean {
-  const normalized = text.trim().toLowerCase();
-  if (normalized.length === 0) return false;
-  if (normalized === "null" || normalized === "undefined" || normalized === "[object object]") {
-    return false;
-  }
-  return true;
-}
-
 function getChatMessageText(message: ChatMessage | null | undefined): string {
   if (!message) return "";
   try {
@@ -197,345 +174,6 @@ function getChatMessageText(message: ChatMessage | null | undefined): string {
 function parseStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((entry): entry is string => typeof entry === "string");
-}
-
-function parseObjectArray(value: unknown): Record<string, unknown>[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((entry): entry is Record<string, unknown> => isObject(entry));
-}
-
-function parseOptionalFiniteNumber(value: unknown): number | null {
-  const parsed = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(parsed)) return null;
-  return parsed;
-}
-
-function parseOptionalBoolean(value: unknown): boolean | null {
-  if (typeof value === "boolean") return value;
-  return null;
-}
-
-function parseObjectField(
-  object: Record<string, unknown>,
-  key: string,
-): Record<string, unknown> | null {
-  const value = object[key];
-  if (!isObject(value)) return null;
-  return value;
-}
-
-function truncateForPrompt(text: string, maxChars: number = MAX_HANDOFF_FIELD_CHARS): string {
-  if (text.length <= maxChars) return text;
-  return `${text.slice(0, Math.max(0, maxChars - 3))}...`;
-}
-
-function appendNumberedSection(lines: string[], title: string, entries: string[]): void {
-  if (entries.length === 0) return;
-  lines.push(`${title}:`);
-  const shown = entries.slice(0, MAX_HANDOFF_LIST_ITEMS);
-  shown.forEach((entry, index) => {
-    lines.push(`${index + 1}. ${truncateForPrompt(entry)}`);
-  });
-  if (entries.length > shown.length) {
-    lines.push(`... ${entries.length - shown.length} more`);
-  }
-  lines.push("");
-}
-
-function formatSourceRef(source: Record<string, unknown>): string | null {
-  const permalink = normalizeOptionalString(source.permalink);
-  if (permalink) return permalink;
-  return normalizeOptionalString(source.reference);
-}
-
-function formatTaskSources(task: Record<string, unknown>): string {
-  const sourceRefs = parseObjectArray(task.sources)
-    .map((source) => formatSourceRef(source))
-    .filter((value): value is string => value != null)
-    .slice(0, 2);
-  if (sourceRefs.length === 0) return "";
-  return ` | sources: ${sourceRefs.join(", ")}`;
-}
-
-function isLikelyTaskDaemonPrompt(text: string): boolean {
-  const normalized = text.toLowerCase();
-  return (
-    normalized.includes("based on a slack discussion in")
-    && normalized.includes("tasks to create")
-  );
-}
-
-function parseTaskDaemonCoordinatorHandoff(
-  message: ChatMessage | null | undefined,
-): TaskDaemonCoordinatorHandoff | null {
-  if (!message || !Array.isArray(message.parts)) return null;
-
-  for (const part of message.parts) {
-    if (!isObject(part)) continue;
-    const data = part.data;
-    if (!isObject(data)) continue;
-
-    const schemaVersion = normalizeOptionalString(data.schema_version);
-    if (schemaVersion !== TASK_DAEMON_COORDINATOR_HANDOFF_SCHEMA_VERSION) continue;
-
-    const batch = data.batch;
-    if (!isObject(batch)) continue;
-    return {
-      schema_version: schemaVersion,
-      batch,
-    };
-  }
-
-  return null;
-}
-
-function renderHandoffPrompt(
-  handoff: TaskDaemonCoordinatorHandoff,
-  fallbackText: string,
-): string {
-  const batch = handoff.batch;
-  const project = parseObjectField(batch, "project");
-  const interpretation = parseObjectField(batch, "interpretation");
-  const workflowSeed =
-    interpretation != null ? parseObjectField(interpretation, "workflow_seed") : null;
-
-  const projectKey = project != null ? normalizeOptionalString(project.project_key) : null;
-  const repoAvailable = project != null ? parseOptionalBoolean(project.repo_available) : null;
-  const repoPath = project != null ? normalizeOptionalString(project.repo_path) : null;
-  const sourceLabel = normalizeOptionalString(batch.source_label);
-  const messagesScanned = parseOptionalFiniteNumber(batch.messages_scanned);
-  const summary =
-    interpretation != null ? normalizeOptionalString(interpretation.executive_summary) : null;
-
-  const objectives =
-    interpretation != null
-      ? parseStringArray(interpretation.current_objectives)
-          .map((entry) => normalizeText(entry))
-          .filter((entry) => entry.length > 0)
-      : [];
-
-  const decisions =
-    interpretation != null
-      ? parseObjectArray(interpretation.decisions_made)
-          .map((decision) => {
-            const decisionText = normalizeOptionalString(decision.decision);
-            if (!decisionText) return null;
-            const rationale = normalizeOptionalString(decision.rationale);
-            const confidence = normalizeOptionalString(decision.confidence);
-            const parts = [decisionText];
-            if (rationale) parts.push(`rationale: ${rationale}`);
-            if (confidence) parts.push(`confidence: ${confidence}`);
-            return parts.join(" | ");
-          })
-          .filter((entry): entry is string => entry != null)
-      : [];
-
-  const openQuestions =
-    interpretation != null
-      ? parseObjectArray(interpretation.open_questions)
-          .map((question) => {
-            const text = normalizeOptionalString(question.question);
-            if (!text) return null;
-            const blocking = parseOptionalBoolean(question.blocking);
-            const owner = normalizeOptionalString(question.suggested_owner);
-            const parts = [text];
-            if (blocking === true) parts.push("blocking");
-            if (owner) parts.push(`owner: ${owner}`);
-            return parts.join(" | ");
-          })
-          .filter((entry): entry is string => entry != null)
-      : [];
-
-  const risks =
-    interpretation != null
-      ? parseObjectArray(interpretation.risks)
-          .map((risk) => {
-            const riskText = normalizeOptionalString(risk.risk);
-            if (!riskText) return null;
-            const impact = normalizeOptionalString(risk.impact);
-            const mitigation = normalizeOptionalString(risk.mitigation);
-            const confidence = normalizeOptionalString(risk.confidence);
-            const parts = [riskText];
-            if (impact) parts.push(`impact: ${impact}`);
-            if (mitigation) parts.push(`mitigation: ${mitigation}`);
-            if (confidence) parts.push(`confidence: ${confidence}`);
-            return parts.join(" | ");
-          })
-          .filter((entry): entry is string => entry != null)
-      : [];
-
-  const followUps =
-    interpretation != null
-      ? parseObjectArray(interpretation.follow_ups)
-          .map((followUp) => {
-            const prompt = normalizeOptionalString(followUp.prompt);
-            if (!prompt) return null;
-            const kind = normalizeOptionalString(followUp.kind);
-            const urgency = normalizeOptionalString(followUp.urgency);
-            const parts = [prompt];
-            if (kind) parts.push(`kind: ${kind}`);
-            if (urgency) parts.push(`urgency: ${urgency}`);
-            return parts.join(" | ");
-          })
-          .filter((entry): entry is string => entry != null)
-      : [];
-
-  const workflowGoal = workflowSeed != null ? normalizeOptionalString(workflowSeed.goal) : null;
-
-  const investigationNodes =
-    workflowSeed != null
-      ? parseObjectArray(workflowSeed.investigation_nodes)
-          .map((node) => {
-            const title = normalizeOptionalString(node.title);
-            const key = normalizeOptionalString(node.key);
-            const prompt = normalizeOptionalString(node.prompt);
-            const goal = normalizeOptionalString(node.goal);
-            const runCondition = normalizeOptionalString(node.when_to_run);
-            const dependencies = parseStringArray(node.depends_on);
-            const parts = [title || key];
-            if (goal) parts.push(`goal: ${goal}`);
-            if (runCondition) parts.push(`when: ${runCondition}`);
-            if (dependencies.length > 0) parts.push(`depends_on: ${dependencies.join(", ")}`);
-            if (prompt) parts.push(`prompt: ${prompt}`);
-            return parts.filter((entry): entry is string => entry != null).join(" | ");
-          })
-          .filter((entry) => entry.length > 0)
-      : [];
-
-  const clarificationNodes =
-    workflowSeed != null
-      ? parseObjectArray(workflowSeed.clarification_nodes)
-          .map((node) => {
-            const question = normalizeOptionalString(node.question);
-            if (!question) return null;
-            const key = normalizeOptionalString(node.key);
-            const owner = normalizeOptionalString(node.suggested_owner);
-            const blocking = parseOptionalBoolean(node.blocking);
-            const dependencies = parseStringArray(node.depends_on);
-            const parts = [question];
-            if (key) parts.push(`key: ${key}`);
-            if (blocking === true) parts.push("blocking");
-            if (owner) parts.push(`owner: ${owner}`);
-            if (dependencies.length > 0) parts.push(`depends_on: ${dependencies.join(", ")}`);
-            return parts.join(" | ");
-          })
-          .filter((entry): entry is string => entry != null)
-      : [];
-
-  const workflowFollowUps =
-    workflowSeed != null
-      ? parseObjectArray(workflowSeed.follow_up_nodes)
-          .map((node) => {
-            const prompt = normalizeOptionalString(node.prompt);
-            if (!prompt) return null;
-            const kind = normalizeOptionalString(node.kind);
-            const urgency = normalizeOptionalString(node.urgency);
-            const parts = [prompt];
-            if (kind) parts.push(`kind: ${kind}`);
-            if (urgency) parts.push(`urgency: ${urgency}`);
-            return parts.join(" | ");
-          })
-          .filter((entry): entry is string => entry != null)
-      : [];
-
-  const derivedTasks = parseObjectArray(batch.derived_tasks)
-    .map((task) => {
-      const title = normalizeOptionalString(task.title);
-      if (!title) return null;
-      const key = normalizeOptionalString(task.key);
-      const description = normalizeOptionalString(task.description);
-      const priority = normalizeOptionalString(task.priority);
-      const parts = [title];
-      if (priority) parts.push(`priority: ${priority}`);
-      if (key) parts.push(`key: ${key}`);
-      if (description) parts.push(`description: ${description}`);
-      const rendered = parts.join(" | ");
-      return `${rendered}${formatTaskSources(task)}`;
-    })
-    .filter((entry): entry is string => entry != null);
-
-  const lines: string[] = [];
-  lines.push("Structured task-daemon handoff:");
-  lines.push("Use this interpretation as the canonical input for workflow planning.");
-  lines.push(`Handoff schema: ${handoff.schema_version}`);
-  lines.push(`Project: ${projectKey || "unknown-project"}`);
-  lines.push(`Source channel: ${sourceLabel || "unknown-source"}`);
-  if (messagesScanned != null) {
-    lines.push(`Messages scanned: ${Math.max(0, Math.floor(messagesScanned))}`);
-  }
-  if (repoAvailable != null) {
-    lines.push(`Repository available: ${repoAvailable ? "yes" : "no"}`);
-  }
-  if (repoPath) {
-    lines.push(`Repository path: ${repoPath}`);
-  }
-  lines.push("");
-
-  if (summary) {
-    lines.push(`Executive summary: ${truncateForPrompt(summary, 1_200)}`);
-    lines.push("");
-  }
-
-  appendNumberedSection(lines, "Current objectives", objectives);
-  appendNumberedSection(lines, "Decisions made", decisions);
-  appendNumberedSection(lines, "Open questions", openQuestions);
-  appendNumberedSection(lines, "Risks", risks);
-  appendNumberedSection(lines, "Interpretation follow-ups", followUps);
-
-  if (workflowGoal) {
-    lines.push(`Workflow goal: ${truncateForPrompt(workflowGoal, 1_000)}`);
-    lines.push("");
-  }
-
-  appendNumberedSection(lines, "Workflow investigation nodes", investigationNodes);
-  appendNumberedSection(lines, "Workflow clarification nodes", clarificationNodes);
-  appendNumberedSection(lines, "Workflow follow-up nodes", workflowFollowUps);
-  appendNumberedSection(lines, "Derived tasks", derivedTasks);
-
-  lines.push("Planning constraints:");
-  lines.push("1. Prioritize workflow_seed and derived tasks over free-form phrasing.");
-  lines.push("2. Treat interpretation as project-context understanding, not keyword matches.");
-  if (repoAvailable === false) {
-    lines.push("3. Repository is unavailable; favor clarification and follow-up workflows.");
-  }
-
-  const normalizedFallbackText = normalizeOptionalString(fallbackText);
-  if (
-    normalizedFallbackText
-    && !isLikelyTaskDaemonPrompt(normalizedFallbackText)
-  ) {
-    lines.push("");
-    lines.push("Additional operator message:");
-    lines.push(truncateForPrompt(normalizedFallbackText, 1_600));
-  }
-
-  return lines.join("\n").slice(0, MAX_HANDOFF_PROMPT_CHARS);
-}
-
-function buildPlannerUserTextFromTaskDaemonHandoff(
-  message: ChatMessage | null | undefined,
-  fallbackUserText: string,
-): PlannerUserTextFromHandoff {
-  const handoff = parseTaskDaemonCoordinatorHandoff(message);
-  if (!handoff) {
-    return {
-      userText: fallbackUserText,
-      structuredHandoff: false,
-    };
-  }
-
-  const rendered = renderHandoffPrompt(handoff, fallbackUserText);
-  if (rendered.trim().length === 0) {
-    return {
-      userText: fallbackUserText,
-      structuredHandoff: true,
-    };
-  }
-
-  return {
-    userText: rendered,
-    structuredHandoff: true,
-  };
 }
 
 function parseRouteTarget(value: unknown): RouteTarget | null {
@@ -768,7 +406,7 @@ function collectMessageParts(value: unknown, out: Set<string>): void {
   for (const part of message.parts) {
     if (!isObject(part) || typeof part.text !== "string") continue;
     const text = part.text.trim();
-    if (isMeaningfulDelegatedText(text)) out.add(text);
+    if (text.length > 0) out.add(text);
   }
 }
 
@@ -805,7 +443,7 @@ function collectDelegatedTexts(value: unknown): string[] {
     for (const part of message.parts) {
       if (!part || typeof part.text !== "string") continue;
       const text = part.text.trim();
-      if (isMeaningfulDelegatedText(text)) out.add(text);
+      if (text.length > 0) out.add(text);
     }
   };
 
@@ -1294,128 +932,15 @@ function isTerminalArtifactStatus(status: NodeArtifactStatus): boolean {
 
 function resolveArtifactPath(path: string, artifacts: Map<string, NodeArtifact>): unknown {
   const segments = path.split(".").filter((segment) => segment.length > 0);
-  if (segments.length < 1) return undefined;
+  if (segments.length < 2) return undefined;
 
   const [nodeId, ...rest] = segments;
   let current: unknown = artifacts.get(nodeId);
-  if (rest.length === 0) return current;
   for (const segment of rest) {
     if (!isObject(current)) return undefined;
     current = current[segment];
   }
   return current;
-}
-
-function tryParseJsonValue(text: string): unknown | null {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    // Try extracting the first JSON object/array from surrounding text.
-  }
-
-  for (let start = 0; start < trimmed.length; start++) {
-    const ch = trimmed[start];
-    if (ch !== "{" && ch !== "[") continue;
-
-    const stack: string[] = [ch === "{" ? "}" : "]"];
-    let inString = false;
-    let escaping = false;
-
-    for (let i = start + 1; i < trimmed.length; i++) {
-      const current = trimmed[i];
-
-      if (inString) {
-        if (escaping) {
-          escaping = false;
-          continue;
-        }
-        if (current === "\\") {
-          escaping = true;
-          continue;
-        }
-        if (current === '"') {
-          inString = false;
-        }
-        continue;
-      }
-
-      if (current === '"') {
-        inString = true;
-        continue;
-      }
-
-      if (current === "{") stack.push("}");
-      else if (current === "[") stack.push("]");
-      else if (current === "}" || current === "]") {
-        const expected = stack.pop();
-        if (!expected || expected !== current) break;
-        if (stack.length === 0) {
-          const candidate = trimmed.slice(start, i + 1);
-          try {
-            return JSON.parse(candidate);
-          } catch {
-            break;
-          }
-        }
-      }
-    }
-  }
-
-  return null;
-}
-
-function findFirstArray(value: unknown, depth = 0): unknown[] | null {
-  if (depth > 4) return null;
-  if (Array.isArray(value)) return value;
-  if (!isObject(value)) return null;
-
-  const preferredKeys = ["items", "results", "data", "entries", "documents", "pages"];
-  for (const key of preferredKeys) {
-    const candidate = value[key];
-    if (Array.isArray(candidate)) return candidate;
-  }
-
-  for (const nested of Object.values(value)) {
-    const found = findFirstArray(nested, depth + 1);
-    if (found) return found;
-  }
-
-  return null;
-}
-
-function resolveForeachItemsFromSource(
-  sourcePath: string,
-  artifacts: Map<string, NodeArtifact>,
-): unknown[] | null {
-  const direct = resolveArtifactPath(sourcePath, artifacts);
-  const directArray = findFirstArray(direct);
-  if (directArray) return directArray;
-
-  if (typeof direct === "string") {
-    const parsed = tryParseJsonValue(direct);
-    const parsedArray = findFirstArray(parsed);
-    if (parsedArray) return parsedArray;
-  }
-
-  const sourceSegments = sourcePath.split(".").filter((segment) => segment.length > 0);
-  if (sourceSegments.length === 1) {
-    const artifact = artifacts.get(sourceSegments[0]);
-    if (!artifact) return null;
-
-    const outputDataArray = findFirstArray(artifact.output_data);
-    if (outputDataArray) return outputDataArray;
-
-    if (typeof artifact.output_text === "string") {
-      const parsed = tryParseJsonValue(artifact.output_text);
-      const parsedArray = findFirstArray(parsed);
-      if (parsedArray) return parsedArray;
-    }
-  }
-
-  return null;
 }
 
 function interpolateTemplate(template: string, artifacts: Map<string, NodeArtifact>): string {
@@ -1537,12 +1062,12 @@ function expandForeachNodeInPlan(
     };
   }
 
-  const resolvedItems = resolveForeachItemsFromSource(node.foreach_from, artifacts);
-  if (!resolvedItems) {
+  const resolved = resolveArtifactPath(node.foreach_from, artifacts);
+  if (!Array.isArray(resolved)) {
     return {
       node_id: node.id,
       status: "failed",
-      error: `foreach source '${node.foreach_from}' did not resolve to an array-compatible value.`,
+      error: `foreach source '${node.foreach_from}' did not resolve to an array.`,
       started_at,
       ended_at: new Date().toISOString(),
     };
@@ -1552,7 +1077,7 @@ function expandForeachNodeInPlan(
     node.foreach_template.max_items ?? MAX_FOREACH_EXPANSIONS,
     MAX_FOREACH_EXPANSIONS,
   );
-  const items = resolvedItems.slice(0, maxItems);
+  const items = resolved.slice(0, maxItems);
   const existingNodeIds = new Set(plan.nodes.map((entry) => entry.id));
   const childIds: string[] = [];
   const children: WorkflowNode[] = [];
@@ -1641,16 +1166,24 @@ async function executeWorkflowNode(
         };
       }
 
-      const parsedOutputData = tryParseJsonValue(joined);
-
-      return {
+      const callArtifact: NodeArtifact = {
         node_id: node.id,
         status: "completed",
         output_text: joined,
-        output_data: parsedOutputData ?? undefined,
         started_at,
         ended_at: new Date().toISOString(),
       };
+
+      try {
+        const parsed = JSON.parse(joined);
+        if (parsed && typeof parsed === "object") {
+          callArtifact.output_data = parsed;
+        }
+      } catch {
+        /* prose response — leave output_data undefined */
+      }
+
+      return callArtifact;
     }
 
     if (node.kind === "direct_answer") {
@@ -1717,44 +1250,9 @@ async function executeWave(
   artifacts: Map<string, NodeArtifact>,
   emit?: SessionEmitter,
 ): Promise<NodeArtifact[]> {
-  const targetExecutionKey = (node: WorkflowNode): string => {
-    if (node.kind === "call_agent" && node.target) {
-      return `target:${workflowTargetKey(node.target)}`;
-    }
-    return `node:${node.id}`;
-  };
-
-  const buildBatches = (nodes: WorkflowNode[]): WorkflowNode[][] => {
-    const pending = [...nodes];
-    const batches: WorkflowNode[][] = [];
-
-    while (pending.length > 0) {
-      const usedKeys = new Set<string>();
-      const batch: WorkflowNode[] = [];
-
-      for (let i = 0; i < pending.length && batch.length < MAX_FANOUT_CONCURRENCY; ) {
-        const node = pending[i];
-        const key = targetExecutionKey(node);
-        if (usedKeys.has(key)) {
-          i += 1;
-          continue;
-        }
-        usedKeys.add(key);
-        batch.push(node);
-        pending.splice(i, 1);
-      }
-
-      if (batch.length === 0) {
-        batch.push(pending.shift()!);
-      }
-      batches.push(batch);
-    }
-
-    return batches;
-  };
-
   const outputs: NodeArtifact[] = [];
-  for (const batch of buildBatches(wave)) {
+  for (let i = 0; i < wave.length; i += MAX_FANOUT_CONCURRENCY) {
+    const batch = wave.slice(i, i + MAX_FANOUT_CONCURRENCY);
     if (emit) {
       emit.message(
         `Executing ${batch.length} workflow node(s): ${batch.map((node) => node.id).join(", ")}`,
@@ -2105,17 +1603,12 @@ async function executeWorkflowPlanPhase3(
 }
 
 async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
-  const rawUserText = (ctx.text || "").trim();
-  const plannerUserText = buildPlannerUserTextFromTaskDaemonHandoff(ctx.message, rawUserText);
-  const baseUserText = plannerUserText.userText;
+  const baseUserText = (ctx.text || "").trim();
   if (!baseUserText) {
     return { message: "Please share what you want me to coordinate." };
   }
 
   ctx.emit.statusChanged("TASK_STATE_WORKING");
-  if (plannerUserText.structuredHandoff) {
-    ctx.emit.message("Received structured task-daemon handoff. Planning from interpretation payload.");
-  }
   const baseConversationSummary = getConversationSummary(ctx);
   const clarificationTurns: string[] = [];
 

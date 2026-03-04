@@ -2,6 +2,7 @@ set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 set dotenv-load
 provenance_db := "provenance.db"
 runner_http_bind := "127.0.0.1:8080"
+slack_channel := "agentium-eng"
 
 # Rebuilds clickup-agent package and runs it via a2a stdio.
 clickup-agent:
@@ -76,6 +77,14 @@ slack-demo:
 # Stops the background runner started by slack-demo.
 slack-demo-stop:
     ./scripts/stop-slack-demo.sh
+
+# Runs one polling cycle of the local Slack task daemon.
+task-daemon-slack-once:
+    cargo run -p baml-task-daemon -- run --channel {{slack_channel}} --once
+
+# Runs the local Slack task daemon in watch mode.
+task-daemon-slack:
+    cargo run -p baml-task-daemon -- run --channel {{slack_channel}} --interval-seconds 120
 
 # Runs coordinator + notion HTTP demo and streams one coordinated request.
 coordinator-demo:

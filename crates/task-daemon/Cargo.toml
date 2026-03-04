@@ -1,0 +1,31 @@
+[package]
+name = "baml-task-daemon"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "Local polling daemon substrate for extracting actionable tasks from sources like Slack"
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+clap = { workspace = true }
+integrations-clickup-client = { path = "../integrations/clickup-client" }
+integrations-github-client = { path = "../integrations/github-client" }
+integrations-slack-read = { path = "../integrations/slack-read" }
+regex = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[features]
+default = []
+llm-tests = []
+
+[dev-dependencies]
+axum = { workspace = true }
+test-support = { path = "../test-support" }
+tempfile = { workspace = true }

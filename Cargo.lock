@@ -1495,6 +1495,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "baml-task-daemon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "clap",
+ "integrations-clickup-client",
+ "integrations-github-client",
+ "integrations-slack-read",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "test-support",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "baml-tools-calculator"
 version = "0.1.0"
 dependencies = [
@@ -3833,6 +3855,16 @@ dependencies = [
 
 [[package]]
 name = "integrations-clickup-client"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "integrations-github-client"
 version = "0.1.0"
 dependencies = [
  "reqwest",

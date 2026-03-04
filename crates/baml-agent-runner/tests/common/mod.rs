@@ -5,23 +5,53 @@ use std::{
 };
 
 use async_trait::async_trait;
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 use baml_rt_a2a::AgentRegistry;
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 use baml_rt_core::A2aRequestHandler;
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister, AgentRouteKey,
 };
 use baml_rt_provenance::GraphqliteProvenanceStore;
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 use baml_rt_provenance::{
     GraphExporter,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
 };
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 use serde_json::Value;
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 pub use test_support::common::TempEnvVar;
 use tokio::sync::Semaphore;
 
@@ -38,7 +68,12 @@ pub fn e2e_serial_gate() -> &'static Semaphore {
     GATE.get_or_init(|| Semaphore::new(1))
 }
 
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 #[derive(Clone)]
 pub struct SingleAgentRegistry {
     package: String,
@@ -48,7 +83,12 @@ pub struct SingleAgentRegistry {
     agent: baml_rt::A2aAgent,
 }
 
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 impl SingleAgentRegistry {
     pub fn new(
         package: &str,
@@ -67,7 +107,12 @@ impl SingleAgentRegistry {
     }
 }
 
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 #[async_trait]
 impl AgentLister for SingleAgentRegistry {
     fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
@@ -90,7 +135,12 @@ impl AgentLister for SingleAgentRegistry {
     }
 }
 
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 #[async_trait]
 impl AgentRegistry for SingleAgentRegistry {
     async fn handle_a2a_stream(
@@ -111,19 +161,34 @@ impl AgentRegistry for SingleAgentRegistry {
     }
 }
 
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 pub struct TestMermaidService {
     store: Arc<GraphqliteProvenanceStore>,
 }
 
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 impl TestMermaidService {
     pub fn new(store: Arc<GraphqliteProvenanceStore>) -> Self {
         Self { store }
     }
 }
 
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 #[async_trait]
 impl baml_rt_api::MermaidService for TestMermaidService {
     async fn mermaid_for_context(
@@ -159,14 +224,24 @@ impl baml_rt_api::MermaidService for TestMermaidService {
     }
 }
 
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 pub struct RunningHttpServer {
     pub base_url: String,
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
     handle: Option<tokio::task::JoinHandle<()>>,
 }
 
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 impl RunningHttpServer {
     fn new(
         base_url: String,
@@ -204,7 +279,12 @@ impl RunningHttpServer {
     }
 }
 
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 impl Drop for RunningHttpServer {
     fn drop(&mut self) {
         if let Some(shutdown_tx) = self.shutdown_tx.take() {
@@ -216,27 +296,47 @@ impl Drop for RunningHttpServer {
     }
 }
 
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 #[derive(Debug)]
 pub struct TempDirCleanup {
     path: PathBuf,
 }
 
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 impl TempDirCleanup {
     pub fn new(path: PathBuf) -> Self {
         Self { path }
     }
 }
 
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 impl Drop for TempDirCleanup {
     fn drop(&mut self) {
         fs::remove_dir_all(&self.path).ok();
     }
 }
 
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 pub async fn start_http_server(app: axum::Router) -> std::io::Result<RunningHttpServer> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
@@ -256,7 +356,12 @@ pub async fn start_http_server(app: axum::Router) -> std::io::Result<RunningHttp
     ))
 }
 
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 pub async fn start_runner_api_server(
     agent_package: &str,
     agent: baml_rt::A2aAgent,
@@ -275,7 +380,12 @@ pub async fn start_runner_api_server(
     start_http_server(app).await
 }
 
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 pub fn contains_kv(value: &Value, key: &str, expected: &str) -> bool {
     match value {
         Value::Object(map) => map.iter().any(|(k, v)| {
@@ -319,7 +429,12 @@ pub async fn build_slack_agent_to_temp_async() -> PathBuf {
 }
 
 /// POST to /a2a/sse and collect all JSON-RPC responses from the SSE stream.
-#[cfg(any(feature = "clickup", feature = "notion", feature = "slack"))]
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 pub async fn post_a2a_sse_collect(
     client: &reqwest::Client,
     url: &str,

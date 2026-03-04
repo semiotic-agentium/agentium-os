@@ -3,6 +3,7 @@ members = [
   "crates/baml-agent-runner",
   "crates/baml-derive-tests",
   "crates/integrations/clickup-client",
+  "crates/integrations/github-client",
   "crates/integrations/notion-read",
   "crates/integrations/slack-read",
   "crates/baml-rt",
@@ -16,6 +17,7 @@ members = [
   "crates/baml-rt-quickjs",
   "crates/baml-rt-tools",
   "crates/test-support",
+  "crates/task-daemon",
   "crates/tools/calculator",
   "crates/tools/claude",
   "crates/tools/internal-dev",
@@ -34,6 +36,7 @@ default-members = [
   "crates/baml-rt-tools",
   "crates/baml-rt-a2a",
   "crates/baml-rt-provenance",
+  "crates/task-daemon",
 ]
 resolver = "2"
 
