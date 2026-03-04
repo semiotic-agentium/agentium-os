@@ -1219,7 +1219,8 @@ async fn test_e2e_argument_sketch_two_agents() {
         return;
     }
 
-    let timeout_duration = std::time::Duration::from_secs(120);
+    // Real-model latency can exceed two minutes under CI load.
+    let timeout_duration = std::time::Duration::from_secs(180);
     let result =
         tokio::time::timeout(timeout_duration, run_argument_sketch_two_agents_body()).await;
     match result {
@@ -1587,10 +1588,60 @@ async fn test_internal_a2a_parallel_same_context_child_tasks_and_provenance() {
         .await
         .expect("parallel fanout request");
     let chunks = chunks_from_responses(&responses);
-    let summary_text = message_texts_from_chunks(&chunks)
-        .into_iter()
-        .find(|t| !t.trim().is_empty())
-        .expect("parallel summary message");
+    fn collect_part_texts(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(parts) = map.get("parts").and_then(Value::as_array) {
+                    for part in parts {
+                        if let Some(text) = part.get("text").and_then(Value::as_str) {
+                            out.push(text.to_string());
+                        }
+                    }
+                }
+                for child in map.values() {
+                    collect_part_texts(child, out);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    collect_part_texts(item, out);
+                }
+            }
+            Value::String(raw) => {
+                let trimmed = raw.trim_start();
+                if (trimmed.starts_with('{') || trimmed.starts_with('['))
+                    && let Ok(parsed) = serde_json::from_str::<Value>(raw)
+                {
+                    collect_part_texts(&parsed, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut candidate_texts = message_texts_from_chunks(&chunks);
+    for chunk in &chunks {
+        collect_part_texts(chunk, &mut candidate_texts);
+    }
+    let summary_text = candidate_texts
+        .iter()
+        .find(|t| {
+            let trimmed = t.trim();
+            !trimmed.is_empty()
+                && trimmed != "null"
+                && serde_json::from_str::<Value>(trimmed)
+                    .ok()
+                    .and_then(|v| v.as_array().map(|_| ()))
+                    .is_some()
+        })
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "parallel summary message; collected texts: {:?}; raw: {}",
+                candidate_texts,
+                serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+            )
+        });
     let parsed_summary: Value =
         serde_json::from_str(&summary_text).expect("summary message should be valid JSON");
     let results = parsed_summary

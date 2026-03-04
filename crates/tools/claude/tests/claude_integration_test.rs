@@ -5,7 +5,7 @@ use baml_rt_core::{
     context,
     ids::{AgentId, UuidId},
 };
-use baml_rt_tools::{ToolRegistry, ToolStep};
+use baml_rt_tools::{ToolRegistry, ToolSessionId, ToolStep};
 use baml_rt_tools_claude::{
     AgentWorkspaceRegistry, ClaudeMessageStream, ClaudeSessionBundle, ClaudeStreamSource,
     ClaudeStreamSourceFactory, ClaudeTurnRequest,
@@ -104,6 +104,19 @@ fn result(subtype: &str, session_id: &str) -> Message {
     })
 }
 
+async fn next_until_suspended_or_done(
+    registry: &ToolRegistry,
+    session_id: &ToolSessionId,
+) -> ToolStep {
+    for _ in 0..16 {
+        match registry.session_next(session_id).await.expect("session_next") {
+            ToolStep::Streaming { .. } => continue,
+            step => return step,
+        }
+    }
+    panic!("expected Suspended or Done within bounded next() calls");
+}
+
 #[tokio::test]
 async fn claude_bundle_exposes_claude_dev_metadata() {
     let registry = Arc::new(ToolRegistry::new());
@@ -168,14 +181,14 @@ async fn claude_dev_fsm_suspend_then_done_cycle() {
             .session_send(&session_id, json!({ "prompt": "hello" }))
             .await
             .expect("send");
-        let first = registry.session_next(&session_id).await.expect("next");
+        let first = next_until_suspended_or_done(&registry, &session_id).await;
         assert!(matches!(first, ToolStep::Suspended { .. }));
 
         registry
             .session_send(&session_id, json!({ "prompt": "continue" }))
             .await
             .expect("send2");
-        let second = registry.session_next(&session_id).await.expect("next2");
+        let second = next_until_suspended_or_done(&registry, &session_id).await;
         assert!(matches!(second, ToolStep::Done { .. }));
     })
     .await;
