@@ -221,3 +221,42 @@ async fn a2a_sink_surfaces_non_success_status_with_body() {
 
     server.stop().await;
 }
+
+#[tokio::test]
+async fn a2a_sink_rejects_jsonrpc_error_envelope_on_http_200() {
+    async fn error_envelope_handler(
+        State(state): State<CoordinatorMockState>,
+        uri: OriginalUri,
+        Json(payload): Json<Value>,
+    ) -> Json<Value> {
+        state.push_hit(format!("POST {}", uri.0)).await;
+        state.push_request(payload).await;
+        Json(json!([
+            {"jsonrpc":"2.0","id":"1","result":{"final":false}},
+            {"jsonrpc":"2.0","id":"1","error":{"code":-32602,"message":"invalid params"}}
+        ]))
+    }
+
+    let state = CoordinatorMockState::default();
+    let app = Router::new()
+        .route(
+            "/agents/coordinator-agent/default/a2a",
+            post(error_envelope_handler),
+        )
+        .with_state(state.clone());
+    let server = start_http_server(app)
+        .await
+        .expect("start mock coordinator");
+
+    let mut sink = A2aSink::new(server.base_url.clone(), false).expect("a2a sink");
+    let err = sink
+        .deliver(&sample_batch())
+        .await
+        .expect_err("deliver should fail when coordinator returns JSON-RPC error envelope");
+
+    let msg = format!("{err:#}");
+    assert!(msg.contains("JSON-RPC error envelope"));
+    assert!(msg.contains("invalid params"));
+
+    server.stop().await;
+}

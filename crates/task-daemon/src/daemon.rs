@@ -74,9 +74,9 @@ impl TaskDaemon {
 
     /// Runs one poll/extract/deliver cycle.
     ///
-    /// Delivery is intentionally at-most-once: source cursor state is persisted
-    /// immediately after polling and before sink delivery. If sink delivery
-    /// fails, those source messages are not re-polled on the next run.
+    /// Delivery is intentionally at-most-once for successfully interpreted polls:
+    /// source cursor state is persisted after extraction and before sink delivery.
+    /// If sink delivery fails, those source messages are not re-polled on the next run.
     pub async fn run_once(&mut self) -> Result<TaskBatch> {
         let mut state = self.state_store.load().context("loading daemon state")?;
         let poll = self
@@ -84,9 +84,6 @@ impl TaskDaemon {
             .poll(&mut state)
             .await
             .context("polling source")?;
-        self.state_store
-            .save(&state)
-            .context("saving daemon cursor state")?;
 
         let mut batch = match poll.source {
             TaskSourceKind::Slack => self
@@ -117,6 +114,10 @@ impl TaskDaemon {
                 .derived_tasks
                 .retain(|task| !source_state.has_seen_task(&task.key));
         }
+
+        self.state_store
+            .save(&state)
+            .context("saving daemon cursor state")?;
 
         if !batch.derived_tasks.is_empty() || self.emit_empty_batches {
             for sink in &mut self.sinks {
@@ -188,6 +189,8 @@ impl TaskDaemon {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, OnceLock};
+
     use anyhow::{Result, anyhow};
     use async_trait::async_trait;
     use tempfile::tempdir;
@@ -197,6 +200,44 @@ mod tests {
 
     const SOURCE_KEY: &str = "slack:test";
     const CURSOR_TS: &str = "1735689700.000000";
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var(key).ok();
+            // SAFETY: test-only mutation guarded by a process-wide mutex in each test.
+            unsafe { std::env::set_var(key, value) };
+            Self { key, original }
+        }
+
+        fn unset(key: &'static str) -> Self {
+            let original = std::env::var(key).ok();
+            // SAFETY: test-only mutation guarded by a process-wide mutex in each test.
+            unsafe { std::env::remove_var(key) };
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.original.as_deref() {
+                // SAFETY: restoring test-only env state under the same mutex guard.
+                unsafe { std::env::set_var(self.key, value) };
+            } else {
+                // SAFETY: restoring test-only env state under the same mutex guard.
+                unsafe { std::env::remove_var(self.key) };
+            }
+        }
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[derive(Default)]
     struct CursorOnlySource;
@@ -275,5 +316,42 @@ mod tests {
             .source_state(SOURCE_KEY)
             .expect("state should include source entry");
         assert_eq!(source_state.last_seen_ts.as_deref(), Some(CURSOR_TS));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // intentional: env-var mutex serialises test-only env mutation
+    async fn does_not_persist_cursor_when_extraction_fails() {
+        let _env = env_lock().lock().expect("lock env mutation");
+        let _base = EnvVarGuard::set("TASK_DAEMON_LLM_BASE_URL", "http://127.0.0.1:9");
+        let _fallback_base = EnvVarGuard::unset("TASK_DAEMON_LLM_FALLBACK_BASE_URL");
+        let _fallback_key = EnvVarGuard::unset("TASK_DAEMON_LLM_FALLBACK_API_KEY");
+        let _fallback_model = EnvVarGuard::unset("TASK_DAEMON_LLM_FALLBACK_MODEL");
+
+        let temp = tempdir().expect("create temp directory");
+        let state_path = temp.path().join("task-daemon-state.json");
+        let store_for_daemon = StateStore::new(state_path.clone(), 100);
+
+        let mut daemon = TaskDaemon::new(
+            Box::new(CursorOnlySource),
+            TaskExtractor::with_mode(20, ExtractionMode::Llm).expect("llm extractor"),
+            Vec::new(),
+            store_for_daemon,
+            ProjectContext {
+                project_key: "test-project".to_string(),
+                repo_available: false,
+                repo_path: None,
+            },
+        );
+
+        let result = daemon.run_once().await;
+        assert!(result.is_err(), "expected extraction to fail");
+
+        let persisted_state = StateStore::new(state_path, 100)
+            .load()
+            .expect("load persisted state");
+        assert!(
+            persisted_state.source_state(SOURCE_KEY).is_none(),
+            "cursor state must not be persisted when extraction fails"
+        );
     }
 }

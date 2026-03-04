@@ -523,7 +523,7 @@ impl TaskSink for A2aSink {
             .await
             .context("reading coordinator A2A response JSON")?;
 
-        let final_text = extract_final_jsonrpc_text(&responses);
+        let final_text = validate_jsonrpc_responses(&responses)?;
         tracing::info!(
             coordinator_url = %self.coordinator_url,
             response_count = responses.len(),
@@ -573,6 +573,58 @@ fn extract_final_jsonrpc_text(responses: &[Value]) -> Option<String> {
     }
 
     None
+}
+
+fn summarize_jsonrpc_error(response: &Value) -> Option<String> {
+    let error = response.get("error")?;
+    let code = error
+        .get("code")
+        .and_then(Value::as_i64)
+        .map_or_else(|| "?".to_string(), |value| value.to_string());
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown error");
+    let id = response.get("id").and_then(Value::as_str).unwrap_or("?");
+    Some(format!("id={id}, code={code}, message={message}"))
+}
+
+fn has_final_success_result(response: &Value) -> bool {
+    response.get("error").is_none()
+        && response
+            .get("result")
+            .and_then(|result| result.get("final"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+}
+
+/// Validates that coordinator JSON-RPC envelopes contain a final success result
+/// and no explicit error envelopes.
+fn validate_jsonrpc_responses(responses: &[Value]) -> Result<Option<String>> {
+    if responses.is_empty() {
+        return Err(anyhow!(
+            "coordinator A2A response did not contain any JSON-RPC envelopes"
+        ));
+    }
+
+    let errors: Vec<String> = responses
+        .iter()
+        .filter_map(summarize_jsonrpc_error)
+        .collect();
+    if !errors.is_empty() {
+        return Err(anyhow!(
+            "coordinator A2A response included JSON-RPC error envelope(s): {}",
+            errors.join(" | ")
+        ));
+    }
+
+    if !responses.iter().any(has_final_success_result) {
+        return Err(anyhow!(
+            "coordinator A2A response did not include a final successful JSON-RPC result"
+        ));
+    }
+
+    Ok(extract_final_jsonrpc_text(responses))
 }
 
 /// Generates a UUID v4 string without pulling in the uuid crate.
@@ -670,6 +722,39 @@ mod tests {
             json!({"jsonrpc":"2.0","id":"1","result":{"final":false,"message":{"parts":[{"text":"partial"}]}}}),
         ];
         assert!(extract_final_jsonrpc_text(&responses).is_none());
+    }
+
+    #[test]
+    fn validate_jsonrpc_responses_rejects_error_envelopes() {
+        let responses = vec![
+            json!({"jsonrpc":"2.0","id":"1","result":{"final":false}}),
+            json!({"jsonrpc":"2.0","id":"1","error":{"code":-32602,"message":"invalid params"}}),
+        ];
+
+        let err = validate_jsonrpc_responses(&responses).expect_err("expected protocol failure");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("JSON-RPC error envelope"));
+        assert!(msg.contains("invalid params"));
+    }
+
+    #[test]
+    fn validate_jsonrpc_responses_requires_final_success() {
+        let responses = vec![json!({"jsonrpc":"2.0","id":"1","result":{"final":false}})];
+        let err = validate_jsonrpc_responses(&responses).expect_err("expected final result check");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("final successful JSON-RPC result"));
+    }
+
+    #[test]
+    fn validate_jsonrpc_responses_accepts_final_success() {
+        let responses = vec![
+            json!({"jsonrpc":"2.0","id":"1","result":{"final":false}}),
+            json!({"jsonrpc":"2.0","id":"1","result":{"final":true,"message":{"parts":[{"text":"done"}]}}}),
+        ];
+
+        let text =
+            validate_jsonrpc_responses(&responses).expect("expected successful protocol response");
+        assert_eq!(text.as_deref(), Some("done"));
     }
 
     #[test]
