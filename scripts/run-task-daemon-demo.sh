@@ -16,6 +16,8 @@ METRICS_OUT="${TASK_DAEMON_DEMO_METRICS_OUT:-/tmp/task-daemon-demo-metrics.json}
 PROJECT_CONFIG="${TASK_DAEMON_DEMO_PROJECT_CONFIG:-.agentium/task-daemon-projects.json}"
 EXTRACTOR="${TASK_DAEMON_DEMO_EXTRACTOR:-llm}"
 START_COORDINATOR="${TASK_DAEMON_DEMO_START_COORDINATOR:-1}"
+AUTH_MODE="${TASK_DAEMON_DEMO_AUTH:-auto}"
+RESET_STATE="${TASK_DAEMON_DEMO_RESET_STATE:-1}"
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required but not found in PATH" >&2
@@ -33,6 +35,10 @@ if [ -f .env ]; then
   set +a
 fi
 
+if [ "$RESET_STATE" = "1" ]; then
+  rm -f "$STATE_FILE" "$JSONL_OUT" "$RUN_LOG" "$MERMAID_OUT" "$METRICS_OUT"
+fi
+
 if [ "$START_COORDINATOR" = "1" ]; then
   COORDINATOR_DEMO_NO_STREAM=1 \
   COORDINATOR_DEMO_PORT="$COORDINATOR_PORT" \
@@ -40,11 +46,12 @@ if [ "$START_COORDINATOR" = "1" ]; then
   ./scripts/run-coordinator-demo.sh
 fi
 
-echo "Running task-daemon once against #${CHANNEL} with coordinator handoff enabled..." >&2
+echo "Running task-daemon once against ${CHANNEL} (auth=${AUTH_MODE}) with coordinator handoff enabled..." >&2
 
 RUST_LOG="${RUST_LOG:-info}" \
   cargo run -p baml-task-daemon -- run \
     --channel "$CHANNEL" \
+    --auth "$AUTH_MODE" \
     --once \
     --extractor "$EXTRACTOR" \
     --coordinator-url "$COORDINATOR_URL" \
@@ -53,7 +60,7 @@ RUST_LOG="${RUST_LOG:-info}" \
     --state-file "$STATE_FILE" \
     --project-config "$PROJECT_CONFIG" \
     --jsonl-out "$JSONL_OUT" \
-    --no_stdout \
+    --no-stdout \
   2>&1 | tee "$RUN_LOG"
 
 CONTEXT_ID="$((

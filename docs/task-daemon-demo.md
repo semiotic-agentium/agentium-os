@@ -59,11 +59,12 @@ Slack read check (no coordinator dependency):
 ```bash
 cargo run -p baml-task-daemon -- run \
   --channel agentium-eng \
+  --auth user \
   --once \
   --extractor heuristic \
   --state-file /tmp/task-daemon-smoke-state.json \
   --jsonl-out /tmp/task-daemon-smoke.jsonl \
-  --no_stdout
+  --no-stdout
 ```
 
 LLM check (real interpretation path):
@@ -71,11 +72,12 @@ LLM check (real interpretation path):
 ```bash
 cargo run -p baml-task-daemon -- run \
   --channel agentium-eng \
+  --auth user \
   --once \
   --extractor llm \
   --state-file /tmp/task-daemon-llm-state.json \
   --jsonl-out /tmp/task-daemon-llm.jsonl \
-  --no_stdout
+  --no-stdout
 ```
 
 ## One-Command Demo Flow
@@ -91,6 +93,8 @@ This does:
 3. Captures `context_id` from coordinator response logs
 4. Fetches timeline metrics from `GET /contexts/{context_id}/metrics`
 5. Exports mermaid sequence to `/tmp/task-daemon-demo-sequence.mmd`
+
+The script resets prior state/artifacts by default (`TASK_DAEMON_DEMO_RESET_STATE=1`) so repeated runs still read channel history instead of reusing an old cursor.
 
 ## Demo Artifacts
 
@@ -110,6 +114,8 @@ just task-daemon-demo-stop
 ## Useful Overrides
 
 - `TASK_DAEMON_DEMO_CHANNEL` (default `agentium-eng`)
+- `TASK_DAEMON_DEMO_AUTH` (`auto` default, use `user` for private channels)
+- `TASK_DAEMON_DEMO_RESET_STATE` (`1` default; set `0` to reuse cursor/artifacts)
 - `TASK_DAEMON_DEMO_COORDINATOR_PORT` (default `8082`)
 - `TASK_DAEMON_DEMO_COORDINATOR_URL` (default `http://127.0.0.1:<port>`)
 - `TASK_DAEMON_DEMO_PROVENANCE_DB` (default `provenance.db`)
@@ -120,5 +126,6 @@ just task-daemon-demo-stop
 
 1. If OpenRouter is degraded, use local fallback provider (`TASK_DAEMON_LLM_FALLBACK_*`).
 2. If Slack auth fails, rerun OAuth exchange and verify channel access (`#agentium-eng`).
+   - For private channels, set `TASK_DAEMON_DEMO_CHANNEL=<C...>` and `TASK_DAEMON_DEMO_AUTH=user`.
 3. If coordinator boot fails, run `just coordinator-demo-stop` then retry `just task-daemon-demo`.
 4. If context capture fails, inspect `/tmp/task-daemon-demo.log` and `/tmp/coordinator-runner.log`.
