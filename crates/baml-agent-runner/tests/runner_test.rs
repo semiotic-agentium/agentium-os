@@ -1220,7 +1220,7 @@ async fn test_e2e_argument_sketch_two_agents() {
     }
 
     // Real-model latency can exceed two minutes under CI load.
-    let timeout_duration = std::time::Duration::from_secs(180);
+    let timeout_duration = std::time::Duration::from_secs(300);
     let result =
         tokio::time::timeout(timeout_duration, run_argument_sketch_two_agents_body()).await;
     match result {

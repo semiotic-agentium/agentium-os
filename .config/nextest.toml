@@ -57,6 +57,11 @@ test-group = "llm"
 slow-timeout = { period = "120s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "5s" }
 
+# LLM two-agent argument sketch test needs extra time on shared CI runners.
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and test(~test_e2e_argument_sketch_two_agents)'
+slow-timeout = { period = "300s", terminate-after = 2 }
+
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-interceptor) and test(~test_e2e_)'
 test-group = "llm"

@@ -1,5 +1,6 @@
 ---
 source: crates/baml-agent-runner/tests/runner_notion_test.rs
+assertion_line: 439
 expression: normalized_mermaid
 ---
 sequenceDiagram
