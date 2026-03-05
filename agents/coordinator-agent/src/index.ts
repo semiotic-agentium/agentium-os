@@ -295,6 +295,10 @@ function sanitizeUntrustedBlockContent(text: string): string {
     .join("[END UNTRUSTED DATA]");
 }
 
+function wrapUntrustedDataBlock(text: string): string {
+  return `${UNTRUSTED_DATA_BEGIN}\n${sanitizeUntrustedBlockContent(text)}\n${UNTRUSTED_DATA_END}`;
+}
+
 function isLikelyTaskDaemonPrompt(text: string): boolean {
   const normalized = text.toLowerCase();
   return (
@@ -1887,11 +1891,15 @@ function interpolateTemplate(template: string, artifacts: Map<string, NodeArtifa
   return template.replace(/\{\{([\w.]+)\}\}/g, (match, path) => {
     const resolved = resolveArtifactPath(path, artifacts);
     if (resolved === undefined) return match;
-    if (typeof resolved === "string") return resolved.slice(0, MAX_INTERPOLATION_CHARS);
+    if (typeof resolved === "string") {
+      return wrapUntrustedDataBlock(resolved.slice(0, MAX_INTERPOLATION_CHARS));
+    }
     try {
-      return JSON.stringify(resolved).slice(0, MAX_INTERPOLATION_CHARS);
+      return wrapUntrustedDataBlock(
+        JSON.stringify(resolved).slice(0, MAX_INTERPOLATION_CHARS),
+      );
     } catch {
-      return String(resolved).slice(0, MAX_INTERPOLATION_CHARS);
+      return wrapUntrustedDataBlock(String(resolved).slice(0, MAX_INTERPOLATION_CHARS));
     }
   });
 }
@@ -2756,7 +2764,7 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
       return { message: "No clarification was provided. Please resend your request with details." };
     }
 
-    clarificationTurns.push(`- ${userReply}`);
+    clarificationTurns.push(`- ${sanitizeUntrustedBlockContent(userReply)}`);
   }
 
   return {

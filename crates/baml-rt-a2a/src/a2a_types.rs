@@ -400,16 +400,19 @@ pub struct TaskArtifactUpdateEvent {
 #[serde(rename_all = "camelCase")]
 pub enum StreamChunk {
     Task {
+        #[serde(flatten)]
         task: Task,
         #[serde(flatten)]
         extra: HashMap<String, Value>,
     },
     StatusUpdate {
+        #[serde(flatten)]
         status_update: TaskStatusUpdateEvent,
         #[serde(flatten)]
         extra: HashMap<String, Value>,
     },
     ArtifactUpdate {
+        #[serde(flatten)]
         artifact_update: TaskArtifactUpdateEvent,
         #[serde(flatten)]
         extra: HashMap<String, Value>,
@@ -664,9 +667,11 @@ pub struct StreamResponse {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use serde_json::{Value, json};
 
-    use super::StreamChunkView;
+    use super::{StreamChunk, StreamChunkView, Task, TaskState, TaskStatus, TaskStatusUpdateEvent};
 
     #[test]
     fn stream_chunk_view_parses_task_id_from_nested_status_update_alias() {
@@ -744,5 +749,57 @@ mod tests {
         }
         let view = StreamChunkView::new(nested);
         assert!(view.task_id().is_none());
+    }
+
+    #[test]
+    fn stream_chunk_status_update_serializes_without_double_nesting() {
+        let chunk = StreamChunk::status_update(TaskStatusUpdateEvent {
+            task_id: Some(baml_rt_core::ids::TaskId::from_external(
+                baml_rt_core::ids::ExternalId::new("task-123"),
+            )),
+            status: Some(TaskStatus {
+                state: Some(TaskState::String("TASK_STATE_WORKING".to_string())),
+                ..TaskStatus::default()
+            }),
+            ..TaskStatusUpdateEvent::default()
+        });
+        let value = serde_json::to_value(chunk).expect("serializes");
+        assert_eq!(
+            value
+                .get("statusUpdate")
+                .and_then(|v| v.get("taskId"))
+                .and_then(Value::as_str),
+            Some("task-123")
+        );
+        assert!(
+            value
+                .get("statusUpdate")
+                .and_then(|v| v.get("statusUpdate"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn stream_chunk_task_serializes_without_double_nesting() {
+        let chunk = StreamChunk::task(Task {
+            id: Some(baml_rt_core::ids::TaskId::from_external(
+                baml_rt_core::ids::ExternalId::new("task-abc"),
+            )),
+            context_id: None,
+            artifacts: Vec::new(),
+            history: Vec::new(),
+            status: None,
+            metadata: None,
+            extra: HashMap::new(),
+        });
+        let value = serde_json::to_value(chunk).expect("serializes");
+        assert_eq!(
+            value
+                .get("task")
+                .and_then(|v| v.get("id"))
+                .and_then(Value::as_str),
+            Some("task-abc")
+        );
+        assert!(value.get("task").and_then(|v| v.get("task")).is_none());
     }
 }

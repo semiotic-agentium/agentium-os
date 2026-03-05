@@ -274,11 +274,38 @@ fn merge_outputs(outputs: Vec<InternalA2aNextOutput>) -> InternalA2aNextOutput {
     let mut completion = None;
     for out in outputs {
         chunks.extend(out.chunks);
-        if matches!(out.completion, Some(InternalA2aCompletion::InputRequired)) {
-            completion = Some(InternalA2aCompletion::InputRequired);
+        match out.completion {
+            Some(InternalA2aCompletion::InputRequired) => {
+                completion = Some(InternalA2aCompletion::InputRequired);
+            }
+            Some(InternalA2aCompletion::Failed)
+                if !matches!(completion, Some(InternalA2aCompletion::InputRequired)) =>
+            {
+                completion = Some(InternalA2aCompletion::Failed);
+            }
+            Some(InternalA2aCompletion::Done) if completion.is_none() => {
+                completion = Some(InternalA2aCompletion::Done);
+            }
+            _ => {}
         }
     }
     InternalA2aNextOutput { chunks, completion }
+}
+
+fn completion_failure_message(output: &InternalA2aNextOutput) -> String {
+    for chunk in &output.chunks {
+        if let Some(message) = &chunk.message {
+            for part in &message.parts {
+                if let Some(text) = &part.text {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        return trimmed.to_string();
+                    }
+                }
+            }
+        }
+    }
+    "system/internal_a2a stream failed".to_string()
 }
 
 #[async_trait]
@@ -292,6 +319,8 @@ impl ToolSession for A2aSession {
         }
         let parts = parse_send_input(input)
             .map_err(|msg| ToolSessionError::Tool(ToolFailure::invalid_input(msg)))?;
+        self.seen_output = false;
+        self.empty_stream_notice_emitted = false;
         if let Some(rx) = &self.output_rx
             && rx.is_closed()
             && rx.is_empty()
@@ -362,9 +391,13 @@ impl ToolSession for A2aSession {
                             status_update: None,
                             artifact_update: None,
                         }],
-                        completion: None,
+                        completion: Some(InternalA2aCompletion::Failed),
                     };
-                    let _ = tx.send(fallback).await;
+                    if tx.send(fallback).await.is_err() {
+                        tracing::warn!(
+                            "system/internal_a2a failed to emit synthetic error chunk (receiver dropped)"
+                        );
+                    }
                 }
             }
             tx.close();
@@ -392,6 +425,11 @@ impl ToolSession for A2aSession {
             ) {
                 self.output_rx = None;
                 ToolStep::Suspended { output: value }
+            } else if matches!(merged.completion, Some(InternalA2aCompletion::Failed)) {
+                self.output_rx = None;
+                ToolStep::Error {
+                    error: ToolFailure::execution_failed(completion_failure_message(&merged)),
+                }
             } else {
                 ToolStep::Streaming { output: value }
             };
@@ -418,6 +456,13 @@ impl ToolSession for A2aSession {
                     ) {
                         self.output_rx = None;
                         ToolStep::Suspended { output: value }
+                    } else if matches!(merged.completion, Some(InternalA2aCompletion::Failed)) {
+                        self.output_rx = None;
+                        ToolStep::Error {
+                            error: ToolFailure::execution_failed(completion_failure_message(
+                                &merged,
+                            )),
+                        }
                     } else {
                         ToolStep::Streaming { output: value }
                     };

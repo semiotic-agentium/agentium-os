@@ -1663,6 +1663,12 @@ impl A2aAgent {
                         // Store only (rx, resume_tx). Dropping response_tx closes the client stream so collect_stream returns and the client can send the next turn.
                         suspended = Some((rx, resume_tx));
                     }
+                    {
+                        let mut sessions = self.stream_sessions.lock().await;
+                        if let Some(session) = sessions.get_mut(&session_key) {
+                            session.relay_tx = None;
+                        }
+                    }
                     continue;
                 }
                 Some(

@@ -78,6 +78,7 @@ pub enum InternalA2aCompletion {
     #[default]
     Done,
     InputRequired,
+    Failed,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]

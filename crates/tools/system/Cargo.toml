@@ -19,6 +19,7 @@ tokio = { workspace = true }
 futures-util = { workspace = true }
 uuid = { workspace = true }
 async-channel = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 baml-tools-calculator = { path = "../calculator" }

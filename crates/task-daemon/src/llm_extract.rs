@@ -903,12 +903,52 @@ fn parse_interpretation_text(text: &str) -> Result<LlmInterpretationEnvelope> {
 }
 
 fn extract_json_slice(text: &str) -> Option<&str> {
-    let start = text.find('{')?;
-    let end = text.rfind('}')?;
-    if end < start.saturating_add(1) {
-        return None;
+    let mut depth = 0usize;
+    let mut start: Option<usize> = None;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in text.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match ch {
+                '\\' => escaped = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    start = Some(idx);
+                }
+                depth += 1;
+            }
+            '}' => {
+                if depth == 0 {
+                    continue;
+                }
+                depth -= 1;
+                if depth == 0
+                    && let Some(start_idx) = start.take()
+                {
+                    let candidate = text.get(start_idx..=idx)?;
+                    if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
+                        return Some(candidate);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
-    text.get(start..=end)
+
+    None
 }
 
 fn truncate_for_error(text: &str) -> String {

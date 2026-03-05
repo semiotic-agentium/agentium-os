@@ -131,8 +131,10 @@ mod tests {
 
         let chunk = relay_rx.recv().await.expect("one relay chunk");
         let su = chunk.get("statusUpdate").expect("statusUpdate");
-        let ev = su.get("statusUpdate").or_else(|| su.get("status_update"));
-        let ev = ev.expect("statusUpdate event body");
+        let ev = su
+            .get("statusUpdate")
+            .or_else(|| su.get("status_update"))
+            .unwrap_or(su);
         let state_str = ev
             .get("status")
             .and_then(|s| s.get("state"))

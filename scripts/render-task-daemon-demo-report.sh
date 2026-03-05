@@ -134,6 +134,12 @@ MERMAID_SOURCE_HTML="$(printf '%s' "$MERMAID_SOURCE" | jq -Rs -r '@html')"
 
 METRICS_ENDPOINT="${COORDINATOR_URL}/contexts/${CONTEXT_ID}/metrics"
 MERMAID_ENDPOINT="${COORDINATOR_URL}/contexts/${CONTEXT_ID}/mermaid"
+CONTEXT_ID_HTML="$(printf '%s' "$CONTEXT_ID" | jq -Rs -r '@html')"
+CHANNEL_HTML="$(printf '%s' "$CHANNEL" | jq -Rs -r '@html')"
+EXTRACTOR_HTML="$(printf '%s' "$EXTRACTOR" | jq -Rs -r '@html')"
+COORDINATOR_URL_HTML="$(printf '%s' "$COORDINATOR_URL" | jq -Rs -r '@html')"
+METRICS_ENDPOINT_HTML="$(printf '%s' "$METRICS_ENDPOINT" | jq -Rs -r '@html')"
+MERMAID_ENDPOINT_HTML="$(printf '%s' "$MERMAID_ENDPOINT" | jq -Rs -r '@html')"
 
 mkdir -p "$(dirname "$REPORT_OUT")"
 cat >"$REPORT_OUT" <<EOF
@@ -311,11 +317,12 @@ cat >"$REPORT_OUT" <<EOF
         <h1>Slack to Action Demo</h1>
         <p>From project conversation to clear, prioritized actions with full traceability.</p>
         <div class="meta">
-          <div>Context: <code>${CONTEXT_ID}</code></div>
-          <div>Channel: <code>${CHANNEL}</code></div>
-          <div>Interpretation mode: <code>${EXTRACTOR}</code></div>
-          <div class="links">Metrics: <a href="${METRICS_ENDPOINT}">${METRICS_ENDPOINT}</a></div>
-          <div class="links">Mermaid: <a href="${MERMAID_ENDPOINT}">${MERMAID_ENDPOINT}</a></div>
+          <div>Context: <code>${CONTEXT_ID_HTML}</code></div>
+          <div>Channel: <code>${CHANNEL_HTML}</code></div>
+          <div>Interpretation mode: <code>${EXTRACTOR_HTML}</code></div>
+          <div>Coordinator URL: <code>${COORDINATOR_URL_HTML}</code></div>
+          <div class="links">Metrics: <a href="${METRICS_ENDPOINT_HTML}">${METRICS_ENDPOINT_HTML}</a></div>
+          <div class="links">Mermaid: <a href="${MERMAID_ENDPOINT_HTML}">${MERMAID_ENDPOINT_HTML}</a></div>
         </div>
         <h3 style="margin-top:14px;">Executive Summary</h3>
         <p>${EXEC_SUMMARY_HTML}</p>

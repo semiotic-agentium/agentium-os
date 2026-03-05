@@ -28,6 +28,7 @@ SPECIALIST_PROFILE="${TASK_DAEMON_DEMO_SPECIALIST_PROFILE:-clickup}"
 CONTEXT_ID_OVERRIDE="${TASK_DAEMON_DEMO_CONTEXT_ID:-}"
 COORDINATOR_LOG="${TASK_DAEMON_DEMO_COORDINATOR_LOG:-/tmp/coordinator-runner.log}"
 SKIP_POLL="${TASK_DAEMON_DEMO_SKIP_POLL:-0}"
+ALLOW_MISSING_CONTEXT="${TASK_DAEMON_DEMO_ALLOW_MISSING_CONTEXT:-0}"
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "jq is required but not found in PATH" >&2
@@ -141,7 +142,11 @@ if [ -z "$CONTEXT_ID" ]; then
   echo "Inspect log: $RUN_LOG" >&2
   echo "Inspect coordinator log: $COORDINATOR_LOG" >&2
   echo "Coordinator may still have processed the handoff; check runner log for details." >&2
-  exit 0
+  if [ "$ALLOW_MISSING_CONTEXT" = "1" ]; then
+    echo "Continuing because TASK_DAEMON_DEMO_ALLOW_MISSING_CONTEXT=1." >&2
+    exit 0
+  fi
+  exit 1
 fi
 
 echo "Captured context id: $CONTEXT_ID" >&2
