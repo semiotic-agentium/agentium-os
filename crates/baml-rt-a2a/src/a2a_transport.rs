@@ -22,8 +22,8 @@ use baml_rt_provenance::{
     ProvenanceWriter,
 };
 use baml_rt_quickjs::{
-    BamlRuntimeManager, QuickJSBridge, QuickJSConfig, baml_execution::ConversationContextProvider,
-    invoke_tool_handover,
+    BamlRuntimeManager, BridgeHandle, QuickJSBridge, QuickJSConfig,
+    baml_execution::ConversationContextProvider, invoke_tool_handover,
 };
 use baml_rt_tools::{
     ToolFailure, ToolHandler, ToolName, ToolRegistry, ToolSession, ToolSessionError, ToolTypeSpec,
@@ -389,7 +389,7 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
 pub struct A2aAgent {
     agent_id: baml_rt_core::ids::AgentId,
     runtime: Arc<Mutex<BamlRuntimeManager>>,
-    bridge: Arc<Mutex<QuickJSBridge>>,
+    bridge_handle: Arc<BridgeHandle>,
     task_store: Arc<dyn TaskStoreBackend>,
     #[allow(dead_code)] // passed to router at build; clone does not use the field directly
     result_pipeline: Arc<dyn ResultStoragePipeline>,
@@ -423,7 +423,12 @@ impl A2aAgent {
 
     /// Access the underlying JS bridge.
     pub fn bridge(&self) -> Arc<Mutex<QuickJSBridge>> {
-        self.bridge.clone()
+        self.bridge_handle.bridge().clone()
+    }
+
+    /// Access the bridge handle for handover dispatch.
+    pub fn bridge_handle(&self) -> Arc<BridgeHandle> {
+        self.bridge_handle.clone()
     }
 
     /// Access the task store for this agent instance.
@@ -443,7 +448,7 @@ impl A2aAgent {
 
     /// Evaluate JavaScript in the agent runtime.
     pub async fn evaluate_js(&self, code: &str) -> Result<Value> {
-        let mut bridge = self.bridge.lock().await;
+        let mut bridge = self.bridge_handle.bridge().lock().await;
         bridge.evaluate(None, code).await
     }
 
@@ -458,7 +463,7 @@ impl A2aAgent {
         let name = name.into();
         let parsed = ToolName::parse(&name)?;
         {
-            let mut bridge = self.bridge.lock().await;
+            let mut bridge = self.bridge_handle.bridge().lock().await;
             bridge.register_js_tool(&name, js_function_code).await?;
         }
 
@@ -491,7 +496,7 @@ impl A2aAgent {
         };
 
         let handler: Arc<dyn ToolHandler> = Arc::new(JsToolHandler {
-            bridge: self.bridge.clone(),
+            handle: self.bridge_handle.clone(),
             tool_name: name,
             metadata: metadata.clone(),
             agent_id: self.agent_id.clone(),
@@ -566,7 +571,7 @@ enum RuntimeConfig {
 
 /// Bridge configuration: either provided or auto-created.
 enum BridgeConfig {
-    Provided(Arc<Mutex<QuickJSBridge>>),
+    Provided(Arc<BridgeHandle>),
     AutoCreate,
 }
 
@@ -661,10 +666,10 @@ impl A2aAgentBuilder {
         self
     }
 
-    /// Provide a shared QuickJS bridge (overrides auto-creation).
+    /// Provide a shared bridge handle (overrides auto-creation).
     /// Requires a runtime handle to be provided as well.
-    pub fn with_bridge_handle(mut self, bridge: Arc<Mutex<QuickJSBridge>>) -> Self {
-        self.bridge = BridgeConfig::Provided(bridge);
+    pub fn with_bridge_handle(mut self, handle: Arc<BridgeHandle>) -> Self {
+        self.bridge = BridgeConfig::Provided(handle);
         self
     }
 
@@ -765,10 +770,10 @@ impl A2aAgentBuilderWithEffectEmitter {
         self
     }
 
-    /// Provide a shared QuickJS bridge (overrides auto-creation).
+    /// Provide a shared bridge handle (overrides auto-creation).
     /// Requires a runtime handle to be provided as well.
-    pub fn with_bridge_handle(mut self, bridge: Arc<Mutex<QuickJSBridge>>) -> Self {
-        self.bridge = BridgeConfig::Provided(bridge);
+    pub fn with_bridge_handle(mut self, handle: Arc<BridgeHandle>) -> Self {
+        self.bridge = BridgeConfig::Provided(handle);
         self
     }
 
@@ -865,10 +870,10 @@ impl A2aAgentBuilderWithEffectEmitter {
 
         // Resolve bridge: provided or auto-created
         tracing::debug!("A2aAgentBuilder::build: Resolving bridge");
-        let bridge = match self.bridge {
-            BridgeConfig::Provided(bridge) => {
-                tracing::debug!("A2aAgentBuilder::build: Using provided bridge");
-                bridge
+        let bridge_handle: Arc<BridgeHandle> = match self.bridge {
+            BridgeConfig::Provided(handle) => {
+                tracing::debug!("A2aAgentBuilder::build: Using provided bridge handle");
+                handle
             }
             BridgeConfig::AutoCreate => {
                 tracing::info!(
@@ -894,13 +899,14 @@ impl A2aAgentBuilderWithEffectEmitter {
                         error = e
                     )))?;
                 tracing::info!("A2aAgentBuilder::build: QuickJS bridge created successfully");
-                Arc::new(Mutex::new(bridge))
+                let raw_bridge = Arc::new(Mutex::new(bridge));
+                Arc::new(BridgeHandle::new(raw_bridge, &agent_id.to_string()))
             }
         };
 
         // Bridge promise polling requires effect liveness wiring.
         {
-            let mut bridge_guard = bridge.lock().await;
+            let mut bridge_guard = bridge_handle.bridge().lock().await;
             bridge_guard.set_effect_liveness(self.effect_emitter.clone());
         }
 
@@ -914,7 +920,7 @@ impl A2aAgentBuilderWithEffectEmitter {
             tracing::debug!(
                 "A2aAgentBuilder::build: Registering BAML functions and/or evaluating init_js"
             );
-            let mut bridge_guard = bridge.lock().await;
+            let mut bridge_guard = bridge_handle.bridge().lock().await;
             if self.register_baml_functions {
                 tracing::debug!("A2aAgentBuilder::build: Calling register_baml_functions()");
                 // INVARIANT L1: Bridge initialization must terminate within bounded time
@@ -1016,11 +1022,11 @@ impl A2aAgentBuilderWithEffectEmitter {
             repository,
             recorder,
             update_queue,
-            bridge.clone(),
+            bridge_handle.bridge().clone(),
             emitter.clone(),
         ));
         let js_invoker: Arc<dyn crate::request_router::JsInvoker> =
-            Arc::new(QuickJsInvoker::new(bridge.clone()));
+            Arc::new(QuickJsInvoker::new(bridge_handle.clone()));
         // Effect subscribers before router: AutoWorkingStatusSubscriber (tasks.subscribe + store); LiveStreamWorkingRelay (HTTP message.sendStream only).
         let effect_emitter = self.effect_emitter.clone();
         effect_emitter
@@ -1085,7 +1091,7 @@ impl A2aAgentBuilderWithEffectEmitter {
         let agent = A2aAgent {
             agent_id,
             runtime,
-            bridge,
+            bridge_handle,
             task_store,
             result_pipeline,
             live_result_pipeline: inner_pipeline,
@@ -1844,7 +1850,7 @@ impl A2aAgent {
 }
 
 struct JsToolHandler {
-    bridge: Arc<Mutex<QuickJSBridge>>,
+    handle: Arc<BridgeHandle>,
     tool_name: String,
     metadata: ToolFunctionMetadata,
     agent_id: AgentId,
@@ -1874,7 +1880,7 @@ impl ToolHandler for JsToolHandler {
         Ok(Box::new(JsToolSession {
             ctx,
             scope: invocation_scope,
-            bridge: self.bridge.clone(),
+            handle: self.handle.clone(),
             tool_name: self.tool_name.clone(),
             input: None,
             completed: false,
@@ -1885,7 +1891,7 @@ impl ToolHandler for JsToolHandler {
 struct JsToolSession {
     ctx: ToolSessionContext,
     scope: InvocationScope,
-    bridge: Arc<Mutex<QuickJSBridge>>,
+    handle: Arc<BridgeHandle>,
     tool_name: String,
     input: Option<Value>,
     completed: bool,
@@ -1914,7 +1920,7 @@ impl ToolSession for JsToolSession {
             )))
         })?;
         let result: Value = invoke_tool_handover(
-            self.bridge.clone(),
+            &self.handle,
             self.scope.clone(),
             self.tool_name.clone(),
             input,
