@@ -11,6 +11,7 @@ COORDINATOR_PACKAGE_FILE="${COORDINATOR_DEMO_PACKAGE:-/tmp/coordinator-agent.tar
 NOTION_PACKAGE_FILE="${COORDINATOR_DEMO_NOTION_PACKAGE:-/tmp/notion-agent.tar.gz}"
 CLICKUP_PACKAGE_FILE="${COORDINATOR_DEMO_CLICKUP_PACKAGE:-/tmp/clickup-agent.tar.gz}"
 INCLUDE_CLICKUP="${COORDINATOR_DEMO_INCLUDE_CLICKUP:-0}"
+INCLUDE_NOTION="${COORDINATOR_DEMO_INCLUDE_NOTION:-1}"
 STREAM_FILE="${COORDINATOR_DEMO_STREAM:-/tmp/coordinator-demo-sse.log}"
 PROVENANCE_DB="${COORDINATOR_DEMO_PROVENANCE_DB:-provenance.db}"
 ENTRY_AGENT="${COORDINATOR_DEMO_ENTRY_AGENT:-coordinator-agent}"
@@ -28,13 +29,16 @@ if [ -f .env ]; then
 fi
 
 cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- \
-  package --agent-dir agents/notion-agent --output "$NOTION_PACKAGE_FILE"
-
-cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- \
   package --agent-dir agents/coordinator-agent --output "$COORDINATOR_PACKAGE_FILE"
 
-RUNNER_PACKAGES=("$COORDINATOR_PACKAGE_FILE" "$NOTION_PACKAGE_FILE")
-LOADED_AGENTS=("coordinator-agent" "notion-agent")
+RUNNER_PACKAGES=("$COORDINATOR_PACKAGE_FILE")
+LOADED_AGENTS=("coordinator-agent")
+if [ "$INCLUDE_NOTION" = "1" ]; then
+  cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- \
+    package --agent-dir agents/notion-agent --output "$NOTION_PACKAGE_FILE"
+  RUNNER_PACKAGES+=("$NOTION_PACKAGE_FILE")
+  LOADED_AGENTS+=("notion-agent")
+fi
 if [ "$INCLUDE_CLICKUP" = "1" ]; then
   cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- \
     package --agent-dir agents/clickup-agent --output "$CLICKUP_PACKAGE_FILE"

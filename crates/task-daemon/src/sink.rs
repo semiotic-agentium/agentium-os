@@ -676,6 +676,19 @@ fn has_final_success_result(response: &Value) -> bool {
             .unwrap_or(false)
 }
 
+fn has_input_required_status(response: &Value) -> bool {
+    const POINTERS: [&str; 3] = [
+        "/result/task/status/state",
+        "/result/chunk/task/status/state",
+        "/result/status/state",
+    ];
+
+    POINTERS.iter().any(|pointer| {
+        pointer_str(response, pointer)
+            .is_some_and(|state| state.eq_ignore_ascii_case("TASK_STATE_INPUT_REQUIRED"))
+    })
+}
+
 /// Validates that coordinator JSON-RPC envelopes contain a final success result
 /// and no explicit error envelopes.
 fn validate_jsonrpc_responses(responses: &[Value]) -> Result<Option<String>> {
@@ -696,7 +709,15 @@ fn validate_jsonrpc_responses(responses: &[Value]) -> Result<Option<String>> {
         ));
     }
 
-    if !responses.iter().any(has_final_success_result) {
+    let has_final = responses.iter().any(has_final_success_result);
+    if !has_final {
+        if responses.iter().any(has_input_required_status) {
+            tracing::info!(
+                "coordinator A2A response ended in TASK_STATE_INPUT_REQUIRED without final result"
+            );
+            return Ok(extract_final_jsonrpc_text(responses));
+        }
+
         return Err(anyhow!(
             "coordinator A2A response did not include a final successful JSON-RPC result"
         ));
@@ -887,6 +908,27 @@ mod tests {
         let text =
             validate_jsonrpc_responses(&responses).expect("expected successful protocol response");
         assert_eq!(text.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn validate_jsonrpc_responses_accepts_input_required_without_final() {
+        let responses = vec![json!({
+            "jsonrpc":"2.0",
+            "id":"1",
+            "result":{
+                "final":false,
+                "chunk":{
+                    "task":{
+                        "id":"task-1",
+                        "status":{"state":"TASK_STATE_INPUT_REQUIRED"}
+                    }
+                }
+            }
+        })];
+
+        let text = validate_jsonrpc_responses(&responses)
+            .expect("input-required terminal state should be accepted");
+        assert!(text.is_none());
     }
 
     #[test]

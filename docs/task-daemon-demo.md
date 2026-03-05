@@ -6,7 +6,8 @@ This runbook is optimized for a high-reliability leadership demo with this flow:
 2. Interpret discussion with LLM (project-aware)
 3. Handoff typed interpretation payload to coordinator over A2A
 4. Show provenance timeline (`/contexts/{id}/metrics`)
-5. Show provenance mermaid sequence export
+5. Show provenance sequence visuals (Mermaid + SVG)
+6. Show a concise scoreboard for leadership
 
 ## Demo Outcome
 
@@ -19,6 +20,7 @@ In `.env`:
 - `SLACK_BOT_TOKEN` (or `SLACK_USER_TOKEN`)
 - `SLACK_WORKSPACE_URL`
 - `OPENROUTER_API_KEY` (primary)
+- `CLICKUP_API_KEY` (required for default ClickUp-specialist profile)
 - Optional local fallback:
   - `TASK_DAEMON_LLM_FALLBACK_BASE_URL=http://localhost:1234/v1`
   - `TASK_DAEMON_LLM_FALLBACK_MODEL=<model-name>`
@@ -89,10 +91,15 @@ just task-daemon-demo
 This does:
 
 1. Starts coordinator runner with file-backed provenance
+   - Default specialist profile is `clickup` (`clickup-agent` on, `notion-agent` off)
 2. Runs task-daemon once with `--a2a-live --emit-empty`
-3. Captures `context_id` from coordinator response logs
+3. Captures `context_id` from task-daemon logs (fallback: coordinator log)
 4. Fetches timeline metrics from `GET /contexts/{context_id}/metrics`
-5. Exports mermaid sequence to `/tmp/task-daemon-demo-sequence.mmd`
+5. Exports sequence to Mermaid (`.mmd`) and Graphviz DOT (`.dot`)
+6. Builds a stage DOT view (noise-reduced) for presentation
+7. Renders SVG from stage DOT when Graphviz is installed
+8. Writes a scoreboard markdown summary
+9. Writes a stage-ready HTML demo report
 
 The script resets prior state/artifacts by default (`TASK_DAEMON_DEMO_RESET_STATE=1`) so repeated runs still read channel history instead of reusing an old cursor.
 
@@ -103,7 +110,52 @@ Default outputs:
 - Task-daemon JSONL: `/tmp/task-daemon-demo-batch.jsonl`
 - Task-daemon log: `/tmp/task-daemon-demo.log`
 - Metrics timeline JSON: `/tmp/task-daemon-demo-metrics.json`
-- Mermaid diagram: `/tmp/task-daemon-demo-sequence.mmd`
+- Mermaid sequence: `/tmp/task-daemon-demo-sequence.mmd`
+- DOT graph (raw): `/tmp/task-daemon-demo-sequence.dot`
+- DOT graph (stage): `/tmp/task-daemon-demo-sequence-stage.dot`
+- SVG graph (stage): `/tmp/task-daemon-demo-sequence.svg` (if `dot` is installed)
+- Scoreboard summary: `/tmp/task-daemon-demo-scoreboard.md`
+- Stage report: `/tmp/task-daemon-demo-report.html`
+
+## Visual Feedback Loop (Do Not Skip)
+
+After `just task-daemon-demo`, review visuals in this order:
+
+1. Open stage report (primary demo view):
+
+```bash
+open /tmp/task-daemon-demo-report.html
+```
+
+2. Open scoreboard and read the headline:
+
+```bash
+cat /tmp/task-daemon-demo-scoreboard.md
+```
+
+3. Open SVG graph for structure (agents, tools, call chain):
+
+```bash
+open /tmp/task-daemon-demo-sequence.svg
+```
+
+4. Open Mermaid sequence for timing narrative:
+
+```bash
+code /tmp/task-daemon-demo-sequence.mmd
+```
+
+5. Optional: if SVG is too dense, regenerate a focused graph for the same context:
+
+```bash
+cargo run -p baml-rt-provenance --features cli --bin graph_exporter -- \
+  --db provenance.db \
+  --context-id <context-id> \
+  --simplify \
+  --format dot \
+  --output /tmp/task-daemon-demo-focused.dot
+dot -Tsvg /tmp/task-daemon-demo-focused.dot -o /tmp/task-daemon-demo-focused.svg
+```
 
 ## Stop / Cleanup
 
@@ -120,7 +172,19 @@ just task-daemon-demo-stop
 - `TASK_DAEMON_DEMO_COORDINATOR_URL` (default `http://127.0.0.1:<port>`)
 - `TASK_DAEMON_DEMO_PROVENANCE_DB` (default `provenance.db`)
 - `TASK_DAEMON_DEMO_EXTRACTOR` (`llm` default)
+- `TASK_DAEMON_DEMO_MAX_CANDIDATES` (default `4`; lower values reduce coordinator latency)
 - `TASK_DAEMON_DEMO_START_COORDINATOR` (`1` default)
+- `TASK_DAEMON_DEMO_CONTEXT_ID` (optional explicit context id for post-run export)
+- `TASK_DAEMON_DEMO_SKIP_POLL` (`0` default; set `1` to export visuals only)
+- `TASK_DAEMON_DEMO_SPECIALIST_PROFILE` (default `clickup`; options: `clickup`, `notion`, `both`, `none`)
+- `TASK_DAEMON_STAGE_DOT_EXCLUDE_PREFIXES` (optional stage graph filter; default removes `task_state: message_processing: tool_args:`)
+- `COORDINATOR_DEMO_INCLUDE_CLICKUP` / `COORDINATOR_DEMO_INCLUDE_NOTION` (advanced override for specialist loading)
+
+Note: If no usable specialist is available for the request, coordinator may return
+`TASK_STATE_INPUT_REQUIRED` for clarification. The demo sink treats this as a successful handoff state.
+
+Latency note: coordinator handoff time is mostly LLM time. If the run feels slow, reduce
+`TASK_DAEMON_DEMO_MAX_CANDIDATES` (for example `2` or `3`) to shrink workflow breadth.
 
 ## Failure Plan
 
@@ -129,3 +193,4 @@ just task-daemon-demo-stop
    - For private channels, set `TASK_DAEMON_DEMO_CHANNEL=<C...>` and `TASK_DAEMON_DEMO_AUTH=user`.
 3. If coordinator boot fails, run `just coordinator-demo-stop` then retry `just task-daemon-demo`.
 4. If context capture fails, inspect `/tmp/task-daemon-demo.log` and `/tmp/coordinator-runner.log`.
+5. If visual artifacts are missing, rerun export only using `TASK_DAEMON_DEMO_CONTEXT_ID=<ctx-id> TASK_DAEMON_DEMO_SKIP_POLL=1 TASK_DAEMON_DEMO_START_COORDINATOR=0 TASK_DAEMON_DEMO_RESET_STATE=0 just task-daemon-demo`.

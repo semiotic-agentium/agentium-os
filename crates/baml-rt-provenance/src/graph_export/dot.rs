@@ -60,7 +60,7 @@ pub fn render_dot(graph: &ExportedGraph, options: &DotOptions) -> String {
     let _ = writeln!(out, "    rankdir=TB;");
     let _ = writeln!(
         out,
-        "    node [fontname=\"Helvetica\", fontsize=10, style=filled];"
+        "    node [fontname=\"Helvetica\", fontsize=10, style=filled, fontcolor=\"#0f172a\"];"
     );
     let _ = writeln!(out, "    edge [fontname=\"Helvetica\", fontsize=9];");
     let _ = writeln!(out);
@@ -127,8 +127,8 @@ fn dot_node_attrs(label: &str) -> (&'static str, &'static str) {
             | GraphNodeLabel::MessageProcessing
             | GraphNodeLabel::TaskExecution
             | GraphNodeLabel::AgentBoot,
-        ) => ("ellipse", "#1a1a2e"),
-        Some(GraphNodeLabel::AgentRuntimeInstance) => ("hexagon", "#16213e"),
+        ) => ("ellipse", "#dbeafe"),
+        Some(GraphNodeLabel::AgentRuntimeInstance) => ("hexagon", "#e2e8f0"),
         Some(
             GraphNodeLabel::Message
             | GraphNodeLabel::LlmPrompt
@@ -138,8 +138,8 @@ fn dot_node_attrs(label: &str) -> (&'static str, &'static str) {
             | GraphNodeLabel::Artifact
             | GraphNodeLabel::AgentArchive
             | GraphNodeLabel::PromptRejected,
-        ) => ("box", "#0f3460"),
-        None => ("box", "#333333"),
+        ) => ("box", "#ecfeff"),
+        None => ("box", "#f1f5f9"),
     }
 }
 
