@@ -1184,16 +1184,8 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
                 });
             }
         }
-        ProvEventData::MessageReceived { role, content, .. }
-        | ProvEventData::MessageSent { role, content, .. } => {
+        ProvEventData::MessageReceived { role, .. } | ProvEventData::MessageSent { role, .. } => {
             canonical_message_role(event, role)?;
-            if content.iter().all(|line| line.trim().is_empty()) {
-                return Err(ProvenanceError::InvalidEvent {
-                    event_id: event.id().as_str().to_string(),
-                    reason: "message content must include at least one non-empty text part"
-                        .to_string(),
-                });
-            }
         }
         _ => {}
     }

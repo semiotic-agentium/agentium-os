@@ -323,13 +323,18 @@ impl BamlExecutor {
                             return Err(e);
                         }
                         Ok(None) => {
-                            // Defer: manager will run execute_tool_from_baml_result_or_value (e.g.
-                            // session plans). Do NOT call process_trace_events here — it always
-                            // passes Ok to the interceptor, so we'd write Success. The real outcome
-                            // (Success or Failure from plan extraction/execution) comes from the
-                            // effect completion. If we notified here, we'd race with the correct
-                            // outcome and risk showing Success in the sequence diagram when the
-                            // plan had empty steps.
+                            // No immediate tool execution. Notify interceptors now for
+                            // the trace events (process_trace_events), then return a
+                            // completion handle so the caller can finalise the effect
+                            // outcome after execute_tool_from_baml_result_or_value.
+                            if let Some(ref collector) = collector
+                                && let Err(e) = collector.process_trace_events(scope).await
+                            {
+                                tracing::warn!(
+                                    error = ?e,
+                                    "Failed to process trace events for LLM interception"
+                                );
+                            }
                             let handle = collector.as_ref().map(|c| {
                                 BamlLLMCollector::completion_handle(
                                     c.clone(),

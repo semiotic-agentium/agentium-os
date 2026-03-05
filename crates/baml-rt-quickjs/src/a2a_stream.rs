@@ -297,9 +297,21 @@ async fn run_stream_same_thread(
             }
             if has_final {
                 guard.finalize_a2a_stream_invocation(session_id).await;
+                // Only emit COMPLETED when the triggering chunk doesn't already carry a
+                // terminal state (e.g. FAILED); avoids contradicting FAILED with COMPLETED.
+                let last_has_state = all.last().and_then(chunk_state).is_some();
+                let payload = if last_has_state {
+                    Value::Null
+                } else {
+                    make_channel_closed_completion_chunk(
+                        all.last(),
+                        &scope,
+                        StreamCompletion::SemanticFinal,
+                    )
+                };
                 let _ = tx
                     .send(StreamOutput::Terminal(
-                        Value::Null,
+                        payload,
                         StreamCompletion::SemanticFinal,
                     ))
                     .await;
@@ -578,9 +590,10 @@ impl StreamCollectorContext {
             .await;
 
         if let Some(completion) = completion {
-            // When channel closes or times out without explicit terminal yield, emit a completion
-            // chunk so provenance records task_execution_ended. The collector knows the stream
-            // ended; this is canonical, not synthetic.
+            // Emit a completion chunk so provenance records task_execution_ended. The collector
+            // knows the stream ended; this is canonical, not synthetic.
+            // For SemanticFinal, only emit COMPLETED when the last chunk doesn't already carry
+            // a terminal state (COMPLETED/FAILED); otherwise the duplicate would contradict FAILED.
             let last_state = self.all.last().and_then(chunk_state);
             let last_has_terminal_state = matches!(
                 last_state.as_deref(),

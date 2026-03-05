@@ -774,17 +774,23 @@ impl ToolSession for ClaudeSession {
     async fn next(&mut self) -> std::result::Result<ToolStep, ToolSessionError> {
         self.ensure_open()?;
         let session_id_str = self.ctx.session_id.to_string();
-        let next_span = spans::session_next(&session_id_str);
-        let _next_guard = next_span.entered();
-
-        if let Some(item) = self.pending.pop_front() {
-            self.pending.push_front(item);
-            tracing::debug!(
-                session_id = %session_id_str,
-                "claude next: serving from pending",
-            );
-        } else if let Some(rx) = &self.output_rx {
-            drop(_next_guard);
+        // Determine whether we need to block-receive from the channel.
+        // The span guard is !Send, so we must drop it before any .await.
+        let needs_recv = {
+            let next_span = spans::session_next(&session_id_str);
+            let _next_guard = next_span.entered();
+            if let Some(item) = self.pending.pop_front() {
+                self.pending.push_front(item);
+                tracing::debug!(
+                    session_id = %session_id_str,
+                    "claude next: serving from pending",
+                );
+                false
+            } else {
+                self.output_rx.is_some()
+            }
+        };
+        if needs_recv && let Some(rx) = &self.output_rx {
             tracing::info!(
                 session_id = %session_id_str,
                 "claude next: waiting on channel",
@@ -858,6 +864,37 @@ impl ToolSession for ClaudeSession {
                 }
             } else {
                 break;
+            }
+        }
+
+        // After collecting events up to the per-step limit, eagerly drain
+        // remaining items until we find a completion/error or the channel is
+        // empty. This ensures terminal signals (Suspended, Done) are never
+        // deferred to a subsequent next() call even with MAX_EVENTS_PER_STEP=1.
+        while completion.is_none() && !events.is_empty() {
+            let next_item = if let Some(item) = self.pending.pop_front() {
+                Some(item)
+            } else if let Some(rx) = &self.output_rx {
+                match rx.recv().await {
+                    Ok(item) => Some(item),
+                    Err(_) => {
+                        self.output_rx = None;
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            match next_item {
+                Some(ClaudeQueueItem::Completion(c)) => completion = Some(c),
+                Some(ClaudeQueueItem::Error(message)) => {
+                    self.output_rx = None;
+                    return Ok(ToolStep::Error {
+                        error: ToolFailure::execution_failed(message),
+                    });
+                }
+                Some(ClaudeQueueItem::Event(event)) => events.push(event),
+                None => break,
             }
         }
 
