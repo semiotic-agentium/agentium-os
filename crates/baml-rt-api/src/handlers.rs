@@ -48,9 +48,9 @@ fn result_label_for_domain_error(error: &BamlRtError) -> &'static str {
     match error {
         BamlRtError::InvalidArgument(msg) if msg.contains("not found") => "not_found",
         BamlRtError::InvalidArgument(_) => "bad_request",
-        BamlRtError::SessionLifecycle(baml_rt_core::SessionLifecycleError::ToolSessionNotFound {
-            ..
-        })
+        BamlRtError::SessionLifecycle(
+            baml_rt_core::SessionLifecycleError::ToolSessionNotFound { .. },
+        )
         | BamlRtError::SessionLifecycle(
             baml_rt_core::SessionLifecycleError::StreamSessionNotFound { .. },
         ) => "not_found",
