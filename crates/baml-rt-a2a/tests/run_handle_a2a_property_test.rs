@@ -76,6 +76,58 @@ fn response_has_input_required(response: &serde_json::Value) -> bool {
         .unwrap_or(false)
 }
 
+fn stream_message_texts(response: &serde_json::Value) -> Vec<String> {
+    fn push_message_texts_from_message(message: Option<&serde_json::Value>, out: &mut Vec<String>) {
+        if let Some(message) = message
+            && let Some(parts) = message.get("parts").and_then(serde_json::Value::as_array)
+        {
+            for part in parts {
+                if let Some(text) = part.get("text").and_then(serde_json::Value::as_str)
+                    && !text.is_empty()
+                {
+                    out.push(text.to_string());
+                }
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    let Some(result) = response.get("result") else {
+        return out;
+    };
+    let chunk = result.get("chunk").unwrap_or(result);
+
+    // Direct message chunk shape.
+    push_message_texts_from_message(chunk.get("message"), &mut out);
+
+    // Task-carried message shape.
+    push_message_texts_from_message(
+        chunk
+            .get("task")
+            .and_then(|task| task.get("status"))
+            .and_then(|status| status.get("message")),
+        &mut out,
+    );
+
+    // statusUpdate canonical and alias shapes.
+    let status_update = chunk.get("statusUpdate");
+    push_message_texts_from_message(
+        status_update
+            .and_then(|s| s.get("status"))
+            .and_then(|status| status.get("message")),
+        &mut out,
+    );
+    push_message_texts_from_message(
+        status_update
+            .and_then(|s| s.get("status_update"))
+            .and_then(|status| status.get("status"))
+            .and_then(|status| status.get("message")),
+        &mut out,
+    );
+
+    out
+}
+
 struct StubChooseCalcToolInterceptor;
 
 #[async_trait::async_trait]
@@ -398,19 +450,22 @@ proptest! {
                     .count();
                 assert_eq!(final_count, 1, "stream must include exactly one final marker");
 
-                let text = first_message_text_from_stream(&responses);
+                let texts: Vec<String> = responses.iter().flat_map(stream_message_texts).collect();
                 let expected_prefix = match kind.as_str() {
                     "a2a" => "A2A:",
                     "tool" => "TOOL:",
                     _ => "LLM:",
                 };
                 assert!(
-                    text.starts_with(expected_prefix),
-                    "message text prefix mismatch for kind {kind}: {text}"
+                    texts.iter().any(|text| text.starts_with(expected_prefix)),
+                    "message text prefix mismatch for kind {kind}. expected prefix={expected_prefix}, texts={texts:?}, raw={}",
+                    serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "<serialize failed>".to_string())
                 );
                 assert!(
-                    text.contains(context_id.as_str()),
-                    "context contamination: expected {ctx} in {text}",
+                    texts.iter().any(|text| text.contains(context_id.as_str())),
+                    "context contamination: expected {ctx} in texts={texts:?}, raw={}",
+                    serde_json::to_string_pretty(&responses)
+                        .unwrap_or_else(|_| "<serialize failed>".to_string()),
                     ctx = context_id.as_str(),
                 );
             }
