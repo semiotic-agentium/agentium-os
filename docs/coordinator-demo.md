@@ -21,6 +21,10 @@ confidence and gaps.
   - `CLICKUP_API_KEY` (if ClickUp specialist enabled)
 - `jq` installed
 
+Known limitation: the current `support/clickup` tool does not set workspace-specific custom
+fields (for example a `Project` dropdown), so created tasks may appear in generic ClickUp
+groupings depending on workspace view configuration.
+
 ## Quick Start (CLI stream)
 
 ```bash

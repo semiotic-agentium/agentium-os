@@ -20,7 +20,7 @@ In `.env`:
 - `SLACK_BOT_TOKEN` (or `SLACK_USER_TOKEN`)
 - `SLACK_WORKSPACE_URL`
 - `OPENROUTER_API_KEY` (primary)
-- `CLICKUP_API_KEY` (required for default ClickUp-specialist profile)
+- `CLICKUP_API_KEY` (required when ClickUp specialist is enabled)
 - Optional local fallback:
   - `TASK_DAEMON_LLM_FALLBACK_BASE_URL=http://localhost:1234/v1`
   - `TASK_DAEMON_LLM_FALLBACK_MODEL=<model-name>`
@@ -185,6 +185,11 @@ Note: If no usable specialist is available for the request, coordinator may retu
 
 Latency note: coordinator handoff time is mostly LLM time. If the run feels slow, reduce
 `TASK_DAEMON_DEMO_MAX_CANDIDATES` (for example `2` or `3`) to shrink workflow breadth.
+
+ClickUp grouping note: the current `support/clickup` tool does not set workspace-specific
+custom fields (such as a `Project` dropdown). New tasks may appear under ClickUp's `Empty`
+grouping in some views. This is a known limitation and should be addressed with explicit,
+typed custom-field support rather than implicit environment-driven behavior.
 
 ## Failure Plan
 

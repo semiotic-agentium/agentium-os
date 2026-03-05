@@ -566,7 +566,16 @@ function renderHandoffPrompt(
   lines.push("1. Prioritize workflow_seed and derived tasks over free-form phrasing.");
   lines.push("2. Treat interpretation as project-context understanding, not keyword matches.");
   if (repoAvailable === false) {
-    lines.push("3. Repository is unavailable; favor clarification and follow-up workflows.");
+    if (derivedTasks.length > 0) {
+      lines.push(
+        "3. Repository is unavailable; still proceed with best-effort task creation for all derived tasks using available project-management specialists.",
+      );
+      lines.push(
+        "4. Do not emit clarify-only plans before attempting derived-task creation; capture unknowns inside created task descriptions instead.",
+      );
+    } else {
+      lines.push("3. Repository is unavailable; favor clarification and follow-up workflows.");
+    }
   }
 
   const normalizedFallbackText = normalizeOptionalString(fallbackText);
