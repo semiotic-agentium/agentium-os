@@ -3,11 +3,13 @@ import type {
   AgentDiscoveryEntry,
   ChatMessage,
   ContentBlock,
+  ContextMetricsResponse,
   JSONRPCResponse,
   ChunkPayload,
   ToolCompletion,
   ToolEvent,
   ToolNotificationBlock,
+  WorkflowProgressState,
 } from "../types/a2a";
 
 let counter = 0;
@@ -147,8 +149,14 @@ export function useA2aClient() {
   const isLoading = ref(false);
 
   // Multi-turn conversation state
-  let contextId: string | undefined;
+  const _contextId = ref<string | undefined>();
   let taskId: string | undefined;
+
+  // Context metrics (fetched after each response)
+  const contextMetrics = ref<ContextMetricsResponse | null>(null);
+
+  // Workflow progress tracker (parsed from coordinator SSE progress messages)
+  const workflowProgress = ref<WorkflowProgressState>({ phase: "idle", nodes: [], completedNodes: [] });
 
   // Provenance diagram source (raw mermaid text fetched after each response)
   const provenanceDiagram = ref<string>("");
@@ -167,9 +175,53 @@ export function useA2aClient() {
   function selectAgent(agent: AgentDiscoveryEntry): void {
     selectedAgent.value = agent;
     messages.value = [];
-    contextId = undefined;
+    _contextId.value = undefined;
     taskId = undefined;
     provenanceDiagram.value = "";
+    contextMetrics.value = null;
+    workflowProgress.value = { phase: "idle", nodes: [], completedNodes: [] };
+  }
+
+  function updateWorkflowPhase(text: string): void {
+    if (/discovering available/i.test(text)) {
+      workflowProgress.value = { phase: "discovery", nodes: [], completedNodes: workflowProgress.value.completedNodes };
+    } else if (/planning workflow/i.test(text)) {
+      const iterMatch = text.match(/iteration\s+(\d+)/i);
+      workflowProgress.value = {
+        phase: "planning",
+        iteration: iterMatch ? parseInt(iterMatch[1]!, 10) : undefined,
+        nodes: [],
+        completedNodes: workflowProgress.value.completedNodes,
+      };
+    } else if (/executing\s+\d+\s+workflow\s+node/i.test(text)) {
+      const nodeListMatch = text.match(/node\(s\):\s*(.+)/i);
+      const nodeNames = nodeListMatch
+        ? nodeListMatch[1]!.split(",").map((n) => n.trim()).filter((n) => n.length > 0)
+        : [];
+      const prev = workflowProgress.value;
+      workflowProgress.value = {
+        phase: "execution",
+        nodes: nodeNames.map((name) => ({
+          name,
+          status: prev.completedNodes.includes(name) ? "completed" as const : "running" as const,
+        })),
+        completedNodes: prev.completedNodes,
+      };
+    } else if (/synthesiz/i.test(text) || /compiling final/i.test(text)) {
+      workflowProgress.value = { phase: "synthesis", nodes: [], completedNodes: workflowProgress.value.completedNodes };
+    }
+  }
+
+  function markWorkflowNodeCompleted(toolName: string): void {
+    const wp = workflowProgress.value;
+    if (wp.phase !== "execution") return;
+    const node = wp.nodes.find((n) => toolName.toLowerCase().includes(n.name.toLowerCase()));
+    if (node && node.status !== "completed") {
+      node.status = "completed";
+      if (!wp.completedNodes.includes(node.name)) {
+        wp.completedNodes.push(node.name);
+      }
+    }
   }
 
   async function sendMessage(text: string): Promise<void> {
@@ -199,7 +251,7 @@ export function useA2aClient() {
       role: "user",
       parts: [{ text: text.trim() }],
     };
-    if (contextId) message.contextId = contextId;
+    if (_contextId.value) message.contextId = _contextId.value;
     if (taskId) message.taskId = taskId;
 
     const request = {
@@ -210,6 +262,7 @@ export function useA2aClient() {
     };
 
     isLoading.value = true;
+    workflowProgress.value = { phase: "idle", nodes: [], completedNodes: [] };
 
     // Placeholder for streaming agent response (contentBlocks updated incrementally from stream)
     const agentMsgId = nextId("agent-msg");
@@ -234,7 +287,7 @@ export function useA2aClient() {
       }
 
       await readSSEStream(response.body, agentMsgId);
-      await fetchProvenanceDiagram();
+      await Promise.all([fetchProvenanceDiagram(), fetchContextMetrics()]);
     } catch (err) {
       updateMessage(messages, agentMsgId, (msg) => {
         msg.text = `Error: ${err}`;
@@ -271,7 +324,7 @@ export function useA2aClient() {
             // Yield so the UI can paint incrementally as chunks arrive (not only when stream ends)
             await new Promise((resolve) => setTimeout(resolve, 0));
             // Refresh provenance diagram as tool/message updates arrive (throttled)
-            if (contextId && Date.now() - lastDiagramFetchAt >= diagramThrottleMs) {
+            if (_contextId.value && Date.now() - lastDiagramFetchAt >= diagramThrottleMs) {
               lastDiagramFetchAt = Date.now();
               await fetchProvenanceDiagram();
             }
@@ -306,7 +359,7 @@ export function useA2aClient() {
     // Track multi-turn state (task and statusUpdate both carry contextId/taskId)
     const ctx = chunk.task?.contextId ?? chunk.statusUpdate?.status_update?.contextId ?? chunk.statusUpdate?.statusUpdate?.contextId;
     const tid = chunk.task?.id ?? chunk.statusUpdate?.taskId ?? chunk.statusUpdate?.status_update?.taskId ?? chunk.statusUpdate?.statusUpdate?.taskId;
-    if (ctx) contextId = ctx;
+    if (ctx) _contextId.value = ctx;
     if (tid) taskId = tid;
 
     // Shape: toolStreamChunk chunks split into two kinds.
@@ -348,6 +401,9 @@ export function useA2aClient() {
         if (completion) block.completion = completion;
         block.status = deriveToolStatus(block);
       });
+      if (completion === "DONE" && baseName) {
+        markWorkflowNodeCompleted(baseName);
+      }
     } else if (result.toolStreamChunk && toolChunk) {
       // Phase chunk: toolStreamChunk true but no tool payload — statusUpdate.message only
       const statusText =
@@ -357,6 +413,7 @@ export function useA2aClient() {
       const trimmed = statusText?.trim();
       // Skip "Invoking tool: X" in the phase block — the tool has its own block; keeps order correct (phase after tool)
       if (trimmed && !trimmed.match(/^Invoking tool: /)) {
+        updateWorkflowPhase(trimmed);
         updateMessage(messages, agentMsgId, (msg) => {
           ensureContentBlocks(msg);
           const block = getOrCreatePhaseBlockForAppend(msg);
@@ -385,6 +442,19 @@ export function useA2aClient() {
 
     // Check terminal state (state can be in task.status or nested statusUpdate.status_update.status)
     const state = getStateFromChunk(chunk);
+
+    // Record state transitions for the task timeline
+    if (state) {
+      updateMessage(messages, agentMsgId, (msg) => {
+        if (!msg.stateTransitions) msg.stateTransitions = [];
+        // Avoid duplicate consecutive states
+        const last = msg.stateTransitions[msg.stateTransitions.length - 1];
+        if (!last || last.state !== state) {
+          msg.stateTransitions.push({ state, timestamp: new Date() });
+        }
+      });
+    }
+
     if (
       state === "TASK_STATE_COMPLETED" ||
       state === "TASK_STATE_FAILED" ||
@@ -394,6 +464,7 @@ export function useA2aClient() {
       updateMessage(messages, agentMsgId, (msg) => {
         msg.isStreaming = false;
       });
+      workflowProgress.value = { phase: "idle", nodes: [], completedNodes: [] };
     }
     // Input required: stream suspended (no final); agent waiting for user reply.
     if (state === "TASK_STATE_INPUT_REQUIRED") {
@@ -434,12 +505,24 @@ export function useA2aClient() {
   }
 
   async function fetchProvenanceDiagram(): Promise<void> {
-    if (!contextId) return;
+    if (!_contextId.value) return;
     try {
-      const res = await fetch(`/mermaid/context/${contextId}`);
+      const res = await fetch(`/mermaid/context/${_contextId.value}`);
       if (res.ok) provenanceDiagram.value = await res.text();
     } catch {
       // provenance endpoint not available; leave existing diagram
+    }
+  }
+
+  async function fetchContextMetrics(): Promise<void> {
+    if (!_contextId.value) return;
+    try {
+      const res = await fetch(`/contexts/${_contextId.value}/metrics`);
+      if (res.ok) {
+        contextMetrics.value = await res.json();
+      }
+    } catch {
+      // metrics endpoint not available; leave existing data
     }
   }
 
@@ -458,6 +541,9 @@ export function useA2aClient() {
     messages,
     isLoading,
     provenanceDiagram,
+    contextMetrics,
+    workflowProgress,
+    contextId: computed(() => _contextId.value),
     awaitingInput,
     inputRequiredPrompt,
     fetchAgents,

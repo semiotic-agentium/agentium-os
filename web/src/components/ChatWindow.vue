@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, nextTick, watch } from "vue";
-import type { ChatMessage } from "../types/a2a";
+import type { ChatMessage, WorkflowProgressState } from "../types/a2a";
 import MessageBubble from "./MessageBubble.vue";
+import WorkflowProgress from "./WorkflowProgress.vue";
 
 const props = defineProps<{
   messages: ChatMessage[];
@@ -11,6 +12,8 @@ const props = defineProps<{
   awaitingInput?: boolean;
   /** Optional prompt from agent (e.g. awaitInput(prompt)); show as hint/placeholder */
   inputRequiredPrompt?: string;
+  /** Workflow progress state from coordinator SSE messages */
+  workflowProgress?: WorkflowProgressState;
 }>();
 
 const emit = defineEmits<{ send: [text: string] }>();
@@ -85,6 +88,7 @@ watch(
 
 <template>
   <div class="chat-window">
+    <WorkflowProgress v-if="workflowProgress && workflowProgress.phase !== 'idle'" :progress="workflowProgress" />
     <div ref="messagesContainer" class="messages" @scroll="onMessagesScroll">
       <div v-if="messages.length === 0" class="empty-state">
         <!-- Chat icon -->
