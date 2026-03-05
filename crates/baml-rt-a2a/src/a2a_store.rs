@@ -624,19 +624,35 @@ fn message_content(message: &Message) -> Vec<String> {
         .collect()
 }
 
-/// Text parts from the message (trimmed, empty lines dropped). Returns an empty vec for
-/// non-text or media-only messages; callers must accept empty for provenance and persistence.
+/// Provenance-safe content extraction from A2A message parts.
+///
+/// Text parts are included verbatim (trimmed, blanks dropped). Non-text parts
+/// (data, file, raw) emit a structural descriptor so the provenance validator
+/// sees a non-empty message without coupling to any domain-specific schema.
 pub(crate) fn validated_message_content(
     message: &Message,
     _operation: &str,
 ) -> Result<Vec<String>> {
-    let content: Vec<String> = message
-        .parts
-        .iter()
-        .filter_map(|part| part.text.clone())
-        .map(|line| line.trim().to_string())
-        .filter(|line| !line.is_empty())
-        .collect();
+    let mut content: Vec<String> = Vec::new();
+    for part in &message.parts {
+        if let Some(ref text) = part.text {
+            let trimmed = text.trim().to_string();
+            if !trimmed.is_empty() {
+                content.push(trimmed);
+            }
+            continue;
+        }
+        // Non-text parts: emit a generic structural marker so provenance knows
+        // the message carried content. No domain-specific fields are inspected.
+        if part.data.is_some() {
+            content.push("[structured-data part]".to_string());
+        } else if part.url.is_some() || part.filename.is_some() {
+            content.push("[file part]".to_string());
+        } else if part.raw.is_some() {
+            content.push("[raw part]".to_string());
+        }
+        // Parts with none of the above fields are truly empty — skip them.
+    }
     Ok(content)
 }
 
