@@ -115,14 +115,9 @@ impl JsInvoker for QuickJsInvoker {
         relay_rx: Option<mpsc::Receiver<Value>>,
     ) -> Result<mpsc::Receiver<StreamOutput>> {
         let js_request = a2a::request_to_js_value(request)?;
-        let rx = spawn_stream_handover(
-            &self.handle,
-            scope.clone(),
-            js_request,
-            resume_rx,
-            relay_rx,
-        )
-        .await;
+        let rx =
+            spawn_stream_handover(&self.handle, scope.clone(), js_request, resume_rx, relay_rx)
+                .await;
         Ok(rx)
     }
 }

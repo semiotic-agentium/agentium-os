@@ -166,8 +166,7 @@ impl BridgeHandle {
                                     request,
                                     tx_result,
                                 } => {
-                                    let out =
-                                        run_invoke_same_thread(bridge, scope, request).await;
+                                    let out = run_invoke_same_thread(bridge, scope, request).await;
                                     let _ = tx_result.send(out);
                                 }
                                 HandoverJob::ToolInvoke {

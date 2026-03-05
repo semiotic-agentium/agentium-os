@@ -11,9 +11,7 @@ use baml_rt_core::{
 use baml_rt_interceptor::{InterceptorPipeline, LLMInterceptor, ToolInterceptor};
 use tokio::sync::Mutex;
 
-use crate::{
-    a2a_stream::BridgeHandle, baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge,
-};
+use crate::{a2a_stream::BridgeHandle, baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
 
 /// Configuration for QuickJS runtime options.
 ///
@@ -434,10 +432,7 @@ impl RuntimeBuilder {
 
         bridge.register_baml_functions().await?;
         let quickjs_bridge = Arc::new(Mutex::new(bridge));
-        let bridge_handle = Arc::new(BridgeHandle::new(
-            quickjs_bridge,
-            &agent_id_label,
-        ));
+        let bridge_handle = Arc::new(BridgeHandle::new(quickjs_bridge, &agent_id_label));
 
         Ok(Runtime {
             baml_manager,
