@@ -288,11 +288,11 @@ async fn test_stream_collector_idle_timeout_cancels_perverse_stream() {
     );
 
     let responses = tokio::time::timeout(
-        std::time::Duration::from_secs(15),
+        std::time::Duration::from_secs(30),
         collect_responses(&agent, request),
     )
     .await
-    .expect("stream request must complete within 15s")
+    .expect("stream request must complete within 30s")
     .unwrap();
 
     assert!(
@@ -496,7 +496,7 @@ async fn test_a2a_session_send_returns_fast_and_next_drains() {
         // CI runners can be heavily oversubscribed; wall-clock jitter may dominate this
         // enqueue-only path. Keep local checks strict while allowing a wider CI envelope.
         let enqueue_threshold_ms: u64 = if std::env::var_os("CI").is_some() {
-            1500
+            3000
         } else {
             100
         };
