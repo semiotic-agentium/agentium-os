@@ -6,6 +6,42 @@
 use anyhow::Error as AnyhowError;
 use thiserror::Error;
 
+/// Typed lifecycle failures for stream/tool sessions.
+#[derive(Error, Debug, Clone, PartialEq, Eq)]
+pub enum SessionLifecycleError {
+    #[error("Tool session not found: {session_id}")]
+    ToolSessionNotFound { session_id: String },
+
+    #[error("Tool session closed: {session_id}")]
+    ToolSessionClosed { session_id: String },
+
+    #[error("Stream session not found: {stream_session_id}")]
+    StreamSessionNotFound { stream_session_id: u64 },
+
+    #[error("Stream session closed: {stream_session_id}")]
+    StreamSessionClosed { stream_session_id: u64 },
+
+    #[error("Invocation context missing")]
+    InvocationContextMissing,
+
+    #[error("Invocation cancelled")]
+    InvocationCancelled,
+}
+
+impl SessionLifecycleError {
+    /// Stable error code for metrics/log labels and bridge mappings.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::ToolSessionNotFound { .. } => "tool_session_not_found",
+            Self::ToolSessionClosed { .. } => "tool_session_closed",
+            Self::StreamSessionNotFound { .. } => "stream_session_not_found",
+            Self::StreamSessionClosed { .. } => "stream_session_closed",
+            Self::InvocationContextMissing => "invocation_context_missing",
+            Self::InvocationCancelled => "invocation_cancelled",
+        }
+    }
+}
+
 /// Main error type for the BAML runtime integration
 #[derive(Error, Debug)]
 pub enum BamlRtError {
@@ -99,6 +135,10 @@ pub enum BamlRtError {
     /// Runtime initialization error
     #[error("Runtime initialization error: {0}")]
     Initialization(String),
+
+    /// Stream/tool session lifecycle failure.
+    #[error("Session lifecycle error: {0}")]
+    SessionLifecycle(#[from] SessionLifecycleError),
 
     /// Function execution failed
     #[error("Function execution failed")]

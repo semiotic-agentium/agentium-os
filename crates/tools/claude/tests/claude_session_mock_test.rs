@@ -268,8 +268,17 @@ async fn claude_session_unknown_id_returns_error() {
         .session_next(&unknown)
         .await
         .expect_err("must error");
+    let err_msg = err.to_string();
+    let typed_not_found = matches!(
+        err,
+        baml_rt_core::BamlRtError::SessionLifecycle(
+            baml_rt_core::SessionLifecycleError::ToolSessionNotFound { .. }
+        )
+    );
+    let legacy_text = err_msg.contains("Unknown session");
+    let new_text = err_msg.contains("Tool session not found");
     assert!(
-        err.to_string().contains("Unknown session"),
-        "error should mention unknown session id"
+        typed_not_found || legacy_text || new_text,
+        "error should mention unknown session id or be typed not-found; got: {err_msg}"
     );
 }

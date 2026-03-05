@@ -32,7 +32,7 @@ pub use context::{
     Scoped,
 };
 pub use deferred::DeferredHolder;
-pub use error::{BamlRtError, Result};
+pub use error::{BamlRtError, Result, SessionLifecycleError};
 pub use ids::{AgentId, ArtifactId, ContextId, CorrelationId, EventId, MessageId, TaskId};
 pub use json::to_json_value;
 pub use package::AgentManifest;

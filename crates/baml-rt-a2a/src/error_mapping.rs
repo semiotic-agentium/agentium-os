@@ -82,6 +82,23 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "invalid_argument",
             Retryability::Permanent,
         ),
+        BamlRtError::SessionLifecycle(lifecycle) => {
+            let (code, message, classifier, retryable) = match lifecycle {
+                baml_rt_core::SessionLifecycleError::InvocationCancelled => (
+                    -32603,
+                    "Internal error",
+                    "invocation_cancelled",
+                    Retryability::Retryable,
+                ),
+                _ => (
+                    -32600,
+                    "Invalid request",
+                    "session_lifecycle",
+                    Retryability::Permanent,
+                ),
+            };
+            mapping(error, code, message, None, classifier, retryable)
+        }
         BamlRtError::FunctionNotFound(name) => mapping(
             error,
             -32601,

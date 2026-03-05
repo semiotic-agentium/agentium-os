@@ -646,6 +646,7 @@ async fn test_a2a_session_send_after_finish_fails() {
         assert!(
             err_msg.contains("terminal")
                 || err_msg.contains("closed")
+                || err_msg.contains("Tool session not found")
                 || err_msg.contains("Unknown tool session")
                 || err_msg.contains("Unknown session")
                 || err_msg.contains("send only valid once after open"),
