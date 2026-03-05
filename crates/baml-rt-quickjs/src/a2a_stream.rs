@@ -195,7 +195,13 @@ async fn run_tool_invoke_same_thread(
         .await
 }
 
-/// Runs begin → invoke → collect. Align with main: when no resume, hold bridge lock for entire collect.
+/// Runs begin → invoke → collect on the handover lane.
+///
+/// Both resume and non-resume paths use the same incremental lock pattern:
+/// hold the bridge lock only for setup/invoke, then release it and collect
+/// via [`collect_into_channel_owned`] which acquires the lock briefly per
+/// drain iteration. This keeps the bridge available for concurrent streams,
+/// invokes, and tool calls between iterations.
 async fn run_stream_same_thread(
     bridge: Arc<Mutex<QuickJSBridge>>,
     scope: InvocationScope,
@@ -203,70 +209,14 @@ async fn run_stream_same_thread(
     tx_err: mpsc::Sender<StreamOutput>,
     tx: mpsc::Sender<StreamOutput>,
     resume_rx: Option<ResumeRx>,
-    mut relay_rx: Option<mpsc::Receiver<Value>>,
+    relay_rx: Option<mpsc::Receiver<Value>>,
 ) {
-    let mut guard = bridge.lock().await;
-    let ready = match begin_a2a_yield_session(&mut guard).await {
-        Ok(r) => r,
-        Err(e) => {
-            let _ = tx_err
-                .send(StreamOutput::Terminal(
-                    json!({ "error": e.to_string() }),
-                    StreamCompletion::SemanticFinal,
-                ))
-                .await;
-            return;
-        }
-    };
-    let (session_id, mut yield_rx) = match ready.invoke(&scope, request).await {
-        Ok(complete) => (complete.session_id, complete.yield_rx),
-        Err(e) => {
-            let _ = tx_err
-                .send(StreamOutput::Terminal(
-                    json!({ "error": e.to_string() }),
-                    StreamCompletion::SemanticFinal,
-                ))
-                .await;
-            return;
-        }
-    };
-
-    if resume_rx.is_some() {
-        // Resume path: release lock and use incremental collect (locks per iteration).
-        drop(guard);
-        if let Err(e) =
-            collect_into_channel_owned(bridge, session_id, yield_rx, tx, resume_rx, relay_rx, scope)
-                .await
-        {
-            let _ = tx_err
-                .send(StreamOutput::Terminal(
-                    json!({ "error": e.to_string() }),
-                    StreamCompletion::SemanticFinal,
-                ))
-                .await;
-        }
-        return;
-    }
-
-    // No resume: hold lock for entire collect (align with main).
-    let idle_timeout_secs = guard.stream_collector_idle_secs();
-    let interval = Duration::from_millis(50);
-    let mut last_yield_at = Instant::now();
-    let mut all: Vec<Value> = Vec::new();
-
-    loop {
-        if let Some(ref mut relay_rx) = relay_rx {
-            while let Ok(value) = relay_rx.try_recv() {
-                if tx.send(StreamOutput::RelayChunk(value)).await.is_err() {
-                    return;
-                }
-            }
-        }
-
-        let drain = match guard.drain_yield_buffer(&mut yield_rx).await {
-            Ok(d) => d,
+    // Hold lock only for setup (begin + invoke), then release.
+    let (session_id, yield_rx) = {
+        let mut guard = bridge.lock().await;
+        let ready = match begin_a2a_yield_session(&mut guard).await {
+            Ok(r) => r,
             Err(e) => {
-                tracing::error!(error = ?e, "collect (holding lock): drain failed");
                 let _ = tx_err
                     .send(StreamOutput::Terminal(
                         json!({ "error": e.to_string() }),
@@ -276,66 +226,32 @@ async fn run_stream_same_thread(
                 return;
             }
         };
-
-        for value in drain.chunks {
-            last_yield_at = Instant::now();
-            all.push(value.clone());
-            let has_input_req = chunk_has_input_required_state(&value);
-            let has_final = chunk_has_final_state(&value);
-            if tx.send(StreamOutput::Chunk(value)).await.is_err() {
-                return;
-            }
-            if has_input_req {
-                guard.finalize_a2a_stream_invocation(session_id).await;
-                let _ = tx
+        match ready.invoke(&scope, request).await {
+            Ok(complete) => (complete.session_id, complete.yield_rx),
+            Err(e) => {
+                let _ = tx_err
                     .send(StreamOutput::Terminal(
-                        Value::Null,
-                        StreamCompletion::InputRequired,
-                    ))
-                    .await;
-                return;
-            }
-            if has_final {
-                guard.finalize_a2a_stream_invocation(session_id).await;
-                let _ = tx
-                    .send(StreamOutput::Terminal(
-                        Value::Null,
+                        json!({ "error": e.to_string() }),
                         StreamCompletion::SemanticFinal,
                     ))
                     .await;
                 return;
             }
         }
+        // guard dropped here — bridge available for other tasks
+    };
 
-        if drain.channel_closed {
-            guard.finalize_a2a_stream_invocation(session_id).await;
-            let payload = make_channel_closed_completion_chunk(
-                all.last(),
-                &scope,
-                StreamCompletion::ChannelClosed,
-            );
-            let _ = tx
-                .send(StreamOutput::Terminal(
-                    payload,
-                    StreamCompletion::ChannelClosed,
-                ))
-                .await;
-            return;
-        }
-
-        if idle_timeout_secs > 0
-            && last_yield_at.elapsed() >= Duration::from_secs(idle_timeout_secs)
-        {
-            guard.finalize_a2a_stream_invocation(session_id).await;
-            let payload =
-                make_channel_closed_completion_chunk(all.last(), &scope, StreamCompletion::Timeout);
-            let _ = tx
-                .send(StreamOutput::Terminal(payload, StreamCompletion::Timeout))
-                .await;
-            return;
-        }
-
-        sleep(interval).await;
+    // Collect using incremental lock pattern (both resume and non-resume).
+    if let Err(e) =
+        collect_into_channel_owned(bridge, session_id, yield_rx, tx, resume_rx, relay_rx, scope)
+            .await
+    {
+        let _ = tx_err
+            .send(StreamOutput::Terminal(
+                json!({ "error": e.to_string() }),
+                StreamCompletion::SemanticFinal,
+            ))
+            .await;
     }
 }
 
