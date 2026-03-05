@@ -14,9 +14,9 @@ pub mod runtime;
 pub mod traits;
 
 pub use a2a_stream::{
-    A2aYieldSessionComplete, A2aYieldSessionReady, StreamOutput, begin_a2a_yield_session,
-    collect_into_channel_owned, invoke_handler_handover, invoke_tool_handover,
-    spawn_stream_handover,
+    A2aYieldSessionComplete, A2aYieldSessionReady, BridgeHandle, StreamOutput,
+    begin_a2a_yield_session, collect_into_channel_owned, invoke_handler_handover,
+    invoke_tool_handover, spawn_stream_handover,
 };
 pub use baml::{BamlRuntimeManager, ToolSessionExecutionHandle};
 pub use context::{BamlContext, ContextMetadata};

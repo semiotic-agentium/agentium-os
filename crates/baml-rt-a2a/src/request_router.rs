@@ -10,11 +10,11 @@ use baml_rt_core::{
 };
 use baml_rt_observability::{metrics, spans};
 use baml_rt_quickjs::{
-    QuickJSBridge,
+    BridgeHandle,
     a2a_stream::{StreamOutput, invoke_handler_handover, spawn_stream_handover},
 };
 use serde_json::Value;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::mpsc;
 
 use crate::{a2a, a2a_types, handlers::TaskHandler, result_pipeline::ResultStoragePipeline};
 
@@ -87,12 +87,12 @@ pub trait JsInvoker: Send + Sync {
 }
 
 pub struct QuickJsInvoker {
-    bridge: Arc<Mutex<QuickJSBridge>>,
+    handle: Arc<BridgeHandle>,
 }
 
 impl QuickJsInvoker {
-    pub fn new(bridge: Arc<Mutex<QuickJSBridge>>) -> Self {
-        Self { bridge }
+    pub fn new(handle: Arc<BridgeHandle>) -> Self {
+        Self { handle }
     }
 }
 
@@ -104,7 +104,7 @@ impl JsInvoker for QuickJsInvoker {
         scope: &InvocationScope,
     ) -> Result<Value> {
         let js_request = a2a::request_to_js_value(request)?;
-        invoke_handler_handover(self.bridge.clone(), scope.clone(), js_request).await
+        invoke_handler_handover(&self.handle, scope.clone(), js_request).await
     }
 
     async fn invoke_stream_incremental(
@@ -116,7 +116,7 @@ impl JsInvoker for QuickJsInvoker {
     ) -> Result<mpsc::Receiver<StreamOutput>> {
         let js_request = a2a::request_to_js_value(request)?;
         let rx = spawn_stream_handover(
-            self.bridge.clone(),
+            &self.handle,
             scope.clone(),
             js_request,
             resume_rx,

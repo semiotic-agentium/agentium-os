@@ -11,7 +11,9 @@ use baml_rt_core::{
 use baml_rt_interceptor::{InterceptorPipeline, LLMInterceptor, ToolInterceptor};
 use tokio::sync::Mutex;
 
-use crate::{baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
+use crate::{
+    a2a_stream::BridgeHandle, baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge,
+};
 
 /// Configuration for QuickJS runtime options.
 ///
@@ -169,8 +171,8 @@ pub struct Runtime {
     /// The BAML runtime manager
     pub baml_manager: Arc<Mutex<BamlRuntimeManager>>,
 
-    /// The QuickJS bridge (always enabled)
-    pub quickjs_bridge: Arc<Mutex<QuickJSBridge>>,
+    /// Per-bridge handover handle (owns the bridge + dedicated OS thread).
+    pub bridge_handle: Arc<BridgeHandle>,
 
     /// Runtime configuration
     pub config: RuntimeConfig,
@@ -182,9 +184,14 @@ impl Runtime {
         self.baml_manager.clone()
     }
 
-    /// Get the QuickJS bridge
+    /// Get the QuickJS bridge (derived from the bridge handle).
     pub fn quickjs_bridge(&self) -> Arc<Mutex<QuickJSBridge>> {
-        self.quickjs_bridge.clone()
+        self.bridge_handle.bridge().clone()
+    }
+
+    /// Get the bridge handle for handover dispatch.
+    pub fn bridge_handle(&self) -> Arc<BridgeHandle> {
+        self.bridge_handle.clone()
     }
 }
 
@@ -415,6 +422,7 @@ impl RuntimeBuilder {
                 "agent_id is REQUIRED. Call with_agent_id() before build().".to_string(),
             )
         })?;
+        let agent_id_label = agent_id.to_string();
         let mut bridge =
             QuickJSBridge::new_with_config(baml_manager.clone(), agent_id, quickjs_config.clone())
                 .await?;
@@ -426,10 +434,14 @@ impl RuntimeBuilder {
 
         bridge.register_baml_functions().await?;
         let quickjs_bridge = Arc::new(Mutex::new(bridge));
+        let bridge_handle = Arc::new(BridgeHandle::new(
+            quickjs_bridge,
+            &agent_id_label,
+        ));
 
         Ok(Runtime {
             baml_manager,
-            quickjs_bridge,
+            bridge_handle,
             config,
         })
     }
