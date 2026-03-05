@@ -35,15 +35,28 @@ pub struct BamlLLMCollector {
 }
 
 /// Handle to complete the LLM effect after tool/plan execution (e.g. so plan extraction failure emits PromptRejected).
+///
+/// Also fires `process_trace_events` so registered interceptors receive the
+/// `on_llm_call_complete` notification. The deferred path in `execute_function`
+/// skips `process_trace_events` to avoid premature notification; by the time the
+/// manager calls `complete()` the outcome is known and it is safe to notify.
 pub struct LLMCompletionHandle {
     collector: Arc<BamlLLMCollector>,
     start: Instant,
+    scope: context::RuntimeScope,
 }
 
 impl LLMCompletionHandle {
     /// Complete the LLM effect with the given outcome. Call once after execute_tool_from_baml_result_or_value.
     /// When outcome is Failure, pass rejection_reason (e.g. plan extraction error) to emit PromptRejected in provenance.
     pub async fn complete(self, outcome: Outcome, rejection_reason: Option<String>) {
+        // Notify interceptors (reads BAML trace; independent of the effect system).
+        if let Err(e) = self.collector.process_trace_events(&self.scope).await {
+            tracing::warn!(
+                error = ?e,
+                "LLMCompletionHandle: failed to process trace events for interceptor notification"
+            );
+        }
         let elapsed_ms = self.start.elapsed().as_millis() as u64;
         self.collector
             .complete_pending_effects(outcome, elapsed_ms, rejection_reason)
@@ -128,8 +141,13 @@ impl BamlLLMCollector {
     pub fn completion_handle(
         collector: Arc<BamlLLMCollector>,
         start: Instant,
+        scope: context::RuntimeScope,
     ) -> LLMCompletionHandle {
-        LLMCompletionHandle { collector, start }
+        LLMCompletionHandle {
+            collector,
+            start,
+            scope,
+        }
     }
 
     /// Get a reference to the inner BAML Collector
