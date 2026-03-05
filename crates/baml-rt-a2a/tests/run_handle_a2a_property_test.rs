@@ -40,6 +40,8 @@ fn scaled_timeout_secs(base_secs: u64) -> Duration {
     Duration::from_secs(base_secs.saturating_mul(ci_timeout_scale()))
 }
 
+const INTERLEAVING_QUICKJS_MAX_ATTEMPTS_MS: u64 = 45_000;
+
 fn proptest_cfg(cases: u32) -> ProptestConfig {
     let mut cfg = ProptestConfig::with_cases(cases);
     // Integration tests do not have a crate root (lib.rs/main.rs) for source-based persistence.
@@ -186,7 +188,7 @@ async fn setup_interleaving_agent() -> A2aAgent {
         .with_quickjs_config(
             baml_rt::QuickJSConfig::new()
                 .with_idle_timeout_ms(Some(45_000))
-                .with_max_attempts_ms(Some(45_000)),
+                .with_max_attempts_ms(Some(INTERLEAVING_QUICKJS_MAX_ATTEMPTS_MS)),
         )
         .with_graphqlite_store(store)
         .build()
@@ -331,8 +333,10 @@ proptest! {
     ///   - response text is scoped to its own context (no cross-contamination)
     ///
     /// Timeout scales with ops.len() because stream handling is serialized per bridge (one permit):
-    /// the last request may not start until all earlier ones complete. Ops capped at 10 to keep
-    /// test duration bounded (see run_handle_a2a_property_test_ANALYSIS.md).
+    /// the last request may not start until all earlier ones complete.
+    ///
+    /// Keep the timeout budget aligned with QuickJS max-attempts headroom. With serialized streams,
+    /// a single slow request can push later requests near the per-request attempt cap.
     #[test]
     fn prop_interleaved_a2a_tool_llm_multi_context_isolation(
         ops in prop::collection::vec((0u8..=2u8, 0u8..=7u8), 3..=10)
@@ -343,9 +347,10 @@ proptest! {
             .build()
             .expect("runtime");
 
-        // Per-request timeout must allow for serialization: last request waits for (ops.len()-1)
-        // others. Base uses (ops.len() * 6) + 20s, then CI multiplies for shared-runner headroom.
-        let timeout_secs = (ops.len() as u64 * 6) + 20;
+        // Per-request timeout must allow for serialization. Budget each queued request for up to
+        // ~1 QuickJS max-attempt window plus small runtime overhead, then add a fixed cushion.
+        let per_request_budget_secs = (INTERLEAVING_QUICKJS_MAX_ATTEMPTS_MS / 1_000) + 5;
+        let timeout_secs = (ops.len() as u64 * per_request_budget_secs) + 20;
         let request_timeout = scaled_timeout_secs(timeout_secs);
 
         rt.block_on(async move {
