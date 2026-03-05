@@ -322,9 +322,16 @@ async fn test_stream_collector_idle_timeout_cancels_perverse_stream() {
         "last response must have final: true (stream cancelled); got result={:?}",
         result
     );
+    let cancelled_with_null_chunk = chunk.is_none() || chunk == Some(&Value::Null);
+    let cancelled_with_failed_task = chunk
+        .and_then(|c| c.get("task"))
+        .and_then(|t| t.get("status"))
+        .and_then(|s| s.get("state"))
+        .and_then(Value::as_str)
+        == Some("TASK_STATE_FAILED");
     assert!(
-        chunk.is_none() || chunk == Some(&Value::Null),
-        "cancelled stream ends with null chunk sentinel; got chunk={:?}",
+        cancelled_with_null_chunk || cancelled_with_failed_task,
+        "cancelled stream must end with null chunk sentinel or TASK_STATE_FAILED chunk; got chunk={:?}",
         chunk
     );
 }

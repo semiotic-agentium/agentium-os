@@ -19,6 +19,11 @@ export interface InternalA2aNextOutput { chunks: ConversationChunk[];
 completion: InternalA2aCompletion | null;
  }
 
+export interface PlanStep { agent_package: string;
+agent_instance_id: string;
+sub_message: string;
+ }
+
 export type RoutePath = "List_capabilities" | "Delegate";
 
 export interface SelectedAgent { agent_package: string;

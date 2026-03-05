@@ -459,8 +459,14 @@ impl StreamChunkView {
     pub fn new(value: Value) -> Self {
         let task_id = Self::parse_task_id(&value);
         let task_state = Self::parse_task_state(&value);
-        let has_status_update = value.get("statusUpdate").is_some();
-        let has_artifact_update = value.get("artifactUpdate").is_some();
+        let has_status_update = value
+            .get("statusUpdate")
+            .or_else(|| value.get("status_update"))
+            .is_some();
+        let has_artifact_update = value
+            .get("artifactUpdate")
+            .or_else(|| value.get("artifact_update"))
+            .is_some();
         let has_task = value.get("task").is_some();
         Self {
             task_id,
@@ -472,14 +478,46 @@ impl StreamChunkView {
         }
     }
 
+    fn value_or_parsed_json(value: &Value) -> Option<Value> {
+        match value {
+            Value::Object(_) => Some(value.clone()),
+            Value::String(raw) => serde_json::from_str::<Value>(raw).ok(),
+            _ => None,
+        }
+    }
+
     fn parse_task_id(v: &Value) -> Option<TaskId> {
-        let from_val = |val: &Value| val.get("id").and_then(Value::as_str).map(String::from);
-        let id_str = v.get("task").and_then(from_val).or_else(|| {
-            v.get("statusUpdate")
-                .and_then(|s| s.get("taskId"))
+        let from_task_val = |val: &Value| {
+            val.get("id")
                 .and_then(Value::as_str)
+                .or_else(|| val.get("taskId").and_then(Value::as_str))
                 .map(String::from)
-        })?;
+        };
+        let from_status_update_val = |val: &Value| {
+            val.get("taskId")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    val.get("statusUpdate")
+                        .or_else(|| val.get("status_update"))
+                        .and_then(|inner| inner.get("taskId"))
+                        .and_then(Value::as_str)
+                })
+                .map(String::from)
+        };
+
+        let task_id_from_task = v
+            .get("task")
+            .and_then(Self::value_or_parsed_json)
+            .as_ref()
+            .and_then(from_task_val);
+        let task_id_from_status = v
+            .get("statusUpdate")
+            .or_else(|| v.get("status_update"))
+            .and_then(Self::value_or_parsed_json)
+            .as_ref()
+            .and_then(from_status_update_val);
+
+        let id_str = task_id_from_task.or(task_id_from_status)?;
         Some(TaskId::from_external(ExternalId::new(id_str)))
     }
 
@@ -490,15 +528,24 @@ impl StreamChunkView {
                 .and_then(|s| s.as_str())
                 .map(String::from)
         };
-        v.get("task").and_then(state_from).or_else(|| {
-            let su = v.get("statusUpdate")?;
-            let ev = if su.get("status").is_some() {
-                su
-            } else {
-                su.get("statusUpdate").or_else(|| su.get("status_update"))?
-            };
-            state_from(ev)
-        })
+        v.get("task")
+            .and_then(Self::value_or_parsed_json)
+            .as_ref()
+            .and_then(state_from)
+            .or_else(|| {
+                let su = v
+                    .get("statusUpdate")
+                    .or_else(|| v.get("status_update"))
+                    .and_then(Self::value_or_parsed_json)?;
+                let ev = if su.get("status").is_some() {
+                    su
+                } else {
+                    su.get("statusUpdate")
+                        .or_else(|| su.get("status_update"))?
+                        .clone()
+                };
+                state_from(&ev)
+            })
     }
 
     pub fn is_null(&self) -> bool {
@@ -538,6 +585,39 @@ impl StreamChunkView {
     /// True if this chunk should be considered for store_result (has task-related or status/artifact payload).
     pub fn has_storable_payload(&self) -> bool {
         self.has_status_update || self.has_artifact_update || self.has_task
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::StreamChunkView;
+
+    #[test]
+    fn stream_chunk_view_parses_task_id_from_nested_status_update_alias() {
+        let chunk = json!({
+            "statusUpdate": {
+                "status_update": {
+                    "contextId": "ctx-1-1",
+                    "taskId": "a2a-child-123",
+                    "status": { "state": "TASK_STATE_WORKING" }
+                }
+            }
+        });
+        let view = StreamChunkView::new(chunk);
+        assert_eq!(view.task_id().map(|id| id.as_str()), Some("a2a-child-123"));
+        assert_eq!(view.task_state(), Some("TASK_STATE_WORKING"));
+    }
+
+    #[test]
+    fn stream_chunk_view_parses_task_id_from_string_task_payload() {
+        let chunk = json!({
+            "task": "{\"id\":\"a2a-child-789\",\"status\":{\"state\":\"TASK_STATE_SUBMITTED\"}}"
+        });
+        let view = StreamChunkView::new(chunk);
+        assert_eq!(view.task_id().map(|id| id.as_str()), Some("a2a-child-789"));
+        assert_eq!(view.task_state(), Some("TASK_STATE_SUBMITTED"));
     }
 }
 
