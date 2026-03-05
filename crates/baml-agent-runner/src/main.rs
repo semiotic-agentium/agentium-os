@@ -1040,7 +1040,7 @@ struct Cli {
     claude_workspaces_base: Option<PathBuf>,
 
     /// Stream collector idle timeout (seconds). If no chunk is yielded for this long, the stream ends with Timeout. Default 600 for long-running tool sessions (e.g. claude/dev).
-    #[arg(long, value_name = "SECS", default_value = "600")]
+    #[arg(long, value_name = "SECS", default_value = "900")]
     stream_idle_secs: u64,
 }
 

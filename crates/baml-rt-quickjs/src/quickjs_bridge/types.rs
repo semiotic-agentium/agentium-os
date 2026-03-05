@@ -131,17 +131,21 @@ impl Drop for EvalLifecycleGuard {
             guard.remove(&self.eval_token);
         }
 
+        // Task-scoped teardown: extract the full scope (context_id + task_id) so the
+        // spawned cleanup task closes only this branch's tool sessions, not siblings'.
         if let Some(ref id) = self.context_id_to_exit {
-            let runtime_cid = self
+            let runtime_scope = self
                 .invocation_context_registry
                 .lock()
                 .ok()
-                .and_then(|reg| reg.get_context_id(id));
-            if let Some(cid) = runtime_cid {
+                .and_then(|reg| reg.get_scope(id));
+            if let Some(scope) = runtime_scope {
                 let baml = self.baml_manager.clone();
                 tokio::spawn(async move {
+                    let cid = scope.context_id().clone();
+                    let task_id = scope.task_id_opt().cloned();
                     let mgr = baml.lock().await;
-                    let _ = mgr.close_sessions_for_context(&cid).await;
+                    let _ = mgr.close_sessions_for_scope(&cid, task_id.as_ref()).await;
                 });
             }
         }

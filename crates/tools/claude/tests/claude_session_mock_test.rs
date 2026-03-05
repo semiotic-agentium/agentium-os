@@ -112,6 +112,23 @@ fn result(subtype: &str, session_id: &str) -> Message {
     })
 }
 
+async fn next_until_suspended_or_done(
+    registry: &ToolRegistry,
+    session_id: &ToolSessionId,
+) -> ToolStep {
+    for _ in 0..16 {
+        match registry
+            .session_next(session_id)
+            .await
+            .expect("session_next")
+        {
+            ToolStep::Streaming { .. } => continue,
+            step => return step,
+        }
+    }
+    panic!("expected Suspended or Done within bounded next() calls");
+}
+
 #[tokio::test]
 async fn claude_session_suspends_then_resumes_to_done() {
     let source_factory = Arc::new(SharedMockSourceFactory::new());
@@ -157,7 +174,7 @@ async fn claude_session_suspends_then_resumes_to_done() {
             .await
             .expect("send #1");
 
-        let suspended = registry.session_next(&session_id).await.expect("next #1");
+        let suspended = next_until_suspended_or_done(&registry, &session_id).await;
         match suspended {
             ToolStep::Suspended { output } => {
                 assert_eq!(output["completion"], "INPUT_REQUIRED");
@@ -169,7 +186,7 @@ async fn claude_session_suspends_then_resumes_to_done() {
             .session_send(&session_id, serde_json::json!({ "prompt": "continue" }))
             .await
             .expect("send #2");
-        let done = registry.session_next(&session_id).await.expect("next #2");
+        let done = next_until_suspended_or_done(&registry, &session_id).await;
         match done {
             ToolStep::Done {
                 output: Some(output),

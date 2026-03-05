@@ -5,10 +5,11 @@ provenance_db := "provenance.db"
 runner_http_bind := "127.0.0.1:8080"
 slack_channel := "agentium-eng"
 
-# Release binaries (build once with `just build-release`, then agent recipes use these).
-builder_bin := "target/debug/baml-agent-builder"
-runner_bin := "target/debug/baml-agent-runner"
-graph_exporter_bin := "target/debug/graph_exporter"
+# Binaries (build once with `just build-release`, then agent recipes use these).
+# Respect CARGO_TARGET_DIR when present (.env sets it in some dev setups).
+builder_bin := "${CARGO_TARGET_DIR:-target}/debug/baml-agent-builder"
+runner_bin := "${CARGO_TARGET_DIR:-target}/debug/baml-agent-runner"
+graph_exporter_bin := "${CARGO_TARGET_DIR:-target}/debug/graph_exporter"
 
 # Build release versions of builder, runner, and graph_exporter. Run once before using agent recipes.
 build-release:

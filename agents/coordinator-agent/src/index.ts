@@ -83,6 +83,15 @@ declare function PlanCoordinatorWorkflow(args: {
   conversation_context?: string | null;
 }): Promise<unknown>;
 
+declare function NormalizeIterableOutput(args: {
+  user_message: string;
+  producer_output_text?: string | null;
+  producer_output_data_json?: string | null;
+  consumer_action_hint?: string | null;
+  required_item_fields: string[];
+  max_items?: number | null;
+}): Promise<unknown>;
+
 declare function openToolSession(
   toolName: string,
   openInput?: Record<string, unknown>,
@@ -90,6 +99,9 @@ declare function openToolSession(
 
 const MAX_FANOUT_CONCURRENCY = 3;
 const MAX_TRANSCRIPT_CHARS = 12_000;
+const MAX_NODE_TRANSCRIPT_TEXT_CHARS = 1_200;
+const MAX_NODE_TRANSCRIPT_DATA_CHARS = 900;
+const MAX_NODE_TRANSCRIPT_URLS = 24;
 const MAX_CONVERSATION_CONTEXT_CHARS = 4_000;
 const MAX_SINGLE_SEND_CONTINUE_STEPS = 16;
 const MAX_DELEGATION_CONTINUE_STEPS = 128;
@@ -99,6 +111,7 @@ const MAX_WORKFLOW_ITERATIONS = 8;
 const MAX_HANDOFF_LIST_ITEMS = 12;
 const MAX_HANDOFF_FIELD_CHARS = 700;
 const MAX_HANDOFF_PROMPT_CHARS = 12_000;
+const MAX_NORMALIZATION_INPUT_CHARS = 16_000;
 
 const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
 const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
@@ -825,10 +838,14 @@ function collectDelegatedTexts(value: unknown): string[] {
     if (Array.isArray(typed.chunks)) {
       for (const chunk of typed.chunks) {
         if (!chunk) continue;
+        const before = out.size;
         if (chunk.message) pushMessageParts(chunk.message);
-        for (const text of extractTextsFromSerializedChunkField(chunk.task)) out.add(text);
-        for (const text of extractTextsFromSerializedChunkField(chunk.statusUpdate)) {
-          out.add(text);
+        // Avoid duplicate echoes: task/status payloads usually mirror chunk.message text.
+        if (out.size === before) {
+          for (const text of extractTextsFromSerializedChunkField(chunk.task)) out.add(text);
+          for (const text of extractTextsFromSerializedChunkField(chunk.statusUpdate)) {
+            out.add(text);
+          }
         }
       }
     }
@@ -905,6 +922,73 @@ function parseDiscoverAgentsOutput(value: unknown): DiscoverAgentsOutput | null 
   };
 }
 
+function extractTextFromMessagePayload(value: unknown): string | null {
+  if (!isObject(value) || !Array.isArray(value.parts)) return null;
+  const texts: string[] = [];
+  for (const part of value.parts) {
+    if (!isObject(part) || typeof part.text !== "string") continue;
+    const text = part.text.trim();
+    if (!isMeaningfulDelegatedText(text)) continue;
+    texts.push(text);
+  }
+  if (texts.length === 0) return null;
+  return normalizeText(texts.join(" "));
+}
+
+function detectDelegatedTaskFailure(value: unknown): string | null {
+  const queue: unknown[] = [value];
+  const visited = new WeakSet<object>();
+
+  while (queue.length > 0) {
+    const current = queue.shift();
+    if (current === undefined || current === null) continue;
+
+    if (typeof current === "string") {
+      const parsed = tryParseJsonValue(current);
+      if (parsed) {
+        queue.push(parsed);
+      }
+      continue;
+    }
+
+    if (Array.isArray(current)) {
+      if (visited.has(current)) continue;
+      visited.add(current);
+      for (const entry of current) queue.push(entry);
+      continue;
+    }
+
+    if (!isObject(current)) continue;
+    if (visited.has(current)) continue;
+    visited.add(current);
+
+    const state = normalizeOptionalString(current.state);
+    if (state && state.toUpperCase() === "TASK_STATE_FAILED") {
+      return (
+        extractTextFromMessagePayload(current.message) ||
+        "Delegated task reported TASK_STATE_FAILED."
+      );
+    }
+
+    const statusCandidates = [current.status, current.status_update, current.statusUpdate];
+    for (const status of statusCandidates) {
+      if (!isObject(status)) continue;
+      const statusState = normalizeOptionalString(status.state);
+      if (!statusState || statusState.toUpperCase() !== "TASK_STATE_FAILED") continue;
+      const nestedStatus = isObject(status.status) ? status.status : null;
+      return (
+        extractTextFromMessagePayload(status.message) ||
+        extractTextFromMessagePayload(nestedStatus?.message) ||
+        "Delegated task reported TASK_STATE_FAILED."
+      );
+    }
+
+    for (const nested of Object.values(current)) queue.push(nested);
+  }
+
+  return null;
+}
+
 type ToolSessionStepStatus = "streaming" | "suspended" | "done" | "error" | "unknown";
 
 type ParsedToolSessionStep = {
@@ -933,6 +1017,11 @@ function parseToolSessionStep(step: unknown): ParsedToolSessionStep {
       : "unknown";
 
   const output = "output" in step ? step.output : step;
+  const delegatedFailure = detectDelegatedTaskFailure(output);
+  if (delegatedFailure) {
+    return { status: "error", output, errorMessage: delegatedFailure };
+  }
+
   const errObj = isObject(step.error) ? step.error : null;
   const errorMessage =
     errObj && typeof errObj.message === "string"
@@ -1014,18 +1103,39 @@ async function delegateToAgent(target: RouteTarget, prompt: string): Promise<str
     });
     await sessionHandle.send({ parts: [{ text: prompt }] });
     const drained = await drainToolSession(sessionHandle, MAX_DELEGATION_CONTINUE_STEPS);
-    if (drained.hitStepLimit) {
+    const allOutputs = drained.steps.map((step) => step.output);
+    const terminal = drained.steps[drained.steps.length - 1] || null;
+    const isTerminalError = terminal?.status === "error";
+
+    if (drained.hitStepLimit || isTerminalError) {
+      // Attempt to salvage useful output from steps collected before the
+      // terminal failure.  If any meaningful text was streamed by the child
+      // agent, return it rather than discarding everything.
+      const partial = collectDelegatedTexts(allOutputs);
+      if (partial.length > 0) {
+        try {
+          await sessionHandle.finish();
+        } catch {
+          try {
+            await sessionHandle.abort("Partial output salvaged after terminal error");
+          } catch {
+            // Ignore cleanup errors.
+          }
+        }
+        sessionHandle = null;
+        return partial;
+      }
+      if (isTerminalError) {
+        throw new Error(terminal.errorMessage || "Delegated session returned error status.");
+      }
       throw new Error(
         `Delegated session did not reach terminal status within ${MAX_DELEGATION_CONTINUE_STEPS} continue steps.`,
       );
     }
-    const terminal = drained.steps[drained.steps.length - 1] || null;
-    if (terminal?.status === "error") {
-      throw new Error(terminal.errorMessage || "Delegated session returned error status.");
-    }
+
     await sessionHandle.finish();
     sessionHandle = null;
-    return collectDelegatedTexts(drained.steps.map((step) => step.output));
+    return collectDelegatedTexts(allOutputs);
   } catch (err) {
     if (sessionHandle) {
       const reason = err instanceof Error ? err.message : String(err);
@@ -1288,6 +1398,12 @@ async function synthesize(
 
 const MAX_INTERPOLATION_CHARS = 8_000;
 
+type ForeachNormalizationResult = {
+  items: unknown[];
+  confidence: number;
+  notes: string[];
+};
+
 function isTerminalArtifactStatus(status: NodeArtifactStatus): boolean {
   return status === "completed" || status === "failed" || status === "skipped";
 }
@@ -1401,10 +1517,11 @@ function resolveForeachItemsFromSource(
   }
 
   const sourceSegments = sourcePath.split(".").filter((segment) => segment.length > 0);
-  if (sourceSegments.length === 1) {
+  if (sourceSegments.length >= 1) {
     const artifact = artifacts.get(sourceSegments[0]);
     if (!artifact) return null;
 
+    // Even when planner points to nX.output_text, prefer any structured artifact data first.
     const outputDataArray = findFirstArray(artifact.output_data);
     if (outputDataArray) return outputDataArray;
 
@@ -1416,6 +1533,222 @@ function resolveForeachItemsFromSource(
   }
 
   return null;
+}
+
+function stringifyForPrompt(value: unknown, maxChars = MAX_NORMALIZATION_INPUT_CHARS): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed.slice(0, maxChars) : null;
+  }
+  try {
+    const json = JSON.stringify(value);
+    if (!json) return null;
+    return json.slice(0, maxChars);
+  } catch {
+    const text = String(value).trim();
+    return text.length > 0 ? text.slice(0, maxChars) : null;
+  }
+}
+
+function getSourceArtifactForPath(
+  sourcePath: string,
+  artifacts: Map<string, NodeArtifact>,
+): NodeArtifact | null {
+  const sourceSegments = sourcePath.split(".").filter((segment) => segment.length > 0);
+  if (sourceSegments.length === 0) return null;
+  return artifacts.get(sourceSegments[0]) || null;
+}
+
+function collectItemFieldHints(template: string): string[] {
+  const fields = new Set<string>();
+  const placeholderMatches = template.match(/\{\{([^}]+)\}\}/g) || [];
+
+  for (const placeholder of placeholderMatches) {
+    const body = placeholder.replace(/^\{\{/, "").replace(/\}\}$/, "").trim();
+    const candidates = body.split("||").map((entry) => entry.trim());
+    for (const candidate of candidates) {
+      if (!/^item(?:\.[\w]+)*$/.test(candidate)) continue;
+      if (candidate === "item") continue;
+      fields.add(candidate.slice("item.".length));
+    }
+  }
+
+  return Array.from(fields).slice(0, 20);
+}
+
+function buildConsumerActionHint(node: WorkflowNode): string | null {
+  if (!node.foreach_template?.prompt_template) return null;
+  const normalized = normalizeText(node.foreach_template.prompt_template);
+  if (!normalized) return null;
+  return normalized.slice(0, 500);
+}
+
+function parseNormalizedItemList(
+  value: unknown,
+  maxItems: number,
+): ForeachNormalizationResult | null {
+  if (!isObject(value)) return null;
+  if (typeof value.items_json !== "string") return null;
+
+  const parsed = tryParseJsonValue(value.items_json);
+  let items: unknown[] | null = null;
+  if (Array.isArray(parsed)) {
+    items = parsed;
+  } else {
+    items = findFirstArray(parsed);
+  }
+  if (!items) return null;
+
+  const confidenceRaw =
+    typeof value.confidence === "number" ? value.confidence : Number(value.confidence);
+  const confidence = Number.isFinite(confidenceRaw)
+    ? Math.max(0, Math.min(1, confidenceRaw))
+    : 0.0;
+
+  const notes = Array.isArray(value.notes)
+    ? value.notes.filter((entry): entry is string => typeof entry === "string")
+    : [];
+
+  return {
+    items: items.slice(0, maxItems),
+    confidence,
+    notes,
+  };
+}
+
+function toMatchableText(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value.toLowerCase();
+  if (typeof value === "number" || typeof value === "boolean") return String(value).toLowerCase();
+  return "";
+}
+
+function flattenPrimitiveStrings(value: unknown, out: Set<string>, depth = 0): void {
+  if (depth > 4 || value === undefined || value === null) return;
+  if (typeof value === "string") {
+    const t = value.trim();
+    if (t.length > 0) out.add(t.toLowerCase());
+    return;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    out.add(String(value).toLowerCase());
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) flattenPrimitiveStrings(item, out, depth + 1);
+    return;
+  }
+  if (!isObject(value)) return;
+  for (const nested of Object.values(value)) {
+    flattenPrimitiveStrings(nested, out, depth + 1);
+  }
+}
+
+function dedupeItems(items: unknown[]): unknown[] {
+  const seen = new Set<string>();
+  const deduped: unknown[] = [];
+
+  for (const item of items) {
+    let key = "";
+    if (isObject(item)) {
+      const id = toMatchableText(item.id);
+      const url = toMatchableText(item.url);
+      const title = toMatchableText(item.title);
+      key = `${id}|${url}|${title}`;
+    } else {
+      key = toMatchableText(item);
+    }
+    if (!key) {
+      let fallback = "";
+      try {
+        fallback = JSON.stringify(item) || "";
+      } catch {
+        fallback = String(item);
+      }
+      key = fallback;
+    }
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(item);
+  }
+
+  return deduped;
+}
+
+function filterItemsByEvidence(items: unknown[], evidenceCorpus: string): unknown[] {
+  const corpus = evidenceCorpus.toLowerCase();
+  if (!corpus.trim()) return dedupeItems(items);
+
+  const grounded = items.filter((item) => {
+    const candidates = new Set<string>();
+    flattenPrimitiveStrings(item, candidates);
+
+    // Require at least one non-trivial field to appear in evidence.
+    for (const candidate of candidates) {
+      if (candidate.length < 4) continue;
+      if (corpus.includes(candidate)) return true;
+    }
+    return false;
+  });
+
+  return dedupeItems(grounded);
+}
+
+async function normalizeForeachItemsWithModel(
+  userText: string,
+  node: WorkflowNode,
+  artifacts: Map<string, NodeArtifact>,
+): Promise<ForeachNormalizationResult | null> {
+  if (!node.foreach_from || !node.foreach_template) return null;
+
+  const direct = resolveArtifactPath(node.foreach_from, artifacts);
+  const sourceArtifact = getSourceArtifactForPath(node.foreach_from, artifacts);
+  const producerOutputText =
+    (typeof direct === "string" ? direct : null) ||
+    sourceArtifact?.output_text ||
+    stringifyForPrompt(direct);
+  const producerOutputDataJson =
+    stringifyForPrompt((isObject(direct) || Array.isArray(direct)) ? direct : undefined) ||
+    stringifyForPrompt(sourceArtifact?.output_data);
+
+  const requiredItemFields = collectItemFieldHints(node.foreach_template.prompt_template);
+  const consumerActionHint = buildConsumerActionHint(node);
+  const maxItems = Math.min(
+    node.foreach_template.max_items ?? MAX_FOREACH_EXPANSIONS,
+    MAX_FOREACH_EXPANSIONS,
+  );
+
+  try {
+    const raw = await NormalizeIterableOutput({
+      user_message: userText,
+      producer_output_text: producerOutputText || null,
+      producer_output_data_json: producerOutputDataJson || null,
+      consumer_action_hint: consumerActionHint,
+      required_item_fields: requiredItemFields,
+      max_items: maxItems,
+    });
+    const parsed = parseNormalizedItemList(raw, maxItems);
+    if (!parsed) return null;
+
+    const evidenceCorpus = `${producerOutputText || ""}\n${producerOutputDataJson || ""}`;
+    const filtered = filterItemsByEvidence(parsed.items, evidenceCorpus).slice(0, maxItems);
+    if (filtered.length === 0) {
+      return {
+        items: [],
+        confidence: Math.min(parsed.confidence, 0.5),
+        notes: [...parsed.notes, "No normalized items were grounded in source evidence."],
+      };
+    }
+
+    return {
+      items: filtered,
+      confidence: parsed.confidence,
+      notes: parsed.notes,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function interpolateTemplate(template: string, artifacts: Map<string, NodeArtifact>): string {
@@ -1507,10 +1840,28 @@ function resolvePathFromObject(base: unknown, dottedPath: string): unknown {
   return current;
 }
 
-function interpolateItemTemplate(template: string, item: unknown): string {
-  return template.replace(/\{\{\s*(item(?:\.[\w]+)*)\s*\}\}/g, (match, expr) => {
-    const path = expr === "item" ? "" : expr.slice("item.".length);
+function resolveItemExpression(item: unknown, expression: string): unknown {
+  const candidates = expression
+    .split("||")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  for (const candidate of candidates) {
+    if (!/^item(?:\.[\w]+)*$/.test(candidate)) continue;
+    const path = candidate === "item" ? "" : candidate.slice("item.".length);
     const resolved = resolvePathFromObject(item, path);
+    if (resolved === undefined || resolved === null) continue;
+    if (typeof resolved === "string" && resolved.trim().length === 0) continue;
+    return resolved;
+  }
+
+  return undefined;
+}
+
+function interpolateItemTemplate(template: string, item: unknown): string {
+  return template.replace(/\{\{\s*([^}]+)\s*\}\}/g, (match, exprRaw) => {
+    const expr = exprRaw.trim();
+    const resolved = resolveItemExpression(item, expr);
     if (resolved === undefined) return match;
     if (typeof resolved === "string") return resolved.slice(0, MAX_INTERPOLATION_CHARS);
     try {
@@ -1521,11 +1872,48 @@ function interpolateItemTemplate(template: string, item: unknown): string {
   });
 }
 
-function expandForeachNodeInPlan(
+function buildForeachChildPrompt(
+  promptTemplate: string,
+  item: unknown,
+  itemIndex: number,
+  totalItems: number,
+): string {
+  const rendered = interpolateItemTemplate(promptTemplate, item);
+  const itemContext = stringifyForPrompt(item, 2_000) || "null";
+  const guardrailBlock = [
+    "Coordinator constraints for this foreach item:",
+    `- Item index: ${itemIndex + 1} of ${totalItems}.`,
+    "- Process only this single item and do not iterate over additional items.",
+    "- Perform at most one primary action for this item, then stop.",
+    "- If completion is not possible, return a failure instead of retrying the same write repeatedly.",
+    "Item context JSON:",
+    itemContext,
+  ].join("\n");
+
+  return `${rendered}\n\n${guardrailBlock}`;
+}
+
+function extractUrlsFromText(text: string, maxUrls = MAX_NODE_TRANSCRIPT_URLS): string[] {
+  const matches = text.match(/https?:\/\/[^\s)>\]}]+/g) || [];
+  if (matches.length === 0) return [];
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of matches) {
+    const cleaned = raw.replace(/[.,;:!?]+$/g, "");
+    if (!cleaned || seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    deduped.push(cleaned);
+    if (deduped.length >= maxUrls) break;
+  }
+  return deduped;
+}
+
+async function expandForeachNodeInPlan(
   plan: WorkflowPlan,
   node: WorkflowNode,
   artifacts: Map<string, NodeArtifact>,
-): NodeArtifact {
+  userText: string,
+): Promise<NodeArtifact> {
   const started_at = new Date().toISOString();
   if (!node.foreach_from || !node.foreach_template) {
     return {
@@ -1537,12 +1925,27 @@ function expandForeachNodeInPlan(
     };
   }
 
-  const resolvedItems = resolveForeachItemsFromSource(node.foreach_from, artifacts);
+  let resolvedItems = resolveForeachItemsFromSource(node.foreach_from, artifacts);
+  let normalizationMeta: {
+    confidence: number;
+    notes: string[];
+  } | null = null;
+  if (!resolvedItems) {
+    const normalized = await normalizeForeachItemsWithModel(userText, node, artifacts);
+    if (normalized) {
+      resolvedItems = normalized.items;
+      normalizationMeta = {
+        confidence: normalized.confidence,
+        notes: normalized.notes,
+      };
+    }
+  }
+
   if (!resolvedItems) {
     return {
       node_id: node.id,
       status: "failed",
-      error: `foreach source '${node.foreach_from}' did not resolve to an array-compatible value.`,
+      error: `foreach source '${node.foreach_from}' did not resolve to an array-compatible value, and coordinator normalization could not recover iterable items.`,
       started_at,
       ended_at: new Date().toISOString(),
     };
@@ -1575,7 +1978,12 @@ function expandForeachNodeInPlan(
       kind: "call_agent",
       depends_on: [...node.depends_on],
       target: node.foreach_template.target,
-      prompt_template: interpolateItemTemplate(node.foreach_template.prompt_template, items[i]),
+      prompt_template: buildForeachChildPrompt(
+        node.foreach_template.prompt_template,
+        items[i],
+        i,
+        items.length,
+      ),
       rationale: `Expanded from foreach node ${node.id}`,
     });
   }
@@ -1594,6 +2002,7 @@ function expandForeachNodeInPlan(
     output_data: {
       expanded_node_ids: childIds,
       expanded_count: childIds.length,
+      normalization: normalizationMeta || undefined,
     },
     started_at,
     ended_at: new Date().toISOString(),
@@ -1861,8 +2270,24 @@ function buildWorkflowTranscript(
     const status = artifact.status;
     const prefix = `[${node.id}|${node.kind}|${status}]`;
     if (artifact.status === "completed" && artifact.output_text) {
-      parts.push(`${prefix}\n${artifact.output_text}`);
+      const condensed = artifact.output_text.replace(/\s+/g, " ").trim();
+      parts.push(`${prefix}\n${condensed.slice(0, MAX_NODE_TRANSCRIPT_TEXT_CHARS)}`);
+      const urls = extractUrlsFromText(artifact.output_text);
+      if (urls.length > 0) {
+        parts.push(`${prefix} URLS: ${urls.join(" | ")}`);
+      }
+      const dataSnippet = stringifyForPrompt(artifact.output_data, MAX_NODE_TRANSCRIPT_DATA_CHARS);
+      if (dataSnippet) {
+        parts.push(`${prefix} DATA: ${dataSnippet}`);
+      }
       continue;
+    }
+    if (artifact.status === "completed" && artifact.output_data !== undefined) {
+      const dataSnippet = stringifyForPrompt(artifact.output_data, MAX_NODE_TRANSCRIPT_DATA_CHARS);
+      if (dataSnippet) {
+        parts.push(`${prefix} DATA: ${dataSnippet}`);
+        continue;
+      }
     }
     if (artifact.status === "failed") {
       parts.push(`${prefix} ERROR: ${artifact.error || "unknown failure"}`);
@@ -2001,7 +2426,12 @@ async function executeWorkflowPlanPhase3(
         if (artifacts.has(node.id)) continue;
         if (node.kind !== "foreach") continue;
         if (!nodeDependenciesCompleted(node, artifacts)) continue;
-        const expansionArtifact = expandForeachNodeInPlan(plan, node, artifacts);
+        const expansionArtifact = await expandForeachNodeInPlan(
+          plan,
+          node,
+          artifacts,
+          userText,
+        );
         artifacts.set(node.id, expansionArtifact);
         progressed = true;
       }

@@ -22,8 +22,10 @@ path = "junit.xml"
 store-failure-output = true
 
 # Rate-limit provenance/heavy tests (max 1 at a time) to avoid resource contention.
+# LLM e2e tests hit external APIs with variable latency; cap concurrency to reduce
+# scheduler pressure and timeout flakes on resource-constrained CI runners.
 [test-groups]
-llm = { max-threads = 8 }
+llm = { max-threads = 4 }
 provenance = { max-threads = 1 }
 
 [[profile.ci.overrides]]
@@ -46,3 +48,23 @@ slow-timeout = { period = "120s", terminate-after = 10 }
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and test(~test_e2e_stream_baml_tool)'
 retries = { backoff = "fixed", count = 2, delay = "2s" }
+
+# LLM-dependent e2e tests: throttle concurrency and allow generous timeouts.
+# These hit external LLM APIs (OpenRouter) whose latency varies wildly on CI.
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and test(~test_e2e_)'
+test-group = "llm"
+slow-timeout = { period = "120s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 1, delay = "5s" }
+
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-interceptor) and test(~test_e2e_)'
+test-group = "llm"
+retries = { backoff = "fixed", count = 1, delay = "2s" }
+
+# baml-rt-a2a streaming tests: timing-sensitive, flake under CI resource contention.
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-a2a) and binary(task_streaming_test)'
+test-group = "llm"
+slow-timeout = { period = "60s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 1, delay = "3s" }

@@ -581,8 +581,21 @@ impl StreamCollectorContext {
             // When channel closes or times out without explicit terminal yield, emit a completion
             // chunk so provenance records task_execution_ended. The collector knows the stream
             // ended; this is canonical, not synthetic.
+            let last_state = self.all.last().and_then(chunk_state);
+            let last_has_terminal_state = matches!(
+                last_state.as_deref(),
+                Some(
+                    "TASK_STATE_COMPLETED"
+                        | "TASK_STATE_FAILED"
+                        | "TASK_STATE_REJECTED"
+                        | "TASK_STATE_CANCELED"
+                )
+            );
             let payload = match completion {
                 StreamCompletion::ChannelClosed | StreamCompletion::Timeout => {
+                    make_channel_closed_completion_chunk(self.all.last(), &self.scope, completion)
+                }
+                StreamCompletion::SemanticFinal if !last_has_terminal_state => {
                     make_channel_closed_completion_chunk(self.all.last(), &self.scope, completion)
                 }
                 _ => Value::Null,

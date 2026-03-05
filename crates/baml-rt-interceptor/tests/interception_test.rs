@@ -658,8 +658,22 @@ async fn test_e2e_llm_interceptor_with_baml_execution() {
     let greeting = result.unwrap();
     assert!(greeting.as_str().is_some(), "Result should be a string");
 
-    // Give a moment for async completion notifications to process
-    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    // Poll for async completion notification instead of a fixed sleep.
+    // The on_llm_call_complete callback fires asynchronously after trace
+    // events are collected, so a fixed delay is a race condition.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let guard = completions.lock().await;
+        if !guard.is_empty() {
+            break;
+        }
+        drop(guard);
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "LLM interceptor should have received completion notification within 5 s"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     // Verify interceptor was called
     let calls_guard = calls.lock().await;

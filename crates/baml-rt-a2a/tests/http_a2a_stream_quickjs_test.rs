@@ -44,16 +44,27 @@ fn task_state_from_chunk(chunk: &Value) -> Option<String> {
             .and_then(|s| s.as_str())
             .map(String::from)
     };
-    chunk.get("task").and_then(state_from).or_else(|| {
-        let su = chunk.get("statusUpdate")?;
-        // Flat (e.g. make_submitted_chunk) has status directly; nested (StreamChunk) has statusUpdate/status_update.
-        let ev = if su.get("status").is_some() {
-            su
-        } else {
-            status_update_event(su)?
-        };
-        state_from(ev)
-    })
+    chunk
+        .get("task")
+        .and_then(|task| {
+            state_from(task).or_else(|| {
+                task.as_str().and_then(|raw| {
+                    serde_json::from_str::<Value>(raw)
+                        .ok()
+                        .and_then(|parsed| state_from(&parsed))
+                })
+            })
+        })
+        .or_else(|| {
+            let su = chunk.get("statusUpdate")?;
+            // Flat (e.g. make_submitted_chunk) has status directly; nested (StreamChunk) has statusUpdate/status_update.
+            let ev = if su.get("status").is_some() {
+                su
+            } else {
+                status_update_event(su)?
+            };
+            state_from(ev)
+        })
 }
 
 /// Inner status update event from StreamChunk::StatusUpdate (variant value has statusUpdate or status_update).

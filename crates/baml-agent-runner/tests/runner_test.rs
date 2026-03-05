@@ -23,10 +23,10 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, UuidId},
 };
 #[cfg(feature = "llm-tests")]
+use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceContextMessage, ProvenanceWriter};
 use baml_rt_provenance::{
-    AgentType, ProvEvent, ProvenanceContextMessage, ProvenanceContextReader, ProvenanceWriter,
+    GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvenanceContextReader,
 };
-use baml_rt_provenance::{GraphqliteProvenanceStore, GraphqliteStoreBuilder};
 use baml_rt_tools::bundles::BundleType;
 #[cfg(feature = "slack")]
 use baml_tools_slack as _;
@@ -417,8 +417,14 @@ impl A2aRequestHandler for PackageTargetRouter {
 
 async fn setup_internal_a2a_router_agents(
     target_package: &str,
-) -> (baml_rt::A2aAgent, baml_rt::A2aAgent) {
+) -> (
+    baml_rt::A2aAgent,
+    baml_rt::A2aAgent,
+    Arc<GraphqliteProvenanceStore>,
+    Arc<GraphqliteProvenanceStore>,
+) {
     let responder_manager = BamlRuntimeManager::new().unwrap();
+    let responder_store = build_graphqlite_test_store();
     let responder_code = r#"
 globalThis.onChatMessage = async function(message) {
   const text = message?.parts?.[0]?.text || "unknown";
@@ -430,7 +436,7 @@ globalThis.onChatMessage = async function(message) {
         .with_runtime_manager(responder_manager)
         .with_init_js(responder_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_graphqlite_store(build_graphqlite_test_store())
+        .with_graphqlite_store(responder_store.clone())
         .build()
         .await
         .unwrap();
@@ -441,6 +447,7 @@ globalThis.onChatMessage = async function(message) {
 
     let initiator_manager = BamlRuntimeManager::new().unwrap();
     let target_literal = serde_json::to_string(target_package).expect("serialize target package");
+    let initiator_store = build_graphqlite_test_store();
     let initiator_code = r#"
 globalThis.onChatMessage = async function(message) {
     const userText = message?.parts?.[0]?.text || "ping";
@@ -499,12 +506,148 @@ globalThis.onChatMessage = async function(message) {
         .with_a2a_session_tool(RegistrationMode::Register)
         .with_a2a_session_router(router)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_graphqlite_store(build_graphqlite_test_store())
+        .with_graphqlite_store(initiator_store.clone())
         .build()
         .await
         .unwrap();
 
-    (initiator_agent, responder_agent)
+    (
+        initiator_agent,
+        responder_agent,
+        initiator_store,
+        responder_store,
+    )
+}
+
+async fn setup_internal_a2a_parallel_fanout_agents(
+    target_package: &str,
+    fanout: usize,
+) -> (
+    baml_rt::A2aAgent,
+    baml_rt::A2aAgent,
+    Arc<GraphqliteProvenanceStore>,
+    Arc<GraphqliteProvenanceStore>,
+) {
+    let responder_manager = BamlRuntimeManager::new().unwrap();
+    let responder_store = build_graphqlite_test_store();
+    let responder_code = r#"
+globalThis.onChatMessage = async function(message) {
+  const text = message?.parts?.[0]?.text || "unknown";
+  __chat_yield({ message: { parts: [{ text: `Responder saw: ${text}` }] } });
+  __chat_yield({ final: true });
+};
+"#;
+    let responder_agent = baml_rt::A2aAgent::builder()
+        .with_runtime_manager(responder_manager)
+        .with_init_js(responder_code)
+        .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_graphqlite_store(responder_store.clone())
+        .build()
+        .await
+        .unwrap();
+
+    let router: Arc<dyn A2aRequestHandler> = Arc::new(PackageTargetRouter {
+        routes: HashMap::from([("responder-agent".to_string(), responder_agent.clone())]),
+    });
+
+    let initiator_manager = BamlRuntimeManager::new().unwrap();
+    let target_literal = serde_json::to_string(target_package).expect("serialize target package");
+    let fanout_literal = fanout.to_string();
+    let initiator_store = build_graphqlite_test_store();
+    let initiator_code = r#"
+globalThis.onChatMessage = async function(message) {
+  const baseText = message?.parts?.[0]?.text || "ping parallel";
+  const count = __FANOUT__;
+  const work = Array.from({ length: count }, (_v, i) => `${baseText} ${i}`);
+
+  function collectTextsAndChildIds(chunks) {
+    const texts = [];
+    const childIds = new Set();
+    for (const rawChunk of chunks) {
+      let chunk = rawChunk;
+      if (typeof rawChunk === "string" && rawChunk.trim().startsWith("{")) {
+        try {
+          chunk = JSON.parse(rawChunk);
+        } catch (_e) {
+          continue;
+        }
+      }
+      const t =
+        chunk?.message?.parts?.[0]?.text ??
+        chunk?.task?.status?.message?.parts?.[0]?.text ??
+        chunk?.statusUpdate?.status?.message?.parts?.[0]?.text ??
+        null;
+      if (typeof t === "string" && t.length > 0) {
+        texts.push(t);
+      }
+      const taskVal = chunk?.task ?? chunk?.statusUpdate ?? null;
+      let task = taskVal;
+      if (typeof taskVal === "string" && taskVal.trim().startsWith("{")) {
+        try {
+          task = JSON.parse(taskVal);
+        } catch (_e) {
+          task = null;
+        }
+      }
+      const taskId =
+        (typeof task?.id === "string" ? task.id : null) ??
+        (typeof task?.taskId === "string" ? task.taskId : null);
+      if (taskId && taskId.startsWith("a2a-child-")) {
+        childIds.add(taskId);
+      }
+    }
+    return { texts, child_task_ids: Array.from(childIds) };
+  }
+
+  const results = await Promise.all(work.map(async (text, index) => {
+    try {
+      const session = await openToolSession("system/internal_a2a", {
+        target: { agent_package: __TARGET_PACKAGE__, agent_instance_id: "default" }
+      });
+      await session.send({ parts: [{ text }] });
+      let next = await session.continue();
+      const allChunks = [];
+      while (next?.status === "streaming" || next?.status === "suspended") {
+        const batch =
+          Array.isArray(next?.chunks) ? next.chunks :
+          Array.isArray(next?.output?.chunks) ? next.output.chunks :
+          [];
+        allChunks.push(...batch);
+        next = await session.continue();
+      }
+      if (next?.output?.chunks) allChunks.push(...next.output.chunks);
+      await session.finish();
+
+      const collected = collectTextsAndChildIds(allChunks);
+      return { index, input: text, ...collected };
+    } catch (e) {
+      return { index, input: text, error: String(e), texts: [], child_task_ids: [] };
+    }
+  }));
+
+  __chat_yield({ message: { parts: [{ text: JSON.stringify(results) }] } });
+  __chat_yield({ final: true });
+};
+"#
+    .replace("__TARGET_PACKAGE__", &target_literal)
+    .replace("__FANOUT__", &fanout_literal);
+    let initiator_agent = baml_rt::A2aAgent::builder()
+        .with_runtime_manager(initiator_manager)
+        .with_init_js(initiator_code)
+        .with_a2a_session_tool(RegistrationMode::Register)
+        .with_a2a_session_router(router)
+        .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_graphqlite_store(initiator_store.clone())
+        .build()
+        .await
+        .unwrap();
+
+    (
+        initiator_agent,
+        responder_agent,
+        initiator_store,
+        responder_store,
+    )
 }
 
 async fn setup_task_lifecycle_demo_agent() -> baml_rt::A2aAgent {
@@ -1076,7 +1219,8 @@ async fn test_e2e_argument_sketch_two_agents() {
         return;
     }
 
-    let timeout_duration = std::time::Duration::from_secs(120);
+    // Real-model latency can exceed two minutes under CI load.
+    let timeout_duration = std::time::Duration::from_secs(180);
     let result =
         tokio::time::timeout(timeout_duration, run_argument_sketch_two_agents_body()).await;
     match result {
@@ -1350,7 +1494,7 @@ async fn test_e2e_stream_js_tool() {
 async fn test_internal_a2a_can_route_to_different_agent_package() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
 
-    let (initiator_agent, _responder_agent) =
+    let (initiator_agent, _responder_agent, _initiator_store, _responder_store) =
         setup_internal_a2a_router_agents("responder-agent").await;
     let request = send_message_request(
         SendMessageRequest {
@@ -1387,7 +1531,7 @@ async fn test_internal_a2a_can_route_to_different_agent_package() {
 async fn test_internal_a2a_context_id_propagates() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
 
-    let (initiator_agent, _responder_agent) =
+    let (initiator_agent, _responder_agent, _initiator_store, _responder_store) =
         setup_internal_a2a_router_agents("responder-agent").await;
     let context_id = ContextId::new(44, 1);
     let request = send_message_request(
@@ -1422,11 +1566,174 @@ async fn test_internal_a2a_context_id_propagates() {
     );
 }
 
+/// Parallel same-context fanout: 6 child A2A streams under one parent.
+///
+/// **Ignored** — the global single-thread `HANDOVER_LANE` serializes all child
+/// streams, causing the parent to idle-timeout before children complete.
+/// Tracked in `runtime_refactor.md` (Phase 1 + Phase 3); un-ignore after the
+/// bridge-local dispatcher and teardown ownership isolation are in place.
+#[tokio::test]
+#[ignore = "blocked on runtime_refactor.md Phase 1 (bridge-local dispatcher) + Phase 3 (teardown ownership)"]
+async fn test_internal_a2a_parallel_same_context_child_tasks_and_provenance() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+
+    let request_count = 6usize;
+    let (initiator_agent, _responder_agent, _initiator_store, responder_store) =
+        setup_internal_a2a_parallel_fanout_agents("responder-agent", request_count).await;
+    let context_id = ContextId::new(88, 1);
+    let request = send_message_request(
+        SendMessageRequest {
+            message: user_message("route-par-root", "ping parallel", Some(context_id.clone())),
+            configuration: None,
+            metadata: None,
+            tenant: None,
+            extra: std::collections::HashMap::new(),
+        },
+        "corr-1700000000200-1",
+    );
+    let responses = collect_stream_responses(&initiator_agent, request)
+        .await
+        .expect("parallel fanout request");
+    let chunks = chunks_from_responses(&responses);
+    fn collect_part_texts(value: &Value, out: &mut Vec<String>) {
+        match value {
+            Value::Object(map) => {
+                if let Some(parts) = map.get("parts").and_then(Value::as_array) {
+                    for part in parts {
+                        if let Some(text) = part.get("text").and_then(Value::as_str) {
+                            out.push(text.to_string());
+                        }
+                    }
+                }
+                for child in map.values() {
+                    collect_part_texts(child, out);
+                }
+            }
+            Value::Array(items) => {
+                for item in items {
+                    collect_part_texts(item, out);
+                }
+            }
+            Value::String(raw) => {
+                let trimmed = raw.trim_start();
+                if (trimmed.starts_with('{') || trimmed.starts_with('['))
+                    && let Ok(parsed) = serde_json::from_str::<Value>(raw)
+                {
+                    collect_part_texts(&parsed, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut candidate_texts = message_texts_from_chunks(&chunks);
+    for chunk in &chunks {
+        collect_part_texts(chunk, &mut candidate_texts);
+    }
+    let summary_text = candidate_texts
+        .iter()
+        .find(|t| {
+            let trimmed = t.trim();
+            !trimmed.is_empty()
+                && trimmed != "null"
+                && serde_json::from_str::<Value>(trimmed)
+                    .ok()
+                    .and_then(|v| v.as_array().map(|_| ()))
+                    .is_some()
+        })
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "parallel summary message; collected texts: {:?}; raw: {}",
+                candidate_texts,
+                serde_json::to_string_pretty(&responses).unwrap_or_else(|_| "?".to_string())
+            )
+        });
+    let parsed_summary: Value =
+        serde_json::from_str(&summary_text).expect("summary message should be valid JSON");
+    let results = parsed_summary
+        .as_array()
+        .cloned()
+        .expect("summary should be an array");
+    assert_eq!(
+        results.len(),
+        request_count,
+        "Expected {request_count} fanout results"
+    );
+    let mut child_ids_from_summary: HashSet<String> = HashSet::new();
+    for i in 0..request_count {
+        let expected_input = format!("ping parallel {i}");
+        let expected = format!("Responder saw: ping parallel {i}");
+        let row = results
+            .iter()
+            .find(|r| {
+                r.get("index").and_then(Value::as_u64) == Some(i as u64)
+                    && r.get("input").and_then(Value::as_str) == Some(expected_input.as_str())
+            })
+            .expect("result row for index");
+        assert!(
+            row.get("error").is_none(),
+            "Fanout result unexpectedly contains error for index {i}: {row:?}"
+        );
+        let texts = row
+            .get("texts")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.as_str().map(|s| s.contains(&expected)).unwrap_or(false)),
+            "Expected delegated echo in texts for index {i}; row={row:?}"
+        );
+        let ids: Vec<String> = row
+            .get("child_task_ids")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(ToOwned::to_owned)
+            .collect();
+        assert_eq!(
+            ids.len(),
+            1,
+            "Expected exactly one child task id for index {i}, got {ids:?}"
+        );
+        child_ids_from_summary.extend(ids);
+    }
+    assert_eq!(
+        child_ids_from_summary.len(),
+        request_count,
+        "Expected one unique child task id per fanout branch, got {child_ids_from_summary:?}"
+    );
+
+    // Provenance regression: all delegated user messages must be queryable under the same root context.
+    let mut matched_messages = 0usize;
+    for _ in 0..60 {
+        let messages = responder_store
+            .context_messages(&context_id, Some(200))
+            .await
+            .expect("read responder context messages");
+        matched_messages = messages
+            .iter()
+            .filter(|m| m.content.iter().any(|c| c.starts_with("ping parallel ")))
+            .count();
+        if matched_messages >= request_count {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        matched_messages >= request_count,
+        "Expected at least {request_count} delegated user messages in responder provenance context, got {matched_messages}"
+    );
+}
+
 #[tokio::test]
 async fn test_internal_a2a_unknown_target_surfaces_error() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
 
-    let (initiator_agent, _responder_agent) =
+    let (initiator_agent, _responder_agent, _initiator_store, _responder_store) =
         setup_internal_a2a_router_agents("missing-agent").await;
     let request = send_message_request(
         SendMessageRequest {

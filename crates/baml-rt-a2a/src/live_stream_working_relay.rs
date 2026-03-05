@@ -16,7 +16,7 @@ use baml_rt_core::{
 };
 
 use crate::{
-    a2a_types::StreamChunk,
+    a2a_types::{StreamChunk, StreamChunkView},
     auto_status::{make_working_status_event, task_id_from_metadata, working_status_metadata_tool},
     live_stream::WorkingChunkPusher,
 };
@@ -40,8 +40,9 @@ impl LiveStreamWorkingRelay {
 impl EffectSubscriber for LiveStreamWorkingRelay {
     async fn on_effect(&self, event: &EffectEvent) -> baml_rt_core::Result<()> {
         if let EffectEvent::ToolStreamChunk { context_id, chunk } = event {
+            let view = StreamChunkView::new(chunk.clone());
             self.pusher
-                .push_relay_chunk(context_id, chunk.clone())
+                .push_relay_chunk(context_id, view.task_id(), chunk.clone())
                 .await;
             return Ok(());
         }
@@ -79,7 +80,9 @@ impl EffectSubscriber for LiveStreamWorkingRelay {
         let status_ev = make_working_status_event(&context_id, task_id_opt.as_ref(), text, meta);
         let chunk_value = to_json_value(&StreamChunk::status_update(status_ev))
             .map_err(|e| baml_rt_core::BamlRtError::InvalidArgument(e.to_string()))?;
-        self.pusher.push_relay_chunk(&context_id, chunk_value).await;
+        self.pusher
+            .push_relay_chunk(&context_id, task_id_opt.as_ref(), chunk_value)
+            .await;
         Ok(())
     }
 }

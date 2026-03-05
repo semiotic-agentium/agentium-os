@@ -331,7 +331,11 @@ impl BamlExecutor {
                             // outcome and risk showing Success in the sequence diagram when the
                             // plan had empty steps.
                             let handle = collector.as_ref().map(|c| {
-                                BamlLLMCollector::completion_handle(c.clone(), start_time)
+                                BamlLLMCollector::completion_handle(
+                                    c.clone(),
+                                    start_time,
+                                    scope.clone(),
+                                )
                             });
                             return Ok((json_value, handle));
                         }
