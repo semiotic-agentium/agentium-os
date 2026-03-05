@@ -455,6 +455,8 @@ pub struct StreamChunkView {
 }
 
 impl StreamChunkView {
+    const MAX_TASK_ID_PARSE_DEPTH: usize = 4;
+
     /// Build a typed view from the wire chunk. Parses task_id and task_state once; use accessors thereafter.
     pub fn new(value: Value) -> Self {
         let task_id = Self::parse_task_id(&value);
@@ -492,9 +494,17 @@ impl StreamChunkView {
     }
 
     fn extract_task_id_str(v: &Value) -> Option<String> {
+        Self::extract_task_id_str_with_depth(v, 0)
+    }
+
+    fn extract_task_id_str_with_depth(v: &Value, depth: usize) -> Option<String> {
+        if depth > Self::MAX_TASK_ID_PARSE_DEPTH {
+            return None;
+        }
+
         if let Some(raw_json) = v.as_str() {
             let parsed = serde_json::from_str::<Value>(raw_json).ok()?;
-            return Self::extract_task_id_str(&parsed);
+            return Self::extract_task_id_str_with_depth(&parsed, depth + 1);
         }
 
         let from_task = || {
@@ -503,16 +513,14 @@ impl StreamChunkView {
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned)
         };
+        let from_direct_id = || v.get("id").and_then(Value::as_str).map(ToOwned::to_owned);
         let from_stringified_task = || {
             let raw = v.get("task").and_then(Value::as_str)?;
             let parsed = serde_json::from_str::<Value>(raw).ok()?;
-            parsed
-                .get("id")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
+            Self::extract_task_id_str_with_depth(&parsed, depth + 1)
         };
         let from_status_update = || {
-            let status_update = v.get("statusUpdate")?;
+            let status_update = v.get("statusUpdate").or_else(|| v.get("status_update"))?;
             status_update
                 .get("taskId")
                 .or_else(|| {
@@ -529,22 +537,12 @@ impl StreamChunkView {
                 .map(ToOwned::to_owned)
         };
         let from_stringified_status_update = || {
-            let raw = v.get("statusUpdate").and_then(Value::as_str)?;
+            let raw = v
+                .get("statusUpdate")
+                .or_else(|| v.get("status_update"))
+                .and_then(Value::as_str)?;
             let parsed = serde_json::from_str::<Value>(raw).ok()?;
-            parsed
-                .get("taskId")
-                .or_else(|| {
-                    parsed
-                        .get("statusUpdate")
-                        .and_then(|nested| nested.get("taskId"))
-                })
-                .or_else(|| {
-                    parsed
-                        .get("status_update")
-                        .and_then(|nested| nested.get("taskId"))
-                })
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
+            Self::extract_task_id_str_with_depth(&parsed, depth + 1)
         };
         let from_message = || {
             v.get("message")
@@ -560,7 +558,7 @@ impl StreamChunkView {
         let from_chunks_array = || {
             let chunks = v.get("chunks")?.as_array()?;
             for chunk in chunks {
-                if let Some(task_id) = Self::extract_task_id_str(chunk) {
+                if let Some(task_id) = Self::extract_task_id_str_with_depth(chunk, depth + 1) {
                     return Some(task_id);
                 }
             }
@@ -568,10 +566,11 @@ impl StreamChunkView {
         };
         let from_chunk = || {
             let chunk = v.get("chunk")?;
-            Self::extract_task_id_str(chunk)
+            Self::extract_task_id_str_with_depth(chunk, depth + 1)
         };
 
         from_task()
+            .or_else(from_direct_id)
             .or_else(from_stringified_task)
             .or_else(from_status_update)
             .or_else(from_stringified_status_update)
@@ -665,7 +664,7 @@ pub struct StreamResponse {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::StreamChunkView;
 
@@ -706,6 +705,17 @@ mod tests {
     }
 
     #[test]
+    fn stream_chunk_view_parses_task_id_from_top_level_status_update_alias() {
+        let view = StreamChunkView::new(json!({
+            "status_update": {
+                "taskId": "task-snake-1",
+                "status": { "state": "TASK_STATE_WORKING" }
+            }
+        }));
+        assert_eq!(view.task_id().map(|id| id.as_str()), Some("task-snake-1"));
+    }
+
+    #[test]
     fn stream_chunk_view_parses_task_id_from_stringified_chunk_payload() {
         let view = StreamChunkView::new(json!({
             "chunk": "{\"statusUpdate\":{\"taskId\":\"task-nested-1\"}}"
@@ -724,5 +734,15 @@ mod tests {
             ]
         }));
         assert_eq!(view.task_id().map(|id| id.as_str()), Some("task-array-1"));
+    }
+
+    #[test]
+    fn stream_chunk_view_task_id_parsing_stops_after_depth_cap() {
+        let mut nested: Value = json!({ "taskId": "task-too-deep" });
+        for _ in 0..10 {
+            nested = Value::String(nested.to_string());
+        }
+        let view = StreamChunkView::new(nested);
+        assert!(view.task_id().is_none());
     }
 }

@@ -79,8 +79,12 @@ END {
       if ((from_id in excluded) || (to_id in excluded)) {
         continue;
       }
-      # Remove edge labels for stage readability.
-      gsub(/[[:space:]]*\[label="[^"]*"\]/, "", line);
+      # Remove edge labels for stage readability while preserving any other attributes.
+      gsub(/label="[^"]*",?[[:space:]]*/, "", line);
+      gsub(/\[[[:space:]]*,[[:space:]]*/, "[", line);
+      gsub(/,[[:space:]]*,/, ",", line);
+      gsub(/,[[:space:]]*\]/, "]", line);
+      gsub(/\[[[:space:]]*\]/, "", line);
       print line;
       continue;
     }

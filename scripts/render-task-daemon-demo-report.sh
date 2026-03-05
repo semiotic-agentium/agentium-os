@@ -81,12 +81,20 @@ if [ -s "$JSONL_OUT" ]; then
           if any(.[]; display_title(.) == display_title($task)) then . else . + [$task] end
         );
 
+      def normalized_priority($task):
+        (($task.priority // "unknown") | ascii_downcase) as $priority
+        | if ($priority == "high" or $priority == "medium" or $priority == "low") then
+            $priority
+          else
+            "unknown"
+          end;
+
       if (last.derived_tasks // [] | length) == 0 then
         "<li>No derived tasks captured.</li>"
       else
         (last.derived_tasks // [] | dedupe_by_display | .[0:6][])
-        | "<li><span class=\"pill " + (.priority // "unknown") + "\">"
-          + ((.priority // "unknown") | ascii_upcase)
+        | "<li><span class=\"pill " + normalized_priority(.) + "\">"
+          + (normalized_priority(.) | ascii_upcase)
           + "</span><span class=\"task-title\">"
           + (shorten(display_title(.)) | @html)
           + "</span></li>"

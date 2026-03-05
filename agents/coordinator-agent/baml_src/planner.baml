@@ -117,8 +117,8 @@ function PlanCoordinatorWorkflow(
   "#
 }
 
-// Intentionally retained for planner quality experiments and offline eval baselines.
-// Runtime currently calls PlanCoordinatorWorkflow only.
+// Alternative planner variant that biases harder toward best-effort execution.
+// Useful for experimentation and evaluation against the primary planner prompt.
 function PlanCoordinatorWorkflowBestEffort(
   user_message: string,
   available_agents: AgentCandidate[],

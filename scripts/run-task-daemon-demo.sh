@@ -46,7 +46,7 @@ if [ -f .env ]; then
 fi
 
 if [ "$RESET_STATE" = "1" ]; then
-  rm -f "$STATE_FILE" "$JSONL_OUT" "$RUN_LOG" "$MERMAID_OUT" "$DOT_OUT" "$STAGE_DOT_OUT" "$SVG_OUT" "$METRICS_OUT" "$SUMMARY_OUT" "$REPORT_OUT"
+  rm -f "$STATE_FILE" "$JSONL_OUT" "$RUN_LOG" "$COORDINATOR_LOG" "$MERMAID_OUT" "$DOT_OUT" "$STAGE_DOT_OUT" "$SVG_OUT" "$METRICS_OUT" "$SUMMARY_OUT" "$REPORT_OUT"
 fi
 
 COORDINATOR_LOG_START_LINE=0
@@ -154,6 +154,10 @@ if curl -fsS "$METRICS_URL" >"$TMP_METRICS" 2>"$TMP_METRICS_ERR"; then
   mv "$TMP_METRICS" "$METRICS_OUT"
   jq . "$METRICS_OUT"
 else
+  if [ -s "$TMP_METRICS_ERR" ]; then
+    echo "Metrics fetch error detail:" >&2
+    sed 's/^/  /' "$TMP_METRICS_ERR" >&2
+  fi
   rm -f "$TMP_METRICS_ERR"
   rm -f "$TMP_METRICS"
   echo "Could not fetch context metrics from ${METRICS_URL}; continuing without live metrics." >&2

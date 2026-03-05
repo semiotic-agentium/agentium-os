@@ -28,7 +28,7 @@ In `.env`:
 ## Slack App Setup (From Scratch)
 
 1. Create a new Slack app from manifest.
-   - Use [docs/slack-app-manifest.example.yaml](/Users/joseph/git/semiotic-agentium/agent-platform/docs/slack-app-manifest.example.yaml)
+   - Use [slack-app-manifest.example.yaml](./slack-app-manifest.example.yaml)
 2. Confirm OAuth redirect URL matches your helper config.
    - Default: `https://localhost:8787/slack/oauth/callback`
 3. Install app to workspace and capture:
