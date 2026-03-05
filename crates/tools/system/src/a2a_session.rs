@@ -3,7 +3,10 @@
 use std::{collections::VecDeque, sync::Arc};
 
 use async_trait::async_trait;
-use baml_rt_core::{A2aRequestHandler, A2aWireRequest, Result, context, ids::TaskId};
+use baml_rt_core::{
+    A2aRequestHandler, A2aWireRequest, Result, context,
+    ids::{ExternalId, TaskId},
+};
 use baml_rt_tools::{
     BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
     ToolSession, ToolSessionError, ToolStep,
@@ -78,6 +81,10 @@ impl ToolHandler for A2aSessionToolHandler {
             ctx,
             handler: self.handler.clone(),
             target: open.target,
+            child_task_id: TaskId::from_external(ExternalId::new(format!(
+                "a2a-child-{id}",
+                id = uuid::Uuid::new_v4()
+            ))),
             queue: VecDeque::new(),
             output_rx: None,
             stream_handle: None,
@@ -92,6 +99,8 @@ struct A2aSession {
     ctx: ToolSessionContext,
     handler: Arc<dyn A2aRequestHandler>,
     target: InternalA2aTarget,
+    /// Stable delegated child task id for this tool session; reused across send/resume turns.
+    child_task_id: TaskId,
     queue: VecDeque<InternalA2aNextOutput>,
     output_rx: Option<async_channel::Receiver<InternalA2aNextOutput>>,
     /// JoinHandle for the task that consumes the A2A stream. Aborted in Drop so the task
@@ -134,9 +143,9 @@ fn build_send_stream_request(
     parts: Vec<ConversationPart>,
     target: &InternalA2aTarget,
     context_id: &baml_rt_core::ids::ContextId,
+    child_task_id: &TaskId,
     parent_task_id: Option<&TaskId>,
 ) -> Value {
-    let child_task_id = format!("a2a-child-{id}", id = uuid::Uuid::new_v4());
     let reference_task_ids = parent_task_id
         .map(|task_id| vec![task_id.as_str().to_string()])
         .unwrap_or_default();
@@ -150,7 +159,7 @@ fn build_send_stream_request(
                 "role": "ROLE_USER",
                 "parts": parts,
                 "contextId": context_id.as_str(),
-                "taskId": child_task_id,
+                "taskId": child_task_id.as_str(),
                 "referenceTaskIds": reference_task_ids
             },
             "metadata": {
@@ -304,6 +313,7 @@ impl ToolSession for A2aSession {
             parts,
             &self.target,
             &self.ctx.context_id,
+            &self.child_task_id,
             parent_task_id.as_ref(),
         );
         let handler = self.handler.clone();
@@ -469,5 +479,43 @@ impl Drop for A2aSession {
         if let Some(h) = self.stream_handle.take() {
             h.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use baml_rt_core::ids::ContextId;
+
+    use super::*;
+
+    #[test]
+    fn build_send_stream_request_uses_stable_child_task_id() {
+        let target = InternalA2aTarget {
+            agent_package: "responder-agent".to_string(),
+            agent_instance_id: "default".to_string(),
+        };
+        let context_id = ContextId::new(1, 1);
+        let child_task_id = TaskId::from_external(ExternalId::new("a2a-child-fixed".to_string()));
+        let parts = vec![ConversationPart {
+            text: Some("hello".to_string()),
+            ..Default::default()
+        }];
+
+        let first =
+            build_send_stream_request(parts.clone(), &target, &context_id, &child_task_id, None);
+        let second = build_send_stream_request(parts, &target, &context_id, &child_task_id, None);
+
+        assert_eq!(
+            first
+                .pointer("/params/message/taskId")
+                .and_then(serde_json::Value::as_str),
+            Some(child_task_id.as_str())
+        );
+        assert_eq!(
+            second
+                .pointer("/params/message/taskId")
+                .and_then(serde_json::Value::as_str),
+            Some(child_task_id.as_str())
+        );
     }
 }
