@@ -463,6 +463,13 @@ globalThis.onChatMessage = async function(message) {
       allChunks.push(...batch);
       next = await session.continue();
     }
+    if (next?.status === "error") {
+      const delegatedError =
+        next?.error?.message ||
+        next?.output?.error?.message ||
+        "delegated session error";
+      throw new Error(delegatedError);
+    }
     if (next?.output?.chunks) allChunks.push(...next.output.chunks);
     await session.finish();
 
