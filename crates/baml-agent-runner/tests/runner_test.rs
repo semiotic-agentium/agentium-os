@@ -1568,12 +1568,10 @@ async fn test_internal_a2a_context_id_propagates() {
 
 /// Parallel same-context fanout: 6 child A2A streams under one parent.
 ///
-/// **Ignored** — the global single-thread `HANDOVER_LANE` serializes all child
-/// streams, causing the parent to idle-timeout before children complete.
-/// Tracked in `runtime_refactor.md` (Phase 1 + Phase 3); un-ignore after the
-/// bridge-local dispatcher and teardown ownership isolation are in place.
+/// Previously blocked on the global single-thread `HANDOVER_LANE` which
+/// serialized all child streams. Resolved by the bridge-local dispatcher
+/// introduced in Phase 1 (`runtime_refactor.md`).
 #[tokio::test]
-#[ignore = "blocked on runtime_refactor.md Phase 1 (bridge-local dispatcher) + Phase 3 (teardown ownership)"]
 async fn test_internal_a2a_parallel_same_context_child_tasks_and_provenance() {
     let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
 
