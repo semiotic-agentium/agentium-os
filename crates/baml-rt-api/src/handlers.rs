@@ -48,6 +48,13 @@ fn result_label_for_domain_error(error: &BamlRtError) -> &'static str {
     match error {
         BamlRtError::InvalidArgument(msg) if msg.contains("not found") => "not_found",
         BamlRtError::InvalidArgument(_) => "bad_request",
+        BamlRtError::SessionLifecycle(
+            baml_rt_core::SessionLifecycleError::ToolSessionNotFound { .. },
+        )
+        | BamlRtError::SessionLifecycle(
+            baml_rt_core::SessionLifecycleError::StreamSessionNotFound { .. },
+        ) => "not_found",
+        BamlRtError::SessionLifecycle(_) => "bad_request",
         BamlRtError::FunctionNotFound(_) => "not_found",
         _ => "internal",
     }
@@ -430,6 +437,21 @@ fn domain_to_problem(
             format!("Agent {agent_package}/{agent_instance_id} not found"),
         ),
         BamlRtError::InvalidArgument(msg) => (400u16, "Bad Request", msg.clone()),
+        BamlRtError::SessionLifecycle(
+            baml_rt_core::SessionLifecycleError::ToolSessionNotFound { session_id },
+        ) => (
+            404u16,
+            "Not Found",
+            format!("Tool session not found: {session_id}"),
+        ),
+        BamlRtError::SessionLifecycle(
+            baml_rt_core::SessionLifecycleError::StreamSessionNotFound { stream_session_id },
+        ) => (
+            404u16,
+            "Not Found",
+            format!("Stream session not found: {stream_session_id}"),
+        ),
+        BamlRtError::SessionLifecycle(e) => (400u16, "Bad Request", e.to_string()),
         BamlRtError::FunctionNotFound(msg) => (404u16, "Not Found", msg.clone()),
         _ => {
             tracing::warn!(

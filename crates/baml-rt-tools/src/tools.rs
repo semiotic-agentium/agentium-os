@@ -12,7 +12,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, ContextId, Result, ids::AgentId};
+use baml_rt_core::{BamlRtError, ContextId, Result, SessionLifecycleError, ids::AgentId};
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1541,7 +1541,9 @@ impl ToolRegistry {
                     self.sessions.len()
                 ));
             }
-            BamlRtError::InvalidArgument(format!("Unknown session {}", session_id))
+            BamlRtError::SessionLifecycle(SessionLifecycleError::ToolSessionNotFound {
+                session_id: session_id.to_string(),
+            })
         })?;
         let mut guard = session.lock().await;
         let result = guard.send(input).await.map_err(map_session_error);
@@ -1569,7 +1571,9 @@ impl ToolRegistry {
                     self.sessions.len()
                 ));
             }
-            BamlRtError::InvalidArgument(format!("Unknown session {}", session_id))
+            BamlRtError::SessionLifecycle(SessionLifecycleError::ToolSessionNotFound {
+                session_id: session_id.to_string(),
+            })
         })?;
         let mut guard = session.lock().await;
         let result = guard.next().await.map_err(map_session_error);

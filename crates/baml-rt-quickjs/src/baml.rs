@@ -16,7 +16,7 @@ use std::{
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    BamlRtError, Outcome, Result,
+    BamlRtError, Outcome, Result, SessionLifecycleError,
     bus::{EffectEmitter, EffectEvent, EffectStartToken, ToolEffectMetadata, ToolKind},
     context,
     correlation::current_correlation_id,
@@ -92,6 +92,15 @@ fn tool_session_trace_enabled() -> bool {
 fn tool_session_trace(message: &str) {
     if tool_session_trace_enabled() {
         tracing::trace!(message = %message, "[tool-session-trace]");
+    }
+}
+
+fn completion_error_from(err: &BamlRtError) -> BamlRtError {
+    match err {
+        BamlRtError::SessionLifecycle(lifecycle) => {
+            BamlRtError::SessionLifecycle(lifecycle.clone())
+        }
+        _ => BamlRtError::InvalidArgument(err.to_string()),
     }
 }
 
@@ -491,7 +500,9 @@ impl ToolSessionExecutionHandle {
                     ));
                 }
             }
-            BamlRtError::InvalidArgument(format!("Unknown tool session {}", session_id))
+            BamlRtError::SessionLifecycle(SessionLifecycleError::ToolSessionNotFound {
+                session_id: session_id.to_string(),
+            })
         })?;
 
         tracing::info!(
@@ -592,7 +603,7 @@ impl ToolSessionExecutionHandle {
                 }
                 let completion_result: Result<Value> = match &result {
                     Ok(_) => Ok(Value::Null),
-                    Err(err) => Err(BamlRtError::InvalidArgument(err.to_string())),
+                    Err(err) => Err(completion_error_from(err)),
                 };
                 let interceptor_registry = self.interceptor_registry.lock().await;
                 if let Some(state) = state.as_ref() {
@@ -648,7 +659,7 @@ impl ToolSessionExecutionHandle {
                     "Tool failure ({:?}): {}",
                     error.kind, error.message
                 )))),
-                Err(err) => Some(Err(BamlRtError::InvalidArgument(err.to_string()))),
+                Err(err) => Some(Err(completion_error_from(err))),
                 _ => None,
             };
 
@@ -713,7 +724,9 @@ impl ToolSessionExecutionHandle {
                         ));
                     }
                 }
-                BamlRtError::InvalidArgument(format!("Unknown tool session {}", session_id))
+                BamlRtError::SessionLifecycle(SessionLifecycleError::ToolSessionNotFound {
+                    session_id: session_id.to_string(),
+                })
             })?
             .scope;
         let result = run().await;
@@ -760,7 +773,7 @@ impl ToolSessionExecutionHandle {
                 }
                 let completion_result: Result<Value> = match &result {
                     Ok(_) => Ok(Value::Null),
-                    Err(err) => Err(BamlRtError::InvalidArgument(err.to_string())),
+                    Err(err) => Err(completion_error_from(err)),
                 };
                 let interceptor_registry = self.interceptor_registry.lock().await;
                 interceptor_registry
@@ -806,7 +819,9 @@ impl ToolSessionExecutionHandle {
                         ));
                     }
                 }
-                BamlRtError::InvalidArgument(format!("Unknown tool session {}", session_id))
+                BamlRtError::SessionLifecycle(SessionLifecycleError::ToolSessionNotFound {
+                    session_id: session_id.to_string(),
+                })
             })?
             .scope;
         let result = run().await;
@@ -890,7 +905,9 @@ impl ToolSessionExecutionHandle {
                         ));
                     }
                 }
-                BamlRtError::InvalidArgument(format!("Unknown tool session {}", session_id))
+                BamlRtError::SessionLifecycle(SessionLifecycleError::ToolSessionNotFound {
+                    session_id: session_id.to_string(),
+                })
             })?
             .scope;
         let result = run().await;
