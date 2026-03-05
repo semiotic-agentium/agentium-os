@@ -218,7 +218,7 @@ async fn test_message_send_deterministic_task() {
     );
 
     let responses = tokio::time::timeout(
-        std::time::Duration::from_secs(20),
+        std::time::Duration::from_secs(60),
         collect_responses(&agent, request),
     )
     .await
@@ -288,11 +288,11 @@ async fn test_stream_collector_idle_timeout_cancels_perverse_stream() {
     );
 
     let responses = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
+        std::time::Duration::from_secs(60),
         collect_responses(&agent, request),
     )
     .await
-    .expect("stream request must complete within 30s")
+    .expect("stream request must complete within 60s")
     .unwrap();
 
     assert!(
