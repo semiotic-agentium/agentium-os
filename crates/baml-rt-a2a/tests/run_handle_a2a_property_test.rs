@@ -240,7 +240,11 @@ async fn setup_interleaving_agent() -> A2aAgent {
         .with_quickjs_config(
             baml_rt::QuickJSConfig::new()
                 .with_idle_timeout_ms(Some(45_000))
-                .with_max_attempts_ms(Some(INTERLEAVING_QUICKJS_MAX_ATTEMPTS_MS)),
+                .with_max_attempts_ms(Some(INTERLEAVING_QUICKJS_MAX_ATTEMPTS_MS))
+                // Interleaving property cases can serialize several tool turns behind one bridge.
+                // Use a larger collector idle budget to avoid false TASK_STATE_FAILED timeouts
+                // when progress is delayed by queueing rather than a logic deadlock.
+                .with_stream_collector_idle_secs(Some(300)),
         )
         .with_graphqlite_store(store)
         .build()
