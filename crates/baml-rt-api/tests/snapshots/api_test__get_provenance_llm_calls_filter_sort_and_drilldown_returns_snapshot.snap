@@ -1,0 +1,89 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+expression: snapshot
+---
+{
+  "filtered": {
+    "status": 200,
+    "body": {
+      "resource": "llm_calls",
+      "rows": [],
+      "summary": {
+        "count": 0,
+        "failedCount": 0,
+        "durationMsTotal": 0,
+        "totalTokens": 0,
+        "latencyHotspots": {
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "tokenHotspots": {
+          "p95": 0.0,
+          "p99": 0.0
+        }
+      },
+      "hotspotGroups": [],
+      "truncated": false,
+      "appliedCaps": {
+        "page_size": 50,
+        "max_page_size": 200,
+        "top_k": 10
+      }
+    }
+  },
+  "drilldown": {
+    "status": 200,
+    "body": {
+      "resource": "llm_calls",
+      "rows": [
+        {
+          "event_id": "[prov_event_id]",
+          "context_id": "ctx-100-1",
+          "task_id": "",
+          "provider": "anthropic",
+          "model": "claude-3-7-sonnet",
+          "baml_prompt": "DraftPrompt",
+          "duration_ms": 650,
+          "prompt_tokens": 20,
+          "completion_tokens": 5,
+          "total_tokens": 25,
+          "success": "",
+          "metadata": "{\"agent_id\":\"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb\",\"message_id\":\"msg-b\",\"error\":\"provider timeout\"}",
+          "agent_id": "[uuid]",
+          "failure_class": "timeout",
+          "timestamp_ms": "[timestamp_ms]"
+        }
+      ],
+      "summary": {
+        "count": 1,
+        "failedCount": 0,
+        "durationMsTotal": 650,
+        "totalTokens": 25,
+        "latencyHotspots": {
+          "p95": 650.0,
+          "p99": 650.0
+        },
+        "tokenHotspots": {
+          "p95": 25.0,
+          "p99": 25.0
+        }
+      },
+      "hotspotGroups": [
+        {
+          "groupKey": "[uuid]",
+          "count": 1,
+          "failed": 0,
+          "failureRate": 0.0,
+          "avgDurationMs": 650.0,
+          "avgTotalTokens": 25.0
+        }
+      ],
+      "truncated": false,
+      "appliedCaps": {
+        "page_size": 5,
+        "max_page_size": 200,
+        "top_k": 10
+      }
+    }
+  }
+}

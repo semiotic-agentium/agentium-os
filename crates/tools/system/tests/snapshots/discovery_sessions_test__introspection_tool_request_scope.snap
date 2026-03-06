@@ -1,0 +1,56 @@
+---
+source: crates/tools/system/tests/discovery_sessions_test.rs
+expression: redact_runtime_fields(payload)
+---
+{
+  "appliedCaps": {
+    "max_page_size": 50,
+    "page_size": 20,
+    "top_k": 10
+  },
+  "hotspotGroups": [
+    {
+      "avgDurationMs": 100.0,
+      "avgTotalTokens": 8.0,
+      "count": 1,
+      "failed": 0,
+      "failureRate": 0.0,
+      "groupKey": "00000000-0000-0000-0000-000000000123"
+    }
+  ],
+  "resource": "llm_calls",
+  "rows": [
+    {
+      "agent_id": "00000000-0000-0000-0000-000000000123",
+      "baml_prompt": "CallerPrompt",
+      "completion_tokens": 3,
+      "context_id": "ctx-9-9",
+      "duration_ms": 100,
+      "event_id": "[prov_event_id]",
+      "failure_class": "unknown",
+      "metadata": "{\"agent_id\":\"00000000-0000-0000-0000-000000000123\",\"message_id\":\"tool-msg-caller\"}",
+      "model": "gpt-4o-mini",
+      "prompt_tokens": 5,
+      "provider": "openai",
+      "success": "",
+      "task_id": "",
+      "timestamp_ms": "[timestamp_ms]",
+      "total_tokens": 8
+    }
+  ],
+  "summary": {
+    "count": 1,
+    "durationMsTotal": 100,
+    "failedCount": 0,
+    "latencyHotspots": {
+      "p95": 100.0,
+      "p99": 100.0
+    },
+    "tokenHotspots": {
+      "p95": 8.0,
+      "p99": 8.0
+    },
+    "totalTokens": 8
+  },
+  "truncated": false
+}

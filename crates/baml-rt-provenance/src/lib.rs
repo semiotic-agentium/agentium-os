@@ -69,7 +69,10 @@ pub use normalizer::{
 };
 pub use store::{
     ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
-    ProvenanceQueryApi, ProvenanceReadIntent, ProvenanceWriter, ToolSessionPhase,
+    ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest,
+    ProvenanceOpsQueryResponse, ProvenanceOpsResource, ProvenanceOutcomeSegment,
+    ProvenanceQueryApi, ProvenanceReadIntent, ProvenanceResponseProfile, ProvenanceWriter,
+    ToolSessionPhase,
 };
 pub use tool_index::{ToolIndexConfig, index_tools, index_tools_into_connection};
 pub use types::{ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef};

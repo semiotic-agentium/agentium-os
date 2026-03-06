@@ -1,0 +1,126 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+expression: snapshot
+---
+{
+  "status": 200,
+  "body": {
+    "resource": "tool_calls",
+    "rows": [
+      {
+        "event_id": "[prov_event_id]",
+        "context_id": "ctx-100-1",
+        "task_id": "",
+        "tool_name": "support/calculate",
+        "baml_prompt": "CalcPrompt",
+        "duration_ms": 420,
+        "success": "",
+        "metadata": "{\"agent_id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"message_id\":\"msg-a\",\"error\":\"timeout while calling tool\"}",
+        "tool_args": "{\"expression\":\"2+2\"}",
+        "agent_id": "[uuid]",
+        "failure_class": "timeout",
+        "timestamp_ms": "[timestamp_ms]"
+      },
+      {
+        "event_id": "[prov_event_id]",
+        "context_id": "ctx-100-1",
+        "task_id": "",
+        "tool_name": "support/calculate",
+        "baml_prompt": "CalcPrompt",
+        "duration_ms": 420,
+        "success": "",
+        "metadata": "{\"agent_id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"message_id\":\"msg-a\",\"error\":\"timeout while calling tool\"}",
+        "tool_args": "{\"expression\":\"2+2\"}",
+        "agent_id": "[uuid]",
+        "failure_class": "timeout",
+        "timestamp_ms": "[timestamp_ms]"
+      },
+      {
+        "event_id": "[prov_event_id]",
+        "context_id": "ctx-100-1",
+        "task_id": "",
+        "tool_name": "support/calculate",
+        "baml_prompt": "CalcPrompt",
+        "duration_ms": 420,
+        "success": "",
+        "metadata": "{\"agent_id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"message_id\":\"msg-a\",\"error\":\"timeout while calling tool\"}",
+        "tool_args": "{\"expression\":\"2+2\"}",
+        "agent_id": "[uuid]",
+        "failure_class": "timeout",
+        "timestamp_ms": "[timestamp_ms]"
+      },
+      {
+        "event_id": "[prov_event_id]",
+        "context_id": "ctx-100-1",
+        "task_id": "",
+        "tool_name": "support/calculate",
+        "baml_prompt": "CalcPrompt",
+        "duration_ms": 420,
+        "success": "",
+        "metadata": "{\"agent_id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"message_id\":\"msg-a\",\"error\":\"timeout while calling tool\"}",
+        "tool_args": "{\"expression\":\"2+2\"}",
+        "agent_id": "[uuid]",
+        "failure_class": "timeout",
+        "timestamp_ms": "[timestamp_ms]"
+      },
+      {
+        "event_id": "[prov_event_id]",
+        "context_id": "ctx-100-1",
+        "task_id": "",
+        "tool_name": "support/calculate",
+        "baml_prompt": "CalcPrompt",
+        "duration_ms": 420,
+        "success": "",
+        "metadata": "{\"agent_id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"message_id\":\"msg-a\",\"error\":\"timeout while calling tool\"}",
+        "tool_args": "{\"expression\":\"2+2\"}",
+        "agent_id": "[uuid]",
+        "failure_class": "timeout",
+        "timestamp_ms": "[timestamp_ms]"
+      },
+      {
+        "event_id": "[prov_event_id]",
+        "context_id": "ctx-100-1",
+        "task_id": "",
+        "tool_name": "support/calculate",
+        "baml_prompt": "CalcPrompt",
+        "duration_ms": 420,
+        "success": "",
+        "metadata": "{\"agent_id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"message_id\":\"msg-a\",\"error\":\"timeout while calling tool\"}",
+        "tool_args": "{\"expression\":\"2+2\"}",
+        "agent_id": "[uuid]",
+        "failure_class": "timeout",
+        "timestamp_ms": "[timestamp_ms]"
+      }
+    ],
+    "summary": {
+      "count": 6,
+      "failedCount": 0,
+      "durationMsTotal": 2520,
+      "totalTokens": 0,
+      "latencyHotspots": {
+        "p95": 420.0,
+        "p99": 420.0
+      },
+      "tokenHotspots": {
+        "p95": 0.0,
+        "p99": 0.0
+      }
+    },
+    "hotspotGroups": [
+      {
+        "groupKey": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa|support/calculate",
+        "count": 6,
+        "failed": 0,
+        "failureRate": 0.0,
+        "avgDurationMs": 420.0,
+        "avgTotalTokens": 0.0
+      }
+    ],
+    "truncated": false,
+    "appliedCaps": {
+      "page_size": 50,
+      "max_page_size": 200,
+      "top_k": 10
+    }
+  }
+}

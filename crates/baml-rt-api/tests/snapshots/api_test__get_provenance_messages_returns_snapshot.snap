@@ -1,0 +1,76 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+expression: snapshot
+---
+{
+  "status": 200,
+  "body": {
+    "resource": "messages",
+    "rows": [
+      {
+        "event_id": "[prov_event_id]",
+        "context_id": "ctx-100-1",
+        "task_id": "",
+        "message_id": "msg-a",
+        "role": "ROLE_USER",
+        "direction": "received",
+        "content": "run analysis",
+        "metadata": "{\"channel\":\"api-test\"}",
+        "llm_duration_ms_sum": 0,
+        "tool_duration_ms_sum": 0,
+        "total_processing_ms": 0,
+        "duration_ms": 0,
+        "timestamp_ms": "[timestamp_ms]",
+        "success": true,
+        "failure_class": "success"
+      },
+      {
+        "event_id": "[prov_event_id]",
+        "context_id": "ctx-100-1",
+        "task_id": "",
+        "message_id": "msg-b",
+        "role": "ROLE_USER",
+        "direction": "received",
+        "content": "secondary flow",
+        "metadata": "{\"channel\":\"api-test\"}",
+        "llm_duration_ms_sum": 0,
+        "tool_duration_ms_sum": 0,
+        "total_processing_ms": 0,
+        "duration_ms": 0,
+        "timestamp_ms": "[timestamp_ms]",
+        "success": true,
+        "failure_class": "success"
+      }
+    ],
+    "summary": {
+      "count": 2,
+      "failedCount": 0,
+      "durationMsTotal": 0,
+      "totalTokens": 0,
+      "latencyHotspots": {
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "tokenHotspots": {
+        "p95": 0.0,
+        "p99": 0.0
+      }
+    },
+    "hotspotGroups": [
+      {
+        "groupKey": "unknown|unknown",
+        "count": 2,
+        "failed": 0,
+        "failureRate": 0.0,
+        "avgDurationMs": 0.0,
+        "avgTotalTokens": 0.0
+      }
+    ],
+    "truncated": false,
+    "appliedCaps": {
+      "page_size": 50,
+      "max_page_size": 200,
+      "top_k": 10
+    }
+  }
+}

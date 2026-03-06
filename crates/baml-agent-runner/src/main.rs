@@ -39,7 +39,7 @@ use baml_rt_core::{
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_provenance::{
     AgentType, GraphExporter, GraphQueryParams, GraphStore, GraphqliteStoreBuilder, ProvEvent,
-    ProvenanceWriter, ToolIndexConfig, context_metrics_queries,
+    ProvenanceOpsQuery, ProvenanceWriter, ToolIndexConfig, context_metrics_queries,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
     index_tools,
 };
@@ -119,6 +119,7 @@ impl AgentPackage {
         policy: &ToolAccessPolicy,
         agent_list_catalogue: Arc<dyn AgentLister>,
         a2a_handler: Arc<dyn A2aRequestHandler>,
+        provenance_query: Arc<dyn ProvenanceOpsQuery>,
     ) -> Result<ToolsRegistered> {
         let runtime_manager = loaded.runtime_manager;
         let manifest_tool_names = ManifestToolNames::parse(&self.manifest.tools)?;
@@ -127,10 +128,11 @@ impl AgentPackage {
         // - system bundle (internal_a2a, discover_agents, discover_tools)
         // - claude bundle (claude/dev host-managed stream session)
         let tool_registry = runtime_manager.tool_registry();
-        tool_registry.register_bundle(SystemBundle::new(
+        tool_registry.register_bundle(SystemBundle::new_with_provenance(
             agent_list_catalogue,
             tool_registry.clone(),
             a2a_handler,
+            provenance_query,
         ))?;
         // Claude workspace root: where claude/dev session cwd lives (agent_id/workspace_name subdirs).
         // Set BAML_CLAUDE_WORKSPACES_BASE to a persistent dir so tmp isn't wiped and Claude can write.
@@ -265,7 +267,13 @@ impl AgentPackage {
         let _guard = span.enter();
         let loaded = self.load_schema_phase().await?;
         let registered = self
-            .register_tools_phase(loaded, policy, agent_list_catalogue, a2a_handler)
+            .register_tools_phase(
+                loaded,
+                policy,
+                agent_list_catalogue,
+                a2a_handler,
+                provenance_config.store().clone(),
+            )
             .await?;
         let built = self
             .build_agent_phase(registered, provenance_config, stream_idle_secs)
@@ -1398,6 +1406,32 @@ impl baml_rt_api::ContextMetricsService for ContextMetricsServiceImpl {
     }
 }
 
+struct ProvenanceOpsServiceImpl {
+    store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+}
+
+impl ProvenanceOpsServiceImpl {
+    fn new(store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>) -> Self {
+        Self { store }
+    }
+}
+
+#[async_trait::async_trait]
+impl baml_rt_api::ProvenanceOpsService for ProvenanceOpsServiceImpl {
+    async fn query(
+        &self,
+        request: baml_rt_provenance::ProvenanceOpsQueryRequest,
+    ) -> std::result::Result<
+        baml_rt_provenance::ProvenanceOpsQueryResponse,
+        baml_rt_api::ProvenanceOpsError,
+    > {
+        self.store
+            .query_ops(request)
+            .await
+            .map_err(|e| baml_rt_api::ProvenanceOpsError::Other(Box::new(std::io::Error::other(e))))
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing
@@ -1516,7 +1550,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let http_handle = if let Some(bind) = config.serve_http.clone() {
-        let (mermaid, context_metrics) = {
+        let (mermaid, context_metrics, provenance_ops) = {
             let runner = ready.runner();
             let prov = runner.provenance_config();
             let store = prov.store().clone();
@@ -1527,6 +1561,10 @@ async fn main() -> anyhow::Result<()> {
                 ),
                 Some(Arc::new(ContextMetricsServiceImpl::new(store))
                     as Arc<dyn baml_rt_api::ContextMetricsService>),
+                Some(
+                    Arc::new(ProvenanceOpsServiceImpl::new(prov.store().clone()))
+                        as Arc<dyn baml_rt_api::ProvenanceOpsService>,
+                ),
             )
         };
         let registry_impl = ready.registry();
@@ -1534,7 +1572,7 @@ async fn main() -> anyhow::Result<()> {
         info!(
             bind = %bind,
             web_dir = ?web_dir,
-            "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a/sse, GET /contexts/.../mermaid, GET /tasks/.../mermaid, GET /contexts/.../metrics, GET /openapi.json)"
+            "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a/sse, GET /contexts/.../mermaid, GET /tasks/.../mermaid, GET /contexts/.../metrics, GET /provenance/..., GET /openapi.json)"
         );
         Some(tokio::spawn(async move {
             baml_rt_api::serve_with_services(
@@ -1542,6 +1580,7 @@ async fn main() -> anyhow::Result<()> {
                 &bind,
                 mermaid,
                 context_metrics,
+                provenance_ops,
                 web_dir.as_deref(),
             )
             .await

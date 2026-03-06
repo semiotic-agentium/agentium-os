@@ -1,0 +1,86 @@
+---
+source: crates/tools/system/tests/discovery_sessions_test.rs
+expression: "redact_runtime_fields(serde_json::json!({\n    \"filtered\": snapshot_safe_tool_output(filtered_output), \"drilldown\":\n    snapshot_safe_tool_output(drilldown_output)\n}))"
+---
+{
+  "drilldown": {
+    "done": true,
+    "payload": {
+      "appliedCaps": {
+        "max_page_size": 50,
+        "page_size": 1,
+        "top_k": 10
+      },
+      "hotspotGroups": [
+        {
+          "avgDurationMs": 500.0,
+          "avgTotalTokens": 0.0,
+          "count": 1,
+          "failed": 0,
+          "failureRate": 0.0,
+          "groupKey": "00000000-0000-0000-0000-000000000700"
+        }
+      ],
+      "resource": "tool_calls",
+      "rows": [
+        {
+          "agent_id": "00000000-0000-0000-0000-000000000700",
+          "baml_prompt": "CalcPrompt",
+          "context_id": "ctx-9-12",
+          "duration_ms": 500,
+          "event_id": "[prov_event_id]",
+          "failure_class": "timeout",
+          "metadata": "{\"agent_id\":\"00000000-0000-0000-0000-000000000700\",\"error\":\"timeout\",\"message_id\":\"tool-msg-caller\"}",
+          "success": "",
+          "task_id": "",
+          "timestamp_ms": "[timestamp_ms]",
+          "tool_args": "{\"expression\":\"1+1\"}",
+          "tool_name": "support/calculate"
+        }
+      ],
+      "summary": {
+        "count": 1,
+        "durationMsTotal": 500,
+        "failedCount": 0,
+        "latencyHotspots": {
+          "p95": 500.0,
+          "p99": 500.0
+        },
+        "tokenHotspots": {
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "totalTokens": 0
+      },
+      "truncated": false
+    }
+  },
+  "filtered": {
+    "done": true,
+    "payload": {
+      "appliedCaps": {
+        "max_page_size": 50,
+        "page_size": 5,
+        "top_k": 10
+      },
+      "hotspotGroups": [],
+      "resource": "tool_calls",
+      "rows": [],
+      "summary": {
+        "count": 0,
+        "durationMsTotal": 0,
+        "failedCount": 0,
+        "latencyHotspots": {
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "tokenHotspots": {
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "totalTokens": 0
+      },
+      "truncated": false
+    }
+  }
+}

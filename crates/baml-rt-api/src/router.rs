@@ -11,7 +11,7 @@ use tower_http::{
 use utoipa::openapi::OpenApi as OpenApiSpec;
 use utoipa_axum::router::OpenApiRouter;
 
-use crate::{ContextMetricsService, MermaidService, handlers};
+use crate::{ContextMetricsService, MermaidService, ProvenanceOpsService, handlers};
 
 /// Shared state for API handlers: registry (from runner), OpenAPI spec, optional Mermaid service.
 #[derive(Clone)]
@@ -20,6 +20,7 @@ pub struct ApiState {
     pub openapi: Arc<OpenApiSpec>,
     pub mermaid: Option<Arc<dyn MermaidService>>,
     pub context_metrics: Option<Arc<dyn ContextMetricsService>>,
+    pub provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
 }
 
 async fn serve_openapi_json(
@@ -36,7 +37,7 @@ pub fn api_router(
     mermaid: Option<Arc<dyn MermaidService>>,
     web_dir: Option<&Path>,
 ) -> Router {
-    api_router_with_services(registry, mermaid, None, web_dir)
+    api_router_with_services(registry, mermaid, None, None, web_dir)
 }
 
 /// Build the API router with optional Mermaid and optional context metrics services.
@@ -44,6 +45,7 @@ pub fn api_router_with_services(
     registry: Arc<dyn AgentRegistry>,
     mermaid: Option<Arc<dyn MermaidService>>,
     context_metrics: Option<Arc<dyn ContextMetricsService>>,
+    provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
     web_dir: Option<&Path>,
 ) -> Router {
     // Route-level tracing layer to capture HTTP semantic fields (including matched route template).
@@ -69,6 +71,10 @@ pub fn api_router_with_services(
         .routes(utoipa_axum::routes!(handlers::get_mermaid_context))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_task))
         .routes(utoipa_axum::routes!(handlers::get_context_metrics))
+        .routes(utoipa_axum::routes!(handlers::get_provenance_llm_calls))
+        .routes(utoipa_axum::routes!(handlers::get_provenance_tool_calls))
+        .routes(utoipa_axum::routes!(handlers::get_provenance_messages))
+        .routes(utoipa_axum::routes!(handlers::get_provenance_aggregates))
         .split_for_parts();
 
     let mut openapi = openapi;
@@ -80,7 +86,7 @@ pub fn api_router_with_services(
     );
     let mut tag_provenance = utoipa::openapi::Tag::new("provenance");
     tag_provenance.description =
-        Some("Provenance-backed context metrics (when GraphQLite is enabled)".to_string());
+        Some("Provenance-backed metrics and operational query APIs.".to_string());
     openapi.tags = Some(vec![tag_agents, tag_mermaid, tag_provenance]);
 
     let state = Arc::new(ApiState {
@@ -88,6 +94,7 @@ pub fn api_router_with_services(
         openapi: Arc::new(openapi),
         mermaid,
         context_metrics,
+        provenance_ops,
     });
 
     let mut router = api_router
@@ -113,7 +120,7 @@ pub async fn serve(
     mermaid: Option<Arc<dyn MermaidService>>,
     web_dir: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    serve_with_services(registry, bind, mermaid, None, web_dir).await
+    serve_with_services(registry, bind, mermaid, None, None, web_dir).await
 }
 
 /// Run the HTTP server with optional Mermaid and context metrics services.
@@ -122,9 +129,10 @@ pub async fn serve_with_services(
     bind: &str,
     mermaid: Option<Arc<dyn MermaidService>>,
     context_metrics: Option<Arc<dyn ContextMetricsService>>,
+    provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
     web_dir: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let app = api_router_with_services(registry, mermaid, context_metrics, web_dir);
+    let app = api_router_with_services(registry, mermaid, context_metrics, provenance_ops, web_dir);
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let addr = listener.local_addr()?;
     tracing::info!(%addr, web_dir = ?web_dir, "HTTP API listening");

@@ -54,3 +54,23 @@ pub(crate) fn get_mermaid_task(task_id: &str) -> Span {
 pub(crate) fn get_context_metrics(context_id: &str) -> Span {
     tracing::debug_span!("baml_rt_api.get_context_metrics", context_id = %context_id)
 }
+
+#[inline]
+pub(crate) fn get_provenance_llm_calls() -> Span {
+    tracing::debug_span!("baml_rt_api.get_provenance_llm_calls")
+}
+
+#[inline]
+pub(crate) fn get_provenance_tool_calls() -> Span {
+    tracing::debug_span!("baml_rt_api.get_provenance_tool_calls")
+}
+
+#[inline]
+pub(crate) fn get_provenance_messages() -> Span {
+    tracing::debug_span!("baml_rt_api.get_provenance_messages")
+}
+
+#[inline]
+pub(crate) fn get_provenance_aggregates() -> Span {
+    tracing::debug_span!("baml_rt_api.get_provenance_aggregates")
+}

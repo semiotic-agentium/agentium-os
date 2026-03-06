@@ -27,8 +27,9 @@
 //!   methods if they need to see those events.
 
 use async_trait::async_trait;
-use baml_rt_core::ids::{ContextId, EventId, MessageId};
-use serde_json::Value;
+use baml_rt_core::ids::{AgentId, ContextId, EventId, MessageId, TaskId};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::{error::Result, events::ProvEvent};
 
@@ -167,4 +168,120 @@ pub trait ProvenanceQueryApi: Send + Sync {
         context_id: &ContextId,
         limit: Option<usize>,
     ) -> Result<Vec<ProvenanceConversationContextItem>>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvenanceOpsResource {
+    LlmCalls,
+    ToolCalls,
+    Messages,
+    Aggregates,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvenanceOutcomeSegment {
+    FailedOnly,
+    SuccessfulOnly,
+    Both,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvenanceResponseProfile {
+    UiFull,
+    ToolCompact,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvenanceOpsFilters {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<ContextId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<TaskId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<AgentId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baml_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from_timestamp_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to_timestamp_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvenanceOpsQueryRequest {
+    pub resource: ProvenanceOpsResource,
+    #[serde(default)]
+    pub filters: ProvenanceOpsFilters,
+    #[serde(default)]
+    pub group_by: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_size: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<ProvenanceOutcomeSegment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_profile: Option<ProvenanceResponseProfile>,
+    #[serde(default = "default_true")]
+    pub budget_mode: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for ProvenanceOpsQueryRequest {
+    fn default() -> Self {
+        Self {
+            resource: ProvenanceOpsResource::LlmCalls,
+            filters: ProvenanceOpsFilters::default(),
+            group_by: Vec::new(),
+            sort_by: None,
+            sort_dir: None,
+            page_size: Some(50),
+            cursor: None,
+            top_k: Some(10),
+            outcome: Some(ProvenanceOutcomeSegment::Both),
+            response_profile: Some(ProvenanceResponseProfile::UiFull),
+            budget_mode: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvenanceOpsQueryResponse {
+    pub resource: ProvenanceOpsResource,
+    pub rows: Vec<Value>,
+    pub summary: Value,
+    pub hotspot_groups: Vec<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub truncated: bool,
+    pub applied_caps: Map<String, Value>,
+}
+
+#[async_trait]
+pub trait ProvenanceOpsQuery: Send + Sync {
+    async fn query_ops(
+        &self,
+        request: ProvenanceOpsQueryRequest,
+    ) -> Result<ProvenanceOpsQueryResponse>;
 }

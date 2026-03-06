@@ -1,7 +1,10 @@
 //! HTTP API tests: discovery, A2A forward, and error mapping.
 //! Uses insta snapshots with selective redaction for variant parts (IDs, instance URLs, etc.).
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use async_trait::async_trait;
 use axum::{
@@ -9,10 +12,18 @@ use axum::{
     http::{Request, StatusCode},
 };
 use baml_rt_a2a::AgentRegistry;
-use baml_rt_api::{MermaidError, MermaidService, api_router};
+use baml_rt_api::{
+    MermaidError, MermaidService, ProvenanceOpsError, ProvenanceOpsService, api_router,
+    api_router_with_services,
+};
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister, AgentRouteKey,
-    BamlRtError, BusStream, Result,
+    BamlRtError, BusStream, Outcome, Result,
+    ids::{AgentId, ContextId, ExternalId, MessageId, UuidId},
+};
+use baml_rt_provenance::{
+    GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvenanceOpsQueryRequest,
+    ProvenanceOpsQueryResponse, ProvenanceWriter,
 };
 use futures_util::{StreamExt, stream};
 use opentelemetry::{global, trace::TracerProvider as _};
@@ -39,6 +50,9 @@ fn redact_variant_parts(v: Value) -> Value {
             if looks_like_uuid(&s) {
                 return V::String("[uuid]".to_string());
             }
+            if looks_like_prov_event_id(&s) {
+                return V::String("[prov_event_id]".to_string());
+            }
             V::String(s)
         }
         V::Object(map) => {
@@ -47,6 +61,8 @@ fn redact_variant_parts(v: Value) -> Value {
                 let redacted = match k.as_str() {
                     "instance" => V::String("[instance]".to_string()),
                     "type_url" => V::String("[type_url]".to_string()),
+                    "event_id" => V::String("[prov_event_id]".to_string()),
+                    "timestamp_ms" => V::String("[timestamp_ms]".to_string()),
                     "type" => match &val {
                         V::String(s) if s.starts_with("http://") || s.starts_with("https://") => {
                             V::String("[type_url]".to_string())
@@ -78,6 +94,12 @@ fn looks_like_uuid(s: &str) -> bool {
         && parts[2].len() == 4
         && parts[3].len() == 4
         && parts[4].len() == 12
+}
+
+fn looks_like_prov_event_id(s: &str) -> bool {
+    s.strip_prefix("prov-")
+        .map(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or(false)
 }
 
 /// Mock registry for testing: fixed list and configurable A2A response.
@@ -178,6 +200,135 @@ fn attr_value(span: &opentelemetry_sdk::export::trace::SpanData, key: &str) -> O
 struct MockMermaid {
     context_body: String,
     task_body: String,
+}
+
+struct RealProvenanceOps {
+    store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+}
+
+#[async_trait]
+impl ProvenanceOpsService for RealProvenanceOps {
+    async fn query(
+        &self,
+        request: ProvenanceOpsQueryRequest,
+    ) -> std::result::Result<ProvenanceOpsQueryResponse, ProvenanceOpsError> {
+        use baml_rt_provenance::ProvenanceOpsQuery;
+        self.store
+            .query_ops(request)
+            .await
+            .map_err(|e| ProvenanceOpsError::Other(Box::new(e)))
+    }
+}
+
+fn call_metadata(agent_id: &AgentId, message_id: &MessageId, error: Option<&str>) -> Value {
+    let mut map = serde_json::Map::new();
+    map.insert(
+        "agent_id".to_string(),
+        Value::String(agent_id.as_str().to_string()),
+    );
+    map.insert(
+        "message_id".to_string(),
+        Value::String(message_id.as_str().to_string()),
+    );
+    if let Some(error) = error {
+        map.insert("error".to_string(), Value::String(error.to_string()));
+    }
+    Value::Object(map)
+}
+
+async fn seeded_provenance_store() -> Arc<baml_rt_provenance::GraphqliteProvenanceStore> {
+    let store = GraphqliteStoreBuilder::in_memory()
+        .build()
+        .expect("build store");
+    let context = ContextId::new(100, 1);
+    let agent_a =
+        AgentId::from_uuid(UuidId::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap());
+    let agent_b =
+        AgentId::from_uuid(UuidId::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap());
+    let msg_a = MessageId::from_external(ExternalId::new("msg-a".to_string()));
+    let msg_b = MessageId::from_external(ExternalId::new("msg-b".to_string()));
+    let mut msg_meta = HashMap::new();
+    msg_meta.insert("channel".to_string(), "api-test".to_string());
+
+    store
+        .add_event(ProvEvent::message_received_global(
+            context.clone(),
+            msg_a.clone(),
+            "ROLE_USER".to_string(),
+            vec!["run analysis".to_string()],
+            Some(msg_meta.clone()),
+            agent_a.clone(),
+            1,
+        ))
+        .await
+        .unwrap();
+    store
+        .add_event(ProvEvent::llm_call_completed_global(
+            context.clone(),
+            msg_a.clone(),
+            "openai".to_string(),
+            "gpt-4o-mini".to_string(),
+            "SummarizePrompt".to_string(),
+            serde_json::json!({"input":"hello"}),
+            call_metadata(&agent_a, &msg_a, None),
+            LlmUsage::Known {
+                prompt_tokens: 12,
+                completion_tokens: 8,
+                total_tokens: 20,
+            },
+            180,
+            Outcome::Success,
+        ))
+        .await
+        .unwrap();
+    store
+        .add_event(ProvEvent::tool_call_completed_global(
+            context.clone(),
+            msg_a.clone(),
+            "support/calculate".to_string(),
+            Some("CalcPrompt".to_string()),
+            serde_json::json!({"expression":"2+2"}),
+            call_metadata(&agent_a, &msg_a, Some("timeout while calling tool")),
+            420,
+            Outcome::Failure,
+            None,
+        ))
+        .await
+        .unwrap();
+
+    store
+        .add_event(ProvEvent::message_received_global(
+            context.clone(),
+            msg_b.clone(),
+            "ROLE_USER".to_string(),
+            vec!["secondary flow".to_string()],
+            Some(msg_meta),
+            agent_b.clone(),
+            2,
+        ))
+        .await
+        .unwrap();
+    store
+        .add_event(ProvEvent::llm_call_completed_global(
+            context.clone(),
+            msg_b.clone(),
+            "anthropic".to_string(),
+            "claude-3-7-sonnet".to_string(),
+            "DraftPrompt".to_string(),
+            serde_json::json!({"input":"world"}),
+            call_metadata(&agent_b, &msg_b, Some("provider timeout")),
+            LlmUsage::Known {
+                prompt_tokens: 20,
+                completion_tokens: 5,
+                total_tokens: 25,
+            },
+            650,
+            Outcome::Failure,
+        ))
+        .await
+        .unwrap();
+
+    store
 }
 
 impl MockMermaid {
@@ -609,6 +760,267 @@ async fn get_mermaid_task_returns_snapshot() {
         .await
         .unwrap();
 
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let snapshot = response_snapshot(status, &body);
+    insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn get_provenance_llm_calls_returns_snapshot() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let store = seeded_provenance_store().await;
+    let context_id = ContextId::new(100, 1).to_string();
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap());
+    let app = api_router_with_services(
+        registry,
+        None,
+        None,
+        Some(Arc::new(RealProvenanceOps { store }) as Arc<dyn ProvenanceOpsService>),
+        None,
+    );
+    let uri = format!(
+        "/provenance/llm-calls?contextId={}&agentId={}&groupBy=agent_id,model",
+        context_id,
+        agent_id.as_str()
+    );
+
+    let response = app
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let snapshot = response_snapshot(status, &body);
+    insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn get_provenance_aggregates_unavailable_returns_501_snapshot() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let app = api_router(registry, None, None);
+    let context_id = ContextId::new(1, 1).to_string();
+    let uri = format!("/provenance/aggregates?contextId={context_id}");
+
+    let response = app
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let snapshot = response_snapshot(status, &body);
+    insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn get_provenance_tool_calls_returns_snapshot() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let store = seeded_provenance_store().await;
+    let context_id = ContextId::new(100, 1).to_string();
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap());
+    let app = api_router_with_services(
+        registry,
+        None,
+        None,
+        Some(Arc::new(RealProvenanceOps { store }) as Arc<dyn ProvenanceOpsService>),
+        None,
+    );
+    let uri = format!(
+        "/provenance/tool-calls?contextId={}&agentId={}&groupBy=agent_id,tool_name&outcome=failed_only",
+        context_id,
+        agent_id.as_str()
+    );
+
+    let response = app
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let snapshot = response_snapshot(status, &body);
+    insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn get_provenance_messages_returns_snapshot() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let store = seeded_provenance_store().await;
+    let context_id = ContextId::new(100, 1).to_string();
+    let app = api_router_with_services(
+        registry,
+        None,
+        None,
+        Some(Arc::new(RealProvenanceOps { store }) as Arc<dyn ProvenanceOpsService>),
+        None,
+    );
+    let uri = format!(
+        "/provenance/messages?contextId={context_id}&groupBy=agent_id,baml_prompt&sortBy=total_processing_ms&sortDir=desc"
+    );
+
+    let response = app
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let snapshot = response_snapshot(status, &body);
+    insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn get_provenance_llm_calls_pagination_returns_snapshot() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let store = seeded_provenance_store().await;
+    let context_id = ContextId::new(100, 1).to_string();
+    let app = api_router_with_services(
+        registry,
+        None,
+        None,
+        Some(Arc::new(RealProvenanceOps { store }) as Arc<dyn ProvenanceOpsService>),
+        None,
+    );
+    let page_1_uri = format!(
+        "/provenance/llm-calls?contextId={context_id}&sortBy=timestamp_ms&sortDir=asc&pageSize=1"
+    );
+    let page_2_uri = format!(
+        "/provenance/llm-calls?contextId={context_id}&sortBy=timestamp_ms&sortDir=asc&pageSize=1&cursor=1"
+    );
+
+    let response_page_1 = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(page_1_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status_1 = response_page_1.status();
+    let body_1 = axum::body::to_bytes(response_page_1.into_body(), usize::MAX)
+        .await
+        .unwrap();
+
+    let response_page_2 = app
+        .oneshot(
+            Request::builder()
+                .uri(page_2_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status_2 = response_page_2.status();
+    let body_2 = axum::body::to_bytes(response_page_2.into_body(), usize::MAX)
+        .await
+        .unwrap();
+
+    let snapshot = serde_json::json!({
+        "page1": response_snapshot(status_1, &body_1),
+        "page2": response_snapshot(status_2, &body_2),
+    });
+    insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn get_provenance_llm_calls_filter_sort_and_drilldown_returns_snapshot() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let store = seeded_provenance_store().await;
+    let context_id = ContextId::new(100, 1).to_string();
+    let drilldown_agent =
+        AgentId::from_uuid(UuidId::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap());
+    let app = api_router_with_services(
+        registry,
+        None,
+        None,
+        Some(Arc::new(RealProvenanceOps { store }) as Arc<dyn ProvenanceOpsService>),
+        None,
+    );
+    let filtered_uri = format!(
+        "/provenance/llm-calls?contextId={context_id}&provider=anthropic&outcome=failed_only&sortBy=duration_ms&sortDir=desc&groupBy=agent_id,provider,model,baml_prompt"
+    );
+    let drilldown_uri = format!(
+        "/provenance/llm-calls?contextId={}&agentId={}&provider=anthropic&model=claude-3-7-sonnet&bamlPrompt=DraftPrompt&sortBy=timestamp_ms&sortDir=asc&pageSize=5",
+        context_id,
+        drilldown_agent.as_str()
+    );
+
+    let filtered = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(filtered_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let filtered_status = filtered.status();
+    let filtered_body = axum::body::to_bytes(filtered.into_body(), usize::MAX)
+        .await
+        .unwrap();
+
+    let drilled = app
+        .oneshot(
+            Request::builder()
+                .uri(drilldown_uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let drilled_status = drilled.status();
+    let drilled_body = axum::body::to_bytes(drilled.into_body(), usize::MAX)
+        .await
+        .unwrap();
+
+    let snapshot = serde_json::json!({
+        "filtered": response_snapshot(filtered_status, &filtered_body),
+        "drilldown": response_snapshot(drilled_status, &drilled_body),
+    });
+    insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn get_provenance_tool_calls_filter_sort_returns_snapshot() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let store = seeded_provenance_store().await;
+    let context_id = ContextId::new(100, 1).to_string();
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap());
+    let app = api_router_with_services(
+        registry,
+        None,
+        None,
+        Some(Arc::new(RealProvenanceOps { store }) as Arc<dyn ProvenanceOpsService>),
+        None,
+    );
+    let uri = format!(
+        "/provenance/tool-calls?contextId={}&agentId={}&toolName=support/calculate&sortBy=duration_ms&sortDir=desc&groupBy=agent_id,tool_name",
+        context_id,
+        agent_id.as_str()
+    );
+
+    let response = app
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
     let status = response.status();
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await

@@ -8,6 +8,7 @@ mod handlers;
 mod mermaid;
 mod metrics;
 mod openapi;
+mod provenance_ops;
 mod router;
 mod spans;
 
@@ -16,4 +17,5 @@ pub use context_metrics::{
     ContextSessionMetricsDto, ContextTurnMetricsDto, TokenUsageDto,
 };
 pub use mermaid::{MermaidError, MermaidService};
+pub use provenance_ops::{ProvenanceOpsError, ProvenanceOpsService};
 pub use router::{ApiState, api_router, api_router_with_services, serve, serve_with_services};

@@ -1,0 +1,32 @@
+---
+source: crates/tools/system/tests/discovery_sessions_test.rs
+expression: snapshot_safe_tool_output(output.clone())
+---
+{
+  "done": true,
+  "payload": {
+    "appliedCaps": {
+      "max_page_size": 50,
+      "page_size": 5,
+      "top_k": 10
+    },
+    "hotspotGroups": [],
+    "resource": "tool_calls",
+    "rows": [],
+    "summary": {
+      "count": 0,
+      "durationMsTotal": 0,
+      "failedCount": 0,
+      "latencyHotspots": {
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "tokenHotspots": {
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "totalTokens": 0
+    },
+    "truncated": false
+  }
+}

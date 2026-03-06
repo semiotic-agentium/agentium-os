@@ -1,0 +1,32 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+expression: snapshot
+---
+{
+  "status": 200,
+  "body": {
+    "resource": "tool_calls",
+    "rows": [],
+    "summary": {
+      "count": 0,
+      "failedCount": 0,
+      "durationMsTotal": 0,
+      "totalTokens": 0,
+      "latencyHotspots": {
+        "p95": 0.0,
+        "p99": 0.0
+      },
+      "tokenHotspots": {
+        "p95": 0.0,
+        "p99": 0.0
+      }
+    },
+    "hotspotGroups": [],
+    "truncated": false,
+    "appliedCaps": {
+      "page_size": 50,
+      "max_page_size": 200,
+      "top_k": 10
+    }
+  }
+}

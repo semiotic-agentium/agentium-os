@@ -8,7 +8,7 @@ use std::{
 
 use axum::{
     Json,
-    extract::State,
+    extract::{Query, State},
     http::StatusCode as AxumStatus,
     response::{
         IntoResponse,
@@ -18,6 +18,11 @@ use axum::{
 use baml_rt_core::{
     A2aWireRequest, AgentInstanceId, AgentPackageName, AgentRouteKey, BamlRtError,
     collect_a2a_stream,
+    ids::{AgentId, ContextId, TaskId},
+};
+use baml_rt_provenance::{
+    ProvenanceOpsFilters, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
+    ProvenanceOutcomeSegment, ProvenanceResponseProfile,
 };
 use futures_util::stream::{Stream, StreamExt};
 use http_api_problem::HttpApiProblem;
@@ -29,6 +34,7 @@ use crate::{
     mermaid::MermaidError,
     metrics,
     openapi::AgentDiscoveryEntryDto,
+    provenance_ops::ProvenanceOpsError,
     spans,
 };
 
@@ -423,6 +429,215 @@ pub async fn get_context_metrics(
             Err(problem(500, "Internal Server Error", e.to_string()))
         }
     }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvenanceQueryParams {
+    pub context_id: Option<ContextId>,
+    pub task_id: Option<TaskId>,
+    pub agent_id: Option<AgentId>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub tool_name: Option<String>,
+    pub baml_prompt: Option<String>,
+    pub from_timestamp_ms: Option<u64>,
+    pub to_timestamp_ms: Option<u64>,
+    pub group_by: Option<String>,
+    pub sort_by: Option<String>,
+    pub sort_dir: Option<String>,
+    pub page_size: Option<u32>,
+    pub cursor: Option<String>,
+    pub top_k: Option<u32>,
+    pub outcome: Option<String>,
+    pub response_profile: Option<String>,
+}
+
+fn parse_outcome(raw: Option<&str>) -> ProvenanceOutcomeSegment {
+    match raw.unwrap_or("both").to_ascii_lowercase().as_str() {
+        "failed_only" => ProvenanceOutcomeSegment::FailedOnly,
+        "successful_only" => ProvenanceOutcomeSegment::SuccessfulOnly,
+        _ => ProvenanceOutcomeSegment::Both,
+    }
+}
+
+fn parse_profile(raw: Option<&str>) -> ProvenanceResponseProfile {
+    match raw.unwrap_or("ui_full").to_ascii_lowercase().as_str() {
+        "tool_compact" => ProvenanceResponseProfile::ToolCompact,
+        _ => ProvenanceResponseProfile::UiFull,
+    }
+}
+
+fn to_ops_request(
+    resource: ProvenanceOpsResource,
+    q: ProvenanceQueryParams,
+) -> ProvenanceOpsQueryRequest {
+    let group_by = q
+        .group_by
+        .as_deref()
+        .map(|s| {
+            s.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    ProvenanceOpsQueryRequest {
+        resource,
+        filters: ProvenanceOpsFilters {
+            context_id: q.context_id,
+            task_id: q.task_id,
+            agent_id: q.agent_id,
+            provider: q.provider,
+            model: q.model,
+            tool_name: q.tool_name,
+            baml_prompt: q.baml_prompt,
+            from_timestamp_ms: q.from_timestamp_ms,
+            to_timestamp_ms: q.to_timestamp_ms,
+        },
+        group_by,
+        sort_by: q.sort_by,
+        sort_dir: q.sort_dir,
+        page_size: q.page_size,
+        cursor: q.cursor,
+        top_k: q.top_k,
+        outcome: Some(parse_outcome(q.outcome.as_deref())),
+        response_profile: Some(parse_profile(q.response_profile.as_deref())),
+        budget_mode: true,
+    }
+}
+
+async fn run_ops_query(
+    state: &Arc<ApiState>,
+    route: &str,
+    resource: ProvenanceOpsResource,
+    query: ProvenanceQueryParams,
+    start: Instant,
+) -> HttpResult<Json<Value>> {
+    let Some(svc) = &state.provenance_ops else {
+        metrics::record_request(route, "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Provenance query service not configured",
+        ));
+    };
+    let req = to_ops_request(resource, query);
+    match svc.query(req).await {
+        Ok(report) => {
+            metrics::record_request(route, "success", start.elapsed());
+            Ok(Json(serde_json::to_value(report).unwrap_or(Value::Null)))
+        }
+        Err(ProvenanceOpsError::NotFound) => {
+            metrics::record_request(route, "not_found", start.elapsed());
+            Err(problem(404, "Not Found", "No provenance rows for query"))
+        }
+        Err(ProvenanceOpsError::Unavailable) => {
+            metrics::record_request(route, "unavailable", start.elapsed());
+            Err(problem(
+                501,
+                "Not Implemented",
+                "Provenance query service unavailable",
+            ))
+        }
+        Err(ProvenanceOpsError::Other(e)) => {
+            metrics::record_request(route, "internal", start.elapsed());
+            Err(problem(500, "Internal Server Error", e.to_string()))
+        }
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/provenance/llm-calls",
+    tag = "provenance",
+    responses((status = 200, description = "Provenance LLM calls query response", body = Value))
+)]
+pub async fn get_provenance_llm_calls(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<ProvenanceQueryParams>,
+) -> HttpResult<Json<Value>> {
+    let start = Instant::now();
+    let span = spans::get_provenance_llm_calls();
+    let _guard = span.enter();
+    run_ops_query(
+        &state,
+        "get_provenance_llm_calls",
+        ProvenanceOpsResource::LlmCalls,
+        query,
+        start,
+    )
+    .await
+}
+
+#[utoipa::path(
+    get,
+    path = "/provenance/tool-calls",
+    tag = "provenance",
+    responses((status = 200, description = "Provenance tool calls query response", body = Value))
+)]
+pub async fn get_provenance_tool_calls(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<ProvenanceQueryParams>,
+) -> HttpResult<Json<Value>> {
+    let start = Instant::now();
+    let span = spans::get_provenance_tool_calls();
+    let _guard = span.enter();
+    run_ops_query(
+        &state,
+        "get_provenance_tool_calls",
+        ProvenanceOpsResource::ToolCalls,
+        query,
+        start,
+    )
+    .await
+}
+
+#[utoipa::path(
+    get,
+    path = "/provenance/messages",
+    tag = "provenance",
+    responses((status = 200, description = "Provenance message query response", body = Value))
+)]
+pub async fn get_provenance_messages(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<ProvenanceQueryParams>,
+) -> HttpResult<Json<Value>> {
+    let start = Instant::now();
+    let span = spans::get_provenance_messages();
+    let _guard = span.enter();
+    run_ops_query(
+        &state,
+        "get_provenance_messages",
+        ProvenanceOpsResource::Messages,
+        query,
+        start,
+    )
+    .await
+}
+
+#[utoipa::path(
+    get,
+    path = "/provenance/aggregates",
+    tag = "provenance",
+    responses((status = 200, description = "Provenance aggregate query response", body = Value))
+)]
+pub async fn get_provenance_aggregates(
+    State(state): State<Arc<ApiState>>,
+    Query(query): Query<ProvenanceQueryParams>,
+) -> HttpResult<Json<Value>> {
+    let start = Instant::now();
+    let span = spans::get_provenance_aggregates();
+    let _guard = span.enter();
+    run_ops_query(
+        &state,
+        "get_provenance_aggregates",
+        ProvenanceOpsResource::Aggregates,
+        query,
+        start,
+    )
+    .await
 }
 
 fn domain_to_problem(

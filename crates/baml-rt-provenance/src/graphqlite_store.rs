@@ -63,7 +63,9 @@ use crate::{
     spans,
     store::{
         ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
-        ProvenanceQueryApi, ProvenanceWriter, ToolSessionPhase,
+        ProvenanceOpsQuery, ProvenanceOpsQueryRequest, ProvenanceOpsQueryResponse,
+        ProvenanceOpsResource, ProvenanceOutcomeSegment, ProvenanceQueryApi,
+        ProvenanceResponseProfile, ProvenanceWriter, ToolSessionPhase,
     },
 };
 
@@ -1004,6 +1006,596 @@ impl ProvenanceQueryApi for GraphqliteProvenanceStore {
         limit: Option<usize>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
         ProvenanceContextReader::conversation_context(self, context_id, limit).await
+    }
+}
+
+fn value_from_row(row: &Row, col: &str) -> Value {
+    if let Ok(v) = row.get::<String>(col) {
+        return Value::String(v);
+    }
+    if let Ok(v) = row.get::<i64>(col) {
+        return Value::Number(v.into());
+    }
+    if let Ok(v) = row.get::<bool>(col) {
+        return Value::Bool(v);
+    }
+    if let Ok(v) = row.get::<f64>(col)
+        && let Some(n) = serde_json::Number::from_f64(v)
+    {
+        return Value::Number(n);
+    }
+    Value::Null
+}
+
+fn cypher_result_to_json_rows(rows: &CypherResult) -> Vec<Map<String, Value>> {
+    let cols = rows.columns();
+    rows.iter()
+        .map(|row| {
+            let mut out = Map::new();
+            for col in cols {
+                out.insert(col.to_string(), value_from_row(row, col));
+            }
+            out
+        })
+        .collect()
+}
+
+fn parse_json_field(row: &Map<String, Value>, field: &str) -> Option<Value> {
+    let raw = row.get(field)?;
+    match raw {
+        Value::String(s) if !s.trim().is_empty() => serde_json::from_str::<Value>(s).ok(),
+        Value::Object(_) | Value::Array(_) => Some(raw.clone()),
+        _ => None,
+    }
+}
+
+fn agent_id_from_metadata(metadata: &Value) -> Option<String> {
+    metadata
+        .get("agent_id")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn classify_failure(success: bool, metadata: Option<&Value>) -> String {
+    if success {
+        return "success".to_string();
+    }
+    let Some(metadata) = metadata else {
+        return "unknown".to_string();
+    };
+    let error = metadata.get("error");
+    if let Some(reason) = metadata.get("reason").and_then(Value::as_str) {
+        let lower = reason.to_ascii_lowercase();
+        if lower.contains("reject") || lower.contains("policy") {
+            return "prompt_rejected".to_string();
+        }
+    }
+    if let Some(error) = error {
+        let e = error.to_string().to_ascii_lowercase();
+        if e.contains("timeout") {
+            return "timeout".to_string();
+        }
+        if e.contains("transport") || e.contains("network") || e.contains("http") {
+            return "transport_error".to_string();
+        }
+        if e.contains("tool") {
+            return "tool_error".to_string();
+        }
+        if e.contains("llm") || e.contains("model") {
+            return "llm_error".to_string();
+        }
+        return "unknown".to_string();
+    }
+    "unknown".to_string()
+}
+
+fn event_id_timestamp(event_id: Option<&Value>) -> u64 {
+    event_id
+        .and_then(Value::as_str)
+        .map(event_id_to_timestamp_ms)
+        .unwrap_or(0)
+}
+
+fn apply_common_filters(
+    mut rows: Vec<Map<String, Value>>,
+    req: &ProvenanceOpsQueryRequest,
+) -> Vec<Map<String, Value>> {
+    rows.retain(|row| {
+        if let Some(from_ms) = req.filters.from_timestamp_ms
+            && event_id_timestamp(row.get("event_id")) < from_ms
+        {
+            return false;
+        }
+        if let Some(to_ms) = req.filters.to_timestamp_ms
+            && event_id_timestamp(row.get("event_id")) > to_ms
+        {
+            return false;
+        }
+        if let Some(ref provider) = req.filters.provider
+            && row.get("provider").and_then(Value::as_str) != Some(provider.as_str())
+        {
+            return false;
+        }
+        if let Some(ref model) = req.filters.model
+            && row.get("model").and_then(Value::as_str) != Some(model.as_str())
+        {
+            return false;
+        }
+        if let Some(ref tool_name) = req.filters.tool_name
+            && row.get("tool_name").and_then(Value::as_str) != Some(tool_name.as_str())
+        {
+            return false;
+        }
+        if let Some(ref prompt) = req.filters.baml_prompt {
+            let prompt_value = row
+                .get("baml_prompt")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if !prompt_value.contains(&prompt.to_ascii_lowercase()) {
+                return false;
+            }
+        }
+        if let Some(ref agent_id) = req.filters.agent_id
+            && row.get("agent_id").and_then(Value::as_str) != Some(agent_id.as_str())
+        {
+            return false;
+        }
+        match req
+            .outcome
+            .clone()
+            .unwrap_or(ProvenanceOutcomeSegment::Both)
+        {
+            ProvenanceOutcomeSegment::FailedOnly => {
+                if row.get("success").and_then(Value::as_bool) != Some(false) {
+                    return false;
+                }
+            }
+            ProvenanceOutcomeSegment::SuccessfulOnly => {
+                if row.get("success").and_then(Value::as_bool) != Some(true) {
+                    return false;
+                }
+            }
+            ProvenanceOutcomeSegment::Both => {}
+        }
+        true
+    });
+    rows
+}
+
+fn percentile(sorted_values: &[f64], q: f64) -> f64 {
+    if sorted_values.is_empty() {
+        return 0.0;
+    }
+    let idx = ((sorted_values.len() as f64 - 1.0) * q).round() as usize;
+    sorted_values[idx.min(sorted_values.len() - 1)]
+}
+
+fn build_hotspot_groups(
+    rows: &[Map<String, Value>],
+    req: &ProvenanceOpsQueryRequest,
+) -> Vec<Value> {
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let dims = if req.group_by.is_empty() {
+        vec!["agent_id".to_string()]
+    } else {
+        req.group_by.clone()
+    };
+    let mut groups: std::collections::HashMap<String, (u64, u64, u64, u64)> =
+        std::collections::HashMap::new();
+    for row in rows {
+        let key_parts: Vec<String> = dims
+            .iter()
+            .map(|d| {
+                row.get(d)
+                    .map(|v| {
+                        v.as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| v.to_string())
+                    })
+                    .unwrap_or_else(|| "unknown".to_string())
+            })
+            .collect();
+        let key = key_parts.join("|");
+        let duration = row.get("duration_ms").and_then(Value::as_u64).unwrap_or(0);
+        let tokens = row.get("total_tokens").and_then(Value::as_u64).unwrap_or(0);
+        let failed = u64::from(row.get("success").and_then(Value::as_bool) == Some(false));
+        let entry = groups.entry(key).or_insert((0, 0, 0, 0));
+        entry.0 += 1;
+        entry.1 += failed;
+        entry.2 += duration;
+        entry.3 += tokens;
+    }
+    let top_k = req.top_k.unwrap_or(10) as usize;
+    let mut out: Vec<Value> = groups
+        .into_iter()
+        .map(|(k, (count, failed, duration_sum, token_sum))| {
+            let avg_duration = if count == 0 {
+                0.0
+            } else {
+                duration_sum as f64 / count as f64
+            };
+            let avg_tokens = if count == 0 {
+                0.0
+            } else {
+                token_sum as f64 / count as f64
+            };
+            serde_json::json!({
+                "groupKey": k,
+                "count": count,
+                "failed": failed,
+                "failureRate": if count == 0 { 0.0 } else { failed as f64 / count as f64 },
+                "avgDurationMs": avg_duration,
+                "avgTotalTokens": avg_tokens
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        let ad = a
+            .get("avgDurationMs")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let bd = b
+            .get("avgDurationMs")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        bd.partial_cmp(&ad).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    out.truncate(top_k);
+    out
+}
+
+impl GraphqliteProvenanceStore {
+    async fn query_llm_rows(
+        &self,
+        req: &ProvenanceOpsQueryRequest,
+    ) -> Result<Vec<Map<String, Value>>> {
+        let mut where_parts: Vec<&str> = vec!["1=1"];
+        let mut params = Map::new();
+        if let Some(ref context_id) = req.filters.context_id {
+            where_parts.push("c.a2a_context_id = $context_id");
+            params.insert(
+                "context_id".to_string(),
+                Value::String(context_id.as_str().to_string()),
+            );
+        }
+        if let Some(ref task_id) = req.filters.task_id {
+            where_parts.push("c.a2a_task_id = $task_id");
+            params.insert(
+                "task_id".to_string(),
+                Value::String(task_id.as_str().to_string()),
+            );
+        }
+        let query = format!(
+            "MATCH (c:LlmCall) WHERE {} \
+             RETURN c.a2a_event_id AS event_id, c.a2a_context_id AS context_id, c.a2a_task_id AS task_id, \
+                    c.a2a_client AS provider, c.a2a_model AS model, c.a2a_function_name AS baml_prompt, \
+                    c.a2a_duration_ms AS duration_ms, c.a2a_usage_prompt_tokens AS prompt_tokens, \
+                    c.a2a_usage_completion_tokens AS completion_tokens, c.a2a_usage_total_tokens AS total_tokens, \
+                    c.a2a_success AS success, toString(c.a2a_metadata) AS metadata \
+             ORDER BY c.a2a_event_id",
+            where_parts.join(" AND ")
+        );
+        let rows = self.run_cypher_read(&query, &params).await?;
+        let mut out = cypher_result_to_json_rows(&rows);
+        for row in &mut out {
+            let metadata = parse_json_field(row, "metadata");
+            if let Some(agent_id) = metadata.as_ref().and_then(agent_id_from_metadata) {
+                row.insert("agent_id".to_string(), Value::String(agent_id));
+            }
+            let success = row.get("success").and_then(Value::as_bool).unwrap_or(false);
+            row.insert(
+                "failure_class".to_string(),
+                Value::String(classify_failure(success, metadata.as_ref())),
+            );
+            row.insert(
+                "timestamp_ms".to_string(),
+                Value::Number(event_id_timestamp(row.get("event_id")).into()),
+            );
+        }
+        Ok(apply_common_filters(out, req))
+    }
+
+    async fn query_tool_rows(
+        &self,
+        req: &ProvenanceOpsQueryRequest,
+    ) -> Result<Vec<Map<String, Value>>> {
+        let mut where_parts: Vec<&str> = vec!["1=1"];
+        let mut params = Map::new();
+        if let Some(ref context_id) = req.filters.context_id {
+            where_parts.push("t.a2a_context_id = $context_id");
+            params.insert(
+                "context_id".to_string(),
+                Value::String(context_id.as_str().to_string()),
+            );
+        }
+        if let Some(ref task_id) = req.filters.task_id {
+            where_parts.push("t.a2a_task_id = $task_id");
+            params.insert(
+                "task_id".to_string(),
+                Value::String(task_id.as_str().to_string()),
+            );
+        }
+        let query = format!(
+            "MATCH (t:ToolCall) WHERE {} \
+             OPTIONAL MATCH (t)-[:WAS_USED_BY]->(args:ToolArgs) \
+             RETURN t.a2a_event_id AS event_id, t.a2a_context_id AS context_id, t.a2a_task_id AS task_id, \
+                    t.a2a_tool_name AS tool_name, t.a2a_function_name AS baml_prompt, \
+                    t.a2a_duration_ms AS duration_ms, t.a2a_success AS success, \
+                    toString(t.a2a_metadata) AS metadata, toString(args.a2a_args) AS tool_args \
+             ORDER BY t.a2a_event_id",
+            where_parts.join(" AND ")
+        );
+        let rows = self.run_cypher_read(&query, &params).await?;
+        let mut out = cypher_result_to_json_rows(&rows);
+        for row in &mut out {
+            let metadata = parse_json_field(row, "metadata");
+            if let Some(agent_id) = metadata.as_ref().and_then(agent_id_from_metadata) {
+                row.insert("agent_id".to_string(), Value::String(agent_id));
+            }
+            let success = row.get("success").and_then(Value::as_bool).unwrap_or(false);
+            row.insert(
+                "failure_class".to_string(),
+                Value::String(classify_failure(success, metadata.as_ref())),
+            );
+            row.insert(
+                "timestamp_ms".to_string(),
+                Value::Number(event_id_timestamp(row.get("event_id")).into()),
+            );
+        }
+        Ok(apply_common_filters(out, req))
+    }
+
+    async fn query_message_rows(
+        &self,
+        req: &ProvenanceOpsQueryRequest,
+    ) -> Result<Vec<Map<String, Value>>> {
+        let mut where_parts: Vec<&str> = vec!["1=1"];
+        let mut params = Map::new();
+        if let Some(ref context_id) = req.filters.context_id {
+            where_parts.push("m.a2a_context_id = $context_id");
+            params.insert(
+                "context_id".to_string(),
+                Value::String(context_id.as_str().to_string()),
+            );
+        }
+        let query = format!(
+            "MATCH (m:Message) WHERE {} \
+             RETURN m.a2a_event_id AS event_id, m.a2a_context_id AS context_id, m.a2a_task_id AS task_id, \
+                    m.a2a_message_id AS message_id, m.a2a_role AS role, m.a2a_direction AS direction, \
+                    toString(m.a2a_content) AS content, toString(m.a2a_metadata) AS metadata \
+             ORDER BY m.a2a_event_id",
+            where_parts.join(" AND ")
+        );
+        let rows = self.run_cypher_read(&query, &params).await?;
+        let mut out = cypher_result_to_json_rows(&rows);
+        let mut llm_duration_by_message: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+        let mut tool_duration_by_message: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+        if let Some(context_id) = req.filters.context_id.clone() {
+            let mut m = Map::new();
+            m.insert(
+                "context_id".to_string(),
+                Value::String(context_id.as_str().to_string()),
+            );
+            let llm_rows = self
+                .run_cypher_read(crate::context_metrics_queries::TURN_TOTALS_BY_CONTEXT, &m)
+                .await?;
+            for row in cypher_result_to_json_rows(&llm_rows) {
+                if let Some(message_id) = row.get("message_id").and_then(Value::as_str) {
+                    llm_duration_by_message.insert(
+                        message_id.to_string(),
+                        row.get("llm_duration_ms_total")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                    );
+                }
+            }
+            let tool_rows = self
+                .run_cypher_read(
+                    "MATCH (m:A2AMessageProcessing)-[:WAS_EXECUTED_BY]->(t:ToolCall) \
+                     WHERE m.a2a_context_id = $context_id AND t.a2a_duration_ms IS NOT NULL \
+                     RETURN m.a2a_message_id AS message_id, sum(t.a2a_duration_ms) AS tool_duration_ms_total",
+                    &m,
+                )
+                .await?;
+            for row in cypher_result_to_json_rows(&tool_rows) {
+                if let Some(message_id) = row.get("message_id").and_then(Value::as_str) {
+                    tool_duration_by_message.insert(
+                        message_id.to_string(),
+                        row.get("tool_duration_ms_total")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(0),
+                    );
+                }
+            }
+        }
+        for row in &mut out {
+            let message_id = row
+                .get("message_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let llm_sum = llm_duration_by_message
+                .get(&message_id)
+                .copied()
+                .unwrap_or(0);
+            let tool_sum = tool_duration_by_message
+                .get(&message_id)
+                .copied()
+                .unwrap_or(0);
+            row.insert(
+                "llm_duration_ms_sum".to_string(),
+                Value::Number(llm_sum.into()),
+            );
+            row.insert(
+                "tool_duration_ms_sum".to_string(),
+                Value::Number(tool_sum.into()),
+            );
+            row.insert(
+                "total_processing_ms".to_string(),
+                Value::Number((llm_sum + tool_sum).into()),
+            );
+            row.insert(
+                "duration_ms".to_string(),
+                Value::Number((llm_sum + tool_sum).into()),
+            );
+            row.insert(
+                "timestamp_ms".to_string(),
+                Value::Number(event_id_timestamp(row.get("event_id")).into()),
+            );
+            if let Some(metadata) = parse_json_field(row, "metadata")
+                && let Some(agent_id) = agent_id_from_metadata(&metadata)
+            {
+                row.insert("agent_id".to_string(), Value::String(agent_id));
+            }
+            row.insert("success".to_string(), Value::Bool(true));
+            row.insert(
+                "failure_class".to_string(),
+                Value::String("success".to_string()),
+            );
+        }
+        Ok(apply_common_filters(out, req))
+    }
+}
+
+#[async_trait]
+impl ProvenanceOpsQuery for GraphqliteProvenanceStore {
+    async fn query_ops(
+        &self,
+        mut request: ProvenanceOpsQueryRequest,
+    ) -> Result<ProvenanceOpsQueryResponse> {
+        let profile = request
+            .response_profile
+            .clone()
+            .unwrap_or(ProvenanceResponseProfile::UiFull);
+        let page_cap = match profile {
+            ProvenanceResponseProfile::UiFull => 200_u32,
+            ProvenanceResponseProfile::ToolCompact => 50_u32,
+        };
+        let requested_page = request.page_size.unwrap_or(50).max(1);
+        let page_size = requested_page.min(page_cap) as usize;
+        let offset = request
+            .cursor
+            .as_deref()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+        request.page_size = Some(page_size as u32);
+
+        let mut rows = match request.resource {
+            ProvenanceOpsResource::LlmCalls => self.query_llm_rows(&request).await?,
+            ProvenanceOpsResource::ToolCalls => self.query_tool_rows(&request).await?,
+            ProvenanceOpsResource::Messages => self.query_message_rows(&request).await?,
+            ProvenanceOpsResource::Aggregates => {
+                // Default aggregate scope is LLM calls unless caller explicitly sets group dimensions
+                // and filters that target other rows; we still compute from LLM rows for token budgets.
+                self.query_llm_rows(&request).await?
+            }
+        };
+
+        let sort_by = request
+            .sort_by
+            .clone()
+            .unwrap_or_else(|| "timestamp_ms".to_string());
+        let sort_desc = request
+            .sort_dir
+            .as_deref()
+            .map(|s| s.eq_ignore_ascii_case("desc"))
+            .unwrap_or(true);
+        rows.sort_by(|a, b| {
+            let av = a.get(&sort_by).cloned().unwrap_or(Value::Null);
+            let bv = b.get(&sort_by).cloned().unwrap_or(Value::Null);
+            let ord = match (av, bv) {
+                (Value::Number(an), Value::Number(bn)) => an
+                    .as_f64()
+                    .partial_cmp(&bn.as_f64())
+                    .unwrap_or(std::cmp::Ordering::Equal),
+                (Value::String(as_), Value::String(bs_)) => as_.cmp(&bs_),
+                _ => std::cmp::Ordering::Equal,
+            };
+            if sort_desc { ord.reverse() } else { ord }
+        });
+
+        let mut durations: Vec<f64> = rows
+            .iter()
+            .filter_map(|r| r.get("duration_ms").and_then(Value::as_f64))
+            .collect();
+        durations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut tokens: Vec<f64> = rows
+            .iter()
+            .filter_map(|r| r.get("total_tokens").and_then(Value::as_f64))
+            .collect();
+        tokens.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let duration_p95 = percentile(&durations, 0.95);
+        let duration_p99 = percentile(&durations, 0.99);
+        let token_p95 = percentile(&tokens, 0.95);
+        let token_p99 = percentile(&tokens, 0.99);
+
+        let total_rows = rows.len();
+        let page_end = std::cmp::min(offset.saturating_add(page_size), total_rows);
+        let page_rows = if offset < total_rows {
+            rows[offset..page_end].to_vec()
+        } else {
+            Vec::new()
+        };
+        let next_cursor = if page_end < total_rows {
+            Some(page_end.to_string())
+        } else {
+            None
+        };
+
+        let hotspot_groups = build_hotspot_groups(&rows, &request);
+        let failed_count = rows
+            .iter()
+            .filter(|r| r.get("success").and_then(Value::as_bool) == Some(false))
+            .count();
+        let total_tokens_sum: u64 = rows
+            .iter()
+            .map(|r| r.get("total_tokens").and_then(Value::as_u64).unwrap_or(0))
+            .sum();
+        let total_duration_sum: u64 = rows
+            .iter()
+            .map(|r| r.get("duration_ms").and_then(Value::as_u64).unwrap_or(0))
+            .sum();
+
+        Ok(ProvenanceOpsQueryResponse {
+            resource: request.resource,
+            rows: page_rows.into_iter().map(Value::Object).collect(),
+            summary: serde_json::json!({
+                "count": total_rows,
+                "failedCount": failed_count,
+                "durationMsTotal": total_duration_sum,
+                "totalTokens": total_tokens_sum,
+                "latencyHotspots": {
+                    "p95": duration_p95,
+                    "p99": duration_p99
+                },
+                "tokenHotspots": {
+                    "p95": token_p95,
+                    "p99": token_p99
+                }
+            }),
+            hotspot_groups,
+            next_cursor,
+            truncated: total_rows > page_size || requested_page > page_cap,
+            applied_caps: serde_json::Map::from_iter([
+                (
+                    "page_size".to_string(),
+                    Value::Number((page_size as u64).into()),
+                ),
+                (
+                    "max_page_size".to_string(),
+                    Value::Number((page_cap as u64).into()),
+                ),
+                (
+                    "top_k".to_string(),
+                    Value::Number((request.top_k.unwrap_or(10) as u64).into()),
+                ),
+            ]),
+        })
     }
 }
 
