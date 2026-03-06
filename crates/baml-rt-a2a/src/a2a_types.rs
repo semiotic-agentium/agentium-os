@@ -465,10 +465,7 @@ impl StreamChunkView {
         let task_id = Self::parse_task_id(&value);
         let task_state = Self::parse_task_state(&value);
         let has_status_update = value.get("statusUpdate").is_some();
-        let has_artifact_update = value
-            .get("artifactUpdate")
-            .or_else(|| value.get("artifact_update"))
-            .is_some();
+        let has_artifact_update = value.get("artifactUpdate").is_some();
         let has_task = value.get("task").is_some();
         Self {
             task_id,
