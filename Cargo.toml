@@ -26,6 +26,7 @@ members = [
   "crates/tools/notion",
   "crates/tools/system",
   "crates/tools/memory",
+  "crates/baml-tool-derive",
 ]
 default-members = [
   "crates/baml-rt-core",
