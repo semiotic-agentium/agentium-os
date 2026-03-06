@@ -6,6 +6,7 @@ pub mod a2a;
 pub mod a2a_store;
 pub mod a2a_transport;
 pub mod a2a_types;
+pub(crate) mod projection;
 pub mod agent_registry;
 pub mod auto_status;
 pub mod error_classifier;
