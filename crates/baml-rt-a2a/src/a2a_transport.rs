@@ -348,7 +348,9 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
             projected_chars = stats.projected_chars,
             dropped_source_filtered = stats.dropped_source_filtered,
             dropped_deduped = stats.dropped_deduped,
+            dropped_empty = stats.dropped_empty,
             dropped_budgeted = stats.dropped_budgeted,
+            floor_applied = stats.floor_applied,
             "conversation_history_json: projection stats"
         );
 

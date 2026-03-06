@@ -51,8 +51,13 @@ pub struct ProjectionStats {
     pub dropped_source_filtered: usize,
     /// Items dropped as duplicates (same role + source + content).
     pub dropped_deduped: usize,
+    /// Items dropped because their content was empty/null.
+    pub dropped_empty: usize,
     /// Items dropped by budget truncation.
     pub dropped_budgeted: usize,
+    /// Whether the floor guarantee fired (injected the most recent user message
+    /// because the pipeline would otherwise have produced an empty result).
+    pub floor_applied: bool,
 }
 
 /// Project provenance conversation context items into the prompt event envelope.
@@ -66,8 +71,11 @@ pub struct ProjectionStats {
 /// 1. Source filtering (drop items whose `source` is not in `allowed_sources`).
 /// 2. Tool compaction (`compact_result` per tool_result).
 /// 3. Deterministic dedupe (key = role + source + canonical content; keep latest).
-/// 4. Budget truncation (`max_items`, keeping the latest N items).
-/// 5. Serialize to prompt event envelope (`{role, source, content}`).
+/// 4. Empty-content removal (drop null, empty string, empty object `{}`).
+/// 5. Budget truncation (`max_items`, keeping the latest N items).
+/// 6. Floor guarantee (if pipeline produced empty but candidates existed, keep
+///    the most recent user message).
+/// 7. Serialize to prompt event envelope (`{role, source, content}`).
 pub fn project(
     mut items: Vec<ProvenanceConversationContextItem>,
     config: &ProjectionConfig,
@@ -131,6 +139,22 @@ pub fn project(
         pre - items.len()
     };
 
+    // Stage: empty-content removal — drop items whose content carries no
+    // useful information (null, empty string, empty object).
+    let dropped_empty = {
+        let pre = items.len();
+        items.retain(|item| !is_empty_content(&item.content));
+        pre - items.len()
+    };
+
+    // Snapshot the most recent user message *before* budget truncation so the
+    // floor guarantee can restore it if the budget drops everything.
+    let floor_candidate = items
+        .iter()
+        .rev()
+        .find(|item| item.role.eq_ignore_ascii_case("ROLE_USER"))
+        .cloned();
+
     // Stage: budget truncation (keep latest N by position; items are already
     // in chronological order from the store).
     let dropped_budgeted = if items.len() > config.max_items {
@@ -139,6 +163,20 @@ pub fn project(
         overflow
     } else {
         0
+    };
+
+    // Stage: floor guarantee — if the pipeline produced an empty result but
+    // candidates existed, inject the most recent user message so the LLM
+    // always has *some* conversational anchor.
+    let floor_applied = if items.is_empty() && candidates > 0 {
+        if let Some(user_item) = floor_candidate {
+            items.push(user_item);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
     };
 
     // Stage: serialize to prompt event envelope.
@@ -165,10 +203,22 @@ pub fn project(
         projected_chars,
         dropped_source_filtered,
         dropped_deduped,
+        dropped_empty,
         dropped_budgeted,
+        floor_applied,
     };
 
     (entries, stats)
+}
+
+/// Returns `true` if the content value carries no useful information.
+fn is_empty_content(v: &Value) -> bool {
+    match v {
+        Value::Null => true,
+        Value::String(s) => s.is_empty(),
+        Value::Object(m) => m.is_empty(),
+        _ => false,
+    }
 }
 
 /// Serialize a non-string `Value` to a JSON string for prompt injection.
@@ -395,6 +445,48 @@ mod tests {
             .collect();
         // Group A winner at input idx 1, Group B winner at idx 3, unique at idx 4.
         assert_eq!(contents, vec!["hi", "ok", "{\"r\":1}"]);
+    }
+
+    /// Empty content is removed; if everything is empty the floor guarantee
+    /// injects the most recent user message.
+    #[test]
+    fn test_empty_filtering_and_floor_guarantee() {
+        let items = vec![
+            make_item("ROLE_USER", "message", Value::String("anchor".into()), 1000),
+            make_item("ROLE_AGENT", "message", Value::String(String::new()), 2000),
+            make_item("ROLE_USER", "message", Value::Null, 3000),
+            make_item("tool", "tool_result", json!({}), 4000),
+        ];
+
+        let config = ProjectionConfig::default();
+        let (entries, stats) = project(items, &config, &empty_registry());
+
+        // 3 empty items dropped, 1 survivor ("anchor").
+        assert_eq!(stats.dropped_empty, 3);
+        assert_eq!(stats.projected, 1);
+        assert!(!stats.floor_applied);
+        assert_eq!(entries[0]["content"], "anchor");
+
+        // When *all* items are empty, floor fires if a user message existed
+        // before the empty filter.
+        let all_empty = vec![
+            make_item(
+                "ROLE_USER",
+                "message",
+                Value::String("last hope".into()),
+                1000,
+            ),
+            make_item("ROLE_USER", "message", Value::String(String::new()), 2000),
+        ];
+        // Budget of 0 forces truncation to empty after the non-empty item survives.
+        let tight = ProjectionConfig {
+            max_items: 0,
+            ..ProjectionConfig::default()
+        };
+        let (entries, stats) = project(all_empty, &tight, &empty_registry());
+        assert!(stats.floor_applied);
+        assert_eq!(stats.projected, 1);
+        assert_eq!(entries[0]["content"], "last hope");
     }
 
     #[test]
