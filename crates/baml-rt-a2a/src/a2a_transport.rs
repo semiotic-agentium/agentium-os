@@ -341,8 +341,7 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
             return Ok(None);
         }
 
-        let (entries, stats) =
-            crate::projection::project(items, &config, &self.tool_registry);
+        let (entries, stats) = crate::projection::project(items, &config, &self.tool_registry);
         tracing::debug!(
             candidates = stats.candidates,
             projected = stats.projected,

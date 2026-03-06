@@ -125,10 +125,11 @@ fn content_to_string(v: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use baml_rt_core::ids::EventId;
     use baml_rt_tools::ToolRegistry;
     use serde_json::json;
+
+    use super::*;
 
     /// Build a synthetic provenance item for testing.
     fn make_item(
@@ -248,18 +249,8 @@ mod tests {
     #[test]
     fn test_projected_chars_counted() {
         let items = vec![
-            make_item(
-                "ROLE_USER",
-                "message",
-                Value::String("abcde".into()),
-                1000,
-            ),
-            make_item(
-                "ROLE_USER",
-                "message",
-                Value::String("fg".into()),
-                2000,
-            ),
+            make_item("ROLE_USER", "message", Value::String("abcde".into()), 1000),
+            make_item("ROLE_USER", "message", Value::String("fg".into()), 2000),
         ];
 
         let config = ProjectionConfig::default();
@@ -268,7 +259,6 @@ mod tests {
         // "abcde" (5) + "fg" (2) = 7
         assert_eq!(stats.projected_chars, 7);
     }
-
 
     #[test]
     fn test_object_content_serialized_to_json_string() {
