@@ -25,7 +25,7 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     #[cfg(feature = "notion")]
     let _ = baml_tools_notion::notion_metadata;
     #[cfg(feature = "slack")]
-    let _ = baml_tools_slack::slack_metadata;
+    let _ = baml_tools_slack::support_slack_metadata;
     let tool_metadata = resolve_manifest_tools(tool_names)?;
 
     let mut output = String::new();
