@@ -5,22 +5,12 @@
 //! - `raw_blocks`: render mode (raw skips Notable lines / Missing info hints).
 //! - `max_depth`: limit child block expansion depth (0 disables expansion).
 
-use std::{collections::VecDeque, fmt, sync::Arc};
+use std::{collections::VecDeque, fmt};
 
 use async_trait::async_trait;
 use baml_derive::BamlType;
-use baml_derive_core::BamlType as BamlTypeTrait;
 use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::{
-    ToolMetadataBuilder, TypeBasedMetadataBuilder,
-    bundles::Support,
-    parse_tool_name_and_class, register_tool,
-    tool_schema::ts_decl,
-    tools::{
-        BamlTool, ToolAccess, ToolFunctionMetadata, ToolHandler, ToolSecretRequirement,
-        create_tool_handler,
-    },
-};
+use baml_rt_tools::{baml_tool, bundles::Support, tools::BamlTool};
 use integrations_notion_read::{
     self as notion_read, NotionReadClient, NotionReadError, RetryAfter,
 };
@@ -1000,6 +990,21 @@ fn compact_notion_payload(content: &mut serde_json::Value) {
     }
 }
 
+#[baml_tool(
+    name = "support/notion",
+    description = "Read-only Notion access (search pages, get page, get page blocks).",
+    tags = ["support", "notion", "read"],
+    access = Read,
+    secrets = [
+        { name = "NOTION_API_TOKEN", description = "Notion integration token", reason = "Required to authenticate with the Notion API" },
+    ],
+    baml_types = [
+        NotionSearchPagesInput, NotionGetPageInput, NotionGetPageBlocksInput,
+        BlockRenderMode, NotionInput, NotionPageSummary, NotionBlockSummary,
+        NotionSource, NotionOutput,
+    ],
+    extra_ts_types = [BlockRenderMode],
+)]
 #[async_trait]
 impl BamlTool for NotionTool {
     type Bundle = Support;
@@ -1070,6 +1075,19 @@ impl NotionSearchPagesTool {
     }
 }
 
+#[baml_tool(
+    name = "support/notionSearchPages",
+    description = "Search Notion pages by query.",
+    tags = ["support", "notion", "read"],
+    access = Read,
+    secrets = [
+        { name = "NOTION_API_TOKEN", description = "Notion integration token", reason = "Required to authenticate with the Notion API" },
+    ],
+    baml_types = [
+        NotionSearchPagesInput, NotionPageSummary, NotionBlockSummary,
+        NotionSource, NotionOutput,
+    ],
+)]
 #[async_trait]
 impl BamlTool for NotionSearchPagesTool {
     type Bundle = Support;
@@ -1121,6 +1139,19 @@ impl NotionGetPageTool {
     }
 }
 
+#[baml_tool(
+    name = "support/notionGetPage",
+    description = "Fetch a Notion page by id.",
+    tags = ["support", "notion", "read"],
+    access = Read,
+    secrets = [
+        { name = "NOTION_API_TOKEN", description = "Notion integration token", reason = "Required to authenticate with the Notion API" },
+    ],
+    baml_types = [
+        NotionGetPageInput, NotionPageSummary, NotionBlockSummary,
+        NotionSource, NotionOutput,
+    ],
+)]
 #[async_trait]
 impl BamlTool for NotionGetPageTool {
     type Bundle = Support;
@@ -1165,6 +1196,19 @@ impl NotionGetPageBlocksTool {
     }
 }
 
+#[baml_tool(
+    name = "support/notionGetPageBlocks",
+    description = "Retrieve Notion block children for a page or block.",
+    tags = ["support", "notion", "read"],
+    access = Read,
+    secrets = [
+        { name = "NOTION_API_TOKEN", description = "Notion integration token", reason = "Required to authenticate with the Notion API" },
+    ],
+    baml_types = [
+        BlockRenderMode, NotionGetPageBlocksInput, NotionPageSummary,
+        NotionBlockSummary, NotionSource, NotionOutput,
+    ],
+)]
 #[async_trait]
 impl BamlTool for NotionGetPageBlocksTool {
     type Bundle = Support;
@@ -1394,168 +1438,6 @@ fn extract_parent_page_id(json: &serde_json::Value) -> Option<String> {
     }
     None
 }
-
-// ---------------------------------------------------------------------------
-// Metadata registration (compile-time, for codegen)
-// ---------------------------------------------------------------------------
-
-pub fn notion_search_pages_metadata() -> ToolFunctionMetadata {
-    let (name, class_name) = parse_tool_name_and_class("support/notionSearchPages")
-        .expect("support/notionSearchPages is a compile-time constant");
-    let baml_decl = [
-        NotionSearchPagesInput::baml_decl(),
-        NotionPageSummary::baml_decl(),
-        NotionBlockSummary::baml_decl(),
-        NotionSource::baml_decl(),
-        NotionOutput::baml_decl(),
-    ]
-    .join("\n\n");
-    TypeBasedMetadataBuilder::<(), NotionSearchPagesInput, NotionOutput>::new(
-        name,
-        class_name,
-        "Search Notion pages by query.".to_string(),
-    )
-    .with_baml_decl(baml_decl)
-    .with_tags(vec![
-        "support".to_string(),
-        "notion".to_string(),
-        "read".to_string(),
-    ])
-    .with_access(ToolAccess::Read)
-    .with_secrets(vec![ToolSecretRequirement {
-        name: "NOTION_API_TOKEN".to_string(),
-        description: "Notion integration token".to_string(),
-        reason: "Required to authenticate with the Notion API".to_string(),
-    }])
-    .build_metadata()
-}
-
-pub fn notion_metadata() -> ToolFunctionMetadata {
-    let (name, class_name) = parse_tool_name_and_class("support/notion")
-        .expect("support/notion is a compile-time constant");
-    let mut extra_ts_decls = Vec::new();
-    if let Some(decl) = ts_decl::<BlockRenderMode>() {
-        extra_ts_decls.push(decl);
-    }
-    let baml_decl = [
-        NotionSearchPagesInput::baml_decl(),
-        NotionGetPageInput::baml_decl(),
-        NotionGetPageBlocksInput::baml_decl(),
-        BlockRenderMode::baml_decl(),
-        NotionInput::baml_decl(),
-        NotionPageSummary::baml_decl(),
-        NotionBlockSummary::baml_decl(),
-        NotionSource::baml_decl(),
-        NotionOutput::baml_decl(),
-    ]
-    .join("\n\n");
-    TypeBasedMetadataBuilder::<(), NotionInput, NotionOutput>::new(
-        name,
-        class_name,
-        "Read-only Notion access (search pages, get page, get page blocks).".to_string(),
-    )
-    .with_baml_decl(baml_decl)
-    .with_extra_ts_decls(extra_ts_decls)
-    .with_tags(vec![
-        "support".to_string(),
-        "notion".to_string(),
-        "read".to_string(),
-    ])
-    .with_access(ToolAccess::Read)
-    .with_secrets(vec![ToolSecretRequirement {
-        name: "NOTION_API_TOKEN".to_string(),
-        description: "Notion integration token".to_string(),
-        reason: "Required to authenticate with the Notion API".to_string(),
-    }])
-    .build_metadata()
-}
-
-pub fn notion_get_page_metadata() -> ToolFunctionMetadata {
-    let (name, class_name) = parse_tool_name_and_class("support/notionGetPage")
-        .expect("support/notionGetPage is a compile-time constant");
-    let baml_decl = [
-        NotionGetPageInput::baml_decl(),
-        NotionPageSummary::baml_decl(),
-        NotionBlockSummary::baml_decl(),
-        NotionSource::baml_decl(),
-        NotionOutput::baml_decl(),
-    ]
-    .join("\n\n");
-    TypeBasedMetadataBuilder::<(), NotionGetPageInput, NotionOutput>::new(
-        name,
-        class_name,
-        "Fetch a Notion page by id.".to_string(),
-    )
-    .with_baml_decl(baml_decl)
-    .with_tags(vec![
-        "support".to_string(),
-        "notion".to_string(),
-        "read".to_string(),
-    ])
-    .with_access(ToolAccess::Read)
-    .with_secrets(vec![ToolSecretRequirement {
-        name: "NOTION_API_TOKEN".to_string(),
-        description: "Notion integration token".to_string(),
-        reason: "Required to authenticate with the Notion API".to_string(),
-    }])
-    .build_metadata()
-}
-
-pub fn notion_get_page_blocks_metadata() -> ToolFunctionMetadata {
-    let (name, class_name) = parse_tool_name_and_class("support/notionGetPageBlocks")
-        .expect("support/notionGetPageBlocks is a compile-time constant");
-    let baml_decl = [
-        BlockRenderMode::baml_decl(),
-        NotionGetPageBlocksInput::baml_decl(),
-        NotionPageSummary::baml_decl(),
-        NotionBlockSummary::baml_decl(),
-        NotionSource::baml_decl(),
-        NotionOutput::baml_decl(),
-    ]
-    .join("\n\n");
-    TypeBasedMetadataBuilder::<(), NotionGetPageBlocksInput, NotionOutput>::new(
-        name,
-        class_name,
-        "Retrieve Notion block children for a page or block.".to_string(),
-    )
-    .with_baml_decl(baml_decl)
-    .with_tags(vec![
-        "support".to_string(),
-        "notion".to_string(),
-        "read".to_string(),
-    ])
-    .with_access(ToolAccess::Read)
-    .with_secrets(vec![ToolSecretRequirement {
-        name: "NOTION_API_TOKEN".to_string(),
-        description: "Notion integration token".to_string(),
-        reason: "Required to authenticate with the Notion API".to_string(),
-    }])
-    .build_metadata()
-}
-
-fn notion_search_pages_build() -> Result<Arc<dyn ToolHandler>> {
-    create_tool_handler(NotionSearchPagesTool::new()).map(|(_, h)| h)
-}
-
-fn notion_get_page_build() -> Result<Arc<dyn ToolHandler>> {
-    create_tool_handler(NotionGetPageTool::new()).map(|(_, h)| h)
-}
-
-fn notion_get_page_blocks_build() -> Result<Arc<dyn ToolHandler>> {
-    create_tool_handler(NotionGetPageBlocksTool::new()).map(|(_, h)| h)
-}
-
-fn notion_build() -> Result<Arc<dyn ToolHandler>> {
-    create_tool_handler(NotionTool::new()).map(|(_, h)| h)
-}
-
-register_tool!(notion_search_pages_metadata, notion_search_pages_build);
-register_tool!(notion_get_page_metadata, notion_get_page_build);
-register_tool!(
-    notion_get_page_blocks_metadata,
-    notion_get_page_blocks_build
-);
-register_tool!(notion_metadata, notion_build);
 
 #[cfg(test)]
 mod compaction_tests {

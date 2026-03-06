@@ -14,6 +14,9 @@ pub mod tools;
 pub mod ts_gen;
 
 pub use access::{ToolAccessPolicy, enforce_tool_access, parse_access_allowlist};
+/// Re-export the `#[baml_tool]` attribute macro so tool crates can use
+/// `use baml_rt_tools::baml_tool;` as a single import path.
+pub use baml_tool_derive::baml_tool;
 pub use bundles::{BundleType, Support};
 pub use host_registration::register_manifest_tools;
 pub use session_coordination::get_session_coordination_baml_for_tools;

@@ -1,15 +1,7 @@
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use baml_derive::BamlType;
-use baml_derive_core::BamlType as BamlTypeTrait;
 use baml_rt_core::Result;
-use baml_rt_tools::{
-    ToolMetadataBuilder, TypeBasedMetadataBuilder,
-    bundles::Support,
-    parse_tool_name_and_class, register_tool,
-    tools::{BamlTool, ToolFunctionMetadata, ToolHandler, create_tool_handler},
-};
+use baml_rt_tools::{baml_tool, bundles::Support, tools::BamlTool};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -53,38 +45,16 @@ pub struct CalculatorOutput {
     pub formatted: String,
 }
 
-pub fn support_calculate_metadata() -> ToolFunctionMetadata {
-    // This is a compile-time constant, so parsing cannot fail
-    let (name, class_name) = parse_tool_name_and_class("support/calculate")
-        .expect("support/calculate is a compile-time constant and must be valid");
-
-    let baml_decl = [
-        Expression::baml_decl(),
-        MathOperation::baml_decl(),
-        CalculatorInput::baml_decl(),
-        CalculatorOutput::baml_decl(),
-    ]
-    .join("\n\n");
-
-    TypeBasedMetadataBuilder::<(), CalculatorInput, CalculatorOutput>::new(
-        name.clone(),
-        class_name,
-        "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division.".to_string(),
-    )
-    .with_baml_decl(baml_decl)
-    .with_tags(vec!["support".to_string(), "calculate".to_string()])
-    .build_metadata()
-}
-
-fn support_calculate_build() -> Result<Arc<dyn ToolHandler>> {
-    create_tool_handler(CalculatorTool).map(|(_, h)| h)
-}
-
-register_tool!(support_calculate_metadata, support_calculate_build);
-
 /// Calculator tool (support/calculate) for fixture and demo use.
+#[derive(Default)]
 pub struct CalculatorTool;
 
+#[baml_tool(
+    name = "support/calculate",
+    description = "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division.",
+    tags = ["support", "calculate"],
+    baml_types = [Expression, MathOperation, CalculatorInput, CalculatorOutput],
+)]
 #[async_trait]
 impl BamlTool for CalculatorTool {
     type Bundle = Support;

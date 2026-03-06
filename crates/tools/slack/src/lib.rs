@@ -8,24 +8,12 @@
 //! - user resolution by ID
 //! - message search (user-token scope)
 
-use std::{
-    collections::{BTreeSet, HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use async_trait::async_trait;
 use baml_derive::BamlType;
-use baml_derive_core::BamlType as BamlTypeTrait;
 use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::{
-    ToolMetadataBuilder, TypeBasedMetadataBuilder,
-    bundles::Support,
-    parse_tool_name_and_class, register_tool,
-    tools::{
-        BamlTool, ToolAccess, ToolFunctionMetadata, ToolHandler, ToolSecretRequirement,
-        create_tool_handler,
-    },
-};
+use baml_rt_tools::{baml_tool, bundles::Support, tools::BamlTool};
 use integrations_slack_read::{self as slack_read, SlackReadClient, SlackReadError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -1411,6 +1399,24 @@ fn compact_slack_payload(content: &mut serde_json::Value) {
     }
 }
 
+#[baml_tool(
+    name = "support/slack",
+    description = "Read-only Slack integration for conversation retrieval and source-backed analysis.",
+    tags = ["support", "slack", "read"],
+    access = Read,
+    secrets = [
+        { name = "SLACK_BOT_TOKEN", description = "Slack bot token (xoxb-...)", reason = "Required for read access to conversations/history for bot-authorized installs" },
+        { name = "SLACK_USER_TOKEN", description = "Slack user token (xoxp-...)", reason = "Required for user-scoped reads such as message search and user-limited access" },
+    ],
+    baml_types = [
+        SlackAuthPreference, SlackConversationKind, SlackHistoryOrder,
+        SlackUserResolutionMode, SlackSearchSort, SlackSearchDirection,
+        ListConversationsInput, GetConversationHistoryInput, GetThreadRepliesInput,
+        ResolveUsersInput, SearchMessagesInput, SlackInput,
+        SlackSourceKind, SlackSource, SlackConversationSummary,
+        SlackUserSummary, SlackMessageSummary, SlackOutput,
+    ],
+)]
 #[async_trait]
 impl BamlTool for SlackTool {
     type Bundle = Support;
@@ -1452,71 +1458,6 @@ impl BamlTool for SlackTool {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Metadata registration
-// ---------------------------------------------------------------------------
-
-pub fn slack_metadata() -> ToolFunctionMetadata {
-    let (name, class_name) =
-        parse_tool_name_and_class("support/slack").expect("support/slack is a compile-time const");
-    let baml_decl = [
-        SlackAuthPreference::baml_decl(),
-        SlackConversationKind::baml_decl(),
-        SlackHistoryOrder::baml_decl(),
-        SlackUserResolutionMode::baml_decl(),
-        SlackSearchSort::baml_decl(),
-        SlackSearchDirection::baml_decl(),
-        ListConversationsInput::baml_decl(),
-        GetConversationHistoryInput::baml_decl(),
-        GetThreadRepliesInput::baml_decl(),
-        ResolveUsersInput::baml_decl(),
-        SearchMessagesInput::baml_decl(),
-        SlackInput::baml_decl(),
-        SlackSourceKind::baml_decl(),
-        SlackSource::baml_decl(),
-        SlackConversationSummary::baml_decl(),
-        SlackUserSummary::baml_decl(),
-        SlackMessageSummary::baml_decl(),
-        SlackOutput::baml_decl(),
-    ]
-    .join("\n\n");
-
-    TypeBasedMetadataBuilder::<(), SlackInput, SlackOutput>::new(
-        name,
-        class_name,
-        "Read-only Slack integration for conversation retrieval and source-backed analysis."
-            .to_string(),
-    )
-    .with_baml_decl(baml_decl)
-    .with_tags(vec![
-        "support".to_string(),
-        "slack".to_string(),
-        "read".to_string(),
-    ])
-    .with_access(ToolAccess::Read)
-    .with_secrets(vec![
-        ToolSecretRequirement {
-            name: "SLACK_BOT_TOKEN".to_string(),
-            description: "Slack bot token (xoxb-...)".to_string(),
-            reason: "Required for read access to conversations/history for bot-authorized installs"
-                .to_string(),
-        },
-        ToolSecretRequirement {
-            name: "SLACK_USER_TOKEN".to_string(),
-            description: "Slack user token (xoxp-...)".to_string(),
-            reason: "Required for user-scoped reads such as message search and user-limited access"
-                .to_string(),
-        },
-    ])
-    .build_metadata()
-}
-
-fn slack_build() -> Result<Arc<dyn ToolHandler>> {
-    create_tool_handler(SlackTool::new()).map(|(_, handler)| handler)
-}
-
-register_tool!(slack_metadata, slack_build);
 
 #[cfg(test)]
 mod tests {
