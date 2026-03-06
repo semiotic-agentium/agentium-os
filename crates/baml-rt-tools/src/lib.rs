@@ -31,3 +31,7 @@ pub use tools::{
     ToolSessionAdvance, ToolSessionHandle, ToolTypeSpec, TypeBasedMetadataBuilder,
     create_multi_send_session_tool_from_async, parse_tool_name_and_class,
 };
+
+/// Re-export the `#[baml_tool]` attribute macro so tool crates can use
+/// `use baml_rt_tools::baml_tool;` as a single import path.
+pub use baml_tool_derive::baml_tool;

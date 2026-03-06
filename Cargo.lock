@@ -1345,6 +1345,7 @@ dependencies = [
  "baml-derive-core",
  "baml-rt",
  "baml-rt-core",
+ "baml-tool-derive",
  "baml-tools-calculator",
  "dashmap 6.1.0",
  "genco",
@@ -1514,6 +1515,15 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "baml-tool-derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

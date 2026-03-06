@@ -3,19 +3,13 @@
 //! Provides a [`BamlTool`] implementation that calls the ClickUp v2 REST API.
 //! Supports listing, getting, creating, and updating tasks.
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use baml_derive::BamlType;
-use baml_derive_core::BamlType as BamlTypeTrait;
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_tools::{
-    ToolMetadataBuilder, TypeBasedMetadataBuilder,
+    baml_tool,
     bundles::Support,
-    parse_tool_name_and_class, register_tool,
-    tools::{
-        BamlTool, ToolFunctionMetadata, ToolHandler, ToolSecretRequirement, create_tool_handler,
-    },
+    tools::BamlTool,
 };
 /// ClickUp v2 REST API base URL.
 pub use integrations_clickup_client::BASE_URL;
@@ -679,6 +673,19 @@ impl ClickUpTool {
     }
 }
 
+#[baml_tool(
+    name = "support/clickup",
+    description = "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks.",
+    tags = ["support", "clickup"],
+    secrets = [
+        { name = "CLICKUP_API_KEY", description = "ClickUp personal API token (pk_...)", reason = "Required to authenticate with the ClickUp v2 API" }
+    ],
+    baml_types = [
+        ListTeamsInput, ListSpacesInput, ListListsInput, ListTasksInput,
+        GetTaskInput, CreateTaskInput, UpdateTaskInput, DeleteTaskInput,
+        ClickUpInput, ClickUpTaskSummary, ClickUpItem, ClickUpOutput,
+    ],
+)]
 #[async_trait]
 impl BamlTool for ClickUpTool {
     type Bundle = Support;
@@ -762,44 +769,3 @@ impl BamlTool for ClickUpTool {
     }
 }
 
-pub fn clickup_metadata() -> ToolFunctionMetadata {
-    let (name, class_name) = parse_tool_name_and_class("support/clickup")
-        .expect("support/clickup is a compile-time constant");
-
-    let baml_decl = [
-        ListTeamsInput::baml_decl(),
-        ListSpacesInput::baml_decl(),
-        ListListsInput::baml_decl(),
-        ListTasksInput::baml_decl(),
-        GetTaskInput::baml_decl(),
-        CreateTaskInput::baml_decl(),
-        UpdateTaskInput::baml_decl(),
-        DeleteTaskInput::baml_decl(),
-        ClickUpInput::baml_decl(),
-        ClickUpTaskSummary::baml_decl(),
-        ClickUpItem::baml_decl(),
-        ClickUpOutput::baml_decl(),
-    ]
-    .join("\n\n");
-
-    TypeBasedMetadataBuilder::<(), ClickUpInput, ClickUpOutput>::new(
-        name,
-        class_name,
-        "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks."
-            .to_string(),
-    )
-    .with_baml_decl(baml_decl)
-    .with_tags(vec!["support".to_string(), "clickup".to_string()])
-    .with_secrets(vec![ToolSecretRequirement {
-        name: "CLICKUP_API_KEY".to_string(),
-        description: "ClickUp personal API token (pk_...)".to_string(),
-        reason: "Required to authenticate with the ClickUp v2 API".to_string(),
-    }])
-    .build_metadata()
-}
-
-fn clickup_build() -> Result<Arc<dyn ToolHandler>> {
-    create_tool_handler(ClickUpTool::new()).map(|(_, h)| h)
-}
-
-register_tool!(clickup_metadata, clickup_build);

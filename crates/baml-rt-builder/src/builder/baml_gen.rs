@@ -21,7 +21,7 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     let _ = baml_rt_tools_claude::metadata::claude_dev_metadata;
     let _ = baml_tools_system::metadata::system_internal_a2a_metadata;
     #[cfg(feature = "clickup")]
-    let _ = baml_tools_clickup::clickup_metadata;
+    let _ = baml_tools_clickup::support_clickup_metadata;
     #[cfg(feature = "notion")]
     let _ = baml_tools_notion::notion_metadata;
     #[cfg(feature = "slack")]
