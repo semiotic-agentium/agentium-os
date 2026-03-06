@@ -5,7 +5,7 @@
 
 use proc_macro2::Span;
 use syn::{
-    Expr, ExprArray, ExprLit, ExprPath, Ident, Lit, LitStr, Path, Token,
+    Expr, ExprArray, ExprLit, ExprPath, Ident, Lit, LitStr, Path, Token, Type,
     parse::{Parse, ParseStream},
     punctuated::Punctuated,
     spanned::Spanned,
@@ -40,11 +40,11 @@ pub(crate) struct ToolAttrs {
     pub build_with: Option<Path>,
     // Mode 2 (metadata_only) explicit types:
     /// The `OpenInput` type (required when `metadata_only` is set).
-    pub open_input: Option<Path>,
+    pub open_input: Option<Type>,
     /// The `Input` type (required when `metadata_only` is set).
-    pub input: Option<Path>,
+    pub input: Option<Type>,
     /// The `Output` type (required when `metadata_only` is set).
-    pub output: Option<Path>,
+    pub output: Option<Type>,
 }
 
 /// Individual key-value or flag entry inside the attribute parentheses.
@@ -57,9 +57,9 @@ enum AttrEntry {
     BamlTypes(Vec<Path>),
     MetadataOnly,
     BuildWith(Path),
-    OpenInput(Path),
-    Input(Path),
-    Output(Path),
+    OpenInput(Type),
+    Input(Type),
+    Output(Type),
 }
 
 /// Parse the entire `(...)` contents of `#[baml_tool(...)]`.
@@ -76,9 +76,9 @@ impl Parse for ToolAttrs {
         let mut baml_types: Vec<Path> = Vec::new();
         let mut metadata_only = false;
         let mut build_with: Option<Path> = None;
-        let mut open_input: Option<Path> = None;
-        let mut input_type: Option<Path> = None;
-        let mut output: Option<Path> = None;
+        let mut open_input: Option<Type> = None;
+        let mut input_type: Option<Type> = None;
+        let mut output: Option<Type> = None;
 
         for entry in entries {
             match entry {
@@ -242,16 +242,16 @@ impl Parse for AttrEntry {
                 Ok(AttrEntry::BuildWith(path))
             }
             "open_input" => {
-                let path: Path = input.parse()?;
-                Ok(AttrEntry::OpenInput(path))
+                let ty: Type = input.parse()?;
+                Ok(AttrEntry::OpenInput(ty))
             }
             "input" => {
-                let path: Path = input.parse()?;
-                Ok(AttrEntry::Input(path))
+                let ty: Type = input.parse()?;
+                Ok(AttrEntry::Input(ty))
             }
             "output" => {
-                let path: Path = input.parse()?;
-                Ok(AttrEntry::Output(path))
+                let ty: Type = input.parse()?;
+                Ok(AttrEntry::Output(ty))
             }
             other => Err(syn::Error::new(
                 key.span(),
