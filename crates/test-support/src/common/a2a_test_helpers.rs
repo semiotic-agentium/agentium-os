@@ -82,20 +82,39 @@ pub fn chunks_from_responses(responses: &[Value]) -> Vec<&Value> {
     responses.iter().filter_map(chunk_content).collect()
 }
 
+fn message_parts(message: &Value) -> Vec<Value> {
+    if let Some(parts) = message.get("parts").and_then(Value::as_array) {
+        return parts.clone();
+    }
+    let Some(raw) = message.as_str() else {
+        return Vec::new();
+    };
+    let Ok(parsed) = serde_json::from_str::<Value>(raw) else {
+        return Vec::new();
+    };
+    parsed
+        .get("parts")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
 /// Extracts message text from the first part of each chunk.
 pub fn message_texts_from_chunks(chunks: &[&Value]) -> Vec<String> {
     chunks
         .iter()
-        .filter_map(|chunk| {
+        .flat_map(|chunk| {
             chunk
                 .get("message")
-                .and_then(|m| m.get("parts"))
-                .and_then(|p| p.as_array())
-                .and_then(|p| p.first())
-                .and_then(|part| part.get("text"))
-                .and_then(Value::as_str)
+                .map(message_parts)
+                .unwrap_or_default()
+                .into_iter()
         })
-        .map(ToOwned::to_owned)
+        .filter_map(|part| {
+            part.get("text")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        })
         .collect()
 }
 
@@ -104,16 +123,14 @@ pub fn first_message_text_from_stream(responses: &[Value]) -> String {
         let Some(content) = chunk_content(response) else {
             continue;
         };
-        let text = content
-            .get("message")
-            .and_then(|m| m.get("parts"))
-            .and_then(|parts| parts.as_array())
-            .and_then(|parts| parts.first())
-            .and_then(|part| part.get("text"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        if !text.is_empty() {
-            return text.to_string();
+        let Some(message) = content.get("message") else {
+            continue;
+        };
+        for part in message_parts(message) {
+            let text = part.get("text").and_then(Value::as_str).unwrap_or("");
+            if !text.is_empty() {
+                return text.to_string();
+            }
         }
     }
     String::new()
