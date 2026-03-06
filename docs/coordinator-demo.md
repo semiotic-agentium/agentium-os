@@ -17,8 +17,13 @@ confidence and gaps.
 
 - `.env` contains:
   - `OPENROUTER_API_KEY`
-  - `NOTION_API_TOKEN`
+  - `NOTION_API_TOKEN` (if Notion specialist enabled)
+  - `CLICKUP_API_KEY` (if ClickUp specialist enabled)
 - `jq` installed
+
+Known limitation: the current `support/clickup` tool does not set workspace-specific custom
+fields (for example a `Project` dropdown), so created tasks may appear in generic ClickUp
+groupings depending on workspace view configuration.
 
 ## Quick Start (CLI stream)
 
@@ -32,9 +37,21 @@ To include ClickUp specialist routing in the same runner:
 COORDINATOR_DEMO_INCLUDE_CLICKUP=1 just coordinator-demo
 ```
 
+To run ClickUp-first specialist routing (without Notion):
+
+```bash
+COORDINATOR_DEMO_INCLUDE_CLICKUP=1 COORDINATOR_DEMO_INCLUDE_NOTION=0 just coordinator-demo
+```
+
+To run coordinator-only (no Notion specialist loaded):
+
+```bash
+COORDINATOR_DEMO_INCLUDE_NOTION=0 just coordinator-demo
+```
+
 This command:
 
-1. Packages `agents/coordinator-agent` and `agents/notion-agent`
+1. Packages `agents/coordinator-agent` (and `agents/notion-agent` when enabled)
 2. Starts `baml-agent-runner` in HTTP mode
 3. Loads both agent packages into one host
 4. Sends one `message.sendStream` request to `/agents/coordinator-agent/default/a2a/sse`
@@ -86,6 +103,7 @@ just provenance-mermaid <context_id>
 - `COORDINATOR_DEMO_NOTION_PACKAGE` (default `/tmp/notion-agent.tar.gz`)
 - `COORDINATOR_DEMO_RUNNER_BIN` (default `target/debug/baml-agent-runner`)
 - `COORDINATOR_DEMO_INCLUDE_CLICKUP` (`1` to also package/load `clickup-agent`)
+- `COORDINATOR_DEMO_INCLUDE_NOTION` (default `1`; set `0` for coordinator-only)
 - `COORDINATOR_DEMO_CLICKUP_PACKAGE` (default `/tmp/clickup-agent.tar.gz`)
 - `COORDINATOR_DEMO_TEXT` (override prompt text)
 - `COORDINATOR_DEMO_NO_STREAM` (`1` to start backend only)

@@ -1002,7 +1002,7 @@ struct RunnerConfig {
     provenance_db: ProvenanceDb,
     /// If set, used as Claude workspaces root (overrides BAML_CLAUDE_WORKSPACES_BASE env).
     claude_workspaces_base: Option<PathBuf>,
-    /// Stream collector idle timeout in seconds. No yield for this long ends the stream (Timeout). Default 600 for long-running tool sessions (e.g. claude/dev).
+    /// Stream collector idle timeout in seconds. No yield for this long ends the stream (Timeout). Default 900 for long-running tool sessions (e.g. claude/dev).
     stream_idle_secs: Option<u64>,
 }
 
@@ -1039,7 +1039,7 @@ struct Cli {
     #[arg(long, value_name = "DIR")]
     claude_workspaces_base: Option<PathBuf>,
 
-    /// Stream collector idle timeout (seconds). If no chunk is yielded for this long, the stream ends with Timeout. Default 600 for long-running tool sessions (e.g. claude/dev).
+    /// Stream collector idle timeout (seconds). If no chunk is yielded for this long, the stream ends with Timeout. Default 900 for long-running tool sessions (e.g. claude/dev).
     #[arg(long, value_name = "SECS", default_value = "900")]
     stream_idle_secs: u64,
 }

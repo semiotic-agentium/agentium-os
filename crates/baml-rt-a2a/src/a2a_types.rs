@@ -400,16 +400,19 @@ pub struct TaskArtifactUpdateEvent {
 #[serde(rename_all = "camelCase")]
 pub enum StreamChunk {
     Task {
+        #[serde(flatten)]
         task: Task,
         #[serde(flatten)]
         extra: HashMap<String, Value>,
     },
     StatusUpdate {
+        #[serde(flatten)]
         status_update: TaskStatusUpdateEvent,
         #[serde(flatten)]
         extra: HashMap<String, Value>,
     },
     ArtifactUpdate {
+        #[serde(flatten)]
         artifact_update: TaskArtifactUpdateEvent,
         #[serde(flatten)]
         extra: HashMap<String, Value>,
@@ -455,6 +458,8 @@ pub struct StreamChunkView {
 }
 
 impl StreamChunkView {
+    const MAX_TASK_ID_PARSE_DEPTH: usize = 4;
+
     /// Build a typed view from the wire chunk. Parses task_id and task_state once; use accessors thereafter.
     pub fn new(value: Value) -> Self {
         let task_id = Self::parse_task_id(&value);
@@ -487,38 +492,95 @@ impl StreamChunkView {
     }
 
     fn parse_task_id(v: &Value) -> Option<TaskId> {
-        let from_task_val = |val: &Value| {
-            val.get("id")
-                .and_then(Value::as_str)
-                .or_else(|| val.get("taskId").and_then(Value::as_str))
-                .map(String::from)
-        };
-        let from_status_update_val = |val: &Value| {
-            val.get("taskId")
-                .and_then(Value::as_str)
-                .or_else(|| {
-                    val.get("statusUpdate")
-                        .or_else(|| val.get("status_update"))
-                        .and_then(|inner| inner.get("taskId"))
-                        .and_then(Value::as_str)
-                })
-                .map(String::from)
-        };
-
-        let task_id_from_task = v
-            .get("task")
-            .and_then(Self::value_or_parsed_json)
-            .as_ref()
-            .and_then(from_task_val);
-        let task_id_from_status = v
-            .get("statusUpdate")
-            .or_else(|| v.get("status_update"))
-            .and_then(Self::value_or_parsed_json)
-            .as_ref()
-            .and_then(from_status_update_val);
-
-        let id_str = task_id_from_task.or(task_id_from_status)?;
+        let id_str = Self::extract_task_id_str(v)?;
         Some(TaskId::from_external(ExternalId::new(id_str)))
+    }
+
+    fn extract_task_id_str(v: &Value) -> Option<String> {
+        Self::extract_task_id_str_with_depth(v, 0)
+    }
+
+    fn extract_task_id_str_with_depth(v: &Value, depth: usize) -> Option<String> {
+        if depth > Self::MAX_TASK_ID_PARSE_DEPTH {
+            return None;
+        }
+
+        if let Some(raw_json) = v.as_str() {
+            let parsed = serde_json::from_str::<Value>(raw_json).ok()?;
+            return Self::extract_task_id_str_with_depth(&parsed, depth + 1);
+        }
+
+        let from_task = || {
+            v.get("task")
+                .and_then(|task| task.get("id"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        };
+        let from_direct_id = || v.get("id").and_then(Value::as_str).map(ToOwned::to_owned);
+        let from_stringified_task = || {
+            let raw = v.get("task").and_then(Value::as_str)?;
+            let parsed = serde_json::from_str::<Value>(raw).ok()?;
+            Self::extract_task_id_str_with_depth(&parsed, depth + 1)
+        };
+        let from_status_update = || {
+            let status_update = v.get("statusUpdate").or_else(|| v.get("status_update"))?;
+            status_update
+                .get("taskId")
+                .or_else(|| {
+                    status_update
+                        .get("statusUpdate")
+                        .and_then(|nested| nested.get("taskId"))
+                })
+                .or_else(|| {
+                    status_update
+                        .get("status_update")
+                        .and_then(|nested| nested.get("taskId"))
+                })
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        };
+        let from_stringified_status_update = || {
+            let raw = v
+                .get("statusUpdate")
+                .or_else(|| v.get("status_update"))
+                .and_then(Value::as_str)?;
+            let parsed = serde_json::from_str::<Value>(raw).ok()?;
+            Self::extract_task_id_str_with_depth(&parsed, depth + 1)
+        };
+        let from_message = || {
+            v.get("message")
+                .and_then(|message| message.get("taskId"))
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        };
+        let from_top_level = || {
+            v.get("taskId")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+        };
+        let from_chunks_array = || {
+            let chunks = v.get("chunks")?.as_array()?;
+            for chunk in chunks {
+                if let Some(task_id) = Self::extract_task_id_str_with_depth(chunk, depth + 1) {
+                    return Some(task_id);
+                }
+            }
+            None
+        };
+        let from_chunk = || {
+            let chunk = v.get("chunk")?;
+            Self::extract_task_id_str_with_depth(chunk, depth + 1)
+        };
+
+        from_task()
+            .or_else(from_direct_id)
+            .or_else(from_stringified_task)
+            .or_else(from_status_update)
+            .or_else(from_stringified_status_update)
+            .or_else(from_message)
+            .or_else(from_top_level)
+            .or_else(from_chunks_array)
+            .or_else(from_chunk)
     }
 
     fn parse_task_state(v: &Value) -> Option<String> {
@@ -588,11 +650,28 @@ impl StreamChunkView {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<Message>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<Task>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_update: Option<TaskStatusUpdateEvent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact_update: Option<TaskArtifactUpdateEvent>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, Value>,
+}
+
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use std::collections::HashMap;
 
-    use super::StreamChunkView;
+    use serde_json::{Value, json};
+
+    use super::{StreamChunk, StreamChunkView, Task, TaskState, TaskStatus, TaskStatusUpdateEvent};
 
     #[test]
     fn stream_chunk_view_parses_task_id_from_nested_status_update_alias() {
@@ -619,19 +698,108 @@ mod tests {
         assert_eq!(view.task_id().map(|id| id.as_str()), Some("a2a-child-789"));
         assert_eq!(view.task_state(), Some("TASK_STATE_SUBMITTED"));
     }
-}
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct StreamResponse {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<Message>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub task: Option<Task>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub status_update: Option<TaskStatusUpdateEvent>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub artifact_update: Option<TaskArtifactUpdateEvent>,
-    #[serde(flatten)]
-    pub extra: HashMap<String, Value>,
+    #[test]
+    fn stream_chunk_view_parses_task_id_from_message_task_id() {
+        let view = StreamChunkView::new(json!({
+            "message": {
+                "taskId": "task-msg-1"
+            }
+        }));
+        assert_eq!(view.task_id().map(|id| id.as_str()), Some("task-msg-1"));
+    }
+
+    #[test]
+    fn stream_chunk_view_parses_task_id_from_top_level_status_update_alias() {
+        let view = StreamChunkView::new(json!({
+            "status_update": {
+                "taskId": "task-snake-1",
+                "status": { "state": "TASK_STATE_WORKING" }
+            }
+        }));
+        assert_eq!(view.task_id().map(|id| id.as_str()), Some("task-snake-1"));
+    }
+
+    #[test]
+    fn stream_chunk_view_parses_task_id_from_stringified_chunk_payload() {
+        let view = StreamChunkView::new(json!({
+            "chunk": "{\"statusUpdate\":{\"taskId\":\"task-nested-1\"}}"
+        }));
+        assert_eq!(view.task_id().map(|id| id.as_str()), Some("task-nested-1"));
+    }
+
+    #[test]
+    fn stream_chunk_view_parses_task_id_from_tool_chunks_array() {
+        let view = StreamChunkView::new(json!({
+            "chunks": [
+                {
+                    "task": "{\"id\":\"task-array-1\"}",
+                    "statusUpdate": "{\"taskId\":\"task-array-1\"}"
+                }
+            ]
+        }));
+        assert_eq!(view.task_id().map(|id| id.as_str()), Some("task-array-1"));
+    }
+
+    #[test]
+    fn stream_chunk_view_task_id_parsing_stops_after_depth_cap() {
+        let mut nested: Value = json!({ "taskId": "task-too-deep" });
+        for _ in 0..10 {
+            nested = Value::String(nested.to_string());
+        }
+        let view = StreamChunkView::new(nested);
+        assert!(view.task_id().is_none());
+    }
+
+    #[test]
+    fn stream_chunk_status_update_serializes_without_double_nesting() {
+        let chunk = StreamChunk::status_update(TaskStatusUpdateEvent {
+            task_id: Some(baml_rt_core::ids::TaskId::from_external(
+                baml_rt_core::ids::ExternalId::new("task-123"),
+            )),
+            status: Some(TaskStatus {
+                state: Some(TaskState::String("TASK_STATE_WORKING".to_string())),
+                ..TaskStatus::default()
+            }),
+            ..TaskStatusUpdateEvent::default()
+        });
+        let value = serde_json::to_value(chunk).expect("serializes");
+        assert_eq!(
+            value
+                .get("statusUpdate")
+                .and_then(|v| v.get("taskId"))
+                .and_then(Value::as_str),
+            Some("task-123")
+        );
+        assert!(
+            value
+                .get("statusUpdate")
+                .and_then(|v| v.get("statusUpdate"))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn stream_chunk_task_serializes_without_double_nesting() {
+        let chunk = StreamChunk::task(Task {
+            id: Some(baml_rt_core::ids::TaskId::from_external(
+                baml_rt_core::ids::ExternalId::new("task-abc"),
+            )),
+            context_id: None,
+            artifacts: Vec::new(),
+            history: Vec::new(),
+            status: None,
+            metadata: None,
+            extra: HashMap::new(),
+        });
+        let value = serde_json::to_value(chunk).expect("serializes");
+        assert_eq!(
+            value
+                .get("task")
+                .and_then(|v| v.get("id"))
+                .and_then(Value::as_str),
+            Some("task-abc")
+        );
+        assert!(value.get("task").and_then(|v| v.get("task")).is_none());
+    }
 }

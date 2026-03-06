@@ -60,7 +60,7 @@ pub fn render_dot(graph: &ExportedGraph, options: &DotOptions) -> String {
     let _ = writeln!(out, "    rankdir=TB;");
     let _ = writeln!(
         out,
-        "    node [fontname=\"Helvetica\", fontsize=10, style=filled];"
+        "    node [fontname=\"Helvetica\", fontsize=10, style=filled, fontcolor=\"#0f172a\"];"
     );
     let _ = writeln!(out, "    edge [fontname=\"Helvetica\", fontsize=9];");
     let _ = writeln!(out);
@@ -74,14 +74,16 @@ pub fn render_dot(graph: &ExportedGraph, options: &DotOptions) -> String {
                 .push((&node.id, &node.display_name));
         }
         for (i, (label, nodes)) in by_label.iter().enumerate() {
+            let escaped_label = escape_dot_label(label);
             let _ = writeln!(out, "    subgraph cluster_{i} {{");
-            let _ = writeln!(out, "        label=\"{label}\";");
+            let _ = writeln!(out, "        label=\"{escaped_label}\";");
             for (id, display) in nodes {
                 let (shape, color) = dot_node_attrs(label);
+                let escaped_id = escape_dot_label(id);
                 let escaped = escape_dot_label(display);
                 let _ = writeln!(
                     out,
-                    "        \"{id}\" [label=\"{escaped}\", shape={shape}, fillcolor=\"{color}\"];"
+                    "        \"{escaped_id}\" [label=\"{escaped}\", shape={shape}, fillcolor=\"{color}\"];"
                 );
             }
             let _ = writeln!(out, "    }}");
@@ -89,11 +91,11 @@ pub fn render_dot(graph: &ExportedGraph, options: &DotOptions) -> String {
     } else {
         for node in &graph.nodes {
             let (shape, color) = dot_node_attrs(&node.label);
+            let escaped_id = escape_dot_label(&node.id);
             let escaped = escape_dot_label(&node.display_name);
             let _ = writeln!(
                 out,
-                "    \"{}\" [label=\"{escaped}\", shape={shape}, fillcolor=\"{color}\"];",
-                node.id,
+                "    \"{escaped_id}\" [label=\"{escaped}\", shape={shape}, fillcolor=\"{color}\"];",
             );
         }
     }
@@ -101,14 +103,16 @@ pub fn render_dot(graph: &ExportedGraph, options: &DotOptions) -> String {
     let _ = writeln!(out);
 
     for edge in &graph.edges {
+        let escaped_from = escape_dot_label(&edge.from);
+        let escaped_to = escape_dot_label(&edge.to);
         if options.show_edge_labels {
+            let escaped_relation = escape_dot_label(&edge.relation);
             let _ = writeln!(
                 out,
-                "    \"{}\" -> \"{}\" [label=\"{}\"];",
-                edge.from, edge.to, edge.relation,
+                "    \"{escaped_from}\" -> \"{escaped_to}\" [label=\"{escaped_relation}\"];",
             );
         } else {
-            let _ = writeln!(out, "    \"{}\" -> \"{}\";", edge.from, edge.to);
+            let _ = writeln!(out, "    \"{escaped_from}\" -> \"{escaped_to}\";");
         }
     }
 
@@ -127,8 +131,8 @@ fn dot_node_attrs(label: &str) -> (&'static str, &'static str) {
             | GraphNodeLabel::MessageProcessing
             | GraphNodeLabel::TaskExecution
             | GraphNodeLabel::AgentBoot,
-        ) => ("ellipse", "#1a1a2e"),
-        Some(GraphNodeLabel::AgentRuntimeInstance) => ("hexagon", "#16213e"),
+        ) => ("ellipse", "#dbeafe"),
+        Some(GraphNodeLabel::AgentRuntimeInstance) => ("hexagon", "#e2e8f0"),
         Some(
             GraphNodeLabel::Message
             | GraphNodeLabel::LlmPrompt
@@ -138,8 +142,8 @@ fn dot_node_attrs(label: &str) -> (&'static str, &'static str) {
             | GraphNodeLabel::Artifact
             | GraphNodeLabel::AgentArchive
             | GraphNodeLabel::PromptRejected,
-        ) => ("box", "#0f3460"),
-        None => ("box", "#333333"),
+        ) => ("box", "#ecfeff"),
+        None => ("box", "#f1f5f9"),
     }
 }
 
@@ -223,5 +227,21 @@ mod tests {
         let output = render_dot(&graph, &opts);
         assert!(output.contains("subgraph cluster_"));
         assert!(output.contains("label=\"ToolCall\""));
+    }
+
+    #[test]
+    fn render_dot_escapes_ids_and_edge_labels() {
+        let graph = ExportedGraph {
+            nodes: vec![
+                node("msg\"1\nline", "Message", "user: Hello"),
+                node("tc\"2", "ToolCall", "Tool clickup"),
+            ],
+            edges: vec![edge("msg\"1\nline", "WAS_\"RECEIVED\"\nBY", "tc\"2")],
+            scope: ExportScope::Full,
+        };
+        let output = render_dot(&graph, &DotOptions::default());
+        assert!(output.contains("\"msg\\\"1\\nline\""));
+        assert!(output.contains("\"tc\\\"2\""));
+        assert!(output.contains("label=\"WAS_\\\"RECEIVED\\\"\\nBY\""));
     }
 }

@@ -103,13 +103,17 @@ sends a valid `message.sendStream` request with:
 
 For integration between poller, interpreter, and orchestration layers, use the
 versioned interpretation event contract:
-- [docs/task-daemon-event-contract.md](/Users/joseph/git/semiotic-agentium/agent-platform/docs/task-daemon-event-contract.md)
+- [task-daemon-event-contract.md](./task-daemon-event-contract.md)
+
+For a leadership-focused end-to-end demo flow (Slack -> coordinator handoff ->
+provenance timeline + mermaid), see:
+- [task-daemon-demo.md](./task-daemon-demo.md)
 
 ## Important Behavior
 
 - LLM mode is the default. Heuristic mode is available only when explicitly requested (`--extractor heuristic`).
 - Slack access is read-only.
-- Delivery is currently at-most-once: if sink delivery fails, already-polled messages are not replayed.
+- Delivery is currently best-effort at-least-once: source cursor/task state is persisted only after sink delivery succeeds.
 
 ## Minimal Project Config Example
 
@@ -118,7 +122,7 @@ versioned interpretation event contract:
   "channels": {
     "agentium-eng": {
       "project_key": "agent-platform",
-      "repo_path": "/Users/joseph/git/semiotic-agentium/agent-platform",
+      "repo_path": "/path/to/agent-platform",
       "clickup_list_id": "901325431486"
     }
   }

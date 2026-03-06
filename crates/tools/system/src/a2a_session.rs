@@ -3,7 +3,10 @@
 use std::{collections::VecDeque, sync::Arc};
 
 use async_trait::async_trait;
-use baml_rt_core::{A2aRequestHandler, A2aWireRequest, Result, context, ids::TaskId};
+use baml_rt_core::{
+    A2aRequestHandler, A2aWireRequest, Result, context,
+    ids::{ExternalId, TaskId},
+};
 use baml_rt_tools::{
     BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
     ToolSession, ToolSessionError, ToolStep,
@@ -78,6 +81,10 @@ impl ToolHandler for A2aSessionToolHandler {
             ctx,
             handler: self.handler.clone(),
             target: open.target,
+            child_task_id: TaskId::from_external(ExternalId::new(format!(
+                "a2a-child-{id}",
+                id = uuid::Uuid::new_v4()
+            ))),
             queue: VecDeque::new(),
             output_rx: None,
             stream_handle: None,
@@ -92,6 +99,8 @@ struct A2aSession {
     ctx: ToolSessionContext,
     handler: Arc<dyn A2aRequestHandler>,
     target: InternalA2aTarget,
+    /// Stable delegated child task id for this tool session; reused across send/resume turns.
+    child_task_id: TaskId,
     queue: VecDeque<InternalA2aNextOutput>,
     output_rx: Option<async_channel::Receiver<InternalA2aNextOutput>>,
     /// JoinHandle for the task that consumes the A2A stream. Aborted in Drop so the task
@@ -134,9 +143,9 @@ fn build_send_stream_request(
     parts: Vec<ConversationPart>,
     target: &InternalA2aTarget,
     context_id: &baml_rt_core::ids::ContextId,
+    child_task_id: &TaskId,
     parent_task_id: Option<&TaskId>,
 ) -> Value {
-    let child_task_id = format!("a2a-child-{}", uuid::Uuid::new_v4());
     let reference_task_ids = parent_task_id
         .map(|task_id| vec![task_id.as_str().to_string()])
         .unwrap_or_default();
@@ -146,11 +155,11 @@ fn build_send_stream_request(
         "id": serde_json::Value::Null,
         "params": {
             "message": {
-                "messageId": format!("system-a2a-{}", uuid::Uuid::new_v4()),
+                "messageId": format!("system-a2a-{id}", id = uuid::Uuid::new_v4()),
                 "role": "ROLE_USER",
                 "parts": parts,
                 "contextId": context_id.as_str(),
-                "taskId": child_task_id,
+                "taskId": child_task_id.as_str(),
                 "referenceTaskIds": reference_task_ids
             },
             "metadata": {
@@ -174,18 +183,10 @@ fn extract_chunk_value(value: Value) -> Value {
         return value;
     };
 
-    if let Some(result) = obj.get("result").and_then(|v| v.as_object()) {
-        if let Some(chunk) = result.get("chunk") {
-            return chunk.clone();
-        }
-        if result
-            .get("stream")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-            && let Some(chunk) = result.get("chunk")
-        {
-            return chunk.clone();
-        }
+    if let Some(result) = obj.get("result").and_then(|v| v.as_object())
+        && let Some(chunk) = result.get("chunk")
+    {
+        return chunk.clone();
     }
 
     if let Some(chunk) = obj.get("chunk") {
@@ -273,11 +274,38 @@ fn merge_outputs(outputs: Vec<InternalA2aNextOutput>) -> InternalA2aNextOutput {
     let mut completion = None;
     for out in outputs {
         chunks.extend(out.chunks);
-        if matches!(out.completion, Some(InternalA2aCompletion::InputRequired)) {
-            completion = Some(InternalA2aCompletion::InputRequired);
+        match out.completion {
+            Some(InternalA2aCompletion::InputRequired) => {
+                completion = Some(InternalA2aCompletion::InputRequired);
+            }
+            Some(InternalA2aCompletion::Failed)
+                if !matches!(completion, Some(InternalA2aCompletion::InputRequired)) =>
+            {
+                completion = Some(InternalA2aCompletion::Failed);
+            }
+            Some(InternalA2aCompletion::Done) if completion.is_none() => {
+                completion = Some(InternalA2aCompletion::Done);
+            }
+            _ => {}
         }
     }
     InternalA2aNextOutput { chunks, completion }
+}
+
+fn completion_failure_message(output: &InternalA2aNextOutput) -> String {
+    for chunk in &output.chunks {
+        if let Some(message) = &chunk.message {
+            for part in &message.parts {
+                if let Some(text) = &part.text {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        return trimmed.to_string();
+                    }
+                }
+            }
+        }
+    }
+    "system/internal_a2a stream failed".to_string()
 }
 
 #[async_trait]
@@ -291,16 +319,30 @@ impl ToolSession for A2aSession {
         }
         let parts = parse_send_input(input)
             .map_err(|msg| ToolSessionError::Tool(ToolFailure::invalid_input(msg)))?;
+        self.seen_output = false;
+        self.empty_stream_notice_emitted = false;
+        if let Some(rx) = &self.output_rx
+            && rx.is_closed()
+            && rx.is_empty()
+        {
+            self.output_rx = None;
+        }
         if self.output_rx.is_some() {
             return Err(ToolSessionError::Tool(ToolFailure::invalid_input(
                 "system/internal_a2a session: send only valid once after open".to_string(),
             )));
+        }
+        if let Some(handle) = self.stream_handle.take()
+            && !handle.is_finished()
+        {
+            handle.abort();
         }
         let parent_task_id = current_parent_task_id();
         let request = build_send_stream_request(
             parts,
             &self.target,
             &self.ctx.context_id,
+            &self.child_task_id,
             parent_task_id.as_ref(),
         );
         let handler = self.handler.clone();
@@ -349,9 +391,13 @@ impl ToolSession for A2aSession {
                             status_update: None,
                             artifact_update: None,
                         }],
-                        completion: None,
+                        completion: Some(InternalA2aCompletion::Failed),
                     };
-                    let _ = tx.send(fallback).await;
+                    if tx.send(fallback).await.is_err() {
+                        tracing::warn!(
+                            "system/internal_a2a failed to emit synthetic error chunk (receiver dropped)"
+                        );
+                    }
                 }
             }
             tx.close();
@@ -377,7 +423,13 @@ impl ToolSession for A2aSession {
                 merged.completion,
                 Some(InternalA2aCompletion::InputRequired)
             ) {
+                self.output_rx = None;
                 ToolStep::Suspended { output: value }
+            } else if matches!(merged.completion, Some(InternalA2aCompletion::Failed)) {
+                self.output_rx = None;
+                ToolStep::Error {
+                    error: ToolFailure::execution_failed(completion_failure_message(&merged)),
+                }
             } else {
                 ToolStep::Streaming { output: value }
             };
@@ -402,7 +454,15 @@ impl ToolSession for A2aSession {
                         merged.completion,
                         Some(InternalA2aCompletion::InputRequired)
                     ) {
+                        self.output_rx = None;
                         ToolStep::Suspended { output: value }
+                    } else if matches!(merged.completion, Some(InternalA2aCompletion::Failed)) {
+                        self.output_rx = None;
+                        ToolStep::Error {
+                            error: ToolFailure::execution_failed(completion_failure_message(
+                                &merged,
+                            )),
+                        }
                     } else {
                         ToolStep::Streaming { output: value }
                     };
@@ -464,5 +524,43 @@ impl Drop for A2aSession {
         if let Some(h) = self.stream_handle.take() {
             h.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use baml_rt_core::ids::ContextId;
+
+    use super::*;
+
+    #[test]
+    fn build_send_stream_request_uses_stable_child_task_id() {
+        let target = InternalA2aTarget {
+            agent_package: "responder-agent".to_string(),
+            agent_instance_id: "default".to_string(),
+        };
+        let context_id = ContextId::new(1, 1);
+        let child_task_id = TaskId::from_external(ExternalId::new("a2a-child-fixed".to_string()));
+        let parts = vec![ConversationPart {
+            text: Some("hello".to_string()),
+            ..Default::default()
+        }];
+
+        let first =
+            build_send_stream_request(parts.clone(), &target, &context_id, &child_task_id, None);
+        let second = build_send_stream_request(parts, &target, &context_id, &child_task_id, None);
+
+        assert_eq!(
+            first
+                .pointer("/params/message/taskId")
+                .and_then(serde_json::Value::as_str),
+            Some(child_task_id.as_str())
+        );
+        assert_eq!(
+            second
+                .pointer("/params/message/taskId")
+                .and_then(serde_json::Value::as_str),
+            Some(child_task_id.as_str())
+        );
     }
 }

@@ -23,7 +23,7 @@ clarification_question: string | null;
 
 declare global {
 
-declare function SynthesizeCoordinatorResponse(args: { user_message: string; delegated_transcript: string }): Promise<CoordinatorAnswer>;
+declare function SynthesizeCoordinatorResponse(args: { user_message: string; delegated_transcript: string; conversation_context?: string | null }): Promise<CoordinatorAnswer>;
 
 }
 

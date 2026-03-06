@@ -14,8 +14,8 @@
 //!   WORKING chunks to. Session lookup uses a single key type derived only from `ContextId`
 //!   at both registration and push; no fallback.
 //! - **Chunk shape**: Status chunks may be flat (e.g. `make_submitted_chunk`) or nested
-//!   (`StreamChunk::StatusUpdate` → `statusUpdate` / `status_update` → event). Helpers
-//!   `status_update_event(su)` and `task_state_from_chunk(chunk)` handle both.
+//!   (legacy `statusUpdate` / `status_update` wrapper). Helpers `status_update_event(su)` and
+//!   `task_state_from_chunk(chunk)` handle both.
 //! - **Tool WORKING contract**: At least one chunk must have `state === "TASK_STATE_WORKING"`,
 //!   message text indicating the tool (e.g. "Invoking tool: support/calculate"), and when
 //!   present `metadata.kind === "tool"`, `metadata.toolName === "<tool_name>"` (see
@@ -67,9 +67,13 @@ fn task_state_from_chunk(chunk: &Value) -> Option<String> {
         })
 }
 
-/// Inner status update event from StreamChunk::StatusUpdate (variant value has statusUpdate or status_update).
+/// Returns the status-update event body from either the flat wire shape or legacy nested aliases.
 fn status_update_event(su: &Value) -> Option<&Value> {
-    su.get("statusUpdate").or_else(|| su.get("status_update"))
+    if su.get("status").is_some() {
+        Some(su)
+    } else {
+        su.get("statusUpdate").or_else(|| su.get("status_update"))
+    }
 }
 
 /// Inline JS that invokes support/calculate via openToolSession so ToolStarted fires and
