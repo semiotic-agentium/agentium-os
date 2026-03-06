@@ -16,6 +16,9 @@ use serde_json::Value;
 /// Allowed source types for the projection pipeline.
 const DEFAULT_ALLOWED_SOURCES: &[&str] = &["message", "tool_result"];
 
+/// Char threshold above which a compacted tool_result triggers a warning.
+const COMPACTED_SIZE_WARN_CHARS: usize = 2000;
+
 /// Configuration for a single projection invocation.
 #[derive(Debug, Clone)]
 pub struct ProjectionConfig {
@@ -55,6 +58,9 @@ pub struct ProjectionStats {
     pub dropped_empty: usize,
     /// Items dropped by budget truncation.
     pub dropped_budgeted: usize,
+    /// Number of tool_result items whose compacted content exceeded the size
+    /// warning threshold. Details (tool name, char count) are emitted via tracing.
+    pub oversized_compacted: usize,
     /// Whether the floor guarantee fired (injected the most recent user message
     /// because the pipeline would otherwise have produced an empty result).
     pub floor_applied: bool,
@@ -91,6 +97,8 @@ pub fn project(
     let dropped_source_filtered = pre_filter_len - items.len();
 
     // Stage: tool compaction (read-time, in-memory only).
+    // After compaction, measure content size and warn if it exceeds the threshold.
+    let mut oversized_compacted: usize = 0;
     for item in &mut items {
         if item.source != "tool_result" {
             continue;
@@ -98,10 +106,23 @@ pub fn project(
         let Some(tool_name) = item.content.get("tool_name").and_then(Value::as_str) else {
             continue;
         };
-        let Some(handler) = tool_registry.get_handler(tool_name) else {
+        let tool_name_owned = tool_name.to_owned();
+        let Some(handler) = tool_registry.get_handler(&tool_name_owned) else {
             continue;
         };
         handler.compact_result(&mut item.content);
+
+        let chars = serde_json::to_string(&item.content)
+            .map(|s| s.len())
+            .unwrap_or(0);
+        if chars > COMPACTED_SIZE_WARN_CHARS {
+            oversized_compacted += 1;
+            tracing::warn!(
+                tool_name = %tool_name_owned,
+                chars,
+                "compacted tool_result exceeds size threshold"
+            );
+        }
     }
 
     // Stage: deterministic dedupe — collapse items with identical
@@ -205,6 +226,7 @@ pub fn project(
         dropped_deduped,
         dropped_empty,
         dropped_budgeted,
+        oversized_compacted,
         floor_applied,
     };
 
