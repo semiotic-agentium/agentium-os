@@ -34,6 +34,8 @@ pub(crate) struct ToolAttrs {
     pub access: Option<Ident>,
     /// Types whose `baml_decl()` forms the BAML declaration.
     pub baml_types: Vec<Path>,
+    /// Types whose `ts_decl()` produces extra TypeScript declarations.
+    pub extra_ts_types: Vec<Path>,
     /// Whether this is a metadata-only registration (no runtime handler).
     pub metadata_only: bool,
     /// Override for the default build function.
@@ -55,6 +57,7 @@ enum AttrEntry {
     Secrets(Vec<SecretDef>),
     Access(Ident),
     BamlTypes(Vec<Path>),
+    ExtraTsTypes(Vec<Path>),
     MetadataOnly,
     BuildWith(Path),
     OpenInput(Type),
@@ -74,6 +77,7 @@ impl Parse for ToolAttrs {
         let mut secrets: Vec<SecretDef> = Vec::new();
         let mut access: Option<Ident> = None;
         let mut baml_types: Vec<Path> = Vec::new();
+        let mut extra_ts_types: Vec<Path> = Vec::new();
         let mut metadata_only = false;
         let mut build_with: Option<Path> = None;
         let mut open_input: Option<Type> = None;
@@ -88,6 +92,7 @@ impl Parse for ToolAttrs {
                 AttrEntry::Secrets(v) => secrets = v,
                 AttrEntry::Access(v) => access = Some(v),
                 AttrEntry::BamlTypes(v) => baml_types = v,
+                AttrEntry::ExtraTsTypes(v) => extra_ts_types = v,
                 AttrEntry::MetadataOnly => metadata_only = true,
                 AttrEntry::BuildWith(v) => build_with = Some(v),
                 AttrEntry::OpenInput(v) => open_input = Some(v),
@@ -119,6 +124,7 @@ impl Parse for ToolAttrs {
             secrets,
             access,
             baml_types,
+            extra_ts_types,
             metadata_only,
             build_with,
             open_input,
@@ -236,6 +242,10 @@ impl Parse for AttrEntry {
             "baml_types" => {
                 let paths = parse_path_array(input)?;
                 Ok(AttrEntry::BamlTypes(paths))
+            }
+            "extra_ts_types" => {
+                let paths = parse_path_array(input)?;
+                Ok(AttrEntry::ExtraTsTypes(paths))
             }
             "build_with" => {
                 let path: Path = input.parse()?;

@@ -70,6 +70,23 @@ fn access_tokens(access: &Option<Ident>) -> TokenStream {
     }
 }
 
+/// Emit the `with_extra_ts_decls(...)` builder call (or nothing if empty).
+fn extra_ts_decls_tokens(extra_ts_types: &[Path]) -> TokenStream {
+    if extra_ts_types.is_empty() {
+        return TokenStream::new();
+    }
+    let decl_calls = extra_ts_types.iter().map(|ty| {
+        quote! {
+            ::baml_rt_tools::ts_decl::<#ty>()
+        }
+    });
+    quote! {
+        .with_extra_ts_decls(
+            [#(#decl_calls),*].into_iter().flatten().collect()
+        )
+    }
+}
+
 /// Emit the `with_baml_decl(...)` builder call (or nothing if no baml_types).
 fn baml_decl_tokens(baml_types: &[Path]) -> TokenStream {
     if baml_types.is_empty() {
@@ -135,6 +152,7 @@ pub(crate) fn expand_impl(attrs: &ToolAttrs, impl_block: &ItemImpl) -> syn::Resu
     let secrets = secrets_tokens(&attrs.secrets);
     let access = access_tokens(&attrs.access);
     let baml_decl = baml_decl_tokens(&attrs.baml_types);
+    let extra_ts = extra_ts_decls_tokens(&attrs.extra_ts_types);
 
     let build_body = if let Some(ref custom_build) = attrs.build_with {
         quote! { #custom_build() }
@@ -164,6 +182,7 @@ pub(crate) fn expand_impl(attrs: &ToolAttrs, impl_block: &ItemImpl) -> syn::Resu
                 ::std::string::String::from(#description),
             )
             #baml_decl
+            #extra_ts
             #tags
             #secrets
             #access
@@ -179,7 +198,7 @@ pub(crate) fn expand_impl(attrs: &ToolAttrs, impl_block: &ItemImpl) -> syn::Resu
 }
 
 // ---------------------------------------------------------------------------
-// Mode 2: #[baml_tool(..., metadata_only)] struct ToolName;
+// Mode 2:
 // ---------------------------------------------------------------------------
 
 /// Expand Mode 2: `#[baml_tool(..., metadata_only)] struct ToolName;`.
@@ -201,6 +220,7 @@ pub(crate) fn expand_struct(attrs: &ToolAttrs, item: &ItemStruct) -> syn::Result
     let secrets = secrets_tokens(&attrs.secrets);
     let access = access_tokens(&attrs.access);
     let baml_decl = baml_decl_tokens(&attrs.baml_types);
+    let extra_ts = extra_ts_decls_tokens(&attrs.extra_ts_types);
 
     let expect_msg = format!("{} is a compile-time constant", tool_name.value());
     let err_msg = format!(
@@ -224,6 +244,7 @@ pub(crate) fn expand_struct(attrs: &ToolAttrs, item: &ItemStruct) -> syn::Result
                 ::std::string::String::from(#description),
             )
             #baml_decl
+            #extra_ts
             #tags
             #secrets
             #access
