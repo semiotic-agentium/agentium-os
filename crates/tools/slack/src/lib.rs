@@ -13,11 +13,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::{
-    baml_tool,
-    bundles::Support,
-    tools::BamlTool,
-};
+use baml_rt_tools::{baml_tool, bundles::Support, tools::BamlTool};
 use integrations_slack_read::{self as slack_read, SlackReadClient, SlackReadError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -1462,7 +1458,6 @@ impl BamlTool for SlackTool {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

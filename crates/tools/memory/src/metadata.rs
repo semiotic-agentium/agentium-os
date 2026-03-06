@@ -97,8 +97,9 @@ pub struct MemoryStats;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use baml_rt_tools::tools::ToolAccess;
+
+    use super::*;
 
     #[test]
     fn memory_tools_set_access_levels() {

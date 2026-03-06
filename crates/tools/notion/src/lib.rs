@@ -1439,7 +1439,6 @@ fn extract_parent_page_id(json: &serde_json::Value) -> Option<String> {
     None
 }
 
-
 #[cfg(test)]
 mod compaction_tests {
     use super::*;

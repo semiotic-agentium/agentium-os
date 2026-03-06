@@ -1,11 +1,7 @@
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::Result;
-use baml_rt_tools::{
-    baml_tool,
-    bundles::Support,
-    tools::BamlTool,
-};
+use baml_rt_tools::{baml_tool, bundles::Support, tools::BamlTool};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

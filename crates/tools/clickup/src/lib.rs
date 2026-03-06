@@ -6,11 +6,7 @@
 use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::{
-    baml_tool,
-    bundles::Support,
-    tools::BamlTool,
-};
+use baml_rt_tools::{baml_tool, bundles::Support, tools::BamlTool};
 /// ClickUp v2 REST API base URL.
 pub use integrations_clickup_client::BASE_URL;
 use integrations_clickup_client::{ClickUpClient, ClickUpClientError};
@@ -768,4 +764,3 @@ impl BamlTool for ClickUpTool {
         }
     }
 }
-

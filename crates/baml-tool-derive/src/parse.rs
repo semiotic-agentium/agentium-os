@@ -68,8 +68,7 @@ enum AttrEntry {
 /// Parse the entire `(...)` contents of `#[baml_tool(...)]`.
 impl Parse for ToolAttrs {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let entries: Punctuated<AttrEntry, Token![,]> =
-            Punctuated::parse_terminated(input)?;
+        let entries: Punctuated<AttrEntry, Token![,]> = Punctuated::parse_terminated(input)?;
 
         let mut name: Option<LitStr> = None;
         let mut description: Option<LitStr> = None;
@@ -101,11 +100,13 @@ impl Parse for ToolAttrs {
             }
         }
 
-        let name = name.ok_or_else(|| {
-            syn::Error::new(Span::call_site(), "baml_tool: `name` is required")
-        })?;
+        let name = name
+            .ok_or_else(|| syn::Error::new(Span::call_site(), "baml_tool: `name` is required"))?;
         if name.value().is_empty() {
-            return Err(syn::Error::new(name.span(), "baml_tool: `name` must not be empty"));
+            return Err(syn::Error::new(
+                name.span(),
+                "baml_tool: `name` must not be empty",
+            ));
         }
         let description = description.ok_or_else(|| {
             syn::Error::new(Span::call_site(), "baml_tool: `description` is required")
@@ -231,10 +232,7 @@ impl Parse for AttrEntry {
                 if !valid.contains(&ident.to_string().as_str()) {
                     return Err(syn::Error::new(
                         ident.span(),
-                        format!(
-                            "baml_tool: `access` must be one of: {}",
-                            valid.join(", ")
-                        ),
+                        format!("baml_tool: `access` must be one of: {}", valid.join(", ")),
                     ));
                 }
                 Ok(AttrEntry::Access(ident))
@@ -275,11 +273,17 @@ impl Parse for AttrEntry {
 fn parse_string_array(input: ParseStream<'_>) -> syn::Result<Vec<LitStr>> {
     let expr: Expr = input.parse()?;
     let Expr::Array(ExprArray { elems, .. }) = expr else {
-        return Err(syn::Error::new(expr.span(), "expected an array literal, e.g. [\"a\", \"b\"]"));
+        return Err(syn::Error::new(
+            expr.span(),
+            "expected an array literal, e.g. [\"a\", \"b\"]",
+        ));
     };
     let mut out = Vec::with_capacity(elems.len());
     for elem in elems {
-        let Expr::Lit(ExprLit { lit: Lit::Str(s), .. }) = elem else {
+        let Expr::Lit(ExprLit {
+            lit: Lit::Str(s), ..
+        }) = elem
+        else {
             return Err(syn::Error::new(
                 elem.span(),
                 "expected a string literal inside the array",
@@ -294,7 +298,10 @@ fn parse_string_array(input: ParseStream<'_>) -> syn::Result<Vec<LitStr>> {
 fn parse_path_array(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
     let expr: Expr = input.parse()?;
     let Expr::Array(ExprArray { elems, .. }) = expr else {
-        return Err(syn::Error::new(expr.span(), "expected an array of type paths, e.g. [MyType, OtherType]"));
+        return Err(syn::Error::new(
+            expr.span(),
+            "expected an array of type paths, e.g. [MyType, OtherType]",
+        ));
     };
     let mut out = Vec::with_capacity(elems.len());
     for elem in elems {
@@ -313,8 +320,7 @@ fn parse_path_array(input: ParseStream<'_>) -> syn::Result<Vec<Path>> {
 fn parse_secrets_array(input: ParseStream<'_>) -> syn::Result<Vec<SecretDef>> {
     let content;
     syn::bracketed!(content in input);
-    let entries: Punctuated<SecretDef, Token![,]> =
-        Punctuated::parse_terminated(&content)?;
+    let entries: Punctuated<SecretDef, Token![,]> = Punctuated::parse_terminated(&content)?;
     Ok(entries.into_iter().collect())
 }
 
@@ -328,8 +334,7 @@ impl Parse for SecretDef {
         let mut description: Option<String> = None;
         let mut reason: Option<String> = None;
 
-        let entries: Punctuated<KvPair, Token![,]> =
-            Punctuated::parse_terminated(&content)?;
+        let entries: Punctuated<KvPair, Token![,]> = Punctuated::parse_terminated(&content)?;
 
         for KvPair(key, value) in entries {
             match key.to_string().as_str() {
@@ -339,7 +344,9 @@ impl Parse for SecretDef {
                 other => {
                     return Err(syn::Error::new(
                         key.span(),
-                        format!("baml_tool: unknown secret field `{other}`; expected name, description, or reason"),
+                        format!(
+                            "baml_tool: unknown secret field `{other}`; expected name, description, or reason"
+                        ),
                     ));
                 }
             }

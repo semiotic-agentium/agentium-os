@@ -84,10 +84,9 @@
 mod expand;
 mod parse;
 
+use parse::ToolAttrs;
 use proc_macro::TokenStream;
 use syn::{Item, parse_macro_input};
-
-use parse::ToolAttrs;
 
 /// Attribute macro for registering BAML tool metadata and handlers.
 ///

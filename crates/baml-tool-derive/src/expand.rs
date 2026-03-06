@@ -206,7 +206,10 @@ pub(crate) fn expand_struct(attrs: &ToolAttrs, item: &ItemStruct) -> syn::Result
     attrs.validate_mode2()?;
 
     // Safe to unwrap — validate_mode2 checks these are Some.
-    let open_input_ty = attrs.open_input.as_ref().expect("validated in validate_mode2");
+    let open_input_ty = attrs
+        .open_input
+        .as_ref()
+        .expect("validated in validate_mode2");
     let input_ty = attrs.input.as_ref().expect("validated in validate_mode2");
     let output_ty = attrs.output.as_ref().expect("validated in validate_mode2");
 
