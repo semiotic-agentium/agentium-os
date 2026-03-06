@@ -411,7 +411,7 @@ export function useA2aClient() {
       const statusText =
         extractTextFromStatusUpdate(chunk) ??
         extractText(chunk.statusUpdate?.status?.message) ??
-        extractText(nestedStatusUpdate?.message as { parts?: { text?: string }[] } | undefined);
+        extractText(nestedStatusUpdate?.message);
       const trimmed = statusText?.trim();
       // Skip "Invoking tool: X" in the phase block — the tool has its own block; keeps order correct (phase after tool)
       if (trimmed && !trimmed.match(/^Invoking tool: /)) {
