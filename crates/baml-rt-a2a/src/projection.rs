@@ -7,7 +7,7 @@
 //! provenance items and a [`ProjectionConfig`], applies compaction and budgeting,
 //! and returns the serialized envelope plus projection statistics.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use baml_rt_provenance::ProvenanceConversationContextItem;
 use baml_rt_tools::ToolRegistry;
@@ -49,6 +49,8 @@ pub struct ProjectionStats {
     pub projected_chars: usize,
     /// Items dropped because their `source` was not in `allowed_sources`.
     pub dropped_source_filtered: usize,
+    /// Items dropped as duplicates (same role + source + content).
+    pub dropped_deduped: usize,
     /// Items dropped by budget truncation.
     pub dropped_budgeted: usize,
 }
@@ -59,14 +61,13 @@ pub struct ProjectionStats {
 /// and is fully deterministic for a fixed input. The caller is responsible for
 /// reading candidates from the store and passing the tool registry for compaction.
 ///
-/// # Pipeline stages (current — Task 1 baseline)
+/// # Pipeline stages
 ///
-/// 1. Tool compaction (`compact_result` per tool_result).
-/// 2. Budget truncation (`max_items`, keeping the latest N items).
-/// 3. Serialize to prompt event envelope (`{role, source, content}`).
-///
-/// Subsequent tasks will insert additional stages (source filtering, dedupe,
-/// empty-content removal, floor guarantee, projection modes) between these steps.
+/// 1. Source filtering (drop items whose `source` is not in `allowed_sources`).
+/// 2. Tool compaction (`compact_result` per tool_result).
+/// 3. Deterministic dedupe (key = role + source + canonical content; keep latest).
+/// 4. Budget truncation (`max_items`, keeping the latest N items).
+/// 5. Serialize to prompt event envelope (`{role, source, content}`).
 pub fn project(
     mut items: Vec<ProvenanceConversationContextItem>,
     config: &ProjectionConfig,
@@ -94,6 +95,41 @@ pub fn project(
         };
         handler.compact_result(&mut item.content);
     }
+
+    // Stage: deterministic dedupe — collapse items with identical
+    // (role, source, canonical_content). For each group, keep the item with
+    // the highest timestamp_ms; on tie, keep the lexicographically greater
+    // event_id. Output preserves chronological order.
+    let dropped_deduped = {
+        let pre = items.len();
+        let mut best: HashMap<(String, String, String), usize> = HashMap::new();
+        for (idx, item) in items.iter().enumerate() {
+            let canonical = serde_json::to_string(&item.content).unwrap_or_default();
+            let key = (item.role.clone(), item.source.clone(), canonical);
+            match best.entry(key) {
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    let prev_idx = *e.get();
+                    let prev = &items[prev_idx];
+                    if item.timestamp_ms > prev.timestamp_ms
+                        || (item.timestamp_ms == prev.timestamp_ms && item.event_id > prev.event_id)
+                    {
+                        e.insert(idx);
+                    }
+                }
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(idx);
+                }
+            }
+        }
+        let keep: HashSet<usize> = best.into_values().collect();
+        items = items
+            .into_iter()
+            .enumerate()
+            .filter(|(i, _)| keep.contains(i))
+            .map(|(_, item)| item)
+            .collect();
+        pre - items.len()
+    };
 
     // Stage: budget truncation (keep latest N by position; items are already
     // in chronological order from the store).
@@ -128,6 +164,7 @@ pub fn project(
         projected: entries.len(),
         projected_chars,
         dropped_source_filtered,
+        dropped_deduped,
         dropped_budgeted,
     };
 
@@ -288,6 +325,76 @@ mod tests {
         let content = entries[0]["content"].as_str().unwrap();
         let parsed: Value = serde_json::from_str(content).expect("should be valid JSON");
         assert_eq!(parsed, json!({"key": "value"}));
+    }
+
+    /// Dedupe: exact duplicates collapse to the latest; timestamp tie uses event_id.
+    #[test]
+    fn test_dedupe_keeps_latest_and_breaks_tie_by_event_id() {
+        fn item_with_event_id(
+            role: &str,
+            source: &str,
+            content: Value,
+            timestamp_ms: u64,
+            event_id: &str,
+        ) -> ProvenanceConversationContextItem {
+            ProvenanceConversationContextItem {
+                timestamp_ms,
+                event_id: EventId::from(event_id),
+                role: role.to_string(),
+                content,
+                source: source.to_string(),
+            }
+        }
+
+        let items = vec![
+            // Dup group A: same role+source+content, different timestamps → keep latest (t=3000).
+            item_with_event_id(
+                "ROLE_USER",
+                "message",
+                Value::String("hi".into()),
+                1000,
+                "e-1",
+            ),
+            item_with_event_id(
+                "ROLE_USER",
+                "message",
+                Value::String("hi".into()),
+                3000,
+                "e-3",
+            ),
+            // Dup group B: same everything, same timestamp → tie-break on event_id ("e-z" > "e-a").
+            item_with_event_id(
+                "ROLE_AGENT",
+                "message",
+                Value::String("ok".into()),
+                2000,
+                "e-a",
+            ),
+            item_with_event_id(
+                "ROLE_AGENT",
+                "message",
+                Value::String("ok".into()),
+                2000,
+                "e-z",
+            ),
+            // Unique item — not a duplicate.
+            item_with_event_id("tool", "tool_result", json!({"r": 1}), 2500, "e-5"),
+        ];
+
+        let config = ProjectionConfig::default();
+        let (entries, stats) = project(items, &config, &empty_registry());
+
+        assert_eq!(stats.candidates, 5);
+        assert_eq!(stats.dropped_deduped, 2);
+        assert_eq!(stats.projected, 3);
+
+        // Surviving items preserve original array position of the winning items.
+        let contents: Vec<&str> = entries
+            .iter()
+            .filter_map(|e| e["content"].as_str())
+            .collect();
+        // Group A winner at input idx 1, Group B winner at idx 3, unique at idx 4.
+        assert_eq!(contents, vec!["hi", "ok", "{\"r\":1}"]);
     }
 
     #[test]
