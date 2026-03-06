@@ -100,9 +100,8 @@ export interface ChunkPayload {
 export interface StatusUpdatePayload {
   taskId?: string;
   status?: TaskStatus;
-  /** Nested event body (relay sends statusUpdate/status_update) */
+  /** Nested event body for status updates. */
   statusUpdate?: { message?: A2aMessage; metadata?: Record<string, unknown> };
-  status_update?: { message?: A2aMessage; metadata?: Record<string, unknown> };
 }
 
 export interface TaskPayload {

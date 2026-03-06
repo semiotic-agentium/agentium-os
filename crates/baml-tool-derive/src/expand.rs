@@ -21,7 +21,7 @@ use crate::parse::ToolAttrs;
 /// `"support/clickup"` → `support_clickup`
 /// `"memory/add"` → `memory_add`
 fn fn_prefix_from_tool_name(name: &str) -> String {
-    name.replace('/', "_").replace('-', "_")
+    name.replace(['/', '-'], "_")
 }
 
 /// Emit the `with_tags(...)` builder call (or nothing if empty).
@@ -113,10 +113,10 @@ fn baml_decl_tokens(baml_types: &[Path]) -> TokenStream {
 /// Looks for `type Name = SomeType;` items and returns the RHS type.
 fn extract_associated_type(impl_block: &ItemImpl, name: &str) -> syn::Result<Type> {
     for item in &impl_block.items {
-        if let ImplItem::Type(assoc) = item {
-            if assoc.ident == name {
-                return Ok(assoc.ty.clone());
-            }
+        if let ImplItem::Type(assoc) = item
+            && assoc.ident == name
+        {
+            return Ok(assoc.ty.clone());
         }
     }
     Err(syn::Error::new_spanned(
