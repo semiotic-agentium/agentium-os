@@ -210,8 +210,9 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
         let will_emit = agent_for_node.contains_key(&node.id);
         let emits_visible = node_emits_visible_content(node, &indices);
         let is_user_msg = is_user_message(node);
-        // Open rect when: (a) switching task_id, or (b) new user message (new turn) after we've
-        // already emitted one. (b) handles resumed tasks where the same task_id is used for both turns.
+        // Open a new task section when: (a) switching task_id, or (b) new user message (new turn)
+        // after we've already emitted one. (b) handles resumed tasks where the same task_id is
+        // used for both turns.
         let should_open_rect = will_emit && emits_visible && {
             let task_switch = task_id
                 .as_ref()
@@ -219,8 +220,7 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
             let new_user_turn = is_user_msg && saw_user_message;
             task_switch || new_user_turn
         };
-        // When the initiating user message triggers a new rect, emit it BEFORE the rect so it
-        // appears above the task scope (the message initiates the task).
+        // When the initiating user message triggers a new section, emit it BEFORE the section note.
         if should_open_rect && is_user_msg {
             if let Some(agent) = agent_for_node.get(&node.id)
                 && indices
@@ -256,13 +256,13 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
                 (false, None)
             };
             if should_open {
-                if current_rect_task.is_some() {
-                    let _ = writeln!(out, "    end");
-                }
                 if let Some(ref t) = note_tid {
                     current_rect_task = Some(t.clone());
                 }
-                let _ = writeln!(out, "    rect rgb(220, 230, 241)");
+                let raw_status = note_tid
+                    .as_ref()
+                    .and_then(|t| task_status_by_id.get(t.as_str()))
+                    .map(String::as_str);
                 let span = note_tid
                     .as_ref()
                     .and_then(|t| task_rect_spans.get(&Some(t.clone())).cloned())
@@ -271,8 +271,8 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
                 if let Some((first, last)) = span {
                     let label = note_tid
                         .as_ref()
-                        .and_then(|t| {
-                            let raw = task_status_by_id.get(t.as_str())?;
+                        .and_then(|_| {
+                            let raw = raw_status?;
                             let humanized = humanize_task_status(raw);
                             // New turn, same task_id: previous rect's "Completed" is stale.
                             // Show "Running" so the rect reflects this turn's FSM, not the last.
@@ -316,9 +316,6 @@ pub fn render_sequence_diagram(graph: &ExportedGraph) -> String {
         if is_user_msg && will_emit {
             saw_user_message = true;
         }
-    }
-    if current_rect_task.is_some() {
-        let _ = writeln!(out, "    end");
     }
 
     let duration = start.elapsed();
@@ -1900,11 +1897,11 @@ mod tests {
 
     /// Delegation: user message to delegate and assistant reply must show coordinator↔worker,
     /// not User↔worker. Regression for coordinator→specialist misattribution.
-    /// Three user messages (hi x3) create three tasks. Each task must get its own rect
-    /// with humanized status. Regression for aggregation where newly opened tasks
-    /// collapsed into one rect.
+    /// Three user messages (hi x3) create three tasks. Each task must get its own section
+    /// note with humanized status. Regression for aggregation where newly opened tasks
+    /// collapsed into one section.
     #[test]
-    fn multi_task_shows_separate_rects_per_task() {
+    fn multi_task_shows_separate_task_notes_per_task() {
         let mut nodes = vec![
             agent_node("a1", "demo"),
             boot_node("boot1"),
@@ -2002,11 +1999,11 @@ mod tests {
         let mut g = graph(nodes, edges);
         enrich::enrich_derived_properties(&mut g);
         let output = render_sequence_diagram(&g);
-        // Must have 3 rect blocks (one per task)
-        let rect_count = output.matches("rect rgb").count();
+        // Must have 3 task section notes (one per task)
+        let note_count = output.matches("Note over").count();
         assert!(
-            rect_count >= 3,
-            "expected at least 3 task rects, got {rect_count}; output:\n{output}"
+            note_count >= 3,
+            "expected at least 3 task section notes, got {note_count}; output:\n{output}"
         );
         // Status labels must appear (humanized)
         assert!(
