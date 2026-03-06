@@ -355,15 +355,17 @@ export function useA2aClient() {
 
     const chunk: ChunkPayload = result.chunk;
     if (!chunk) return;
+    const nestedStatusUpdate = resolveNestedStatusUpdate(chunk.statusUpdate);
 
     // Track multi-turn state (task and statusUpdate both carry contextId/taskId)
-    const ctx = chunk.task?.contextId ?? chunk.statusUpdate?.status_update?.contextId ?? chunk.statusUpdate?.statusUpdate?.contextId;
-    const tid = chunk.task?.id ?? chunk.statusUpdate?.taskId ?? chunk.statusUpdate?.status_update?.taskId ?? chunk.statusUpdate?.statusUpdate?.taskId;
+    const ctx = chunk.task?.contextId ?? nestedStatusUpdate?.contextId;
+    const tid = chunk.task?.id ?? chunk.statusUpdate?.taskId ?? nestedStatusUpdate?.taskId;
     if (ctx) _contextId.value = ctx;
     if (tid) taskId = tid;
 
     // Shape: toolStreamChunk chunks split into two kinds.
-    // - Phase (status): toolStreamChunk true, no tool payload — statusUpdate.status_update.status.message only (e.g. "Calling model: unknown (PhaseName)", "Invoking tool: X"). One block per "segment" (new segment after each message).
+    // - Phase (status): toolStreamChunk true, no tool payload — nested status message only
+    //   (e.g. "Calling model: unknown (PhaseName)", "Invoking tool: X"). One block per segment.
     // - Tool: toolStreamChunk true, has tool payload — toolName and/or events and/or completion. One block per tool invocation (new block when previous for same tool is DONE).
     // Backend may send tool data at chunk top level (chunk.toolName/events/completion) or inside chunk.task.
     const toolChunk = result.toolStreamChunk
@@ -409,7 +411,7 @@ export function useA2aClient() {
       const statusText =
         extractTextFromStatusUpdate(chunk) ??
         extractText(chunk.statusUpdate?.status?.message) ??
-        extractText((chunk.statusUpdate?.statusUpdate ?? chunk.statusUpdate?.status_update)?.message);
+        extractText(nestedStatusUpdate?.message);
       const trimmed = statusText?.trim();
       // Skip "Invoking tool: X" in the phase block — the tool has its own block; keeps order correct (phase after tool)
       if (trimmed && !trimmed.match(/^Invoking tool: /)) {
@@ -440,7 +442,7 @@ export function useA2aClient() {
       }
     }
 
-    // Check terminal state (state can be in task.status or nested statusUpdate.status_update.status)
+    // Check terminal state (state can be in task.status or nested statusUpdate.status.state)
     const state = getStateFromChunk(chunk);
 
     // Record state transitions for the task timeline
@@ -479,23 +481,39 @@ export function useA2aClient() {
     }
   }
 
+  function resolveNestedStatusUpdate(
+    statusUpdate: ChunkPayload["statusUpdate"],
+  ): {
+    contextId?: string;
+    taskId?: string;
+    message?: { parts?: { text?: string }[] };
+    status?: { state?: string; message?: { parts?: { text?: string }[] } };
+  } | null {
+    if (!statusUpdate || typeof statusUpdate !== "object") return null;
+    if (statusUpdate.statusUpdate && typeof statusUpdate.statusUpdate === "object") {
+      return statusUpdate.statusUpdate as {
+        contextId?: string;
+        taskId?: string;
+        message?: { parts?: { text?: string }[] };
+        status?: { state?: string; message?: { parts?: { text?: string }[] } };
+      };
+    }
+    return null;
+  }
+
   function extractTextFromStatusUpdate(chunk: ChunkPayload): string | undefined {
-    const su = chunk.statusUpdate;
-    const inner = su?.statusUpdate ?? su?.status_update;
-    // Relay sends status_update.status.message; flat shape uses inner.message
-    const nested = inner as { message?: A2aMessage; status?: { message?: A2aMessage } } | undefined;
+    const nested = resolveNestedStatusUpdate(chunk.statusUpdate);
     return extractText(nested?.status?.message) ?? extractText(nested?.message);
   }
 
-  /** State can be in task.status or statusUpdate.status or nested statusUpdate.status_update.status */
+  /** State can be in task.status or statusUpdate.status or nested statusUpdate.status.state */
   function getStateFromChunk(chunk: ChunkPayload): string | undefined {
     const t = chunk.task?.status?.state;
     if (t) return t;
     const su = chunk.statusUpdate;
     const flat = su?.status?.state;
     if (flat) return flat;
-    const inner = su?.statusUpdate ?? su?.status_update;
-    return (inner as { status?: { state?: string } } | undefined)?.status?.state;
+    return resolveNestedStatusUpdate(su)?.status?.state;
   }
 
   function extractText(

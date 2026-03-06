@@ -7,7 +7,6 @@ type DelegatedChunk = {
   };
   task?: string;
   statusUpdate?: string;
-  status_update?: string;
 };
 
 type DelegatedResult = {
@@ -972,9 +971,6 @@ function collectDelegatedTexts(value: unknown): string[] {
           for (const text of extractTextsFromSerializedChunkField(chunk.statusUpdate)) {
             out.add(text);
           }
-          for (const text of extractTextsFromSerializedChunkField(chunk.status_update)) {
-            out.add(text);
-          }
         }
       }
     }
@@ -1099,7 +1095,7 @@ function detectDelegatedTaskFailure(value: unknown): string | null {
       );
     }
 
-    const statusCandidates = [current.status, current.status_update, current.statusUpdate];
+    const statusCandidates = [current.status, current.statusUpdate];
     for (const status of statusCandidates) {
       if (!isObject(status)) continue;
       const statusState = normalizeOptionalString(status.state);
