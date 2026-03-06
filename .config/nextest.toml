@@ -9,9 +9,21 @@ experimental = ["setup-scripts"]
 command = 'cargo run -p baml-rt-builder --features http-tools,memory --bin regen_fixtures'
 slow-timeout = { period = "120s", terminate-after = 2 }
 
+# Pre-extract the bundled GraphQLite .so/.dylib once before tests run in parallel.
+# Without this, concurrent test processes race to write the same file, causing
+# "file too short" errors when one process loads a partially-written extension.
+[scripts.setup.pre-extract-graphqlite]
+command = 'cargo run -p baml-rt-provenance --bin pre_extract_graphqlite'
+slow-timeout = { period = "60s", terminate-after = 2 }
+
 [[profile.default.scripts]]
 filter = 'all()'
 setup = 'regen-fixtures'
+
+# Only run graphqlite pre-extraction for packages that transitively depend on it.
+[[profile.default.scripts]]
+filter = 'package(baml-rt-provenance) | package(baml-rt-a2a) | package(baml-rt-quickjs) | package(baml-rt-tools) | package(baml-rt) | package(baml-agent-runner)'
+setup = 'pre-extract-graphqlite'
 
 [profile.ci]
 # Do not stop scheduling on first failure; surface full suite results in CI.
