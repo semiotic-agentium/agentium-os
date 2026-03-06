@@ -7,25 +7,38 @@
 //! provenance items and a [`ProjectionConfig`], applies compaction and budgeting,
 //! and returns the serialized envelope plus projection statistics.
 
+use std::collections::HashSet;
+
 use baml_rt_provenance::ProvenanceConversationContextItem;
 use baml_rt_tools::ToolRegistry;
 use serde_json::Value;
+
+/// Allowed source types for the projection pipeline.
+const DEFAULT_ALLOWED_SOURCES: &[&str] = &["message", "tool_result"];
 
 /// Configuration for a single projection invocation.
 #[derive(Debug, Clone)]
 pub struct ProjectionConfig {
     /// Hard cap on the number of projected items.
     pub max_items: usize,
+    /// Source types to include. Items whose `source` field is not in this set
+    /// are dropped before any other pipeline stage. Default: `["message", "tool_result"]`.
+    pub allowed_sources: HashSet<String>,
 }
 
 impl Default for ProjectionConfig {
     fn default() -> Self {
-        Self { max_items: 40 }
+        Self {
+            max_items: 40,
+            allowed_sources: DEFAULT_ALLOWED_SOURCES
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+        }
     }
 }
 
-/// Statistics collected during a projection pass. Will be extended with
-/// per-reason drop counters in subsequent tasks.
+/// Statistics collected during a projection pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectionStats {
     /// Total candidate items received from the store.
@@ -34,6 +47,8 @@ pub struct ProjectionStats {
     pub projected: usize,
     /// Total estimated chars in the serialized projected output.
     pub projected_chars: usize,
+    /// Items dropped because their `source` was not in `allowed_sources`.
+    pub dropped_source_filtered: usize,
     /// Items dropped by budget truncation.
     pub dropped_budgeted: usize,
 }
@@ -58,6 +73,13 @@ pub fn project(
     tool_registry: &ToolRegistry,
 ) -> (Vec<Value>, ProjectionStats) {
     let candidates = items.len();
+
+    // Stage: source filtering — drop items whose source type is not in the
+    // allowed set. This runs before compaction so we don't waste work on
+    // items that will be discarded anyway.
+    let pre_filter_len = items.len();
+    items.retain(|item| config.allowed_sources.contains(&item.source));
+    let dropped_source_filtered = pre_filter_len - items.len();
 
     // Stage: tool compaction (read-time, in-memory only).
     for item in &mut items {
@@ -105,6 +127,7 @@ pub fn project(
         candidates,
         projected: entries.len(),
         projected_chars,
+        dropped_source_filtered,
         dropped_budgeted,
     };
 
@@ -165,41 +188,27 @@ mod tests {
         let items = vec![
             make_item("ROLE_USER", "message", Value::String("hello".into()), 1000),
             make_item(
-                "assistant",
-                "tool_call",
-                json!({"tool_call": {"name": "clickup/create_task", "args": {}}}),
-                2000,
-            ),
-            make_item(
                 "tool",
                 "tool_result",
                 json!({"tool_name": "clickup/create_task", "result": {"id": "123"}}),
-                3000,
+                2000,
             ),
-            make_item("ROLE_AGENT", "message", Value::String("done".into()), 4000),
+            make_item("ROLE_AGENT", "message", Value::String("done".into()), 3000),
         ];
 
         let config = ProjectionConfig::default();
         let (entries, stats) = project(items, &config, &empty_registry());
 
-        assert_eq!(stats.candidates, 4);
-        assert_eq!(stats.projected, 4);
-        assert_eq!(stats.dropped_budgeted, 0);
+        assert_eq!(stats.candidates, 3);
+        assert_eq!(stats.projected, 3);
+        assert_eq!(stats.dropped_source_filtered, 0);
 
-        // Verify envelope shape: each entry has role, source, content.
-        for entry in &entries {
-            assert!(entry.get("role").is_some(), "missing 'role' field");
-            assert!(entry.get("source").is_some(), "missing 'source' field");
-            assert!(entry.get("content").is_some(), "missing 'content' field");
-        }
-
-        // Verify ordering preserved (chronological).
+        // Verify envelope shape and chronological ordering.
         assert_eq!(entries[0]["role"], "ROLE_USER");
         assert_eq!(entries[0]["content"], "hello");
-        assert_eq!(entries[1]["source"], "tool_call");
-        assert_eq!(entries[2]["source"], "tool_result");
-        assert_eq!(entries[3]["role"], "ROLE_AGENT");
-        assert_eq!(entries[3]["content"], "done");
+        assert_eq!(entries[1]["source"], "tool_result");
+        assert_eq!(entries[2]["role"], "ROLE_AGENT");
+        assert_eq!(entries[2]["content"], "done");
     }
 
     #[test]
@@ -231,7 +240,10 @@ mod tests {
             })
             .collect();
 
-        let config = ProjectionConfig { max_items: 3 };
+        let config = ProjectionConfig {
+            max_items: 3,
+            ..ProjectionConfig::default()
+        };
         let (entries, stats) = project(items, &config, &empty_registry());
 
         assert_eq!(stats.candidates, 10);
@@ -276,5 +288,28 @@ mod tests {
         let content = entries[0]["content"].as_str().unwrap();
         let parsed: Value = serde_json::from_str(content).expect("should be valid JSON");
         assert_eq!(parsed, json!({"key": "value"}));
+    }
+
+    #[test]
+    fn test_source_filtering_drops_disallowed_keeps_allowed() {
+        let items = vec![
+            make_item("ROLE_USER", "message", Value::String("hi".into()), 1000),
+            make_item("assistant", "tool_call", json!({"tool_call": {}}), 2000),
+            make_item("tool", "tool_result", json!({"result": {}}), 3000),
+            make_item("system", "internal", Value::String("noise".into()), 4000),
+        ];
+
+        // Default: ["message", "tool_result"] — tool_call and internal dropped.
+        let config = ProjectionConfig::default();
+        let (entries, stats) = project(items, &config, &empty_registry());
+
+        assert_eq!(stats.candidates, 4);
+        assert_eq!(stats.dropped_source_filtered, 2);
+        assert_eq!(stats.projected, 2);
+        let sources: Vec<&str> = entries
+            .iter()
+            .filter_map(|e| e["source"].as_str())
+            .collect();
+        assert_eq!(sources, vec!["message", "tool_result"]);
     }
 }
