@@ -35,6 +35,8 @@ jobs:
 
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Install nightly rustfmt
         uses: dtolnay/rust-toolchain@nightly
@@ -65,6 +67,11 @@ jobs:
           free -h
           echo "=== uname -a ==="
           uname -a
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        env:
+          RUSTUP_TOOLCHAIN: stable
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
