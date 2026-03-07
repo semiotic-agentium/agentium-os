@@ -12,7 +12,7 @@ use thiserror::Error;
 use crate::{
     daemon::{SourcePoll, TaskSource},
     model::{InvestigationTask, SourceReference, TaskConfidence},
-    state::{ClickupTaskSnapshot, TaskDaemonState},
+    state::{ClickupLifecycleRevisionSlot, ClickupTaskSnapshot, TaskDaemonState},
 };
 
 const MAX_CLICKUP_LIST_TASK_PAGES: u32 = 50;
@@ -126,11 +126,12 @@ impl ClickupLifecycleEventKey {
 }
 
 fn next_lifecycle_revision(
-    revisions: &mut BTreeMap<String, u64>,
+    revisions: &mut BTreeMap<ClickupLifecycleRevisionSlot, u64>,
     kind: ClickupLifecycleEventKind,
     task_id: &str,
 ) -> u64 {
-    let slot = format!("{}:{task_id}", kind.revision_counter_prefix());
+    let slot =
+        ClickupLifecycleRevisionSlot::new(format!("{}:{task_id}", kind.revision_counter_prefix()));
     let next = revisions.get(&slot).copied().unwrap_or(0).saturating_add(1);
     revisions.insert(slot, next);
     next

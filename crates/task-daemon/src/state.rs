@@ -10,6 +10,21 @@ use std::{
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+/// Stable key for ClickUp lifecycle revision counters persisted in daemon state.
+pub struct ClickupLifecycleRevisionSlot(String);
+
+impl ClickupLifecycleRevisionSlot {
+    pub fn new(slot: String) -> Self {
+        Self(slot)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 /// Snapshot of a ClickUp task tracked for reconciliation.
 pub struct ClickupTaskSnapshot {
@@ -38,7 +53,7 @@ pub struct SourceState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub clickup_task_snapshot: BTreeMap<String, ClickupTaskSnapshot>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub clickup_lifecycle_revisions: BTreeMap<String, u64>,
+    pub clickup_lifecycle_revisions: BTreeMap<ClickupLifecycleRevisionSlot, u64>,
 }
 
 impl SourceState {
