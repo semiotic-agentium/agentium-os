@@ -66,6 +66,7 @@ impl ToolSession for ProvenanceQuerySession {
                 model: send.model,
                 tool_name: send.tool_name,
                 baml_prompt: send.baml_prompt,
+                payload_text: send.payload_text,
                 from_timestamp_ms: None,
                 to_timestamp_ms: None,
             },

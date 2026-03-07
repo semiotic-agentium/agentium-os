@@ -57,6 +57,10 @@ pub mod a2a {
     pub const FAILURE_CLASS: &str = "a2a:failure_class";
     pub const FAILURE_EVIDENCE: &str = "a2a:failure_evidence";
     pub const FAILURE_CODE: &str = "a2a:failure_code";
+    pub const LLM_CALL_PAYLOAD_ID: &str = "a2a:llm_call_payload_id";
+    pub const LLM_RESULT_PAYLOAD_ID: &str = "a2a:llm_result_payload_id";
+    pub const TOOL_CALL_PAYLOAD_ID: &str = "a2a:tool_call_payload_id";
+    pub const TOOL_RESULT_PAYLOAD_ID: &str = "a2a:tool_result_payload_id";
 }
 
 pub mod prov_types {
@@ -222,6 +226,10 @@ pub mod storage_safe {
     pub const A2A_FAILURE_CLASS: &str = "a2a_failure_class";
     pub const A2A_FAILURE_EVIDENCE: &str = "a2a_failure_evidence";
     pub const A2A_FAILURE_CODE: &str = "a2a_failure_code";
+    pub const A2A_LLM_CALL_PAYLOAD_ID: &str = "a2a_llm_call_payload_id";
+    pub const A2A_LLM_RESULT_PAYLOAD_ID: &str = "a2a_llm_result_payload_id";
+    pub const A2A_TOOL_CALL_PAYLOAD_ID: &str = "a2a_tool_call_payload_id";
+    pub const A2A_TOOL_RESULT_PAYLOAD_ID: &str = "a2a_tool_result_payload_id";
 }
 
 pub mod node_labels {

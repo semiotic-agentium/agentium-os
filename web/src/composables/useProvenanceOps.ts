@@ -1,7 +1,9 @@
 import { computed, onUnmounted, ref, type ComputedRef, type Ref } from "vue";
 import type {
+  ProvenanceGroupHotspot,
   ProvenanceQueryParams,
   ProvenanceQueryResponse,
+  ProvenanceRowBase,
   ProvenanceResource,
 } from "../types/provenance";
 
@@ -34,6 +36,57 @@ export interface ProvenanceQueryController {
   clear: () => void;
   startAutoRefresh: (options?: AutoRefreshOptions) => void;
   stopAutoRefresh: () => void;
+}
+
+function rowIdentity(row: ProvenanceRowBase, idx: number): string {
+  const activityId = row.activity_id;
+  if (typeof activityId === "string" && activityId.length > 0) return activityId;
+  const messageId = row.message_id;
+  if (typeof messageId === "string" && messageId.length > 0) {
+    const kind = typeof row.activity_kind === "string" ? row.activity_kind : "row";
+    return `${kind}:${messageId}:${idx}`;
+  }
+  return `row:${idx}`;
+}
+
+function groupIdentity(group: ProvenanceGroupHotspot, idx: number): string {
+  const key = group.groupKey;
+  if (typeof key === "string" && key.length > 0) return key;
+  return `group:${idx}`;
+}
+
+function mergeResponse(
+  previous: ProvenanceQueryResponse | null,
+  incoming: ProvenanceQueryResponse,
+): ProvenanceQueryResponse {
+  if (!previous) return incoming;
+  const prevRowsById = new Map<string, ProvenanceRowBase>();
+  previous.rows.forEach((row, idx) => {
+    prevRowsById.set(rowIdentity(row, idx), row);
+  });
+  const mergedRows = incoming.rows.map((row, idx) => {
+    const id = rowIdentity(row, idx);
+    const prev = prevRowsById.get(id);
+    if (!prev) return row;
+    return JSON.stringify(prev) === JSON.stringify(row) ? prev : row;
+  });
+
+  const prevGroupsById = new Map<string, ProvenanceGroupHotspot>();
+  previous.hotspotGroups.forEach((group, idx) => {
+    prevGroupsById.set(groupIdentity(group, idx), group);
+  });
+  const mergedGroups = incoming.hotspotGroups.map((group, idx) => {
+    const id = groupIdentity(group, idx);
+    const prev = prevGroupsById.get(id);
+    if (!prev) return group;
+    return JSON.stringify(prev) === JSON.stringify(group) ? prev : group;
+  });
+
+  return {
+    ...incoming,
+    rows: mergedRows,
+    hotspotGroups: mergedGroups,
+  };
 }
 
 function toSearchParams(params: ProvenanceQueryParams): URLSearchParams {
@@ -137,7 +190,7 @@ export function useProvenanceOps() {
         }
 
         const payload = (await response.json()) as ProvenanceQueryResponse;
-        state.value.response = payload;
+        state.value.response = mergeResponse(state.value.response, payload);
         state.value.lastUpdatedAt = Date.now();
       } catch (error) {
         if ((error as Error).name !== "AbortError") {

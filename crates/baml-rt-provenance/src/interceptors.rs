@@ -77,7 +77,7 @@ impl LLMInterceptor for ProvenanceInterceptor {
     ) {
         let outcome = Outcome::from(result.is_ok());
         let task_id = context.runtime_scope.task_id_opt().cloned();
-        let metadata = metadata_with_runtime_scope(&context.metadata, &context.runtime_scope);
+        let metadata = metadata_with_llm_result(&context.metadata, &context.runtime_scope, result);
         let prompt = normalized_prompt(&context.prompt);
         let message_id = message_id_from_scope(&context.runtime_scope);
         let usage = extract_usage_from_metadata(&context.metadata);
@@ -271,6 +271,26 @@ fn metadata_with_tool_result(
     Value::Object(out)
 }
 
+fn metadata_with_llm_result(
+    metadata: &Value,
+    scope: &RuntimeScope,
+    result: &Result<Value>,
+) -> Value {
+    let mut out = match metadata_with_runtime_scope(metadata, scope) {
+        Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    match result {
+        Ok(value) => {
+            out.insert("result".to_string(), value.clone());
+        }
+        Err(error) => {
+            out.insert("error".to_string(), Value::String(error.to_string()));
+        }
+    }
+    Value::Object(out)
+}
+
 fn normalized_prompt(prompt: &Value) -> Value {
     if prompt.is_null() {
         Value::Object(serde_json::Map::new())
@@ -335,6 +355,10 @@ fn parse_u64_value(value: &Value) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use baml_rt_core::{
+        context::RuntimeScope,
+        ids::{AgentId, ContextId, ExternalId, MessageId, UuidId},
+    };
     use serde_json::json;
 
     use super::*;
@@ -427,5 +451,24 @@ mod tests {
     fn returns_unknown_when_usage_absent() {
         let metadata = json!({ "agent_id": "a1" });
         assert_eq!(extract_usage_from_metadata(&metadata), LlmUsage::Unknown);
+    }
+
+    #[test]
+    fn llm_completion_metadata_includes_result_payload() {
+        let scope = RuntimeScope::message_scope(
+            ContextId::new(1, 1),
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000123").unwrap()),
+            MessageId::from_external(ExternalId::new("msg-1".to_string())),
+        );
+        let metadata = json!({ "usage": { "prompt_tokens": 1, "completion_tokens": 1 } });
+        let result = Ok(json!({ "steps": [{ "op": "Open" }] }));
+        let merged = metadata_with_llm_result(&metadata, &scope, &result);
+        let obj = merged.as_object().expect("metadata must be object");
+        assert!(obj.get("result").is_some(), "result must be present");
+        assert_eq!(
+            obj.get("message_id").and_then(Value::as_str),
+            Some("msg-1"),
+            "runtime scope fields must be preserved"
+        );
     }
 }

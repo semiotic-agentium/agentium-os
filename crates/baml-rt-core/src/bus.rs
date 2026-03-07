@@ -132,6 +132,8 @@ pub enum EffectEvent {
         context_id: ContextId,
         metadata: LlmEffectMetadata,
         usage: Option<LlmUsage>,
+        /// Serialized LLM completion payload when available.
+        result_payload: Option<Value>,
         duration_ms: u64,
         outcome: Outcome,
         /// When outcome is Failure, optional reason (e.g. plan extraction failure) for provenance PromptRejected.
@@ -263,6 +265,7 @@ impl EffectStartToken<LlmKind> {
         mut self,
         emitter: &dyn EffectEmitter,
         usage: Option<LlmUsage>,
+        result_payload: Option<Value>,
         duration_ms: u64,
         outcome: Outcome,
         rejection_reason: Option<String>,
@@ -277,6 +280,7 @@ impl EffectStartToken<LlmKind> {
                 context_id,
                 metadata,
                 usage,
+                result_payload,
                 duration_ms,
                 outcome,
                 rejection_reason,
@@ -432,6 +436,7 @@ pub struct DomainEvent {
 
 /// Payload emitted on the bus.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum Payload {
     Command(Command),
     DomainEvent(DomainEvent),

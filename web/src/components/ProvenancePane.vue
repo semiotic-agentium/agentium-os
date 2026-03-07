@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useTheme } from "../composables/useTheme";
 import { useMermaidRenderer } from "../composables/useMermaidRenderer";
 import { useProvenanceOps } from "../composables/useProvenanceOps";
@@ -87,8 +87,9 @@ const exploreForm = ref<{
 
 const selectedRow = ref<ProvenanceRowBase | null>(null);
 const inspectorCollapsed = ref(false);
-const backgroundPolling = ref(false);
 const isExploreTab = computed(() => activeTab.value === "explore");
+const pollTimer = ref<number | null>(null);
+const pollInFlight = ref(false);
 
 function baseScope(): Pick<ProvenanceQueryParams, "contextId" | "agentId"> {
   return {
@@ -97,67 +98,48 @@ function baseScope(): Pick<ProvenanceQueryParams, "contextId" | "agentId"> {
   };
 }
 
-async function refreshLiveAndAnomalies() {
-  if (!props.contextId) return;
-  const scope = baseScope();
-  await Promise.all([
-    liveLlm.run(scope),
-    liveTool.run(scope),
-    anomalyQuery.run({
-      ...scope,
-      outcome: "both",
-    }),
-    failedLlmQuery.run({
-      ...scope,
-      outcome: "failed_only",
-    }),
-    failedToolQuery.run({
-      ...scope,
-      outcome: "failed_only",
-    }),
-  ]);
+async function refreshForActiveTab() {
+  if (!props.contextId || pollInFlight.value) return;
+  pollInFlight.value = true;
+  try {
+    const scope = baseScope();
+    if (activeTab.value === "live") {
+      await Promise.all([liveLlm.run(scope), liveTool.run(scope)]);
+      return;
+    }
+    if (activeTab.value === "failures") {
+      await Promise.all([
+        failedLlmQuery.run({ ...scope, outcome: "failed_only" }),
+        failedToolQuery.run({ ...scope, outcome: "failed_only" }),
+      ]);
+      return;
+    }
+    if (activeTab.value === "anomalies") {
+      await anomalyQuery.run({
+        ...scope,
+        outcome: "both",
+      });
+    }
+  } finally {
+    pollInFlight.value = false;
+  }
 }
 
-function stopBackgroundPolling() {
-  if (!backgroundPolling.value) return;
-  liveLlm.stopAutoRefresh();
-  liveTool.stopAutoRefresh();
-  anomalyQuery.stopAutoRefresh();
-  failedLlmQuery.stopAutoRefresh();
-  failedToolQuery.stopAutoRefresh();
-  backgroundPolling.value = false;
+function stopPolling() {
+  if (pollTimer.value !== null) {
+    window.clearTimeout(pollTimer.value);
+    pollTimer.value = null;
+  }
 }
 
-function startBackgroundPolling() {
-  if (backgroundPolling.value) return;
-  // Keep these queries fresh for Live / Failures / Anomalies, but never while
-  // Explore is active to avoid request storms that interfere with form input.
-  liveLlm.startAutoRefresh({
-    activeRef: computed(() => props.isStreaming && !isExploreTab.value),
-    activeIntervalMs: 2500,
-    idleIntervalMs: 12000,
-  });
-  liveTool.startAutoRefresh({
-    activeRef: computed(() => props.isStreaming && !isExploreTab.value),
-    activeIntervalMs: 2500,
-    idleIntervalMs: 12000,
-  });
-  anomalyQuery.startAutoRefresh({
-    activeRef: computed(() => props.isStreaming && !isExploreTab.value),
-    activeIntervalMs: 3000,
-    idleIntervalMs: 15000,
-  });
-  failedLlmQuery.startAutoRefresh({
-    activeRef: computed(() => props.isStreaming && !isExploreTab.value),
-    activeIntervalMs: 2500,
-    idleIntervalMs: 12000,
-  });
-  failedToolQuery.startAutoRefresh({
-    activeRef: computed(() => props.isStreaming && !isExploreTab.value),
-    activeIntervalMs: 2500,
-    idleIntervalMs: 12000,
-  });
-  backgroundPolling.value = true;
+function schedulePolling(immediate = false) {
+  stopPolling();
+  if (!props.contextId || activeTab.value === "explore") return;
+  const delay = immediate ? 0 : props.isStreaming ? 2500 : 12000;
+  pollTimer.value = window.setTimeout(async () => {
+    await refreshForActiveTab();
+    schedulePolling(false);
+  }, delay);
 }
 
 type AggregateCard = {
@@ -306,6 +288,8 @@ type SelectedRowEntry = {
   display: string;
 };
 
+const structuredPayloadKeys = new Set(["llm_call", "llm_result", "tool_call", "tool_result"]);
+
 function parseMaybeJson(value: string): unknown {
   let current: unknown = value;
   // Some fields are JSON encoded once (or occasionally twice).
@@ -326,13 +310,34 @@ function parseMaybeJson(value: string): unknown {
   return current;
 }
 
-function normalizeDisplayValue(value: unknown): unknown {
+function decodeJsonLikeDeep(value: unknown, depth = 0): unknown {
+  if (depth > 6) return value;
+  if (typeof value === "string") {
+    const parsed = parseMaybeJson(value);
+    if (parsed === value) return value;
+    return decodeJsonLikeDeep(parsed, depth + 1);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => decodeJsonLikeDeep(item, depth + 1));
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = decodeJsonLikeDeep(v, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
+function normalizeDisplayValue(value: unknown, key: string): unknown {
+  if (structuredPayloadKeys.has(key)) return decodeJsonLikeDeep(value);
   if (typeof value !== "string") return value;
   return parseMaybeJson(value);
 }
 
-function formatSelectedValue(value: unknown): Omit<SelectedRowEntry, "key"> {
-  const normalized = normalizeDisplayValue(value);
+function formatSelectedValue(value: unknown, key: string): Omit<SelectedRowEntry, "key"> {
+  const normalized = normalizeDisplayValue(value, key);
   if (normalized === null || normalized === undefined) {
     return {
       kind: "scalar",
@@ -383,7 +388,7 @@ const selectedRowEntries = computed<SelectedRowEntry[]>(() => {
   const keys = Object.keys(row);
   const orderedKeys = [...preferred.filter((key) => keys.includes(key)), ...keys.filter((key) => !preferred.includes(key))];
   return orderedKeys.map((key) => {
-    const formatted = formatSelectedValue(row[key]);
+    const formatted = formatSelectedValue(row[key], key);
     return {
       key,
       kind: formatted.kind,
@@ -672,34 +677,39 @@ watch(
   () => [props.contextId, props.selectedAgentId],
   () => {
     if (!props.contextId) return;
-    void refreshLiveAndAnomalies();
+    void refreshForActiveTab();
     if (isExploreTab.value) {
       applyExploreQuery(true);
+    } else {
+      schedulePolling(true);
     }
   },
   { immediate: true },
 );
 
 watch(
-  () => activeTab.value,
-  (tab) => {
+  () => [activeTab.value, props.isStreaming] as const,
+  ([tab]) => {
     if (tab === "explore") {
-      stopBackgroundPolling();
+      stopPolling();
       applyExploreQuery(true);
       return;
     }
-    startBackgroundPolling();
-    void refreshLiveAndAnomalies();
+    schedulePolling(true);
   },
   { immediate: true },
 );
 
 onMounted(() => {
   if (isExploreTab.value) {
-    stopBackgroundPolling();
+    stopPolling();
   } else {
-    startBackgroundPolling();
+    schedulePolling(true);
   }
+});
+
+onUnmounted(() => {
+  stopPolling();
 });
 </script>
 
@@ -716,7 +726,7 @@ onMounted(() => {
       </svg>
     </button>
 
-    <div class="provenance-pane-inner">
+    <div v-show="isOpen" class="provenance-pane-inner">
       <header class="provenance-header">
         <div class="provenance-header-title">Traces</div>
         <div class="provenance-header-status">
@@ -738,7 +748,7 @@ onMounted(() => {
         </div>
 
         <template v-else-if="activeTab === 'live'">
-          <div class="provenance-card-grid">
+          <div class="provenance-card-grid" role="region" aria-label="Live aggregate counts">
             <article v-for="card in aggregateCards" :key="card.label" class="provenance-card">
               <div class="provenance-card-label">{{ card.label }}</div>
               <div class="provenance-card-value">{{ formatCompact(card.count) }}</div>
@@ -758,12 +768,12 @@ onMounted(() => {
             </article>
           </div>
 
-          <section class="provenance-section">
+          <section class="provenance-section" role="region" aria-label="Live trace mermaid diagram">
             <div class="provenance-section-title">Live Trace Diagram</div>
             <div v-if="rendered.length === 0" class="provenance-empty">
               The conversation sequence diagram will appear here after the first reply.
             </div>
-            <div v-else class="reasoning-diagrams">
+            <div v-else class="reasoning-diagrams" aria-live="polite">
               <div
                 v-for="(item, i) in rendered.slice(0, 1)"
                 :key="i"
@@ -789,7 +799,7 @@ onMounted(() => {
             </div>
           </section>
 
-          <section class="provenance-section">
+          <section class="provenance-section" role="region" aria-label="Live hotspot groups">
             <div class="provenance-section-title">Hotspot Groups</div>
             <div
               v-if="liveHotspotItems.length === 0"
@@ -797,7 +807,7 @@ onMounted(() => {
             >
               No hotspot groups yet.
             </div>
-            <ul v-else class="provenance-list">
+            <ul v-else class="provenance-list" aria-live="polite">
               <li
                 v-for="item in liveHotspotItems"
                 :key="`${item.kind}:${item.groupKey}`"
@@ -826,7 +836,7 @@ onMounted(() => {
           <div v-if="failureRows.length === 0" class="provenance-empty">
             No failed activities in this context.
           </div>
-          <div v-else class="anomaly-grid">
+          <div v-else class="anomaly-grid" role="region" aria-label="Failure cards" aria-live="polite">
             <button
               v-for="item in failureRows"
               :key="`${item.kind}:${rowKey(item.row, 0)}`"
@@ -847,7 +857,7 @@ onMounted(() => {
           <div v-if="anomalyCards.length === 0" class="provenance-empty">
             No anomalies detected.
           </div>
-          <div v-else class="anomaly-grid">
+          <div v-else class="anomaly-grid" role="region" aria-label="Anomaly cards" aria-live="polite">
             <button
               v-for="anomaly in anomalyCards"
               :key="anomaly.groupKey"
@@ -943,7 +953,7 @@ onMounted(() => {
             {{ exploreQuery.state.value.error }}
           </div>
 
-          <div class="explore-table-wrap">
+          <div class="explore-table-wrap" role="region" aria-label="Explore results table">
             <table class="explore-table">
               <thead>
                 <tr>

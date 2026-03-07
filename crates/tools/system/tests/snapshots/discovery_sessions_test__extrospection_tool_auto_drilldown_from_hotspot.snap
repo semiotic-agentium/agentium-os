@@ -57,7 +57,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"pass1\": snapshot_
       "resource": "tool_calls",
       "rows": [
         {
-          "activity_id": "tool:ctx-9-14:tool-msg-caller:support/calculate:CalcPrompt",
+          "activity_id": "tool_call:ctx-9-14:tool-msg-caller:00000000-0000-0000-0000-000000000710:0",
           "activity_kind": "tool_call",
           "activity_outcome": "Failed",
           "activity_status": "Completed",
@@ -71,7 +71,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"pass1\": snapshot_
           "failure_class": "timeout",
           "failure_evidence": "metadata",
           "message_id": "tool-msg-caller",
-          "task_id": "",
+          "task_id": null,
           "timestamp_ms": "[timestamp_ms]",
           "tool_call": {
             "args": {
@@ -86,7 +86,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"pass1\": snapshot_
           }
         },
         {
-          "activity_id": "tool:ctx-9-14:tool-msg-linked:support/delegate:DelegatePrompt",
+          "activity_id": "tool_call:ctx-9-14:tool-msg-linked:00000000-0000-0000-0000-000000000710:0",
           "activity_kind": "tool_call",
           "activity_outcome": "Failed",
           "activity_status": "Completed",
@@ -100,7 +100,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"pass1\": snapshot_
           "failure_class": "failed_graph_incomplete",
           "failure_evidence": "metadata",
           "message_id": "tool-msg-linked",
-          "task_id": "",
+          "task_id": null,
           "timestamp_ms": "[timestamp_ms]",
           "tool_call": {
             "args": {
@@ -163,7 +163,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"pass1\": snapshot_
       "resource": "tool_calls",
       "rows": [
         {
-          "activity_id": "tool:ctx-9-14:tool-msg-caller:support/calculate:CalcPrompt",
+          "activity_id": "tool_call:ctx-9-14:tool-msg-caller:00000000-0000-0000-0000-000000000710:0",
           "activity_kind": "tool_call",
           "activity_outcome": "Failed",
           "activity_status": "Completed",
@@ -177,7 +177,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"pass1\": snapshot_
           "failure_class": "timeout",
           "failure_evidence": "metadata",
           "message_id": "tool-msg-caller",
-          "task_id": "",
+          "task_id": null,
           "timestamp_ms": "[timestamp_ms]",
           "tool_call": {
             "args": {

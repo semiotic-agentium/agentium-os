@@ -9,9 +9,10 @@ expression: snapshot
       "resource": "llm_calls",
       "rows": [
         {
-          "activity_id": "llm:ctx-100-1:msg-b:anthropic:claude-3-7-sonnet:DraftPrompt",
+          "activity_id": "llm_call:ctx-100-1:msg-b:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:0",
+          "timestamp_ms": "[timestamp_ms]",
           "context_id": "ctx-100-1",
-          "task_id": "",
+          "task_id": null,
           "message_id": "msg-b",
           "agent_id": "[uuid]",
           "provider": "anthropic",
@@ -32,7 +33,6 @@ expression: snapshot
           "activity_status": "Completed",
           "failure_class": "baml_validation_error",
           "failure_evidence": "linked_prompt_rejected",
-          "timestamp_ms": "[timestamp_ms]",
           "activity_kind": "llm_call"
         }
       ],
@@ -41,6 +41,8 @@ expression: snapshot
         "failedCount": 1,
         "durationMsTotal": 650,
         "totalTokens": 25,
+        "promptTokensTotal": 20,
+        "completionTokensTotal": 5,
         "latencyHotspots": {
           "p95": 650.0,
           "p99": 650.0
@@ -80,9 +82,10 @@ expression: snapshot
       "resource": "tool_calls",
       "rows": [
         {
-          "activity_id": "tool:ctx-100-1:msg-c:support/delegate:DelegatePrompt",
+          "activity_id": "tool_call:ctx-100-1:msg-c:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+          "timestamp_ms": "[timestamp_ms]",
           "context_id": "ctx-100-1",
-          "task_id": "",
+          "task_id": null,
           "message_id": "msg-c",
           "agent_id": "[uuid]",
           "tool_name": "support/delegate",
@@ -103,7 +106,6 @@ expression: snapshot
           "activity_status": "Completed",
           "failure_class": "failed_graph_incomplete",
           "failure_evidence": "metadata",
-          "timestamp_ms": "[timestamp_ms]",
           "activity_kind": "tool_call"
         }
       ],
@@ -112,6 +114,8 @@ expression: snapshot
         "failedCount": 1,
         "durationMsTotal": 240,
         "totalTokens": 0,
+        "promptTokensTotal": 0,
+        "completionTokensTotal": 0,
         "latencyHotspots": {
           "p95": 240.0,
           "p99": 240.0

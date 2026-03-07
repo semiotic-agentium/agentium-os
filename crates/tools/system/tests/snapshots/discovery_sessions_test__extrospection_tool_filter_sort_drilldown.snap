@@ -30,7 +30,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"filtered\": snapsh
       "resource": "tool_calls",
       "rows": [
         {
-          "activity_id": "tool:ctx-9-12:tool-msg-caller:support/calculate:CalcPrompt",
+          "activity_id": "tool_call:ctx-9-12:tool-msg-caller:00000000-0000-0000-0000-000000000700:0",
           "activity_kind": "tool_call",
           "activity_outcome": "Failed",
           "activity_status": "Completed",
@@ -44,7 +44,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"filtered\": snapsh
           "failure_class": "timeout",
           "failure_evidence": "metadata",
           "message_id": "tool-msg-caller",
-          "task_id": "",
+          "task_id": null,
           "timestamp_ms": "[timestamp_ms]",
           "tool_call": {
             "args": {
@@ -60,6 +60,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"filtered\": snapsh
         }
       ],
       "summary": {
+        "completionTokensTotal": 0,
         "count": 1,
         "durationMsTotal": 500,
         "failedCount": 1,
@@ -67,6 +68,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"filtered\": snapsh
           "p95": 500.0,
           "p99": 500.0
         },
+        "promptTokensTotal": 0,
         "tokenHotspots": {
           "p95": 0.0,
           "p99": 0.0
@@ -121,7 +123,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"filtered\": snapsh
       "resource": "tool_calls",
       "rows": [
         {
-          "activity_id": "tool:ctx-9-12:tool-msg-caller:support/calculate:CalcPrompt",
+          "activity_id": "tool_call:ctx-9-12:tool-msg-caller:00000000-0000-0000-0000-000000000700:0",
           "activity_kind": "tool_call",
           "activity_outcome": "Failed",
           "activity_status": "Completed",
@@ -135,7 +137,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"filtered\": snapsh
           "failure_class": "timeout",
           "failure_evidence": "metadata",
           "message_id": "tool-msg-caller",
-          "task_id": "",
+          "task_id": null,
           "timestamp_ms": "[timestamp_ms]",
           "tool_call": {
             "args": {
@@ -150,7 +152,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"filtered\": snapsh
           }
         },
         {
-          "activity_id": "tool:ctx-9-12:tool-msg-linked:support/delegate:DelegatePrompt",
+          "activity_id": "tool_call:ctx-9-12:tool-msg-linked:00000000-0000-0000-0000-000000000700:0",
           "activity_kind": "tool_call",
           "activity_outcome": "Failed",
           "activity_status": "Completed",
@@ -164,7 +166,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"filtered\": snapsh
           "failure_class": "failed_graph_incomplete",
           "failure_evidence": "metadata",
           "message_id": "tool-msg-linked",
-          "task_id": "",
+          "task_id": null,
           "timestamp_ms": "[timestamp_ms]",
           "tool_call": {
             "args": {
@@ -178,6 +180,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"filtered\": snapsh
         }
       ],
       "summary": {
+        "completionTokensTotal": 0,
         "count": 2,
         "durationMsTotal": 830,
         "failedCount": 2,
@@ -185,6 +188,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"filtered\": snapsh
           "p95": 500.0,
           "p99": 500.0
         },
+        "promptTokensTotal": 0,
         "tokenHotspots": {
           "p95": 0.0,
           "p99": 0.0

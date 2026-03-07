@@ -8,9 +8,10 @@ expression: snapshot
     "resource": "tool_calls",
     "rows": [
       {
-        "activity_id": "tool:ctx-100-1:msg-a:support/calculate:CalcPrompt",
+        "activity_id": "tool_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+        "timestamp_ms": "[timestamp_ms]",
         "context_id": "ctx-100-1",
-        "task_id": "",
+        "task_id": null,
         "message_id": "msg-a",
         "agent_id": "[uuid]",
         "tool_name": "support/calculate",
@@ -33,7 +34,6 @@ expression: snapshot
         "activity_status": "Completed",
         "failure_class": "timeout",
         "failure_evidence": "metadata",
-        "timestamp_ms": "[timestamp_ms]",
         "activity_kind": "tool_call"
       }
     ],
@@ -42,6 +42,8 @@ expression: snapshot
       "failedCount": 1,
       "durationMsTotal": 420,
       "totalTokens": 0,
+      "promptTokensTotal": 0,
+      "completionTokensTotal": 0,
       "latencyHotspots": {
         "p95": 420.0,
         "p99": 420.0

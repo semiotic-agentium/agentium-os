@@ -154,8 +154,10 @@ function BuildExtrospectionPlan(
     - topK from intent.top_k
 
     Agent targeting:
-    - If selected_agent is present, set agentId from selected_agent.agent_instance_id.
-    - If selected_agent is null, omit agentId.
+    - Do NOT set agentId from selected_agent fields.
+    - selected_agent is package/instance identity for narrative focus only, not provenance row identity.
+    - In pass-1, omit agentId unless the user explicitly provides a canonical provenance agent_id value.
+    - Canonical provenance agent_id must be a value already present in provenance rows/hotspot groupValues.
 
     IMPORTANT:
     - Do NOT include Finish in this first-pass plan.
@@ -193,10 +195,11 @@ function BuildExtrospectionDrilldownPlan(
       - failed_only for incident/failure intents
       - both otherwise
     - Narrow with concrete fields from pass-1 data:
-      - always include agentId when available from hotspot group or row
+      - include agentId only when it comes from pass-1 hotspot groupValues[0] or row.agent_id
       - for tool_calls include toolName when available
       - for llm_calls include provider/model and bamlPrompt when available
       - for messages keep agentId-only unless a strong prompt signal exists
+    - Never derive agentId from selected_agent.agent_package, selected_agent.name, or selected_agent.agent_instance_id.
     - sortBy:
       - duration_ms for incident/perf
       - total_tokens for token/cost
@@ -212,7 +215,7 @@ function BuildExtrospectionDrilldownPlan(
     If pass1 payload is empty/unparseable:
     - still return valid continuation with conservative filters:
       - resource from intent
-      - selected_agent agentId when present
+      - omit agentId
       - pageSize 6
       - topK 6
       - then Finish

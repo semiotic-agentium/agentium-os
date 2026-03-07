@@ -43,13 +43,13 @@ const diagrams = computed(() => {
 
 const dashboardOps = createQuery("llm_calls", {
   pageSize: 30,
-  groupBy: ["agent_id", "model"],
+  groupBy: ["agent_id", "agent_package", "agent_version", "model"],
   sortBy: "timestamp_ms",
   sortDir: "desc",
 });
 const dashboardOpsTool = createQuery("tool_calls", {
   pageSize: 30,
-  groupBy: ["agent_id", "tool_name"],
+  groupBy: ["agent_id", "agent_package", "agent_version", "tool_name"],
   sortBy: "timestamp_ms",
   sortDir: "desc",
 });

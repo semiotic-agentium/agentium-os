@@ -30,7 +30,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"llm_linked_prompt_
       "resource": "llm_calls",
       "rows": [
         {
-          "activity_id": "llm:ctx-9-13:tool-msg-caller:openai:gpt-4o-mini:CallerPrompt",
+          "activity_id": "llm_call:ctx-9-13:tool-msg-caller:00000000-0000-0000-0000-000000000702:0",
           "activity_kind": "llm_call",
           "activity_outcome": "Failed",
           "activity_status": "Completed",
@@ -52,12 +52,13 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"llm_linked_prompt_
           "model": "gpt-4o-mini",
           "prompt_tokens": 7,
           "provider": "openai",
-          "task_id": "",
+          "task_id": null,
           "timestamp_ms": "[timestamp_ms]",
           "total_tokens": 7
         }
       ],
       "summary": {
+        "completionTokensTotal": 0,
         "count": 1,
         "durationMsTotal": 220,
         "failedCount": 1,
@@ -65,6 +66,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"llm_linked_prompt_
           "p95": 220.0,
           "p99": 220.0
         },
+        "promptTokensTotal": 7,
         "tokenHotspots": {
           "p95": 7.0,
           "p99": 7.0
@@ -101,7 +103,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"llm_linked_prompt_
       "resource": "tool_calls",
       "rows": [
         {
-          "activity_id": "tool:ctx-9-13:tool-msg-linked:support/delegate:DelegatePrompt",
+          "activity_id": "tool_call:ctx-9-13:tool-msg-linked:00000000-0000-0000-0000-000000000702:0",
           "activity_kind": "tool_call",
           "activity_outcome": "Failed",
           "activity_status": "Completed",
@@ -115,7 +117,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"llm_linked_prompt_
           "failure_class": "failed_graph_incomplete",
           "failure_evidence": "metadata",
           "message_id": "tool-msg-linked",
-          "task_id": "",
+          "task_id": null,
           "timestamp_ms": "[timestamp_ms]",
           "tool_call": {
             "args": {
@@ -129,6 +131,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"llm_linked_prompt_
         }
       ],
       "summary": {
+        "completionTokensTotal": 0,
         "count": 1,
         "durationMsTotal": 330,
         "failedCount": 1,
@@ -136,6 +139,7 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"llm_linked_prompt_
           "p95": 330.0,
           "p99": 330.0
         },
+        "promptTokensTotal": 0,
         "tokenHotspots": {
           "p95": 0.0,
           "p99": 0.0

@@ -106,15 +106,54 @@ function formatDuration(ms: number): string {
   return `${ms}ms`;
 }
 
-function hotspotLabel(group: ProvenanceGroupHotspot): string {
+function shortId(id: string): string {
+  if (id.length <= 12) return id;
+  return `${id.slice(0, 8)}...${id.slice(-4)}`;
+}
+
+function normalizeGroupValue(raw: string | null | undefined): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function asDisplayIdentity(agentId?: string, agentPackage?: string, agentVersion?: string): string {
+  const packageName = agentPackage && agentPackage !== "unknown" ? agentPackage : "";
+  const version = agentVersion && agentVersion !== "unknown" ? agentVersion : "";
+  if (packageName && version) return `${packageName}/${version}`;
+  if (packageName) return packageName;
+  if (agentId && agentId !== "unknown") return shortId(agentId);
+  return "unknown-agent";
+}
+
+function groupDimensionValue(group: ProvenanceGroupHotspot, dimension: string): string | undefined {
+  const dimensions = Array.isArray(group.groupDimensions) ? group.groupDimensions : [];
   const values = Array.isArray(group.groupValues) ? group.groupValues : [];
-  const visible = values
-    .map((v) => (typeof v === "string" ? v.trim() : ""))
-    .filter((v) => v.length > 0);
-  if (visible.length > 0) {
-    return visible.join(" · ");
-  }
-  return group.groupKey;
+  const idx = dimensions.indexOf(dimension);
+  if (idx >= 0) return normalizeGroupValue(values[idx]);
+  // Fallback for older payloads where only pipe-encoded groupKey is present.
+  const legacyValues = group.groupKey.split("|");
+  const legacyIdx =
+    dimension === "agent_id" ? 0
+    : dimension === "agent_package" ? 1
+    : dimension === "agent_version" ? 2
+    : dimension === "model" || dimension === "tool_name" ? 3
+    : -1;
+  if (legacyIdx >= 0) return normalizeGroupValue(legacyValues[legacyIdx]);
+  return undefined;
+}
+
+function hotspotLabel(group: ProvenanceGroupHotspot): string {
+  const agentDisplay = asDisplayIdentity(
+    groupDimensionValue(group, "agent_id"),
+    groupDimensionValue(group, "agent_package"),
+    groupDimensionValue(group, "agent_version"),
+  );
+  const model = groupDimensionValue(group, "model");
+  const toolName = groupDimensionValue(group, "tool_name");
+  if (model) return `${agentDisplay} · ${model}`;
+  if (toolName) return `${agentDisplay} · ${toolName}`;
+  return agentDisplay;
 }
 
 // ── Provenance diagram preview ──

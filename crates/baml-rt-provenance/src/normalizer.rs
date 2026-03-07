@@ -75,6 +75,10 @@ fn canonical_message_role(event: &ProvEvent, role: &str) -> Result<&'static str>
     })
 }
 
+fn payload_id_for_event(event: &ProvEvent, payload_kind: &str) -> String {
+    format!("payload:{}:{}", event.id().as_str(), payload_kind)
+}
+
 /// Prior state from the backing store, used so message events can attach
 /// (MessageProcessing, WAS_EXECUTED_BY, task_agent) when the task entity
 /// was persisted by an earlier event (TaskExists + TaskExecutionStarted).
@@ -455,6 +459,10 @@ fn normalize_event_with_registry(
                     Value::String(message_id.as_str().to_string()),
                 );
             }
+            attrs.insert(
+                a2a::LLM_CALL_PAYLOAD_ID.to_string(),
+                Value::String(payload_id_for_event(event, "llm_call")),
+            );
             let start_time_ms = Some(event.timestamp_ms());
 
             doc.insert_activity(
@@ -545,6 +553,14 @@ fn normalize_event_with_registry(
                     Value::String(message_id.as_str().to_string()),
                 );
             }
+            attrs.insert(
+                a2a::LLM_CALL_PAYLOAD_ID.to_string(),
+                Value::String(payload_id_for_event(event, "llm_call")),
+            );
+            attrs.insert(
+                a2a::LLM_RESULT_PAYLOAD_ID.to_string(),
+                Value::String(payload_id_for_event(event, "llm_result")),
+            );
             if let Some(result) = metadata_json_field(metadata, "result") {
                 attrs.insert(a2a::RESULT.to_string(), result);
             }
@@ -789,6 +805,10 @@ fn normalize_event_with_registry(
                     Value::String(message_id.as_str().to_string()),
                 );
             }
+            attrs.insert(
+                a2a::TOOL_CALL_PAYLOAD_ID.to_string(),
+                Value::String(payload_id_for_event(event, "tool_call")),
+            );
             if let Some(phase) = metadata_string_field(metadata, "phase") {
                 attrs.insert(a2a::PHASE.to_string(), Value::String(phase));
             }
@@ -897,6 +917,14 @@ fn normalize_event_with_registry(
                     Value::String(message_id.as_str().to_string()),
                 );
             }
+            attrs.insert(
+                a2a::TOOL_CALL_PAYLOAD_ID.to_string(),
+                Value::String(payload_id_for_event(event, "tool_call")),
+            );
+            attrs.insert(
+                a2a::TOOL_RESULT_PAYLOAD_ID.to_string(),
+                Value::String(payload_id_for_event(event, "tool_result")),
+            );
             if let Some(phase) = metadata_string_field(metadata, "phase") {
                 attrs.insert(a2a::PHASE.to_string(), Value::String(phase));
             }

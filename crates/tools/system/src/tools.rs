@@ -216,6 +216,8 @@ pub struct ProvenanceQuerySendInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub baml_prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub group_by: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sort_by: Option<String>,

@@ -9,30 +9,28 @@ expression: snapshot
       "resource": "llm_calls",
       "rows": [
         {
-          "activity_id": "llm:ctx-100-1:msg-b:anthropic:claude-3-7-sonnet:DraftPrompt",
+          "activity_id": "llm_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+          "timestamp_ms": "[timestamp_ms]",
           "context_id": "ctx-100-1",
-          "task_id": "",
-          "message_id": "msg-b",
+          "task_id": null,
+          "message_id": "msg-a",
           "agent_id": "[uuid]",
-          "provider": "anthropic",
-          "model": "claude-3-7-sonnet",
-          "baml_prompt": "DraftPrompt",
-          "duration_ms": 650,
-          "prompt_tokens": 20,
-          "completion_tokens": 5,
-          "total_tokens": 25,
-          "activity_outcome": "Failed",
+          "provider": "openai",
+          "model": "gpt-4o-mini",
+          "baml_prompt": "SummarizePrompt",
+          "duration_ms": 180,
+          "prompt_tokens": 12,
+          "completion_tokens": 8,
+          "total_tokens": 20,
+          "activity_outcome": "Success",
           "llm_result": null,
           "llm_call": {
-            "input": "world"
+            "input": "hello"
           },
           "agent_package": "unknown",
           "agent_version": "unknown",
           "agent_display": "unknown/unknown",
           "activity_status": "Completed",
-          "failure_class": "baml_validation_error",
-          "failure_evidence": "linked_prompt_rejected",
-          "timestamp_ms": "[timestamp_ms]",
           "activity_kind": "llm_call"
         }
       ],
@@ -41,6 +39,8 @@ expression: snapshot
         "failedCount": 1,
         "durationMsTotal": 830,
         "totalTokens": 45,
+        "promptTokensTotal": 32,
+        "completionTokensTotal": 13,
         "latencyHotspots": {
           "p95": 650.0,
           "p99": 650.0
@@ -95,28 +95,30 @@ expression: snapshot
       "resource": "llm_calls",
       "rows": [
         {
-          "activity_id": "llm:ctx-100-1:msg-a:openai:gpt-4o-mini:SummarizePrompt",
+          "activity_id": "llm_call:ctx-100-1:msg-b:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:0",
+          "timestamp_ms": "[timestamp_ms]",
           "context_id": "ctx-100-1",
-          "task_id": "",
-          "message_id": "msg-a",
+          "task_id": null,
+          "message_id": "msg-b",
           "agent_id": "[uuid]",
-          "provider": "openai",
-          "model": "gpt-4o-mini",
-          "baml_prompt": "SummarizePrompt",
-          "duration_ms": 180,
-          "prompt_tokens": 12,
-          "completion_tokens": 8,
-          "total_tokens": 20,
-          "activity_outcome": "Success",
+          "provider": "anthropic",
+          "model": "claude-3-7-sonnet",
+          "baml_prompt": "DraftPrompt",
+          "duration_ms": 650,
+          "prompt_tokens": 20,
+          "completion_tokens": 5,
+          "total_tokens": 25,
+          "activity_outcome": "Failed",
           "llm_result": null,
           "llm_call": {
-            "input": "hello"
+            "input": "world"
           },
           "agent_package": "unknown",
           "agent_version": "unknown",
           "agent_display": "unknown/unknown",
           "activity_status": "Completed",
-          "timestamp_ms": "[timestamp_ms]",
+          "failure_class": "baml_validation_error",
+          "failure_evidence": "linked_prompt_rejected",
           "activity_kind": "llm_call"
         }
       ],
@@ -125,6 +127,8 @@ expression: snapshot
         "failedCount": 1,
         "durationMsTotal": 830,
         "totalTokens": 45,
+        "promptTokensTotal": 32,
+        "completionTokensTotal": 13,
         "latencyHotspots": {
           "p95": 650.0,
           "p99": 650.0

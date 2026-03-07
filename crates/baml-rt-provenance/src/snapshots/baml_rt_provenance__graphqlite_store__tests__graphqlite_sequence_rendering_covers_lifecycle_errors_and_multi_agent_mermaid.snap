@@ -24,11 +24,10 @@ sequenceDiagram
     rect rgb(220, 230, 241)
     Note over worker_1_0_0,clickup: "Failed"
     worker_1_0_0->>+LLM_openai_generic: WorkerStep
-    LLM_openai_generic--xworker_1_0_0: 2100ms ✗ rate limited
+    LLM_openai_generic--xworker_1_0_0: 2100ms ✗
     deactivate LLM_openai_generic
     worker_1_0_0->>+clickup: action=CreateTask name=demo
-    clickup--xworker_1_0_0: 600ms ✗ permission denied
+    clickup--xworker_1_0_0: 600ms ✗
     deactivate clickup
-    Note over clickup,worker_1_0_0: ✗ "permission denied"
     worker_1_0_0->>-User: Worker failed: permission denied
     end

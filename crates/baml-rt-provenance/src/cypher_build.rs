@@ -1078,6 +1078,10 @@ fn storage_safe_key(key: &str) -> String {
         a2a::FAILURE_CLASS => storage_safe::A2A_FAILURE_CLASS,
         a2a::FAILURE_EVIDENCE => storage_safe::A2A_FAILURE_EVIDENCE,
         a2a::FAILURE_CODE => storage_safe::A2A_FAILURE_CODE,
+        a2a::LLM_CALL_PAYLOAD_ID => storage_safe::A2A_LLM_CALL_PAYLOAD_ID,
+        a2a::LLM_RESULT_PAYLOAD_ID => storage_safe::A2A_LLM_RESULT_PAYLOAD_ID,
+        a2a::TOOL_CALL_PAYLOAD_ID => storage_safe::A2A_TOOL_CALL_PAYLOAD_ID,
+        a2a::TOOL_RESULT_PAYLOAD_ID => storage_safe::A2A_TOOL_RESULT_PAYLOAD_ID,
         _ => return key.to_string(),
     };
     s.to_string()

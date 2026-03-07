@@ -27,7 +27,7 @@ expression: redact_runtime_fields(payload)
   "resource": "llm_calls",
   "rows": [
     {
-      "activity_id": "llm:ctx-9-9:tool-msg-caller:openai:gpt-4o-mini:CallerPrompt",
+      "activity_id": "llm_call:ctx-9-9:tool-msg-caller:00000000-0000-0000-0000-000000000123:0",
       "activity_kind": "llm_call",
       "activity_outcome": "Failed",
       "activity_status": "Completed",
@@ -49,12 +49,13 @@ expression: redact_runtime_fields(payload)
       "model": "gpt-4o-mini",
       "prompt_tokens": 7,
       "provider": "openai",
-      "task_id": "",
+      "task_id": null,
       "timestamp_ms": "[timestamp_ms]",
       "total_tokens": 7
     }
   ],
   "summary": {
+    "completionTokensTotal": 0,
     "count": 1,
     "durationMsTotal": 220,
     "failedCount": 1,
@@ -62,6 +63,7 @@ expression: redact_runtime_fields(payload)
       "p95": 220.0,
       "p99": 220.0
     },
+    "promptTokensTotal": 7,
     "tokenHotspots": {
       "p95": 7.0,
       "p99": 7.0

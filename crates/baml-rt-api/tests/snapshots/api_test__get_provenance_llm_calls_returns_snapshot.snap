@@ -8,9 +8,10 @@ expression: snapshot
     "resource": "llm_calls",
     "rows": [
       {
-        "activity_id": "llm:ctx-100-1:msg-a:openai:gpt-4o-mini:SummarizePrompt",
+        "activity_id": "llm_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+        "timestamp_ms": "[timestamp_ms]",
         "context_id": "ctx-100-1",
-        "task_id": "",
+        "task_id": null,
         "message_id": "msg-a",
         "agent_id": "[uuid]",
         "provider": "openai",
@@ -29,7 +30,6 @@ expression: snapshot
         "agent_version": "unknown",
         "agent_display": "unknown/unknown",
         "activity_status": "Completed",
-        "timestamp_ms": "[timestamp_ms]",
         "activity_kind": "llm_call"
       }
     ],
@@ -38,6 +38,8 @@ expression: snapshot
       "failedCount": 0,
       "durationMsTotal": 180,
       "totalTokens": 20,
+      "promptTokensTotal": 12,
+      "completionTokensTotal": 8,
       "latencyHotspots": {
         "p95": 180.0,
         "p99": 180.0

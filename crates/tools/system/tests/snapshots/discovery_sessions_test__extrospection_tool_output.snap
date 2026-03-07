@@ -14,6 +14,7 @@ expression: snapshot_safe_tool_output(output.clone())
     "resource": "tool_calls",
     "rows": [],
     "summary": {
+      "completionTokensTotal": 0,
       "count": 0,
       "durationMsTotal": 0,
       "failedCount": 0,
@@ -21,6 +22,7 @@ expression: snapshot_safe_tool_output(output.clone())
         "p95": 0.0,
         "p99": 0.0
       },
+      "promptTokensTotal": 0,
       "tokenHotspots": {
         "p95": 0.0,
         "p99": 0.0
