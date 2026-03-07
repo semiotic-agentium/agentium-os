@@ -1167,11 +1167,11 @@ impl baml_rt_api::MermaidService for MermaidServiceImpl {
         &self,
         context_id: &str,
     ) -> std::result::Result<String, baml_rt_api::MermaidError> {
-        if let Some(ref cache) = self.cache {
-            if let Some(cached) = cache.get(context_id) {
-                tracing::debug!(context_id = %context_id, "mermaid: cache HIT");
-                return Ok(cached);
-            }
+        if let Some(ref cache) = self.cache
+            && let Some(cached) = cache.get(context_id)
+        {
+            tracing::debug!(context_id = %context_id, "mermaid: cache HIT");
+            return Ok(cached);
         }
         tracing::info!(context_id = %context_id, "mermaid: START export_by_context");
         let t0 = std::time::Instant::now();
