@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use crate::{
     daemon::{SourcePoll, TaskSource},
-    model::{SlackMessage, SourceReference, TaskSourceKind},
+    model::{SlackMessage, SourceReference},
     state::TaskDaemonState,
 };
 
@@ -374,12 +374,14 @@ impl TaskSource for SlackTaskSource {
             }
         }
 
-        Ok(SourcePoll {
+        let source_items_scanned = messages.len();
+
+        Ok(SourcePoll::slack(
             source_key,
-            source: TaskSourceKind::Slack,
-            source_label: channel_label,
+            channel_label,
             messages,
-        })
+            source_items_scanned,
+        ))
     }
 }
 

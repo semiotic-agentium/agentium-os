@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 pub enum TaskSourceKind {
     /// Slack channel polling source.
     Slack,
+    /// ClickUp task list polling source.
+    Clickup,
     /// Placeholder variant for planned support; extraction is not implemented yet.
     GithubIssues,
 }

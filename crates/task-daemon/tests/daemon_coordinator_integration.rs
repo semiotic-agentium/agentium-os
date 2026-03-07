@@ -7,8 +7,8 @@ use axum::{
     routing::post,
 };
 use baml_task_daemon::{
-    A2aSink, InvestigationTask, ProjectContext, ProjectInterpretation, SourceReference, TaskBatch,
-    TaskConfidence, TaskSink, TaskSourceKind,
+    A2aSink, InvestigationTask, ProjectContext, ProjectInterpretation, SinkDeliveryMode,
+    SourceReference, TaskBatch, TaskConfidence, TaskSink, TaskSourceKind,
 };
 use serde_json::{Value, json};
 
@@ -133,7 +133,7 @@ async fn a2a_sink_sends_typed_handoff_to_coordinator_endpoint() {
         .await
         .expect("start mock coordinator");
 
-    let mut sink = A2aSink::new(server.base_url.clone(), false).expect("a2a sink");
+    let mut sink = A2aSink::new(server.base_url.clone(), SinkDeliveryMode::Live).expect("a2a sink");
     sink.deliver(&sample_batch())
         .await
         .expect("deliver to mock coordinator");
@@ -208,7 +208,7 @@ async fn a2a_sink_surfaces_non_success_status_with_body() {
         .await
         .expect("start mock coordinator");
 
-    let mut sink = A2aSink::new(server.base_url.clone(), false).expect("a2a sink");
+    let mut sink = A2aSink::new(server.base_url.clone(), SinkDeliveryMode::Live).expect("a2a sink");
     let err = sink
         .deliver(&sample_batch())
         .await
@@ -248,7 +248,7 @@ async fn a2a_sink_rejects_jsonrpc_error_envelope_on_http_200() {
         .await
         .expect("start mock coordinator");
 
-    let mut sink = A2aSink::new(server.base_url.clone(), false).expect("a2a sink");
+    let mut sink = A2aSink::new(server.base_url.clone(), SinkDeliveryMode::Live).expect("a2a sink");
     let err = sink
         .deliver(&sample_batch())
         .await

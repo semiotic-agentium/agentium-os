@@ -8,6 +8,7 @@
 //! The main payload is [`TaskBatch`], which includes project interpretation,
 //! workflow seed data, and derived tasks for downstream systems.
 
+pub mod clickup_source;
 pub mod contract;
 pub mod daemon;
 pub mod extract;
@@ -17,11 +18,14 @@ pub mod sink;
 pub mod slack_source;
 pub mod state;
 
+pub use clickup_source::{ClickupSourceConfig, ClickupSourceConfigError, ClickupTaskSource};
 pub use contract::{
     ContractProvenance, ContractSource, INTERPRETATION_EVENT_SCHEMA_VERSION,
     InterpretationRequestEvent, InterpretationResultEvent,
 };
-pub use daemon::{SourcePoll, TaskDaemon, TaskSource};
+pub use daemon::{
+    RoundRobinTaskSource, RoundRobinTaskSourceError, SourcePoll, TaskDaemon, TaskSource,
+};
 pub use extract::{ExtractionMode, TaskExtractor};
 pub use model::{
     ClarificationPrompt, DecisionItem, FollowUpItem, FollowUpKind, InvestigationPrompt,
@@ -30,8 +34,8 @@ pub use model::{
     TaskSourceKind, WorkflowSeed,
 };
 pub use sink::{
-    A2aSink, ClickUpSink, GithubIssueSink, JsonlFileSink, StdoutSink, TaskSink,
-    format_coordinator_prompt,
+    A2aSink, ClickUpSink, GithubIssueSink, JsonlFileSink, SinkConstructorError, SinkDeliveryError,
+    SinkDeliveryMode, StdoutSink, TaskSink, format_coordinator_prompt,
 };
 pub use slack_source::{SlackChannelSelector, SlackSourceConfig, SlackTaskSource};
 pub use state::{SourceState, StateStore, TaskDaemonState};

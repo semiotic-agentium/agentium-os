@@ -1,6 +1,6 @@
 # Task Daemon User Guide
 
-`baml-task-daemon` watches a Slack channel for a project and turns conversation into actionable outputs for humans and agents.
+`baml-task-daemon` polls project work sources and emits actionable outputs for humans and agents. Use repeatable `--source` flags to select sources (for example `--source slack --source clickup`).
 
 Each poll produces:
 - a project interpretation (what changed, decisions, risks, open questions)
@@ -9,14 +9,18 @@ Each poll produces:
 
 ## Who this is for
 
-Use this when a project channel has meaningful technical coordination and you want faster follow-through without manually triaging every message.
+Use this when project coordination lives in Slack and/or ClickUp and you want faster follow-through without manual triage.
 
 ## Quick Start
 
-1. Set Slack credentials.
+1. Set credentials for the sources you plan to run.
 
 ```bash
+# Slack source mode
 export SLACK_BOT_TOKEN=xoxb-...
+
+# ClickUp source mode
+export CLICKUP_API_KEY=pk_...
 ```
 
 2. Choose an LLM provider.
@@ -34,7 +38,7 @@ export TASK_DAEMON_LLM_BASE_URL=http://localhost:1234/v1
 export TASK_DAEMON_LLM_MODEL=<your-local-model>
 ```
 
-3. Run one poll.
+3. Run one poll (Slack mode shown).
 
 ```bash
 cargo run -p baml-task-daemon -- run --channel agentium-eng --once
@@ -74,6 +78,23 @@ cargo run -p baml-task-daemon -- run --channel agentium-eng --clickup-list-id <L
 cargo run -p baml-task-daemon -- run --channel agentium-eng --clickup-list-id <LIST_ID> --clickup-live
 ```
 
+Use ClickUp as the source input (task-created/task-terminal/task-removed lifecycle events):
+
+```bash
+# ClickUp source only
+cargo run -p baml-task-daemon -- run \
+  --source clickup \
+  --clickup-list-id <LIST_ID> \
+  --once
+
+# Poll Slack and ClickUp in the same daemon loop
+cargo run -p baml-task-daemon -- run \
+  --source slack \
+  --source clickup \
+  --channel agentium-eng \
+  --clickup-list-id <LIST_ID>
+```
+
 Delegate to coordinator agent over A2A:
 
 ```bash
@@ -104,6 +125,7 @@ sends a valid `message.sendStream` request with:
 For integration between poller, interpreter, and orchestration layers, use the
 versioned interpretation event contract:
 - [task-daemon-event-contract.md](./task-daemon-event-contract.md)
+- [task-daemon-clickup-source-contract.md](./task-daemon-clickup-source-contract.md) (ClickUp lifecycle source semantics)
 
 For a leadership-focused end-to-end demo flow (Slack -> coordinator handoff ->
 provenance timeline + mermaid), see:
@@ -112,7 +134,10 @@ provenance timeline + mermaid), see:
 ## Important Behavior
 
 - LLM mode is the default. Heuristic mode is available only when explicitly requested (`--extractor heuristic`).
-- Slack access is read-only.
+- Slack and ClickUp source access are read-only.
+- With multiple `--source` flags, each interval (and `--once`) covers each selected source once.
+- Startup validation rejects configurations where a selected source has no compatible sink.
+- ClickUp source lifecycle semantics (keys, revisions, loop-prevention) are defined in [task-daemon-clickup-source-contract.md](./task-daemon-clickup-source-contract.md).
 - Delivery is currently best-effort at-least-once: source cursor/task state is persisted only after sink delivery succeeds.
 
 ## Minimal Project Config Example

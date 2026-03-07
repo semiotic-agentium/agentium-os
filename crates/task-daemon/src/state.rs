@@ -11,6 +11,16 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// Snapshot of a ClickUp task tracked for reconciliation.
+pub struct ClickupTaskSnapshot {
+    pub list_id: String,
+    pub name: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 /// Per-source persisted state.
 pub struct SourceState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -25,6 +35,10 @@ pub struct SourceState {
     pub pending_last_seen_ts: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub seen_task_keys: BTreeMap<String, u64>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub clickup_task_snapshot: BTreeMap<String, ClickupTaskSnapshot>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub clickup_lifecycle_revisions: BTreeMap<String, u64>,
 }
 
 impl SourceState {
