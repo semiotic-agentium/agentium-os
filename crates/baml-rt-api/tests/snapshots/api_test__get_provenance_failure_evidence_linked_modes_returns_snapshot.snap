@@ -3,7 +3,7 @@ source: crates/baml-rt-api/tests/api_test.rs
 expression: snapshot
 ---
 {
-  "page1": {
+  "llm_linked_prompt_rejected": {
     "status": 200,
     "body": {
       "resource": "llm_calls",
@@ -37,10 +37,10 @@ expression: snapshot
         }
       ],
       "summary": {
-        "count": 2,
+        "count": 1,
         "failedCount": 1,
-        "durationMsTotal": 830,
-        "totalTokens": 45,
+        "durationMsTotal": 650,
+        "totalTokens": 25,
         "latencyHotspots": {
           "p95": 650.0,
           "p99": 650.0
@@ -64,74 +64,61 @@ expression: snapshot
           "failureRate": 1.0,
           "avgDurationMs": 650.0,
           "avgTotalTokens": 25.0
-        },
-        {
-          "groupKey": "[uuid]",
-          "groupValues": [
-            "[uuid]"
-          ],
-          "groupDimensions": [
-            "agent_id"
-          ],
-          "count": 1,
-          "failed": 0,
-          "failureRate": 0.0,
-          "avgDurationMs": 180.0,
-          "avgTotalTokens": 20.0
         }
       ],
-      "nextCursor": "1",
-      "truncated": true,
+      "truncated": false,
       "appliedCaps": {
-        "page_size": 1,
+        "page_size": 5,
         "max_page_size": 200,
         "top_k": 10
       }
     }
   },
-  "page2": {
+  "tool_linked_emitted_message": {
     "status": 200,
     "body": {
-      "resource": "llm_calls",
+      "resource": "tool_calls",
       "rows": [
         {
-          "activity_id": "llm:ctx-100-1:msg-a:openai:gpt-4o-mini:SummarizePrompt",
+          "activity_id": "tool:ctx-100-1:msg-c:support/delegate:DelegatePrompt",
           "context_id": "ctx-100-1",
           "task_id": "",
-          "message_id": "msg-a",
+          "message_id": "msg-c",
           "agent_id": "[uuid]",
-          "provider": "openai",
-          "model": "gpt-4o-mini",
-          "baml_prompt": "SummarizePrompt",
-          "duration_ms": 180,
-          "prompt_tokens": 12,
-          "completion_tokens": 8,
-          "total_tokens": 20,
-          "activity_outcome": "Success",
-          "llm_result": null,
-          "llm_call": {
-            "input": "hello"
+          "tool_name": "support/delegate",
+          "baml_prompt": "DelegatePrompt",
+          "duration_ms": 240,
+          "activity_outcome": "Failed",
+          "tool_call": {
+            "name": "support/delegate",
+            "args": {
+              "objective": "narrow evidence fixture"
+            },
+            "phase": null
           },
+          "tool_result": null,
           "agent_package": "unknown",
           "agent_version": "unknown",
           "agent_display": "unknown/unknown",
           "activity_status": "Completed",
+          "failure_class": "failed_graph_incomplete",
+          "failure_evidence": "metadata",
           "timestamp_ms": "[timestamp_ms]",
-          "activity_kind": "llm_call"
+          "activity_kind": "tool_call"
         }
       ],
       "summary": {
-        "count": 2,
+        "count": 1,
         "failedCount": 1,
-        "durationMsTotal": 830,
-        "totalTokens": 45,
+        "durationMsTotal": 240,
+        "totalTokens": 0,
         "latencyHotspots": {
-          "p95": 650.0,
-          "p99": 650.0
+          "p95": 240.0,
+          "p99": 240.0
         },
         "tokenHotspots": {
-          "p95": 25.0,
-          "p99": 25.0
+          "p95": 0.0,
+          "p99": 0.0
         }
       },
       "hotspotGroups": [
@@ -146,27 +133,13 @@ expression: snapshot
           "count": 1,
           "failed": 1,
           "failureRate": 1.0,
-          "avgDurationMs": 650.0,
-          "avgTotalTokens": 25.0
-        },
-        {
-          "groupKey": "[uuid]",
-          "groupValues": [
-            "[uuid]"
-          ],
-          "groupDimensions": [
-            "agent_id"
-          ],
-          "count": 1,
-          "failed": 0,
-          "failureRate": 0.0,
-          "avgDurationMs": 180.0,
-          "avgTotalTokens": 20.0
+          "avgDurationMs": 240.0,
+          "avgTotalTokens": 0.0
         }
       ],
-      "truncated": true,
+      "truncated": false,
       "appliedCaps": {
-        "page_size": 1,
+        "page_size": 5,
         "max_page_size": 200,
         "top_k": 10
       }

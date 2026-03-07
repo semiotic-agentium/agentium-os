@@ -1,14 +1,21 @@
 //! Tests for system discovery sessions: discover_agents and discover_tools via SystemBundle.
 
-use std::sync::Arc;
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use async_trait::async_trait;
 use baml_rt_core::{
     A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister,
     BusStream, ContextId, Outcome, Result,
-    ids::{AgentId, ExternalId, MessageId, UuidId},
+    ids::{AgentId, EventId, ExternalId, MessageId, UuidId},
 };
-use baml_rt_provenance::{GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvenanceWriter};
+use baml_rt_provenance::{
+    CallScope, GlobalEvent, GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvEventData,
+    ProvenanceWriter,
+};
 use baml_rt_tools::{ToolRegistry, ToolStep};
 use baml_tools_calculator::CalculatorTool;
 use baml_tools_system::SystemBundle;
@@ -95,11 +102,20 @@ async fn seeded_store_for_context(
     caller_agent: &AgentId,
     other_agent: &AgentId,
 ) -> Arc<baml_rt_provenance::GraphqliteProvenanceStore> {
-    let store = GraphqliteStoreBuilder::in_memory()
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path: PathBuf = std::env::temp_dir().join(format!(
+        "baml-tools-system-provenance-{}-{unique}.db",
+        std::process::id()
+    ));
+    let store = GraphqliteStoreBuilder::file(&path)
         .build()
         .expect("build store");
     let msg_caller = MessageId::from_external(ExternalId::new("tool-msg-caller".to_string()));
     let msg_other = MessageId::from_external(ExternalId::new("tool-msg-other".to_string()));
+    let msg_linked = MessageId::from_external(ExternalId::new("tool-msg-linked".to_string()));
     store
         .add_event(ProvEvent::message_received_global(
             context_id.clone(),
@@ -131,6 +147,54 @@ async fn seeded_store_for_context(
         ))
         .await
         .unwrap();
+    let caller_failed_llm_event_id = EventId::from_counter(900);
+    store
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: caller_failed_llm_event_id.clone(),
+            context_id: context_id.clone(),
+            timestamp_ms: 3,
+            data: ProvEventData::LlmCallCompleted {
+                scope: CallScope::Message {
+                    message_id: msg_caller.clone(),
+                },
+                client: "openai".to_string(),
+                model: "gpt-4o-mini".to_string(),
+                function_name: "CallerPrompt".to_string(),
+                prompt: json!({"input":"caller-failed"}),
+                // Sparse metadata on purpose; linked PromptRejected must classify this.
+                metadata: call_metadata(caller_agent, &msg_caller, None),
+                usage: LlmUsage::Known {
+                    prompt_tokens: 7,
+                    completion_tokens: 0,
+                    total_tokens: 7,
+                },
+                duration_ms: 220,
+                outcome: Outcome::Failure,
+            },
+        }))
+        .await
+        .unwrap();
+    store
+        .add_event(ProvEvent::prompt_rejected_global(
+            context_id.clone(),
+            msg_caller.clone(),
+            caller_failed_llm_event_id,
+            "BAML validation failed: missing required field".to_string(),
+        ))
+        .await
+        .unwrap();
+    store
+        .add_event(ProvEvent::message_sent_global(
+            context_id.clone(),
+            msg_caller.clone(),
+            "ROLE_AGENT".to_string(),
+            vec!["BAML validation failed: missing required field".to_string()],
+            None,
+            caller_agent.clone(),
+            4,
+        ))
+        .await
+        .unwrap();
     store
         .add_event(ProvEvent::tool_call_completed_global(
             context_id.clone(),
@@ -142,6 +206,44 @@ async fn seeded_store_for_context(
             500,
             Outcome::Failure,
             None,
+        ))
+        .await
+        .unwrap();
+    store
+        .add_event(ProvEvent::message_received_global(
+            context_id.clone(),
+            msg_linked.clone(),
+            "ROLE_USER".to_string(),
+            vec!["linked evidence path".to_string()],
+            None,
+            caller_agent.clone(),
+            5,
+        ))
+        .await
+        .unwrap();
+    store
+        .add_event(ProvEvent::tool_call_completed_global(
+            context_id.clone(),
+            msg_linked.clone(),
+            "support/delegate".to_string(),
+            Some("DelegatePrompt".to_string()),
+            json!({"objective":"linked emitted message evidence"}),
+            call_metadata(caller_agent, &msg_linked, None),
+            330,
+            Outcome::Failure,
+            None,
+        ))
+        .await
+        .unwrap();
+    store
+        .add_event(ProvEvent::message_sent_global(
+            context_id.clone(),
+            msg_linked,
+            "ROLE_AGENT".to_string(),
+            vec!["authentication failed: 401 unauthorized invalid api key".to_string()],
+            None,
+            caller_agent.clone(),
+            6,
         ))
         .await
         .unwrap();
@@ -619,6 +721,230 @@ async fn extrospection_session_filter_sort_and_drilldown_snapshots() {
         redact_runtime_fields(serde_json::json!({
             "filtered": snapshot_safe_tool_output(filtered_output),
             "drilldown": snapshot_safe_tool_output(drilldown_output)
+        }))
+    );
+}
+
+#[tokio::test]
+async fn extrospection_session_auto_drilldown_from_hotspot_snapshot() {
+    let registry = Arc::new(ToolRegistry::new());
+    let context = ContextId::new(9, 14);
+    let caller =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000710").unwrap());
+    let other =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000711").unwrap());
+    registry
+        .register_bundle(SystemBundle::new_with_provenance(
+            Arc::new(MockAgentList::new(vec![])),
+            registry.clone(),
+            Arc::new(MockA2aHandler),
+            seeded_store_for_context(&context, &caller, &other).await,
+        ))
+        .unwrap();
+
+    let session_id = registry
+        .open_session("system/extrospection", json!({}), &context, &caller)
+        .await
+        .unwrap();
+    let context_id = context.to_string();
+
+    // Pass 1: aggregate sweep.
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "resource": "tool_calls",
+                "contextId": context_id.clone(),
+                "outcome": "failed_only",
+                "groupBy": ["agent_id", "tool_name", "baml_prompt"],
+                "sortBy": "duration_ms",
+                "sortDir": "desc",
+                "pageSize": 5
+            }),
+        )
+        .await
+        .unwrap();
+    let pass1 = registry.session_next(&session_id).await.unwrap();
+    let pass1_output = match pass1 {
+        ToolStep::Done {
+            output: Some(output),
+        } => output,
+        other => panic!("expected pass1 Done(Some(output)), got {:?}", other),
+    };
+
+    // Derive pass-2 drilldown from pass-1 hotspot/rows, like the agent FSM does.
+    let pass1_payload = pass1_output
+        .get("payloadJson")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .unwrap_or_else(|| json!({}));
+
+    let mut derived_agent_id: Option<String> = None;
+    let mut derived_tool_name: Option<String> = None;
+    let mut derived_prompt: Option<String> = None;
+
+    if let Some(group0) = pass1_payload
+        .get("hotspotGroups")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+    {
+        if let Some(values) = group0.get("groupValues").and_then(|v| v.as_array()) {
+            derived_agent_id = values
+                .first()
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+            derived_tool_name = values
+                .get(1)
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+            derived_prompt = values
+                .get(2)
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+        }
+    }
+
+    if let Some(row0) = pass1_payload
+        .get("rows")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+    {
+        if derived_agent_id.is_none() {
+            derived_agent_id = row0
+                .get("agent_id")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+        }
+        if derived_tool_name.is_none() {
+            derived_tool_name = row0
+                .get("tool_name")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+        }
+        if derived_prompt.is_none() {
+            derived_prompt = row0
+                .get("baml_prompt")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+        }
+    }
+
+    // Pass 2: focused drilldown in the same session.
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "resource": "tool_calls",
+                "contextId": context_id,
+                "agentId": derived_agent_id,
+                "toolName": derived_tool_name,
+                "bamlPrompt": derived_prompt,
+                "outcome": "failed_only",
+                "groupBy": ["agent_id", "tool_name", "baml_prompt"],
+                "sortBy": "duration_ms",
+                "sortDir": "desc",
+                "pageSize": 3
+            }),
+        )
+        .await
+        .unwrap();
+    let pass2 = registry.session_next(&session_id).await.unwrap();
+    let pass2_output = match pass2 {
+        ToolStep::Done {
+            output: Some(output),
+        } => output,
+        other => panic!("expected pass2 Done(Some(output)), got {:?}", other),
+    };
+
+    insta::assert_json_snapshot!(
+        "extrospection_tool_auto_drilldown_from_hotspot",
+        redact_runtime_fields(serde_json::json!({
+            "pass1": snapshot_safe_tool_output(pass1_output),
+            "derived_filters": {
+                "agentId": derived_agent_id,
+                "toolName": derived_tool_name,
+                "bamlPrompt": derived_prompt
+            },
+            "pass2": snapshot_safe_tool_output(pass2_output)
+        }))
+    );
+}
+
+#[tokio::test]
+async fn extrospection_session_failure_evidence_linked_modes_snapshots() {
+    let registry = Arc::new(ToolRegistry::new());
+    let context = ContextId::new(9, 13);
+    let caller =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000702").unwrap());
+    let other =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000703").unwrap());
+    registry
+        .register_bundle(SystemBundle::new_with_provenance(
+            Arc::new(MockAgentList::new(vec![])),
+            registry.clone(),
+            Arc::new(MockA2aHandler),
+            seeded_store_for_context(&context, &caller, &other).await,
+        ))
+        .unwrap();
+
+    let session_id = registry
+        .open_session("system/extrospection", json!({}), &context, &caller)
+        .await
+        .unwrap();
+    let context_id = context.to_string();
+
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "resource": "llm_calls",
+                "contextId": context_id.clone(),
+                "outcome": "failed_only",
+                "provider": "openai",
+                "sortBy": "timestamp_ms",
+                "sortDir": "asc",
+                "pageSize": 5
+            }),
+        )
+        .await
+        .unwrap();
+    let llm = registry.session_next(&session_id).await.unwrap();
+
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "resource": "tool_calls",
+                "contextId": context_id,
+                "toolName": "support/delegate",
+                "outcome": "failed_only",
+                "sortBy": "timestamp_ms",
+                "sortDir": "asc",
+                "pageSize": 5
+            }),
+        )
+        .await
+        .unwrap();
+    let tool = registry.session_next(&session_id).await.unwrap();
+
+    let llm_output = match llm {
+        ToolStep::Done {
+            output: Some(output),
+        } => output,
+        other => panic!("expected llm Done(Some(output)), got {:?}", other),
+    };
+    let tool_output = match tool {
+        ToolStep::Done {
+            output: Some(output),
+        } => output,
+        other => panic!("expected tool Done(Some(output)), got {:?}", other),
+    };
+
+    insta::assert_json_snapshot!(
+        "extrospection_tool_failure_evidence_linked_modes",
+        redact_runtime_fields(serde_json::json!({
+            "llm_linked_prompt_rejected": snapshot_safe_tool_output(llm_output),
+            "tool_linked_emitted_message": snapshot_safe_tool_output(tool_output)
         }))
     );
 }

@@ -12,7 +12,7 @@ use baml_rt_core::{
     bus::{BusStream, EffectEmitter},
     context::{self, InvocationScope, OutcomeInvocationContext, RequestScope},
     correlation,
-    ids::{AgentId, ExternalId, MessageId, TaskId},
+    ids::{AgentId, ContextId, ExternalId, MessageId, TaskId},
     stream_completion::StreamCompletion,
 };
 use baml_rt_observability::{metrics, spans};
@@ -1169,10 +1169,19 @@ fn build_stream_sessions_and_relay(
 
 /// Scope resolution for outcome handling. No optionality; branching is on the typed invocation context.
 ///
-/// **Provenance invariant (agent,task) not shared:** For LiveSessionFirstTurn, when the message
-/// carries a task_id (e.g. delegated worker task from internal_a2a), use it. Otherwise fall back
-/// to context_id-based task for direct first-turn. This ensures MessageReceived is attributed to
-/// the receiver's (agent_id, task_id), never the sender's.
+/// **Provenance invariant (context,task) not conflated:** For LiveSessionFirstTurn, when the
+/// message carries a task_id (e.g. delegated worker task from internal_a2a), use it. Otherwise
+/// synthesize a deterministic live-session task id derived from (context_id, message_id).
+/// This keeps MessageReceived attributed to the receiver's (agent_id, task_id) without collapsing
+/// task_id to context_id.
+fn synthesized_live_task_id(context_id: &ContextId, message_id: &MessageId) -> TaskId {
+    TaskId::from_external(ExternalId::new(format!(
+        "live-task:{}:{}",
+        context_id.as_str(),
+        message_id.as_str()
+    )))
+}
+
 fn resolve_scope_for_outcome(
     parsed: &a2a::A2aRequest,
     ctx: &OutcomeInvocationContext,
@@ -1180,9 +1189,10 @@ fn resolve_scope_for_outcome(
     match ctx {
         OutcomeInvocationContext::Standalone => parsed.resolved_scope.clone(),
         OutcomeInvocationContext::LiveSessionFirstTurn { context_id } => {
-            let task_id = parsed.task_id_opt().cloned().unwrap_or_else(|| {
-                TaskId::from_external(ExternalId::new(context_id.as_str().to_string()))
-            });
+            let task_id = parsed
+                .task_id_opt()
+                .cloned()
+                .unwrap_or_else(|| synthesized_live_task_id(context_id, parsed.message_id()));
             RequestScope::TaskScoped {
                 context_id: context_id.clone(),
                 message_id: parsed.message_id().clone(),
@@ -1988,13 +1998,37 @@ mod tests {
 
     use baml_rt_core::{
         context::InvocationScope,
-        ids::{ContextId, ExternalId, TaskId},
+        ids::{ContextId, ExternalId, MessageId, TaskId},
     };
     use baml_rt_provenance::ProvenanceContextReader;
     use serde_json::json;
 
-    use super::{A2aAgent, GraphqliteRuntimeStore, TaskRepository};
+    use super::{A2aAgent, GraphqliteRuntimeStore, TaskRepository, synthesized_live_task_id};
     use crate::a2a_types::{A2aMessageId, Message, MessageRole, Part};
+
+    #[test]
+    fn synthesized_live_task_id_is_distinct_from_context_id() {
+        let context_id = ContextId::new(1772891621615, 18);
+        let message_id = MessageId::from_external(ExternalId::new("ui-msg-1772891621613-2"));
+        let task_id = synthesized_live_task_id(&context_id, &message_id);
+        assert_ne!(
+            task_id.as_str(),
+            context_id.as_str(),
+            "task_id must not collapse to context_id"
+        );
+    }
+
+    #[test]
+    fn synthesized_live_task_id_is_deterministic_for_scope() {
+        let context_id = ContextId::new(1772891621615, 18);
+        let message_id = MessageId::from_external(ExternalId::new("ui-msg-1772891621613-2"));
+        let left = synthesized_live_task_id(&context_id, &message_id);
+        let right = synthesized_live_task_id(&context_id, &message_id);
+        assert_eq!(
+            left, right,
+            "same context/message scope must map to one task identity"
+        );
+    }
 
     #[tokio::test]
     async fn js_tool_can_be_called_via_baml_tool_registry() {

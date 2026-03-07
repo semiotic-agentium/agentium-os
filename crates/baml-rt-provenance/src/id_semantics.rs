@@ -95,6 +95,64 @@ impl ProvDerivedIdTemplate for PromptRejectedActivityId {
     }
 }
 
+/// Activity representing write-time canonical failure classification for a call activity.
+pub struct FailureClassificationActivityId;
+impl DerivedConstructible for FailureClassificationActivityId {}
+impl ProvIdSemantics for FailureClassificationActivityId {
+    const KIND: ProvKind = ProvKind::Activity;
+}
+impl ProvActivitySemantics for FailureClassificationActivityId {}
+impl ProvDerivedActivitySemantics for FailureClassificationActivityId {}
+impl ProvVocabularyType for FailureClassificationActivityId {
+    const VOCAB_TYPE: &'static str = a2a_types::FAILURE_CLASSIFICATION_ACTIVITY;
+}
+
+pub struct FailureClassificationActivityInput<'a> {
+    pub call_kind: &'a str,
+    pub scope_key: &'a str,
+    pub ordinal: u64,
+}
+
+impl ProvDerivedIdTemplate for FailureClassificationActivityId {
+    type Input<'a> = FailureClassificationActivityInput<'a>;
+
+    fn build<'a>(input: Self::Input<'a>) -> DerivedId {
+        DerivedId::from_parts(
+            "failure_classification_activity",
+            [input.call_kind, input.scope_key, &input.ordinal.to_string()],
+        )
+    }
+}
+
+/// Entity representing canonical failure classification payload for a call activity.
+pub struct FailureClassificationEntityId;
+impl DerivedConstructible for FailureClassificationEntityId {}
+impl ProvIdSemantics for FailureClassificationEntityId {
+    const KIND: ProvKind = ProvKind::Entity;
+}
+impl ProvEntitySemantics for FailureClassificationEntityId {}
+impl ProvDerivedEntitySemantics for FailureClassificationEntityId {}
+impl ProvVocabularyType for FailureClassificationEntityId {
+    const VOCAB_TYPE: &'static str = a2a_types::FAILURE_CLASSIFICATION;
+}
+
+pub struct FailureClassificationEntityInput<'a> {
+    pub call_kind: &'a str,
+    pub scope_key: &'a str,
+    pub ordinal: u64,
+}
+
+impl ProvDerivedIdTemplate for FailureClassificationEntityId {
+    type Input<'a> = FailureClassificationEntityInput<'a>;
+
+    fn build<'a>(input: Self::Input<'a>) -> DerivedId {
+        DerivedId::from_parts(
+            "failure_classification",
+            [input.call_kind, input.scope_key, &input.ordinal.to_string()],
+        )
+    }
+}
+
 /// Activity representing a single tool invocation.
 pub struct ToolCallActivityId;
 impl DerivedConstructible for ToolCallActivityId {}

@@ -8,7 +8,7 @@ expression: snapshot
     "resource": "messages",
     "rows": [
       {
-        "event_id": "[prov_event_id]",
+        "activity_id": "message:ctx-100-1:msg-a",
         "context_id": "ctx-100-1",
         "task_id": "",
         "message_id": "msg-a",
@@ -21,29 +21,49 @@ expression: snapshot
         "total_processing_ms": 0,
         "duration_ms": 0,
         "timestamp_ms": "[timestamp_ms]",
-        "success": true,
-        "failure_class": "success"
+        "activity_status": "Completed",
+        "activity_outcome": "Success",
+        "activity_kind": "message_turn"
       },
       {
-        "event_id": "[prov_event_id]",
+        "activity_id": "message:ctx-100-1:msg-b",
         "context_id": "ctx-100-1",
         "task_id": "",
         "message_id": "msg-b",
-        "role": "ROLE_USER",
-        "direction": "received",
-        "content": "secondary flow",
+        "role": "ROLE_AGENT",
+        "direction": "sent",
+        "content": "BAML validation failed: invalid response schema",
         "metadata": "{\"channel\":\"api-test\"}",
         "llm_duration_ms_sum": 0,
         "tool_duration_ms_sum": 0,
         "total_processing_ms": 0,
         "duration_ms": 0,
         "timestamp_ms": "[timestamp_ms]",
-        "success": true,
-        "failure_class": "success"
+        "activity_status": "Completed",
+        "activity_outcome": "Success",
+        "activity_kind": "message_turn"
+      },
+      {
+        "activity_id": "message:ctx-100-1:msg-c",
+        "context_id": "ctx-100-1",
+        "task_id": "",
+        "message_id": "msg-c",
+        "role": "ROLE_AGENT",
+        "direction": "sent",
+        "content": "authentication failed: 401 unauthorized invalid api key",
+        "metadata": "",
+        "llm_duration_ms_sum": 0,
+        "tool_duration_ms_sum": 0,
+        "total_processing_ms": 0,
+        "duration_ms": 0,
+        "timestamp_ms": "[timestamp_ms]",
+        "activity_status": "Completed",
+        "activity_outcome": "Success",
+        "activity_kind": "message_turn"
       }
     ],
     "summary": {
-      "count": 2,
+      "count": 3,
       "failedCount": 0,
       "durationMsTotal": 0,
       "totalTokens": 0,
@@ -58,8 +78,16 @@ expression: snapshot
     },
     "hotspotGroups": [
       {
-        "groupKey": "unknown|unknown",
-        "count": 2,
+        "groupKey": "|",
+        "groupValues": [
+          null,
+          null
+        ],
+        "groupDimensions": [
+          "agent_id",
+          "baml_prompt"
+        ],
+        "count": 3,
         "failed": 0,
         "failureRate": 0.0,
         "avgDurationMs": 0.0,

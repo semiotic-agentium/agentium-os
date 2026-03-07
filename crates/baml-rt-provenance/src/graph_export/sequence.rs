@@ -1544,6 +1544,7 @@ fn find_tool_args(indices: &GraphIndices<'_>, tool_call_id: &str) -> String {
     {
         if edge.relation == "WAS_USED_BY"
             && let Some(args_node) = indices.nodes_by_id.get(edge.to.as_str())
+            && args_node.label == "ToolArgs"
         {
             return super::summarize_args(
                 args_node.properties.get(a2a::ARGS),

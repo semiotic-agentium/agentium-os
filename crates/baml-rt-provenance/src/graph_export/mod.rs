@@ -642,6 +642,15 @@ fn derive_display_name(label: &str, props: &HashMap<String, serde_json::Value>) 
             let reason = prop_str(a2a::REASON).unwrap_or_default();
             format!("⚠️ Rejected {reason}")
         }
+        Some(GraphNodeLabel::FailureClassificationActivity) => {
+            let evidence = prop_str(a2a::FAILURE_EVIDENCE).unwrap_or_default();
+            format!("🧭 FailureClassify {evidence}")
+        }
+        Some(GraphNodeLabel::FailureClassification) => {
+            let class = prop_str(a2a::FAILURE_CLASS).unwrap_or_default();
+            let evidence = prop_str(a2a::FAILURE_EVIDENCE).unwrap_or_default();
+            format!("📉 Failure {class} [{evidence}]")
+        }
         None => label.to_string(),
     }
 }

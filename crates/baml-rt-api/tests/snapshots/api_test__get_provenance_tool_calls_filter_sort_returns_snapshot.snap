@@ -8,94 +8,39 @@ expression: snapshot
     "resource": "tool_calls",
     "rows": [
       {
-        "event_id": "[prov_event_id]",
+        "activity_id": "tool:ctx-100-1:msg-a:support/calculate:CalcPrompt",
         "context_id": "ctx-100-1",
         "task_id": "",
+        "message_id": "msg-a",
+        "agent_id": "[uuid]",
         "tool_name": "support/calculate",
         "baml_prompt": "CalcPrompt",
         "duration_ms": 420,
-        "success": "",
-        "metadata": "{\"agent_id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"message_id\":\"msg-a\",\"error\":\"timeout while calling tool\"}",
-        "tool_args": "{\"expression\":\"2+2\"}",
-        "agent_id": "[uuid]",
+        "activity_outcome": "Failed",
+        "tool_call": {
+          "name": "support/calculate",
+          "args": {
+            "expression": "2+2"
+          },
+          "phase": null
+        },
+        "tool_result": {
+          "error": "timeout while calling tool"
+        },
+        "agent_package": "unknown",
+        "agent_version": "unknown",
+        "agent_display": "unknown/unknown",
+        "activity_status": "Completed",
         "failure_class": "timeout",
-        "timestamp_ms": "[timestamp_ms]"
-      },
-      {
-        "event_id": "[prov_event_id]",
-        "context_id": "ctx-100-1",
-        "task_id": "",
-        "tool_name": "support/calculate",
-        "baml_prompt": "CalcPrompt",
-        "duration_ms": 420,
-        "success": "",
-        "metadata": "{\"agent_id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"message_id\":\"msg-a\",\"error\":\"timeout while calling tool\"}",
-        "tool_args": "{\"expression\":\"2+2\"}",
-        "agent_id": "[uuid]",
-        "failure_class": "timeout",
-        "timestamp_ms": "[timestamp_ms]"
-      },
-      {
-        "event_id": "[prov_event_id]",
-        "context_id": "ctx-100-1",
-        "task_id": "",
-        "tool_name": "support/calculate",
-        "baml_prompt": "CalcPrompt",
-        "duration_ms": 420,
-        "success": "",
-        "metadata": "{\"agent_id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"message_id\":\"msg-a\",\"error\":\"timeout while calling tool\"}",
-        "tool_args": "{\"expression\":\"2+2\"}",
-        "agent_id": "[uuid]",
-        "failure_class": "timeout",
-        "timestamp_ms": "[timestamp_ms]"
-      },
-      {
-        "event_id": "[prov_event_id]",
-        "context_id": "ctx-100-1",
-        "task_id": "",
-        "tool_name": "support/calculate",
-        "baml_prompt": "CalcPrompt",
-        "duration_ms": 420,
-        "success": "",
-        "metadata": "{\"agent_id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"message_id\":\"msg-a\",\"error\":\"timeout while calling tool\"}",
-        "tool_args": "{\"expression\":\"2+2\"}",
-        "agent_id": "[uuid]",
-        "failure_class": "timeout",
-        "timestamp_ms": "[timestamp_ms]"
-      },
-      {
-        "event_id": "[prov_event_id]",
-        "context_id": "ctx-100-1",
-        "task_id": "",
-        "tool_name": "support/calculate",
-        "baml_prompt": "CalcPrompt",
-        "duration_ms": 420,
-        "success": "",
-        "metadata": "{\"agent_id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"message_id\":\"msg-a\",\"error\":\"timeout while calling tool\"}",
-        "tool_args": "{\"expression\":\"2+2\"}",
-        "agent_id": "[uuid]",
-        "failure_class": "timeout",
-        "timestamp_ms": "[timestamp_ms]"
-      },
-      {
-        "event_id": "[prov_event_id]",
-        "context_id": "ctx-100-1",
-        "task_id": "",
-        "tool_name": "support/calculate",
-        "baml_prompt": "CalcPrompt",
-        "duration_ms": 420,
-        "success": "",
-        "metadata": "{\"agent_id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"message_id\":\"msg-a\",\"error\":\"timeout while calling tool\"}",
-        "tool_args": "{\"expression\":\"2+2\"}",
-        "agent_id": "[uuid]",
-        "failure_class": "timeout",
-        "timestamp_ms": "[timestamp_ms]"
+        "failure_evidence": "metadata",
+        "timestamp_ms": "[timestamp_ms]",
+        "activity_kind": "tool_call"
       }
     ],
     "summary": {
-      "count": 6,
-      "failedCount": 0,
-      "durationMsTotal": 2520,
+      "count": 1,
+      "failedCount": 1,
+      "durationMsTotal": 420,
       "totalTokens": 0,
       "latencyHotspots": {
         "p95": 420.0,
@@ -109,9 +54,17 @@ expression: snapshot
     "hotspotGroups": [
       {
         "groupKey": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa|support/calculate",
-        "count": 6,
-        "failed": 0,
-        "failureRate": 0.0,
+        "groupValues": [
+          "[uuid]",
+          "support/calculate"
+        ],
+        "groupDimensions": [
+          "agent_id",
+          "tool_name"
+        ],
+        "count": 1,
+        "failed": 1,
+        "failureRate": 1.0,
         "avgDurationMs": 420.0,
         "avgTotalTokens": 0.0
       }

@@ -75,26 +75,14 @@ const MSG_COL_MESSAGE_ID: &str = "m.a2a_message_id";
 const MSG_COL_DIRECTION: &str = "m.a2a_direction";
 const MSG_COL_ROLE: &str = "m.a2a_role";
 const MSG_COL_CONTENT: &str = "m.a2a_content";
-const MSG_COL_EVENT_ID_ALT: &str = "a2a_event_id";
-const MSG_COL_MESSAGE_ID_ALT: &str = "a2a_message_id";
-const MSG_COL_DIRECTION_ALT: &str = "a2a_direction";
-const MSG_COL_ROLE_ALT: &str = "a2a_role";
-const MSG_COL_CONTENT_ALT: &str = "a2a_content";
 
 const TOOL_COL_EVENT_ID: &str = "t.a2a_event_id";
 const TOOL_COL_TOOL_NAME: &str = "t.a2a_tool_name";
 const TOOL_COL_METADATA: &str = "t.a2a_metadata";
 const TOOL_COL_ARGS: &str = "args.a2a_args";
 const TOOL_COL_ACTIVITY_OUTCOME: &str = "t.a2a_activity_outcome";
-const TOOL_COL_EVENT_ID_ALT: &str = "t.`a2a:event_id`";
-const TOOL_COL_TOOL_NAME_ALT: &str = "t.`a2a:tool_name`";
-const TOOL_COL_METADATA_ALT: &str = "t.`a2a:metadata`";
-const TOOL_COL_ARGS_ALT: &str = "args.`a2a:args`";
 const TOOL_COL_ROLE: &str = "used.prov_role";
-const TOOL_COL_ROLE_ALT: &str = "used.`prov:role`";
 const TOOL_COL_TARGET_TYPE: &str = "args.prov_type";
-const TOOL_COL_TARGET_TYPE_ALT: &str = "args.`prov:type`";
-const TOOL_COL_ACTIVITY_OUTCOME_ALT: &str = "t.`a2a:activity_outcome`";
 
 const TOOL_PAYLOAD_TABLE_SQL: &str = "CREATE TABLE IF NOT EXISTS provenance_tool_payload (
     event_id TEXT PRIMARY KEY,
@@ -186,24 +174,14 @@ fn graphqlite_value_to_json(value: &GraphqliteValue) -> Value {
     }
 }
 
-fn read_json_column(
-    row: &Row,
-    primary_col: &str,
-    alt_col: &str,
-) -> std::result::Result<Value, graphqlite::Error> {
-    if let Some(value) = row
-        .get_value(primary_col)
-        .or_else(|| row.get_value(alt_col))
-    {
+fn read_json_column(row: &Row, col: &str) -> std::result::Result<Value, graphqlite::Error> {
+    if let Some(value) = row.get_value(col) {
         return Ok(graphqlite_value_to_json(value));
     }
-    if let Ok(raw) = row
-        .get::<String>(primary_col)
-        .or_else(|_| row.get::<String>(alt_col))
-    {
+    if let Ok(raw) = row.get::<String>(col) {
         return Ok(parse_json_like_string(&raw));
     }
-    Err(graphqlite::Error::ColumnNotFound(primary_col.to_string()))
+    Err(graphqlite::Error::ColumnNotFound(col.to_string()))
 }
 
 fn parse_json_like_string(raw: &str) -> Value {
@@ -241,19 +219,11 @@ fn tool_payload_record_from_event(event: &crate::events::ProvEvent) -> Option<To
 
 impl MessageRow {
     fn from_row(row: &Row) -> std::result::Result<Self, graphqlite::Error> {
-        let event_id: String = row
-            .get(MSG_COL_EVENT_ID)
-            .or_else(|_| row.get(MSG_COL_EVENT_ID_ALT))?;
-        let message_id: String = row
-            .get(MSG_COL_MESSAGE_ID)
-            .or_else(|_| row.get(MSG_COL_MESSAGE_ID_ALT))?;
-        let direction: String = row
-            .get(MSG_COL_DIRECTION)
-            .or_else(|_| row.get(MSG_COL_DIRECTION_ALT))?;
-        let role: String = row
-            .get(MSG_COL_ROLE)
-            .or_else(|_| row.get(MSG_COL_ROLE_ALT))?;
-        let content = read_json_column(row, MSG_COL_CONTENT, MSG_COL_CONTENT_ALT)?;
+        let event_id: String = row.get(MSG_COL_EVENT_ID)?;
+        let message_id: String = row.get(MSG_COL_MESSAGE_ID)?;
+        let direction: String = row.get(MSG_COL_DIRECTION)?;
+        let role: String = row.get(MSG_COL_ROLE)?;
+        let content = read_json_column(row, MSG_COL_CONTENT)?;
         Ok(Self {
             event_id,
             message_id,
@@ -275,20 +245,15 @@ struct ToolCallRow {
     activity_outcome: Option<NodeActivityOutcome>,
 }
 
-fn decode_activity_outcome(
-    row: &Row,
-    primary_col: &str,
-    alt_col: &str,
-) -> Option<NodeActivityOutcome> {
-    let raw: String = row.get(primary_col).or_else(|_| row.get(alt_col)).ok()?;
+fn decode_activity_outcome(row: &Row, col: &str) -> Option<NodeActivityOutcome> {
+    let raw: String = row.get(col).ok()?;
     match raw.trim() {
         "Success" => Some(NodeActivityOutcome::Success),
         "Failed" => Some(NodeActivityOutcome::Failed),
         "InProgress" => Some(NodeActivityOutcome::InProgress),
         _ => {
             tracing::debug!(
-                column = %primary_col,
-                alt_column = %alt_col,
+                column = %col,
                 value = %raw,
                 "unable to parse activity_outcome from string"
             );
@@ -299,27 +264,13 @@ fn decode_activity_outcome(
 
 impl ToolCallRow {
     fn from_row(row: &Row) -> std::result::Result<Self, graphqlite::Error> {
-        let event_id: String = row
-            .get(TOOL_COL_EVENT_ID)
-            .or_else(|_| row.get(TOOL_COL_EVENT_ID_ALT))?;
-        let tool_name: String = row
-            .get(TOOL_COL_TOOL_NAME)
-            .or_else(|_| row.get(TOOL_COL_TOOL_NAME_ALT))?;
-        let metadata = read_json_column(row, TOOL_COL_METADATA, TOOL_COL_METADATA_ALT)?;
-        let args = read_json_column(row, TOOL_COL_ARGS, TOOL_COL_ARGS_ALT)?;
-        let role: String = row
-            .get(TOOL_COL_ROLE)
-            .or_else(|_| row.get(TOOL_COL_ROLE_ALT))
-            .unwrap_or_default();
-        let target_type: String = row
-            .get(TOOL_COL_TARGET_TYPE)
-            .or_else(|_| row.get(TOOL_COL_TARGET_TYPE_ALT))
-            .unwrap_or_default();
-        let activity_outcome = decode_activity_outcome(
-            row,
-            TOOL_COL_ACTIVITY_OUTCOME,
-            TOOL_COL_ACTIVITY_OUTCOME_ALT,
-        );
+        let event_id: String = row.get(TOOL_COL_EVENT_ID)?;
+        let tool_name: String = row.get(TOOL_COL_TOOL_NAME)?;
+        let metadata = read_json_column(row, TOOL_COL_METADATA)?;
+        let args = read_json_column(row, TOOL_COL_ARGS)?;
+        let role: String = row.get(TOOL_COL_ROLE).unwrap_or_default();
+        let target_type: String = row.get(TOOL_COL_TARGET_TYPE).unwrap_or_default();
+        let activity_outcome = decode_activity_outcome(row, TOOL_COL_ACTIVITY_OUTCOME);
         Ok(Self {
             event_id,
             tool_name,
@@ -1043,50 +994,150 @@ fn cypher_result_to_json_rows(rows: &CypherResult) -> Vec<Map<String, Value>> {
 fn parse_json_field(row: &Map<String, Value>, field: &str) -> Option<Value> {
     let raw = row.get(field)?;
     match raw {
-        Value::String(s) if !s.trim().is_empty() => serde_json::from_str::<Value>(s).ok(),
+        Value::String(s) if !s.trim().is_empty() => Some(parse_json_like_string(s)),
         Value::Object(_) | Value::Array(_) => Some(raw.clone()),
         _ => None,
     }
 }
 
-fn agent_id_from_metadata(metadata: &Value) -> Option<String> {
-    metadata
-        .get("agent_id")
-        .and_then(Value::as_str)
-        .map(str::to_string)
+fn agent_id_from_instance_id(instance_id: &str) -> Option<String> {
+    let raw = instance_id.strip_prefix("agent_instance:")?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    Some(raw.to_string())
 }
 
-fn classify_failure(success: bool, metadata: Option<&Value>) -> String {
-    if success {
-        return "success".to_string();
-    }
-    let Some(metadata) = metadata else {
-        return "unknown".to_string();
+fn normalize_agent_field(raw: Option<&str>, fallback: &str) -> String {
+    raw.map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "null")
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+fn apply_agent_identity_fields(
+    row: &mut Map<String, Value>,
+    identity_by_agent_id: &HashMap<String, (String, String)>,
+) {
+    let Some(agent_id) = row.get("agent_id").and_then(Value::as_str) else {
+        return;
     };
-    let error = metadata.get("error");
-    if let Some(reason) = metadata.get("reason").and_then(Value::as_str) {
-        let lower = reason.to_ascii_lowercase();
-        if lower.contains("reject") || lower.contains("policy") {
-            return "prompt_rejected".to_string();
-        }
+    let Some((agent_package, agent_version)) = identity_by_agent_id.get(agent_id) else {
+        return;
+    };
+    row.insert(
+        "agent_package".to_string(),
+        Value::String(agent_package.clone()),
+    );
+    row.insert(
+        "agent_version".to_string(),
+        Value::String(agent_version.clone()),
+    );
+    row.insert(
+        "agent_display".to_string(),
+        Value::String(format!("{agent_package}/{agent_version}")),
+    );
+}
+
+fn parse_activity_outcome(row: &Map<String, Value>) -> NodeActivityOutcome {
+    let raw = row
+        .get("activity_outcome")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    match raw {
+        "Success" => NodeActivityOutcome::Success,
+        "Failed" => NodeActivityOutcome::Failed,
+        "InProgress" => NodeActivityOutcome::InProgress,
+        _ => NodeActivityOutcome::InProgress,
     }
-    if let Some(error) = error {
-        let e = error.to_string().to_ascii_lowercase();
-        if e.contains("timeout") {
-            return "timeout".to_string();
-        }
-        if e.contains("transport") || e.contains("network") || e.contains("http") {
-            return "transport_error".to_string();
-        }
-        if e.contains("tool") {
-            return "tool_error".to_string();
-        }
-        if e.contains("llm") || e.contains("model") {
-            return "llm_error".to_string();
-        }
-        return "unknown".to_string();
-    }
-    "unknown".to_string()
+}
+
+fn apply_activity_lifecycle_fields(row: &mut Map<String, Value>) -> NodeActivityOutcome {
+    let outcome = parse_activity_outcome(row);
+    let status = if outcome.is_completed() {
+        "Completed"
+    } else {
+        "InProgress"
+    };
+    let outcome_label = match outcome {
+        NodeActivityOutcome::Success => "Success",
+        NodeActivityOutcome::Failed => "Failed",
+        NodeActivityOutcome::InProgress => "Indeterminate",
+    };
+    row.insert(
+        "activity_status".to_string(),
+        Value::String(status.to_string()),
+    );
+    row.insert(
+        "activity_outcome".to_string(),
+        Value::String(outcome_label.to_string()),
+    );
+    outcome
+}
+
+fn row_is_failed(row: &Map<String, Value>) -> bool {
+    row.get("activity_outcome").and_then(Value::as_str) == Some("Failed")
+}
+
+fn row_is_success(row: &Map<String, Value>) -> bool {
+    row.get("activity_outcome").and_then(Value::as_str) == Some("Success")
+}
+
+fn llm_activity_id(row: &Map<String, Value>) -> String {
+    let context_id = row
+        .get("context_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let message_id = row
+        .get("message_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let provider = row
+        .get("provider")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let model = row
+        .get("model")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let prompt = row
+        .get("baml_prompt")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    format!("llm:{context_id}:{message_id}:{provider}:{model}:{prompt}")
+}
+
+fn tool_activity_id(row: &Map<String, Value>) -> String {
+    let context_id = row
+        .get("context_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let message_id = row
+        .get("message_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let tool_name = row
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let prompt = row
+        .get("baml_prompt")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    format!("tool:{context_id}:{message_id}:{tool_name}:{prompt}")
+}
+
+fn message_activity_id(row: &Map<String, Value>) -> String {
+    let context_id = row
+        .get("context_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let message_id = row
+        .get("message_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    format!("message:{context_id}:{message_id}")
 }
 
 fn event_id_timestamp(event_id: Option<&Value>) -> u64 {
@@ -1096,18 +1147,26 @@ fn event_id_timestamp(event_id: Option<&Value>) -> u64 {
         .unwrap_or(0)
 }
 
+fn row_timestamp_ms(row: &Map<String, Value>) -> u64 {
+    if let Some(ts) = row.get("timestamp_ms").and_then(Value::as_u64) {
+        ts
+    } else {
+        event_id_timestamp(row.get("event_id"))
+    }
+}
+
 fn apply_common_filters(
     mut rows: Vec<Map<String, Value>>,
     req: &ProvenanceOpsQueryRequest,
 ) -> Vec<Map<String, Value>> {
     rows.retain(|row| {
         if let Some(from_ms) = req.filters.from_timestamp_ms
-            && event_id_timestamp(row.get("event_id")) < from_ms
+            && row_timestamp_ms(row) < from_ms
         {
             return false;
         }
         if let Some(to_ms) = req.filters.to_timestamp_ms
-            && event_id_timestamp(row.get("event_id")) > to_ms
+            && row_timestamp_ms(row) > to_ms
         {
             return false;
         }
@@ -1147,16 +1206,21 @@ fn apply_common_filters(
             .unwrap_or(ProvenanceOutcomeSegment::Both)
         {
             ProvenanceOutcomeSegment::FailedOnly => {
-                if row.get("success").and_then(Value::as_bool) != Some(false) {
+                if !row_is_failed(row) {
                     return false;
                 }
             }
             ProvenanceOutcomeSegment::SuccessfulOnly => {
-                if row.get("success").and_then(Value::as_bool) != Some(true) {
+                if !row_is_success(row) {
                     return false;
                 }
             }
-            ProvenanceOutcomeSegment::Both => {}
+            ProvenanceOutcomeSegment::Both => {
+                // "both" includes completed outcomes only; excludes indeterminate in-progress rows.
+                if !row_is_success(row) && !row_is_failed(row) {
+                    return false;
+                }
+            }
         }
         true
     });
@@ -1175,6 +1239,8 @@ fn build_hotspot_groups(
     rows: &[Map<String, Value>],
     req: &ProvenanceOpsQueryRequest,
 ) -> Vec<Value> {
+    type HotspotAggregate = (Vec<Option<String>>, u64, u64, u64, u64);
+
     if rows.is_empty() {
         return Vec::new();
     }
@@ -1183,54 +1249,70 @@ fn build_hotspot_groups(
     } else {
         req.group_by.clone()
     };
-    let mut groups: std::collections::HashMap<String, (u64, u64, u64, u64)> =
+    let mut groups: std::collections::HashMap<String, HotspotAggregate> =
         std::collections::HashMap::new();
     for row in rows {
-        let key_parts: Vec<String> = dims
+        let group_values: Vec<Option<String>> = dims
             .iter()
             .map(|d| {
-                row.get(d)
-                    .map(|v| {
-                        v.as_str()
-                            .map(str::to_string)
-                            .unwrap_or_else(|| v.to_string())
-                    })
-                    .unwrap_or_else(|| "unknown".to_string())
+                row.get(d).and_then(|v| match v {
+                    Value::Null => None,
+                    Value::String(s) => {
+                        let trimmed = s.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.to_string())
+                        }
+                    }
+                    _ => Some(v.to_string()),
+                })
             })
             .collect();
-        let key = key_parts.join("|");
+        let key = serde_json::to_string(&group_values).unwrap_or_default();
         let duration = row.get("duration_ms").and_then(Value::as_u64).unwrap_or(0);
         let tokens = row.get("total_tokens").and_then(Value::as_u64).unwrap_or(0);
-        let failed = u64::from(row.get("success").and_then(Value::as_bool) == Some(false));
-        let entry = groups.entry(key).or_insert((0, 0, 0, 0));
-        entry.0 += 1;
-        entry.1 += failed;
-        entry.2 += duration;
-        entry.3 += tokens;
+        let failed = u64::from(row_is_failed(row));
+        let entry = groups
+            .entry(key)
+            .or_insert_with(|| (group_values.clone(), 0, 0, 0, 0));
+        entry.1 += 1;
+        entry.2 += failed;
+        entry.3 += duration;
+        entry.4 += tokens;
     }
     let top_k = req.top_k.unwrap_or(10) as usize;
     let mut out: Vec<Value> = groups
         .into_iter()
-        .map(|(k, (count, failed, duration_sum, token_sum))| {
-            let avg_duration = if count == 0 {
-                0.0
-            } else {
-                duration_sum as f64 / count as f64
-            };
-            let avg_tokens = if count == 0 {
-                0.0
-            } else {
-                token_sum as f64 / count as f64
-            };
-            serde_json::json!({
-                "groupKey": k,
-                "count": count,
-                "failed": failed,
-                "failureRate": if count == 0 { 0.0 } else { failed as f64 / count as f64 },
-                "avgDurationMs": avg_duration,
-                "avgTotalTokens": avg_tokens
-            })
-        })
+        .map(
+            |(_k, (group_values, count, failed, duration_sum, token_sum))| {
+                let avg_duration = if count == 0 {
+                    0.0
+                } else {
+                    duration_sum as f64 / count as f64
+                };
+                let avg_tokens = if count == 0 {
+                    0.0
+                } else {
+                    token_sum as f64 / count as f64
+                };
+                let group_key = group_values
+                    .iter()
+                    .map(|v| v.clone().unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join("|");
+                serde_json::json!({
+                    "groupKey": group_key,
+                    "groupValues": group_values,
+                    "groupDimensions": dims.clone(),
+                    "count": count,
+                    "failed": failed,
+                    "failureRate": if count == 0 { 0.0 } else { failed as f64 / count as f64 },
+                    "avgDurationMs": avg_duration,
+                    "avgTotalTokens": avg_tokens
+                })
+            },
+        )
         .collect();
     out.sort_by(|a, b| {
         let ad = a
@@ -1248,10 +1330,74 @@ fn build_hotspot_groups(
 }
 
 impl GraphqliteProvenanceStore {
+    async fn load_agent_identity_map(&self) -> Result<HashMap<String, (String, String)>> {
+        let rows = self
+            .run_cypher_read(
+                "MATCH (a:AgentRuntimeInstance) \
+                 RETURN a.id AS instance_id, toString(a.a2a_agent_type) AS agent_package, \
+                        toString(a.a2a_agent_version) AS agent_version",
+                &Map::new(),
+            )
+            .await?;
+        let mut out: HashMap<String, (String, String)> = HashMap::new();
+        for row in cypher_result_to_json_rows(&rows) {
+            let instance_id = row
+                .get("instance_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let Some(agent_id) = agent_id_from_instance_id(instance_id) else {
+                continue;
+            };
+            let agent_package =
+                normalize_agent_field(row.get("agent_package").and_then(Value::as_str), "unknown");
+            let agent_version =
+                normalize_agent_field(row.get("agent_version").and_then(Value::as_str), "unknown");
+            out.insert(agent_id, (agent_package, agent_version));
+        }
+        Ok(out)
+    }
+
+    async fn load_failure_classification_map(&self) -> Result<HashMap<String, (String, String)>> {
+        let rows = self
+            .run_cypher_read(
+                "MATCH (call)-[used:WAS_USED_BY]->(fc:FailureClassification) \
+                 WHERE (call:LlmCall OR call:ToolCall) \
+                 RETURN toString(call.a2a_event_id) AS event_id, \
+                        toString(fc.a2a_failure_class) AS failure_class, \
+                        toString(fc.a2a_failure_evidence) AS failure_evidence",
+                &Map::new(),
+            )
+            .await?;
+        let mut out = HashMap::new();
+        for row in cypher_result_to_json_rows(&rows) {
+            let event_id = row
+                .get("event_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            if event_id.is_empty() || event_id == "null" {
+                continue;
+            }
+            let class = normalize_agent_field(
+                row.get("failure_class").and_then(Value::as_str),
+                "failed_graph_incomplete",
+            );
+            let evidence = normalize_agent_field(
+                row.get("failure_evidence").and_then(Value::as_str),
+                "failed_graph_incomplete",
+            );
+            out.insert(event_id, (class, evidence));
+        }
+        Ok(out)
+    }
+
     async fn query_llm_rows(
         &self,
         req: &ProvenanceOpsQueryRequest,
     ) -> Result<Vec<Map<String, Value>>> {
+        let identity_by_agent_id = self.load_agent_identity_map().await?;
+        let failure_by_event_id = self.load_failure_classification_map().await?;
         let mut where_parts: Vec<&str> = vec!["1=1"];
         let mut params = Map::new();
         if let Some(ref context_id) = req.filters.context_id {
@@ -1270,30 +1416,113 @@ impl GraphqliteProvenanceStore {
         }
         let query = format!(
             "MATCH (c:LlmCall) WHERE {} \
+             OPTIONAL MATCH (c)-[:WAS_USED_BY]->(p:LlmPrompt) \
              RETURN c.a2a_event_id AS event_id, c.a2a_context_id AS context_id, c.a2a_task_id AS task_id, \
+                    c.a2a_message_id AS message_id, c.a2a_agent_id AS agent_id, \
                     c.a2a_client AS provider, c.a2a_model AS model, c.a2a_function_name AS baml_prompt, \
                     c.a2a_duration_ms AS duration_ms, c.a2a_usage_prompt_tokens AS prompt_tokens, \
                     c.a2a_usage_completion_tokens AS completion_tokens, c.a2a_usage_total_tokens AS total_tokens, \
-                    c.a2a_success AS success, toString(c.a2a_metadata) AS metadata \
+                    c.a2a_activity_outcome AS activity_outcome, toString(c.a2a_result) AS llm_result_raw, \
+                    toString(c.a2a_error) AS llm_error_raw, \
+                    toString(p.a2a_prompt) AS llm_call \
              ORDER BY c.a2a_event_id",
             where_parts.join(" AND ")
         );
         let rows = self.run_cypher_read(&query, &params).await?;
-        let mut out = cypher_result_to_json_rows(&rows);
-        for row in &mut out {
-            let metadata = parse_json_field(row, "metadata");
-            if let Some(agent_id) = metadata.as_ref().and_then(agent_id_from_metadata) {
-                row.insert("agent_id".to_string(), Value::String(agent_id));
+        let mut by_event_id: std::collections::HashMap<String, Map<String, Value>> =
+            std::collections::HashMap::new();
+        for row in cypher_result_to_json_rows(&rows) {
+            let event_id = row
+                .get("event_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if event_id.is_empty() {
+                continue;
             }
-            let success = row.get("success").and_then(Value::as_bool).unwrap_or(false);
+            let incoming_call_len = row
+                .get("llm_call")
+                .and_then(Value::as_str)
+                .map(str::len)
+                .unwrap_or(0);
+            let replace = by_event_id
+                .get(&event_id)
+                .map(|existing| {
+                    let existing_call_len = existing
+                        .get("llm_call")
+                        .and_then(Value::as_str)
+                        .map(str::len)
+                        .unwrap_or(0);
+                    incoming_call_len > existing_call_len
+                })
+                .unwrap_or(true);
+            if replace {
+                by_event_id.insert(event_id, row);
+            }
+        }
+        let mut out: Vec<Map<String, Value>> = by_event_id.into_values().collect();
+        out.sort_by(|a, b| {
+            let av = a
+                .get("event_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let bv = b
+                .get("event_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            av.cmp(bv)
+        });
+        for row in &mut out {
+            let llm_call = parse_json_field(row, "llm_call").unwrap_or(Value::Null);
+            row.insert("llm_call".to_string(), llm_call);
+            let llm_result_value = parse_json_field(row, "llm_result_raw");
+            let llm_error_value = parse_json_field(row, "llm_error_raw");
+            let llm_result = match (llm_result_value, llm_error_value) {
+                (Some(result), Some(error)) => serde_json::json!({
+                    "result": result,
+                    "error": error
+                }),
+                (Some(result), None) => result,
+                (None, Some(error)) => serde_json::json!({
+                    "error": error
+                }),
+                (None, None) => Value::Null,
+            };
+            row.insert("llm_result".to_string(), llm_result);
+            row.remove("llm_result_raw");
+            row.remove("llm_error_raw");
+            apply_agent_identity_fields(row, &identity_by_agent_id);
+            let activity_outcome = apply_activity_lifecycle_fields(row);
+            if activity_outcome == NodeActivityOutcome::Failed {
+                let event_id = row
+                    .get("event_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let resolved = failure_by_event_id.get(&event_id).ok_or_else(|| {
+                    ProvenanceError::InvalidEvent {
+                        event_id,
+                        reason: "missing write-time failure classification for failed llm_call"
+                            .to_string(),
+                    }
+                })?;
+                row.insert(
+                    "failure_class".to_string(),
+                    Value::String(resolved.0.clone()),
+                );
+                row.insert(
+                    "failure_evidence".to_string(),
+                    Value::String(resolved.1.clone()),
+                );
+            }
+            let ts = event_id_timestamp(row.get("event_id"));
+            row.insert("timestamp_ms".to_string(), Value::Number(ts.into()));
             row.insert(
-                "failure_class".to_string(),
-                Value::String(classify_failure(success, metadata.as_ref())),
+                "activity_kind".to_string(),
+                Value::String("llm_call".to_string()),
             );
-            row.insert(
-                "timestamp_ms".to_string(),
-                Value::Number(event_id_timestamp(row.get("event_id")).into()),
-            );
+            let activity_id = llm_activity_id(row);
+            row.insert("activity_id".to_string(), Value::String(activity_id));
         }
         Ok(apply_common_filters(out, req))
     }
@@ -1302,6 +1531,8 @@ impl GraphqliteProvenanceStore {
         &self,
         req: &ProvenanceOpsQueryRequest,
     ) -> Result<Vec<Map<String, Value>>> {
+        let identity_by_agent_id = self.load_agent_identity_map().await?;
+        let failure_by_event_id = self.load_failure_classification_map().await?;
         let mut where_parts: Vec<&str> = vec!["1=1"];
         let mut params = Map::new();
         if let Some(ref context_id) = req.filters.context_id {
@@ -1322,28 +1553,129 @@ impl GraphqliteProvenanceStore {
             "MATCH (t:ToolCall) WHERE {} \
              OPTIONAL MATCH (t)-[:WAS_USED_BY]->(args:ToolArgs) \
              RETURN t.a2a_event_id AS event_id, t.a2a_context_id AS context_id, t.a2a_task_id AS task_id, \
+                    t.a2a_message_id AS message_id, t.a2a_agent_id AS agent_id, \
                     t.a2a_tool_name AS tool_name, t.a2a_function_name AS baml_prompt, \
-                    t.a2a_duration_ms AS duration_ms, t.a2a_success AS success, \
-                    toString(t.a2a_metadata) AS metadata, toString(args.a2a_args) AS tool_args \
+                    t.a2a_duration_ms AS duration_ms, t.a2a_activity_outcome AS activity_outcome, \
+                    t.a2a_phase AS phase, toString(t.a2a_result) AS tool_result_raw, \
+                    toString(t.a2a_error) AS tool_error_raw, toString(args.a2a_args) AS tool_args \
              ORDER BY t.a2a_event_id",
             where_parts.join(" AND ")
         );
         let rows = self.run_cypher_read(&query, &params).await?;
-        let mut out = cypher_result_to_json_rows(&rows);
-        for row in &mut out {
-            let metadata = parse_json_field(row, "metadata");
-            if let Some(agent_id) = metadata.as_ref().and_then(agent_id_from_metadata) {
-                row.insert("agent_id".to_string(), Value::String(agent_id));
+        let mut by_event_id: std::collections::HashMap<String, Map<String, Value>> =
+            std::collections::HashMap::new();
+        for row in cypher_result_to_json_rows(&rows) {
+            let event_id = row
+                .get("event_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if event_id.is_empty() {
+                continue;
             }
-            let success = row.get("success").and_then(Value::as_bool).unwrap_or(false);
+            let incoming_args_len = row
+                .get("tool_args")
+                .and_then(Value::as_str)
+                .map(str::len)
+                .unwrap_or(0);
+            let replace = by_event_id
+                .get(&event_id)
+                .map(|existing| {
+                    let existing_args_len = existing
+                        .get("tool_args")
+                        .and_then(Value::as_str)
+                        .map(str::len)
+                        .unwrap_or(0);
+                    incoming_args_len > existing_args_len
+                })
+                .unwrap_or(true);
+            if replace {
+                by_event_id.insert(event_id, row);
+            }
+        }
+        let mut out: Vec<Map<String, Value>> = by_event_id.into_values().collect();
+        out.sort_by(|a, b| {
+            let av = a
+                .get("event_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let bv = b
+                .get("event_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            av.cmp(bv)
+        });
+        for row in &mut out {
+            let tool_args = parse_json_field(row, "tool_args").unwrap_or(Value::Null);
+            let tool_phase = row
+                .get("phase")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string);
+            let tool_name = row
+                .get("tool_name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
             row.insert(
-                "failure_class".to_string(),
-                Value::String(classify_failure(success, metadata.as_ref())),
+                "tool_call".to_string(),
+                serde_json::json!({
+                    "name": tool_name,
+                    "args": tool_args,
+                    "phase": tool_phase
+                }),
             );
+            let tool_result_value = parse_json_field(row, "tool_result_raw");
+            let tool_error_value = parse_json_field(row, "tool_error_raw");
+            let tool_result = match (tool_result_value, tool_error_value) {
+                (Some(result), Some(error)) => serde_json::json!({
+                    "result": result,
+                    "error": error
+                }),
+                (Some(result), None) => result,
+                (None, Some(error)) => serde_json::json!({
+                    "error": error
+                }),
+                (None, None) => Value::Null,
+            };
+            row.insert("tool_result".to_string(), tool_result);
+            row.remove("tool_args");
+            row.remove("phase");
+            row.remove("tool_result_raw");
+            row.remove("tool_error_raw");
+            apply_agent_identity_fields(row, &identity_by_agent_id);
+            let activity_outcome = apply_activity_lifecycle_fields(row);
+            if activity_outcome == NodeActivityOutcome::Failed {
+                let event_id = row
+                    .get("event_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let resolved = failure_by_event_id.get(&event_id).ok_or_else(|| {
+                    ProvenanceError::InvalidEvent {
+                        event_id,
+                        reason: "missing write-time failure classification for failed tool_call"
+                            .to_string(),
+                    }
+                })?;
+                row.insert(
+                    "failure_class".to_string(),
+                    Value::String(resolved.0.clone()),
+                );
+                row.insert(
+                    "failure_evidence".to_string(),
+                    Value::String(resolved.1.clone()),
+                );
+            }
+            let ts = event_id_timestamp(row.get("event_id"));
+            row.insert("timestamp_ms".to_string(), Value::Number(ts.into()));
             row.insert(
-                "timestamp_ms".to_string(),
-                Value::Number(event_id_timestamp(row.get("event_id")).into()),
+                "activity_kind".to_string(),
+                Value::String("tool_call".to_string()),
             );
+            let activity_id = tool_activity_id(row);
+            row.insert("activity_id".to_string(), Value::String(activity_id));
         }
         Ok(apply_common_filters(out, req))
     }
@@ -1352,6 +1684,7 @@ impl GraphqliteProvenanceStore {
         &self,
         req: &ProvenanceOpsQueryRequest,
     ) -> Result<Vec<Map<String, Value>>> {
+        let identity_by_agent_id = self.load_agent_identity_map().await?;
         let mut where_parts: Vec<&str> = vec!["1=1"];
         let mut params = Map::new();
         if let Some(ref context_id) = req.filters.context_id {
@@ -1364,8 +1697,8 @@ impl GraphqliteProvenanceStore {
         let query = format!(
             "MATCH (m:Message) WHERE {} \
              RETURN m.a2a_event_id AS event_id, m.a2a_context_id AS context_id, m.a2a_task_id AS task_id, \
-                    m.a2a_message_id AS message_id, m.a2a_role AS role, m.a2a_direction AS direction, \
-                    toString(m.a2a_content) AS content, toString(m.a2a_metadata) AS metadata \
+                    m.a2a_message_id AS message_id, m.a2a_agent_id AS agent_id, \
+                    m.a2a_role AS role, m.a2a_direction AS direction, toString(m.a2a_content) AS content \
              ORDER BY m.a2a_event_id",
             where_parts.join(" AND ")
         );
@@ -1447,15 +1780,37 @@ impl GraphqliteProvenanceStore {
                 "timestamp_ms".to_string(),
                 Value::Number(event_id_timestamp(row.get("event_id")).into()),
             );
-            if let Some(metadata) = parse_json_field(row, "metadata")
-                && let Some(agent_id) = agent_id_from_metadata(&metadata)
-            {
-                row.insert("agent_id".to_string(), Value::String(agent_id));
+            let message_content = parse_json_field(row, "content").unwrap_or(Value::Array(vec![]));
+            let message_text = match &message_content {
+                Value::Array(parts) => parts
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                Value::String(s) => s.clone(),
+                _ => String::new(),
+            };
+            row.insert("message_content".to_string(), message_content);
+            if !message_text.is_empty() {
+                row.insert("message_text".to_string(), Value::String(message_text));
             }
-            row.insert("success".to_string(), Value::Bool(true));
+            row.remove("content");
+            apply_agent_identity_fields(row, &identity_by_agent_id);
             row.insert(
-                "failure_class".to_string(),
-                Value::String("success".to_string()),
+                "activity_status".to_string(),
+                Value::String("Completed".to_string()),
+            );
+            row.insert(
+                "activity_outcome".to_string(),
+                Value::String("Success".to_string()),
+            );
+            row.insert(
+                "activity_kind".to_string(),
+                Value::String("message_turn".to_string()),
+            );
+            row.insert(
+                "activity_id".to_string(),
+                Value::String(message_activity_id(row)),
             );
         }
         Ok(apply_common_filters(out, req))
@@ -1536,11 +1891,14 @@ impl ProvenanceOpsQuery for GraphqliteProvenanceStore {
 
         let total_rows = rows.len();
         let page_end = std::cmp::min(offset.saturating_add(page_size), total_rows);
-        let page_rows = if offset < total_rows {
+        let mut page_rows = if offset < total_rows {
             rows[offset..page_end].to_vec()
         } else {
             Vec::new()
         };
+        for row in &mut page_rows {
+            row.remove("event_id");
+        }
         let next_cursor = if page_end < total_rows {
             Some(page_end.to_string())
         } else {
@@ -1548,13 +1906,22 @@ impl ProvenanceOpsQuery for GraphqliteProvenanceStore {
         };
 
         let hotspot_groups = build_hotspot_groups(&rows, &request);
-        let failed_count = rows
-            .iter()
-            .filter(|r| r.get("success").and_then(Value::as_bool) == Some(false))
-            .count();
+        let failed_count = rows.iter().filter(|r| row_is_failed(r)).count();
         let total_tokens_sum: u64 = rows
             .iter()
             .map(|r| r.get("total_tokens").and_then(Value::as_u64).unwrap_or(0))
+            .sum();
+        let prompt_tokens_sum: u64 = rows
+            .iter()
+            .map(|r| r.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0))
+            .sum();
+        let completion_tokens_sum: u64 = rows
+            .iter()
+            .map(|r| {
+                r.get("completion_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            })
             .sum();
         let total_duration_sum: u64 = rows
             .iter()
@@ -1569,6 +1936,8 @@ impl ProvenanceOpsQuery for GraphqliteProvenanceStore {
                 "failedCount": failed_count,
                 "durationMsTotal": total_duration_sum,
                 "totalTokens": total_tokens_sum,
+                "promptTokensTotal": prompt_tokens_sum,
+                "completionTokensTotal": completion_tokens_sum,
                 "latencyHotspots": {
                     "p95": duration_p95,
                     "p99": duration_p99

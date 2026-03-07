@@ -8,9 +8,11 @@ expression: snapshot
     "resource": "llm_calls",
     "rows": [
       {
-        "event_id": "[prov_event_id]",
+        "activity_id": "llm:ctx-100-1:msg-a:openai:gpt-4o-mini:SummarizePrompt",
         "context_id": "ctx-100-1",
         "task_id": "",
+        "message_id": "msg-a",
+        "agent_id": "[uuid]",
         "provider": "openai",
         "model": "gpt-4o-mini",
         "baml_prompt": "SummarizePrompt",
@@ -18,11 +20,17 @@ expression: snapshot
         "prompt_tokens": 12,
         "completion_tokens": 8,
         "total_tokens": 20,
-        "success": "",
-        "metadata": "{\"agent_id\":\"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa\",\"message_id\":\"msg-a\"}",
-        "agent_id": "[uuid]",
-        "failure_class": "unknown",
-        "timestamp_ms": "[timestamp_ms]"
+        "activity_outcome": "Success",
+        "llm_result": null,
+        "llm_call": {
+          "input": "hello"
+        },
+        "agent_package": "unknown",
+        "agent_version": "unknown",
+        "agent_display": "unknown/unknown",
+        "activity_status": "Completed",
+        "timestamp_ms": "[timestamp_ms]",
+        "activity_kind": "llm_call"
       }
     ],
     "summary": {
@@ -42,6 +50,14 @@ expression: snapshot
     "hotspotGroups": [
       {
         "groupKey": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa|gpt-4o-mini",
+        "groupValues": [
+          "[uuid]",
+          "gpt-4o-mini"
+        ],
+        "groupDimensions": [
+          "agent_id",
+          "model"
+        ],
         "count": 1,
         "failed": 0,
         "failureRate": 0.0,

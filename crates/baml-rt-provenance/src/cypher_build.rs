@@ -872,6 +872,8 @@ fn semantic_used(
         Some(a2a_roles::ARCHIVE) => Some(semantic_labels::WAS_BOOTSTRAPPED_BY),
         Some(a2a_roles::REJECTED_OUTPUT) => Some(semantic_labels::WAS_USED_BY),
         Some(a2a_roles::DELEGATION_TARGET) => Some(semantic_labels::WAS_DELEGATED_TO),
+        Some(a2a_roles::FAILURE_CLASSIFICATION) => Some(semantic_labels::WAS_USED_BY),
+        Some(a2a_roles::FAILURE_EVIDENCE) => Some(semantic_labels::WAS_USED_BY),
         _ => None,
     }
 }
@@ -1050,6 +1052,9 @@ fn storage_safe_key(key: &str) -> String {
         a2a::CONTENT => storage_safe::A2A_CONTENT,
         a2a::DIRECTION => storage_safe::A2A_DIRECTION,
         a2a::METADATA => storage_safe::A2A_METADATA,
+        a2a::PHASE => storage_safe::A2A_PHASE,
+        a2a::RESULT => storage_safe::A2A_RESULT,
+        a2a::ERROR => storage_safe::A2A_ERROR,
         a2a::EVENT_ID => storage_safe::A2A_EVENT_ID,
         a2a::RELATION => storage_safe::A2A_RELATION,
         a2a::FROM => storage_safe::A2A_FROM,
@@ -1070,6 +1075,9 @@ fn storage_safe_key(key: &str) -> String {
         a2a::ARTIFACT_TYPE => storage_safe::A2A_ARTIFACT_TYPE,
         a2a::CONTEXT_ID => storage_safe::A2A_CONTEXT_ID,
         a2a::TIMESTAMP_MS => storage_safe::A2A_TIMESTAMP_MS,
+        a2a::FAILURE_CLASS => storage_safe::A2A_FAILURE_CLASS,
+        a2a::FAILURE_EVIDENCE => storage_safe::A2A_FAILURE_EVIDENCE,
+        a2a::FAILURE_CODE => storage_safe::A2A_FAILURE_CODE,
         _ => return key.to_string(),
     };
     s.to_string()

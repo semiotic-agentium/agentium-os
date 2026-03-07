@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, watch, ref } from "vue";
 import AgentSelector from "./components/AgentSelector.vue";
 import ChatWindow from "./components/ChatWindow.vue";
 import Dashboard from "./components/Dashboard.vue";
 import Navbar from "./components/Navbar.vue";
-import ReasoningPane from "./components/ReasoningPane.vue";
+import ProvenancePane from "./components/ProvenancePane.vue";
+import { useProvenanceOps } from "./composables/useProvenanceOps";
 import { useA2aClient } from "./composables/useA2aClient";
 import { useTheme } from "./composables/useTheme";
 import { parseMermaidBlocks } from "./utils/parseMermaid";
@@ -16,6 +17,7 @@ const {
   isLoading,
   provenanceDiagram,
   contextMetrics,
+  contextId,
   workflowProgress,
   awaitingInput,
   inputRequiredPrompt,
@@ -24,6 +26,7 @@ const {
   sendMessage,
 } = useA2aClient();
 const { theme, toggle: toggleTheme } = useTheme();
+const { createQuery } = useProvenanceOps();
 
 // Active view — defaults to dashboard as landing page
 const view = ref<"dashboard" | "chat">("dashboard");
@@ -36,6 +39,52 @@ const diagrams = computed(() => {
   return provenanceDiagram.value
     ? [provenanceDiagram.value, ...inline]
     : inline;
+});
+
+const dashboardOps = createQuery("llm_calls", {
+  pageSize: 30,
+  groupBy: ["agent_id", "model"],
+  sortBy: "timestamp_ms",
+  sortDir: "desc",
+});
+const dashboardOpsTool = createQuery("tool_calls", {
+  pageSize: 30,
+  groupBy: ["agent_id", "tool_name"],
+  sortBy: "timestamp_ms",
+  sortDir: "desc",
+});
+
+watch(
+  () => contextMetrics.value?.context_id,
+  async () => {
+    const contextId = contextMetrics.value?.context_id;
+    if (!contextId) return;
+    await Promise.all([
+      dashboardOps.run({ contextId, outcome: "both" }),
+      dashboardOpsTool.run({ contextId, outcome: "both" }),
+    ]);
+  },
+  { immediate: true },
+);
+
+const provenanceDashboardSummary = computed(() => {
+  const llm = dashboardOps.state.value.response?.summary;
+  const tool = dashboardOpsTool.state.value.response?.summary;
+  const llmGroups = dashboardOps.state.value.response?.hotspotGroups ?? [];
+  const toolGroups = dashboardOpsTool.state.value.response?.hotspotGroups ?? [];
+  return {
+    count: (llm?.count ?? 0) + (tool?.count ?? 0),
+    failedCount: (llm?.failedCount ?? 0) + (tool?.failedCount ?? 0),
+    durationMsTotal: (llm?.durationMsTotal ?? 0) + (tool?.durationMsTotal ?? 0),
+    totalTokens: (llm?.totalTokens ?? 0) + (tool?.totalTokens ?? 0),
+    llmCount: llm?.count ?? 0,
+    toolCount: tool?.count ?? 0,
+    hotspotGroups: [...llmGroups, ...toolGroups].slice(0, 8),
+    lastUpdatedAt: Math.max(
+      dashboardOps.state.value.lastUpdatedAt ?? 0,
+      dashboardOpsTool.state.value.lastUpdatedAt ?? 0,
+    ),
+  };
 });
 
 onMounted(() => fetchAgents());
@@ -52,7 +101,14 @@ onMounted(() => fetchAgents());
     />
 
     <div class="app-content-area">
-      <Dashboard v-show="view === 'dashboard'" :agents="agents" :context-metrics="contextMetrics" :provenance-diagram="provenanceDiagram" :messages="messages" />
+      <Dashboard
+        v-show="view === 'dashboard'"
+        :agents="agents"
+        :context-metrics="contextMetrics"
+        :provenance-diagram="provenanceDiagram"
+        :messages="messages"
+        :provenance-summary="provenanceDashboardSummary"
+      />
 
       <div v-show="view === 'chat'" class="chat-layout">
         <div class="chat-toolbar">
@@ -60,7 +116,6 @@ onMounted(() => fetchAgents());
         </div>
 
         <div class="app-body">
-          <ReasoningPane :diagrams="diagrams" />
           <ChatWindow
             :messages="messages"
             :is-loading="isLoading"
@@ -69,6 +124,12 @@ onMounted(() => fetchAgents());
             :input-required-prompt="inputRequiredPrompt"
             :workflow-progress="workflowProgress"
             @send="sendMessage"
+          />
+          <ProvenancePane
+            :context-id="contextId"
+            :selected-agent-id="undefined"
+            :is-streaming="isLoading"
+            :diagrams="diagrams"
           />
         </div>
       </div>

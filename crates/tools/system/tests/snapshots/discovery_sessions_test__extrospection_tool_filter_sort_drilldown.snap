@@ -16,32 +16,53 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"filtered\": snapsh
           "avgDurationMs": 500.0,
           "avgTotalTokens": 0.0,
           "count": 1,
-          "failed": 0,
-          "failureRate": 0.0,
-          "groupKey": "00000000-0000-0000-0000-000000000700"
+          "failed": 1,
+          "failureRate": 1.0,
+          "groupDimensions": [
+            "agent_id"
+          ],
+          "groupKey": "00000000-0000-0000-0000-000000000700",
+          "groupValues": [
+            "00000000-0000-0000-0000-000000000700"
+          ]
         }
       ],
       "resource": "tool_calls",
       "rows": [
         {
+          "activity_id": "tool:ctx-9-12:tool-msg-caller:support/calculate:CalcPrompt",
+          "activity_kind": "tool_call",
+          "activity_outcome": "Failed",
+          "activity_status": "Completed",
+          "agent_display": "unknown/unknown",
           "agent_id": "00000000-0000-0000-0000-000000000700",
+          "agent_package": "unknown",
+          "agent_version": "unknown",
           "baml_prompt": "CalcPrompt",
           "context_id": "ctx-9-12",
           "duration_ms": 500,
-          "event_id": "[prov_event_id]",
           "failure_class": "timeout",
-          "metadata": "{\"agent_id\":\"00000000-0000-0000-0000-000000000700\",\"error\":\"timeout\",\"message_id\":\"tool-msg-caller\"}",
-          "success": "",
+          "failure_evidence": "metadata",
+          "message_id": "tool-msg-caller",
           "task_id": "",
           "timestamp_ms": "[timestamp_ms]",
-          "tool_args": "{\"expression\":\"1+1\"}",
-          "tool_name": "support/calculate"
+          "tool_call": {
+            "args": {
+              "expression": "1+1"
+            },
+            "name": "support/calculate",
+            "phase": null
+          },
+          "tool_name": "support/calculate",
+          "tool_result": {
+            "error": "timeout"
+          }
         }
       ],
       "summary": {
         "count": 1,
         "durationMsTotal": 500,
-        "failedCount": 0,
+        "failedCount": 1,
         "latencyHotspots": {
           "p95": 500.0,
           "p99": 500.0
@@ -63,16 +84,106 @@ expression: "redact_runtime_fields(serde_json::json!({\n    \"filtered\": snapsh
         "page_size": 5,
         "top_k": 10
       },
-      "hotspotGroups": [],
+      "hotspotGroups": [
+        {
+          "avgDurationMs": 500.0,
+          "avgTotalTokens": 0.0,
+          "count": 1,
+          "failed": 1,
+          "failureRate": 1.0,
+          "groupDimensions": [
+            "agent_id",
+            "tool_name"
+          ],
+          "groupKey": "00000000-0000-0000-0000-000000000700|support/calculate",
+          "groupValues": [
+            "00000000-0000-0000-0000-000000000700",
+            "support/calculate"
+          ]
+        },
+        {
+          "avgDurationMs": 330.0,
+          "avgTotalTokens": 0.0,
+          "count": 1,
+          "failed": 1,
+          "failureRate": 1.0,
+          "groupDimensions": [
+            "agent_id",
+            "tool_name"
+          ],
+          "groupKey": "00000000-0000-0000-0000-000000000700|support/delegate",
+          "groupValues": [
+            "00000000-0000-0000-0000-000000000700",
+            "support/delegate"
+          ]
+        }
+      ],
       "resource": "tool_calls",
-      "rows": [],
+      "rows": [
+        {
+          "activity_id": "tool:ctx-9-12:tool-msg-caller:support/calculate:CalcPrompt",
+          "activity_kind": "tool_call",
+          "activity_outcome": "Failed",
+          "activity_status": "Completed",
+          "agent_display": "unknown/unknown",
+          "agent_id": "00000000-0000-0000-0000-000000000700",
+          "agent_package": "unknown",
+          "agent_version": "unknown",
+          "baml_prompt": "CalcPrompt",
+          "context_id": "ctx-9-12",
+          "duration_ms": 500,
+          "failure_class": "timeout",
+          "failure_evidence": "metadata",
+          "message_id": "tool-msg-caller",
+          "task_id": "",
+          "timestamp_ms": "[timestamp_ms]",
+          "tool_call": {
+            "args": {
+              "expression": "1+1"
+            },
+            "name": "support/calculate",
+            "phase": null
+          },
+          "tool_name": "support/calculate",
+          "tool_result": {
+            "error": "timeout"
+          }
+        },
+        {
+          "activity_id": "tool:ctx-9-12:tool-msg-linked:support/delegate:DelegatePrompt",
+          "activity_kind": "tool_call",
+          "activity_outcome": "Failed",
+          "activity_status": "Completed",
+          "agent_display": "unknown/unknown",
+          "agent_id": "00000000-0000-0000-0000-000000000700",
+          "agent_package": "unknown",
+          "agent_version": "unknown",
+          "baml_prompt": "DelegatePrompt",
+          "context_id": "ctx-9-12",
+          "duration_ms": 330,
+          "failure_class": "failed_graph_incomplete",
+          "failure_evidence": "metadata",
+          "message_id": "tool-msg-linked",
+          "task_id": "",
+          "timestamp_ms": "[timestamp_ms]",
+          "tool_call": {
+            "args": {
+              "objective": "linked emitted message evidence"
+            },
+            "name": "support/delegate",
+            "phase": null
+          },
+          "tool_name": "support/delegate",
+          "tool_result": null
+        }
+      ],
       "summary": {
-        "count": 0,
-        "durationMsTotal": 0,
-        "failedCount": 0,
+        "count": 2,
+        "durationMsTotal": 830,
+        "failedCount": 2,
         "latencyHotspots": {
-          "p95": 0.0,
-          "p99": 0.0
+          "p95": 500.0,
+          "p99": 500.0
         },
         "tokenHotspots": {
           "p95": 0.0,
