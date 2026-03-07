@@ -53,6 +53,8 @@ pub enum SinkConstructorError {
     EmptyGithubRepo,
     #[error("coordinator URL must not be empty")]
     EmptyCoordinatorUrl,
+    #[error("coordinator URL is invalid: {raw}")]
+    InvalidCoordinatorUrl { raw: String },
 }
 
 #[derive(Debug, Error)]
@@ -568,7 +570,7 @@ pub fn format_coordinator_prompt(batch: &TaskBatch) -> String {
 
 /// Sink that bridges task batches to a running coordinator agent via the A2A protocol.
 pub struct A2aSink {
-    coordinator_url: String,
+    coordinator_url: reqwest::Url,
     client: reqwest::Client,
     mode: SinkDeliveryMode,
 }
@@ -590,9 +592,30 @@ impl A2aSink {
         coordinator_url: String,
         mode: SinkDeliveryMode,
     ) -> std::result::Result<Self, SinkConstructorError> {
-        let coordinator_url = coordinator_url.trim().trim_end_matches('/').to_string();
+        let coordinator_url = coordinator_url.trim().to_string();
         if coordinator_url.is_empty() {
             return Err(SinkConstructorError::EmptyCoordinatorUrl);
+        }
+        let mut coordinator_url = reqwest::Url::parse(&coordinator_url).map_err(|_| {
+            SinkConstructorError::InvalidCoordinatorUrl {
+                raw: coordinator_url.clone(),
+            }
+        })?;
+        if !matches!(coordinator_url.scheme(), "http" | "https") {
+            return Err(SinkConstructorError::InvalidCoordinatorUrl {
+                raw: coordinator_url.to_string(),
+            });
+        }
+        if !coordinator_url.path().ends_with('/') {
+            let normalized_path = {
+                let trimmed = coordinator_url.path().trim_end_matches('/');
+                if trimmed.is_empty() {
+                    "/".to_string()
+                } else {
+                    format!("{trimmed}/")
+                }
+            };
+            coordinator_url.set_path(&normalized_path);
         }
 
         Ok(Self {
@@ -667,10 +690,12 @@ impl TaskSink for A2aSink {
             return Ok(());
         }
 
-        let url = format!(
-            "{base}/agents/coordinator-agent/default/a2a",
-            base = self.coordinator_url,
-        );
+        let url = self
+            .coordinator_url
+            .join("agents/coordinator-agent/default/a2a")
+            .map_err(|source| SinkDeliveryError::CoordinatorTransport {
+                source: anyhow::Error::new(source),
+            })?;
         let body = Self::build_jsonrpc_body(batch, &prompt);
 
         tracing::info!(
@@ -681,7 +706,7 @@ impl TaskSink for A2aSink {
 
         let resp = self
             .client
-            .post(&url)
+            .post(url)
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
@@ -696,9 +721,11 @@ impl TaskSink for A2aSink {
                 Ok(body) => body,
                 Err(error) => format!("<failed to read response body: {error}>"),
             };
-            return Err(anyhow!(
-                "coordinator A2A request failed with {status}: {body_text}"
-            ));
+            return Err(SinkDeliveryError::CoordinatorHttp {
+                status,
+                body: body_text,
+            }
+            .into());
         }
 
         let responses: Vec<Value> =
@@ -719,11 +746,25 @@ impl TaskSink for A2aSink {
             "Coordinator A2A response received"
         );
         if let Some(context_id) = context_id {
+            let mermaid_endpoint = self
+                .coordinator_url
+                .join(&format!("contexts/{context_id}/mermaid"))
+                .map(|url| url.to_string())
+                .unwrap_or_else(|_| {
+                    format!("{}/contexts/{context_id}/mermaid", self.coordinator_url)
+                });
+            let metrics_endpoint = self
+                .coordinator_url
+                .join(&format!("contexts/{context_id}/metrics"))
+                .map(|url| url.to_string())
+                .unwrap_or_else(|_| {
+                    format!("{}/contexts/{context_id}/metrics", self.coordinator_url)
+                });
             tracing::info!(
                 coordinator_url = %self.coordinator_url,
                 context_id = %context_id,
-                mermaid_endpoint = %format!("{}/contexts/{context_id}/mermaid", self.coordinator_url),
-                metrics_endpoint = %format!("{}/contexts/{context_id}/metrics", self.coordinator_url),
+                mermaid_endpoint = %mermaid_endpoint,
+                metrics_endpoint = %metrics_endpoint,
                 "Captured coordinator context id for provenance replay"
             );
         }

@@ -9,6 +9,7 @@ use baml_task_daemon::{
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use integrations_slack_read::SlackAuthPreference;
+use reqwest::Url;
 use serde::Deserialize;
 use tracing_subscriber::EnvFilter;
 
@@ -229,9 +230,12 @@ async fn run(args: RunArgs) -> Result<()> {
     let workspace_url = args.workspace_url.clone().or_else(|| {
         std::env::var("SLACK_WORKSPACE_URL")
             .ok()
-            .map(|v| v.trim().trim_end_matches('/').to_string())
+            .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
     });
+    let workspace_url = workspace_url
+        .map(|raw| parse_workspace_url(&raw))
+        .transpose()?;
 
     let config_entry = load_project_config_entry(&args.project_config, &args.channel, &selector)?;
     let project_context = resolve_project_context(&args, &selector, config_entry.as_ref());
@@ -441,6 +445,38 @@ fn normalize_selected_sources(raw: &[SourceKindArg]) -> Vec<SourceKindArg> {
         }
     }
     selected
+}
+
+fn parse_workspace_url(raw: &str) -> Result<Url> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("workspace URL must not be empty"));
+    }
+
+    let mut url = Url::parse(trimmed).with_context(|| {
+        format!("invalid workspace URL {trimmed}; expected absolute http(s) URL")
+    })?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(anyhow!(
+            "invalid workspace URL scheme {}; expected http or https",
+            url.scheme()
+        ));
+    }
+    if !url.path().ends_with('/') {
+        let normalized_path = {
+            let trimmed_path = url.path().trim_end_matches('/');
+            if trimmed_path.is_empty() {
+                "/".to_string()
+            } else {
+                format!("{trimmed_path}/")
+            }
+        };
+        url.set_path(&normalized_path);
+    }
+
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
 }
 
 fn selected_source_kinds(sources: &[SourceKindArg]) -> Vec<TaskSourceKind> {
