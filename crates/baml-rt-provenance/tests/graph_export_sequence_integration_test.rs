@@ -447,7 +447,7 @@ async fn coordinator_flow_shows_initial_user_message_before_delegated_message() 
 ///
 /// Seeds a context with two tasks: first user "hi" → processing → reply "Wotcha!";
 /// second user "hi" → processing → reply "Hello again". Asserts the Mermaid diagram has
-/// both user messages, both replies, and at least two task rects.
+/// both user messages, both replies, and explicit markers for both task ids.
 #[tokio::test]
 async fn two_tasks_in_same_context_both_render_with_separate_rects() {
     let dir = tempdir().expect("tempdir");
@@ -637,10 +637,10 @@ async fn two_tasks_in_same_context_both_render_with_separate_rects() {
         output.contains("Wotcha") && output.contains("Hello again"),
         "expected both replies (Wotcha..., Hello again); got:\n{output}"
     );
-    // At least two task rects (one per task)
-    let rect_count = output.matches("rect rgb").count();
+    // Task sections are now marked as `Note over ...: "<task-id>"`.
+    let task_note_count = output.matches("Note over").count();
     assert!(
-        rect_count >= 2,
-        "expected at least 2 task rects, got {rect_count}; output:\n{output}"
+        output.contains("\"task-two-1\"") && output.contains("\"task-two-2\"") && task_note_count >= 2,
+        "expected both task-id markers and at least 2 task notes; got {task_note_count}; output:\n{output}"
     );
 }
