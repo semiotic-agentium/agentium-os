@@ -117,7 +117,12 @@ fn stabilize_ops_payload(value: serde_json::Value) -> serde_json::Value {
                 });
                 out.insert("rows".to_string(), V::Array(sorted));
             }
-            V::Object(out)
+            // Sort object keys for deterministic snapshot (CI vs local HashMap order).
+            let mut keys: Vec<_> = out.keys().cloned().collect();
+            keys.sort();
+            let sorted_map: serde_json::Map<_, _> =
+                keys.into_iter().map(|k| (k.clone(), out.remove(&k).unwrap())).collect();
+            V::Object(sorted_map)
         }
         other => other,
     }
