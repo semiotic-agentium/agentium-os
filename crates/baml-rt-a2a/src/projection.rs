@@ -9,6 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use baml_rt_core::ids::AgentId;
 use baml_rt_provenance::ProvenanceConversationContextItem;
 use baml_rt_tools::ToolRegistry;
 use serde_json::Value;
@@ -24,6 +25,9 @@ const COMPACTED_SIZE_WARN_CHARS: usize = 2000;
 pub struct ProjectionConfig {
     /// Hard cap on the number of projected items.
     pub max_items: usize,
+    /// Optional target agent scope. When set, only items matching this agent
+    /// are retained in the projection.
+    pub agent_id: Option<AgentId>,
     /// Source types to include. Items whose `source` field is not in this set
     /// are dropped before any other pipeline stage. Default: `["message", "tool_result"]`.
     pub allowed_sources: HashSet<String>,
@@ -33,6 +37,7 @@ impl Default for ProjectionConfig {
     fn default() -> Self {
         Self {
             max_items: 40,
+            agent_id: None,
             allowed_sources: DEFAULT_ALLOWED_SOURCES
                 .iter()
                 .map(|s| (*s).to_string())
@@ -50,6 +55,8 @@ pub struct ProjectionStats {
     pub projected: usize,
     /// Total estimated chars in the serialized projected output.
     pub projected_chars: usize,
+    /// Items dropped because their `agent_id` did not match the projection scope.
+    pub dropped_agent_filtered: usize,
     /// Items dropped because their `source` was not in `allowed_sources`.
     pub dropped_source_filtered: usize,
     /// Items dropped as duplicates (same role + source + content).
@@ -74,20 +81,30 @@ pub struct ProjectionStats {
 ///
 /// # Pipeline stages
 ///
-/// 1. Source filtering (drop items whose `source` is not in `allowed_sources`).
-/// 2. Tool compaction (`compact_result` per tool_result).
-/// 3. Deterministic dedupe (key = role + source + canonical content; keep latest).
-/// 4. Empty-content removal (drop null, empty string, empty object `{}`).
-/// 5. Budget truncation (`max_items`, keeping the latest N items).
-/// 6. Floor guarantee (if pipeline produced empty but candidates existed, keep
+/// 1. Agent filtering (drop items outside `agent_id` scope when configured).
+/// 2. Source filtering (drop items whose `source` is not in `allowed_sources`).
+/// 3. Tool compaction (`compact_result` per tool_result).
+/// 4. Deterministic dedupe (key = role + source + canonical content; keep latest).
+/// 5. Empty-content removal (drop null, empty string, empty object `{}`).
+/// 6. Budget truncation (`max_items`, keeping the latest N items).
+/// 7. Floor guarantee (if pipeline produced empty but candidates existed, keep
 ///    the most recent user message).
-/// 7. Serialize to prompt event envelope (`{role, source, content}`).
+/// 8. Serialize to prompt event envelope (`{role, source, content}`).
 pub fn project(
     mut items: Vec<ProvenanceConversationContextItem>,
     config: &ProjectionConfig,
     tool_registry: &ToolRegistry,
 ) -> (Vec<Value>, ProjectionStats) {
     let candidates = items.len();
+
+    // Stage: optional agent filtering.
+    let dropped_agent_filtered = if let Some(agent_id) = &config.agent_id {
+        let pre = items.len();
+        items.retain(|item| item.agent_id.as_ref().is_some_and(|id| id == agent_id));
+        pre - items.len()
+    } else {
+        0
+    };
 
     // Stage: source filtering — drop items whose source type is not in the
     // allowed set. This runs before compaction so we don't waste work on
@@ -222,6 +239,7 @@ pub fn project(
         candidates,
         projected: entries.len(),
         projected_chars,
+        dropped_agent_filtered,
         dropped_source_filtered,
         dropped_deduped,
         dropped_empty,
@@ -257,7 +275,7 @@ fn content_to_string(v: &Value) -> String {
 
 #[cfg(test)]
 mod tests {
-    use baml_rt_core::ids::EventId;
+    use baml_rt_core::ids::{EventId, UuidId};
     use baml_rt_tools::ToolRegistry;
     use serde_json::json;
 
@@ -270,10 +288,20 @@ mod tests {
         content: Value,
         timestamp_ms: u64,
     ) -> ProvenanceConversationContextItem {
+        make_item_with_agent(role, source, content, timestamp_ms, None)
+    }
+
+    fn make_item_with_agent(
+        role: &str,
+        source: &str,
+        content: Value,
+        timestamp_ms: u64,
+        agent_id: Option<AgentId>,
+    ) -> ProvenanceConversationContextItem {
         ProvenanceConversationContextItem {
             timestamp_ms,
             event_id: EventId::from(format!("evt-{}", timestamp_ms).as_str()),
-            agent_id: None,
+            agent_id,
             role: role.to_string(),
             content,
             source: source.to_string(),
@@ -534,5 +562,53 @@ mod tests {
             .filter_map(|e| e["source"].as_str())
             .collect();
         assert_eq!(sources, vec!["message", "tool_result"]);
+    }
+
+    #[test]
+    fn test_agent_filtering_keeps_only_target_agent_items() {
+        let agent_a =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000000a").unwrap());
+        let agent_b =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000000b").unwrap());
+
+        let items = vec![
+            make_item_with_agent(
+                "ROLE_USER",
+                "message",
+                Value::String("for-a-1".into()),
+                1000,
+                Some(agent_a.clone()),
+            ),
+            make_item_with_agent(
+                "ROLE_USER",
+                "message",
+                Value::String("for-b".into()),
+                2000,
+                Some(agent_b),
+            ),
+            make_item_with_agent(
+                "tool",
+                "tool_result",
+                json!({"tool_name": "x", "result": {"ok": true}}),
+                3000,
+                Some(agent_a),
+            ),
+        ];
+
+        let config = ProjectionConfig {
+            agent_id: Some(
+                AgentId::from_uuid(
+                    UuidId::parse_str("00000000-0000-0000-0000-00000000000a").unwrap(),
+                ),
+            ),
+            ..ProjectionConfig::default()
+        };
+        let (entries, stats) = project(items, &config, &empty_registry());
+
+        assert_eq!(stats.candidates, 3);
+        assert_eq!(stats.dropped_agent_filtered, 1);
+        assert_eq!(stats.projected, 2);
+        assert_eq!(entries[0]["content"], "for-a-1");
+        assert_eq!(entries[1]["source"], "tool_result");
     }
 }

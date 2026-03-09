@@ -325,12 +325,11 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
         scope: &context::RuntimeScope,
     ) -> Result<Option<Value>> {
         let context_id = scope.context_id();
-        // Configuration must come from somewhere else
-        // for now lets create a default config
-        let config = crate::projection::ProjectionConfig::default();
+        let mut config = crate::projection::ProjectionConfig::default();
+        config.agent_id = Some(scope.agent_id().clone());
         let items = self
             .store
-            .conversation_context(context_id, Some(config.max_items))
+            .conversation_context(context_id, None)
             .await?;
         tracing::debug!(
             context_id = %context_id,
@@ -346,6 +345,7 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
             candidates = stats.candidates,
             projected = stats.projected,
             projected_chars = stats.projected_chars,
+            dropped_agent_filtered = stats.dropped_agent_filtered,
             dropped_source_filtered = stats.dropped_source_filtered,
             dropped_deduped = stats.dropped_deduped,
             dropped_empty = stats.dropped_empty,

@@ -1373,14 +1373,14 @@ fn normalize_event_with_registry(
             role,
             content,
             metadata: _,
-            agent_id: _,
+            agent_id,
         }
         | ProvEventData::MessageSent {
             id,
             role,
             content,
             metadata: _,
-            agent_id: _,
+            agent_id,
         } => {
             let canonical_role = canonical_message_role(event, role)?;
             let message_id = message_entity_id(event.context_id(), id);
@@ -1398,6 +1398,10 @@ fn normalize_event_with_registry(
                 .map(|line| Value::String(line.clone()))
                 .collect();
             message_attrs.insert(a2a::CONTENT.to_string(), Value::Array(content_values));
+            message_attrs.insert(
+                a2a::AGENT_ID.to_string(),
+                Value::String(agent_id.as_str().to_string()),
+            );
 
             let direction = if matches!(event.data(), ProvEventData::MessageReceived { .. }) {
                 message_directions::RECEIVED
@@ -1430,6 +1434,10 @@ fn normalize_event_with_registry(
             processing_attrs.insert(
                 a2a::ROLE.to_string(),
                 Value::String(canonical_role.to_string()),
+            );
+            processing_attrs.insert(
+                a2a::AGENT_ID.to_string(),
+                Value::String(agent_id.as_str().to_string()),
             );
             doc.insert_activity(
                 processing_id.clone(),

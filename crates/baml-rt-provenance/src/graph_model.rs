@@ -234,14 +234,26 @@ const MAPPING_MESSAGE_RECEIVED: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::MessageReceived,
     primary_node: GraphNodeLabel::Message,
     expected_edges: &[EDGE_WAS_RECEIVED_BY, EDGE_TASK_TRIGGERED_BY_MESSAGE],
-    required_properties: &[a2a::MESSAGE_ID, a2a::ROLE, a2a::CONTENT, a2a::DIRECTION],
+    required_properties: &[
+        a2a::MESSAGE_ID,
+        a2a::ROLE,
+        a2a::CONTENT,
+        a2a::DIRECTION,
+        a2a::AGENT_ID,
+    ],
 };
 
 const MAPPING_MESSAGE_SENT: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::MessageSent,
     primary_node: GraphNodeLabel::Message,
     expected_edges: &[EDGE_WAS_EMITTED_BY, EDGE_TASK_EMITTED_MESSAGE],
-    required_properties: &[a2a::MESSAGE_ID, a2a::ROLE, a2a::CONTENT, a2a::DIRECTION],
+    required_properties: &[
+        a2a::MESSAGE_ID,
+        a2a::ROLE,
+        a2a::CONTENT,
+        a2a::DIRECTION,
+        a2a::AGENT_ID,
+    ],
 };
 
 pub fn event_kind_from_data(data: &ProvEventData) -> EventGraphKind {
