@@ -226,10 +226,12 @@ pub fn project(
                 Value::String(s) => s.clone(),
                 other => content_to_string(other),
             };
+            let agent_id = item.agent_id.as_ref().map(ToString::to_string);
             projected_chars += content.len();
             serde_json::json!({
                 "role": item.role,
                 "source": item.source,
+                "agent_id": agent_id,
                 "content": content,
             })
         })
@@ -610,5 +612,26 @@ mod tests {
         assert_eq!(stats.projected, 2);
         assert_eq!(entries[0]["content"], "for-a-1");
         assert_eq!(entries[1]["source"], "tool_result");
+    }
+
+    #[test]
+    fn test_envelope_includes_agent_id_when_present() {
+        let agent =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000000a").unwrap());
+        let items = vec![make_item_with_agent(
+            "ROLE_USER",
+            "message",
+            Value::String("hi".into()),
+            1000,
+            Some(agent),
+        )];
+
+        let config = ProjectionConfig::default();
+        let (entries, _) = project(items, &config, &empty_registry());
+
+        assert_eq!(
+            entries[0]["agent_id"],
+            Value::String("00000000-0000-0000-0000-00000000000a".to_string())
+        );
     }
 }

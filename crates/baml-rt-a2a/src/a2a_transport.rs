@@ -333,6 +333,7 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
             .await?;
         tracing::debug!(
             context_id = %context_id,
+            agent_id = %scope.agent_id(),
             item_count = items.len(),
             "conversation_history_json: store returned items"
         );
@@ -342,6 +343,7 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
 
         let (entries, stats) = crate::projection::project(items, &config, &self.tool_registry);
         tracing::debug!(
+            agent_id = %scope.agent_id(),
             candidates = stats.candidates,
             projected = stats.projected,
             projected_chars = stats.projected_chars,
