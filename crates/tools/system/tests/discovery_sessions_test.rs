@@ -83,18 +83,59 @@ fn redact_runtime_fields(value: serde_json::Value) -> serde_json::Value {
     }
 }
 
+/// Stabilize ops payload for deterministic snapshots across CI (HashMap iteration, float repr).
+fn stabilize_ops_payload(value: serde_json::Value) -> serde_json::Value {
+    use serde_json::Value as V;
+    match value {
+        V::Number(n) if n.is_f64() => {
+            let f = n.as_f64().unwrap();
+            V::Number(serde_json::Number::from_f64((f * 100.0).round() / 100.0).unwrap_or(n))
+        }
+        V::Array(values) => V::Array(values.into_iter().map(stabilize_ops_payload).collect()),
+        V::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for (k, v) in map {
+                let v = stabilize_ops_payload(v);
+                out.insert(k, v);
+            }
+            // Sort hotspotGroups and rows for deterministic order (HashMap iteration can vary).
+            if let Some(V::Array(groups)) = out.get("hotspotGroups") {
+                let mut sorted: Vec<_> = groups.clone();
+                sorted.sort_by(|a, b| {
+                    let ak = a.get("groupKey").and_then(|v| v.as_str()).unwrap_or("");
+                    let bk = b.get("groupKey").and_then(|v| v.as_str()).unwrap_or("");
+                    ak.cmp(bk)
+                });
+                out.insert("hotspotGroups".to_string(), V::Array(sorted));
+            }
+            if let Some(V::Array(rows)) = out.get("rows") {
+                let mut sorted: Vec<_> = rows.clone();
+                sorted.sort_by(|a, b| {
+                    let ak = a.get("activity_id").and_then(|v| v.as_str()).unwrap_or("");
+                    let bk = b.get("activity_id").and_then(|v| v.as_str()).unwrap_or("");
+                    ak.cmp(bk)
+                });
+                out.insert("rows".to_string(), V::Array(sorted));
+            }
+            V::Object(out)
+        }
+        other => other,
+    }
+}
+
 fn snapshot_safe_tool_output(output: serde_json::Value) -> serde_json::Value {
     let mut out = output;
     if let Some(payload_json) = out.get("payloadJson").and_then(|v| v.as_str())
         && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(payload_json)
     {
         let redacted = redact_runtime_fields(parsed);
+        let stabilized = stabilize_ops_payload(redacted);
         if let Some(obj) = out.as_object_mut() {
-            obj.insert("payload".to_string(), redacted);
+            obj.insert("payload".to_string(), stabilized);
             obj.remove("payloadJson");
         }
     }
-    redact_runtime_fields(out)
+    stabilize_ops_payload(redact_runtime_fields(out))
 }
 
 async fn seeded_store_for_context(
