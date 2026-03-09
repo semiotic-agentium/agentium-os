@@ -288,13 +288,13 @@ pub fn mapping_for_event_data(data: &ProvEventData) -> &'static EventGraphMappin
 pub struct ConversationReadModel;
 
 impl ConversationReadModel {
-    pub const MESSAGE_COLUMN_COUNT: usize = 5;
-    pub const TOOL_COLUMN_COUNT: usize = 7;
+    pub const MESSAGE_COLUMN_COUNT: usize = 6;
+    pub const TOOL_COLUMN_COUNT: usize = 8;
 
     /// Typed parameterised message query for cypher_builder().params().run().
     pub fn message_query_storage_safe_params(context: &str) -> (String, serde_json::Value) {
         let query = "MATCH (m:Message) WHERE m.a2a_context_id = $context \
-             RETURN m.a2a_event_id, m.a2a_message_id, m.a2a_direction, m.a2a_role, m.a2a_content \
+             RETURN m.a2a_event_id, m.a2a_message_id, m.a2a_direction, m.a2a_role, m.a2a_content, m.a2a_agent_id \
              ORDER BY m.a2a_event_id";
         (query.to_string(), serde_json::json!({ "context": context }))
     }
@@ -303,7 +303,7 @@ impl ConversationReadModel {
     pub fn tool_query_storage_safe_params(context: &str) -> (String, serde_json::Value) {
         let query = "MATCH (t:ToolCall) WHERE t.a2a_context_id = $context \
              MATCH (t)-[used:WAS_USED_BY]->(args:ToolArgs) \
-             RETURN DISTINCT t.a2a_event_id, t.a2a_tool_name, t.a2a_metadata, args.a2a_args, used.prov_role, args.prov_type, t.a2a_activity_outcome \
+             RETURN DISTINCT t.a2a_event_id, t.a2a_tool_name, t.a2a_metadata, args.a2a_args, used.prov_role, args.prov_type, t.a2a_activity_outcome, t.a2a_agent_id \
              ORDER BY t.a2a_event_id";
         (query.to_string(), serde_json::json!({ "context": context }))
     }

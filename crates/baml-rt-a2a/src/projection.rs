@@ -273,6 +273,7 @@ mod tests {
         ProvenanceConversationContextItem {
             timestamp_ms,
             event_id: EventId::from(format!("evt-{}", timestamp_ms).as_str()),
+            agent_id: None,
             role: role.to_string(),
             content,
             source: source.to_string(),
@@ -412,6 +413,7 @@ mod tests {
             ProvenanceConversationContextItem {
                 timestamp_ms,
                 event_id: EventId::from(event_id),
+                agent_id: None,
                 role: role.to_string(),
                 content,
                 source: source.to_string(),

@@ -671,6 +671,7 @@ fn message_to_context_item(
     ProvenanceConversationContextItem {
         timestamp_ms,
         event_id: EventId::from(message.message_id.as_message_id().as_str()),
+        agent_id: None,
         role,
         content,
         source: "message".to_string(),

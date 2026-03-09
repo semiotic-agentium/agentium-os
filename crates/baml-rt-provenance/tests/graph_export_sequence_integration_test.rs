@@ -640,7 +640,9 @@ async fn two_tasks_in_same_context_both_render_with_separate_rects() {
     // Task sections are now marked as `Note over ...: "<task-id>"`.
     let task_note_count = output.matches("Note over").count();
     assert!(
-        output.contains("\"task-two-1\"") && output.contains("\"task-two-2\"") && task_note_count >= 2,
+        output.contains("\"task-two-1\"")
+            && output.contains("\"task-two-2\"")
+            && task_note_count >= 2,
         "expected both task-id markers and at least 2 task notes; got {task_note_count}; output:\n{output}"
     );
 }
