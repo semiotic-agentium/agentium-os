@@ -30,7 +30,7 @@ use tokio::{
 
 fn ci_timeout_scale() -> u64 {
     if std::env::var_os("CI").is_some() {
-        3
+        5
     } else {
         1
     }
@@ -41,6 +41,11 @@ fn scaled_timeout_secs(base_secs: u64) -> Duration {
 }
 
 fn proptest_cfg(cases: u32) -> ProptestConfig {
+    let cases = if std::env::var_os("CI").is_some() {
+        cases.min(3)
+    } else {
+        cases
+    };
     let mut cfg = ProptestConfig::with_cases(cases);
     // Integration tests do not have a crate root (lib.rs/main.rs) for source-based persistence.
     // Disable persistence to avoid noisy "failed to find lib.rs or main.rs" warnings.

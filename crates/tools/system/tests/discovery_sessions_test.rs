@@ -528,19 +528,23 @@ async fn introspection_session_snapshots_compact_result_and_agent_scope() {
         } => output,
         other => panic!("expected Done(Some(output)), got {:?}", other),
     };
-    insta::assert_json_snapshot!(
-        "introspection_tool_output",
-        snapshot_safe_tool_output(output.clone())
-    );
+    insta::with_settings!({sort_maps => true}, {
+        insta::assert_json_snapshot!(
+            "introspection_tool_output",
+            snapshot_safe_tool_output(output.clone())
+        );
+    });
     let payload = output
         .get("payloadJson")
         .and_then(|v| v.as_str())
         .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap())
         .expect("payloadJson string");
-    insta::assert_json_snapshot!(
-        "introspection_tool_request_scope",
-        redact_runtime_fields(payload)
-    );
+    insta::with_settings!({sort_maps => true}, {
+        insta::assert_json_snapshot!(
+            "introspection_tool_request_scope",
+            redact_runtime_fields(payload)
+        );
+    });
 }
 
 #[tokio::test]
@@ -597,19 +601,23 @@ async fn extrospection_session_snapshots_cross_scope_request() {
         } => output,
         other => panic!("expected Done(Some(output)), got {:?}", other),
     };
-    insta::assert_json_snapshot!(
-        "extrospection_tool_output",
-        snapshot_safe_tool_output(output.clone())
-    );
+    insta::with_settings!({sort_maps => true}, {
+        insta::assert_json_snapshot!(
+            "extrospection_tool_output",
+            snapshot_safe_tool_output(output.clone())
+        );
+    });
     let payload = output
         .get("payloadJson")
         .and_then(|v| v.as_str())
         .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap())
         .expect("payloadJson string");
-    insta::assert_json_snapshot!(
-        "extrospection_tool_request_scope",
-        redact_runtime_fields(payload)
-    );
+    insta::with_settings!({sort_maps => true}, {
+        insta::assert_json_snapshot!(
+            "extrospection_tool_request_scope",
+            redact_runtime_fields(payload)
+        );
+    });
 }
 
 #[tokio::test]
@@ -685,13 +693,15 @@ async fn introspection_session_pagination_snapshots() {
         other => panic!("expected second Done(Some(output)), got {:?}", other),
     };
 
-    insta::assert_json_snapshot!(
-        "introspection_tool_pagination",
-        redact_runtime_fields(serde_json::json!({
-            "page1": snapshot_safe_tool_output(first_output),
-            "page2": snapshot_safe_tool_output(second_output)
-        }))
-    );
+    insta::with_settings!({sort_maps => true}, {
+        insta::assert_json_snapshot!(
+            "introspection_tool_pagination",
+            redact_runtime_fields(serde_json::json!({
+                "page1": snapshot_safe_tool_output(first_output),
+                "page2": snapshot_safe_tool_output(second_output)
+            }))
+        );
+    });
 }
 
 #[tokio::test]
@@ -764,13 +774,15 @@ async fn extrospection_session_filter_sort_and_drilldown_snapshots() {
         other => panic!("expected drilldown Done(Some(output)), got {:?}", other),
     };
 
-    insta::assert_json_snapshot!(
-        "extrospection_tool_filter_sort_drilldown",
-        redact_runtime_fields(serde_json::json!({
-            "filtered": snapshot_safe_tool_output(filtered_output),
-            "drilldown": snapshot_safe_tool_output(drilldown_output)
-        }))
-    );
+    insta::with_settings!({sort_maps => true}, {
+        insta::assert_json_snapshot!(
+            "extrospection_tool_filter_sort_drilldown",
+            redact_runtime_fields(serde_json::json!({
+                "filtered": snapshot_safe_tool_output(filtered_output),
+                "drilldown": snapshot_safe_tool_output(drilldown_output)
+            }))
+        );
+    });
 }
 
 #[tokio::test]
@@ -903,18 +915,20 @@ async fn extrospection_session_auto_drilldown_from_hotspot_snapshot() {
         other => panic!("expected pass2 Done(Some(output)), got {:?}", other),
     };
 
-    insta::assert_json_snapshot!(
-        "extrospection_tool_auto_drilldown_from_hotspot",
-        redact_runtime_fields(serde_json::json!({
-            "pass1": snapshot_safe_tool_output(pass1_output),
-            "derived_filters": {
-                "agentId": derived_agent_id,
-                "toolName": derived_tool_name,
-                "bamlPrompt": derived_prompt
-            },
-            "pass2": snapshot_safe_tool_output(pass2_output)
-        }))
-    );
+    insta::with_settings!({sort_maps => true}, {
+        insta::assert_json_snapshot!(
+            "extrospection_tool_auto_drilldown_from_hotspot",
+            redact_runtime_fields(serde_json::json!({
+                "pass1": snapshot_safe_tool_output(pass1_output),
+                "derived_filters": {
+                    "agentId": derived_agent_id,
+                    "toolName": derived_tool_name,
+                    "bamlPrompt": derived_prompt
+                },
+                "pass2": snapshot_safe_tool_output(pass2_output)
+            }))
+        );
+    });
 }
 
 #[tokio::test]
@@ -987,11 +1001,13 @@ async fn extrospection_session_failure_evidence_linked_modes_snapshots() {
         other => panic!("expected tool Done(Some(output)), got {:?}", other),
     };
 
-    insta::assert_json_snapshot!(
-        "extrospection_tool_failure_evidence_linked_modes",
-        redact_runtime_fields(serde_json::json!({
-            "llm_linked_prompt_rejected": snapshot_safe_tool_output(llm_output),
-            "tool_linked_emitted_message": snapshot_safe_tool_output(tool_output)
-        }))
-    );
+    insta::with_settings!({sort_maps => true}, {
+        insta::assert_json_snapshot!(
+            "extrospection_tool_failure_evidence_linked_modes",
+            redact_runtime_fields(serde_json::json!({
+                "llm_linked_prompt_rejected": snapshot_safe_tool_output(llm_output),
+                "tool_linked_emitted_message": snapshot_safe_tool_output(tool_output)
+            }))
+        );
+    });
 }
