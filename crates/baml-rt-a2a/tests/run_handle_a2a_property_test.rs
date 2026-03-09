@@ -344,7 +344,10 @@ async fn test_interleaved_context_isolation_regression() {
                     .unwrap_or(false)
             })
             .count();
-        assert_eq!(final_count, 1, "stream must include exactly one final marker");
+        assert_eq!(
+            final_count, 1,
+            "stream must include exactly one final marker"
+        );
 
         let text = first_message_text_from_stream(&responses);
         let expected_prefix = match kind.as_str() {
