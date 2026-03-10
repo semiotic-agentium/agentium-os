@@ -1250,6 +1250,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "baml-rt-hash"
+version = "0.1.0"
+dependencies = [
+ "insta",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "baml-rt-id"
 version = "0.1.0"
 dependencies = [
@@ -1334,6 +1345,32 @@ dependencies = [
  "tokio-util",
  "tracing",
  "ts-rs",
+ "uuid",
+]
+
+[[package]]
+name = "baml-rt-repository"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "baml-rt-core",
+ "baml-rt-hash",
+ "baml-rt-id",
+ "http-api-problem",
+ "insta",
+ "opentelemetry",
+ "proptest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tower",
+ "tracing",
+ "utoipa",
  "uuid",
 ]
 

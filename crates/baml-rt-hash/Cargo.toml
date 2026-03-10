@@ -1,0 +1,16 @@
+[package]
+name = "baml-rt-hash"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "Canonical content-addressable hashing for agent source bundles"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }

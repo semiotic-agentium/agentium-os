@@ -1,0 +1,31 @@
+[package]
+name = "baml-rt-repository"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "Agent package repository: content-addressable archive with lineage, versioning, and search"
+
+[dependencies]
+baml-rt-core = { path = "../baml-rt-core" }
+baml-rt-hash = { path = "../baml-rt-hash" }
+baml-rt-id = { path = "../baml-rt-id" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+rusqlite = { workspace = true }
+axum = { workspace = true }
+http-api-problem = { workspace = true }
+utoipa = { workspace = true }
+opentelemetry = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+tempfile = { workspace = true }
+insta = { workspace = true }
+proptest = { workspace = true }
+tower = { workspace = true }

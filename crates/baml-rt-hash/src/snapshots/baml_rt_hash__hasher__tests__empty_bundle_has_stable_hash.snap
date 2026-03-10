@@ -1,0 +1,6 @@
+---
+source: crates/baml-rt-hash/src/hasher.rs
+assertion_line: 355
+expression: hash.as_str()
+---
+f64bc2b31b8acd1be3ba4dee009d87f69fbf491a6e97ff837eb6e5cec098895c
