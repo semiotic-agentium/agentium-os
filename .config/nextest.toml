@@ -16,6 +16,8 @@ setup = 'regen-fixtures'
 [profile.ci]
 # Do not stop scheduling on first failure; surface full suite results in CI.
 fail-fast = false
+# Limit overall parallelism to reduce CI runner contention.
+test-threads = 6
 # JUnit output for GitHub Actions junit-report-action.
 [profile.ci.junit]
 path = "junit.xml"
