@@ -6,11 +6,9 @@
 
 use std::sync::Arc;
 
-use baml_rt_hash::{CanonicalHasher, HashInput, HashInputFile};
-
 use crate::{
     commands::{ForkCommand, PublishCommand, PublishOrigin, PublishResult},
-    entry::{NewEntry, RepositoryEntry, RepositoryEntryHeader, SourceBundle, Tag, Timestamp},
+    entry::{NewEntry, RepositoryEntry, RepositoryEntryHeader, Tag, Timestamp},
     error::{RepositoryError, Result},
     ids::{AgentName, ContentHash, Generation, LineageEdgeId, Version},
     lineage::{EdgeDescription, LineageEdge, LineageKind, LineageSubgraph, Parentage},
@@ -51,54 +49,45 @@ impl RepositoryService {
 
     /// Publish a new agent version.
     ///
-    /// 1. Compute canonical hash from source bundle.
-    /// 2. Determine parentage and generation from origin.
-    /// 3. Insert metadata (store atomically assigns version).
-    /// 4. Record lineage edges.
+    /// 1. Determine parentage and generation from origin.
+    /// 2. Insert metadata (store atomically assigns version, writes it into
+    ///    the manifest, and computes the content hash).
+    /// 3. Record lineage edges (using the hash returned by the store).
     ///
     /// Does **not** write a blob (the caller packages the tar.gz separately
     /// via `put_blob`).
     pub async fn publish(&self, cmd: PublishCommand) -> Result<PublishResult> {
         let _span = crate::spans::publish(cmd.name.as_str());
 
-        let hash = compute_hash(&cmd.source);
-
-        let (parentage, generation, deferred_edges) = match cmd.origin {
+        // Determine parentage, generation, and deferred edge descriptors.
+        // Edge targets will be filled with stored.hash after insert.
+        let (parentage, generation, edge_descriptors) = match cmd.origin {
             PublishOrigin::Original => (Parentage::Original, Generation::ROOT, vec![]),
 
             PublishOrigin::Iteration => {
-                // Look up the latest existing version to create an implicit fork edge.
                 match self.metadata.get_latest(&cmd.name).await? {
                     Some(prev) => {
-                        let edge = LineageEdge {
-                            id: LineageEdgeId::from_uuid(uuid::Uuid::new_v4()),
-                            source: prev.hash.clone(),
-                            target: hash.clone(),
-                            kind: LineageKind::Fork,
-                            description: EdgeDescription::new(format!(
-                                "Iteration from {ver}",
-                                ver = prev.version_ref
-                            ))
-                            .expect("non-empty"),
-                        };
+                        let desc = EdgeDescription::new(format!(
+                            "Iteration from {ver}",
+                            ver = prev.version_ref
+                        ))
+                        .expect("non-empty");
                         (
                             Parentage::Forked {
-                                parent: prev.hash,
-                                description: edge.description.clone(),
+                                parent: prev.hash.clone(),
+                                description: desc.clone(),
                             },
                             prev.generation,
-                            vec![edge],
+                            // (source_hash, kind, description) — target filled later
+                            vec![(prev.hash, LineageKind::Fork, desc)],
                         )
                     }
-                    None => {
-                        // No prior version — treat as original
-                        (Parentage::Original, Generation::ROOT, vec![])
-                    }
+                    None => (Parentage::Original, Generation::ROOT, vec![]),
                 }
             }
 
             PublishOrigin::Influenced { influences } => {
-                let mut edges = Vec::new();
+                let mut descs = Vec::new();
                 let mut max_gen = Generation::ROOT;
 
                 for inf in &influences {
@@ -115,13 +104,11 @@ impl RepositoryService {
                             });
                         }
                     }
-                    edges.push(LineageEdge {
-                        id: LineageEdgeId::from_uuid(uuid::Uuid::new_v4()),
-                        source: inf.source.clone(),
-                        target: hash.clone(),
-                        kind: LineageKind::Influence,
-                        description: inf.description.clone(),
-                    });
+                    descs.push((
+                        inf.source.clone(),
+                        LineageKind::Influence,
+                        inf.description.clone(),
+                    ));
                 }
 
                 (
@@ -129,13 +116,12 @@ impl RepositoryService {
                         influences: influences.clone(),
                     },
                     max_gen.increment(),
-                    edges,
+                    descs,
                 )
             }
         };
 
         let new_entry = NewEntry {
-            hash: hash.clone(),
             name: cmd.name.clone(),
             source: cmd.source,
             parentage,
@@ -144,11 +130,22 @@ impl RepositoryService {
             tags: cmd.tags,
         };
 
-        // Store atomically assigns the version number.
+        // Store atomically assigns version, writes it into manifest, computes hash.
         let stored = self.metadata.insert_entry(&new_entry).await?;
 
-        if !deferred_edges.is_empty() {
-            self.lineage.record_edges(&deferred_edges).await?;
+        // Now create lineage edges using the store-assigned hash as target.
+        if !edge_descriptors.is_empty() {
+            let edges: Vec<LineageEdge> = edge_descriptors
+                .into_iter()
+                .map(|(source, kind, description)| LineageEdge {
+                    id: LineageEdgeId::from_uuid(uuid::Uuid::new_v4()),
+                    source,
+                    target: stored.hash.clone(),
+                    kind,
+                    description,
+                })
+                .collect();
+            self.lineage.record_edges(&edges).await?;
         }
 
         tracing::info!(
@@ -182,7 +179,6 @@ impl RepositoryService {
                 parent_hash: cmd.source_hash.clone(),
             })?;
 
-        let hash = compute_hash(&cmd.source);
         let generation = source_entry.generation.increment();
 
         let parentage = Parentage::Forked {
@@ -190,16 +186,7 @@ impl RepositoryService {
             description: cmd.fork_description.clone(),
         };
 
-        let edge = LineageEdge {
-            id: LineageEdgeId::from_uuid(uuid::Uuid::new_v4()),
-            source: cmd.source_hash.clone(),
-            target: hash.clone(),
-            kind: LineageKind::Fork,
-            description: cmd.fork_description,
-        };
-
         let new_entry = NewEntry {
-            hash: hash.clone(),
             name: cmd.new_name.clone(),
             source: cmd.source,
             parentage,
@@ -208,8 +195,18 @@ impl RepositoryService {
             tags: cmd.tags,
         };
 
-        // Store atomically assigns version (v1 for a new lineage).
+        // Store atomically assigns version (v1 for a new lineage), writes it
+        // into manifest, computes hash.
         let stored = self.metadata.insert_entry(&new_entry).await?;
+
+        // Record fork edge using the store-assigned hash.
+        let edge = LineageEdge {
+            id: LineageEdgeId::from_uuid(uuid::Uuid::new_v4()),
+            source: cmd.source_hash.clone(),
+            target: stored.hash.clone(),
+            kind: LineageKind::Fork,
+            description: cmd.fork_description,
+        };
         self.lineage.record_edges(&[edge]).await?;
 
         tracing::info!(
@@ -333,34 +330,6 @@ impl RepositoryService {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Compute the canonical content hash from a source bundle.
-fn compute_hash(source: &SourceBundle) -> ContentHash {
-    let manifest_value = source.manifest.as_value();
-    let ts_files: Vec<HashInputFile<'_>> = source
-        .ts_sources
-        .iter()
-        .map(|f| HashInputFile {
-            path: f.path.as_str(),
-            content: f.content.as_str(),
-        })
-        .collect();
-    let baml_files: Vec<HashInputFile<'_>> = source
-        .baml_sources
-        .iter()
-        .map(|f| HashInputFile {
-            path: f.path.as_str(),
-            content: f.content.as_str(),
-        })
-        .collect();
-
-    let input = HashInput {
-        manifest: manifest_value,
-        ts_files,
-        baml_files,
-    };
-    CanonicalHasher::hash(&input)
-}
 
 /// UTC timestamp in RFC 3339 format.
 pub(crate) fn chrono_now() -> Timestamp {

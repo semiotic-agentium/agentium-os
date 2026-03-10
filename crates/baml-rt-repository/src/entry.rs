@@ -4,10 +4,11 @@
 //! content (ts + baml + manifest.json) with mutable metadata (fitness scores,
 //! tags) and structural lineage information.
 
+use baml_rt_hash::{CanonicalHasher, ContentHash, HashInput, HashInputFile};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ids::{AgentName, ContentHash, Generation, VersionRef},
+    ids::{AgentName, Generation, VersionRef},
     lineage::Parentage,
 };
 
@@ -114,6 +115,47 @@ pub struct SourceBundle {
     pub baml_sources: Vec<SourceFile>,
 }
 
+impl SourceBundle {
+    /// Return a copy with the repository-assigned version set in the manifest.
+    pub fn with_manifest_version(&self, version: u32) -> Self {
+        Self {
+            manifest: self.manifest.with_version(version),
+            ts_sources: self.ts_sources.clone(),
+            baml_sources: self.baml_sources.clone(),
+        }
+    }
+
+    /// Compute the canonical content hash for this source bundle.
+    ///
+    /// The hash covers the manifest (including the version field), TypeScript
+    /// sources, and BAML sources in canonical order.
+    pub fn compute_hash(&self) -> ContentHash {
+        let ts_files: Vec<HashInputFile<'_>> = self
+            .ts_sources
+            .iter()
+            .map(|f| HashInputFile {
+                path: f.path.as_str(),
+                content: f.content.as_str(),
+            })
+            .collect();
+        let baml_files: Vec<HashInputFile<'_>> = self
+            .baml_sources
+            .iter()
+            .map(|f| HashInputFile {
+                path: f.path.as_str(),
+                content: f.content.as_str(),
+            })
+            .collect();
+
+        let input = HashInput {
+            manifest: self.manifest.as_value(),
+            ts_files,
+            baml_files,
+        };
+        CanonicalHasher::hash(&input)
+    }
+}
+
 /// The raw manifest.json content, stored as structured JSON so it can be
 /// queried without full deserialization into `AgentManifest`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,6 +203,16 @@ impl ManifestSource {
     /// Extract description from discovery metadata.
     pub fn description(&self) -> Option<&str> {
         self.0.get("discovery")?.get("description")?.as_str()
+    }
+
+    /// Return a copy with the repository-assigned version written in.
+    ///
+    /// The repository controls the `"version"` field — callers may provide
+    /// a draft value, but the repository overwrites it before hashing.
+    pub fn with_version(&self, version: u32) -> Self {
+        let mut value = self.0.clone();
+        value["version"] = serde_json::Value::String(version.to_string());
+        Self(value)
     }
 }
 
@@ -264,19 +316,21 @@ impl std::fmt::Display for FitnessDomain {
 // NewEntry — the caller-provided draft (version assigned by the store)
 // ---------------------------------------------------------------------------
 
-/// A draft entry provided by the caller. The repository assigns the version
-/// atomically during insert — the caller never specifies a version number.
+/// A draft entry provided by the caller. The repository assigns both the
+/// version and the content hash atomically during insert.
 ///
-/// `hash` is computed by the service from the source bundle (it depends on
-/// content, not on version). `name` identifies the lineage. Everything else
-/// describes the content, provenance, and metadata.
+/// The repository:
+/// 1. Assigns the next version number.
+/// 2. Writes the version into the manifest.
+/// 3. Computes the canonical hash from the versioned source bundle.
+///
+/// `name` identifies the lineage. Everything else describes the content,
+/// provenance, and metadata.
 #[derive(Debug, Clone)]
 pub struct NewEntry {
-    /// Content hash computed from the source bundle.
-    pub hash: ContentHash,
     /// Agent lineage name — determines which version sequence this belongs to.
     pub name: AgentName,
-    /// Complete source content.
+    /// Complete source content (manifest version will be overwritten by the store).
     pub source: SourceBundle,
     /// How this entry relates to existing entries.
     pub parentage: Parentage,

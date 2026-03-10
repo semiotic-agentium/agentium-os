@@ -63,11 +63,17 @@ pub trait BlobStore: Send + Sync {
 pub trait MetadataStore: Send + Sync {
     // --- Entry lifecycle ---
 
-    /// Insert a new entry, atomically assigning the next version number.
+    /// Insert a new entry, atomically assigning the next version number and
+    /// computing the content hash.
     ///
-    /// The store determines the version — callers never specify one. Returns
-    /// the complete `RepositoryEntry` with the assigned version and timestamp.
-    /// Fails if the content hash already exists.
+    /// The store:
+    /// 1. Assigns the next version for the agent lineage.
+    /// 2. Writes the version into the manifest.
+    /// 3. Computes the canonical content hash from the versioned source.
+    /// 4. Persists the entry.
+    ///
+    /// Returns the complete `RepositoryEntry` with the assigned version, hash,
+    /// and timestamp. Fails if the content hash already exists.
     async fn insert_entry(&self, entry: &NewEntry) -> Result<RepositoryEntry>;
 
     /// Retrieve a full entry by content hash.

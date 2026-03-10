@@ -170,34 +170,13 @@ CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
 #[async_trait]
 impl MetadataStore for SqliteStore {
     async fn insert_entry(&self, entry: &NewEntry) -> Result<RepositoryEntry> {
-        let hash = entry.hash.as_str().to_string();
         let name = entry.name.as_str().to_string();
         let generation = entry.generation.as_u32();
         let parentage_json =
             serde_json::to_string(&entry.parentage).expect("parentage serialization");
-        let source_json = serde_json::to_string(&entry.source).expect("source serialization");
         let rationale = entry.change_rationale.as_str().to_string();
-        let description = entry.source.manifest.description().map(String::from);
-        let tools_json = serde_json::to_string(
-            &entry
-                .source
-                .manifest
-                .tools()
-                .into_iter()
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or_default();
-        let caps_json = serde_json::to_string(
-            &entry
-                .source
-                .manifest
-                .capabilities()
-                .into_iter()
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or_default();
 
-        // Collect FTS text
+        // Collect FTS text (does not depend on version)
         let mut source_text = String::new();
         for f in &entry.source.ts_sources {
             source_text.push_str(f.content.as_str());
@@ -207,11 +186,12 @@ impl MetadataStore for SqliteStore {
             source_text.push_str(f.content.as_str());
             source_text.push('\n');
         }
-        let manifest_text =
-            serde_json::to_string(entry.source.manifest.as_value()).unwrap_or_default();
 
         // Tags to insert
         let tags: Vec<String> = entry.tags.iter().map(|t| t.as_str().to_string()).collect();
+
+        // Clone source for the blocking closure (version will be set inside)
+        let source_bundle = entry.source.clone();
 
         // Compute timestamp now (before entering the blocking closure)
         let now = crate::service::chrono_now();
@@ -236,13 +216,41 @@ impl MetadataStore for SqliteStore {
                 None => 1,
             };
 
+            // Write the repository-assigned version into the manifest, then
+            // compute the canonical hash. The hash covers the versioned manifest.
+            let versioned_source = source_bundle.with_manifest_version(version);
+            let hash = versioned_source.compute_hash();
+            let hash_str = hash.as_str().to_string();
+
+            let source_json =
+                serde_json::to_string(&versioned_source).expect("source serialization");
+            let description = versioned_source.manifest.description().map(String::from);
+            let tools_json = serde_json::to_string(
+                &versioned_source
+                    .manifest
+                    .tools()
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap_or_default();
+            let caps_json = serde_json::to_string(
+                &versioned_source
+                    .manifest
+                    .capabilities()
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap_or_default();
+            let manifest_text =
+                serde_json::to_string(versioned_source.manifest.as_value()).unwrap_or_default();
+
             conn.execute(
                 "INSERT INTO entries (hash, agent_name, version, generation, parentage_json,
                  source_json, change_rationale, created_at, manifest_description,
                  manifest_tools_json, manifest_capabilities_json)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
-                    hash,
+                    hash_str,
                     name,
                     version,
                     generation,
@@ -260,7 +268,7 @@ impl MetadataStore for SqliteStore {
                     && err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
                 {
                     return RepositoryError::DuplicateHash {
-                        hash: hash.parse().unwrap(),
+                        hash: hash_str.parse().unwrap(),
                         existing_name: name.parse().unwrap(),
                         existing_version: Version::new(version).unwrap(),
                     };
@@ -274,7 +282,7 @@ impl MetadataStore for SqliteStore {
             conn.execute(
                 "INSERT INTO entries_fts (hash, agent_name, source_text, manifest_text)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![hash, name, source_text, manifest_text],
+                params![hash_str, name, source_text, manifest_text],
             )
             .map_err(|e| RepositoryError::StorageWrite {
                 source: Box::new(e),
@@ -284,28 +292,27 @@ impl MetadataStore for SqliteStore {
             for tag in &tags {
                 conn.execute(
                     "INSERT OR IGNORE INTO tags (entry_hash, tag) VALUES (?1, ?2)",
-                    params![hash, tag],
+                    params![hash_str, tag],
                 )
                 .map_err(|e| RepositoryError::StorageWrite {
                     source: Box::new(e),
                 })?;
             }
 
-            // Build the complete RepositoryEntry with the assigned version.
+            // Build the complete RepositoryEntry with the assigned version and hash.
             let assigned_version = Version::new(version).expect("version > 0");
             let parentage: Parentage =
                 serde_json::from_str(&parentage_json).expect("parentage round-trip");
-            let source = serde_json::from_str(&source_json).expect("source round-trip");
             let change_rationale = ChangeRationale::new(rationale).expect("rationale round-trip");
             let tags_out = tags.iter().map(|t| Tag::new(t.as_str())).collect();
 
             Ok(RepositoryEntry {
-                hash: hash.parse().unwrap(),
+                hash,
                 version_ref: VersionRef {
                     name: name.parse().unwrap(),
                     version: assigned_version,
                 },
-                source,
+                source: versioned_source,
                 parentage,
                 generation: Generation::new(generation),
                 change_rationale,
