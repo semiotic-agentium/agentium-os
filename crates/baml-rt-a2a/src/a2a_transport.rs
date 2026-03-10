@@ -327,10 +327,7 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
         let context_id = scope.context_id();
         let mut config = crate::projection::ProjectionConfig::default();
         config.agent_id = Some(scope.agent_id().clone());
-        let items = self
-            .store
-            .conversation_context(context_id, None)
-            .await?;
+        let items = self.store.conversation_context(context_id, None).await?;
         tracing::debug!(
             context_id = %context_id,
             agent_id = %scope.agent_id(),

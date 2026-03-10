@@ -598,11 +598,9 @@ mod tests {
         ];
 
         let config = ProjectionConfig {
-            agent_id: Some(
-                AgentId::from_uuid(
-                    UuidId::parse_str("00000000-0000-0000-0000-00000000000a").unwrap(),
-                ),
-            ),
+            agent_id: Some(AgentId::from_uuid(
+                UuidId::parse_str("00000000-0000-0000-0000-00000000000a").unwrap(),
+            )),
             ..ProjectionConfig::default()
         };
         let (entries, stats) = project(items, &config, &empty_registry());
