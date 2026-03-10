@@ -18,13 +18,13 @@
 
 use async_trait::async_trait;
 
-use crate::entry::{
-    FitnessDomain, RepositoryEntry, RepositoryEntryHeader, Tag, Timestamp,
+use crate::{
+    entry::{FitnessDomain, RepositoryEntry, RepositoryEntryHeader, Tag, Timestamp},
+    error::Result,
+    ids::{AgentName, ContentHash, Version, VersionRef},
+    lineage::{AncestryNode, LineageEdge, LineageSubgraph},
+    search::SearchQuery,
 };
-use crate::error::Result;
-use crate::ids::{AgentName, ContentHash, Version, VersionRef};
-use crate::lineage::{AncestryNode, LineageEdge, LineageSubgraph};
-use crate::search::SearchQuery;
 
 // ---------------------------------------------------------------------------
 // BlobStore — filesystem-backed tar.gz storage
@@ -142,11 +142,7 @@ pub trait LineageStore: Send + Sync {
 
     /// Build a local subgraph centered on an entry, including ancestors up to
     /// `ancestor_depth` and direct descendants.
-    async fn subgraph(
-        &self,
-        hash: &ContentHash,
-        ancestor_depth: u32,
-    ) -> Result<LineageSubgraph>;
+    async fn subgraph(&self, hash: &ContentHash, ancestor_depth: u32) -> Result<LineageSubgraph>;
 }
 
 // ---------------------------------------------------------------------------

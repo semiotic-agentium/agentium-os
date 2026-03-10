@@ -8,16 +8,18 @@ use std::sync::Arc;
 use axum::extract::{Json, Path, Query, State};
 use http_api_problem::HttpApiProblem;
 
-use crate::commands::{ForkCommand, PublishCommand, PublishResult};
-use crate::entry::{FitnessDomain, Tag};
-use crate::http::{
-    AddTagRequest, GetByHashPath, GetByVersionPath, HttpResult, LineagePath, LineageQuery,
-    LineageResponse, ListAgentsResponse, ListVersionsPath, ListVersionsResponse,
-    RecordFitnessPath, RecordFitnessRequest, RemoveTagRequest, SearchResponse, TagPath,
+use crate::{
+    commands::{ForkCommand, PublishCommand, PublishResult},
+    entry::{FitnessDomain, Tag},
+    http::{
+        AddTagRequest, GetByHashPath, GetByVersionPath, HttpResult, LineagePath, LineageQuery,
+        LineageResponse, ListAgentsResponse, ListVersionsPath, ListVersionsResponse,
+        RecordFitnessPath, RecordFitnessRequest, RemoveTagRequest, SearchResponse, TagPath,
+    },
+    ids::Version,
+    search::SearchQuery,
+    service::RepositoryService,
 };
-use crate::ids::Version;
-use crate::search::SearchQuery;
-use crate::service::RepositoryService;
 
 /// Shared state for all repository handlers.
 pub type RepoState = Arc<RepositoryService>;
@@ -26,10 +28,7 @@ pub async fn get_by_hash(
     State(svc): State<RepoState>,
     Path(p): Path<GetByHashPath>,
 ) -> HttpResult<crate::entry::RepositoryEntry> {
-    let hash = p
-        .hash
-        .parse()
-        .map_err(|e| bad_request(format!("{e}")))?;
+    let hash = p.hash.parse().map_err(|e| bad_request(format!("{e}")))?;
     let entry = svc.get_by_hash(&hash).await.map_err(HttpApiProblem::from)?;
     match entry {
         Some(e) => Ok(Json(e)),
@@ -49,13 +48,14 @@ pub async fn get_by_version(
         .map_err(HttpApiProblem::from)?;
     match entry {
         Some(e) => Ok(Json(e)),
-        None => Err(not_found(format!("Entry not found: {}@{}", p.name, p.version))),
+        None => Err(not_found(format!(
+            "Entry not found: {}@{}",
+            p.name, p.version
+        ))),
     }
 }
 
-pub async fn list_agents(
-    State(svc): State<RepoState>,
-) -> HttpResult<ListAgentsResponse> {
+pub async fn list_agents(State(svc): State<RepoState>) -> HttpResult<ListAgentsResponse> {
     let agents = svc.list_agents().await.map_err(HttpApiProblem::from)?;
     Ok(Json(ListAgentsResponse { agents }))
 }
@@ -65,7 +65,10 @@ pub async fn list_versions(
     Path(p): Path<ListVersionsPath>,
 ) -> HttpResult<ListVersionsResponse> {
     let name = p.name.parse().map_err(|e| bad_request(format!("{e}")))?;
-    let versions = svc.list_versions(&name).await.map_err(HttpApiProblem::from)?;
+    let versions = svc
+        .list_versions(&name)
+        .await
+        .map_err(HttpApiProblem::from)?;
     Ok(Json(ListVersionsResponse { name, versions }))
 }
 

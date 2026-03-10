@@ -6,10 +6,12 @@
 use http_api_problem::{HttpApiProblem, StatusCode as ProblemStatusCode};
 use serde::{Deserialize, Serialize};
 
-use crate::entry::RepositoryEntryHeader;
-use crate::error::RepositoryError;
-use crate::ids::{AgentName, ContentHash};
-use crate::lineage::LineageSubgraph;
+use crate::{
+    entry::RepositoryEntryHeader,
+    error::RepositoryError,
+    ids::{AgentName, ContentHash},
+    lineage::LineageSubgraph,
+};
 
 // ---------------------------------------------------------------------------
 // Problem type constants (RFC 7807)

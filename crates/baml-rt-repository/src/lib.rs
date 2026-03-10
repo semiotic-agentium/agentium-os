@@ -28,9 +28,9 @@
 //! identical hashes.
 
 // --- Domain types ---
+pub mod entry;
 pub mod ids;
 pub mod lineage;
-pub mod entry;
 pub mod search;
 
 // --- Operations ---
@@ -42,28 +42,28 @@ pub mod storage;
 
 // --- Implementations ---
 pub mod fs_blob_store;
-pub mod sqlite_store;
 pub mod service;
+pub mod sqlite_store;
 
 // --- HTTP API surface ---
-pub mod http;
 pub mod handlers;
+pub mod http;
 pub mod router;
 
 // --- Observability (orthogonal) ---
 #[allow(dead_code)]
-mod spans;
-#[allow(dead_code)]
 mod metrics;
+#[allow(dead_code)]
+mod spans;
 
 // --- Re-exports for public API ---
-pub use error::{RepositoryError, Result};
-pub use ids::{AgentName, ContentHash, Generation, Version, VersionRef};
-pub use entry::{ChangeRationale, RepositoryEntry, RepositoryEntryHeader, SourceBundle};
-pub use lineage::{LineageEdge, LineageKind, LineageSubgraph, Parentage};
 pub use commands::{ForkCommand, PublishCommand, PublishResult};
-pub use storage::{BlobStore, LineageStore, MetadataStore, SearchStore};
+pub use entry::{ChangeRationale, RepositoryEntry, RepositoryEntryHeader, SourceBundle};
+pub use error::{RepositoryError, Result};
 pub use fs_blob_store::FsBlobStore;
-pub use sqlite_store::SqliteStore;
-pub use service::RepositoryService;
+pub use ids::{AgentName, ContentHash, Generation, Version, VersionRef};
+pub use lineage::{LineageEdge, LineageKind, LineageSubgraph, Parentage};
 pub use router::repository_router;
+pub use service::RepositoryService;
+pub use sqlite_store::SqliteStore;
+pub use storage::{BlobStore, LineageStore, MetadataStore, SearchStore};

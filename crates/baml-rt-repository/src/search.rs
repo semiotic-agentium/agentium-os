@@ -5,9 +5,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::entry::FitnessDomain;
-use crate::ids::{AgentName, Generation};
-use crate::lineage::LineageKind;
+use crate::{
+    entry::FitnessDomain,
+    ids::{AgentName, Generation},
+    lineage::LineageKind,
+};
 
 // ---------------------------------------------------------------------------
 // SearchQuery — the top-level query structure

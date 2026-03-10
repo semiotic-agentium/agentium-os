@@ -11,10 +11,7 @@ use tracing::Span;
 /// Children: storage write, hash computation, lineage edge recording.
 #[inline]
 pub(crate) fn publish(agent_name: &str) -> Span {
-    tracing::info_span!(
-        "repository.publish",
-        agent_name = agent_name,
-    )
+    tracing::info_span!("repository.publish", agent_name = agent_name,)
 }
 
 /// Span for forking an agent into a new lineage.
@@ -36,10 +33,7 @@ pub(crate) fn fork(source_hash: &str, new_name: &str) -> Span {
 /// Children: metadata read, blob read.
 #[inline]
 pub(crate) fn get_by_hash(hash: &str) -> Span {
-    tracing::debug_span!(
-        "repository.get_by_hash",
-        hash = hash,
-    )
+    tracing::debug_span!("repository.get_by_hash", hash = hash,)
 }
 
 /// Span for retrieving an entry by name + version.
@@ -61,11 +55,7 @@ pub(crate) fn get_by_version(name: &str, version: &str) -> Span {
 /// Children: lineage store traversal.
 #[inline]
 pub(crate) fn lineage_query(hash: &str, depth: u32) -> Span {
-    tracing::debug_span!(
-        "repository.lineage_query",
-        hash = hash,
-        depth = depth,
-    )
+    tracing::debug_span!("repository.lineage_query", hash = hash, depth = depth,)
 }
 
 /// Span for search execution.
@@ -83,11 +73,7 @@ pub(crate) fn search() -> Span {
 /// Children: search store query.
 #[inline]
 pub(crate) fn top_by_fitness(domain: &str, limit: usize) -> Span {
-    tracing::debug_span!(
-        "repository.top_by_fitness",
-        domain = domain,
-        limit = limit,
-    )
+    tracing::debug_span!("repository.top_by_fitness", domain = domain, limit = limit,)
 }
 
 /// Span for recording a fitness score.
@@ -96,11 +82,7 @@ pub(crate) fn top_by_fitness(domain: &str, limit: usize) -> Span {
 /// Children: metadata write.
 #[inline]
 pub(crate) fn record_fitness(hash: &str, domain: &str) -> Span {
-    tracing::debug_span!(
-        "repository.record_fitness",
-        hash = hash,
-        domain = domain,
-    )
+    tracing::debug_span!("repository.record_fitness", hash = hash, domain = domain,)
 }
 
 /// Span for canonical hash computation.
@@ -116,10 +98,7 @@ pub(crate) fn compute_hash() -> Span {
 /// Parent: publish or fork span.
 #[inline]
 pub(crate) fn blob_write(hash: &str) -> Span {
-    tracing::debug_span!(
-        "repository.blob_write",
-        hash = hash,
-    )
+    tracing::debug_span!("repository.blob_write", hash = hash,)
 }
 
 /// Span for blob store read.
@@ -127,8 +106,5 @@ pub(crate) fn blob_write(hash: &str) -> Span {
 /// Parent: get_by_hash span.
 #[inline]
 pub(crate) fn blob_read(hash: &str) -> Span {
-    tracing::debug_span!(
-        "repository.blob_read",
-        hash = hash,
-    )
+    tracing::debug_span!("repository.blob_read", hash = hash,)
 }

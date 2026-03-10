@@ -22,7 +22,9 @@ pub enum RepositoryError {
     LineageNotFound { name: AgentName },
 
     // --- Conflict / invariant violations ---
-    #[error("Duplicate content hash: {hash} (content already exists as {existing_name}@{existing_version})")]
+    #[error(
+        "Duplicate content hash: {hash} (content already exists as {existing_name}@{existing_version})"
+    )]
     DuplicateHash {
         hash: ContentHash,
         existing_name: AgentName,

@@ -5,13 +5,11 @@
 //! cannot be confused with an `AgentName`, a `Version` cannot masquerade as a
 //! `Generation`, and lineage edges carry typed endpoints.
 
-use std::fmt;
-use std::str::FromStr;
-
-use serde::{Deserialize, Serialize};
+use std::{fmt, str::FromStr};
 
 // Re-export ContentHash from the dedicated hash crate.
 pub use baml_rt_hash::{ContentHash, ContentHashParseError};
+use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
 // AgentName — the logical identity of an agent lineage
@@ -120,7 +118,9 @@ impl FromStr for Version {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let digits = s.strip_prefix('v').unwrap_or(s);
-        let value = digits.parse::<u32>().map_err(|_| VersionError { value: 0 })?;
+        let value = digits
+            .parse::<u32>()
+            .map_err(|_| VersionError { value: 0 })?;
         Self::new(value)
     }
 }
@@ -174,7 +174,12 @@ pub struct VersionRef {
 
 impl fmt::Display for VersionRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{name}@{version}", name = self.name, version = self.version)
+        write!(
+            f,
+            "{name}@{version}",
+            name = self.name,
+            version = self.version
+        )
     }
 }
 

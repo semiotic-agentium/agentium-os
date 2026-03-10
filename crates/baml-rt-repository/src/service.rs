@@ -8,18 +8,15 @@ use std::sync::Arc;
 
 use baml_rt_hash::{CanonicalHasher, HashInput, HashInputFile};
 
-use crate::commands::{ForkCommand, PublishCommand, PublishOrigin, PublishResult};
-use crate::entry::{
-    RepositoryEntry, RepositoryEntryHeader, SourceBundle, Tag, Timestamp,
+use crate::{
+    commands::{ForkCommand, PublishCommand, PublishOrigin, PublishResult},
+    entry::{RepositoryEntry, RepositoryEntryHeader, SourceBundle, Tag, Timestamp},
+    error::{RepositoryError, Result},
+    ids::{AgentName, ContentHash, Generation, LineageEdgeId, Version, VersionRef},
+    lineage::{EdgeDescription, LineageEdge, LineageKind, LineageSubgraph, Parentage},
+    search::SearchQuery,
+    storage::{BlobStore, LineageStore, MetadataStore, SearchStore},
 };
-use crate::error::{RepositoryError, Result};
-use crate::ids::{AgentName, ContentHash, Generation, LineageEdgeId, Version, VersionRef};
-use crate::lineage::{
-    EdgeDescription, LineageEdge, LineageKind, LineageSubgraph,
-    Parentage,
-};
-use crate::search::SearchQuery;
-use crate::storage::{BlobStore, LineageStore, MetadataStore, SearchStore};
 
 /// The main repository service.
 ///
@@ -86,11 +83,9 @@ impl RepositoryService {
                         };
                         match self.metadata.resolve_hash(&prev_ref).await? {
                             Some(prev_hash) => {
-                                let prev_entry =
-                                    self.metadata.get_by_hash(&prev_hash).await?;
-                                let prev_gen = prev_entry
-                                    .map(|e| e.generation)
-                                    .unwrap_or(Generation::ROOT);
+                                let prev_entry = self.metadata.get_by_hash(&prev_hash).await?;
+                                let prev_gen =
+                                    prev_entry.map(|e| e.generation).unwrap_or(Generation::ROOT);
                                 let edge = LineageEdge {
                                     id: LineageEdgeId::from_uuid(uuid::Uuid::new_v4()),
                                     source: prev_hash.clone(),
@@ -352,9 +347,7 @@ impl RepositoryService {
         score: f64,
     ) -> Result<()> {
         let now = chrono_now();
-        self.metadata
-            .record_fitness(hash, domain, score, now)
-            .await
+        self.metadata.record_fitness(hash, domain, score, now).await
     }
 
     /// Add a tag to an entry.

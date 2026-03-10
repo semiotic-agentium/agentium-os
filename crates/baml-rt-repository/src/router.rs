@@ -2,11 +2,12 @@
 
 use std::sync::Arc;
 
-use axum::routing::{delete, get, post};
-use axum::Router;
+use axum::{
+    Router,
+    routing::{delete, get, post},
+};
 
-use crate::handlers;
-use crate::service::RepositoryService;
+use crate::{handlers, service::RepositoryService};
 
 /// Build the repository API router.
 ///
@@ -21,14 +22,8 @@ pub fn repository_router(service: Arc<RepositoryService>) -> Router {
         .route("/fork", post(handlers::fork))
         .route("/search", post(handlers::search))
         .route("/lineage/{hash}", get(handlers::get_lineage))
-        .route(
-            "/entries/{hash}/fitness",
-            post(handlers::record_fitness),
-        )
+        .route("/entries/{hash}/fitness", post(handlers::record_fitness))
         .route("/entries/{hash}/tags", post(handlers::add_tag))
-        .route(
-            "/entries/{hash}/tags",
-            delete(handlers::remove_tag),
-        )
+        .route("/entries/{hash}/tags", delete(handlers::remove_tag))
         .with_state(service)
 }

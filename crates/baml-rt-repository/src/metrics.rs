@@ -4,10 +4,12 @@
 //! `repository.{domain}.{metric_type}` namespace. Instruments are cached
 //! in `OnceLock` for zero-allocation recording on the hot path.
 
-use opentelemetry::{global, KeyValue};
-use opentelemetry::metrics::{Counter, Histogram};
-use std::sync::OnceLock;
-use std::time::Duration;
+use std::{sync::OnceLock, time::Duration};
+
+use opentelemetry::{
+    KeyValue, global,
+    metrics::{Counter, Histogram},
+};
 
 // ---------------------------------------------------------------------------
 // Cached instruments
@@ -123,7 +125,10 @@ pub(crate) fn record_fork(source_name: &str, new_name: &str, result: &str) {
 
 /// Record a search operation.
 pub(crate) fn record_search(result_count: usize, duration: Duration) {
-    let attrs = &[KeyValue::new("result_count_bucket", bucket_count(result_count))];
+    let attrs = &[KeyValue::new(
+        "result_count_bucket",
+        bucket_count(result_count),
+    )];
     search_counter().add(1, attrs);
     search_duration().record(duration.as_millis() as f64, attrs);
 }

@@ -8,9 +8,11 @@ use std::path::PathBuf;
 
 use async_trait::async_trait;
 
-use crate::error::{RepositoryError, Result};
-use crate::ids::ContentHash;
-use crate::storage::BlobStore;
+use crate::{
+    error::{RepositoryError, Result},
+    ids::ContentHash,
+    storage::BlobStore,
+};
 
 /// Filesystem-backed content-addressable blob store.
 pub struct FsBlobStore {

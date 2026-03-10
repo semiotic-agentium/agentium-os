@@ -12,25 +12,25 @@
 //! - `lineage_edges` — directed edges in the DAG
 //! - `entries_fts` — FTS5 virtual table for full-text search
 
-use std::path::Path;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use async_trait::async_trait;
 use rusqlite::{Connection, params};
 use tokio::sync::Mutex;
 
-use crate::entry::{
-    ChangeRationale, FitnessDomain, FitnessScore, RepositoryEntry, RepositoryEntryHeader, Tag,
-    Timestamp,
+use crate::{
+    entry::{
+        ChangeRationale, FitnessDomain, FitnessScore, RepositoryEntry, RepositoryEntryHeader, Tag,
+        Timestamp,
+    },
+    error::{RepositoryError, Result},
+    ids::{AgentName, ContentHash, Generation, LineageEdgeId, Version, VersionRef},
+    lineage::{
+        AncestryNode, EdgeDescription, LineageEdge, LineageKind, LineageSubgraph, Parentage,
+    },
+    search::{SearchOrder, SearchQuery},
+    storage::{LineageStore, MetadataStore, SearchStore},
 };
-use crate::error::{RepositoryError, Result};
-use crate::ids::{AgentName, ContentHash, Generation, LineageEdgeId, Version, VersionRef};
-use crate::lineage::{
-    AncestryNode, EdgeDescription, LineageEdge, LineageKind, LineageSubgraph,
-    Parentage,
-};
-use crate::search::{SearchOrder, SearchQuery};
-use crate::storage::{LineageStore, MetadataStore, SearchStore};
 
 /// SQLite-backed store for all structured repository data.
 ///
@@ -209,8 +209,8 @@ impl MetadataStore for SqliteStore {
             source_text.push_str(f.content.as_str());
             source_text.push('\n');
         }
-        let manifest_text = serde_json::to_string(entry.source.manifest.as_value())
-            .unwrap_or_default();
+        let manifest_text =
+            serde_json::to_string(entry.source.manifest.as_value()).unwrap_or_default();
 
         // Tags to insert
         let tags: Vec<String> = entry.tags.iter().map(|t| t.as_str().to_string()).collect();
@@ -361,8 +361,10 @@ impl MetadataStore for SqliteStore {
                     source: Box::new(e),
                 })?;
             match result {
-                Some(h) => Ok(Some(h.parse().map_err(|e| RepositoryError::StorageRead {
-                    source: Box::new(e),
+                Some(h) => Ok(Some(h.parse().map_err(|e| {
+                    RepositoryError::StorageRead {
+                        source: Box::new(e),
+                    }
                 })?)),
                 None => Ok(None),
             }
@@ -565,9 +567,7 @@ impl LineageStore for SqliteStore {
                     source: Box::new(e),
                 })?;
             let nodes = stmt
-                .query_map(params![hash_str], |row| {
-                    Ok(row_to_ancestry_node(row))
-                })
+                .query_map(params![hash_str], |row| Ok(row_to_ancestry_node(row)))
                 .map_err(|e| RepositoryError::StorageRead {
                     source: Box::new(e),
                 })?
@@ -594,9 +594,7 @@ impl LineageStore for SqliteStore {
                     source: Box::new(e),
                 })?;
             let nodes = stmt
-                .query_map(params![hash_str], |row| {
-                    Ok(row_to_ancestry_node(row))
-                })
+                .query_map(params![hash_str], |row| Ok(row_to_ancestry_node(row)))
                 .map_err(|e| RepositoryError::StorageRead {
                     source: Box::new(e),
                 })?
@@ -627,13 +625,13 @@ impl LineageStore for SqliteStore {
                 JOIN entries e ON e.hash = anc.hash
                 ORDER BY e.generation ASC"
             );
-            let mut stmt = conn.prepare(&sql).map_err(|e| RepositoryError::StorageRead {
-                source: Box::new(e),
-            })?;
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| RepositoryError::StorageRead {
+                    source: Box::new(e),
+                })?;
             let nodes = stmt
-                .query_map(params![hash_str], |row| {
-                    Ok(row_to_ancestry_node(row))
-                })
+                .query_map(params![hash_str], |row| Ok(row_to_ancestry_node(row)))
                 .map_err(|e| RepositoryError::StorageRead {
                     source: Box::new(e),
                 })?
@@ -660,9 +658,7 @@ impl LineageStore for SqliteStore {
                     source: Box::new(e),
                 })?;
             let nodes = stmt
-                .query_map(params![hash_str], |row| {
-                    Ok(row_to_ancestry_node(row))
-                })
+                .query_map(params![hash_str], |row| Ok(row_to_ancestry_node(row)))
                 .map_err(|e| RepositoryError::StorageRead {
                     source: Box::new(e),
                 })?
@@ -675,11 +671,7 @@ impl LineageStore for SqliteStore {
         .await
     }
 
-    async fn subgraph(
-        &self,
-        hash: &ContentHash,
-        ancestor_depth: u32,
-    ) -> Result<LineageSubgraph> {
+    async fn subgraph(&self, hash: &ContentHash, ancestor_depth: u32) -> Result<LineageSubgraph> {
         let ancestors = self.ancestors(hash, ancestor_depth).await?;
         let descendants = self.children(hash).await?;
 
@@ -694,61 +686,66 @@ impl LineageStore for SqliteStore {
         }
 
         // Load edges within the subgraph
-        let edges = self.with_conn(move |conn| {
-            let placeholders: String = all_hashes.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-            let sql = format!(
-                "SELECT id, source_hash, target_hash, kind, description
+        let edges = self
+            .with_conn(move |conn| {
+                let placeholders: String =
+                    all_hashes.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+                let sql = format!(
+                    "SELECT id, source_hash, target_hash, kind, description
                  FROM lineage_edges
                  WHERE source_hash IN ({placeholders}) OR target_hash IN ({placeholders})"
-            );
-            let mut stmt = conn.prepare(&sql).map_err(|e| RepositoryError::StorageRead {
-                source: Box::new(e),
-            })?;
+                );
+                let mut stmt = conn
+                    .prepare(&sql)
+                    .map_err(|e| RepositoryError::StorageRead {
+                        source: Box::new(e),
+                    })?;
 
-            // Bind params: each hash appears twice (source IN + target IN)
-            let mut param_values: Vec<String> = Vec::new();
-            param_values.extend(all_hashes.iter().cloned());
-            param_values.extend(all_hashes.iter().cloned());
-            let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-                param_values.iter().map(|s| s as &dyn rusqlite::types::ToSql).collect();
+                // Bind params: each hash appears twice (source IN + target IN)
+                let mut param_values: Vec<String> = Vec::new();
+                param_values.extend(all_hashes.iter().cloned());
+                param_values.extend(all_hashes.iter().cloned());
+                let param_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
+                    .iter()
+                    .map(|s| s as &dyn rusqlite::types::ToSql)
+                    .collect();
 
-            let edges = stmt
-                .query_map(param_refs.as_slice(), |row| {
-                    let id: String = row.get(0)?;
-                    let source: String = row.get(1)?;
-                    let target: String = row.get(2)?;
-                    let kind: String = row.get(3)?;
-                    let desc: String = row.get(4)?;
-                    Ok((id, source, target, kind, desc))
-                })
-                .map_err(|e| RepositoryError::StorageRead {
-                    source: Box::new(e),
-                })?
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| RepositoryError::StorageRead {
-                    source: Box::new(e),
-                })?;
+                let edges = stmt
+                    .query_map(param_refs.as_slice(), |row| {
+                        let id: String = row.get(0)?;
+                        let source: String = row.get(1)?;
+                        let target: String = row.get(2)?;
+                        let kind: String = row.get(3)?;
+                        let desc: String = row.get(4)?;
+                        Ok((id, source, target, kind, desc))
+                    })
+                    .map_err(|e| RepositoryError::StorageRead {
+                        source: Box::new(e),
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(|e| RepositoryError::StorageRead {
+                        source: Box::new(e),
+                    })?;
 
-            let mut result = Vec::new();
-            for (id, source, target, kind, desc) in edges {
-                result.push(LineageEdge {
-                    id: LineageEdgeId::from_uuid(
-                        uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
-                    ),
-                    source: source.parse().unwrap(),
-                    target: target.parse().unwrap(),
-                    kind: match kind.as_str() {
-                        "fork" => LineageKind::Fork,
-                        _ => LineageKind::Influence,
-                    },
-                    description: EdgeDescription::new(desc).unwrap_or_else(|_| {
-                        EdgeDescription::new("(no description)").unwrap()
-                    }),
-                });
-            }
-            Ok(result)
-        })
-        .await?;
+                let mut result = Vec::new();
+                for (id, source, target, kind, desc) in edges {
+                    result.push(LineageEdge {
+                        id: LineageEdgeId::from_uuid(
+                            uuid::Uuid::parse_str(&id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+                        ),
+                        source: source.parse().unwrap(),
+                        target: target.parse().unwrap(),
+                        kind: match kind.as_str() {
+                            "fork" => LineageKind::Fork,
+                            _ => LineageKind::Influence,
+                        },
+                        description: EdgeDescription::new(desc)
+                            .unwrap_or_else(|_| EdgeDescription::new("(no description)").unwrap()),
+                    });
+                }
+                Ok(result)
+            })
+            .await?;
 
         Ok(LineageSubgraph {
             root: hash.clone(),
@@ -922,15 +919,15 @@ impl SearchStore for SqliteStore {
                  ORDER BY fs.score DESC
                  LIMIT ?2";
 
-            let mut stmt = conn.prepare(sql).map_err(|e| RepositoryError::SearchExecution {
-                source: Box::new(e),
-            })?;
+            let mut stmt = conn
+                .prepare(sql)
+                .map_err(|e| RepositoryError::SearchExecution {
+                    source: Box::new(e),
+                })?;
 
             let limit_i64 = limit as i64;
             let rows = stmt
-                .query_map(params![domain_str, limit_i64], |row| {
-                    Ok(row_to_header(row))
-                })
+                .query_map(params![domain_str, limit_i64], |row| Ok(row_to_header(row)))
                 .map_err(|e| RepositoryError::SearchExecution {
                     source: Box::new(e),
                 })?
@@ -983,9 +980,11 @@ fn load_headers(
                 e.manifest_tools_json, e.manifest_capabilities_json
          FROM entries e {where_suffix}"
     );
-    let mut stmt = conn.prepare(&sql).map_err(|e| RepositoryError::StorageRead {
-        source: Box::new(e),
-    })?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| RepositoryError::StorageRead {
+            source: Box::new(e),
+        })?;
     let rows = stmt
         .query_map(params, |row| Ok(row_to_header(row)))
         .map_err(|e| RepositoryError::StorageRead {
@@ -1016,9 +1015,11 @@ fn load_entry(
                 source_json, change_rationale, created_at
          FROM entries WHERE {where_suffix}"
     );
-    let mut stmt = conn.prepare(&sql).map_err(|e| RepositoryError::StorageRead {
-        source: Box::new(e),
-    })?;
+    let mut stmt = conn
+        .prepare(&sql)
+        .map_err(|e| RepositoryError::StorageRead {
+            source: Box::new(e),
+        })?;
 
     let result = stmt
         .query_row(params, |row| {

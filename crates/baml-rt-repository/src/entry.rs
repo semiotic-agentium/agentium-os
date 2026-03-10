@@ -6,8 +6,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{ContentHash, Generation, VersionRef};
-use crate::lineage::Parentage;
+use crate::{
+    ids::{ContentHash, Generation, VersionRef},
+    lineage::Parentage,
+};
 
 // ---------------------------------------------------------------------------
 // Source content — the canonical hash inputs

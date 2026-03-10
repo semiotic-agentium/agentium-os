@@ -6,9 +6,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::entry::{ChangeRationale, SourceBundle, Tag};
-use crate::ids::{AgentName, ContentHash};
-use crate::lineage::{EdgeDescription, InfluenceRef};
+use crate::{
+    entry::{ChangeRationale, SourceBundle, Tag},
+    ids::{AgentName, ContentHash},
+    lineage::{EdgeDescription, InfluenceRef},
+};
 
 // ---------------------------------------------------------------------------
 // Publish — add a new version to an existing or new lineage
