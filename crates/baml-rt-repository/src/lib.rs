@@ -58,7 +58,7 @@ mod spans;
 
 // --- Re-exports for public API ---
 pub use commands::{ForkCommand, PublishCommand, PublishResult};
-pub use entry::{ChangeRationale, RepositoryEntry, RepositoryEntryHeader, SourceBundle};
+pub use entry::{ChangeRationale, NewEntry, RepositoryEntry, RepositoryEntryHeader, SourceBundle};
 pub use error::{RepositoryError, Result};
 pub use fs_blob_store::FsBlobStore;
 pub use ids::{AgentName, ContentHash, Generation, Version, VersionRef};

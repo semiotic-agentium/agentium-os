@@ -373,7 +373,7 @@ async fn get_lineage_returns_subgraph() {
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(json["subgraph"]["ancestors"].as_array().unwrap().len() >= 1);
+    assert!(!json["subgraph"]["ancestors"].as_array().unwrap().is_empty());
 }
 
 // -------------------------------------------------------------------------

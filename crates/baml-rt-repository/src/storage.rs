@@ -19,7 +19,7 @@
 use async_trait::async_trait;
 
 use crate::{
-    entry::{FitnessDomain, RepositoryEntry, RepositoryEntryHeader, Tag, Timestamp},
+    entry::{FitnessDomain, NewEntry, RepositoryEntry, RepositoryEntryHeader, Tag, Timestamp},
     error::Result,
     ids::{AgentName, ContentHash, Version, VersionRef},
     lineage::{AncestryNode, LineageEdge, LineageSubgraph},
@@ -63,8 +63,12 @@ pub trait BlobStore: Send + Sync {
 pub trait MetadataStore: Send + Sync {
     // --- Entry lifecycle ---
 
-    /// Insert a new entry. Fails if the hash or version_ref already exists.
-    async fn insert_entry(&self, entry: &RepositoryEntry) -> Result<()>;
+    /// Insert a new entry, atomically assigning the next version number.
+    ///
+    /// The store determines the version — callers never specify one. Returns
+    /// the complete `RepositoryEntry` with the assigned version and timestamp.
+    /// Fails if the content hash already exists.
+    async fn insert_entry(&self, entry: &NewEntry) -> Result<RepositoryEntry>;
 
     /// Retrieve a full entry by content hash.
     async fn get_by_hash(&self, hash: &ContentHash) -> Result<Option<RepositoryEntry>>;
@@ -81,9 +85,6 @@ pub trait MetadataStore: Send + Sync {
 
     /// Resolve a content hash from a version reference.
     async fn resolve_hash(&self, version_ref: &VersionRef) -> Result<Option<ContentHash>>;
-
-    /// Determine the next version number for an agent name.
-    async fn next_version(&self, name: &AgentName) -> Result<Version>;
 
     // --- Listings ---
 

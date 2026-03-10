@@ -20,8 +20,8 @@ use tokio::sync::Mutex;
 
 use crate::{
     entry::{
-        ChangeRationale, FitnessDomain, FitnessScore, RepositoryEntry, RepositoryEntryHeader, Tag,
-        Timestamp,
+        ChangeRationale, FitnessDomain, FitnessScore, NewEntry, RepositoryEntry,
+        RepositoryEntryHeader, Tag, Timestamp,
     },
     error::{RepositoryError, Result},
     ids::{AgentName, ContentHash, Generation, LineageEdgeId, Version, VersionRef},
@@ -169,16 +169,14 @@ CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
 
 #[async_trait]
 impl MetadataStore for SqliteStore {
-    async fn insert_entry(&self, entry: &RepositoryEntry) -> Result<()> {
+    async fn insert_entry(&self, entry: &NewEntry) -> Result<RepositoryEntry> {
         let hash = entry.hash.as_str().to_string();
-        let name = entry.version_ref.name.as_str().to_string();
-        let version = entry.version_ref.version.as_u32();
+        let name = entry.name.as_str().to_string();
         let generation = entry.generation.as_u32();
         let parentage_json =
             serde_json::to_string(&entry.parentage).expect("parentage serialization");
         let source_json = serde_json::to_string(&entry.source).expect("source serialization");
         let rationale = entry.change_rationale.as_str().to_string();
-        let created_at = entry.created_at.as_str().to_string();
         let description = entry.source.manifest.description().map(String::from);
         let tools_json = serde_json::to_string(
             &entry
@@ -215,20 +213,29 @@ impl MetadataStore for SqliteStore {
         // Tags to insert
         let tags: Vec<String> = entry.tags.iter().map(|t| t.as_str().to_string()).collect();
 
-        // Fitness scores to insert
-        let scores: Vec<(String, f64, String)> = entry
-            .fitness_scores
-            .iter()
-            .map(|s| {
-                (
-                    s.domain.as_str().to_string(),
-                    s.score,
-                    s.recorded_at.as_str().to_string(),
-                )
-            })
-            .collect();
+        // Compute timestamp now (before entering the blocking closure)
+        let now = crate::service::chrono_now();
+        let created_at = now.as_str().to_string();
 
         self.with_conn(move |conn| {
+            // Atomically determine next version inside the same connection lock.
+            // No TOCTOU race: we hold the Mutex<Connection> for the entire operation.
+            let max: Option<u32> = conn
+                .query_row(
+                    "SELECT MAX(version) FROM entries WHERE agent_name = ?1",
+                    params![name],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|e| RepositoryError::StorageRead {
+                    source: Box::new(e),
+                })?
+                .flatten();
+            let version = match max {
+                Some(v) => v + 1,
+                None => 1,
+            };
+
             conn.execute(
                 "INSERT INTO entries (hash, agent_name, version, generation, parentage_json,
                  source_json, change_rationale, created_at, manifest_description,
@@ -249,20 +256,14 @@ impl MetadataStore for SqliteStore {
                 ],
             )
             .map_err(|e| {
-                if let rusqlite::Error::SqliteFailure(ref err, _) = e {
-                    if err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY {
-                        return RepositoryError::DuplicateHash {
-                            hash: hash.parse().unwrap(),
-                            existing_name: name.parse().unwrap(),
-                            existing_version: Version::new(version).unwrap(),
-                        };
-                    }
-                    if err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE {
-                        return RepositoryError::VersionConflict {
-                            name: name.parse().unwrap(),
-                            version: Version::new(version).unwrap(),
-                        };
-                    }
+                if let rusqlite::Error::SqliteFailure(ref err, _) = e
+                    && err.extended_code == rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                {
+                    return RepositoryError::DuplicateHash {
+                        hash: hash.parse().unwrap(),
+                        existing_name: name.parse().unwrap(),
+                        existing_version: Version::new(version).unwrap(),
+                    };
                 }
                 RepositoryError::StorageWrite {
                     source: Box::new(e),
@@ -290,19 +291,28 @@ impl MetadataStore for SqliteStore {
                 })?;
             }
 
-            // Fitness scores
-            for (domain, score, recorded_at) in &scores {
-                conn.execute(
-                    "INSERT INTO fitness_scores (entry_hash, domain, score, recorded_at)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![hash, domain, score, recorded_at],
-                )
-                .map_err(|e| RepositoryError::StorageWrite {
-                    source: Box::new(e),
-                })?;
-            }
+            // Build the complete RepositoryEntry with the assigned version.
+            let assigned_version = Version::new(version).expect("version > 0");
+            let parentage: Parentage =
+                serde_json::from_str(&parentage_json).expect("parentage round-trip");
+            let source = serde_json::from_str(&source_json).expect("source round-trip");
+            let change_rationale = ChangeRationale::new(rationale).expect("rationale round-trip");
+            let tags_out = tags.iter().map(|t| Tag::new(t.as_str())).collect();
 
-            Ok(())
+            Ok(RepositoryEntry {
+                hash: hash.parse().unwrap(),
+                version_ref: VersionRef {
+                    name: name.parse().unwrap(),
+                    version: assigned_version,
+                },
+                source,
+                parentage,
+                generation: Generation::new(generation),
+                change_rationale,
+                created_at: Timestamp::new(created_at),
+                fitness_scores: vec![],
+                tags: tags_out,
+            })
         })
         .await
     }
@@ -367,29 +377,6 @@ impl MetadataStore for SqliteStore {
                     }
                 })?)),
                 None => Ok(None),
-            }
-        })
-        .await
-    }
-
-    async fn next_version(&self, name: &AgentName) -> Result<Version> {
-        let name_str = name.as_str().to_string();
-        self.with_conn(move |conn| {
-            let mut stmt = conn
-                .prepare("SELECT MAX(version) FROM entries WHERE agent_name = ?1")
-                .map_err(|e| RepositoryError::StorageRead {
-                    source: Box::new(e),
-                })?;
-            let max: Option<u32> = stmt
-                .query_row(params![name_str], |row| row.get(0))
-                .optional()
-                .map_err(|e| RepositoryError::StorageRead {
-                    source: Box::new(e),
-                })?
-                .flatten();
-            match max {
-                Some(v) => Ok(Version::new(v + 1).expect("version overflow")),
-                None => Ok(Version::FIRST),
             }
         })
         .await

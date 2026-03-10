@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ids::{ContentHash, Generation, VersionRef},
+    ids::{AgentName, ContentHash, Generation, VersionRef},
     lineage::Parentage,
 };
 
@@ -261,6 +261,34 @@ impl std::fmt::Display for FitnessDomain {
 }
 
 // ---------------------------------------------------------------------------
+// NewEntry — the caller-provided draft (version assigned by the store)
+// ---------------------------------------------------------------------------
+
+/// A draft entry provided by the caller. The repository assigns the version
+/// atomically during insert — the caller never specifies a version number.
+///
+/// `hash` is computed by the service from the source bundle (it depends on
+/// content, not on version). `name` identifies the lineage. Everything else
+/// describes the content, provenance, and metadata.
+#[derive(Debug, Clone)]
+pub struct NewEntry {
+    /// Content hash computed from the source bundle.
+    pub hash: ContentHash,
+    /// Agent lineage name — determines which version sequence this belongs to.
+    pub name: AgentName,
+    /// Complete source content.
+    pub source: SourceBundle,
+    /// How this entry relates to existing entries.
+    pub parentage: Parentage,
+    /// Lineage depth from root.
+    pub generation: Generation,
+    /// Why this version was created.
+    pub change_rationale: ChangeRationale,
+    /// Initial tags to attach.
+    pub tags: Vec<Tag>,
+}
+
+// ---------------------------------------------------------------------------
 // RepositoryEntry — the complete stored agent record
 // ---------------------------------------------------------------------------
 
@@ -268,6 +296,9 @@ impl std::fmt::Display for FitnessDomain {
 ///
 /// The `hash` is the primary key. The `version_ref` is the human-friendly
 /// secondary key. Both are unique within the repository.
+///
+/// The `version_ref.version` is assigned atomically by the store during
+/// insert — it is never provided by the caller.
 ///
 /// Source content and lineage are immutable after creation. Metadata (fitness
 /// scores, tags) may be appended but never modified in place.

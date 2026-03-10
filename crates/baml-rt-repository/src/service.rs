@@ -10,9 +10,9 @@ use baml_rt_hash::{CanonicalHasher, HashInput, HashInputFile};
 
 use crate::{
     commands::{ForkCommand, PublishCommand, PublishOrigin, PublishResult},
-    entry::{RepositoryEntry, RepositoryEntryHeader, SourceBundle, Tag, Timestamp},
+    entry::{NewEntry, RepositoryEntry, RepositoryEntryHeader, SourceBundle, Tag, Timestamp},
     error::{RepositoryError, Result},
-    ids::{AgentName, ContentHash, Generation, LineageEdgeId, Version, VersionRef},
+    ids::{AgentName, ContentHash, Generation, LineageEdgeId, Version},
     lineage::{EdgeDescription, LineageEdge, LineageKind, LineageSubgraph, Parentage},
     search::SearchQuery,
     storage::{BlobStore, LineageStore, MetadataStore, SearchStore},
@@ -52,9 +52,9 @@ impl RepositoryService {
     /// Publish a new agent version.
     ///
     /// 1. Compute canonical hash from source bundle.
-    /// 2. Assign next version number.
-    /// 3. Determine parentage and generation from origin.
-    /// 4. Insert metadata and lineage edges.
+    /// 2. Determine parentage and generation from origin.
+    /// 3. Insert metadata (store atomically assigns version).
+    /// 4. Record lineage edges.
     ///
     /// Does **not** write a blob (the caller packages the tar.gz separately
     /// via `put_blob`).
@@ -62,52 +62,37 @@ impl RepositoryService {
         let _span = crate::spans::publish(cmd.name.as_str());
 
         let hash = compute_hash(&cmd.source);
-        let version = self.metadata.next_version(&cmd.name).await?;
 
-        let (parentage, generation, edges) = match cmd.origin {
+        let (parentage, generation, deferred_edges) = match cmd.origin {
             PublishOrigin::Original => (Parentage::Original, Generation::ROOT, vec![]),
 
             PublishOrigin::Iteration => {
-                // Find previous version to create implicit fork edge
-                let prev_version_num = version.as_u32().checked_sub(1);
-                match prev_version_num {
-                    Some(0) | None => {
-                        // First version — treat as original
-                        (Parentage::Original, Generation::ROOT, vec![])
-                    }
-                    Some(prev_v) => {
-                        let prev_ver = Version::new(prev_v).expect("checked > 0");
-                        let prev_ref = VersionRef {
-                            name: cmd.name.clone(),
-                            version: prev_ver,
+                // Look up the latest existing version to create an implicit fork edge.
+                match self.metadata.get_latest(&cmd.name).await? {
+                    Some(prev) => {
+                        let edge = LineageEdge {
+                            id: LineageEdgeId::from_uuid(uuid::Uuid::new_v4()),
+                            source: prev.hash.clone(),
+                            target: hash.clone(),
+                            kind: LineageKind::Fork,
+                            description: EdgeDescription::new(format!(
+                                "Iteration from {ver}",
+                                ver = prev.version_ref
+                            ))
+                            .expect("non-empty"),
                         };
-                        match self.metadata.resolve_hash(&prev_ref).await? {
-                            Some(prev_hash) => {
-                                let prev_entry = self.metadata.get_by_hash(&prev_hash).await?;
-                                let prev_gen =
-                                    prev_entry.map(|e| e.generation).unwrap_or(Generation::ROOT);
-                                let edge = LineageEdge {
-                                    id: LineageEdgeId::from_uuid(uuid::Uuid::new_v4()),
-                                    source: prev_hash.clone(),
-                                    target: hash.clone(),
-                                    kind: LineageKind::Fork,
-                                    description: EdgeDescription::new(format!(
-                                        "Iteration from {name}@{prev_ver}",
-                                        name = cmd.name
-                                    ))
-                                    .expect("non-empty"),
-                                };
-                                (
-                                    Parentage::Forked {
-                                        parent: prev_hash,
-                                        description: edge.description.clone(),
-                                    },
-                                    prev_gen,
-                                    vec![edge],
-                                )
-                            }
-                            None => (Parentage::Original, Generation::ROOT, vec![]),
-                        }
+                        (
+                            Parentage::Forked {
+                                parent: prev.hash,
+                                description: edge.description.clone(),
+                            },
+                            prev.generation,
+                            vec![edge],
+                        )
+                    }
+                    None => {
+                        // No prior version — treat as original
+                        (Parentage::Original, Generation::ROOT, vec![])
                     }
                 }
             }
@@ -117,7 +102,6 @@ impl RepositoryService {
                 let mut max_gen = Generation::ROOT;
 
                 for inf in &influences {
-                    // Verify source exists
                     let source_entry = self.metadata.get_by_hash(&inf.source).await?;
                     match source_entry {
                         Some(e) => {
@@ -150,41 +134,34 @@ impl RepositoryService {
             }
         };
 
-        let now = chrono_now();
-        let version_ref = VersionRef {
-            name: cmd.name.clone(),
-            version,
-        };
-
-        let entry = RepositoryEntry {
+        let new_entry = NewEntry {
             hash: hash.clone(),
-            version_ref: version_ref.clone(),
+            name: cmd.name.clone(),
             source: cmd.source,
-            parentage: parentage.clone(),
+            parentage,
             generation,
             change_rationale: cmd.rationale,
-            created_at: now,
-            fitness_scores: vec![],
             tags: cmd.tags,
         };
 
-        self.metadata.insert_entry(&entry).await?;
+        // Store atomically assigns the version number.
+        let stored = self.metadata.insert_entry(&new_entry).await?;
 
-        if !edges.is_empty() {
-            self.lineage.record_edges(&edges).await?;
+        if !deferred_edges.is_empty() {
+            self.lineage.record_edges(&deferred_edges).await?;
         }
 
         tracing::info!(
-            hash = %hash,
-            version = %version_ref,
-            generation = generation.as_u32(),
+            hash = %stored.hash,
+            version = %stored.version_ref,
+            generation = stored.generation.as_u32(),
             event = "published"
         );
 
         Ok(PublishResult {
-            hash,
-            version_ref,
-            generation,
+            hash: stored.hash,
+            version_ref: stored.version_ref,
+            generation: stored.generation,
         })
     }
 
@@ -206,13 +183,7 @@ impl RepositoryService {
             })?;
 
         let hash = compute_hash(&cmd.source);
-        let version = Version::FIRST;
         let generation = source_entry.generation.increment();
-
-        let version_ref = VersionRef {
-            name: cmd.new_name.clone(),
-            version,
-        };
 
         let parentage = Parentage::Forked {
             parent: cmd.source_hash.clone(),
@@ -227,33 +198,31 @@ impl RepositoryService {
             description: cmd.fork_description,
         };
 
-        let now = chrono_now();
-        let entry = RepositoryEntry {
+        let new_entry = NewEntry {
             hash: hash.clone(),
-            version_ref: version_ref.clone(),
+            name: cmd.new_name.clone(),
             source: cmd.source,
             parentage,
             generation,
             change_rationale: cmd.rationale,
-            created_at: now,
-            fitness_scores: vec![],
             tags: cmd.tags,
         };
 
-        self.metadata.insert_entry(&entry).await?;
+        // Store atomically assigns version (v1 for a new lineage).
+        let stored = self.metadata.insert_entry(&new_entry).await?;
         self.lineage.record_edges(&[edge]).await?;
 
         tracing::info!(
-            hash = %hash,
-            version = %version_ref,
+            hash = %stored.hash,
+            version = %stored.version_ref,
             forked_from = %cmd.source_hash,
             event = "forked"
         );
 
         Ok(PublishResult {
-            hash,
-            version_ref,
-            generation,
+            hash: stored.hash,
+            version_ref: stored.version_ref,
+            generation: stored.generation,
         })
     }
 
@@ -394,13 +363,11 @@ fn compute_hash(source: &SourceBundle) -> ContentHash {
 }
 
 /// UTC timestamp in RFC 3339 format.
-fn chrono_now() -> Timestamp {
-    // Use system time formatted as RFC 3339.
+pub(crate) fn chrono_now() -> Timestamp {
     let now = std::time::SystemTime::now();
     let duration = now
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     let secs = duration.as_secs();
-    // Simple RFC 3339 formatting without chrono dependency
     Timestamp::new(format!("{secs}"))
 }
