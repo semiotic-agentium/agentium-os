@@ -78,9 +78,9 @@ jobs:
         with:
           tool: cargo-nextest
 
-      - name: Run nextest
+      - name: Run nextest (release)
         run: |
-          cargo nextest run --workspace --locked --profile ci --no-fail-fast \
+          cargo nextest run --workspace --locked --release --profile ci --no-fail-fast \
             --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests
         env:
           RUSTUP_TOOLCHAIN: stable
