@@ -1,0 +1,12 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+expression: snapshot
+---
+{
+  "status": 501,
+  "body": {
+    "status": 501,
+    "title": "Not Implemented",
+    "detail": "Provenance query service not configured"
+  }
+}

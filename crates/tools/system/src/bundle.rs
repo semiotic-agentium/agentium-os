@@ -3,9 +3,13 @@
 use std::sync::Arc;
 
 use baml_rt_core::{A2aRequestHandler, AgentLister};
+use baml_rt_provenance::ProvenanceOpsQuery;
 use baml_rt_tools::{ToolBundle, ToolBundleMetadata, ToolRegistry, bundles::BundleType};
 
-use crate::{a2a_session::A2aSessionBundle, discover_bundle::DiscoverBundle};
+use crate::{
+    a2a_session::A2aSessionBundle, discover_bundle::DiscoverBundle,
+    provenance_bundle::ProvenanceBundle,
+};
 
 /// System bundle — host tools for system operations (name/description only).
 pub struct System;
@@ -23,6 +27,7 @@ impl BundleType for System {
 pub struct SystemBundle {
     a2a: A2aSessionBundle,
     discover: DiscoverBundle,
+    provenance: Option<ProvenanceBundle>,
 }
 
 impl SystemBundle {
@@ -34,6 +39,20 @@ impl SystemBundle {
         Self {
             a2a: A2aSessionBundle::new(a2a_handler),
             discover: DiscoverBundle::new(agent_list, tool_registry),
+            provenance: None,
+        }
+    }
+
+    pub fn new_with_provenance(
+        agent_list: Arc<dyn AgentLister>,
+        tool_registry: Arc<ToolRegistry>,
+        a2a_handler: Arc<dyn A2aRequestHandler>,
+        query: Arc<dyn ProvenanceOpsQuery>,
+    ) -> Self {
+        Self {
+            a2a: A2aSessionBundle::new(a2a_handler),
+            discover: DiscoverBundle::new(agent_list, tool_registry),
+            provenance: Some(ProvenanceBundle::new(query)),
         }
     }
 }
@@ -53,6 +72,9 @@ impl ToolBundle for SystemBundle {
     fn functions(&self) -> Vec<Arc<dyn baml_rt_tools::ToolHandler>> {
         let mut fns = self.a2a.functions();
         fns.extend(self.discover.functions());
+        if let Some(bundle) = &self.provenance {
+            fns.extend(bundle.functions());
+        }
         fns
     }
 }

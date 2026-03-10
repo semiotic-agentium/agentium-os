@@ -44,6 +44,7 @@ pub struct LLMCompletionHandle {
     collector: Arc<BamlLLMCollector>,
     start: Instant,
     scope: context::RuntimeScope,
+    llm_result_payload: serde_json::Value,
 }
 
 impl LLMCompletionHandle {
@@ -59,7 +60,12 @@ impl LLMCompletionHandle {
         }
         let elapsed_ms = self.start.elapsed().as_millis() as u64;
         self.collector
-            .complete_pending_effects(outcome, elapsed_ms, rejection_reason)
+            .complete_pending_effects(
+                outcome,
+                elapsed_ms,
+                rejection_reason,
+                Some(self.llm_result_payload),
+            )
             .await;
     }
 }
@@ -110,6 +116,7 @@ impl BamlLLMCollector {
         outcome: Outcome,
         duration_ms: u64,
         rejection_reason: Option<String>,
+        llm_result_payload: Option<serde_json::Value>,
     ) {
         let emitter = match self.effect_emitter.as_ref() {
             Some(e) => e.clone(),
@@ -124,6 +131,7 @@ impl BamlLLMCollector {
                 .complete(
                     emitter.as_ref(),
                     None,
+                    llm_result_payload.clone(),
                     duration_ms,
                     outcome,
                     rejection_reason.clone(),
@@ -142,11 +150,13 @@ impl BamlLLMCollector {
         collector: Arc<BamlLLMCollector>,
         start: Instant,
         scope: context::RuntimeScope,
+        llm_result_payload: serde_json::Value,
     ) -> LLMCompletionHandle {
         LLMCompletionHandle {
             collector,
             start,
             scope,
+            llm_result_payload,
         }
     }
 

@@ -101,7 +101,13 @@ export interface StatusUpdatePayload {
   taskId?: string;
   status?: TaskStatus;
   /** Nested event body for status updates. */
-  statusUpdate?: { message?: A2aMessage; metadata?: Record<string, unknown> };
+  statusUpdate?: {
+    message?: A2aMessage;
+    metadata?: Record<string, unknown>;
+    contextId?: string;
+    taskId?: string;
+    status?: TaskStatus;
+  };
 }
 
 export interface TaskPayload {

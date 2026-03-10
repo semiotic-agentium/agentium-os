@@ -1,0 +1,124 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+expression: snapshot
+---
+{
+  "status": 200,
+  "body": {
+    "resource": "tool_calls",
+    "rows": [
+      {
+        "activity_id": "tool_call:ctx-100-1:msg-c:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+        "timestamp_ms": "[timestamp_ms]",
+        "context_id": "ctx-100-1",
+        "task_id": null,
+        "message_id": "msg-c",
+        "agent_id": "[uuid]",
+        "tool_name": "support/delegate",
+        "baml_prompt": "DelegatePrompt",
+        "duration_ms": 240,
+        "activity_outcome": "Failed",
+        "tool_call": {
+          "name": "support/delegate",
+          "args": {
+            "objective": "narrow evidence fixture"
+          },
+          "phase": null
+        },
+        "tool_result": null,
+        "agent_package": "unknown",
+        "agent_version": "unknown",
+        "agent_display": "unknown/unknown",
+        "activity_status": "Completed",
+        "failure_class": "failed_graph_incomplete",
+        "failure_evidence": "metadata",
+        "activity_kind": "tool_call"
+      },
+      {
+        "activity_id": "tool_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+        "timestamp_ms": "[timestamp_ms]",
+        "context_id": "ctx-100-1",
+        "task_id": null,
+        "message_id": "msg-a",
+        "agent_id": "[uuid]",
+        "tool_name": "support/calculate",
+        "baml_prompt": "CalcPrompt",
+        "duration_ms": 420,
+        "activity_outcome": "Failed",
+        "tool_call": {
+          "name": "support/calculate",
+          "args": {
+            "expression": "2+2"
+          },
+          "phase": null
+        },
+        "tool_result": {
+          "error": "timeout while calling tool"
+        },
+        "agent_package": "unknown",
+        "agent_version": "unknown",
+        "agent_display": "unknown/unknown",
+        "activity_status": "Completed",
+        "failure_class": "timeout",
+        "failure_evidence": "metadata",
+        "activity_kind": "tool_call"
+      }
+    ],
+    "summary": {
+      "count": 2,
+      "failedCount": 2,
+      "durationMsTotal": 660,
+      "totalTokens": 0,
+      "promptTokensTotal": 0,
+      "completionTokensTotal": 0,
+      "latencyHotspots": {
+        "p95": 420.0,
+        "p99": 420.0
+      },
+      "tokenHotspots": {
+        "p95": 0.0,
+        "p99": 0.0
+      }
+    },
+    "hotspotGroups": [
+      {
+        "groupKey": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa|support/calculate",
+        "groupValues": [
+          "[uuid]",
+          "support/calculate"
+        ],
+        "groupDimensions": [
+          "agent_id",
+          "tool_name"
+        ],
+        "count": 1,
+        "failed": 1,
+        "failureRate": 1.0,
+        "avgDurationMs": 420.0,
+        "avgTotalTokens": 0.0
+      },
+      {
+        "groupKey": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa|support/delegate",
+        "groupValues": [
+          "[uuid]",
+          "support/delegate"
+        ],
+        "groupDimensions": [
+          "agent_id",
+          "tool_name"
+        ],
+        "count": 1,
+        "failed": 1,
+        "failureRate": 1.0,
+        "avgDurationMs": 240.0,
+        "avgTotalTokens": 0.0
+      }
+    ],
+    "truncated": false,
+    "appliedCaps": {
+      "page_size": 50,
+      "max_page_size": 200,
+      "top_k": 10
+    }
+  }
+}

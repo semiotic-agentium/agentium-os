@@ -219,6 +219,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 context_id,
                 metadata,
                 usage,
+                result_payload,
                 duration_ms,
                 outcome,
                 rejection_reason,
@@ -237,9 +238,19 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 };
                 let prov_usage_clone = prov_usage.clone();
                 let prompt = normalized_prompt(&metadata.prompt);
+                let completion_metadata = match &metadata.metadata {
+                    Value::Object(map) => {
+                        let mut out = map.clone();
+                        if let Some(result_payload) = result_payload.clone() {
+                            out.insert("result".to_string(), result_payload);
+                        }
+                        Value::Object(out)
+                    }
+                    _ => metadata.metadata.clone(),
+                };
                 let Some(completed_event) = build_prov_event_completion(
                     context_id,
-                    &metadata.metadata,
+                    &completion_metadata,
                     ProvenanceEventType::LlmCall,
                     |ctx_id, task_id| {
                         ProvEvent::llm_call_completed_task(
@@ -249,7 +260,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             metadata.model.clone(),
                             metadata.function_name.clone(),
                             prompt.clone(),
-                            metadata.metadata.clone(),
+                            completion_metadata.clone(),
                             prov_usage.clone(),
                             *duration_ms,
                             *outcome,
@@ -263,7 +274,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             metadata.model.clone(),
                             metadata.function_name.clone(),
                             prompt.clone(),
-                            metadata.metadata.clone(),
+                            completion_metadata.clone(),
                             prov_usage_clone,
                             *duration_ms,
                             *outcome,

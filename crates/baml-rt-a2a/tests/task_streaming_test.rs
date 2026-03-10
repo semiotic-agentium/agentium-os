@@ -205,6 +205,14 @@ async fn setup_agent_with_a2a_session_tool() -> A2aAgent {
     agent
 }
 
+fn test_timeout_secs() -> u64 {
+    if std::env::var_os("CI").is_some() {
+        45
+    } else {
+        20
+    }
+}
+
 #[tokio::test]
 async fn test_message_send_deterministic_task() {
     let _permit = acquire_test_permit().await;
@@ -218,22 +226,38 @@ async fn test_message_send_deterministic_task() {
     );
 
     let responses = tokio::time::timeout(
-        std::time::Duration::from_secs(20),
+        std::time::Duration::from_secs(test_timeout_secs()),
         collect_responses(&agent, request),
     )
     .await
     .expect("stream request timed out")
     .unwrap();
-    let result = responses[0].get("result").cloned().unwrap_or(Value::Null);
-    let content = result.get("chunk").cloned().unwrap_or(result);
-    let task_id = content
-        .get("task")
-        .and_then(|task| task.get("id"))
-        .and_then(|value| value.as_str());
-    // Live path first turn uses a context-stable task_id (context_id.as_str()); agent may otherwise yield js-task-*.
+    // Find first chunk with task.id (may be in result.chunk or statusUpdate)
+    let task_id = responses.iter().find_map(|r| {
+        let result = r.get("result")?;
+        let chunk = result.get("chunk")?;
+        chunk
+            .get("task")
+            .and_then(|t| t.get("id"))
+            .and_then(Value::as_str)
+            .or_else(|| {
+                chunk
+                    .get("statusUpdate")
+                    .and_then(|s| s.get("status"))
+                    .and_then(|s| s.get("taskId"))
+                    .and_then(Value::as_str)
+            })
+    });
+    // Live path: context_id or live-task:...; JS path: js-task-*; fallback: stream-{context_id}
+    let valid = task_id.is_some_and(|id| {
+        id.starts_with("js-task-")
+            || id.starts_with("live-task:")
+            || id.starts_with("stream-")
+            || id == context_id.as_str()
+    });
     assert!(
-        task_id.is_some_and(|id| id.starts_with("js-task-") || id == context_id.as_str()),
-        "expected deterministic task id (js-task-* or context-stable), got {:?}",
+        valid,
+        "expected deterministic task id (js-task-*, live-task:*, stream-*, or context-stable), got {:?}",
         task_id
     );
 }

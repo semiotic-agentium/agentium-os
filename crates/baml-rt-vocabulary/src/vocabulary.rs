@@ -27,6 +27,9 @@ pub mod a2a {
     pub const CONTENT: &str = "a2a:content";
     pub const DIRECTION: &str = "a2a:direction";
     pub const METADATA: &str = "a2a:metadata";
+    pub const PHASE: &str = "a2a:phase";
+    pub const RESULT: &str = "a2a:result";
+    pub const ERROR: &str = "a2a:error";
     pub const EVENT_ID: &str = "a2a:event_id";
     pub const RELATION: &str = "a2a:relation";
     pub const FROM: &str = "a2a:from";
@@ -51,6 +54,13 @@ pub mod a2a {
     pub const REASON: &str = "a2a:reason";
     pub const TIMESTAMP_MS: &str = "a2a:timestamp_ms";
     pub const DELEGATION_TARGET: &str = "a2a:delegation_target";
+    pub const FAILURE_CLASS: &str = "a2a:failure_class";
+    pub const FAILURE_EVIDENCE: &str = "a2a:failure_evidence";
+    pub const FAILURE_CODE: &str = "a2a:failure_code";
+    pub const LLM_CALL_PAYLOAD_ID: &str = "a2a:llm_call_payload_id";
+    pub const LLM_RESULT_PAYLOAD_ID: &str = "a2a:llm_result_payload_id";
+    pub const TOOL_CALL_PAYLOAD_ID: &str = "a2a:tool_call_payload_id";
+    pub const TOOL_RESULT_PAYLOAD_ID: &str = "a2a:tool_result_payload_id";
 }
 
 pub mod prov_types {
@@ -89,6 +99,8 @@ pub mod a2a_types {
     pub const MESSAGE: &str = "a2a:Message";
     pub const ARTIFACT: &str = "a2a:Artifact";
     pub const DELEGATION_TARGET: &str = "a2a:DelegationTarget";
+    pub const FAILURE_CLASSIFICATION_ACTIVITY: &str = "a2a:FailureClassificationActivity";
+    pub const FAILURE_CLASSIFICATION: &str = "a2a:FailureClassification";
 }
 
 pub mod a2a_relation_types {
@@ -142,6 +154,8 @@ pub mod a2a_roles {
     pub const REJECTED_OUTPUT: &str = "a2a:rejected_output";
     pub const TASK_STATE: &str = "task_state";
     pub const DELEGATION_TARGET: &str = "a2a:delegation_target";
+    pub const FAILURE_CLASSIFICATION: &str = "a2a:failure_classification";
+    pub const FAILURE_EVIDENCE: &str = "a2a:failure_evidence";
 }
 
 pub mod agent_types {
@@ -186,6 +200,9 @@ pub mod storage_safe {
     pub const A2A_CONTENT: &str = "a2a_content";
     pub const A2A_DIRECTION: &str = "a2a_direction";
     pub const A2A_METADATA: &str = "a2a_metadata";
+    pub const A2A_PHASE: &str = "a2a_phase";
+    pub const A2A_RESULT: &str = "a2a_result";
+    pub const A2A_ERROR: &str = "a2a_error";
     pub const A2A_EVENT_ID: &str = "a2a_event_id";
     pub const A2A_RELATION: &str = "a2a_relation";
     pub const A2A_FROM: &str = "a2a_from";
@@ -206,6 +223,13 @@ pub mod storage_safe {
     pub const A2A_ARTIFACT_TYPE: &str = "a2a_artifact_type";
     pub const A2A_CONTEXT_ID: &str = "a2a_context_id";
     pub const A2A_TIMESTAMP_MS: &str = "a2a_timestamp_ms";
+    pub const A2A_FAILURE_CLASS: &str = "a2a_failure_class";
+    pub const A2A_FAILURE_EVIDENCE: &str = "a2a_failure_evidence";
+    pub const A2A_FAILURE_CODE: &str = "a2a_failure_code";
+    pub const A2A_LLM_CALL_PAYLOAD_ID: &str = "a2a_llm_call_payload_id";
+    pub const A2A_LLM_RESULT_PAYLOAD_ID: &str = "a2a_llm_result_payload_id";
+    pub const A2A_TOOL_CALL_PAYLOAD_ID: &str = "a2a_tool_call_payload_id";
+    pub const A2A_TOOL_RESULT_PAYLOAD_ID: &str = "a2a_tool_result_payload_id";
 }
 
 pub mod node_labels {
@@ -223,4 +247,6 @@ pub mod node_labels {
     pub const MESSAGE: &str = "A2AMessage";
     pub const ARTIFACT: &str = "Artifact";
     pub const DELEGATION_TARGET: &str = "DelegationTarget";
+    pub const FAILURE_CLASSIFICATION_ACTIVITY: &str = "FailureClassificationActivity";
+    pub const FAILURE_CLASSIFICATION: &str = "FailureClassification";
 }

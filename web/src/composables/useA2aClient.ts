@@ -4,6 +4,7 @@ import type {
   ChatMessage,
   ContentBlock,
   ContextMetricsResponse,
+  A2aMessage,
   JSONRPCResponse,
   ChunkPayload,
   ToolCompletion,
@@ -525,8 +526,15 @@ export function useA2aClient() {
   async function fetchProvenanceDiagram(): Promise<void> {
     if (!_contextId.value) return;
     try {
-      const res = await fetch(`/mermaid/context/${_contextId.value}`);
-      if (res.ok) provenanceDiagram.value = await res.text();
+      // Canonical API route is /contexts/{context_id}/mermaid.
+      // Keep a legacy fallback while old backends/links still exist.
+      let res = await fetch(`/contexts/${_contextId.value}/mermaid`);
+      if (!res.ok && res.status === 404) {
+        res = await fetch(`/mermaid/context/${_contextId.value}`);
+      }
+      if (res.ok) {
+        provenanceDiagram.value = await res.text();
+      }
     } catch {
       // provenance endpoint not available; leave existing diagram
     }

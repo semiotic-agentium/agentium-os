@@ -1,0 +1,214 @@
+---
+source: crates/tools/system/tests/discovery_sessions_test.rs
+expression: "redact_runtime_fields(serde_json::json!({\n    \"pass1\": snapshot_safe_tool_output(pass1_output), \"derived_filters\":\n    {\n        \"agentId\": derived_agent_id, \"toolName\": derived_tool_name,\n        \"bamlPrompt\": derived_prompt\n    }, \"pass2\": snapshot_safe_tool_output(pass2_output)\n}))"
+---
+{
+  "derived_filters": {
+    "agentId": "00000000-0000-0000-0000-000000000710",
+    "bamlPrompt": "CalcPrompt",
+    "toolName": "support/calculate"
+  },
+  "pass1": {
+    "done": true,
+    "payload": {
+      "appliedCaps": {
+        "max_page_size": 50,
+        "page_size": 5,
+        "top_k": 10
+      },
+      "hotspotGroups": [
+        {
+          "avgDurationMs": 500.0,
+          "avgTotalTokens": 0.0,
+          "count": 1,
+          "failed": 1,
+          "failureRate": 1.0,
+          "groupDimensions": [
+            "agent_id",
+            "tool_name",
+            "baml_prompt"
+          ],
+          "groupKey": "00000000-0000-0000-0000-000000000710|support/calculate|CalcPrompt",
+          "groupValues": [
+            "00000000-0000-0000-0000-000000000710",
+            "support/calculate",
+            "CalcPrompt"
+          ]
+        },
+        {
+          "avgDurationMs": 330.0,
+          "avgTotalTokens": 0.0,
+          "count": 1,
+          "failed": 1,
+          "failureRate": 1.0,
+          "groupDimensions": [
+            "agent_id",
+            "tool_name",
+            "baml_prompt"
+          ],
+          "groupKey": "00000000-0000-0000-0000-000000000710|support/delegate|DelegatePrompt",
+          "groupValues": [
+            "00000000-0000-0000-0000-000000000710",
+            "support/delegate",
+            "DelegatePrompt"
+          ]
+        }
+      ],
+      "resource": "tool_calls",
+      "rows": [
+        {
+          "activity_id": "tool_call:ctx-9-14:tool-msg-caller:00000000-0000-0000-0000-000000000710:0",
+          "activity_kind": "tool_call",
+          "activity_outcome": "Failed",
+          "activity_status": "Completed",
+          "agent_display": "unknown/unknown",
+          "agent_id": "00000000-0000-0000-0000-000000000710",
+          "agent_package": "unknown",
+          "agent_version": "unknown",
+          "baml_prompt": "CalcPrompt",
+          "context_id": "ctx-9-14",
+          "duration_ms": 500,
+          "failure_class": "timeout",
+          "failure_evidence": "metadata",
+          "message_id": "tool-msg-caller",
+          "task_id": null,
+          "timestamp_ms": "[timestamp_ms]",
+          "tool_call": {
+            "args": {
+              "expression": "1+1"
+            },
+            "name": "support/calculate",
+            "phase": null
+          },
+          "tool_name": "support/calculate",
+          "tool_result": {
+            "error": "timeout"
+          }
+        },
+        {
+          "activity_id": "tool_call:ctx-9-14:tool-msg-linked:00000000-0000-0000-0000-000000000710:0",
+          "activity_kind": "tool_call",
+          "activity_outcome": "Failed",
+          "activity_status": "Completed",
+          "agent_display": "unknown/unknown",
+          "agent_id": "00000000-0000-0000-0000-000000000710",
+          "agent_package": "unknown",
+          "agent_version": "unknown",
+          "baml_prompt": "DelegatePrompt",
+          "context_id": "ctx-9-14",
+          "duration_ms": 330,
+          "failure_class": "failed_graph_incomplete",
+          "failure_evidence": "metadata",
+          "message_id": "tool-msg-linked",
+          "task_id": null,
+          "timestamp_ms": "[timestamp_ms]",
+          "tool_call": {
+            "args": {
+              "objective": "linked emitted message evidence"
+            },
+            "name": "support/delegate",
+            "phase": null
+          },
+          "tool_name": "support/delegate",
+          "tool_result": null
+        }
+      ],
+      "summary": {
+        "completionTokensTotal": 0,
+        "count": 2,
+        "durationMsTotal": 830,
+        "failedCount": 2,
+        "latencyHotspots": {
+          "p95": 500.0,
+          "p99": 500.0
+        },
+        "promptTokensTotal": 0,
+        "tokenHotspots": {
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "totalTokens": 0
+      },
+      "truncated": false
+    }
+  },
+  "pass2": {
+    "done": true,
+    "payload": {
+      "appliedCaps": {
+        "max_page_size": 50,
+        "page_size": 3,
+        "top_k": 10
+      },
+      "hotspotGroups": [
+        {
+          "avgDurationMs": 500.0,
+          "avgTotalTokens": 0.0,
+          "count": 1,
+          "failed": 1,
+          "failureRate": 1.0,
+          "groupDimensions": [
+            "agent_id",
+            "tool_name",
+            "baml_prompt"
+          ],
+          "groupKey": "00000000-0000-0000-0000-000000000710|support/calculate|CalcPrompt",
+          "groupValues": [
+            "00000000-0000-0000-0000-000000000710",
+            "support/calculate",
+            "CalcPrompt"
+          ]
+        }
+      ],
+      "resource": "tool_calls",
+      "rows": [
+        {
+          "activity_id": "tool_call:ctx-9-14:tool-msg-caller:00000000-0000-0000-0000-000000000710:0",
+          "activity_kind": "tool_call",
+          "activity_outcome": "Failed",
+          "activity_status": "Completed",
+          "agent_display": "unknown/unknown",
+          "agent_id": "00000000-0000-0000-0000-000000000710",
+          "agent_package": "unknown",
+          "agent_version": "unknown",
+          "baml_prompt": "CalcPrompt",
+          "context_id": "ctx-9-14",
+          "duration_ms": 500,
+          "failure_class": "timeout",
+          "failure_evidence": "metadata",
+          "message_id": "tool-msg-caller",
+          "task_id": null,
+          "timestamp_ms": "[timestamp_ms]",
+          "tool_call": {
+            "args": {
+              "expression": "1+1"
+            },
+            "name": "support/calculate",
+            "phase": null
+          },
+          "tool_name": "support/calculate",
+          "tool_result": {
+            "error": "timeout"
+          }
+        }
+      ],
+      "summary": {
+        "completionTokensTotal": 0,
+        "count": 1,
+        "durationMsTotal": 500,
+        "failedCount": 1,
+        "latencyHotspots": {
+          "p95": 500.0,
+          "p99": 500.0
+        },
+        "promptTokensTotal": 0,
+        "tokenHotspots": {
+          "p95": 0.0,
+          "p99": 0.0
+        },
+        "totalTokens": 0
+      },
+      "truncated": false
+    }
+  }
+}

@@ -5,7 +5,7 @@ import { useMermaidRenderer } from "../composables/useMermaidRenderer";
 
 const props = defineProps<{ diagrams: string[] }>();
 
-const isOpen = ref(true);
+const isOpen = ref(typeof window !== "undefined" ? window.innerWidth >= 1500 : true);
 const { theme } = useTheme();
 
 const sources = computed(() => props.diagrams);

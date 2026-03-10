@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from "vue";
 import type { AgentDiscoveryEntry, ChatMessage, ContextMetricsResponse } from "../types/a2a";
+import type { ProvenanceGroupHotspot } from "../types/provenance";
 import { useMermaidRenderer } from "../composables/useMermaidRenderer";
 import { useTheme } from "../composables/useTheme";
 import InterpretationPanel from "./InterpretationPanel.vue";
@@ -10,6 +11,16 @@ const props = defineProps<{
   contextMetrics: ContextMetricsResponse | null;
   provenanceDiagram: string;
   messages: ChatMessage[];
+  provenanceSummary?: {
+    count: number;
+    failedCount: number;
+    durationMsTotal: number;
+    totalTokens: number;
+    llmCount: number;
+    toolCount: number;
+    hotspotGroups: ProvenanceGroupHotspot[];
+    lastUpdatedAt: number;
+  } | null;
 }>();
 
 // ── Agent inventory (fully dynamic from discovery API) ──
@@ -42,12 +53,19 @@ const SPARK_W = 320;
 const SPARK_H = 56;
 
 const totalTokens = computed(() => props.contextMetrics?.session.tokens_total.total ?? null);
-const llmCalls = computed(() => props.contextMetrics?.session.llm_calls_total ?? null);
 const avgLatencyMs = computed(() => {
   if (!props.contextMetrics) return null;
   const { llm_calls_total, llm_duration_ms_total } = props.contextMetrics.session;
   if (llm_calls_total === 0) return 0;
   return Math.round(llm_duration_ms_total / llm_calls_total);
+});
+
+const provenanceSuccessRate = computed(() => {
+  const total = props.provenanceSummary?.count ?? 0;
+  if (total <= 0) return null;
+  const failed = props.provenanceSummary?.failedCount ?? 0;
+  const successful = Math.max(0, total - failed);
+  return Math.round((successful / total) * 100);
 });
 
 const turnTokens = computed(() => {
@@ -81,6 +99,61 @@ function formatTokenCount(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
   return String(n);
+}
+
+function formatDuration(ms: number): string {
+  if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
+  return `${ms}ms`;
+}
+
+function shortId(id: string): string {
+  if (id.length <= 12) return id;
+  return `${id.slice(0, 8)}...${id.slice(-4)}`;
+}
+
+function normalizeGroupValue(raw: string | null | undefined): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function asDisplayIdentity(agentId?: string, agentPackage?: string, agentVersion?: string): string {
+  const packageName = agentPackage && agentPackage !== "unknown" ? agentPackage : "";
+  const version = agentVersion && agentVersion !== "unknown" ? agentVersion : "";
+  if (packageName && version) return `${packageName}/${version}`;
+  if (packageName) return packageName;
+  if (agentId && agentId !== "unknown") return shortId(agentId);
+  return "unknown-agent";
+}
+
+function groupDimensionValue(group: ProvenanceGroupHotspot, dimension: string): string | undefined {
+  const dimensions = Array.isArray(group.groupDimensions) ? group.groupDimensions : [];
+  const values = Array.isArray(group.groupValues) ? group.groupValues : [];
+  const idx = dimensions.indexOf(dimension);
+  if (idx >= 0) return normalizeGroupValue(values[idx]);
+  // Fallback for older payloads where only pipe-encoded groupKey is present.
+  const legacyValues = group.groupKey.split("|");
+  const legacyIdx =
+    dimension === "agent_id" ? 0
+    : dimension === "agent_package" ? 1
+    : dimension === "agent_version" ? 2
+    : dimension === "model" || dimension === "tool_name" ? 3
+    : -1;
+  if (legacyIdx >= 0) return normalizeGroupValue(legacyValues[legacyIdx]);
+  return undefined;
+}
+
+function hotspotLabel(group: ProvenanceGroupHotspot): string {
+  const agentDisplay = asDisplayIdentity(
+    groupDimensionValue(group, "agent_id"),
+    groupDimensionValue(group, "agent_package"),
+    groupDimensionValue(group, "agent_version"),
+  );
+  const model = groupDimensionValue(group, "model");
+  const toolName = groupDimensionValue(group, "tool_name");
+  if (model) return `${agentDisplay} · ${model}`;
+  if (toolName) return `${agentDisplay} · ${toolName}`;
+  return agentDisplay;
 }
 
 // ── Provenance diagram preview ──
@@ -169,6 +242,22 @@ function shortToolName(tool: string): string {
           {{ formatTokenCount(contextMetrics.session.tokens_total.out) }} out
         </div>
         <div v-else class="stat-card-sub">No conversation data</div>
+      </div>
+
+      <!-- Provenance Success -->
+      <div class="stat-card">
+        <div class="stat-card-label">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20 6L9 17l-5-5" />
+          </svg>
+          Provenance Success
+        </div>
+        <div v-if="provenanceSuccessRate !== null" class="stat-card-value success-value">{{ provenanceSuccessRate }}%</div>
+        <div v-else class="stat-card-value" style="color: var(--text-muted);">&mdash;</div>
+        <div v-if="provenanceSummary" class="stat-card-sub">
+          {{ provenanceSummary.count }} ops · {{ provenanceSummary.failedCount }} failed
+        </div>
+        <div v-else class="stat-card-sub">No provenance data</div>
       </div>
     </div>
 
@@ -296,6 +385,20 @@ function shortToolName(tool: string): string {
                 <span class="sparkline-status-key">Tokens In</span>
                 <span class="sparkline-status-val">{{ formatTokenCount(contextMetrics.session.tokens_total.in) }}</span>
               </div>
+              <div class="sparkline-status-item">
+                <span class="sparkline-status-key">Prov Duration</span>
+                <span class="sparkline-status-val">{{ provenanceSummary ? formatDuration(provenanceSummary.durationMsTotal) : "—" }}</span>
+              </div>
+            </div>
+
+            <div v-if="provenanceSummary && provenanceSummary.hotspotGroups.length > 0" class="dashboard-hotspots">
+              <div class="stat-card-label">Top Hotspots</div>
+              <ul>
+                <li v-for="group in provenanceSummary.hotspotGroups.slice(0, 3)" :key="group.groupKey">
+                  <span class="group-key">{{ hotspotLabel(group) }}</span>
+                  <span>{{ group.count }} · {{ formatDuration(Math.round(group.avgDurationMs)) }}</span>
+                </li>
+              </ul>
             </div>
           </template>
 

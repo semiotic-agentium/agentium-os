@@ -1,0 +1,77 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+expression: snapshot
+---
+{
+  "status": 200,
+  "body": {
+    "resource": "llm_calls",
+    "rows": [
+      {
+        "activity_id": "llm_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+        "timestamp_ms": "[timestamp_ms]",
+        "context_id": "ctx-100-1",
+        "task_id": null,
+        "message_id": "msg-a",
+        "agent_id": "[uuid]",
+        "provider": "openai",
+        "model": "gpt-4o-mini",
+        "baml_prompt": "SummarizePrompt",
+        "duration_ms": 180,
+        "prompt_tokens": 12,
+        "completion_tokens": 8,
+        "total_tokens": 20,
+        "activity_outcome": "Success",
+        "llm_result": null,
+        "llm_call": {
+          "input": "hello"
+        },
+        "agent_package": "unknown",
+        "agent_version": "unknown",
+        "agent_display": "unknown/unknown",
+        "activity_status": "Completed",
+        "activity_kind": "llm_call"
+      }
+    ],
+    "summary": {
+      "count": 1,
+      "failedCount": 0,
+      "durationMsTotal": 180,
+      "totalTokens": 20,
+      "promptTokensTotal": 12,
+      "completionTokensTotal": 8,
+      "latencyHotspots": {
+        "p95": 180.0,
+        "p99": 180.0
+      },
+      "tokenHotspots": {
+        "p95": 20.0,
+        "p99": 20.0
+      }
+    },
+    "hotspotGroups": [
+      {
+        "groupKey": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa|gpt-4o-mini",
+        "groupValues": [
+          "[uuid]",
+          "gpt-4o-mini"
+        ],
+        "groupDimensions": [
+          "agent_id",
+          "model"
+        ],
+        "count": 1,
+        "failed": 0,
+        "failureRate": 0.0,
+        "avgDurationMs": 180.0,
+        "avgTotalTokens": 20.0
+      }
+    ],
+    "truncated": false,
+    "appliedCaps": {
+      "page_size": 50,
+      "max_page_size": 200,
+      "top_k": 10
+    }
+  }
+}

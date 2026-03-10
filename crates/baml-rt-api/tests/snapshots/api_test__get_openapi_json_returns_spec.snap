@@ -237,6 +237,78 @@ expression: snapshot
           }
         }
       },
+      "/provenance/aggregates": {
+        "get": {
+          "tags": [
+            "provenance"
+          ],
+          "operationId": "get_provenance_aggregates",
+          "responses": {
+            "200": {
+              "description": "Provenance aggregate query response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            }
+          }
+        }
+      },
+      "/provenance/llm-calls": {
+        "get": {
+          "tags": [
+            "provenance"
+          ],
+          "operationId": "get_provenance_llm_calls",
+          "responses": {
+            "200": {
+              "description": "Provenance LLM calls query response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            }
+          }
+        }
+      },
+      "/provenance/messages": {
+        "get": {
+          "tags": [
+            "provenance"
+          ],
+          "operationId": "get_provenance_messages",
+          "responses": {
+            "200": {
+              "description": "Provenance message query response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            }
+          }
+        }
+      },
+      "/provenance/tool-calls": {
+        "get": {
+          "tags": [
+            "provenance"
+          ],
+          "operationId": "get_provenance_tool_calls",
+          "responses": {
+            "200": {
+              "description": "Provenance tool calls query response",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            }
+          }
+        }
+      },
       "/tasks/{task_id}/mermaid": {
         "get": {
           "tags": [
@@ -483,7 +555,7 @@ expression: snapshot
       },
       {
         "name": "provenance",
-        "description": "Provenance-backed context metrics (when GraphQLite is enabled)"
+        "description": "Provenance-backed metrics and operational query APIs."
       }
     ]
   }

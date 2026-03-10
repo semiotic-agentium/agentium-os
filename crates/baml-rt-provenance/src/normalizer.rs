@@ -15,13 +15,15 @@ use crate::{
         AgentRuntimeInstanceInput, ArchiveEntityId, ArchiveEntityInput, ArtifactByEventEntityId,
         ArtifactByEventEntityInput, ArtifactByIdEntityId, ArtifactByIdEntityInput,
         ArtifactByTypeEntityId, ArtifactByTypeEntityInput, ArtifactIdentity,
-        DelegationTargetEntityId, DelegationTargetEntityInput, LlmCallActivityId,
-        LlmCallActivityInput, LlmPromptEntityId, LlmPromptEntityInput, MessageEntityId,
-        MessageEntityInput, MessageProcessingActivityId, MessageProcessingActivityInput,
-        PromptRejectedActivityId, PromptRejectedActivityInput, RunnerRuntimeInstanceId,
-        TaskEntityId, TaskEntityInput, TaskExecutionActivityId, TaskExecutionActivityInput,
-        TaskStateEntityId, TaskStateEntityInput, ToolArgsEntityId, ToolArgsEntityInput,
-        ToolCallActivityId, ToolCallActivityInput,
+        DelegationTargetEntityId, DelegationTargetEntityInput, FailureClassificationActivityId,
+        FailureClassificationActivityInput, FailureClassificationEntityId,
+        FailureClassificationEntityInput, LlmCallActivityId, LlmCallActivityInput,
+        LlmPromptEntityId, LlmPromptEntityInput, MessageEntityId, MessageEntityInput,
+        MessageProcessingActivityId, MessageProcessingActivityInput, PromptRejectedActivityId,
+        PromptRejectedActivityInput, RunnerRuntimeInstanceId, TaskEntityId, TaskEntityInput,
+        TaskExecutionActivityId, TaskExecutionActivityInput, TaskStateEntityId,
+        TaskStateEntityInput, ToolArgsEntityId, ToolArgsEntityInput, ToolCallActivityId,
+        ToolCallActivityInput,
     },
     types::{
         Activity, Agent, Entity, ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef,
@@ -71,6 +73,10 @@ fn canonical_message_role(event: &ProvEvent, role: &str) -> Result<&'static str>
         event_id: event.id().as_str().to_string(),
         reason: format!("invalid message role '{normalized}'"),
     })
+}
+
+fn payload_id_for_event(event: &ProvEvent, payload_kind: &str) -> String {
+    format!("payload:{}:{}", event.id().as_str(), payload_kind)
 }
 
 /// Prior state from the backing store, used so message events can attach
@@ -160,6 +166,191 @@ fn prov_type<S: ProvVocabularyType>() -> String {
     S::VOCAB_TYPE.to_string()
 }
 
+#[derive(Debug, Clone)]
+struct FailureResolution {
+    class: String,
+    evidence: String,
+    code: Option<String>,
+}
+
+struct FailureClassificationTarget {
+    call_kind: &'static str,
+    scope_key: String,
+    ordinal: u64,
+    failed_activity_id: ProvActivityId,
+    evidence_entity: Option<ProvEntityId>,
+}
+
+fn is_unknown_placeholder(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.is_empty() || trimmed.eq_ignore_ascii_case("unknown")
+}
+
+fn value_str(value: Option<&Value>) -> Option<&str> {
+    value.and_then(Value::as_str).map(str::trim)
+}
+
+fn metadata_string_field(metadata: &Value, key: &str) -> Option<String> {
+    metadata
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(ToString::to_string)
+}
+
+fn metadata_json_field(metadata: &Value, key: &str) -> Option<Value> {
+    let value = metadata.get(key)?.clone();
+    match &value {
+        Value::Null => None,
+        Value::String(s) if s.trim().is_empty() => None,
+        Value::Array(items) if items.is_empty() => None,
+        Value::Object(map) if map.is_empty() => None,
+        _ => Some(value),
+    }
+}
+
+fn model_from_value(value: &Value) -> Option<String> {
+    match value {
+        Value::Object(map) => {
+            if let Some(model) = map
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !is_unknown_placeholder(s))
+            {
+                return Some(model.to_string());
+            }
+            for nested in map.values() {
+                if let Some(model) = model_from_value(nested) {
+                    return Some(model);
+                }
+            }
+            None
+        }
+        Value::Array(items) => items.iter().find_map(model_from_value),
+        _ => None,
+    }
+}
+
+fn canonicalize_llm_client_model(
+    event: &ProvEvent,
+    client: &str,
+    model: &str,
+    prompt: &Value,
+    metadata: &Value,
+) -> Result<(String, String)> {
+    let resolved_client = if is_unknown_placeholder(client) {
+        value_str(metadata.get("client"))
+            .filter(|v| !is_unknown_placeholder(v))
+            .map(ToString::to_string)
+            .or_else(|| {
+                value_str(metadata.get("provider"))
+                    .filter(|v| !is_unknown_placeholder(v))
+                    .map(ToString::to_string)
+            })
+            .ok_or_else(|| ProvenanceError::MissingField {
+                event_id: event.id().as_str().to_string(),
+                field: "a2a:client (BAML provider type)".to_string(),
+            })?
+    } else {
+        client.trim().to_string()
+    };
+
+    let resolved_model = if is_unknown_placeholder(model) {
+        model_from_value(prompt)
+            .or_else(|| {
+                value_str(metadata.get("model"))
+                    .filter(|v| !is_unknown_placeholder(v))
+                    .map(ToString::to_string)
+            })
+            .ok_or_else(|| ProvenanceError::MissingField {
+                event_id: event.id().as_str().to_string(),
+                field: "a2a:model".to_string(),
+            })?
+    } else {
+        model.trim().to_string()
+    };
+
+    Ok((resolved_client, resolved_model))
+}
+
+fn classify_failure_from_metadata(metadata: &Value) -> FailureResolution {
+    let reason = metadata
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if reason.contains("reject") || reason.contains("policy") {
+        return FailureResolution {
+            class: "prompt_rejected".to_string(),
+            evidence: "metadata".to_string(),
+            code: None,
+        };
+    }
+
+    let error = metadata
+        .get("error")
+        .map(Value::to_string)
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if error.contains("unauthorized")
+        || error.contains("authentication")
+        || error.contains("api key")
+        || error.contains("invalid_api_key")
+        || error.contains("401")
+    {
+        return FailureResolution {
+            class: "auth_error".to_string(),
+            evidence: "metadata".to_string(),
+            code: Some("auth".to_string()),
+        };
+    }
+    if error.contains("timeout") {
+        return FailureResolution {
+            class: "timeout".to_string(),
+            evidence: "metadata".to_string(),
+            code: Some("timeout".to_string()),
+        };
+    }
+    if error.contains("transport") || error.contains("network") || error.contains("http") {
+        return FailureResolution {
+            class: "transport_error".to_string(),
+            evidence: "metadata".to_string(),
+            code: Some("transport".to_string()),
+        };
+    }
+    if error.contains("tool") {
+        return FailureResolution {
+            class: "tool_error".to_string(),
+            evidence: "metadata".to_string(),
+            code: Some("tool".to_string()),
+        };
+    }
+    if error.contains("llm") || error.contains("model") {
+        return FailureResolution {
+            class: "llm_error".to_string(),
+            evidence: "metadata".to_string(),
+            code: Some("llm".to_string()),
+        };
+    }
+    if metadata.get("status").is_some()
+        || metadata.get("status_code").is_some()
+        || metadata.get("url").is_some()
+    {
+        return FailureResolution {
+            class: "provider_error".to_string(),
+            evidence: "metadata".to_string(),
+            code: Some("provider".to_string()),
+        };
+    }
+    FailureResolution {
+        class: "failed_graph_incomplete".to_string(),
+        evidence: "metadata".to_string(),
+        code: Some("incomplete".to_string()),
+    }
+}
+
 /// Build deterministic scope key from operational identifiers: context_id:scope_id:agent_id.
 /// Scope_id is message_id (Message scope) or task_id (Task scope).
 fn build_call_scope_key(event: &ProvEvent, scope: &CallScope, metadata: &Value) -> Result<String> {
@@ -243,13 +434,35 @@ fn normalize_event_with_registry(
             let ordinal = get_ordinal_for_call(call_state, &scope_key, true);
             let activity_id = llm_activity_id(&scope_key, ordinal);
             let mut attrs = base_attrs(event);
-            attrs.insert(a2a::CLIENT.to_string(), Value::String(client.clone()));
-            attrs.insert(a2a::MODEL.to_string(), Value::String(model.clone()));
+            let (resolved_client, resolved_model) =
+                canonicalize_llm_client_model(event, client, model, prompt, metadata)?;
+            attrs.insert(a2a::CLIENT.to_string(), Value::String(resolved_client));
+            attrs.insert(a2a::MODEL.to_string(), Value::String(resolved_model));
             attrs.insert(
                 a2a::FUNCTION_NAME.to_string(),
                 Value::String(function_name.clone()),
             );
-            attrs.insert(a2a::METADATA.to_string(), metadata.clone());
+            let agent_id = metadata
+                .get("agent_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ProvenanceError::MissingField {
+                    event_id: event.id().as_str().to_string(),
+                    field: "metadata.agent_id".to_string(),
+                })?;
+            attrs.insert(
+                a2a::AGENT_ID.to_string(),
+                Value::String(agent_id.to_string()),
+            );
+            if let Some(message_id) = scoped_message_id(scope, metadata) {
+                attrs.insert(
+                    a2a::MESSAGE_ID.to_string(),
+                    Value::String(message_id.as_str().to_string()),
+                );
+            }
+            attrs.insert(
+                a2a::LLM_CALL_PAYLOAD_ID.to_string(),
+                Value::String(payload_id_for_event(event, "llm_call")),
+            );
             let start_time_ms = Some(event.timestamp_ms());
 
             doc.insert_activity(
@@ -315,13 +528,45 @@ fn normalize_event_with_registry(
             );
             let activity_id = llm_activity_id(&scope_key, ordinal);
             let mut attrs = base_attrs(event);
-            attrs.insert(a2a::CLIENT.to_string(), Value::String(client.clone()));
-            attrs.insert(a2a::MODEL.to_string(), Value::String(model.clone()));
+            let (resolved_client, resolved_model) =
+                canonicalize_llm_client_model(event, client, model, prompt, metadata)?;
+            attrs.insert(a2a::CLIENT.to_string(), Value::String(resolved_client));
+            attrs.insert(a2a::MODEL.to_string(), Value::String(resolved_model));
             attrs.insert(
                 a2a::FUNCTION_NAME.to_string(),
                 Value::String(function_name.clone()),
             );
-            attrs.insert(a2a::METADATA.to_string(), metadata.clone());
+            let agent_id = metadata
+                .get("agent_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ProvenanceError::MissingField {
+                    event_id: event.id().as_str().to_string(),
+                    field: "metadata.agent_id".to_string(),
+                })?;
+            attrs.insert(
+                a2a::AGENT_ID.to_string(),
+                Value::String(agent_id.to_string()),
+            );
+            if let Some(message_id) = scoped_message_id(scope, metadata) {
+                attrs.insert(
+                    a2a::MESSAGE_ID.to_string(),
+                    Value::String(message_id.as_str().to_string()),
+                );
+            }
+            attrs.insert(
+                a2a::LLM_CALL_PAYLOAD_ID.to_string(),
+                Value::String(payload_id_for_event(event, "llm_call")),
+            );
+            attrs.insert(
+                a2a::LLM_RESULT_PAYLOAD_ID.to_string(),
+                Value::String(payload_id_for_event(event, "llm_result")),
+            );
+            if let Some(result) = metadata_json_field(metadata, "result") {
+                attrs.insert(a2a::RESULT.to_string(), result);
+            }
+            if let Some(error) = metadata_json_field(metadata, "error") {
+                attrs.insert(a2a::ERROR.to_string(), error);
+            }
             match usage {
                 crate::events::LlmUsage::Known {
                     prompt_tokens,
@@ -347,14 +592,30 @@ fn normalize_event_with_registry(
                 a2a::DURATION_MS.to_string(),
                 Value::Number((*duration_ms).into()),
             );
+            let is_success = bool::from(*outcome);
+            let failure_resolution = if is_success {
+                None
+            } else {
+                Some(classify_failure_from_metadata(metadata))
+            };
             attrs.insert(
                 a2a::ACTIVITY_OUTCOME.to_string(),
-                Value::String(if bool::from(*outcome) {
+                Value::String(if is_success {
                     "Success".to_string()
                 } else {
                     "Failed".to_string()
                 }),
             );
+            if let Some(resolution) = &failure_resolution {
+                attrs.insert(
+                    a2a::FAILURE_CLASS.to_string(),
+                    Value::String(resolution.class.clone()),
+                );
+                attrs.insert(
+                    a2a::FAILURE_EVIDENCE.to_string(),
+                    Value::String(resolution.evidence.clone()),
+                );
+            }
 
             doc.insert_activity(
                 activity_id.clone(),
@@ -382,6 +643,24 @@ fn normalize_event_with_registry(
                 prompt_id,
                 Some(a2a_roles::PROMPT.to_string()),
             );
+            if !is_success {
+                let resolution = failure_resolution
+                    .as_ref()
+                    .expect("failed outcome must carry failure resolution");
+                let evidence_prompt_id = llm_prompt_entity_id(&scope_key, ordinal);
+                upsert_failure_classification(
+                    &mut doc,
+                    event,
+                    FailureClassificationTarget {
+                        call_kind: "llm_call",
+                        scope_key: scope_key.clone(),
+                        ordinal,
+                        failed_activity_id: activity_id.clone(),
+                        evidence_entity: Some(evidence_prompt_id),
+                    },
+                    resolution,
+                );
+            }
             if let Some(message_id) = scoped_message_id(scope, metadata) {
                 attach_message_context(
                     &mut doc,
@@ -435,6 +714,43 @@ fn normalize_event_with_registry(
                 prompt_id,
                 Some(a2a_roles::REJECTED_OUTPUT.to_string()),
             );
+            let reason_lower = reason.to_ascii_lowercase();
+            let resolution = if reason_lower.contains("baml")
+                || reason_lower.contains("schema")
+                || reason_lower.contains("validation")
+            {
+                FailureResolution {
+                    class: "baml_validation_error".to_string(),
+                    evidence: "linked_prompt_rejected".to_string(),
+                    code: Some("baml_validation".to_string()),
+                }
+            } else if reason_lower.contains("policy") || reason_lower.contains("reject") {
+                FailureResolution {
+                    class: "prompt_rejected".to_string(),
+                    evidence: "linked_prompt_rejected".to_string(),
+                    code: Some("prompt_rejected".to_string()),
+                }
+            } else {
+                FailureResolution {
+                    class: "prompt_rejected".to_string(),
+                    evidence: "linked_prompt_rejected".to_string(),
+                    code: None,
+                }
+            };
+            let failed_llm_activity = llm_activity_id(&scope_key, ordinal);
+            let evidence_prompt_id = llm_prompt_entity_id(&scope_key, ordinal);
+            upsert_failure_classification(
+                &mut doc,
+                event,
+                FailureClassificationTarget {
+                    call_kind: "llm_call",
+                    scope_key: scope_key.clone(),
+                    ordinal,
+                    failed_activity_id: failed_llm_activity,
+                    evidence_entity: Some(evidence_prompt_id),
+                },
+                &resolution,
+            );
             if let CallScope::Message { message_id } = scope {
                 attach_message_context(
                     &mut doc,
@@ -472,7 +788,30 @@ fn normalize_event_with_registry(
                     Value::String(function_name.clone()),
                 );
             }
-            attrs.insert(a2a::METADATA.to_string(), metadata.clone());
+            let agent_id = metadata
+                .get("agent_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ProvenanceError::MissingField {
+                    event_id: event.id().as_str().to_string(),
+                    field: "metadata.agent_id".to_string(),
+                })?;
+            attrs.insert(
+                a2a::AGENT_ID.to_string(),
+                Value::String(agent_id.to_string()),
+            );
+            if let Some(message_id) = scoped_message_id(scope, metadata) {
+                attrs.insert(
+                    a2a::MESSAGE_ID.to_string(),
+                    Value::String(message_id.as_str().to_string()),
+                );
+            }
+            attrs.insert(
+                a2a::TOOL_CALL_PAYLOAD_ID.to_string(),
+                Value::String(payload_id_for_event(event, "tool_call")),
+            );
+            if let Some(phase) = metadata_string_field(metadata, "phase") {
+                attrs.insert(a2a::PHASE.to_string(), Value::String(phase));
+            }
             let start_time_ms = Some(event.timestamp_ms());
 
             doc.insert_activity(
@@ -561,19 +900,68 @@ fn normalize_event_with_registry(
                     Value::String(function_name.clone()),
                 );
             }
-            attrs.insert(a2a::METADATA.to_string(), metadata.clone());
+            let agent_id = metadata
+                .get("agent_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ProvenanceError::MissingField {
+                    event_id: event.id().as_str().to_string(),
+                    field: "metadata.agent_id".to_string(),
+                })?;
+            attrs.insert(
+                a2a::AGENT_ID.to_string(),
+                Value::String(agent_id.to_string()),
+            );
+            if let Some(message_id) = scoped_message_id(scope, metadata) {
+                attrs.insert(
+                    a2a::MESSAGE_ID.to_string(),
+                    Value::String(message_id.as_str().to_string()),
+                );
+            }
+            attrs.insert(
+                a2a::TOOL_CALL_PAYLOAD_ID.to_string(),
+                Value::String(payload_id_for_event(event, "tool_call")),
+            );
+            attrs.insert(
+                a2a::TOOL_RESULT_PAYLOAD_ID.to_string(),
+                Value::String(payload_id_for_event(event, "tool_result")),
+            );
+            if let Some(phase) = metadata_string_field(metadata, "phase") {
+                attrs.insert(a2a::PHASE.to_string(), Value::String(phase));
+            }
+            if let Some(result) = metadata_json_field(metadata, "result") {
+                attrs.insert(a2a::RESULT.to_string(), result);
+            }
+            if let Some(error) = metadata_json_field(metadata, "error") {
+                attrs.insert(a2a::ERROR.to_string(), error);
+            }
             attrs.insert(
                 a2a::DURATION_MS.to_string(),
                 Value::Number((*duration_ms).into()),
             );
+            let is_success = bool::from(*outcome);
+            let failure_resolution = if is_success {
+                None
+            } else {
+                Some(classify_failure_from_metadata(metadata))
+            };
             attrs.insert(
                 a2a::ACTIVITY_OUTCOME.to_string(),
-                Value::String(if bool::from(*outcome) {
+                Value::String(if is_success {
                     "Success".to_string()
                 } else {
                     "Failed".to_string()
                 }),
             );
+            if let Some(resolution) = &failure_resolution {
+                attrs.insert(
+                    a2a::FAILURE_CLASS.to_string(),
+                    Value::String(resolution.class.clone()),
+                );
+                attrs.insert(
+                    a2a::FAILURE_EVIDENCE.to_string(),
+                    Value::String(resolution.evidence.clone()),
+                );
+            }
 
             doc.insert_activity(
                 activity_id.clone(),
@@ -601,6 +989,24 @@ fn normalize_event_with_registry(
                 args_id,
                 Some(a2a_roles::ARGS.to_string()),
             );
+            if !is_success {
+                let resolution = failure_resolution
+                    .as_ref()
+                    .expect("failed outcome must carry failure resolution");
+                let evidence_args_id = tool_args_entity_id(&scope_key, ordinal);
+                upsert_failure_classification(
+                    &mut doc,
+                    event,
+                    FailureClassificationTarget {
+                        call_kind: "tool_call",
+                        scope_key: scope_key.clone(),
+                        ordinal,
+                        failed_activity_id: activity_id.clone(),
+                        evidence_entity: Some(evidence_args_id),
+                    },
+                    resolution,
+                );
+            }
             if let Some(agent_package) = delegation_target {
                 let delegation_id = delegation_target_entity_id(&scope_key, ordinal);
                 let mut delegation_attrs = base_attrs(event);
@@ -966,14 +1372,14 @@ fn normalize_event_with_registry(
             id,
             role,
             content,
-            metadata,
+            metadata: _,
             agent_id: _,
         }
         | ProvEventData::MessageSent {
             id,
             role,
             content,
-            metadata,
+            metadata: _,
             agent_id: _,
         } => {
             let canonical_role = canonical_message_role(event, role)?;
@@ -992,9 +1398,6 @@ fn normalize_event_with_registry(
                 .map(|line| Value::String(line.clone()))
                 .collect();
             message_attrs.insert(a2a::CONTENT.to_string(), Value::Array(content_values));
-            if let Some(metadata) = metadata {
-                message_attrs.insert(a2a::METADATA.to_string(), map_string_map(metadata));
-            }
 
             let direction = if matches!(event.data(), ProvEventData::MessageReceived { .. }) {
                 message_directions::RECEIVED
@@ -1498,6 +1901,72 @@ fn insert_was_derived_from(
     );
 }
 
+fn upsert_failure_classification(
+    doc: &mut ProvDocument,
+    event: &ProvEvent,
+    target: FailureClassificationTarget,
+    resolution: &FailureResolution,
+) {
+    let classify_activity_id =
+        failure_classification_activity_id(target.call_kind, &target.scope_key, target.ordinal);
+    let mut classify_attrs = base_attrs(event);
+    classify_attrs.insert(
+        a2a::FAILURE_EVIDENCE.to_string(),
+        Value::String(resolution.evidence.clone()),
+    );
+    doc.insert_activity(
+        classify_activity_id.clone(),
+        Activity {
+            start_time_ms: Some(event.timestamp_ms()),
+            end_time_ms: Some(event.timestamp_ms()),
+            prov_type: Some(prov_type::<FailureClassificationActivityId>()),
+            attributes: classify_attrs,
+        },
+    );
+
+    let classify_entity_id =
+        failure_classification_entity_id(target.call_kind, &target.scope_key, target.ordinal);
+    let mut classify_entity_attrs = base_attrs(event);
+    classify_entity_attrs.insert(
+        a2a::FAILURE_CLASS.to_string(),
+        Value::String(resolution.class.clone()),
+    );
+    classify_entity_attrs.insert(
+        a2a::FAILURE_EVIDENCE.to_string(),
+        Value::String(resolution.evidence.clone()),
+    );
+    if let Some(code) = &resolution.code {
+        classify_entity_attrs.insert(a2a::FAILURE_CODE.to_string(), Value::String(code.clone()));
+    }
+    doc.insert_entity(
+        classify_entity_id.clone(),
+        Entity {
+            prov_type: Some(prov_type::<FailureClassificationEntityId>()),
+            attributes: classify_entity_attrs,
+        },
+    );
+    insert_was_generated_by(
+        doc,
+        ProvNodeRef::Entity(classify_entity_id.clone()),
+        classify_activity_id.clone(),
+        Some(event.timestamp_ms()),
+    );
+    insert_used(
+        doc,
+        target.failed_activity_id,
+        classify_entity_id,
+        Some(a2a_roles::FAILURE_CLASSIFICATION.to_string()),
+    );
+    if let Some(evidence) = target.evidence_entity {
+        insert_used(
+            doc,
+            classify_activity_id,
+            evidence,
+            Some(a2a_roles::FAILURE_EVIDENCE.to_string()),
+        );
+    }
+}
+
 /// LLM call activity id: derived from `EventId` to ensure per-call uniqueness.
 /// LLM call activity id: deterministic composite from (scope_key, ordinal).
 fn llm_activity_id(scope_key: &str, ordinal: u64) -> ProvActivityId {
@@ -1515,6 +1984,30 @@ fn llm_prompt_entity_id(scope_key: &str, ordinal: u64) -> ProvEntityId {
 
 fn prompt_rejected_activity_id(scope_key: &str, ordinal: u64) -> ProvActivityId {
     ProvActivityId::derived::<PromptRejectedActivityId>(PromptRejectedActivityInput {
+        scope_key,
+        ordinal,
+    })
+}
+
+fn failure_classification_activity_id(
+    call_kind: &str,
+    scope_key: &str,
+    ordinal: u64,
+) -> ProvActivityId {
+    ProvActivityId::derived::<FailureClassificationActivityId>(FailureClassificationActivityInput {
+        call_kind,
+        scope_key,
+        ordinal,
+    })
+}
+
+fn failure_classification_entity_id(
+    call_kind: &str,
+    scope_key: &str,
+    ordinal: u64,
+) -> ProvEntityId {
+    ProvEntityId::derived::<FailureClassificationEntityId>(FailureClassificationEntityInput {
+        call_kind,
         scope_key,
         ordinal,
     })
@@ -1853,12 +2346,4 @@ fn is_terminal_status(status: &str) -> bool {
         normalized.as_str(),
         "completed" | "failed" | "cancelled" | "canceled"
     )
-}
-
-fn map_string_map(input: &HashMap<String, String>) -> Value {
-    let mut map = serde_json::Map::new();
-    for (key, value) in input {
-        map.insert(key.clone(), Value::String(value.clone()));
-    }
-    Value::Object(map)
 }

@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
+use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
 use integrations_clickup_client::ClickUpClient;
 use integrations_github_client::GitHubClient;
 use serde::Serialize;
@@ -788,7 +789,7 @@ fn pointer_str<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
         .filter(|v| !v.is_empty())
 }
 
-fn extract_context_id(responses: &[Value]) -> Option<String> {
+fn extract_context_id(responses: &[Value]) -> Option<ContextId> {
     const POINTERS: [&str; 6] = [
         "/result/contextId",
         "/result/message/contextId",
@@ -802,18 +803,18 @@ fn extract_context_id(responses: &[Value]) -> Option<String> {
         POINTERS
             .iter()
             .find_map(|pointer| pointer_str(response, pointer))
-            .map(ToString::to_string)
+            .map(ContextId::from)
     })
 }
 
-fn extract_task_id(responses: &[Value]) -> Option<String> {
+fn extract_task_id(responses: &[Value]) -> Option<TaskId> {
     const POINTERS: [&str; 2] = ["/result/task/id", "/result/chunk/task/id"];
 
     responses.iter().rev().find_map(|response| {
         POINTERS
             .iter()
             .find_map(|pointer| pointer_str(response, pointer))
-            .map(ToString::to_string)
+            .map(|raw| TaskId::from_external(ExternalId::new(raw.to_string())))
     })
 }
 
@@ -1255,8 +1256,16 @@ mod tests {
             }),
         ];
 
-        assert_eq!(extract_context_id(&responses).as_deref(), Some("ctx-2"));
-        assert_eq!(extract_task_id(&responses).as_deref(), Some("task-2"));
+        assert_eq!(
+            extract_context_id(&responses)
+                .as_ref()
+                .map(|id| id.as_str()),
+            Some("ctx-2")
+        );
+        assert_eq!(
+            extract_task_id(&responses).as_ref().map(|id| id.as_str()),
+            Some("task-2")
+        );
     }
 
     #[test]

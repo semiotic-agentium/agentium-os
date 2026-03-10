@@ -1,0 +1,179 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+expression: snapshot
+---
+{
+  "page1": {
+    "status": 200,
+    "body": {
+      "resource": "llm_calls",
+      "rows": [
+        {
+          "activity_id": "llm_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+          "timestamp_ms": "[timestamp_ms]",
+          "context_id": "ctx-100-1",
+          "task_id": null,
+          "message_id": "msg-a",
+          "agent_id": "[uuid]",
+          "provider": "openai",
+          "model": "gpt-4o-mini",
+          "baml_prompt": "SummarizePrompt",
+          "duration_ms": 180,
+          "prompt_tokens": 12,
+          "completion_tokens": 8,
+          "total_tokens": 20,
+          "activity_outcome": "Success",
+          "llm_result": null,
+          "llm_call": {
+            "input": "hello"
+          },
+          "agent_package": "unknown",
+          "agent_version": "unknown",
+          "agent_display": "unknown/unknown",
+          "activity_status": "Completed",
+          "activity_kind": "llm_call"
+        }
+      ],
+      "summary": {
+        "count": 2,
+        "failedCount": 1,
+        "durationMsTotal": 830,
+        "totalTokens": 45,
+        "promptTokensTotal": 32,
+        "completionTokensTotal": 13,
+        "latencyHotspots": {
+          "p95": 650.0,
+          "p99": 650.0
+        },
+        "tokenHotspots": {
+          "p95": 25.0,
+          "p99": 25.0
+        }
+      },
+      "hotspotGroups": [
+        {
+          "groupKey": "[uuid]",
+          "groupValues": [
+            "[uuid]"
+          ],
+          "groupDimensions": [
+            "agent_id"
+          ],
+          "count": 1,
+          "failed": 1,
+          "failureRate": 1.0,
+          "avgDurationMs": 650.0,
+          "avgTotalTokens": 25.0
+        },
+        {
+          "groupKey": "[uuid]",
+          "groupValues": [
+            "[uuid]"
+          ],
+          "groupDimensions": [
+            "agent_id"
+          ],
+          "count": 1,
+          "failed": 0,
+          "failureRate": 0.0,
+          "avgDurationMs": 180.0,
+          "avgTotalTokens": 20.0
+        }
+      ],
+      "nextCursor": "1",
+      "truncated": true,
+      "appliedCaps": {
+        "page_size": 1,
+        "max_page_size": 200,
+        "top_k": 10
+      }
+    }
+  },
+  "page2": {
+    "status": 200,
+    "body": {
+      "resource": "llm_calls",
+      "rows": [
+        {
+          "activity_id": "llm_call:ctx-100-1:msg-b:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:0",
+          "timestamp_ms": "[timestamp_ms]",
+          "context_id": "ctx-100-1",
+          "task_id": null,
+          "message_id": "msg-b",
+          "agent_id": "[uuid]",
+          "provider": "anthropic",
+          "model": "claude-3-7-sonnet",
+          "baml_prompt": "DraftPrompt",
+          "duration_ms": 650,
+          "prompt_tokens": 20,
+          "completion_tokens": 5,
+          "total_tokens": 25,
+          "activity_outcome": "Failed",
+          "llm_result": null,
+          "llm_call": {
+            "input": "world"
+          },
+          "agent_package": "unknown",
+          "agent_version": "unknown",
+          "agent_display": "unknown/unknown",
+          "activity_status": "Completed",
+          "failure_class": "baml_validation_error",
+          "failure_evidence": "linked_prompt_rejected",
+          "activity_kind": "llm_call"
+        }
+      ],
+      "summary": {
+        "count": 2,
+        "failedCount": 1,
+        "durationMsTotal": 830,
+        "totalTokens": 45,
+        "promptTokensTotal": 32,
+        "completionTokensTotal": 13,
+        "latencyHotspots": {
+          "p95": 650.0,
+          "p99": 650.0
+        },
+        "tokenHotspots": {
+          "p95": 25.0,
+          "p99": 25.0
+        }
+      },
+      "hotspotGroups": [
+        {
+          "groupKey": "[uuid]",
+          "groupValues": [
+            "[uuid]"
+          ],
+          "groupDimensions": [
+            "agent_id"
+          ],
+          "count": 1,
+          "failed": 1,
+          "failureRate": 1.0,
+          "avgDurationMs": 650.0,
+          "avgTotalTokens": 25.0
+        },
+        {
+          "groupKey": "[uuid]",
+          "groupValues": [
+            "[uuid]"
+          ],
+          "groupDimensions": [
+            "agent_id"
+          ],
+          "count": 1,
+          "failed": 0,
+          "failureRate": 0.0,
+          "avgDurationMs": 180.0,
+          "avgTotalTokens": 20.0
+        }
+      ],
+      "truncated": true,
+      "appliedCaps": {
+        "page_size": 1,
+        "max_page_size": 200,
+        "top_k": 10
+      }
+    }
+  }
+}

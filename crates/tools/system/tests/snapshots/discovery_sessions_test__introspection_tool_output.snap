@@ -1,0 +1,77 @@
+---
+source: crates/tools/system/tests/discovery_sessions_test.rs
+expression: snapshot_safe_tool_output(output.clone())
+---
+{
+  "done": true,
+  "payload": {
+    "appliedCaps": {
+      "max_page_size": 50,
+      "page_size": 20,
+      "top_k": 10
+    },
+    "hotspotGroups": [
+      {
+        "avgDurationMs": 220.0,
+        "avgTotalTokens": 7.0,
+        "count": 1,
+        "failed": 1,
+        "failureRate": 1.0,
+        "groupDimensions": [
+          "agent_id"
+        ],
+        "groupKey": "00000000-0000-0000-0000-000000000123",
+        "groupValues": [
+          "00000000-0000-0000-0000-000000000123"
+        ]
+      }
+    ],
+    "resource": "llm_calls",
+    "rows": [
+      {
+        "activity_id": "llm_call:ctx-9-9:tool-msg-caller:00000000-0000-0000-0000-000000000123:0",
+        "activity_kind": "llm_call",
+        "activity_outcome": "Failed",
+        "activity_status": "Completed",
+        "agent_display": "unknown/unknown",
+        "agent_id": "00000000-0000-0000-0000-000000000123",
+        "agent_package": "unknown",
+        "agent_version": "unknown",
+        "baml_prompt": "CallerPrompt",
+        "completion_tokens": 0,
+        "context_id": "ctx-9-9",
+        "duration_ms": 220,
+        "failure_class": "baml_validation_error",
+        "failure_evidence": "linked_prompt_rejected",
+        "llm_call": {
+          "input": "caller-failed"
+        },
+        "llm_result": null,
+        "message_id": "tool-msg-caller",
+        "model": "gpt-4o-mini",
+        "prompt_tokens": 7,
+        "provider": "openai",
+        "task_id": null,
+        "timestamp_ms": "[timestamp_ms]",
+        "total_tokens": 7
+      }
+    ],
+    "summary": {
+      "completionTokensTotal": 0,
+      "count": 1,
+      "durationMsTotal": 220,
+      "failedCount": 1,
+      "latencyHotspots": {
+        "p95": 220.0,
+        "p99": 220.0
+      },
+      "promptTokensTotal": 7,
+      "tokenHotspots": {
+        "p95": 7.0,
+        "p99": 7.0
+      },
+      "totalTokens": 7
+    },
+    "truncated": false
+  }
+}

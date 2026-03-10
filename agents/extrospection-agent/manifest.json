@@ -1,0 +1,20 @@
+{
+  "version": "1.0.0",
+  "name": "extrospection-agent",
+  "entry_point": "src/index.ts",
+  "signature": "extrospection-agent@1.0.0",
+  "tools": [
+    "system/extrospection",
+    "system/discover_agents"
+  ],
+  "discovery": {
+    "description": "Austere operational provenance analyst; discovers and comments on other agents, then inspects cross-agent failures, latency, and token hotspots via system/extrospection.",
+    "capabilities": [
+      "operations:agent-observability",
+      "operations:failure-analysis",
+      "operations:latency-hotspots",
+      "operations:token-hotspots",
+      "operations:cross-agent-reporting"
+    ]
+  }
+}

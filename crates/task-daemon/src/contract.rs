@@ -7,6 +7,7 @@
 //! The contract carries provenance identifiers so downstream systems can stitch
 //! together Slack evidence, interpretation runs, and generated tasks.
 
+use baml_rt_core::ids::{ContextId, CorrelationId, EventId, TaskId};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
@@ -44,16 +45,16 @@ impl ContractSource {
 pub struct ContractProvenance {
     /// Runtime context identifier (typically provenance context id).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_id: Option<String>,
+    pub context_id: Option<ContextId>,
     /// Runtime task identifier when a task-scoped flow exists.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
+    pub task_id: Option<TaskId>,
     /// Correlation identifier (for example request id) for distributed tracing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub correlation_id: Option<String>,
+    pub correlation_id: Option<CorrelationId>,
     /// Parent event id used to preserve causality between request/result events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_event_id: Option<String>,
+    pub parent_event_id: Option<EventId>,
     /// Source cursor used for this poll window (for example latest Slack ts).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_cursor: Option<String>,
@@ -180,7 +181,7 @@ impl InterpretationResultEvent {
     ) -> Self {
         let event_id = result_event_id(&request.event_id, &interpretation, &derived_tasks);
         let provenance = request.provenance.clone().map(|mut value| {
-            value.parent_event_id = Some(request.event_id.clone());
+            value.parent_event_id = Some(EventId::from(request.event_id.clone()));
             value
         });
 
@@ -358,7 +359,7 @@ mod tests {
                 sample_message("1735689700.000000", "second"),
             ],
             Some(ContractProvenance {
-                context_id: Some("ctx-1".to_string()),
+                context_id: Some(ContextId::new(1, 1)),
                 source_cursor: Some("1735689700.000000".to_string()),
                 ..ContractProvenance::default()
             }),
@@ -377,8 +378,8 @@ mod tests {
             sample_project(),
             vec![sample_message("1735689600.000000", "first")],
             Some(ContractProvenance {
-                context_id: Some("ctx-1".to_string()),
-                correlation_id: Some("corr-1".to_string()),
+                context_id: Some(ContextId::new(1, 1)),
+                correlation_id: Some(CorrelationId::new(1, 1)),
                 ..ContractProvenance::default()
             }),
         );
@@ -405,10 +406,13 @@ mod tests {
         assert_eq!(result.messages_scanned, 1);
         let provenance = result.provenance.expect("provenance exists");
         assert_eq!(
-            provenance.parent_event_id.as_deref(),
+            provenance.parent_event_id.as_ref().map(|id| id.as_str()),
             Some(request.event_id.as_str())
         );
-        assert_eq!(provenance.context_id.as_deref(), Some("ctx-1"));
+        assert_eq!(
+            provenance.context_id.as_ref().map(|id| id.as_str()),
+            Some(ContextId::new(1, 1).as_str())
+        );
     }
 
     #[test]

@@ -20,6 +20,8 @@ pub enum GraphNodeLabel {
     AgentArchive,
     AgentRuntimeInstance,
     PromptRejected,
+    FailureClassificationActivity,
+    FailureClassification,
 }
 
 impl GraphNodeLabel {
@@ -39,6 +41,8 @@ impl GraphNodeLabel {
             Self::AgentArchive => "AgentArchive",
             Self::AgentRuntimeInstance => "AgentRuntimeInstance",
             Self::PromptRejected => "PromptRejected",
+            Self::FailureClassificationActivity => "FailureClassificationActivity",
+            Self::FailureClassification => "FailureClassification",
         }
     }
 
@@ -58,6 +62,8 @@ impl GraphNodeLabel {
             "AgentArchive" => Some(Self::AgentArchive),
             "AgentRuntimeInstance" => Some(Self::AgentRuntimeInstance),
             "PromptRejected" => Some(Self::PromptRejected),
+            "FailureClassificationActivity" => Some(Self::FailureClassificationActivity),
+            "FailureClassification" => Some(Self::FailureClassification),
             _ => None,
         }
     }
@@ -139,7 +145,7 @@ const MAPPING_LLM_CALL_STARTED: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::LlmCallStarted,
     primary_node: GraphNodeLabel::LlmCall,
     expected_edges: &[EDGE_WAS_USED_BY, EDGE_WAS_INVOKED_BY],
-    required_properties: &[a2a::CLIENT, a2a::MODEL, a2a::FUNCTION_NAME, a2a::METADATA],
+    required_properties: &[a2a::CLIENT, a2a::MODEL, a2a::FUNCTION_NAME, a2a::AGENT_ID],
 };
 
 const MAPPING_LLM_CALL_COMPLETED: EventGraphMapping = EventGraphMapping {
@@ -150,7 +156,7 @@ const MAPPING_LLM_CALL_COMPLETED: EventGraphMapping = EventGraphMapping {
         a2a::CLIENT,
         a2a::MODEL,
         a2a::FUNCTION_NAME,
-        a2a::METADATA,
+        a2a::AGENT_ID,
         a2a::DURATION_MS,
         a2a::ACTIVITY_OUTCOME,
     ],
@@ -167,7 +173,7 @@ const MAPPING_TOOL_CALL_STARTED: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::ToolCallStarted,
     primary_node: GraphNodeLabel::ToolCall,
     expected_edges: &[EDGE_WAS_USED_BY, EDGE_WAS_EXECUTED_BY],
-    required_properties: &[a2a::TOOL_NAME, a2a::METADATA],
+    required_properties: &[a2a::TOOL_NAME, a2a::AGENT_ID],
 };
 
 const MAPPING_TOOL_CALL_COMPLETED: EventGraphMapping = EventGraphMapping {
@@ -176,7 +182,7 @@ const MAPPING_TOOL_CALL_COMPLETED: EventGraphMapping = EventGraphMapping {
     expected_edges: &[EDGE_WAS_USED_BY, EDGE_WAS_EXECUTED_BY],
     required_properties: &[
         a2a::TOOL_NAME,
-        a2a::METADATA,
+        a2a::AGENT_ID,
         a2a::DURATION_MS,
         a2a::ACTIVITY_OUTCOME,
     ],
@@ -285,71 +291,12 @@ impl ConversationReadModel {
     pub const MESSAGE_COLUMN_COUNT: usize = 5;
     pub const TOOL_COLUMN_COUNT: usize = 7;
 
-    pub fn message_query(context: &str) -> String {
-        let message_label = GraphNodeLabel::Message.as_str();
-        format!(
-            "MATCH (m:{message_label}) \
-             WHERE m.`a2a:context_id` = \"{context}\" \
-             RETURN m.`a2a:event_id`, m.`a2a:message_id`, m.`a2a:direction`, m.`a2a:role`, m.`a2a:content` \
-             ORDER BY m.`a2a:event_id`"
-        )
-    }
-
-    pub fn tool_query(context: &str) -> String {
-        let tool_call_label = GraphNodeLabel::ToolCall.as_str();
-        let tool_args_label = GraphNodeLabel::ToolArgs.as_str();
-        let tool_args_edge = TOOL_CALL_ARGS_EDGE.edge_label;
-        let tool_args_role = TOOL_CALL_ARGS_EDGE.role_key;
-        let tool_args_type = TOOL_CALL_ARGS_EDGE.target_type_key;
-        // Match ToolCall nodes directly by context_id. Every ToolCall activity
-        // carries a2a:context_id from base_attrs, so we don't need to traverse
-        // the parent (A2AMessageProcessing or A2ATaskExecution) at all. This
-        // works for both message-scoped and task-scoped tool calls.
-        //
-        // The second MATCH is constrained to WAS_USED_BY edges targeting
-        // ToolArgs nodes to avoid picking up other outgoing edges (e.g.
-        // WAS_EXECUTED_BY to AgentRuntimeInstance).
-        format!(
-            "MATCH (t:{tool_call_label}) \
-             WHERE t.`a2a:context_id` = \"{context}\" \
-             MATCH (t)-[used:{tool_args_edge}]->(args:{tool_args_label}) \
-             RETURN DISTINCT t.`a2a:event_id`, t.`a2a:tool_name`, t.`a2a:metadata`, args.`a2a:args`, used.`{tool_args_role}`, args.`{tool_args_type}`, t.`a2a:activity_outcome` \
-             ORDER BY t.`a2a:event_id`"
-        )
-    }
-
-    /// Message query using storage-safe property names (a2a_context_id etc.; colons replaced by underscores).
-    /// Use for GraphQLite literal MERGE path ([KeyStyle::StorageSafeUnderscore]).
-    pub fn message_query_storage_safe(context: &str) -> String {
-        let message_label = GraphNodeLabel::Message.as_str();
-        format!(
-            "MATCH (m:{message_label}) \
-             WHERE m.a2a_context_id = \"{context}\" \
-             RETURN m.a2a_event_id, m.a2a_message_id, m.a2a_direction, m.a2a_role, m.a2a_content \
-             ORDER BY m.a2a_event_id"
-        )
-    }
-
     /// Typed parameterised message query for cypher_builder().params().run().
     pub fn message_query_storage_safe_params(context: &str) -> (String, serde_json::Value) {
         let query = "MATCH (m:Message) WHERE m.a2a_context_id = $context \
              RETURN m.a2a_event_id, m.a2a_message_id, m.a2a_direction, m.a2a_role, m.a2a_content \
              ORDER BY m.a2a_event_id";
         (query.to_string(), serde_json::json!({ "context": context }))
-    }
-
-    /// Tool query using storage-safe property names (underscore form). Use for GraphQLite.
-    pub fn tool_query_storage_safe(context: &str) -> String {
-        let tool_call_label = GraphNodeLabel::ToolCall.as_str();
-        let tool_args_label = GraphNodeLabel::ToolArgs.as_str();
-        let tool_args_edge = TOOL_CALL_ARGS_EDGE.edge_label;
-        format!(
-            "MATCH (t:{tool_call_label}) \
-             WHERE t.a2a_context_id = \"{context}\" \
-             MATCH (t)-[used:{tool_args_edge}]->(args:{tool_args_label}) \
-             RETURN DISTINCT t.a2a_event_id, t.a2a_tool_name, t.a2a_metadata, args.a2a_args, used.prov_role, args.prov_type, t.a2a_activity_outcome \
-             ORDER BY t.a2a_event_id"
-        )
     }
 
     /// Typed parameterised tool query for cypher_builder().params().run().

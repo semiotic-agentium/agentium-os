@@ -192,7 +192,7 @@ impl BamlExecutor {
                 Ok(InterceptorDecision::Block(msg)) => {
                     if let Some(ref collector) = collector {
                         collector
-                            .complete_pending_effects(Outcome::Failure, 0, None)
+                            .complete_pending_effects(Outcome::Failure, 0, None, None)
                             .await;
                     }
                     return Err(BamlRtError::BamlRuntime(format!(
@@ -203,7 +203,7 @@ impl BamlExecutor {
                 Ok(InterceptorDecision::Substitute(value)) => {
                     if let Some(ref collector) = collector {
                         collector
-                            .complete_pending_effects(Outcome::Success, 0, None)
+                            .complete_pending_effects(Outcome::Success, 0, None, None)
                             .await;
                     }
                     return Ok((value, None));
@@ -211,7 +211,7 @@ impl BamlExecutor {
                 Err(e) => {
                     if let Some(ref collector) = collector {
                         collector
-                            .complete_pending_effects(Outcome::Failure, 0, None)
+                            .complete_pending_effects(Outcome::Failure, 0, None, None)
                             .await;
                     }
                     return Err(e);
@@ -285,6 +285,7 @@ impl BamlExecutor {
                             Outcome::Failure,
                             start_time.elapsed().as_millis() as u64,
                             None,
+                            None,
                         )
                         .await;
                 }
@@ -317,7 +318,12 @@ impl BamlExecutor {
                         Err(e) => {
                             if let Some(ref collector) = collector {
                                 collector
-                                    .complete_pending_effects(Outcome::Failure, elapsed_ms, None)
+                                    .complete_pending_effects(
+                                        Outcome::Failure,
+                                        elapsed_ms,
+                                        None,
+                                        None,
+                                    )
                                     .await;
                             }
                             return Err(e);
@@ -335,6 +341,7 @@ impl BamlExecutor {
                                     c.clone(),
                                     start_time,
                                     scope.clone(),
+                                    json_value.clone(),
                                 )
                             });
                             return Ok((json_value, handle));
@@ -352,7 +359,12 @@ impl BamlExecutor {
                             }
                             if let Some(ref collector) = collector {
                                 collector
-                                    .complete_pending_effects(Outcome::Success, elapsed_ms, None)
+                                    .complete_pending_effects(
+                                        Outcome::Success,
+                                        elapsed_ms,
+                                        None,
+                                        Some(json_value.clone()),
+                                    )
                                     .await;
                             }
                             return Ok((tool_result, None));
@@ -367,6 +379,7 @@ impl BamlExecutor {
                                 .complete_pending_effects(
                                     Outcome::Failure,
                                     start_time.elapsed().as_millis() as u64,
+                                    None,
                                     None,
                                 )
                                 .await;

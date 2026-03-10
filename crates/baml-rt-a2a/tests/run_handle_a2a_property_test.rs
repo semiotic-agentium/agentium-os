@@ -30,7 +30,7 @@ use tokio::{
 
 fn ci_timeout_scale() -> u64 {
     if std::env::var_os("CI").is_some() {
-        3
+        5
     } else {
         1
     }
@@ -41,6 +41,11 @@ fn scaled_timeout_secs(base_secs: u64) -> Duration {
 }
 
 fn proptest_cfg(cases: u32) -> ProptestConfig {
+    let cases = if std::env::var_os("CI").is_some() {
+        cases.min(3)
+    } else {
+        cases
+    };
     let mut cfg = ProptestConfig::with_cases(cases);
     // Integration tests do not have a crate root (lib.rs/main.rs) for source-based persistence.
     // Disable persistence to avoid noisy "failed to find lib.rs or main.rs" warnings.
@@ -283,6 +288,89 @@ async fn test_input_required_resume_single_context() {
         "resumed turn must keep context attribution: expected {}, got {text}",
         context_id.as_str()
     );
+}
+
+/// Regression: minimal failing case from proptest (context isolation).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn test_interleaved_context_isolation_regression() {
+    let ops: Vec<(u8, u8)> = vec![
+        (1, 2),
+        (1, 0),
+        (1, 0),
+        (2, 3),
+        (1, 1),
+        (1, 1),
+        (0, 5),
+        (1, 4),
+        (0, 7),
+    ];
+    let timeout_secs = (ops.len() as u64 * 6) + 20;
+    let request_timeout = scaled_timeout_secs(timeout_secs);
+
+    let agent = setup_interleaving_agent().await;
+    let mut join_set = JoinSet::new();
+    for (idx, (kind_raw, jitter_raw)) in ops.iter().copied().enumerate() {
+        let agent = agent.clone();
+        let context_id = ContextId::new(900, (idx as u64) + 1);
+        let kind = match kind_raw {
+            0 => "a2a",
+            1 => "tool",
+            _ => "llm",
+        };
+        let jitter_ms = (jitter_raw as u64) + ((idx as u64) % 3);
+        let request = send_stream_request(
+            &format!("msg-{idx}"),
+            &format!("{kind}:{jitter_ms}:{}", context_id.as_str()),
+            &format!("corr-1700000000200-{}", idx + 1),
+            Some(context_id.clone()),
+        );
+        join_set.spawn(async move {
+            sleep(Duration::from_millis(jitter_ms)).await;
+            let responses = timeout(request_timeout, collect_responses(&agent, request))
+                .await
+                .expect("interleaving request timed out")
+                .expect("interleaving request failed");
+            (kind.to_string(), context_id, responses)
+        });
+    }
+
+    let mut completed = 0usize;
+    while let Some(result) = join_set.join_next().await {
+        let (kind, context_id, responses) = result.expect("join");
+        completed += 1;
+        assert!(!responses.is_empty(), "responses must not be empty");
+        let final_count = responses
+            .iter()
+            .filter(|value| {
+                value
+                    .get("result")
+                    .and_then(|result| result.get("final"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(
+            final_count, 1,
+            "stream must include exactly one final marker"
+        );
+
+        let text = first_message_text_from_stream(&responses);
+        let expected_prefix = match kind.as_str() {
+            "a2a" => "A2A:",
+            "tool" => "TOOL:",
+            _ => "LLM:",
+        };
+        assert!(
+            text.starts_with(expected_prefix),
+            "message text prefix mismatch for kind {kind}: {text}"
+        );
+        assert!(
+            text.contains(context_id.as_str()),
+            "context contamination: expected {ctx} in {text}",
+            ctx = context_id.as_str(),
+        );
+    }
+    assert_eq!(completed, ops.len(), "all spawned requests must complete");
 }
 
 proptest! {

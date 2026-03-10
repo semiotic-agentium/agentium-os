@@ -1544,6 +1544,7 @@ fn find_tool_args(indices: &GraphIndices<'_>, tool_call_id: &str) -> String {
     {
         if edge.relation == "WAS_USED_BY"
             && let Some(args_node) = indices.nodes_by_id.get(edge.to.as_str())
+            && args_node.label == "ToolArgs"
         {
             return super::summarize_args(
                 args_node.properties.get(a2a::ARGS),
@@ -1569,16 +1570,18 @@ fn sanitize_participant(name: &str) -> String {
         .collect()
 }
 
-/// Extract a truncated error message preview from a node's metadata.
+/// Extract a truncated error message preview from a node.
 ///
-/// The `interceptors.rs` layer stores the error string under `metadata.error`
-/// when a tool call or LLM call fails. This helper reads it back out and
-/// truncates it for use in diagram labels.
+/// The normalizer stores the error string as `a2a:error` on the activity node.
+/// Fallback: `metadata.error` for legacy/test nodes that use nested metadata.
 fn extract_error_preview(node: &ExportedNode) -> Option<String> {
-    let raw = super::extract_metadata_field(node.properties.get(a2a::METADATA), "error")?;
-    if raw.is_empty() {
-        return None;
-    }
+    let raw = node
+        .properties
+        .get(a2a::ERROR)
+        .and_then(|v| v.as_str())
+        .map(String::from)
+        .or_else(|| super::extract_metadata_field(node.properties.get(a2a::METADATA), "error"));
+    let raw = raw.filter(|s| !s.is_empty())?;
     Some(super::truncate_str(&raw, SEQUENCE_ERROR_PREVIEW_LEN))
 }
 

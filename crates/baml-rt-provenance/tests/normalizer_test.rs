@@ -245,3 +245,85 @@ fn normalize_rejects_empty_message_role() {
         "expected empty role rejection, got: {err_text}"
     );
 }
+
+#[test]
+fn normalize_llm_call_rejects_unknown_provider_type() {
+    let event = ProvEvent::llm_call_completed_task(
+        ContextId::new(120, 1),
+        TaskId::from_external(ExternalId::new("task-unknown-provider")),
+        "unknown".to_string(),
+        "unknown".to_string(),
+        "RequirementsPhase".to_string(),
+        serde_json::json!({
+            "model": "x-ai/grok-4.1-fast",
+            "messages": [{"role": "user", "content": "hi"}]
+        }),
+        serde_json::json!({
+            "agent_id": "00000000-0000-0000-0000-000000000001",
+            "message_id": "msg-unknown-provider"
+        }),
+        LlmUsage::Known {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+        },
+        20,
+        Outcome::Success,
+    );
+
+    let err = normalize_event(&event).expect_err("unknown provider type must fail normalization");
+    let err_text = err.to_string();
+    assert!(
+        err_text.contains("a2a:client"),
+        "expected missing provider/client field error, got: {err_text}"
+    );
+}
+
+#[test]
+fn normalize_llm_call_backfills_model_from_prompt() {
+    let event = ProvEvent::llm_call_completed_task(
+        ContextId::new(121, 1),
+        TaskId::from_external(ExternalId::new("task-model-backfill")),
+        "openrouter".to_string(),
+        "unknown".to_string(),
+        "RequirementsPhase".to_string(),
+        serde_json::json!({
+            "model": "x-ai/grok-4.1-fast",
+            "messages": [{"role": "user", "content": "hi"}]
+        }),
+        serde_json::json!({
+            "agent_id": "00000000-0000-0000-0000-000000000001",
+            "message_id": "msg-model-backfill"
+        }),
+        LlmUsage::Known {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+        },
+        20,
+        Outcome::Success,
+    );
+
+    let normalized = normalize_event(&event).expect("normalize llm call with prompt model");
+    let llm_activity = normalized
+        .document
+        .activities()
+        .find(|(id, _)| id.as_str().starts_with("llm_call:"))
+        .expect("llm activity");
+
+    let client = llm_activity
+        .1
+        .attributes
+        .get("a2a:client")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let model = llm_activity
+        .1
+        .attributes
+        .get("a2a:model")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+
+    assert_eq!(client, "openrouter");
+    assert_eq!(model, "x-ai/grok-4.1-fast");
+}
