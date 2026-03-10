@@ -63,6 +63,8 @@ pub struct ProvenanceContextMessage {
 pub struct ProvenanceConversationContextItem {
     pub timestamp_ms: u64,
     pub event_id: EventId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<AgentId>,
     pub role: String,
     pub content: Value,
     pub source: String,

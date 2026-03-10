@@ -128,8 +128,10 @@ async fn graphqlite_store_persists_messages_and_returns_conversation_context() {
     assert_eq!(items.len(), 2);
     assert_eq!(items[0].role, "ROLE_USER");
     assert_eq!(items[0].source, "message");
+    assert_eq!(items[0].agent_id.as_ref(), Some(&agent_id));
     assert_eq!(items[1].role, "ROLE_AGENT");
     assert_eq!(items[1].source, "message");
+    assert_eq!(items[1].agent_id.as_ref(), Some(&agent_id));
 }
 
 /// No-stale-read invariant: a read after each write must see that write.

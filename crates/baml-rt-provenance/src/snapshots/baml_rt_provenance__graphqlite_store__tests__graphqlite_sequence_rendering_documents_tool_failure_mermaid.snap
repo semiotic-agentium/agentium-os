@@ -9,11 +9,9 @@ sequenceDiagram
     participant storage
 
     User->>+ops_1_0_0: Delete stale objects
-    rect rgb(220, 230, 241)
     Note over ops_1_0_0,storage: "Failed"
     ops_1_0_0->>+storage: action=Delete bucket=prod-artifacts
     storage--xops_1_0_0: 780ms ✗ permission denied
     deactivate storage
     Note over storage,ops_1_0_0: ✗ "permission denied"
     ops_1_0_0->>-User: Storage delete failed: permission denied
-    end

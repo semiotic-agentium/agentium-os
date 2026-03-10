@@ -1,5 +1,6 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
+assertion_line: 961
 expression: snapshot
 ---
 {
@@ -13,7 +14,7 @@ expression: snapshot
         "context_id": "ctx-100-1",
         "task_id": null,
         "message_id": "msg-a",
-        "agent_id": null,
+        "agent_id": "[uuid]",
         "role": "ROLE_USER",
         "direction": "received",
         "message_text": "run analysis",
@@ -22,6 +23,9 @@ expression: snapshot
         "total_processing_ms": 1490,
         "duration_ms": 1490,
         "message_content": "run analysis",
+        "agent_package": "unknown",
+        "agent_version": "unknown",
+        "agent_display": "unknown/unknown",
         "activity_status": "Completed",
         "activity_outcome": "Success",
         "activity_kind": "message_turn"
@@ -32,7 +36,7 @@ expression: snapshot
         "context_id": "ctx-100-1",
         "task_id": null,
         "message_id": "msg-c",
-        "agent_id": null,
+        "agent_id": "[uuid]",
         "role": "ROLE_AGENT",
         "direction": "sent",
         "message_text": "authentication failed: 401 unauthorized invalid api key",
@@ -41,6 +45,9 @@ expression: snapshot
         "total_processing_ms": 0,
         "duration_ms": 0,
         "message_content": "authentication failed: 401 unauthorized invalid api key",
+        "agent_package": "unknown",
+        "agent_version": "unknown",
+        "agent_display": "unknown/unknown",
         "activity_status": "Completed",
         "activity_outcome": "Success",
         "activity_kind": "message_turn"
@@ -51,7 +58,7 @@ expression: snapshot
         "context_id": "ctx-100-1",
         "task_id": null,
         "message_id": "msg-b",
-        "agent_id": null,
+        "agent_id": "[uuid]",
         "role": "ROLE_AGENT",
         "direction": "sent",
         "message_text": "BAML validation failed: invalid response schema",
@@ -60,6 +67,9 @@ expression: snapshot
         "total_processing_ms": 0,
         "duration_ms": 0,
         "message_content": "BAML validation failed: invalid response schema",
+        "agent_package": "unknown",
+        "agent_version": "unknown",
+        "agent_display": "unknown/unknown",
         "activity_status": "Completed",
         "activity_outcome": "Success",
         "activity_kind": "message_turn"
@@ -83,19 +93,35 @@ expression: snapshot
     },
     "hotspotGroups": [
       {
-        "groupKey": "|",
+        "groupKey": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa|",
         "groupValues": [
-          null,
+          "[uuid]",
           null
         ],
         "groupDimensions": [
           "agent_id",
           "baml_prompt"
         ],
-        "count": 3,
+        "count": 2,
         "failed": 0,
         "failureRate": 0.0,
-        "avgDurationMs": 496.6666666666667,
+        "avgDurationMs": 745.0,
+        "avgTotalTokens": 0.0
+      },
+      {
+        "groupKey": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb|",
+        "groupValues": [
+          "[uuid]",
+          null
+        ],
+        "groupDimensions": [
+          "agent_id",
+          "baml_prompt"
+        ],
+        "count": 1,
+        "failed": 0,
+        "failureRate": 0.0,
+        "avgDurationMs": 0.0,
         "avgTotalTokens": 0.0
       }
     ],

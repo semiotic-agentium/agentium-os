@@ -403,10 +403,59 @@ impl QuickJSBridge {
         let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
         let session_id_num = session_id.0;
 
+        // Override openToolSession per-stream to use session-aware natives.
+        // The global openToolSession uses tokenless __tool_session_* functions that
+        // resolve scope from the LIFO invocation context registry. Under concurrent
+        // streams, LIFO resolution returns the wrong scope (last-entered), causing
+        // all tool sessions to share one context_id. When one stream finalizes and
+        // tears down tool sessions by context_id, sibling streams' sessions are
+        // destroyed too.
+        //
+        // The session-aware variants (__tool_session_*_session) resolve scope from
+        // the stream session map by stream session id, which is always correct.
         let js_code = format!(
             r#"
             (function() {{
                 const sid = {session_id_num};
+                const _openToolSession = async function(toolName, openInput) {{
+                    const toolSessionId = await __tool_session_open_session(sid, toolName, JSON.stringify(openInput ?? {{}}));
+                    let phase = "Open";
+                    const isTerminal = () => phase === "Finish" || phase === "Abort";
+                    const assertNotTerminal = (op) => {{
+                        if (isTerminal()) {{
+                            throw new Error("Tool session " + toolSessionId + " cannot " + op + " after terminal phase " + phase);
+                        }}
+                    }};
+                    return {{
+                        sessionId: toolSessionId,
+                        phase: function() {{ return phase; }},
+                        send: async function(args) {{
+                            assertNotTerminal("send");
+                            const argObj = args ?? {{}};
+                            const out = await __tool_session_send_session(sid, toolSessionId, JSON.stringify(argObj));
+                            phase = "Send";
+                            return out;
+                        }},
+                        continue: async function() {{
+                            assertNotTerminal("continue");
+                            const out = await __tool_session_next_session(sid, toolSessionId);
+                            phase = "Next";
+                            return out;
+                        }},
+                        finish: async function() {{
+                            assertNotTerminal("finish");
+                            const out = await __tool_session_finish_session(sid, toolSessionId);
+                            phase = "Finish";
+                            return out;
+                        }},
+                        abort: async function(reason) {{
+                            assertNotTerminal("abort");
+                            const out = await __tool_session_abort_session(sid, toolSessionId, reason);
+                            phase = "Abort";
+                            return out;
+                        }}
+                    }};
+                }};
                 try {{
                     const args = {args_json};
                     if (Array.isArray(args) && args[0] && typeof args[0] === 'object') {{
@@ -418,6 +467,10 @@ impl QuickJSBridge {
                     if (func === undefined || typeof func !== 'function') {{
                         throw new Error("JS function not found: {function_name}");
                     }}
+                    // Shadow globalThis.openToolSession with session-aware version
+                    // for the duration of this stream invocation.
+                    const _origOpenToolSession = globalThis.openToolSession;
+                    globalThis.openToolSession = _openToolSession;
                     function wrapSession(p) {{
                         if (!p || typeof p.then !== 'function') return p;
                         return p.then(

@@ -75,12 +75,14 @@ const MSG_COL_MESSAGE_ID: &str = "m.a2a_message_id";
 const MSG_COL_DIRECTION: &str = "m.a2a_direction";
 const MSG_COL_ROLE: &str = "m.a2a_role";
 const MSG_COL_CONTENT: &str = "m.a2a_content";
+const MSG_COL_AGENT_ID: &str = "m.a2a_agent_id";
 
 const TOOL_COL_EVENT_ID: &str = "t.a2a_event_id";
 const TOOL_COL_TOOL_NAME: &str = "t.a2a_tool_name";
 const TOOL_COL_METADATA: &str = "t.a2a_metadata";
 const TOOL_COL_ARGS: &str = "args.a2a_args";
 const TOOL_COL_ACTIVITY_OUTCOME: &str = "t.a2a_activity_outcome";
+const TOOL_COL_AGENT_ID: &str = "t.a2a_agent_id";
 const TOOL_COL_ROLE: &str = "used.prov_role";
 const TOOL_COL_TARGET_TYPE: &str = "args.prov_type";
 
@@ -172,6 +174,7 @@ struct MessageRow {
     direction: String,
     role: String,
     content: Value,
+    agent_id: Option<AgentId>,
 }
 
 #[derive(Debug, Clone)]
@@ -213,6 +216,39 @@ fn read_json_column(row: &Row, col: &str) -> std::result::Result<Value, graphqli
         return Ok(parse_json_like_string(&raw));
     }
     Err(graphqlite::Error::ColumnNotFound(col.to_string()))
+}
+
+fn read_optional_string_column(row: &Row, col: &str) -> Option<String> {
+    if let Some(value) = row.get_value(col) {
+        return match graphqlite_value_to_json(value) {
+            Value::String(s) => {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }
+            Value::Null => None,
+            _ => None,
+        };
+    }
+    row.get::<String>(col).ok().and_then(|s| {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn parse_agent_id_str(raw: &str) -> Option<AgentId> {
+    UuidId::parse_str(raw).ok().map(AgentId::from_uuid)
+}
+
+fn parse_agent_id_column(row: &Row, col: &str) -> Option<AgentId> {
+    read_optional_string_column(row, col).and_then(|raw| parse_agent_id_str(&raw))
 }
 
 fn parse_json_like_string(raw: &str) -> Value {
@@ -339,12 +375,14 @@ impl MessageRow {
         let direction: String = row.get(MSG_COL_DIRECTION)?;
         let role: String = row.get(MSG_COL_ROLE)?;
         let content = read_json_column(row, MSG_COL_CONTENT)?;
+        let agent_id = parse_agent_id_column(row, MSG_COL_AGENT_ID);
         Ok(Self {
             event_id,
             message_id,
             direction,
             role,
             content,
+            agent_id,
         })
     }
 }
@@ -355,6 +393,7 @@ struct ToolCallRow {
     tool_name: String,
     metadata: Value,
     args: Value,
+    agent_id: Option<AgentId>,
     role: String,
     target_type: String,
     activity_outcome: Option<NodeActivityOutcome>,
@@ -383,6 +422,12 @@ impl ToolCallRow {
         let tool_name: String = row.get(TOOL_COL_TOOL_NAME)?;
         let metadata = read_json_column(row, TOOL_COL_METADATA)?;
         let args = read_json_column(row, TOOL_COL_ARGS)?;
+        let agent_id = parse_agent_id_column(row, TOOL_COL_AGENT_ID).or_else(|| {
+            metadata
+                .get("agent_id")
+                .and_then(Value::as_str)
+                .and_then(parse_agent_id_str)
+        });
         let role: String = row.get(TOOL_COL_ROLE).unwrap_or_default();
         let target_type: String = row.get(TOOL_COL_TARGET_TYPE).unwrap_or_default();
         let activity_outcome = decode_activity_outcome(row, TOOL_COL_ACTIVITY_OUTCOME);
@@ -391,6 +436,7 @@ impl ToolCallRow {
             tool_name,
             metadata,
             args,
+            agent_id,
             role,
             target_type,
             activity_outcome,
@@ -1092,6 +1138,7 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
             items.push(ProvenanceConversationContextItem {
                 timestamp_ms: event_id_to_timestamp_ms(&msg.event_id),
                 event_id: EventId::from(msg.event_id.as_str()),
+                agent_id: msg.agent_id.clone(),
                 role,
                 content: Value::String(content),
                 source: "message".to_string(),
@@ -1163,6 +1210,7 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
                 items.push(ProvenanceConversationContextItem {
                     timestamp_ms: event_id_to_timestamp_ms(&tool.event_id),
                     event_id: EventId::from(tool.event_id.as_str()),
+                    agent_id: tool.agent_id.clone(),
                     role: "assistant".to_string(),
                     content: serde_json::json!({
                         "tool_call": {
@@ -1191,6 +1239,7 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
                 items.push(ProvenanceConversationContextItem {
                     timestamp_ms: event_id_to_timestamp_ms(&tool.event_id),
                     event_id: EventId::from(tool.event_id.as_str()),
+                    agent_id: tool.agent_id.clone(),
                     role: "tool".to_string(),
                     content: Value::Object(content),
                     source: "tool_result".to_string(),

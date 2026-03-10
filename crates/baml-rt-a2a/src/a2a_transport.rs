@@ -318,17 +318,6 @@ impl TaskStoreConversationContextProvider {
     }
 }
 
-fn conversation_content_to_string(v: &Value) -> String {
-    serde_json::to_string(v)
-        .inspect_err(|e| {
-            tracing::warn!(
-                error = %e,
-                "conversation context content serialization failed, using Debug"
-            );
-        })
-        .unwrap_or_else(|_| v.to_string())
-}
-
 #[async_trait]
 impl ConversationContextProvider for TaskStoreConversationContextProvider {
     async fn conversation_history_json(
@@ -336,12 +325,14 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
         scope: &context::RuntimeScope,
     ) -> Result<Option<Value>> {
         let context_id = scope.context_id();
-        let mut items = self
-            .store
-            .conversation_context(context_id, Some(40))
-            .await?;
+        let config = crate::projection::ProjectionConfig {
+            agent_id: Some(scope.agent_id().clone()),
+            ..Default::default()
+        };
+        let items = self.store.conversation_context(context_id, None).await?;
         tracing::debug!(
             context_id = %context_id,
+            agent_id = %scope.agent_id(),
             item_count = items.len(),
             "conversation_history_json: store returned items"
         );
@@ -349,37 +340,22 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
             return Ok(None);
         }
 
-        // Read-time prompt projection only: compact tool_result items in-memory.
-        for item in &mut items {
-            if item.source != "tool_result" {
-                continue;
-            }
-            let Some(tool_name) = item.content.get("tool_name").and_then(Value::as_str) else {
-                continue;
-            };
-            let Some(handler) = self.tool_registry.get_handler(tool_name) else {
-                continue;
-            };
-            handler.compact_result(&mut item.content);
-        }
+        let (entries, stats) = crate::projection::project(items, &config, &self.tool_registry);
+        tracing::debug!(
+            agent_id = %scope.agent_id(),
+            candidates = stats.candidates,
+            projected = stats.projected,
+            projected_chars = stats.projected_chars,
+            dropped_agent_filtered = stats.dropped_agent_filtered,
+            dropped_source_filtered = stats.dropped_source_filtered,
+            dropped_deduped = stats.dropped_deduped,
+            dropped_empty = stats.dropped_empty,
+            dropped_budgeted = stats.dropped_budgeted,
+            oversized_compacted = stats.oversized_compacted,
+            floor_applied = stats.floor_applied,
+            "conversation_history_json: projection stats"
+        );
 
-        // Include all provenance items (messages, tool_call, tool_result)
-        // so that BAML templates receive the full conversation context
-        // including tool interactions from prior turns.
-        let entries: Vec<Value> = items
-            .into_iter()
-            .map(|item| {
-                let content = match &item.content {
-                    Value::String(s) => s.clone(),
-                    other => conversation_content_to_string(other),
-                };
-                serde_json::json!({
-                    "role": item.role,
-                    "source": item.source,
-                    "content": content,
-                })
-            })
-            .collect();
         Ok(Some(Value::Array(entries)))
     }
 }
