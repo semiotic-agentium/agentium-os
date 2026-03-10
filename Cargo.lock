@@ -1337,6 +1337,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "baml-rt-repository"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "baml-rt-core",
+ "baml-rt-id",
+ "http-api-problem",
+ "insta",
+ "opentelemetry",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "utoipa",
+ "uuid",
+]
+
+[[package]]
 name = "baml-rt-tools"
 version = "0.1.0"
 dependencies = [

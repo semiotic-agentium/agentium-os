@@ -15,6 +15,7 @@ members = [
   "crates/baml-rt-observability",
   "crates/baml-rt-provenance",
   "crates/baml-rt-quickjs",
+  "crates/baml-rt-repository",
   "crates/baml-rt-tools",
   "crates/test-support",
   "crates/task-daemon",
