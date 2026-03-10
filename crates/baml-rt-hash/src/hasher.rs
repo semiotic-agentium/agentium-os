@@ -136,15 +136,11 @@ fn canonical_json(value: &serde_json::Value) -> String {
 fn sort_json_keys(value: &serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(map) => {
-            let mut sorted: Vec<(&String, serde_json::Value)> = map
-                .iter()
-                .map(|(k, v)| (k, sort_json_keys(v)))
-                .collect();
+            let mut sorted: Vec<(&String, serde_json::Value)> =
+                map.iter().map(|(k, v)| (k, sort_json_keys(v))).collect();
             sorted.sort_by_key(|(k, _)| *k);
-            let new_map: serde_json::Map<String, serde_json::Value> = sorted
-                .into_iter()
-                .map(|(k, v)| (k.clone(), v))
-                .collect();
+            let new_map: serde_json::Map<String, serde_json::Value> =
+                sorted.into_iter().map(|(k, v)| (k.clone(), v)).collect();
             serde_json::Value::Object(new_map)
         }
         serde_json::Value::Array(arr) => {
