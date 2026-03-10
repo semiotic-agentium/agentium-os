@@ -72,6 +72,9 @@ Example:
 
 `InterpretationResultEvent` is the payload produced by interpretation and consumed by orchestration/sinks.
 
+This is now the canonical typed payload emitted by `baml-task-daemon`'s A2A sink
+in `message.parts[].data`.
+
 Key fields:
 - `request_event_id`: links back to the request event
 - `interpretation`: project-aware meaning of the discussion

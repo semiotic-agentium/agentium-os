@@ -95,19 +95,45 @@ cargo run -p baml-task-daemon -- run \
   --clickup-list-id <LIST_ID>
 ```
 
-Delegate to coordinator agent over A2A:
+Route specific sources to specific sinks:
+
+```bash
+# Slack discussions create ClickUp tasks; ClickUp lifecycle events dispatch to a workflow intake agent over A2A.
+cargo run -p baml-task-daemon -- run \
+  --source slack \
+  --source clickup \
+  --channel agentium-eng \
+  --clickup-list-id <LIST_ID> \
+  --a2a-base-url http://127.0.0.1:8082 \
+  --a2a-agent-package workflow-intake-agent \
+  --a2a-agent-instance-id dispatch \
+  --route slack:clickup \
+  --route clickup:a2a \
+  --clickup-live \
+  --a2a-live
+```
+
+Delegate daemon events to an A2A target agent:
 
 ```bash
 # dry-run (logs request payload intent, no network side-effects)
-cargo run -p baml-task-daemon -- run --channel agentium-eng --coordinator-url http://127.0.0.1:8082
+cargo run -p baml-task-daemon -- run --channel agentium-eng --a2a-base-url http://127.0.0.1:8082
 
 # live delegation
-cargo run -p baml-task-daemon -- run --channel agentium-eng --coordinator-url http://127.0.0.1:8082 --a2a-live
+cargo run -p baml-task-daemon -- run --channel agentium-eng --a2a-base-url http://127.0.0.1:8082 --a2a-live
+
+# target a non-default agent route
+cargo run -p baml-task-daemon -- run \
+  --channel agentium-eng \
+  --a2a-base-url http://127.0.0.1:8082 \
+  --a2a-agent-package workflow-intake-agent \
+  --a2a-agent-instance-id dispatch \
+  --a2a-live
 ```
 
 ## Output You Should Expect
 
-A typical batch includes:
+A typical interpretation result event includes:
 - `interpretation.executive_summary`: concise state of the project discussion
 - `interpretation.decisions_made`, `open_questions`, `risks`: structured understanding of the conversation
 - `interpretation.workflow_seed.goal`: the intended next objective
@@ -115,10 +141,10 @@ A typical batch includes:
 - `interpretation.workflow_seed.clarification_nodes`: questions that should be resolved before execution
 - `derived_tasks`: practical tasks emitted to sinks
 
-When using coordinator delegation (`--coordinator-url --a2a-live`), task-daemon
+When using A2A delegation (`--a2a-base-url --a2a-live`), task-daemon
 sends a valid `message.sendStream` request with:
-- a concise text instruction
-- a typed workflow handoff payload in `message.parts[].data`
+- a concise text prompt for compatibility/debugging
+- a typed `InterpretationResultEvent` payload in `message.parts[].data`
 
 ## Event Contract
 
@@ -136,6 +162,7 @@ provenance timeline + mermaid), see:
 - LLM mode is the default. Heuristic mode is available only when explicitly requested (`--extractor heuristic`).
 - Slack and ClickUp source access are read-only.
 - With multiple `--source` flags, each interval (and `--once`) covers each selected source once.
+- `--route <source>:<sink>` overrides default fan-out. When routes are present, only explicitly routed source/sink pairs are active.
 - Startup validation rejects configurations where a selected source has no compatible sink.
 - ClickUp source lifecycle semantics (keys, revisions, loop-prevention) are defined in [task-daemon-clickup-source-contract.md](./task-daemon-clickup-source-contract.md).
 - Delivery is currently best-effort at-least-once: source cursor/task state is persisted only after sink delivery succeeds.

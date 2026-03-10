@@ -116,6 +116,7 @@ const MAX_NORMALIZATION_INPUT_CHARS = 16_000;
 const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
 const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
 const TASK_DAEMON_COORDINATOR_HANDOFF_SCHEMA_VERSION = "task-daemon.coordinator-handoff.v1";
+const TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION = "task-daemon.interpretation.v1";
 
 type WorkflowNodeKind =
   | "call_agent"
@@ -162,6 +163,10 @@ type NodeArtifact = {
   ended_at?: string;
 };
 
+type ConsoleLike = {
+  warn: (message?: unknown, ...optionalParams: unknown[]) => void;
+};
+
 // ---------------------------------------------------------------------------
 // Utility helpers
 // ---------------------------------------------------------------------------
@@ -172,6 +177,13 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function normalizeText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function warnToConsole(message: string): void {
+  const consoleLike = (globalThis as { console?: ConsoleLike }).console;
+  if (typeof consoleLike?.warn === "function") {
+    consoleLike.warn(message);
+  }
 }
 
 function normalizeOptionalString(value: unknown): string | null {
@@ -306,6 +318,13 @@ function isLikelyTaskDaemonPrompt(text: string): boolean {
   );
 }
 
+function parseTaskDaemonSourceKind(value: unknown): string | null {
+  if (value !== "slack" && value !== "clickup" && value !== "github_issues") {
+    return null;
+  }
+  return value;
+}
+
 function parseTaskDaemonCoordinatorHandoff(
   message: ChatMessage | null | undefined,
 ): TaskDaemonCoordinatorHandoff | null {
@@ -317,13 +336,38 @@ function parseTaskDaemonCoordinatorHandoff(
     if (!isObject(data)) continue;
 
     const schemaVersion = normalizeOptionalString(data.schema_version);
-    if (schemaVersion !== TASK_DAEMON_COORDINATOR_HANDOFF_SCHEMA_VERSION) continue;
+    if (schemaVersion === TASK_DAEMON_COORDINATOR_HANDOFF_SCHEMA_VERSION) {
+      const batch = data.batch;
+      if (!isObject(batch)) continue;
+      return {
+        schema_version: schemaVersion,
+        batch,
+      };
+    }
 
-    const batch = data.batch;
-    if (!isObject(batch)) continue;
+    if (schemaVersion !== TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION) continue;
+
+    const source = parseObjectField(data, "source");
+    const project = parseObjectField(data, "project");
+    const interpretation = parseObjectField(data, "interpretation");
+    const sourceKind = source != null ? parseTaskDaemonSourceKind(source.source) : null;
+    const sourceKey = source != null ? normalizeOptionalString(source.source_key) : null;
+    const sourceLabel = source != null ? normalizeOptionalString(source.source_label) : null;
+    if (!sourceKind || !sourceKey || !sourceLabel || project == null || interpretation == null) {
+      continue;
+    }
+
     return {
       schema_version: schemaVersion,
-      batch,
+      batch: {
+        source: sourceKind,
+        source_key: sourceKey,
+        source_label: sourceLabel,
+        messages_scanned: data.messages_scanned,
+        project,
+        interpretation,
+        derived_tasks: parseObjectArray(data.derived_tasks),
+      },
     };
   }
 
@@ -711,8 +755,8 @@ function parseWorkflowPlan(value: unknown): WorkflowPlan | null {
   const nodes = parsedNodes.filter((node): node is WorkflowNode => node != null);
   if (nodes.length === 0) return null;
   const droppedCount = parsedNodes.length - nodes.length;
-  if (droppedCount > 0 && typeof console !== "undefined" && typeof console.warn === "function") {
-    console.warn(
+  if (droppedCount > 0) {
+    warnToConsole(
       `[coordinator] parseWorkflowPlan dropped ${droppedCount} malformed node(s) and kept ${nodes.length} valid node(s).`,
     );
   }
@@ -1874,11 +1918,9 @@ async function normalizeForeachItemsWithModel(
     };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    if (typeof console !== "undefined" && typeof console.warn === "function") {
-      console.warn(
-        `[coordinator] NormalizeIterableOutput failed for node=${node.id} source=${node.foreach_from}: ${reason}`,
-      );
-    }
+    warnToConsole(
+      `[coordinator] NormalizeIterableOutput failed for node=${node.id} source=${node.foreach_from}: ${reason}`,
+    );
     return null;
   }
 }

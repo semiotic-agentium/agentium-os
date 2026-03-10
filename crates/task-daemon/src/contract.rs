@@ -200,6 +200,33 @@ impl InterpretationResultEvent {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+/// In-memory daemon dispatch envelope: legacy batch plus first-class contract events.
+pub struct TaskDispatch {
+    pub request_event: InterpretationRequestEvent,
+    pub result_event: InterpretationResultEvent,
+    pub batch: TaskBatch,
+}
+
+impl TaskDispatch {
+    pub fn new(
+        request_event: InterpretationRequestEvent,
+        result_event: InterpretationResultEvent,
+        batch: TaskBatch,
+    ) -> Self {
+        Self {
+            request_event,
+            result_event,
+            batch,
+        }
+    }
+
+    pub fn from_batch(request_event: InterpretationRequestEvent, batch: TaskBatch) -> Self {
+        let result_event = InterpretationResultEvent::from_batch(&request_event, &batch);
+        Self::new(request_event, result_event, batch)
+    }
+}
+
 fn normalize_provenance(
     provenance: Option<ContractProvenance>,
     messages: &[SlackMessage],

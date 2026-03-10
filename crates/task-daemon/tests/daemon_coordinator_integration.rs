@@ -7,8 +7,9 @@ use axum::{
     routing::post,
 };
 use baml_task_daemon::{
-    A2aSink, InvestigationTask, ProjectContext, ProjectInterpretation, SinkDeliveryMode,
-    SourceReference, TaskBatch, TaskConfidence, TaskSink, TaskSourceKind,
+    A2aSink, ContractSource, InterpretationRequestEvent, InvestigationTask, ProjectContext,
+    ProjectInterpretation, SinkDeliveryMode, SourceReference, TaskBatch, TaskConfidence,
+    TaskDispatch, TaskSink, TaskSourceKind,
 };
 use serde_json::{Value, json};
 
@@ -103,8 +104,23 @@ fn sample_batch() -> TaskBatch {
     }
 }
 
+fn sample_dispatch() -> TaskDispatch {
+    let batch = sample_batch();
+    let request = InterpretationRequestEvent::new(
+        ContractSource::new(
+            "slack:C123".to_string(),
+            TaskSourceKind::Slack,
+            batch.source_label.clone(),
+        ),
+        batch.project.clone(),
+        Vec::new(),
+        None,
+    );
+    TaskDispatch::from_batch(request, batch)
+}
+
 #[tokio::test]
-async fn a2a_sink_sends_typed_handoff_to_coordinator_endpoint() {
+async fn a2a_sink_sends_typed_handoff_to_target_agent_endpoint() {
     async fn a2a_handler(
         State(state): State<CoordinatorMockState>,
         uri: OriginalUri,
@@ -127,21 +143,30 @@ async fn a2a_sink_sends_typed_handoff_to_coordinator_endpoint() {
 
     let state = CoordinatorMockState::default();
     let app = Router::new()
-        .route("/agents/coordinator-agent/default/a2a", post(a2a_handler))
+        .route(
+            "/agents/workflow-intake-agent/dispatch/a2a",
+            post(a2a_handler),
+        )
         .with_state(state.clone());
     let server = start_http_server(app)
         .await
         .expect("start mock coordinator");
 
-    let mut sink = A2aSink::new(server.base_url.clone(), SinkDeliveryMode::Live).expect("a2a sink");
-    sink.deliver(&sample_batch())
+    let mut sink = A2aSink::for_agent(
+        server.base_url.clone(),
+        "workflow-intake-agent".to_string(),
+        "dispatch".to_string(),
+        SinkDeliveryMode::Live,
+    )
+    .expect("a2a sink");
+    sink.deliver(&sample_dispatch())
         .await
         .expect("deliver to mock coordinator");
 
     let hits = state.snapshot_hits().await;
     assert!(
         hits.iter()
-            .any(|hit| hit.contains("/agents/coordinator-agent/default/a2a")),
+            .any(|hit| hit.contains("/agents/workflow-intake-agent/dispatch/a2a")),
         "expected /a2a endpoint to be called, got {hits:?}"
     );
 
@@ -170,11 +195,11 @@ async fn a2a_sink_sends_typed_handoff_to_coordinator_endpoint() {
         request
             .pointer("/params/message/parts/1/data/schema_version")
             .and_then(Value::as_str),
-        Some("task-daemon.coordinator-handoff.v1")
+        Some("task-daemon.interpretation.v1")
     );
     assert_eq!(
         request
-            .pointer("/params/message/parts/1/data/batch/project/project_key")
+            .pointer("/params/message/parts/1/data/project/project_key")
             .and_then(Value::as_str),
         Some("agent-platform")
     );
@@ -210,12 +235,12 @@ async fn a2a_sink_surfaces_non_success_status_with_body() {
 
     let mut sink = A2aSink::new(server.base_url.clone(), SinkDeliveryMode::Live).expect("a2a sink");
     let err = sink
-        .deliver(&sample_batch())
+        .deliver(&sample_dispatch())
         .await
         .expect_err("deliver should fail on non-2xx");
 
     let msg = format!("{err:#}");
-    assert!(msg.contains("coordinator A2A request failed"));
+    assert!(msg.contains("A2A request failed"));
     assert!(msg.contains("400"));
     assert!(msg.contains("coordinator could not parse payload"));
 
@@ -250,7 +275,7 @@ async fn a2a_sink_rejects_jsonrpc_error_envelope_on_http_200() {
 
     let mut sink = A2aSink::new(server.base_url.clone(), SinkDeliveryMode::Live).expect("a2a sink");
     let err = sink
-        .deliver(&sample_batch())
+        .deliver(&sample_dispatch())
         .await
         .expect_err("deliver should fail when coordinator returns JSON-RPC error envelope");
 

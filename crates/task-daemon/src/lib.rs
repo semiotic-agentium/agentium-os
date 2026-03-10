@@ -5,8 +5,9 @@
 //! - interpretation (`extract::TaskExtractor`)
 //! - delivery (`sink::TaskSink`)
 //!
-//! The main payload is [`TaskBatch`], which includes project interpretation,
-//! workflow seed data, and derived tasks for downstream systems.
+//! The daemon's typed handoff is [`InterpretationResultEvent`], with [`TaskDispatch`]
+//! carrying both the versioned contract events and the legacy [`TaskBatch`] view
+//! used by batch-oriented sinks.
 
 pub mod clickup_source;
 pub mod contract;
@@ -21,7 +22,7 @@ pub mod state;
 pub use clickup_source::{ClickupSourceConfig, ClickupSourceConfigError, ClickupTaskSource};
 pub use contract::{
     ContractProvenance, ContractSource, INTERPRETATION_EVENT_SCHEMA_VERSION,
-    InterpretationRequestEvent, InterpretationResultEvent,
+    InterpretationRequestEvent, InterpretationResultEvent, TaskDispatch,
 };
 pub use daemon::{
     RoundRobinTaskSource, RoundRobinTaskSourceError, SourcePoll, TaskDaemon, TaskSource,
@@ -35,7 +36,7 @@ pub use model::{
 };
 pub use sink::{
     A2aSink, ClickUpSink, GithubIssueSink, JsonlFileSink, SinkConstructorError, SinkDeliveryError,
-    SinkDeliveryMode, StdoutSink, TaskSink, format_coordinator_prompt,
+    SinkDeliveryMode, SourceFilteredSink, StdoutSink, TaskSink, format_coordinator_prompt,
 };
 pub use slack_source::{SlackChannelSelector, SlackSourceConfig, SlackTaskSource};
 pub use state::{SourceState, StateStore, TaskDaemonState};
