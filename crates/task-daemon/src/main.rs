@@ -2,12 +2,14 @@ use std::{collections::BTreeMap, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use baml_task_daemon::{
-    A2aSink, ClickUpSink, ExtractionMode, GithubIssueSink, JsonlFileSink, ProjectContext,
-    SlackChannelSelector, SlackSourceConfig, SlackTaskSource, StateStore, StdoutSink, TaskDaemon,
-    TaskExtractor, TaskSink,
+    A2aSink, ClickUpSink, ClickupSourceConfig, ClickupTaskSource, ExtractionMode, GithubIssueSink,
+    JsonlFileSink, ProjectContext, RoundRobinTaskSource, SinkDeliveryMode, SlackChannelSelector,
+    SlackSourceConfig, SlackTaskSource, StateStore, StdoutSink, TaskDaemon, TaskExtractor,
+    TaskSink, TaskSource, TaskSourceKind,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use integrations_slack_read::SlackAuthPreference;
+use reqwest::Url;
 use serde::Deserialize;
 use tracing_subscriber::EnvFilter;
 
@@ -43,6 +45,21 @@ impl From<ExtractorMode> for ExtractionMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum SourceKindArg {
+    Slack,
+    Clickup,
+}
+
+impl SourceKindArg {
+    fn as_task_source_kind(self) -> TaskSourceKind {
+        match self {
+            Self::Slack => TaskSourceKind::Slack,
+            Self::Clickup => TaskSourceKind::Clickup,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "baml-task-daemon",
@@ -60,6 +77,10 @@ enum Command {
 
 #[derive(Debug, Clone, Args)]
 struct RunArgs {
+    /// Source(s) to poll; repeat flag to enable multiple (for example `--source slack --source clickup`).
+    #[arg(long = "source", value_enum)]
+    sources: Vec<SourceKindArg>,
+
     /// Channel selector (`agentium-eng`, `#agentium-eng`, or `C...`).
     #[arg(long, default_value = "agentium-eng")]
     channel: String,
@@ -201,36 +222,23 @@ fn init_tracing() {
 }
 
 async fn run(args: RunArgs) -> Result<()> {
+    let selected_sources = normalize_selected_sources(&args.sources);
+
     let selector = SlackChannelSelector::parse(&args.channel)
         .map_err(|err| anyhow!("invalid --channel value {}: {err}", args.channel))?;
 
     let workspace_url = args.workspace_url.clone().or_else(|| {
         std::env::var("SLACK_WORKSPACE_URL")
             .ok()
-            .map(|v| v.trim().trim_end_matches('/').to_string())
+            .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
     });
-
-    let source = SlackTaskSource::new(SlackSourceConfig {
-        channel: selector.clone(),
-        history_limit: args.history_limit,
-        max_pages: args.max_pages,
-        auth_preference: args.auth.into(),
-        initial_lookback_seconds: args.initial_lookback_seconds,
-        workspace_url,
-    });
+    let workspace_url = workspace_url
+        .map(|raw| parse_workspace_url(&raw))
+        .transpose()?;
 
     let config_entry = load_project_config_entry(&args.project_config, &args.channel, &selector)?;
     let project_context = resolve_project_context(&args, &selector, config_entry.as_ref());
-
-    let mut sinks: Vec<Box<dyn TaskSink>> = Vec::new();
-    if !args.no_stdout {
-        sinks.push(Box::new(StdoutSink::new(args.pretty)));
-    }
-
-    if let Some(path) = args.jsonl_out {
-        sinks.push(Box::new(JsonlFileSink::new(path)));
-    }
 
     let clickup_list_id = args
         .clickup_list_id
@@ -243,20 +251,73 @@ async fn run(args: RunArgs) -> Result<()> {
         .or_else(|| std::env::var("CLICKUP_TASK_DAEMON_LIST_ID").ok())
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+
+    let mut sources: Vec<Box<dyn TaskSource>> = Vec::new();
+
+    for selected_source in &selected_sources {
+        match selected_source {
+            SourceKindArg::Slack => {
+                let slack_source = SlackTaskSource::new(SlackSourceConfig {
+                    channel: selector.clone(),
+                    history_limit: args.history_limit,
+                    max_pages: args.max_pages,
+                    auth_preference: args.auth.into(),
+                    initial_lookback_seconds: args.initial_lookback_seconds,
+                    workspace_url: workspace_url.clone(),
+                });
+                sources.push(Box::new(slack_source));
+            }
+            SourceKindArg::Clickup => {
+                let list_id = clickup_list_id.clone().ok_or_else(|| {
+                    anyhow!(
+                        "ClickUp source selection requires a list id via --clickup-list-id, project config, or CLICKUP_TASK_DAEMON_LIST_ID"
+                    )
+                })?;
+                let clickup_source = ClickupTaskSource::new(ClickupSourceConfig {
+                    list_ids: vec![list_id],
+                })?;
+                sources.push(Box::new(clickup_source));
+            }
+        }
+    }
+
+    let source: Box<dyn TaskSource> = if sources.len() == 1 {
+        sources
+            .pop()
+            .ok_or_else(|| anyhow!("no source configured for task-daemon run"))?
+    } else {
+        Box::new(RoundRobinTaskSource::new(sources)?)
+    };
+
+    let mut sinks: Vec<Box<dyn TaskSink>> = Vec::new();
+    if !args.no_stdout {
+        sinks.push(Box::new(StdoutSink::new(args.pretty)));
+    }
+
+    if let Some(path) = args.jsonl_out {
+        sinks.push(Box::new(JsonlFileSink::new(path)));
+    }
+
     if let Some(list_id) = clickup_list_id {
-        sinks.push(Box::new(ClickUpSink::new(list_id, !args.clickup_live)?));
+        sinks.push(Box::new(ClickUpSink::new(
+            list_id,
+            SinkDeliveryMode::from_live_flag(args.clickup_live),
+        )?));
     }
 
     if let (Some(owner), Some(repo)) = (args.github_owner.clone(), args.github_repo.clone()) {
         sinks.push(Box::new(GithubIssueSink::new(
             owner,
             repo,
-            !args.github_live,
+            SinkDeliveryMode::from_live_flag(args.github_live),
         )?));
     }
 
     if let Some(url) = args.coordinator_url.clone() {
-        sinks.push(Box::new(A2aSink::new(url, !args.a2a_live)?));
+        sinks.push(Box::new(A2aSink::new(
+            url,
+            SinkDeliveryMode::from_live_flag(args.a2a_live),
+        )?));
     }
 
     if sinks.is_empty() {
@@ -265,26 +326,31 @@ async fn run(args: RunArgs) -> Result<()> {
         ));
     }
 
+    for source_kind in selected_source_kinds(&selected_sources) {
+        if !sinks.iter().any(|sink| sink.accepts_source(source_kind)) {
+            return Err(anyhow!(
+                "no compatible sinks configured for source {:?}; add stdout/jsonl/github/a2a sink or change --source",
+                source_kind
+            ));
+        }
+    }
+
     let state_store = StateStore::new(args.state_file, args.max_seen_tasks_per_source);
     let extractor = TaskExtractor::with_mode(args.max_candidates, args.extractor.into())?;
-    let mut daemon = TaskDaemon::new(
-        Box::new(source),
-        extractor,
-        sinks,
-        state_store,
-        project_context,
-    );
+    let mut daemon = TaskDaemon::new(source, extractor, sinks, state_store, project_context);
     daemon.set_emit_empty_batches(args.emit_empty);
 
     if args.once {
-        let batch = daemon.run_once().await?;
-        tracing::info!(
-            source = %batch.source_label,
-            derived_tasks = batch.derived_tasks.len(),
-            messages_scanned = batch.messages_scanned,
-            project_key = %batch.project.project_key,
-            "task-daemon run-once completed"
-        );
+        for _ in 0..daemon.polls_per_cycle() {
+            let batch = daemon.run_once().await?;
+            tracing::info!(
+                source = %batch.source_label,
+                derived_tasks = batch.derived_tasks.len(),
+                messages_scanned = batch.messages_scanned,
+                project_key = %batch.project.project_key,
+                "task-daemon run-once completed"
+            );
+        }
         return Ok(());
     }
 
@@ -365,4 +431,80 @@ fn project_lookup_keys(channel_raw: &str, selector: &SlackChannelSelector) -> Ve
     keys.sort();
     keys.dedup();
     keys
+}
+
+fn normalize_selected_sources(raw: &[SourceKindArg]) -> Vec<SourceKindArg> {
+    if raw.is_empty() {
+        return vec![SourceKindArg::Slack];
+    }
+
+    let mut selected = Vec::new();
+    for source in raw.iter().copied() {
+        if !selected.contains(&source) {
+            selected.push(source);
+        }
+    }
+    selected
+}
+
+fn parse_workspace_url(raw: &str) -> Result<Url> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("workspace URL must not be empty"));
+    }
+
+    let mut url = Url::parse(trimmed).with_context(|| {
+        format!("invalid workspace URL {trimmed}; expected absolute http(s) URL")
+    })?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(anyhow!(
+            "invalid workspace URL scheme {}; expected http or https",
+            url.scheme()
+        ));
+    }
+    if !url.path().ends_with('/') {
+        let normalized_path = {
+            let trimmed_path = url.path().trim_end_matches('/');
+            if trimmed_path.is_empty() {
+                "/".to_string()
+            } else {
+                format!("{trimmed_path}/")
+            }
+        };
+        url.set_path(&normalized_path);
+    }
+
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
+}
+
+fn selected_source_kinds(sources: &[SourceKindArg]) -> Vec<TaskSourceKind> {
+    sources
+        .iter()
+        .copied()
+        .map(SourceKindArg::as_task_source_kind)
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SourceKindArg, normalize_selected_sources};
+
+    #[test]
+    fn normalize_selected_sources_defaults_to_slack() {
+        assert_eq!(normalize_selected_sources(&[]), vec![SourceKindArg::Slack]);
+    }
+
+    #[test]
+    fn normalize_selected_sources_deduplicates_preserving_order() {
+        assert_eq!(
+            normalize_selected_sources(&[
+                SourceKindArg::Clickup,
+                SourceKindArg::Slack,
+                SourceKindArg::Clickup,
+            ]),
+            vec![SourceKindArg::Clickup, SourceKindArg::Slack]
+        );
+    }
 }

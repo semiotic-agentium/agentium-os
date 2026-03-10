@@ -1,11 +1,15 @@
 # Task Daemon Event Contract (Interpretation v1)
 
-This contract defines the handoff between:
+This contract defines the interpretation handoff between:
 - Slack polling in `baml-task-daemon`
 - conversation interpretation (LLM/agent)
 - downstream orchestration and sinks (for example ClickUp)
 
 The goal is to make every interpretation run traceable and replayable.
+
+This `interpretation.v1` contract is currently Slack-message based. For ClickUp
+source lifecycle semantics (`--source clickup`), see:
+- [task-daemon-clickup-source-contract.md](./task-daemon-clickup-source-contract.md)
 
 ## Contract Version
 

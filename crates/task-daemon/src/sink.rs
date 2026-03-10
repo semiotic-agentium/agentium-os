@@ -12,16 +12,108 @@ use integrations_clickup_client::ClickUpClient;
 use integrations_github_client::GitHubClient;
 use serde::Serialize;
 use serde_json::{Value, json};
+use thiserror::Error;
 
-use crate::model::{InvestigationTask, TaskBatch};
+use crate::model::{InvestigationTask, TaskBatch, TaskSourceKind};
 
 #[async_trait]
 /// A destination for interpreted task batches.
 pub trait TaskSink: Send {
     /// Stable sink identifier used in logs and error context.
     fn name(&self) -> &'static str;
+    /// Returns whether this sink accepts batches from a source kind.
+    fn accepts_source(&self, _source: TaskSourceKind) -> bool {
+        true
+    }
     /// Delivers a batch to the sink.
     async fn deliver(&mut self, batch: &TaskBatch) -> Result<()>;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Delivery mode for write-capable sinks.
+pub enum SinkDeliveryMode {
+    DryRun,
+    Live,
+}
+
+impl SinkDeliveryMode {
+    pub fn from_live_flag(live: bool) -> Self {
+        if live { Self::Live } else { Self::DryRun }
+    }
+}
+
+#[derive(Debug, Error)]
+/// Typed sink-construction failures.
+pub enum SinkConstructorError {
+    #[error("clickup list_id must not be empty")]
+    EmptyClickupListId,
+    #[error("github owner must not be empty")]
+    EmptyGithubOwner,
+    #[error("github repo must not be empty")]
+    EmptyGithubRepo,
+    #[error("coordinator URL must not be empty")]
+    EmptyCoordinatorUrl,
+    #[error("coordinator URL is invalid: {raw}")]
+    InvalidCoordinatorUrl { raw: String },
+}
+
+#[derive(Debug, Error)]
+/// Typed sink-delivery failures grouped by operation category.
+pub enum SinkDeliveryError {
+    #[error("serializing task batch for stdout sink failed")]
+    StdoutSerialize(#[source] serde_json::Error),
+    #[error("serializing task batch to jsonl failed")]
+    JsonlSerialize(#[source] serde_json::Error),
+    #[error("jsonl sink I/O failed for {path}: {source}")]
+    JsonlIo {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error(
+        "clickup sink cannot consume clickup-origin batches; configure a non-clickup sink for clickup source output"
+    )]
+    ClickupOriginUnsupported,
+    #[error("loading CLICKUP_API_KEY for sink failed: {source}")]
+    ClickupCredential {
+        #[source]
+        source: anyhow::Error,
+    },
+    #[error("creating ClickUp task in list {list_id} failed: {source}")]
+    ClickupCreateTask {
+        list_id: String,
+        #[source]
+        source: anyhow::Error,
+    },
+    #[error("loading GITHUB_TOKEN for sink failed: {source}")]
+    GithubCredential {
+        #[source]
+        source: anyhow::Error,
+    },
+    #[error("creating GitHub issue in {owner}/{repo} failed: {source}")]
+    GithubCreateIssue {
+        owner: String,
+        repo: String,
+        #[source]
+        source: anyhow::Error,
+    },
+    #[error("sending A2A request to coordinator failed: {source}")]
+    CoordinatorTransport {
+        #[source]
+        source: anyhow::Error,
+    },
+    #[error("coordinator A2A request failed with {status}: {body}")]
+    CoordinatorHttp { status: u16, body: String },
+    #[error("reading coordinator A2A response JSON failed: {source}")]
+    CoordinatorResponseJson {
+        #[source]
+        source: anyhow::Error,
+    },
+    #[error("coordinator protocol validation failed: {source}")]
+    CoordinatorProtocol {
+        #[source]
+        source: anyhow::Error,
+    },
 }
 
 /// Sink that prints one JSON payload per batch to stdout.
@@ -50,7 +142,7 @@ impl TaskSink for StdoutSink {
         } else {
             serde_json::to_string(batch)
         }
-        .context("serializing task batch for stdout sink")?;
+        .map_err(SinkDeliveryError::StdoutSerialize)?;
         println!("{serialized}");
         Ok(())
     }
@@ -83,19 +175,25 @@ impl TaskSink for JsonlFileSink {
         if let Some(parent) = self.path.parent()
             && !parent.as_os_str().is_empty()
         {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("creating parent directory for {}", self.path.display())
+            std::fs::create_dir_all(parent).map_err(|source| SinkDeliveryError::JsonlIo {
+                path: self.path.clone(),
+                source,
             })?;
         }
 
-        let line = serde_json::to_string(batch).context("serializing task batch to jsonl")?;
+        let line = serde_json::to_string(batch).map_err(SinkDeliveryError::JsonlSerialize)?;
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)
-            .with_context(|| format!("opening jsonl sink file {}", self.path.display()))?;
-        writeln!(file, "{line}")
-            .with_context(|| format!("writing jsonl sink file {}", self.path.display()))?;
+            .map_err(|source| SinkDeliveryError::JsonlIo {
+                path: self.path.clone(),
+                source,
+            })?;
+        writeln!(file, "{line}").map_err(|source| SinkDeliveryError::JsonlIo {
+            path: self.path.clone(),
+            source,
+        })?;
         Ok(())
     }
 }
@@ -152,23 +250,26 @@ fn format_source_refs(task: &InvestigationTask) -> String {
 pub struct ClickUpSink {
     client: ClickUpClient,
     list_id: String,
-    dry_run: bool,
+    mode: SinkDeliveryMode,
 }
 
 impl ClickUpSink {
     /// Creates a ClickUp sink.
     ///
-    /// When `dry_run` is true, no API writes are performed.
-    pub fn new(list_id: String, dry_run: bool) -> Result<Self> {
+    /// `SinkDeliveryMode::DryRun` logs intent without API writes.
+    pub fn new(
+        list_id: String,
+        mode: SinkDeliveryMode,
+    ) -> std::result::Result<Self, SinkConstructorError> {
         let list_id = list_id.trim().to_string();
         if list_id.is_empty() {
-            return Err(anyhow!("clickup list_id must not be empty"));
+            return Err(SinkConstructorError::EmptyClickupListId);
         }
 
         Ok(Self {
             client: ClickUpClient::new(),
             list_id,
-            dry_run,
+            mode,
         })
     }
 
@@ -196,11 +297,14 @@ impl ClickUpSink {
 #[async_trait]
 impl TaskSink for ClickUpSink {
     fn name(&self) -> &'static str {
-        if self.dry_run {
-            "clickup-dry-run"
-        } else {
-            "clickup"
+        match self.mode {
+            SinkDeliveryMode::DryRun => "clickup-dry-run",
+            SinkDeliveryMode::Live => "clickup",
         }
+    }
+
+    fn accepts_source(&self, source: TaskSourceKind) -> bool {
+        !matches!(source, TaskSourceKind::Clickup)
     }
 
     async fn deliver(&mut self, batch: &TaskBatch) -> Result<()> {
@@ -208,7 +312,11 @@ impl TaskSink for ClickUpSink {
             return Ok(());
         }
 
-        if self.dry_run {
+        if matches!(batch.source, TaskSourceKind::Clickup) {
+            return Err(SinkDeliveryError::ClickupOriginUnsupported.into());
+        }
+
+        if matches!(self.mode, SinkDeliveryMode::DryRun) {
             tracing::info!(
                 list_id = %self.list_id,
                 derived_tasks = batch.derived_tasks.len(),
@@ -217,7 +325,10 @@ impl TaskSink for ClickUpSink {
             return Ok(());
         }
 
-        let api_key = ClickUpClient::api_key().context("loading CLICKUP_API_KEY for sink")?;
+        let api_key =
+            ClickUpClient::api_key().map_err(|source| SinkDeliveryError::ClickupCredential {
+                source: source.into(),
+            })?;
 
         for task in &batch.derived_tasks {
             let body = json!({
@@ -229,10 +340,12 @@ impl TaskSink for ClickUpSink {
                 .client
                 .post(&format!("/list/{}/task", self.list_id), &api_key)
                 .json(&body);
-            self.client
-                .send_json(request)
-                .await
-                .with_context(|| format!("creating ClickUp task in list {}", self.list_id))?;
+            self.client.send_json(request).await.map_err(|source| {
+                SinkDeliveryError::ClickupCreateTask {
+                    list_id: self.list_id.clone(),
+                    source: source.into(),
+                }
+            })?;
         }
 
         tracing::info!(
@@ -249,28 +362,32 @@ pub struct GithubIssueSink {
     client: GitHubClient,
     owner: String,
     repo: String,
-    dry_run: bool,
+    mode: SinkDeliveryMode,
 }
 
 impl GithubIssueSink {
     /// Creates a GitHub issue sink.
     ///
-    /// When `dry_run` is true, no API writes are performed.
-    pub fn new(owner: String, repo: String, dry_run: bool) -> Result<Self> {
+    /// `SinkDeliveryMode::DryRun` logs intent without API writes.
+    pub fn new(
+        owner: String,
+        repo: String,
+        mode: SinkDeliveryMode,
+    ) -> std::result::Result<Self, SinkConstructorError> {
         let owner = owner.trim().to_string();
         let repo = repo.trim().to_string();
         if owner.is_empty() {
-            return Err(anyhow!("github owner must not be empty"));
+            return Err(SinkConstructorError::EmptyGithubOwner);
         }
         if repo.is_empty() {
-            return Err(anyhow!("github repo must not be empty"));
+            return Err(SinkConstructorError::EmptyGithubRepo);
         }
 
         Ok(Self {
             client: GitHubClient::new(),
             owner,
             repo,
-            dry_run,
+            mode,
         })
     }
 
@@ -308,10 +425,9 @@ impl GithubIssueSink {
 #[async_trait]
 impl TaskSink for GithubIssueSink {
     fn name(&self) -> &'static str {
-        if self.dry_run {
-            "github-dry-run"
-        } else {
-            "github"
+        match self.mode {
+            SinkDeliveryMode::DryRun => "github-dry-run",
+            SinkDeliveryMode::Live => "github",
         }
     }
 
@@ -320,7 +436,7 @@ impl TaskSink for GithubIssueSink {
             return Ok(());
         }
 
-        if self.dry_run {
+        if matches!(self.mode, SinkDeliveryMode::DryRun) {
             tracing::info!(
                 owner = %self.owner,
                 repo = %self.repo,
@@ -330,7 +446,10 @@ impl TaskSink for GithubIssueSink {
             return Ok(());
         }
 
-        let token = GitHubClient::token().context("loading GITHUB_TOKEN for sink")?;
+        let token =
+            GitHubClient::token().map_err(|source| SinkDeliveryError::GithubCredential {
+                source: source.into(),
+            })?;
 
         for task in &batch.derived_tasks {
             let body = json!({
@@ -349,13 +468,21 @@ impl TaskSink for GithubIssueSink {
                     &token,
                 )
                 .json(&body);
-            self.client.send_json(request).await.with_context(|| {
-                format!(
-                    "creating GitHub issue in {owner}/{repo}",
-                    owner = self.owner,
-                    repo = self.repo,
-                )
-            })?;
+            self.client
+                .send_json(request)
+                .await
+                .with_context(|| {
+                    format!(
+                        "creating GitHub issue in {owner}/{repo}",
+                        owner = self.owner,
+                        repo = self.repo,
+                    )
+                })
+                .map_err(|source| SinkDeliveryError::GithubCreateIssue {
+                    owner: self.owner.clone(),
+                    repo: self.repo.clone(),
+                    source,
+                })?;
         }
 
         tracing::info!(
@@ -373,9 +500,15 @@ impl TaskSink for GithubIssueSink {
 pub fn format_coordinator_prompt(batch: &TaskBatch) -> String {
     let source_label = sanitize_single_line(&batch.source_label);
     let project_key = sanitize_single_line(&batch.project.project_key);
+    let source_intro = match batch.source {
+        TaskSourceKind::Slack => "Based on a Slack discussion",
+        TaskSourceKind::Clickup => "Based on ClickUp task lifecycle events",
+        TaskSourceKind::GithubIssues => "Based on GitHub issue activity",
+    };
     let mut lines = Vec::new();
     lines.push(format!(
-        "Based on a Slack discussion in {source_label} ({project_key}):",
+        "{source_intro} in {source_label} ({project_key}):",
+        source_intro = source_intro,
         source_label = source_label,
         project_key = project_key,
     ));
@@ -437,9 +570,9 @@ pub fn format_coordinator_prompt(batch: &TaskBatch) -> String {
 
 /// Sink that bridges task batches to a running coordinator agent via the A2A protocol.
 pub struct A2aSink {
-    coordinator_url: String,
+    coordinator_url: reqwest::Url,
     client: reqwest::Client,
-    dry_run: bool,
+    mode: SinkDeliveryMode,
 }
 
 const COORDINATOR_HANDOFF_SCHEMA_VERSION: &str = "task-daemon.coordinator-handoff.v1";
@@ -454,17 +587,41 @@ struct CoordinatorWorkflowHandoff<'a> {
 impl A2aSink {
     /// Creates an A2A coordinator sink.
     ///
-    /// When `dry_run` is true, the formatted prompt is logged but not sent.
-    pub fn new(coordinator_url: String, dry_run: bool) -> Result<Self> {
-        let coordinator_url = coordinator_url.trim().trim_end_matches('/').to_string();
+    /// `SinkDeliveryMode::DryRun` logs the prompt without sending requests.
+    pub fn new(
+        coordinator_url: String,
+        mode: SinkDeliveryMode,
+    ) -> std::result::Result<Self, SinkConstructorError> {
+        let coordinator_url = coordinator_url.trim().to_string();
         if coordinator_url.is_empty() {
-            return Err(anyhow!("coordinator URL must not be empty"));
+            return Err(SinkConstructorError::EmptyCoordinatorUrl);
+        }
+        let mut coordinator_url = reqwest::Url::parse(&coordinator_url).map_err(|_| {
+            SinkConstructorError::InvalidCoordinatorUrl {
+                raw: coordinator_url.clone(),
+            }
+        })?;
+        if !matches!(coordinator_url.scheme(), "http" | "https") {
+            return Err(SinkConstructorError::InvalidCoordinatorUrl {
+                raw: coordinator_url.to_string(),
+            });
+        }
+        if !coordinator_url.path().ends_with('/') {
+            let normalized_path = {
+                let trimmed = coordinator_url.path().trim_end_matches('/');
+                if trimmed.is_empty() {
+                    "/".to_string()
+                } else {
+                    format!("{trimmed}/")
+                }
+            };
+            coordinator_url.set_path(&normalized_path);
         }
 
         Ok(Self {
             coordinator_url,
             client: reqwest::Client::new(),
-            dry_run,
+            mode,
         })
     }
 
@@ -514,13 +671,16 @@ impl A2aSink {
 #[async_trait]
 impl TaskSink for A2aSink {
     fn name(&self) -> &'static str {
-        if self.dry_run { "a2a-dry-run" } else { "a2a" }
+        match self.mode {
+            SinkDeliveryMode::DryRun => "a2a-dry-run",
+            SinkDeliveryMode::Live => "a2a",
+        }
     }
 
     async fn deliver(&mut self, batch: &TaskBatch) -> Result<()> {
         let prompt = format_coordinator_prompt(batch);
 
-        if self.dry_run {
+        if matches!(self.mode, SinkDeliveryMode::DryRun) {
             tracing::info!(
                 coordinator_url = %self.coordinator_url,
                 derived_tasks = batch.derived_tasks.len(),
@@ -530,10 +690,12 @@ impl TaskSink for A2aSink {
             return Ok(());
         }
 
-        let url = format!(
-            "{base}/agents/coordinator-agent/default/a2a",
-            base = self.coordinator_url,
-        );
+        let url = self
+            .coordinator_url
+            .join("agents/coordinator-agent/default/a2a")
+            .map_err(|source| SinkDeliveryError::CoordinatorTransport {
+                source: anyhow::Error::new(source),
+            })?;
         let body = Self::build_jsonrpc_body(batch, &prompt);
 
         tracing::info!(
@@ -544,12 +706,14 @@ impl TaskSink for A2aSink {
 
         let resp = self
             .client
-            .post(&url)
+            .post(url)
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
             .await
-            .context("sending A2A request to coordinator")?;
+            .map_err(|source| SinkDeliveryError::CoordinatorTransport {
+                source: source.into(),
+            })?;
 
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
@@ -557,17 +721,22 @@ impl TaskSink for A2aSink {
                 Ok(body) => body,
                 Err(error) => format!("<failed to read response body: {error}>"),
             };
-            return Err(anyhow!(
-                "coordinator A2A request failed with {status}: {body_text}"
-            ));
+            return Err(SinkDeliveryError::CoordinatorHttp {
+                status,
+                body: body_text,
+            }
+            .into());
         }
 
-        let responses: Vec<Value> = resp
-            .json()
-            .await
-            .context("reading coordinator A2A response JSON")?;
+        let responses: Vec<Value> =
+            resp.json()
+                .await
+                .map_err(|source| SinkDeliveryError::CoordinatorResponseJson {
+                    source: source.into(),
+                })?;
 
-        let final_text = validate_jsonrpc_responses(&responses)?;
+        let final_text = validate_jsonrpc_responses(&responses)
+            .map_err(|source| SinkDeliveryError::CoordinatorProtocol { source })?;
         let context_id = extract_context_id(&responses);
         let task_id = extract_task_id(&responses);
         tracing::info!(
@@ -577,11 +746,25 @@ impl TaskSink for A2aSink {
             "Coordinator A2A response received"
         );
         if let Some(context_id) = context_id {
+            let mermaid_endpoint = self
+                .coordinator_url
+                .join(&format!("contexts/{context_id}/mermaid"))
+                .map(|url| url.to_string())
+                .unwrap_or_else(|_| {
+                    format!("{}/contexts/{context_id}/mermaid", self.coordinator_url)
+                });
+            let metrics_endpoint = self
+                .coordinator_url
+                .join(&format!("contexts/{context_id}/metrics"))
+                .map(|url| url.to_string())
+                .unwrap_or_else(|_| {
+                    format!("{}/contexts/{context_id}/metrics", self.coordinator_url)
+                });
             tracing::info!(
                 coordinator_url = %self.coordinator_url,
                 context_id = %context_id,
-                mermaid_endpoint = %format!("{}/contexts/{context_id}/mermaid", self.coordinator_url),
-                metrics_endpoint = %format!("{}/contexts/{context_id}/metrics", self.coordinator_url),
+                mermaid_endpoint = %mermaid_endpoint,
+                metrics_endpoint = %metrics_endpoint,
                 "Captured coordinator context id for provenance replay"
             );
         }
@@ -911,6 +1094,30 @@ mod tests {
     }
 
     #[test]
+    fn format_coordinator_prompt_uses_clickup_source_context_when_clickup_origin() {
+        let batch = TaskBatch {
+            source: TaskSourceKind::Clickup,
+            source_label: "clickup:list:901325431486".to_string(),
+            generated_at_unix: 1735720000,
+            messages_scanned: 1,
+            project: ProjectContext {
+                project_key: "agent-platform".to_string(),
+                repo_available: true,
+                repo_path: Some("/repo/agent-platform".to_string()),
+            },
+            interpretation: ProjectInterpretation::default(),
+            derived_tasks: vec![],
+        };
+
+        let prompt = format_coordinator_prompt(&batch);
+
+        assert!(prompt.contains(
+            "Based on ClickUp task lifecycle events in clickup:list:901325431486 (agent-platform):"
+        ));
+        assert!(!prompt.contains("Based on a Slack discussion"));
+    }
+
+    #[test]
     fn truncate_title_respects_max_length() {
         let short = "Short title";
         assert_eq!(truncate_title(short, 240), "Short title");
@@ -919,6 +1126,46 @@ mod tests {
         let truncated = truncate_title(&long, 240);
         assert_eq!(truncated.chars().count(), 240);
         assert!(truncated.ends_with("..."));
+    }
+
+    #[tokio::test]
+    async fn clickup_sink_rejects_clickup_origin_batches() {
+        let mut sink = ClickUpSink::new("901325431486".to_string(), SinkDeliveryMode::Live)
+            .expect("clickup sink");
+        let batch = TaskBatch {
+            source: TaskSourceKind::Clickup,
+            source_label: "clickup:list:901325431486".to_string(),
+            generated_at_unix: 1735720000,
+            messages_scanned: 1,
+            project: ProjectContext {
+                project_key: "agent-platform".to_string(),
+                repo_available: true,
+                repo_path: Some("/repo/agent-platform".to_string()),
+            },
+            interpretation: ProjectInterpretation::default(),
+            derived_tasks: vec![InvestigationTask {
+                key: "clickup-created:task-1".to_string(),
+                title: "Execute ClickUp task".to_string(),
+                description: "handoff".to_string(),
+                priority: TaskConfidence::High,
+                sources: Vec::new(),
+            }],
+        };
+
+        assert!(
+            !sink.accepts_source(TaskSourceKind::Clickup),
+            "clickup sink should declare clickup-origin batches as incompatible"
+        );
+
+        let err = sink
+            .deliver(&batch)
+            .await
+            .expect_err("clickup-origin batch should be rejected");
+        assert!(
+            err.to_string()
+                .contains("clickup sink cannot consume clickup-origin batches"),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]

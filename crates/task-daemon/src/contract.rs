@@ -103,11 +103,11 @@ impl InterpretationRequestEvent {
         Self::new(
             ContractSource::new(
                 poll.source_key.clone(),
-                poll.source,
+                poll.source_kind(),
                 poll.source_label.clone(),
             ),
             project,
-            poll.messages.clone(),
+            poll.messages().to_vec(),
             provenance,
         )
     }

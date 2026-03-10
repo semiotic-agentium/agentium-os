@@ -15,6 +15,7 @@ use baml_task_daemon::{
     StateStore, TaskBatch, TaskDaemon, TaskExtractor, TaskSink,
 };
 use integrations_slack_read::SlackAuthPreference;
+use reqwest::Url;
 use serde_json::{Value, json};
 use test_support::common::TempEnvVar;
 
@@ -172,7 +173,7 @@ async fn slack_poll_interprets_discussion_and_persists_cursor() {
         max_pages: 1,
         auth_preference: SlackAuthPreference::Auto,
         initial_lookback_seconds: 86_400,
-        workspace_url: Some("https://acme.slack.com".to_string()),
+        workspace_url: Some(Url::parse("https://acme.slack.com").expect("workspace URL")),
     });
 
     let sink = CaptureSink::default();

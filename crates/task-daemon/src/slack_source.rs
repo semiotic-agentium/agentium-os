@@ -5,11 +5,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use integrations_slack_read::{SlackAuthPreference, SlackReadClient, SlackReadError};
+use reqwest::Url;
 use serde::Deserialize;
 
 use crate::{
     daemon::{SourcePoll, TaskSource},
-    model::{SlackMessage, SourceReference, TaskSourceKind},
+    model::{SlackMessage, SourceReference},
     state::TaskDaemonState,
 };
 
@@ -68,7 +69,7 @@ pub struct SlackSourceConfig {
     pub max_pages: u16,
     pub auth_preference: SlackAuthPreference,
     pub initial_lookback_seconds: u64,
-    pub workspace_url: Option<String>,
+    pub workspace_url: Option<Url>,
 }
 
 impl Default for SlackSourceConfig {
@@ -235,7 +236,7 @@ impl SlackTaskSource {
                     raw,
                     channel_id,
                     channel_name,
-                    self.config.workspace_url.as_deref(),
+                    self.config.workspace_url.as_ref(),
                 )
             }));
 
@@ -374,12 +375,14 @@ impl TaskSource for SlackTaskSource {
             }
         }
 
-        Ok(SourcePoll {
+        let source_items_scanned = messages.len();
+
+        Ok(SourcePoll::slack(
             source_key,
-            source: TaskSourceKind::Slack,
-            source_label: channel_label,
+            channel_label,
             messages,
-        })
+            source_items_scanned,
+        ))
     }
 }
 
@@ -463,7 +466,7 @@ fn normalize_message(
     raw: RawMessage,
     channel_id: &str,
     channel_name: &str,
-    workspace_url: Option<&str>,
+    workspace_url: Option<&Url>,
 ) -> Option<SlackMessage> {
     let ts = raw.ts?;
     let compact_ts = compact_ts(&ts);
@@ -475,9 +478,12 @@ fn normalize_message(
         },
         permalink: raw.permalink.or_else(|| {
             workspace_url.and_then(|workspace| {
-                compact_ts
-                    .as_ref()
-                    .map(|compact| format!("{workspace}/archives/{channel_id}/p{compact}"))
+                compact_ts.as_ref().and_then(|compact| {
+                    workspace
+                        .join(&format!("archives/{channel_id}/p{compact}"))
+                        .ok()
+                        .map(|url| url.to_string())
+                })
             })
         }),
         channel_id: Some(channel_id.to_string()),
