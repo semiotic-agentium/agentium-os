@@ -40,12 +40,17 @@ pub mod error;
 // --- Storage trait boundaries ---
 pub mod storage;
 
+// --- Implementations ---
+pub mod fs_blob_store;
+pub mod sqlite_store;
+pub mod service;
+
 // --- HTTP API surface ---
 pub mod http;
+pub mod handlers;
+pub mod router;
 
 // --- Observability (orthogonal) ---
-// Pre-wired for the service implementation layer; consumers call these
-// when handler and orchestration code is added.
 #[allow(dead_code)]
 mod spans;
 #[allow(dead_code)]
@@ -58,3 +63,7 @@ pub use entry::{ChangeRationale, RepositoryEntry, RepositoryEntryHeader, SourceB
 pub use lineage::{LineageEdge, LineageKind, LineageSubgraph, Parentage};
 pub use commands::{ForkCommand, PublishCommand, PublishResult};
 pub use storage::{BlobStore, LineageStore, MetadataStore, SearchStore};
+pub use fs_blob_store::FsBlobStore;
+pub use sqlite_store::SqliteStore;
+pub use service::RepositoryService;
+pub use router::repository_router;
