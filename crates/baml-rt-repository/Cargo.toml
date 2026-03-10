@@ -8,6 +8,7 @@ description = "Agent package repository: content-addressable archive with lineag
 
 [dependencies]
 baml-rt-core = { path = "../baml-rt-core" }
+baml-rt-hash = { path = "../baml-rt-hash" }
 baml-rt-id = { path = "../baml-rt-id" }
 serde = { workspace = true }
 serde_json = { workspace = true }

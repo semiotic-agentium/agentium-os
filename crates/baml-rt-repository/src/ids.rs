@@ -10,62 +10,8 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-// ---------------------------------------------------------------------------
-// ContentHash — the canonical content-addressable key
-// ---------------------------------------------------------------------------
-
-/// SHA-256 digest of the canonical agent source content.
-///
-/// Computed over `manifest.json || sorted .ts sources || sorted .baml prompts`,
-/// each prefixed with a length-delimited header. Two packages with identical
-/// source produce identical hashes; runtime-generated artefacts are excluded.
-///
-/// Represented as lowercase hex (64 chars).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ContentHash(String);
-
-/// Rejection when parsing a `ContentHash` from a string that is not valid hex-64.
-#[derive(Debug, Clone, thiserror::Error)]
-#[error("invalid content hash: expected 64 lowercase hex chars, got {length} chars")]
-pub struct ContentHashParseError {
-    pub length: usize,
-}
-
-impl ContentHash {
-    /// Wrap a pre-validated hex-64 string. Callers must ensure the invariant.
-    /// Used by the canonical hash computation in the service layer.
-    #[allow(dead_code)]
-    pub(crate) fn from_validated(hex: String) -> Self {
-        debug_assert!(
-            hex.len() == 64 && hex.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
-            "ContentHash invariant violated"
-        );
-        Self(hex)
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for ContentHash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl FromStr for ContentHash {
-    type Err = ContentHashParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()) {
-            Ok(Self(s.to_string()))
-        } else {
-            Err(ContentHashParseError { length: s.len() })
-        }
-    }
-}
+// Re-export ContentHash from the dedicated hash crate.
+pub use baml_rt_hash::{ContentHash, ContentHashParseError};
 
 // ---------------------------------------------------------------------------
 // AgentName — the logical identity of an agent lineage

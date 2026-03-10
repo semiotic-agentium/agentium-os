@@ -1249,6 +1249,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "baml-rt-hash"
+version = "0.1.0"
+dependencies = [
+ "insta",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "baml-rt-id"
 version = "0.1.0"
 dependencies = [
@@ -1343,6 +1354,7 @@ dependencies = [
  "async-trait",
  "axum",
  "baml-rt-core",
+ "baml-rt-hash",
  "baml-rt-id",
  "http-api-problem",
  "insta",
