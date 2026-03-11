@@ -110,7 +110,7 @@ impl AgentPackage {
         &self,
         _provenance_config: &ProvenanceConfig,
     ) -> Result<SchemaLoaded> {
-        let mut runtime_manager = BamlRuntimeManager::new()?;
+        let mut runtime_manager = BamlRuntimeManager::builder().build()?;
         let schema_span = spans::load_baml_schema(&self.baml_src);
         let _schema_guard = schema_span.enter();
         let baml_src_str = self.baml_src.to_str().ok_or_else(|| {
@@ -1829,7 +1829,9 @@ mod tests {
     }
 
     async fn build_test_agent() -> A2aAgent {
-        let manager = BamlRuntimeManager::new().expect("create runtime manager");
+        let manager = BamlRuntimeManager::builder()
+            .build()
+            .expect("create runtime manager");
         let store = GraphqliteStoreBuilder::in_memory()
             .build()
             .expect("in-memory store for test agent");

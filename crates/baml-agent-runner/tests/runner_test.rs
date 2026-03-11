@@ -391,7 +391,7 @@ async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
             .build()
             .unwrap();
         #[cfg(not(feature = "llm-tests"))]
-        let m = BamlRuntimeManager::new().unwrap();
+        let m = BamlRuntimeManager::builder().build().unwrap();
         m
     };
     manager.load_schema(built.to_str().unwrap()).unwrap();
@@ -448,7 +448,7 @@ async fn setup_internal_a2a_router_agents(
     Arc<GraphqliteProvenanceStore>,
     Arc<GraphqliteProvenanceStore>,
 ) {
-    let responder_manager = BamlRuntimeManager::new().unwrap();
+    let responder_manager = BamlRuntimeManager::builder().build().unwrap();
     let responder_store = build_graphqlite_test_store();
     let responder_code = r#"
 globalThis.onChatMessage = async function(message) {
@@ -474,7 +474,7 @@ globalThis.onChatMessage = async function(message) {
         routes: HashMap::from([("responder-agent".to_string(), responder_agent.clone())]),
     });
 
-    let initiator_manager = BamlRuntimeManager::new().unwrap();
+    let initiator_manager = BamlRuntimeManager::builder().build().unwrap();
     let target_literal = serde_json::to_string(target_package).expect("serialize target package");
     let initiator_store = build_graphqlite_test_store();
     let initiator_code = r#"
@@ -568,7 +568,7 @@ async fn setup_internal_a2a_parallel_fanout_agents(
     Arc<GraphqliteProvenanceStore>,
     Arc<GraphqliteProvenanceStore>,
 ) {
-    let responder_manager = BamlRuntimeManager::new().unwrap();
+    let responder_manager = BamlRuntimeManager::builder().build().unwrap();
     let responder_store = build_graphqlite_test_store();
     let responder_code = r#"
 globalThis.onChatMessage = async function(message) {
@@ -590,7 +590,7 @@ globalThis.onChatMessage = async function(message) {
         routes: HashMap::from([("responder-agent".to_string(), responder_agent.clone())]),
     });
 
-    let initiator_manager = BamlRuntimeManager::new().unwrap();
+    let initiator_manager = BamlRuntimeManager::builder().build().unwrap();
     let target_literal = serde_json::to_string(target_package).expect("serialize target package");
     let fanout_literal = fanout.to_string();
     let initiator_store = build_graphqlite_test_store();
@@ -700,7 +700,7 @@ async fn setup_task_lifecycle_demo_agent() -> baml_rt::A2aAgent {
             .build()
             .unwrap();
         #[cfg(not(feature = "llm-tests"))]
-        let m = BamlRuntimeManager::new().unwrap();
+        let m = BamlRuntimeManager::builder().build().unwrap();
         m
     };
     manager.load_schema(built.to_str().unwrap()).unwrap();
@@ -780,7 +780,9 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
             .build()
             .expect("runtime manager");
         #[cfg(not(feature = "llm-tests"))]
-        let m = BamlRuntimeManager::new().expect("runtime manager");
+        let m = BamlRuntimeManager::builder()
+            .build()
+            .expect("runtime manager");
         m
     };
     manager
@@ -912,7 +914,7 @@ fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
 
 #[tokio::test]
 async fn test_manifest_allowlist_blocks_undeclared_tool() {
-    let mut manager = BamlRuntimeManager::new().unwrap();
+    let mut manager = BamlRuntimeManager::builder().build().unwrap();
     manager.register_tool(CalculatorTool).await.unwrap();
 
     let agent_id =
@@ -1007,7 +1009,7 @@ async fn test_runtime_manager_loads_schema() {
         return;
     }
 
-    let mut manager = BamlRuntimeManager::new().unwrap();
+    let mut manager = BamlRuntimeManager::builder().build().unwrap();
     let result = manager.load_schema(
         workspace_root()
             .join("baml_src")

@@ -203,6 +203,16 @@ pub fn setup_baml_runtime_manager_default() -> BamlRuntimeManager {
     )
 }
 
+/// Build a runtime manager without an LLM resolver — for unit/integration tests
+/// that do NOT make real LLM calls (tool registration, JS bridge tests, etc.).
+/// Always prefer this over `BamlRuntimeManager::builder().build()` at call sites
+/// so the intent is explicit and traceable.
+pub fn setup_baml_runtime_manager_no_llm() -> BamlRuntimeManager {
+    BamlRuntimeManager::builder()
+        .build()
+        .expect("BamlRuntimeManager::builder().build() must succeed")
+}
+
 pub fn setup_baml_runtime_default() -> Arc<Mutex<BamlRuntimeManager>> {
     setup_baml_runtime(
         workspace_root()

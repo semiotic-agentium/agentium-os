@@ -41,7 +41,7 @@ async fn run_stream_test(k: u32) -> Vec<Value> {
     let js = js_yield_n_chunks();
     let store = common::provenance::build_graphqlite_test_store();
     let agent = A2aAgent::builder()
-        .with_runtime_manager(BamlRuntimeManager::new().unwrap())
+        .with_runtime_manager(BamlRuntimeManager::builder().build().unwrap())
         .with_init_js(js)
         .with_effect_emitter(std::sync::Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(baml_rt::QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))

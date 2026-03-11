@@ -826,7 +826,7 @@ impl A2aAgentBuilderWithEffectEmitter {
             }
             RuntimeConfig::Default => {
                 tracing::debug!("A2aAgentBuilder::build: Creating default runtime");
-                Arc::new(Mutex::new(BamlRuntimeManager::new()?))
+                Arc::new(Mutex::new(BamlRuntimeManager::builder().build()?))
             }
         };
 

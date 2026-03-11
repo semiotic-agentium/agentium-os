@@ -117,7 +117,7 @@ async fn test_full_integration_package_load_execute() {
     // STEP 3: Load the package (simulating what baml-agent-builder does)
     // Set up BAML runtime
     let baml_src = extract_dir.path().join("baml_src");
-    let mut baml_manager = BamlRuntimeManager::new().unwrap();
+    let mut baml_manager = BamlRuntimeManager::builder().build().unwrap();
     baml_manager
         .load_schema(baml_src.to_str().unwrap())
         .unwrap();

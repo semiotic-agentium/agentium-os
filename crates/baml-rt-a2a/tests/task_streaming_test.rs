@@ -147,7 +147,7 @@ async fn acquire_test_permit() -> tokio::sync::OwnedSemaphorePermit {
 }
 
 async fn setup_agent() -> A2aAgent {
-    let manager = BamlRuntimeManager::new().unwrap();
+    let manager = BamlRuntimeManager::builder().build().unwrap();
     let store = common::provenance::build_graphqlite_test_store();
     A2aAgent::builder()
         .with_runtime_manager(manager)
@@ -162,7 +162,7 @@ async fn setup_agent() -> A2aAgent {
 
 /// Agent with 5s stream collector idle timeout for tests that assert timeout cancellation.
 async fn setup_agent_with_stream_idle_5s() -> A2aAgent {
-    let manager = BamlRuntimeManager::new().unwrap();
+    let manager = BamlRuntimeManager::builder().build().unwrap();
     let store = common::provenance::build_graphqlite_test_store();
     A2aAgent::builder()
         .with_runtime_manager(manager)
@@ -183,7 +183,7 @@ const SYSTEM_A2A_TOOL: &str = "system/internal_a2a";
 
 /// Agent with system/internal_a2a tool registered (for session FSM tests).
 async fn setup_agent_with_a2a_session_tool() -> A2aAgent {
-    let manager = BamlRuntimeManager::new().unwrap();
+    let manager = BamlRuntimeManager::builder().build().unwrap();
     let store = common::provenance::build_graphqlite_test_store();
     let agent = A2aAgent::builder()
         .with_runtime_manager(manager)

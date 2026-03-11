@@ -975,8 +975,9 @@ impl BamlRuntimeManager {
         BamlRuntimeManagerBuilder::default()
     }
 
-    /// Create a new BAML runtime manager with no optional dependencies (no LLM resolver).
-    pub fn new() -> Result<Self> {
+    /// Create a new BAML runtime manager with no optional dependencies.
+    /// Private to this crate — external code must use [`BamlRuntimeManager::builder()`].
+    pub(crate) fn new() -> Result<Self> {
         tracing::info!("Initializing BAML runtime manager");
 
         Ok(Self {
@@ -1341,7 +1342,7 @@ impl BamlRuntimeManager {
     /// }
     ///
     /// # tokio_test::block_on(async {
-    /// let mut manager = BamlRuntimeManager::new()?;
+    /// let mut manager = BamlRuntimeManager::builder().build()?;
     /// manager.register_tool(MyTool).await?;
     /// # Ok::<(), baml_rt::BamlRtError>(())
     /// # }).unwrap();
@@ -1554,7 +1555,7 @@ impl BamlRuntimeManager {
     /// #     }
     /// # }
     /// # tokio_test::block_on(async {
-    /// # let mut manager = BamlRuntimeManager::new()?;
+    /// # let mut manager = BamlRuntimeManager::builder().build()?;
     /// manager.register_tool(WeatherTool).await?;
     /// # Ok::<(), baml_rt::BamlRtError>(())
     /// # }).unwrap();

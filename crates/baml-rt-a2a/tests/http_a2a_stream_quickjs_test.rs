@@ -109,7 +109,9 @@ async fn collect_stream(agent: &A2aAgent, request: Value) -> baml_rt::Result<Vec
 async fn setup_stream_js_tool_agent() -> A2aAgent {
     ensure_fixture_runtime_types();
     let built = build_fixture_package_to_temp("stream-js-tool").await;
-    let mut manager = BamlRuntimeManager::new().expect("runtime manager");
+    let mut manager = BamlRuntimeManager::builder()
+        .build()
+        .expect("runtime manager");
     manager
         .load_schema(built.to_str().expect("utf8 path"))
         .expect("load schema");
@@ -129,7 +131,9 @@ async fn setup_stream_js_tool_agent() -> A2aAgent {
 async fn setup_task_lifecycle_demo_agent() -> A2aAgent {
     ensure_fixture_runtime_types();
     let built = build_fixture_package_to_temp("task-lifecycle-demo").await;
-    let mut manager = BamlRuntimeManager::new().expect("runtime manager");
+    let mut manager = BamlRuntimeManager::builder()
+        .build()
+        .expect("runtime manager");
     manager
         .load_schema(built.to_str().expect("utf8 path"))
         .expect("load schema");
@@ -151,7 +155,9 @@ async fn setup_task_lifecycle_demo_agent() -> A2aAgent {
 async fn setup_emit_plan_then_block_agent() -> A2aAgent {
     ensure_fixture_runtime_types();
     let built = build_fixture_package_to_temp("emit-plan-then-block").await;
-    let mut manager = BamlRuntimeManager::new().expect("runtime manager");
+    let mut manager = BamlRuntimeManager::builder()
+        .build()
+        .expect("runtime manager");
     manager
         .load_schema(built.to_str().expect("utf8 path"))
         .expect("load schema");
@@ -172,7 +178,9 @@ async fn setup_emit_plan_then_block_agent() -> A2aAgent {
 async fn setup_stream_baml_tool_agent() -> A2aAgent {
     ensure_fixture_runtime_types();
     let agent_dir = agent_fixture("stream-baml-tool");
-    let mut manager = BamlRuntimeManager::new().expect("runtime manager");
+    let mut manager = BamlRuntimeManager::builder()
+        .build()
+        .expect("runtime manager");
     manager
         .load_schema(agent_dir.to_str().expect("utf8 path"))
         .expect("load schema");

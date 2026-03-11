@@ -45,7 +45,7 @@ impl LLMInterceptor for StubChooseCalcToolStreamInterceptor {
 async fn test_js_stream_baml_function() {
     test_support::common::ensure_fixture_runtime_types();
 
-    let mut baml_manager = BamlRuntimeManager::new().unwrap();
+    let mut baml_manager = BamlRuntimeManager::builder().build().unwrap();
 
     let agent_dir = test_support::common::agent_fixture("stream-baml-tool");
     if !agent_dir.join("baml_src").exists() {

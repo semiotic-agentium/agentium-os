@@ -89,7 +89,7 @@ async fn test_baml_function_returns_actual_result() {
     // Uses stream-baml-tool and ChooseCalcTool; LLM stubbed so no API key required.
     ensure_fixture_runtime_types();
 
-    let mut baml_manager = BamlRuntimeManager::new().unwrap();
+    let mut baml_manager = BamlRuntimeManager::builder().build().unwrap();
     let agent_dir = agent_fixture("stream-baml-tool");
     baml_manager
         .load_schema(agent_dir.to_str().unwrap())
@@ -160,7 +160,7 @@ async fn test_js_function_invocation_returns_actual_result() {
     // LLM stubbed so no API key required.
     ensure_fixture_runtime_types();
 
-    let mut baml_manager = BamlRuntimeManager::new().unwrap();
+    let mut baml_manager = BamlRuntimeManager::builder().build().unwrap();
     let agent_dir = agent_fixture("stream-baml-tool");
     baml_manager
         .load_schema(agent_dir.to_str().unwrap())
@@ -237,7 +237,7 @@ async fn test_invoke_function_api_contract() {
     ensure_fixture_runtime_types();
 
     let agent_dir = agent_fixture("stream-baml-tool");
-    let mut baml_manager = BamlRuntimeManager::new().unwrap();
+    let mut baml_manager = BamlRuntimeManager::builder().build().unwrap();
     baml_manager
         .load_schema(agent_dir.to_str().unwrap())
         .unwrap();
@@ -315,7 +315,7 @@ async fn test_loaded_agent_invoke_function_contract() {
 
     let agent_dir = test_support::common::agent_fixture("stream-baml-tool");
 
-    let mut runtime_manager = BamlRuntimeManager::new().unwrap();
+    let mut runtime_manager = BamlRuntimeManager::builder().build().unwrap();
     runtime_manager
         .load_schema(agent_dir.to_str().unwrap())
         .unwrap();
