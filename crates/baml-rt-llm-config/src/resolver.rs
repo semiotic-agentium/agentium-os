@@ -121,9 +121,11 @@ mod tests {
         );
     }
 
-    /// Missing LLM client in config: resolver falls back to default client and returns Some(registry).
+    /// An override that references a non-existent client is a configuration error — the resolver
+    /// must return an error rather than silently falling back, so misconfigured overrides surface
+    /// at call time instead of being masked.
     #[tokio::test]
-    async fn static_resolver_falls_back_to_default_when_resolved_client_missing() {
+    async fn static_resolver_errors_when_override_references_missing_client() {
         let mut options = HashMap::new();
         options.insert("model".to_string(), "openai/gpt-4o-mini".to_string());
         let client = ClientDef {
@@ -151,14 +153,15 @@ mod tests {
             AgentId::from_uuid(UuidId::parse_str(agent_id_str).unwrap()),
             MessageId::from("msg-1"),
         );
-        let registry_opt = resolver.resolve(&scope, "AddNumbers").await.unwrap();
+        let result = resolver.resolve(&scope, "AddNumbers").await;
         assert!(
-            registry_opt.is_some(),
-            "Resolver must fall back to default client when resolved name is missing"
+            result.is_err(),
+            "Resolver must return an error when an override references a non-existent client"
         );
+        let err = result.unwrap_err().to_string();
         assert!(
-            !registry_opt.unwrap().is_empty(),
-            "Fallback registry must be non-empty"
+            err.contains("MissingClient"),
+            "Error must name the missing client; got: {err}"
         );
     }
 }
