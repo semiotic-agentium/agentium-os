@@ -21,6 +21,7 @@ baml-tools-clickup = { path = "../tools/clickup", optional = true }
 baml-tools-memory = { path = "../tools/memory", optional = true }
 baml-tools-notion = { path = "../tools/notion", optional = true }
 baml-tools-slack = { path = "../tools/slack", optional = true }
+baml-rt-embedding = { path = "../baml-rt-embedding", optional = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 flate2 = { workspace = true }
@@ -52,4 +53,5 @@ memory = ["dep:baml-tools-memory"]
 notion = ["dep:baml-tools-notion"]
 slack = ["dep:baml-tools-slack"]
 http-tools = ["clickup", "notion", "slack"]
+embedding-drift = ["dep:baml-rt-embedding"]
 llm-tests = []

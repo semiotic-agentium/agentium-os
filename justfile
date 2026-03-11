@@ -118,6 +118,9 @@ coordinator-demo-stop:
 fmt:
     cargo fmt --all
 
+clippy:
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
+
 ci_features := "baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests"
 
 # CI parity: run the full nextest suite (mirrors rust-ci.yml "nextest" job).
