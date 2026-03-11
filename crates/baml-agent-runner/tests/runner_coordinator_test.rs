@@ -2,13 +2,7 @@
 
 mod common;
 
-use std::{
-    collections::HashSet,
-    fs,
-    path::PathBuf,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use baml_rt::{A2aRequestHandler, baml::BamlRuntimeManager};
@@ -55,13 +49,10 @@ impl A2aRequestHandler for EmptyA2aHandler {
 }
 
 fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time")
-        .as_nanos();
     let path = std::env::temp_dir().join(format!(
         "baml-rt-runner-coordinator-{pid}-{unique}.db",
         pid = std::process::id(),
+        unique = uuid::Uuid::new_v4(),
     ));
     GraphqliteStoreBuilder::file(path)
         .build()

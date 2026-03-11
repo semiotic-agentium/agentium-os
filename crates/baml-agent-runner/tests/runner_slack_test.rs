@@ -2,13 +2,7 @@
 
 mod common;
 
-use std::{
-    collections::HashMap,
-    fs,
-    path::PathBuf,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt_core::{
@@ -168,13 +162,10 @@ async fn setup_slack_agent_with_provenance()
 }
 
 fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time")
-        .as_nanos();
     let path = std::env::temp_dir().join(format!(
         "baml-rt-runner-slack-{pid}-{unique}.db",
         pid = std::process::id(),
+        unique = uuid::Uuid::new_v4(),
     ));
     GraphqliteStoreBuilder::file(path)
         .build()

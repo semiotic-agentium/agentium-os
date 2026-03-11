@@ -8,7 +8,6 @@ use std::{
     fs,
     path::Path,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -837,13 +836,10 @@ async fn setup_coordinator_agent() -> baml_rt::A2aAgent {
 }
 
 fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time")
-        .as_nanos();
     let path = std::env::temp_dir().join(format!(
         "baml-rt-runner-test-{pid}-{unique}.db",
         pid = std::process::id(),
+        unique = uuid::Uuid::new_v4(),
     ));
     GraphqliteStoreBuilder::file(path)
         .build()
