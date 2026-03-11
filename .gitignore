@@ -41,6 +41,9 @@ provenance.db
 provenance.db-shm
 provenance.db-wal
 
+# Fastembed model cache (downloaded ONNX models, ~130 MB)
+.fastembed_cache/
+
 # Nix
 .direnv/
 result
