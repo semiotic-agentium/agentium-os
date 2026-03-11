@@ -14,7 +14,7 @@ reason: string | null;
 
 declare global {
 
-declare function ChooseDiscoverToolsQuery(args: { user_message: string }): Promise<SystemDiscover_toolsSessionPlan>;
+declare function ChooseDiscoverToolsQuery(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_toolsSessionPlan>;
 
 }
 
@@ -175,6 +175,14 @@ export interface BamlAgent {
   tools?: Record<string, (args: unknown) => Promise<unknown>>;
 }
 declare global {
+  /** Minimal console interface matching the QuickJS sandbox polyfill (log, info, warn, error, debug). */
+  var console: {
+    log(...args: unknown[]): void;
+    info(...args: unknown[]): void;
+    warn(...args: unknown[]): void;
+    error(...args: unknown[]): void;
+    debug(...args: unknown[]): void;
+  };
   /**
    * Global alias for incoming chat messages in agent entrypoints.
    * This keeps bootstrap/index.ts ergonomic without local type shims.
