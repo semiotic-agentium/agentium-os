@@ -1984,16 +1984,8 @@ a.source-chip:hover {
 .settings-view {
   flex: 1;
   overflow: auto;
-  display: flex;
-  flex-direction: column;
-}
-
-.settings-scroll {
-  flex: 1;
-  overflow: auto;
   padding: 24px;
-  max-width: 700px;
-  width: 100%;
+  max-width: 900px;
   margin: 0 auto;
 }
 
@@ -2475,23 +2467,6 @@ a.source-chip:hover {
   color: var(--text);
 }
 
-.config-clients-by-provider {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.config-provider-group-title {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-muted);
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 2px;
-}
-
 .config-client-card {
   padding: 14px;
   background: var(--bg-subtle);
@@ -2506,13 +2481,6 @@ a.source-chip:hover {
   display: flex;
   align-items: center;
   gap: 8px;
-}
-
-.config-client-fields {
-  display: grid;
-  grid-template-columns: 110px 1fr;
-  align-items: center;
-  gap: 8px 12px;
 }
 
 .config-badge-default {
