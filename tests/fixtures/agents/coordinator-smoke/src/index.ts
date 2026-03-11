@@ -874,6 +874,7 @@ async function synthesize(
     synthesizedRaw = await SynthesizeCoordinatorResponse({
       user_message: userText,
       delegated_transcript: transcript,
+      conversation_context: _conversationSummary,
     });
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);

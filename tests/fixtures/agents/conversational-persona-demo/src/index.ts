@@ -23,17 +23,17 @@ declare global {
 }
 
 function mergeA2aOutput(value: unknown): InternalA2aNextOutput {
-  if (value == null) return { chunks: [] };
+  if (value == null) return { chunks: [], completion: null };
   if (Array.isArray(value)) {
     const chunks: InternalA2aNextOutput["chunks"] = [];
     for (const item of value) {
       const v = item as { chunks?: InternalA2aNextOutput["chunks"] };
       if (Array.isArray(v.chunks)) chunks.push(...v.chunks);
     }
-    return { chunks };
+    return { chunks, completion: null };
   }
   const obj = value as InternalA2aNextOutput;
-  return Array.isArray(obj.chunks) ? obj : { chunks: [] };
+  return Array.isArray(obj.chunks) ? obj : { chunks: [], completion: null };
 }
 
 __chat_register({
@@ -75,7 +75,7 @@ __chat_register({
         const stepMerged = mergeA2aOutput(stepOutput);
         if (Array.isArray(stepMerged.chunks)) allChunks.push(...stepMerged.chunks);
       }
-      const merged = { chunks: allChunks };
+      const merged: InternalA2aNextOutput = { chunks: allChunks, completion: null };
       const message = await SummarizeDelegatedResult({ a2a_output: merged });
       return { message: String(message) };
     } catch (e) {
