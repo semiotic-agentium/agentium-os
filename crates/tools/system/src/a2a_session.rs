@@ -42,7 +42,7 @@ impl ToolBundle for A2aSessionBundle {
             name,
             description: "System tools (e.g. agent-to-agent session)".to_string(),
             config_schema: None,
-            secret_requirements: Vec::new(),
+            secret_requests: Vec::new(),
         }
     }
 

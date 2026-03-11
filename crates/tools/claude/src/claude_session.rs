@@ -485,7 +485,7 @@ impl ToolBundle for ClaudeSessionBundle {
             name,
             description: "Claude tools (host-managed Claude session).".to_string(),
             config_schema: None,
-            secret_requirements: Vec::new(),
+            secret_requests: Vec::new(),
         }
     }
 

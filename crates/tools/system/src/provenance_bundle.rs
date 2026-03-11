@@ -24,7 +24,7 @@ impl ToolBundle for ProvenanceBundle {
             description: "System provenance query tools (introspection, extrospection)."
                 .to_string(),
             config_schema: None,
-            secret_requirements: Vec::new(),
+            secret_requests: Vec::new(),
         }
     }
 

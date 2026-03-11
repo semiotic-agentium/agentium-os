@@ -242,13 +242,6 @@ pub trait BamlTool: Send + Sync + 'static {
     fn compact_result(&self, _content: &mut Value) {}
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolSecretRequirement {
-    pub name: String,
-    pub description: String,
-    pub reason: String,
-}
-
 /// Type of secret required by a tool (determines provisioning UX and validation).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -595,8 +588,6 @@ pub struct ToolFunctionMetadata {
     pub access: Option<ToolAccess>,
     /// Tool tags for indexing/search
     pub tags: Vec<String>,
-    /// Secrets required to execute this tool (legacy; prefer secret_requests).
-    pub secret_requirements: Vec<ToolSecretRequirement>,
     /// Declared secrets required by this tool (name, type, justification, descriptor).
     pub secret_requests: Vec<SecretRequest>,
     /// Config schema and defaults; absent when tool has no config.
@@ -635,13 +626,12 @@ impl ToolFunctionMetadata {
     ///
     /// This helper consolidates the common pattern of building metadata
     /// from type information, reducing duplication across registration sites.
-    #[allow(clippy::too_many_arguments)] // prefer TypeBasedMetadataBuilder for new call sites
+    #[allow(clippy::too_many_arguments)]
     pub fn from_types<OpenInput, Input, Output>(
         name: ToolName,
         class_name: String,
         description: String,
         tags: Vec<String>,
-        secret_requirements: Vec<ToolSecretRequirement>,
         secret_requests: Vec<SecretRequest>,
         origin: ToolOrigin,
         extra_ts_decls: Vec<String>,
@@ -676,7 +666,6 @@ impl ToolFunctionMetadata {
             extra_ts_decls,
             access,
             tags,
-            secret_requirements,
             secret_requests,
             config: None,
             config_bundle: None,
@@ -692,7 +681,6 @@ pub struct TypeBasedMetadataBuilder<OpenInput, Input, Output> {
     description: String,
     baml_decl: Option<String>,
     tags: Vec<String>,
-    secret_requirements: Vec<ToolSecretRequirement>,
     secret_requests: Vec<SecretRequest>,
     config: Option<ToolConfigMetadata>,
     config_bundle: Option<BundleName>,
@@ -718,7 +706,6 @@ where
             extra_ts_decls: Vec::new(),
             access: None,
             tags: Vec::new(),
-            secret_requirements: Vec::new(),
             secret_requests: Vec::new(),
             config: None,
             config_bundle: None,
@@ -739,12 +726,6 @@ where
     /// Set tags for the tool
     pub fn with_tags(mut self, tags: Vec<String>) -> Self {
         self.tags = tags;
-        self
-    }
-
-    /// Set secret requirements for the tool (legacy; prefer with_secret_requests).
-    pub fn with_secrets(mut self, secrets: Vec<ToolSecretRequirement>) -> Self {
-        self.secret_requirements = secrets;
         self
     }
 
@@ -798,7 +779,6 @@ where
             self.class_name,
             self.description,
             self.tags,
-            self.secret_requirements,
             self.secret_requests,
             self.origin,
             self.extra_ts_decls,
@@ -826,7 +806,6 @@ pub struct ToolFunctionMetadataExport {
     pub extra_ts_decls: Vec<String>,
     pub access: Option<ToolAccess>,
     pub tags: Vec<String>,
-    pub secret_requirements: Vec<ToolSecretRequirement>,
     pub secret_requests: Vec<SecretRequest>,
     pub config: Option<ToolConfigMetadata>,
     pub origin: ToolOrigin,
@@ -848,7 +827,6 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
             extra_ts_decls: metadata.extra_ts_decls.clone(),
             access: metadata.access,
             tags: metadata.tags.clone(),
-            secret_requirements: metadata.secret_requirements.clone(),
             secret_requests: metadata.secret_requests.clone(),
             config: metadata.config.clone(),
             origin: metadata.origin,
@@ -886,7 +864,7 @@ pub struct ToolBundleMetadata {
     pub name: BundleName,
     pub description: String,
     pub config_schema: Option<Value>,
-    pub secret_requirements: Vec<ToolSecretRequirement>,
+    pub secret_requests: Vec<SecretRequest>,
 }
 
 /// Declares whether this tool ever emits `ToolStep::Streaming` from `next()`.
