@@ -346,7 +346,7 @@ expression: snapshot
           "tags": [
             "config"
           ],
-          "summary": "Create or update config (PUT /config/{bundle_name}).\nRequest body shape is defined by the bundle's config schema (GET /config/{bundle_name} returns it).",
+          "summary": "Create or update config (PUT /config/{bundle_name}).\nRequest body shape is defined by the bundle's config schema (GET /config/{bundle_name} returns it).\nSend `If-Match: <version>` to enable optimistic concurrency; returns 409 if stale.",
           "operationId": "put_config",
           "parameters": [
             {
@@ -384,6 +384,9 @@ expression: snapshot
             },
             "404": {
               "description": "Bundle not found"
+            },
+            "409": {
+              "description": "Version conflict (stale If-Match)"
             },
             "503": {
               "description": "Config service not available"

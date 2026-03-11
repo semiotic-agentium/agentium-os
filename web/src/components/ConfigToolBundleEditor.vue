@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
 import { useConfigApi } from "../composables/useConfigApi";
 import type { SecretRequestDto } from "../types/config";
 
@@ -8,11 +8,22 @@ const emit = defineEmits<{ close: [] }>();
 
 const { fetchConfig, putConfig, fetchSecretRequests } = useConfigApi();
 const configJson = ref("");
+const savedJson = ref("");
 const secretRequests = ref<SecretRequestDto[]>([]);
 const error = ref<string | null>(null);
 const saveMessage = ref<"saved" | "error" | null>(null);
+const version = ref<number>(0);
+
+const dirty = ref(false);
+
+function beforeUnloadHandler(e: BeforeUnloadEvent) {
+  if (dirty.value) {
+    e.preventDefault();
+  }
+}
 
 onMounted(async () => {
+  window.addEventListener("beforeunload", beforeUnloadHandler);
   const [configResult, secretsResult] = await Promise.all([
     fetchConfig(props.bundleName),
     fetchSecretRequests(props.bundleName),
@@ -21,11 +32,29 @@ onMounted(async () => {
     error.value = configResult.error.detail ?? configResult.error.title;
     return;
   }
-  configJson.value = JSON.stringify(configResult.data.config, null, 2);
+  const json = JSON.stringify(configResult.data.config, null, 2);
+  configJson.value = json;
+  savedJson.value = json;
+  version.value = configResult.data.version;
   if ("data" in secretsResult) {
     secretRequests.value = secretsResult.data;
   }
 });
+
+onUnmounted(() => {
+  window.removeEventListener("beforeunload", beforeUnloadHandler);
+});
+
+function onInput() {
+  dirty.value = configJson.value !== savedJson.value;
+}
+
+function tryClose() {
+  if (dirty.value && !confirm("You have unsaved changes. Discard them?")) {
+    return;
+  }
+  emit("close");
+}
 
 async function save() {
   saveMessage.value = null;
@@ -36,12 +65,15 @@ async function save() {
     error.value = "Invalid JSON: " + (e instanceof Error ? e.message : String(e));
     return;
   }
-  const result = await putConfig(props.bundleName, parsed);
+  const result = await putConfig(props.bundleName, parsed, version.value);
   if ("error" in result) {
     saveMessage.value = "error";
     error.value = result.error.detail ?? result.error.title;
     return;
   }
+  version.value = result.data.version;
+  savedJson.value = configJson.value;
+  dirty.value = false;
   saveMessage.value = "saved";
   error.value = null;
   setTimeout(() => { saveMessage.value = null; }, 2000);
@@ -52,7 +84,7 @@ async function save() {
   <div class="config-tool-editor">
     <div class="config-tool-editor-header">
       <h3 class="config-section-title">{{ bundleName }}</h3>
-      <button type="button" class="config-btn config-btn-ghost" @click="emit('close')">← Back to list</button>
+      <button type="button" class="config-btn config-btn-ghost" @click="tryClose">← Back to list</button>
     </div>
 
     <p v-if="error" class="config-error">{{ error }}</p>
@@ -76,11 +108,13 @@ async function save() {
         class="config-input config-textarea config-json-editor"
         rows="16"
         spellcheck="false"
+        @input="onInput"
       />
     </div>
 
     <div class="config-form-actions">
       <button type="button" class="config-btn config-btn-primary" @click="save">Save</button>
+      <span v-if="dirty" class="config-dirty-indicator">Unsaved changes</span>
       <p v-if="saveMessage === 'saved'" class="config-save-ok">Saved.</p>
       <p v-else-if="saveMessage === 'error'" class="config-save-err">Save failed.</p>
     </div>

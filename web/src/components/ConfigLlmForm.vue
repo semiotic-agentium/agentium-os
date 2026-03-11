@@ -230,7 +230,7 @@ function setOverridesAgentFunctionFromText(text: string) {
             :value="getClient(name).name"
             class="config-input config-input-inline"
             placeholder="Client name"
-            @input="(e) => setClient(name, { ...getClient(name), name: (e.target as HTMLInputElement).value })"
+            @change="(e) => setClient(name, { ...getClient(name), name: (e.target as HTMLInputElement).value.trim() })"
           />
           <span v-if="name === defaultClientName" class="config-badge-default">Default</span>
           <button

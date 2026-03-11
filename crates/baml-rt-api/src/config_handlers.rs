@@ -464,6 +464,7 @@ pub async fn get_config(
 
 /// Create or update config (PUT /config/{bundle_name}).
 /// Request body shape is defined by the bundle's config schema (GET /config/{bundle_name} returns it).
+/// Send `If-Match: <version>` to enable optimistic concurrency; returns 409 if stale.
 #[utoipa::path(
     put,
     path = "/config/{bundle_name}",
@@ -474,12 +475,14 @@ pub async fn get_config(
         (status = 200, description = "Config updated", body = ConfigVersionDto),
         (status = 400, description = "Invalid config"),
         (status = 404, description = "Bundle not found"),
+        (status = 409, description = "Version conflict (stale If-Match)"),
         (status = 503, description = "Config service not available")
     )
 )]
 pub async fn put_config(
     State(state): State<Arc<crate::router::ApiState>>,
     axum::extract::Path(bundle_name): axum::extract::Path<String>,
+    headers: axum::http::HeaderMap,
     Json(body): Json<Value>,
 ) -> HttpResult<ConfigVersionDto> {
     let catalog = &state.tool_catalog;
@@ -522,6 +525,30 @@ pub async fn put_config(
         }
         body
     };
+
+    if let Some(if_match) = headers.get("if-match").and_then(|v| v.to_str().ok()) {
+        let expected: u64 = if_match.trim().parse().map_err(|_| {
+            problem(
+                400,
+                "Bad Request",
+                format!("If-Match must be a version number, got: {if_match}"),
+            )
+        })?;
+        let current = config
+            .get_with_version(&parsed)
+            .map_err(config_err_500)?
+            .map(|s| s.version.into())
+            .unwrap_or(0u64);
+        if current != expected {
+            return Err(problem(
+                409,
+                "Conflict",
+                format!(
+                    "Version conflict: you have version {expected}, but current is {current}. Reload and retry."
+                ),
+            ));
+        }
+    }
 
     let version = config.set(&parsed, body_to_store).map_err(|e| {
         tracing::error!(error = %e, "config set failed");

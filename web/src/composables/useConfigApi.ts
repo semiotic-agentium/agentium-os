@@ -127,12 +127,17 @@ export function useConfigApi() {
   async function putConfig(
     bundleName: string,
     body: Record<string, unknown>,
+    expectedVersion?: number,
   ): Promise<{ data: ConfigVersionDto } | { error: ConfigApiError }> {
     loading.value = true;
     try {
+      const hdrs: Record<string, string> = { "Content-Type": "application/json" };
+      if (expectedVersion !== undefined) {
+        hdrs["If-Match"] = String(expectedVersion);
+      }
       const res = await fetch(`/config/${encodeURIComponent(bundleName)}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: hdrs,
         body: JSON.stringify(body),
       });
       if (!res.ok) {
