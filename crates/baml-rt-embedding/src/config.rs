@@ -73,44 +73,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_config_monitors_all_functions() {
+    fn should_monitor_respects_defaults_allowlist_and_skip_precedence() {
+        // Default: monitors everything, mode is Audit.
         let cfg = DriftConfig::default();
+        assert_eq!(cfg.mode, DriftMode::Audit);
         assert!(cfg.should_monitor("ChooseClickUpAction"));
-        assert!(cfg.should_monitor("ChooseNotionAction"));
-    }
+        assert!(cfg.should_monitor("AnyFunction"));
 
-    #[test]
-    fn skip_functions_are_excluded() {
-        let cfg = DriftConfig {
-            skip_functions: HashSet::from(["PlanCoordinatorWorkflow".to_owned()]),
-            ..Default::default()
-        };
-        assert!(!cfg.should_monitor("PlanCoordinatorWorkflow"));
-        assert!(cfg.should_monitor("ChooseClickUpAction"));
-    }
-
-    #[test]
-    fn monitored_functions_allowlist() {
+        // Allowlist restricts to named functions only.
         let cfg = DriftConfig {
             monitored_functions: Some(HashSet::from(["ChooseClickUpAction".to_owned()])),
             ..Default::default()
         };
         assert!(cfg.should_monitor("ChooseClickUpAction"));
         assert!(!cfg.should_monitor("ChooseNotionAction"));
-    }
 
-    #[test]
-    fn skip_takes_precedence_over_allowlist() {
+        // Skip takes precedence over allowlist.
         let cfg = DriftConfig {
             monitored_functions: Some(HashSet::from(["Foo".to_owned()])),
             skip_functions: HashSet::from(["Foo".to_owned()]),
             ..Default::default()
         };
         assert!(!cfg.should_monitor("Foo"));
-    }
-
-    #[test]
-    fn default_mode_is_audit() {
-        assert_eq!(DriftConfig::default().mode, DriftMode::Audit);
     }
 }

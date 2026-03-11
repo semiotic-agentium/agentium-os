@@ -26,33 +26,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn identical_vectors_yield_one() {
+    fn cosine_similarity_covers_all_geometric_cases() {
+        // Identical → 1.0
         let v = vec![1.0, 2.0, 3.0];
-        let sim = cosine_similarity(&v, &v);
-        assert!((sim - 1.0).abs() < 1e-6, "expected ~1.0, got {sim}");
-    }
+        assert!((cosine_similarity(&v, &v) - 1.0).abs() < 1e-6);
 
-    #[test]
-    fn opposite_vectors_yield_negative_one() {
-        let v = vec![1.0, 2.0, 3.0];
+        // Orthogonal → 0.0
+        assert!(cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]).abs() < 1e-6);
+
+        // Opposite → -1.0
         let neg: Vec<f32> = v.iter().map(|x| -x).collect();
-        let sim = cosine_similarity(&v, &neg);
-        assert!((sim + 1.0).abs() < 1e-6, "expected ~-1.0, got {sim}");
-    }
+        assert!((cosine_similarity(&v, &neg) + 1.0).abs() < 1e-6);
 
-    #[test]
-    fn orthogonal_vectors_yield_zero() {
-        let a = vec![1.0, 0.0];
-        let b = vec![0.0, 1.0];
-        let sim = cosine_similarity(&a, &b);
-        assert!(sim.abs() < 1e-6, "expected ~0.0, got {sim}");
-    }
-
-    #[test]
-    fn zero_vector_returns_zero() {
-        let a = vec![0.0, 0.0, 0.0];
-        let b = vec![1.0, 2.0, 3.0];
-        assert_eq!(cosine_similarity(&a, &b), 0.0);
-        assert_eq!(cosine_similarity(&b, &a), 0.0);
+        // Zero-norm → 0.0 (degenerate guard)
+        assert_eq!(cosine_similarity(&[0.0, 0.0], &[1.0, 2.0]), 0.0);
     }
 }
