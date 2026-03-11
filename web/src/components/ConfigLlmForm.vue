@@ -193,6 +193,25 @@ function agentEffectiveLabel(agentPkg: string): string {
   return getAgentOverride(agentPkg) || local.value.default || "system default";
 }
 
+/** Whether any function-level override is set for this agent. */
+function hasFnOverrides(agentPkg: string): boolean {
+  const af = local.value.overrides?.agent_function ?? {};
+  return Object.keys(af).some((k) => k.startsWith(`${agentPkg}:`));
+}
+
+// ── Collapsible agent cards ──
+// Collapsed by default; badges indicate which agents have overrides.
+const expandedAgents = ref<Record<string, boolean>>({});
+
+function toggleAgent(agentPkg: string) {
+  const current = expandedAgents.value[agentPkg] ?? false;
+  expandedAgents.value = { ...expandedAgents.value, [agentPkg]: !current };
+}
+
+function isExpanded(agentPkg: string): boolean {
+  return expandedAgents.value[agentPkg] === true;
+}
+
 // ── Validation + Save ──
 
 function validate(): string[] {
@@ -238,92 +257,110 @@ function onSave() {
 <template>
   <div class="config-llm-form">
 
-    <!-- ── System default ── -->
-    <div class="config-form-section">
+    <!-- ══ Routing section ══ -->
+    <div class="config-routing-block">
+      <div class="config-routing-block-header">
+        <div>
+          <h3 class="config-section-title">LLM Routing</h3>
+          <p class="config-hint">Controls which LLM client each agent and prompt uses.</p>
+        </div>
+      </div>
+
+      <!-- System default -->
       <div class="config-override-system-row">
         <div class="config-override-system-label">
-          <span class="config-section-title">System default</span>
-          <span class="config-hint">All agents use this unless overridden below.</span>
+          <span class="config-label" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;">System default</span>
+          <span class="config-hint" style="font-size:11px;">All agents inherit this unless overridden</span>
         </div>
         <select v-model="defaultClientName" class="config-input config-select">
           <option v-for="name in clientNames" :key="name" :value="name">{{ name }}</option>
         </select>
       </div>
-    </div>
 
-    <!-- ── Per-agent override cards ── -->
-    <div class="config-form-section">
-      <h3 class="config-section-title">Agent routing</h3>
-      <p class="config-hint">Set a default client per agent, and optionally override individual prompts.</p>
+      <!-- Agent cards -->
+      <div class="config-agent-cards">
+        <p v-if="discoveredAgents.length === 0" class="config-override-empty">
+          No agents discovered — start the runner to populate this section.
+        </p>
 
-      <p v-if="discoveredAgents.length === 0" class="config-override-empty">
-        No agents discovered — start the runner to populate this section.
-      </p>
-
-      <div
-        v-for="agent in discoveredAgents"
-        :key="agent.agent_package"
-        class="config-agent-override-card"
-      >
-        <!-- Agent header + agent-level override -->
-        <div class="config-agent-override-header">
-          <span class="config-agent-override-name">{{ agent.agent_package }}</span>
-          <div class="config-agent-override-client">
-            <span class="config-override-inherit-label">uses</span>
-            <select
-              :value="getAgentOverride(agent.agent_package)"
-              class="config-input config-select"
-              :aria-label="'Default client for ' + agent.agent_package"
-              @change="(e) => setAgentOverride(agent.agent_package, (e.target as HTMLSelectElement).value)"
-            >
-              <option value="">{{ local.default }} (system default)</option>
-              <option
-                v-for="c in clientNames"
-                :key="c"
-                :value="c"
-              >{{ c }}</option>
-            </select>
-          </div>
-        </div>
-
-        <!-- Per-function overrides -->
         <div
-          v-if="functionsForAgent(agent.agent_package).length > 0"
-          class="config-fn-override-list"
+          v-for="agent in discoveredAgents"
+          :key="agent.agent_package"
+          class="config-agent-override-card"
+          :class="{ 'is-expanded': isExpanded(agent.agent_package) }"
         >
+          <!-- Header row: expand toggle + agent name + agent-level client + badges -->
           <div
-            v-for="fn in functionsForAgent(agent.agent_package)"
-            :key="fn"
-            class="config-fn-override-row"
+            class="config-agent-override-header"
+            :class="{ 'is-expandable': functionsForAgent(agent.agent_package).length > 0 }"
+            @click="functionsForAgent(agent.agent_package).length > 0 && toggleAgent(agent.agent_package)"
           >
-            <span class="config-fn-override-name">{{ fn }}</span>
-            <div class="config-fn-override-client">
+            <span
+              v-if="functionsForAgent(agent.agent_package).length > 0"
+              class="config-agent-expand-icon"
+              :class="{ 'is-open': isExpanded(agent.agent_package) }"
+              aria-hidden="true"
+            >▶</span>
+            <span v-else class="config-agent-expand-spacer" aria-hidden="true" />
+
+            <span class="config-agent-override-name">{{ agent.agent_package }}</span>
+
+            <!-- Fn override badge — shows how many function overrides are set -->
+            <span
+              v-if="hasFnOverrides(agent.agent_package)"
+              class="config-agent-fn-badge"
+              title="Has per-prompt overrides"
+            >prompts overridden</span>
+
+            <div class="config-agent-override-client" @click.stop>
+              <span class="config-override-inherit-label">uses</span>
               <select
-                :value="getFnOverride(agent.agent_package, fn)"
-                class="config-input config-select"
-                :aria-label="fn + ' client override'"
-                @change="(e) => setFnOverride(agent.agent_package, fn, (e.target as HTMLSelectElement).value)"
+                :value="getAgentOverride(agent.agent_package)"
+                class="config-input config-select config-select-sm"
+                :aria-label="'Default client for ' + agent.agent_package"
+                @change="(e) => setAgentOverride(agent.agent_package, (e.target as HTMLSelectElement).value)"
               >
-                <option value="">{{ agentEffectiveLabel(agent.agent_package) }} (inherited)</option>
-                <option
-                  v-for="c in clientNames"
-                  :key="c"
-                  :value="c"
-                >{{ c }}</option>
+                <option value="">{{ local.default }} (system default)</option>
+                <option v-for="c in clientNames" :key="c" :value="c">{{ c }}</option>
               </select>
             </div>
           </div>
+
+          <!-- Per-function overrides — only shown when expanded -->
+          <div v-if="isExpanded(agent.agent_package)" class="config-fn-override-list">
+            <div
+              v-for="fn in functionsForAgent(agent.agent_package)"
+              :key="fn"
+              class="config-fn-override-row"
+            >
+              <span class="config-fn-override-name">{{ fn }}</span>
+              <div class="config-fn-override-client">
+                <select
+                  :value="getFnOverride(agent.agent_package, fn)"
+                  class="config-input config-select config-select-sm"
+                  :aria-label="fn + ' client override'"
+                  @change="(e) => setFnOverride(agent.agent_package, fn, (e.target as HTMLSelectElement).value)"
+                >
+                  <option value="">{{ agentEffectiveLabel(agent.agent_package) }} (inherited)</option>
+                  <option v-for="c in clientNames" :key="c" :value="c">{{ c }}</option>
+                </select>
+              </div>
+            </div>
+          </div>
         </div>
-        <p v-else class="config-fn-override-empty">No BAML functions discovered for this agent.</p>
       </div>
     </div>
 
-    <!-- ── LLM clients ── -->
-    <div class="config-form-section">
+    <!-- ══ Clients section ══ -->
+    <div class="config-clients-block">
       <div class="config-section-header">
-        <h3 class="config-section-title">Clients</h3>
+        <div>
+          <h3 class="config-section-title">Clients</h3>
+          <p class="config-hint">Define LLM clients available for routing above.</p>
+        </div>
         <button type="button" class="config-btn config-btn-secondary" @click="addClient">Add client</button>
       </div>
+
       <div v-for="(names, provider) in clientsByProvider" :key="provider" class="config-clients-by-provider">
         <h4 class="config-provider-group-title">{{ provider }}</h4>
         <div v-for="name in names" :key="name" class="config-client-card">

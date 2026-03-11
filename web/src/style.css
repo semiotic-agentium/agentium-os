@@ -2569,6 +2569,23 @@ a.source-chip:hover {
   gap: 4px;
 }
 
+/* ── Routing block (LLM routing section) ── */
+
+.config-routing-block {
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.config-routing-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 8px;
+  background: var(--primary-subtle);
+  border-bottom: 1px solid var(--primary);
+}
+
 /* ── System default row ── */
 
 .config-override-system-row {
@@ -2576,10 +2593,9 @@ a.source-chip:hover {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 12px 16px;
+  padding: 10px 16px;
   background: var(--bg-subtle);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .config-override-system-label {
@@ -2588,45 +2604,95 @@ a.source-chip:hover {
   gap: 2px;
 }
 
+/* ── Agent cards container ── */
+
+.config-agent-cards {
+  padding: 8px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 /* ── Agent override cards ── */
 
 .config-agent-override-card {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
+  background: var(--surface);
   overflow: hidden;
-  margin-bottom: 8px;
-}
-
-.config-agent-override-card:last-child {
-  margin-bottom: 0;
 }
 
 .config-agent-override-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 14px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border-subtle);
+  gap: 8px;
+  padding: 8px 12px;
+  user-select: none;
+}
+
+.config-agent-override-header.is-expandable {
+  cursor: pointer;
+}
+
+.config-agent-override-header.is-expandable:hover {
+  background: var(--bg-subtle);
+}
+
+.config-agent-expand-icon {
+  font-size: 9px;
+  color: var(--text-muted);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+  width: 12px;
+}
+
+.config-agent-expand-icon.is-open {
+  transform: rotate(90deg);
+}
+
+.config-agent-expand-spacer {
+  width: 12px;
+  flex-shrink: 0;
 }
 
 .config-agent-override-name {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-agent-fn-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  background: var(--primary-subtle);
+  color: var(--primary);
+  border-radius: 4px;
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .config-agent-override-client {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex-shrink: 0;
 }
 
 .config-override-inherit-label {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-muted);
+}
+
+.config-select-sm {
+  font-size: 12px;
+  padding: 4px 8px;
+  max-width: 200px;
 }
 
 /* ── Per-function override rows ── */
@@ -2634,6 +2700,7 @@ a.source-chip:hover {
 .config-fn-override-list {
   display: flex;
   flex-direction: column;
+  border-top: 1px solid var(--border-subtle);
 }
 
 .config-fn-override-row {
@@ -2641,8 +2708,9 @@ a.source-chip:hover {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 14px 8px 28px;
+  padding: 6px 12px 6px 32px;
   border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-subtle);
 }
 
 .config-fn-override-row:last-child {
@@ -2650,7 +2718,7 @@ a.source-chip:hover {
 }
 
 .config-fn-override-name {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text-secondary);
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   flex: 1;
@@ -2666,6 +2734,14 @@ a.source-chip:hover {
   color: var(--text-muted);
   font-style: italic;
   padding: 8px 14px 8px 28px;
+}
+
+/* ── Clients block ── */
+
+.config-clients-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 .config-override-empty {
