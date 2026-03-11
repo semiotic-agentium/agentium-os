@@ -18,14 +18,23 @@ expression: snapshot
           "provider": "openai",
           "model": "gpt-4o-mini",
           "baml_prompt": "SummarizePrompt",
-          "duration_ms": 180,
-          "prompt_tokens": 12,
-          "completion_tokens": 8,
-          "total_tokens": 20,
-          "activity_outcome": "Success",
-          "llm_result": null,
+          "duration_ms": 181,
+          "prompt_tokens": 10,
+          "completion_tokens": 7,
+          "total_tokens": 17,
           "llm_call": {
-            "input": "hello"
+            "input": "hello with drift"
+          },
+          "llm_result": null,
+          "activity_outcome": "Success",
+          "drift": {
+            "score": 0.6179999709,
+            "severity": "warn",
+            "mode": "audit",
+            "warnThreshold": 0.5,
+            "blockThreshold": 0.25,
+            "intentTextPreview": "Create a task titled Research",
+            "responseTextPreview": "Create task in list 901325431486"
           },
           "agent_package": "unknown",
           "agent_version": "unknown",
@@ -37,10 +46,10 @@ expression: snapshot
       "summary": {
         "count": 2,
         "failedCount": 1,
-        "durationMsTotal": 830,
-        "totalTokens": 45,
-        "promptTokensTotal": 32,
-        "completionTokensTotal": 13,
+        "durationMsTotal": 831,
+        "totalTokens": 42,
+        "promptTokensTotal": 30,
+        "completionTokensTotal": 12,
         "latencyHotspots": {
           "p95": 650.0,
           "p99": 650.0
@@ -76,8 +85,8 @@ expression: snapshot
           "count": 1,
           "failed": 0,
           "failureRate": 0.0,
-          "avgDurationMs": 180.0,
-          "avgTotalTokens": 20.0
+          "avgDurationMs": 181.0,
+          "avgTotalTokens": 17.0
         }
       ],
       "nextCursor": "1",
@@ -108,11 +117,11 @@ expression: snapshot
           "prompt_tokens": 20,
           "completion_tokens": 5,
           "total_tokens": 25,
-          "activity_outcome": "Failed",
-          "llm_result": null,
           "llm_call": {
             "input": "world"
           },
+          "llm_result": null,
+          "activity_outcome": "Failed",
           "agent_package": "unknown",
           "agent_version": "unknown",
           "agent_display": "unknown/unknown",
@@ -125,10 +134,10 @@ expression: snapshot
       "summary": {
         "count": 2,
         "failedCount": 1,
-        "durationMsTotal": 830,
-        "totalTokens": 45,
-        "promptTokensTotal": 32,
-        "completionTokensTotal": 13,
+        "durationMsTotal": 831,
+        "totalTokens": 42,
+        "promptTokensTotal": 30,
+        "completionTokensTotal": 12,
         "latencyHotspots": {
           "p95": 650.0,
           "p99": 650.0
@@ -164,8 +173,8 @@ expression: snapshot
           "count": 1,
           "failed": 0,
           "failureRate": 0.0,
-          "avgDurationMs": 180.0,
-          "avgTotalTokens": 20.0
+          "avgDurationMs": 181.0,
+          "avgTotalTokens": 17.0
         }
       ],
       "truncated": true,

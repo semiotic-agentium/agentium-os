@@ -1,6 +1,5 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
-assertion_line: 961
 expression: snapshot
 ---
 {
@@ -18,10 +17,10 @@ expression: snapshot
         "role": "ROLE_USER",
         "direction": "received",
         "message_text": "run analysis",
-        "llm_duration_ms_sum": 830,
+        "llm_duration_ms_sum": 1012,
         "tool_duration_ms_sum": 660,
-        "total_processing_ms": 1490,
-        "duration_ms": 1490,
+        "total_processing_ms": 1672,
+        "duration_ms": 1672,
         "message_content": "run analysis",
         "agent_package": "unknown",
         "agent_version": "unknown",
@@ -78,13 +77,13 @@ expression: snapshot
     "summary": {
       "count": 3,
       "failedCount": 0,
-      "durationMsTotal": 1490,
+      "durationMsTotal": 1672,
       "totalTokens": 0,
       "promptTokensTotal": 0,
       "completionTokensTotal": 0,
       "latencyHotspots": {
-        "p95": 1490.0,
-        "p99": 1490.0
+        "p95": 1672.0,
+        "p99": 1672.0
       },
       "tokenHotspots": {
         "p95": 0.0,
@@ -105,7 +104,7 @@ expression: snapshot
         "count": 2,
         "failed": 0,
         "failureRate": 0.0,
-        "avgDurationMs": 745.0,
+        "avgDurationMs": 836.0,
         "avgTotalTokens": 0.0
       },
       {
