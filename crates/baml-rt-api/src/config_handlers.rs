@@ -97,8 +97,10 @@ fn save_secret_links_state(
     config_service: &dyn InternalConfigWriter,
     state: &SecretLinksState,
 ) -> Result<(), HttpApiProblem> {
-    let value =
-        serde_json::to_value(state).map_err(|e| problem(500, "Internal Error", e.to_string()))?;
+    let value = serde_json::to_value(state).map_err(|e| {
+        tracing::error!(error = %e, "failed to serialize secret links state");
+        problem(500, "Internal Error", "Serialization failure")
+    })?;
     config_service
         .set_internal(SECRET_LINKS_CONFIG_KEY, value)
         .map_err(config_err_500)?;
@@ -129,12 +131,20 @@ pub async fn list_secrets_overview(
     let catalog = &state.tool_catalog;
     // LLM_CONFIG_BUNDLE_NAME is a crate constant guaranteed by baml_rt_llm_config to pass BundleName::new.
     let llm_bundle = BundleName::new(LLM_CONFIG_BUNDLE_NAME).expect("llm bundle name valid");
-    let llm_config = state
+    let llm_config = match state
         .config_service
         .get_with_version(&llm_bundle)
         .map_err(config_err_500)?
-        .and_then(|s| LlmClientConfig::from_value(s.config).ok())
-        .unwrap_or_else(LlmClientConfig::sensible_default);
+    {
+        Some(s) => match LlmClientConfig::from_value(s.config) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, "stored LLM config parse failed; using sensible default");
+                LlmClientConfig::sensible_default()
+            }
+        },
+        None => LlmClientConfig::sensible_default(),
+    };
 
     #[derive(Default)]
     struct Entry {
@@ -173,7 +183,13 @@ pub async fn list_secrets_overview(
     }
 
     let resolver = &state.secret_resolver;
-    let link_state = load_secret_links_state(state.config_service.as_ref()).unwrap_or_default();
+    let link_state = match load_secret_links_state(state.config_service.as_ref()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(error = ?e, "secret link state load failed; reporting as empty");
+            SecretLinksState::default()
+        }
+    };
     let mut out: Vec<SecretOverviewEntryDto> = by_name
         .into_iter()
         .map(|(name, e)| {

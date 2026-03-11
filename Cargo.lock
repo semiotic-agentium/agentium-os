@@ -1539,7 +1539,6 @@ dependencies = [
 name = "baml-rt-config"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "baml-rt-core",
  "baml-rt-tools",
  "graphqlite",

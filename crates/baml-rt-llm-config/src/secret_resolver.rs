@@ -313,7 +313,13 @@ impl SecretResolver for OverlaySecretResolver {
     fn resolve(&self, placeholder: &str) -> Option<SecretValue> {
         let request = SecretRequestName::from(Self::placeholder_to_key(placeholder));
         let overlay_result = {
-            let guard = self.overlay.read().ok()?;
+            let guard = match self.overlay.read() {
+                Ok(g) => g,
+                Err(e) => {
+                    tracing::error!(error = %e, "overlay RwLock poisoned; falling back to backend");
+                    return self.backend.resolve(placeholder);
+                }
+            };
             guard.get(&request).cloned()
         };
         match overlay_result {
@@ -334,14 +340,24 @@ impl SecretResolver for OverlaySecretResolver {
 
 impl RuntimeSecretStore for OverlaySecretResolver {
     fn set(&self, request: &SecretRequestName, value: SecretValue) {
-        if let Ok(mut g) = self.overlay.write() {
-            g.insert(request.clone(), Some(value));
+        match self.overlay.write() {
+            Ok(mut g) => {
+                g.insert(request.clone(), Some(value));
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "overlay RwLock poisoned; secret link not applied")
+            }
         }
     }
 
     fn remove(&self, request: &SecretRequestName) {
-        if let Ok(mut g) = self.overlay.write() {
-            g.insert(request.clone(), None);
+        match self.overlay.write() {
+            Ok(mut g) => {
+                g.insert(request.clone(), None);
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "overlay RwLock poisoned; secret unlink not applied")
+            }
         }
     }
 }

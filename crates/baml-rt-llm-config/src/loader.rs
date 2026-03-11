@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, path::Path};
 
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use serde::Deserialize;
 
 use crate::config::{ClientDef, LlmClientConfig, LlmOverrides, RetryPolicyDef};
@@ -22,20 +22,25 @@ impl LlmClientConfig {
     pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         let s = std::fs::read_to_string(path)
-            .map_err(|e| anyhow::anyhow!("read llm config {}: {}", path.display(), e))?;
+            .with_context(|| format!("read llm config: {}", path.display()))?;
         Self::load_from_str(&s, path.extension().and_then(|e| e.to_str()))
     }
 
     /// Load config from string (format hint: Some("yaml") or Some("json")).
     pub fn load_from_str(s: &str, format_hint: Option<&str>) -> Result<Self> {
         let raw: RawConfig = match format_hint {
-            Some("yaml") | Some("yml") => serde_yaml::from_str(s)
-                .map_err(|e| anyhow::anyhow!("parse llm config yaml: {}", e))?,
+            Some("yaml") | Some("yml") => {
+                serde_yaml::from_str(s).context("parse llm config yaml")?
+            }
             _ => {
-                // Try JSON first, then YAML
+                // Try JSON first, then YAML; capture the JSON error for richer diagnostics.
                 serde_json::from_str(s)
-                    .or_else(|_| serde_yaml::from_str(s))
-                    .map_err(|e| anyhow::anyhow!("parse llm config: {}", e))?
+                    .or_else(|json_err| {
+                        serde_yaml::from_str(s).with_context(|| {
+                            format!("parse llm config (json failed: {json_err}; yaml also failed)")
+                        })
+                    })
+                    .context("parse llm config")?
             }
         };
         let default = raw.default.unwrap_or_default();

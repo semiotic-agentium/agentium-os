@@ -50,24 +50,14 @@ impl LlmClientResolver for StaticResolver {
         if primary.is_empty() {
             return Ok(None);
         }
-        let effective = if self.config.clients.contains_key(primary) {
-            primary.to_string()
-        } else {
-            tracing::warn!(
-                primary = %primary,
-                default = %self.config.default,
-                "Resolved LLM client name not in config, using default client"
-            );
-            if self
-                .config
-                .clients
-                .contains_key(self.config.default.as_str())
-            {
-                self.config.default.clone()
-            } else {
-                return Ok(None);
-            }
-        };
+        if !self.config.clients.contains_key(primary) {
+            let available: Vec<&str> = self.config.clients.keys().map(String::as_str).collect();
+            return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
+                "LLM routing override references client '{primary}' which does not exist; \
+                 available clients: {available:?}"
+            )));
+        }
+        let effective = primary.to_string();
         let registry = build_client_registry(
             self.config.as_ref(),
             &effective,

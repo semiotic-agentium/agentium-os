@@ -146,6 +146,12 @@ impl ConfigReader for SqliteConfigStore {
 
 impl ConfigWriter for SqliteConfigStore {
     fn set(&self, bundle_name: &BundleName, config: Value) -> Result<ConfigVersion> {
+        let span = tracing::debug_span!(
+            "baml_rt_config.set",
+            bundle = %bundle_name.as_str(),
+        );
+        let _guard = span.enter();
+
         let conn = self
             .conn
             .lock()
@@ -195,6 +201,12 @@ impl ConfigWriter for SqliteConfigStore {
     }
 
     fn delete(&self, bundle_name: &BundleName) -> Result<()> {
+        let span = tracing::debug_span!(
+            "baml_rt_config.delete",
+            bundle = %bundle_name.as_str(),
+        );
+        let _guard = span.enter();
+
         let conn = self
             .conn
             .lock()
