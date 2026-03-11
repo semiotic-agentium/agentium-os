@@ -70,8 +70,7 @@ impl FastEmbedProvider {
     pub fn new() -> Result<Self, EmbeddingError> {
         let opts =
             InitOptions::new(EmbeddingModel::BGESmallENV15).with_show_download_progress(true);
-        let model =
-            TextEmbedding::try_new(opts).map_err(|e| EmbeddingError::ModelInit(e.into()))?;
+        let model = TextEmbedding::try_new(opts).map_err(EmbeddingError::ModelInit)?;
         Ok(Self {
             model: Mutex::new(model),
             dim: Self::BGE_SMALL_DIM,
@@ -89,9 +88,7 @@ impl EmbeddingProvider for FastEmbedProvider {
             .model
             .lock()
             .map_err(|e| EmbeddingError::Inference(anyhow::anyhow!("Mutex poisoned: {e}")))?;
-        guard
-            .embed(docs, None)
-            .map_err(|e| EmbeddingError::Inference(e.into()))
+        guard.embed(docs, None).map_err(EmbeddingError::Inference)
     }
 
     fn dimension(&self) -> usize {

@@ -288,7 +288,7 @@ impl AgentPackage {
         #[cfg(feature = "embedding-drift")]
         {
             let provider_result =
-                tokio::task::spawn_blocking(|| baml_rt_embedding::FastEmbedProvider::new()).await;
+                tokio::task::spawn_blocking(baml_rt_embedding::FastEmbedProvider::new).await;
 
             match provider_result {
                 Ok(Ok(provider)) => {

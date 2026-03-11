@@ -164,9 +164,7 @@ fn unwrap_llm_call_trace(value: &Value) -> Option<Value> {
         .and_then(Value::as_str)?;
 
     // Guard: only proceed if this looks like an LLMCall trace (has client_name).
-    if value.get("client_name").is_none() {
-        return None;
-    }
+    value.get("client_name")?;
 
     // Parse the raw HTTP response body.
     let http_response: Value = serde_json::from_str(body_str).ok()?;
@@ -212,10 +210,8 @@ fn extract_from_content(value: &Value) -> String {
                 .get("type")
                 .and_then(Value::as_str)
                 .is_some_and(|t| t == "Send");
-            if is_send {
-                if let Some(input) = step.get("input").and_then(Value::as_str) {
-                    parts.push(input);
-                }
+            if is_send && let Some(input) = step.get("input").and_then(Value::as_str) {
+                parts.push(input);
             }
             // Non-Send steps (e.g. ToolCall, Wait) don't carry user-facing text.
         }
@@ -287,7 +283,10 @@ mod tests {
 
         // FinalResponse shape.
         let response = json!({"message": "Task created successfully."});
-        assert_eq!(extract_response_text(&response), "Task created successfully.");
+        assert_eq!(
+            extract_response_text(&response),
+            "Task created successfully."
+        );
     }
 
     #[test]
