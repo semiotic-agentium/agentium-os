@@ -103,7 +103,9 @@ sha2 = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 flate2 = "1"
 tar = "0.4"
-quickjs_runtime = "0.15"
+# Minimal QuickJS runtime: no SWC/typescript (agents are pre-compiled by the builder),
+# no timer APIs (unused), no console (we inject our own sandboxed polyfill).
+quickjs_runtime = { version = "0.15", default-features = false, features = ["bellard"] }
 # Agent memory
 agentic-memory = "0.2.6"
 # Embedding / drift detection
