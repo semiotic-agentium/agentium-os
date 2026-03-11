@@ -218,6 +218,7 @@ async fn seeded_store_for_context(
                 },
                 duration_ms: 220,
                 outcome: Outcome::Failure,
+                drift: None,
             },
         }))
         .await

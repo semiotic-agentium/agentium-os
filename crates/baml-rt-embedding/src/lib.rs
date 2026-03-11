@@ -1,26 +1,19 @@
-//! Embedding-based drift detection for prompt injection defense.
+//! Embedding-based drift scoring utilities.
 //!
-//! This crate provides an [`LLMInterceptor`] implementation that detects when
-//! an LLM response deviates from the coordinator's intended prompt — a signal
-//! of prompt injection via untrusted data in the conversation context.
-//!
-//! # Architecture
-//!
-//! 1. On `intercept_llm_call`, the **intent** (last user message minus untrusted
-//!    data blocks) is embedded and stashed.
-//! 2. On `on_llm_call_complete`, the **response** is embedded and compared to
-//!    the stashed intent via cosine similarity.
-//! 3. If similarity drops below configurable thresholds the event is logged
-//!    (audit mode) or the *next* LLM call in the same ReAct loop is blocked
-//!    (enforce mode).
+//! This crate extracts intent text from prompts, extracts response text from
+//! completed LLM results, computes embeddings, and classifies cosine-similarity
+//! drift scores against configurable thresholds.
 
+pub mod assessment;
 pub mod config;
-pub mod drift;
 pub mod extraction;
 pub mod provider;
 pub mod similarity;
 
+pub use assessment::{
+    DEFAULT_TEXT_PREVIEW_CHARS, DriftAssessment, DriftSeverity, classify_score, preview_text,
+    score_drift,
+};
 pub use config::{DriftConfig, DriftMode};
-pub use drift::DriftDetectorInterceptor;
 pub use provider::{EmbeddingProvider, FastEmbedProvider};
 pub use similarity::cosine_similarity;

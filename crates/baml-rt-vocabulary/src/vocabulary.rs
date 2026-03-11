@@ -42,6 +42,13 @@ pub mod a2a {
     pub const USAGE_COMPLETION_TOKENS: &str = "a2a:usage_completion_tokens";
     pub const USAGE_TOTAL_TOKENS: &str = "a2a:usage_total_tokens";
     pub const DURATION_MS: &str = "a2a:duration_ms";
+    pub const DRIFT_SCORE: &str = "a2a:drift_score";
+    pub const DRIFT_SEVERITY: &str = "a2a:drift_severity";
+    pub const DRIFT_MODE: &str = "a2a:drift_mode";
+    pub const DRIFT_WARN_THRESHOLD: &str = "a2a:drift_warn_threshold";
+    pub const DRIFT_BLOCK_THRESHOLD: &str = "a2a:drift_block_threshold";
+    pub const INTENT_TEXT_PREVIEW: &str = "a2a:intent_text_preview";
+    pub const RESPONSE_TEXT_PREVIEW: &str = "a2a:response_text_preview";
     /// Tri-state outcome inferred from (1) activity having an end time and (2) outcome.
     /// InProgress when no end time; Success | Failed when completed, from outcome.
     pub const ACTIVITY_OUTCOME: &str = "a2a:activity_outcome";
@@ -215,6 +222,13 @@ pub mod storage_safe {
     pub const A2A_USAGE_COMPLETION_TOKENS: &str = "a2a_usage_completion_tokens";
     pub const A2A_USAGE_TOTAL_TOKENS: &str = "a2a_usage_total_tokens";
     pub const A2A_DURATION_MS: &str = "a2a_duration_ms";
+    pub const A2A_DRIFT_SCORE: &str = "a2a_drift_score";
+    pub const A2A_DRIFT_SEVERITY: &str = "a2a_drift_severity";
+    pub const A2A_DRIFT_MODE: &str = "a2a_drift_mode";
+    pub const A2A_DRIFT_WARN_THRESHOLD: &str = "a2a_drift_warn_threshold";
+    pub const A2A_DRIFT_BLOCK_THRESHOLD: &str = "a2a_drift_block_threshold";
+    pub const A2A_INTENT_TEXT_PREVIEW: &str = "a2a_intent_text_preview";
+    pub const A2A_RESPONSE_TEXT_PREVIEW: &str = "a2a_response_text_preview";
     pub const A2A_ACTIVITY_OUTCOME: &str = "a2a_activity_outcome";
     pub const A2A_TOOL_NAME: &str = "a2a_tool_name";
     pub const A2A_ARGS: &str = "a2a_args";

@@ -84,6 +84,17 @@ pub enum LlmUsage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LlmDriftInfo {
+    pub score: f32,
+    pub severity: String,
+    pub mode: String,
+    pub warn_threshold: f32,
+    pub block_threshold: f32,
+    pub intent_text_preview: String,
+    pub response_text_preview: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum CallScope {
     Message { message_id: MessageId },
     Task { task_id: TaskId },
@@ -109,6 +120,7 @@ pub enum ProvEventData {
         usage: LlmUsage,
         duration_ms: u64,
         outcome: Outcome,
+        drift: Option<LlmDriftInfo>,
     },
     ToolCallStarted {
         scope: CallScope,
@@ -339,6 +351,35 @@ impl ProvEvent {
         duration_ms: u64,
         outcome: Outcome,
     ) -> Self {
+        Self::llm_call_completed_global_with_drift(
+            context_id,
+            message_id,
+            client,
+            model,
+            function_name,
+            prompt,
+            metadata,
+            usage,
+            duration_ms,
+            outcome,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn llm_call_completed_global_with_drift(
+        context_id: ContextId,
+        message_id: MessageId,
+        client: String,
+        model: String,
+        function_name: String,
+        prompt: Value,
+        metadata: JsonValue,
+        usage: LlmUsage,
+        duration_ms: u64,
+        outcome: Outcome,
+        drift: Option<LlmDriftInfo>,
+    ) -> Self {
         ProvEvent::Global(GlobalEvent {
             id: next_event_id(),
             context_id,
@@ -353,6 +394,7 @@ impl ProvEvent {
                 usage,
                 duration_ms,
                 outcome,
+                drift,
             },
         })
     }
@@ -370,6 +412,35 @@ impl ProvEvent {
         duration_ms: u64,
         outcome: Outcome,
     ) -> Self {
+        Self::llm_call_completed_task_with_drift(
+            context_id,
+            task_id,
+            client,
+            model,
+            function_name,
+            prompt,
+            metadata,
+            usage,
+            duration_ms,
+            outcome,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn llm_call_completed_task_with_drift(
+        context_id: ContextId,
+        task_id: TaskId,
+        client: String,
+        model: String,
+        function_name: String,
+        prompt: Value,
+        metadata: JsonValue,
+        usage: LlmUsage,
+        duration_ms: u64,
+        outcome: Outcome,
+        drift: Option<LlmDriftInfo>,
+    ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
             id: next_event_id(),
             context_id,
@@ -385,6 +456,7 @@ impl ProvEvent {
                 usage,
                 duration_ms,
                 outcome,
+                drift,
             },
         })
     }

@@ -25,7 +25,7 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     CallScope, GlobalEvent, GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvEventData,
-    ProvenanceOpsQueryRequest, ProvenanceOpsQueryResponse, ProvenanceWriter,
+    ProvenanceOpsQueryRequest, ProvenanceOpsQueryResponse, ProvenanceWriter, events::LlmDriftInfo,
 };
 use futures_util::{StreamExt, stream};
 use opentelemetry::{global, trace::TracerProvider as _};
@@ -293,6 +293,34 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::GraphqliteProvenan
         .await
         .unwrap();
     store
+        .add_event(ProvEvent::llm_call_completed_global_with_drift(
+            context.clone(),
+            msg_a.clone(),
+            "openai".to_string(),
+            "gpt-4o-mini".to_string(),
+            "SummarizePrompt".to_string(),
+            serde_json::json!({"input":"hello with drift"}),
+            call_metadata(&agent_a, &msg_a, None),
+            LlmUsage::Known {
+                prompt_tokens: 10,
+                completion_tokens: 7,
+                total_tokens: 17,
+            },
+            181,
+            Outcome::Success,
+            Some(LlmDriftInfo {
+                score: 0.618,
+                severity: "warn".to_string(),
+                mode: "audit".to_string(),
+                warn_threshold: 0.5,
+                block_threshold: 0.25,
+                intent_text_preview: "Create a task titled Research".to_string(),
+                response_text_preview: "Create task in list 901325431486".to_string(),
+            }),
+        ))
+        .await
+        .unwrap();
+    store
         .add_event(ProvEvent::tool_call_completed_global(
             context.clone(),
             msg_a.clone(),
@@ -342,6 +370,7 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::GraphqliteProvenan
                 },
                 duration_ms: 650,
                 outcome: Outcome::Failure,
+                drift: None,
             },
         }))
         .await
@@ -877,6 +906,63 @@ async fn get_provenance_llm_calls_returns_snapshot() {
         .unwrap();
     let snapshot = response_snapshot(status, &body);
     insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn get_provenance_llm_calls_nests_drift_fields() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
+    let store = seeded_provenance_store().await;
+    let context_id = ContextId::new(100, 1).to_string();
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap());
+    let app = api_router_with_services(
+        registry,
+        None,
+        None,
+        Some(Arc::new(RealProvenanceOps { store }) as Arc<dyn ProvenanceOpsService>),
+        None,
+    );
+    let uri = format!(
+        "/provenance/llm-calls?contextId={}&agentId={}&sortBy=duration_ms&sortDir=desc&pageSize=10",
+        context_id,
+        agent_id.as_str()
+    );
+
+    let response = app
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_slice(&body).expect("json body");
+    let rows = json
+        .get("rows")
+        .and_then(Value::as_array)
+        .expect("rows array");
+    let drift_row = rows
+        .iter()
+        .find(|row| row.get("drift").is_some())
+        .expect("row with drift");
+
+    let drift = drift_row
+        .get("drift")
+        .and_then(Value::as_object)
+        .expect("drift object");
+    let score = drift
+        .get("score")
+        .and_then(Value::as_f64)
+        .expect("drift score");
+    assert!((score - 0.618).abs() < 0.001, "unexpected score: {score}");
+    assert_eq!(drift.get("severity"), Some(&serde_json::json!("warn")));
+    assert_eq!(drift.get("mode"), Some(&serde_json::json!("audit")));
+    assert_eq!(drift.get("warnThreshold"), Some(&serde_json::json!(0.5)));
+    assert_eq!(drift.get("blockThreshold"), Some(&serde_json::json!(0.25)));
+    assert!(drift.get("intentTextPreview").is_some());
+    assert!(drift.get("responseTextPreview").is_some());
+    assert!(drift_row.get("drift_score").is_none());
+    assert!(drift_row.get("drift_severity").is_none());
+    assert!(drift_row.get("intent_text_preview").is_none());
 }
 
 #[tokio::test]

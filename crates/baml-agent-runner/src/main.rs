@@ -282,34 +282,6 @@ impl AgentPackage {
         let agent = initialized.agent;
         let runtime_manager_arc = initialized.runtime_manager;
 
-        // Register embedding drift detection interceptor when feature is enabled.
-        // FastEmbedProvider::new() downloads the ONNX model on first use (~30 MB)
-        // using blocking I/O, so we run it off the async executor.
-        #[cfg(feature = "embedding-drift")]
-        {
-            let provider_result =
-                tokio::task::spawn_blocking(baml_rt_embedding::FastEmbedProvider::new).await;
-
-            match provider_result {
-                Ok(Ok(provider)) => {
-                    let drift_config = baml_rt_embedding::DriftConfig::default();
-                    let interceptor = baml_rt_embedding::DriftDetectorInterceptor::new(
-                        drift_config,
-                        std::sync::Arc::new(provider),
-                    );
-                    let manager = runtime_manager_arc.lock().await;
-                    manager.register_llm_interceptor(interceptor).await;
-                    info!("Embedding drift detection interceptor registered");
-                }
-                Ok(Err(e)) => {
-                    warn!(error = %e, "Failed to initialise embedding model — drift detection disabled");
-                }
-                Err(join_err) => {
-                    warn!(error = %join_err, "Embedding model init task panicked — drift detection disabled");
-                }
-            }
-        }
-
         if let Some(index_config) = tool_index {
             let manager = runtime_manager_arc.lock().await;
             let tools = manager.export_tool_metadata().await;

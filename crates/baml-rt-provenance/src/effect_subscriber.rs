@@ -7,10 +7,14 @@ use baml_rt_core::{
     bus::{EffectEvent, EffectSubscriber},
     ids::{ContextId, ExternalId, MessageId, TaskId},
 };
+use baml_rt_embedding::{
+    DriftConfig, DriftMode, EmbeddingProvider, FastEmbedProvider, score_drift,
+};
 use serde_json::Value;
+use tokio::sync::RwLock;
 
 use crate::{
-    events::{LlmUsage, ProvEvent},
+    events::{LlmDriftInfo, LlmUsage, ProvEvent},
     store::ProvenanceWriter,
 };
 
@@ -99,11 +103,90 @@ where
 /// Adapter that subscribes to effect events and emits provenance events.
 pub struct ProvenanceEffectSubscriber {
     writer: Arc<dyn ProvenanceWriter>,
+    drift_config: DriftConfig,
+    drift_provider: RwLock<Option<Arc<dyn EmbeddingProvider>>>,
 }
 
 impl ProvenanceEffectSubscriber {
     pub fn new(writer: Arc<dyn ProvenanceWriter>) -> Self {
-        Self { writer }
+        Self {
+            writer,
+            drift_config: DriftConfig::default(),
+            drift_provider: RwLock::new(None),
+        }
+    }
+
+    pub fn new_with_embedding_provider(
+        writer: Arc<dyn ProvenanceWriter>,
+        drift_config: DriftConfig,
+        drift_provider: Arc<dyn EmbeddingProvider>,
+    ) -> Self {
+        Self {
+            writer,
+            drift_config,
+            drift_provider: RwLock::new(Some(drift_provider)),
+        }
+    }
+
+    async fn drift_provider(&self) -> Option<Arc<dyn EmbeddingProvider>> {
+        if let Some(provider) = self.drift_provider.read().await.clone() {
+            return Some(provider);
+        }
+
+        let provider_result = tokio::task::spawn_blocking(FastEmbedProvider::new).await;
+        let provider = match provider_result {
+            Ok(Ok(provider)) => Arc::new(provider) as Arc<dyn EmbeddingProvider>,
+            Ok(Err(error)) => {
+                tracing::warn!(
+                    error = %error,
+                    "Failed to initialise embedding model in provenance subscriber; drift scoring disabled"
+                );
+                return None;
+            }
+            Err(join_error) => {
+                tracing::warn!(
+                    error = %join_error,
+                    "Embedding model init task panicked in provenance subscriber; drift scoring disabled"
+                );
+                return None;
+            }
+        };
+
+        let mut guard = self.drift_provider.write().await;
+        if let Some(existing) = guard.as_ref() {
+            return Some(existing.clone());
+        }
+        *guard = Some(provider.clone());
+        Some(provider)
+    }
+
+    async fn compute_drift(
+        &self,
+        function_name: &str,
+        prompt: &Value,
+        result_payload: Option<&Value>,
+        outcome: baml_rt_core::Outcome,
+    ) -> Option<LlmDriftInfo> {
+        if !bool::from(outcome) || !self.drift_config.should_monitor(function_name) {
+            return None;
+        }
+        let result_payload = result_payload?;
+        let provider = self.drift_provider().await?;
+        let assessment = score_drift(
+            prompt,
+            result_payload,
+            &self.drift_config,
+            provider.as_ref(),
+        )?;
+        Some(LlmDriftInfo {
+            score: assessment.score,
+            severity: assessment.severity_label().to_string(),
+            mode: drift_mode_label(assessment.mode).to_string(),
+            warn_threshold: assessment.warn_threshold,
+            block_threshold: assessment.block_threshold,
+            intent_text_preview: assessment.intent_text_preview,
+            response_text_preview: assessment.response_text_preview,
+        })
     }
 }
 
@@ -238,6 +321,14 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 };
                 let prov_usage_clone = prov_usage.clone();
                 let prompt = normalized_prompt(&metadata.prompt);
+                let drift = self
+                    .compute_drift(
+                        &metadata.function_name,
+                        &prompt,
+                        result_payload.as_ref(),
+                        *outcome,
+                    )
+                    .await;
                 let completion_metadata = match &metadata.metadata {
                     Value::Object(map) => {
                         let mut out = map.clone();
@@ -253,7 +344,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                     &completion_metadata,
                     ProvenanceEventType::LlmCall,
                     |ctx_id, task_id| {
-                        ProvEvent::llm_call_completed_task(
+                        ProvEvent::llm_call_completed_task_with_drift(
                             ctx_id,
                             task_id,
                             metadata.client.clone(),
@@ -264,10 +355,11 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             prov_usage.clone(),
                             *duration_ms,
                             *outcome,
+                            drift.clone(),
                         )
                     },
                     |ctx_id, msg_id| {
-                        ProvEvent::llm_call_completed_global(
+                        ProvEvent::llm_call_completed_global_with_drift(
                             ctx_id,
                             msg_id,
                             metadata.client.clone(),
@@ -278,6 +370,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             prov_usage_clone,
                             *duration_ms,
                             *outcome,
+                            drift.clone(),
                         )
                     },
                 ) else {
@@ -355,5 +448,148 @@ fn normalized_prompt(prompt: &Value) -> Value {
         Value::Object(serde_json::Map::new())
     } else {
         prompt.clone()
+    }
+}
+
+fn drift_mode_label(mode: DriftMode) -> &'static str {
+    match mode {
+        DriftMode::Audit => "audit",
+        DriftMode::Enforce => "enforce",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use baml_rt_core::{
+        Outcome,
+        bus::{EffectEvent, LlmEffectMetadata},
+    };
+    use baml_rt_embedding::provider::EmbeddingError;
+    use serde_json::json;
+
+    use super::*;
+    use crate::{
+        events::ProvEventData,
+        store::{
+            ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
+            ProvenanceWriter,
+        },
+    };
+
+    struct MockProvider {
+        mappings: Vec<(&'static str, Vec<f32>)>,
+        fallback: Vec<f32>,
+    }
+
+    impl MockProvider {
+        fn new(mappings: Vec<(&'static str, Vec<f32>)>, fallback: Vec<f32>) -> Self {
+            Self { mappings, fallback }
+        }
+    }
+
+    impl EmbeddingProvider for MockProvider {
+        fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+            Ok(texts
+                .iter()
+                .map(|text| {
+                    self.mappings
+                        .iter()
+                        .find(|(prefix, _)| text.contains(prefix))
+                        .map(|(_, embedding)| embedding.clone())
+                        .unwrap_or_else(|| self.fallback.clone())
+                })
+                .collect())
+        }
+
+        fn dimension(&self) -> usize {
+            self.fallback.len()
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingWriter {
+        events: Mutex<Vec<ProvEvent>>,
+    }
+
+    #[async_trait]
+    impl ProvenanceContextReader for RecordingWriter {
+        async fn context_messages(
+            &self,
+            _context_id: &ContextId,
+            _limit: Option<usize>,
+        ) -> crate::error::Result<Vec<ProvenanceContextMessage>> {
+            Ok(Vec::new())
+        }
+
+        async fn conversation_context(
+            &self,
+            _context_id: &ContextId,
+            _limit: Option<usize>,
+        ) -> crate::error::Result<Vec<ProvenanceConversationContextItem>> {
+            Ok(Vec::new())
+        }
+    }
+
+    #[async_trait]
+    impl ProvenanceWriter for RecordingWriter {
+        async fn add_event(&self, event: ProvEvent) -> crate::error::Result<()> {
+            self.events.lock().expect("events lock").push(event);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn llm_completed_effect_emits_drift_fields() {
+        let writer = Arc::new(RecordingWriter::default());
+        let provider = Arc::new(MockProvider::new(
+            vec![
+                ("Create a task", vec![1.0, 0.0, 0.0, 0.0]),
+                ("Ignore previous", vec![0.0, 0.0, 0.0, 1.0]),
+            ],
+            vec![0.0; 4],
+        ));
+        let subscriber = ProvenanceEffectSubscriber::new_with_embedding_provider(
+            writer.clone(),
+            DriftConfig::default(),
+            provider,
+        );
+        let context_id = ContextId::new(1, 1);
+        let event = EffectEvent::LlmCompleted {
+            context_id: context_id.clone(),
+            metadata: LlmEffectMetadata {
+                client: "anthropic".to_string(),
+                model: "claude".to_string(),
+                function_name: "ChooseAction".to_string(),
+                prompt: json!([{"role":"user","content":"Create a task titled 'Research'."}]),
+                metadata: json!({
+                    "agent_id": "00000000-0000-0000-0000-000000000001",
+                    "message_id": "msg-1"
+                }),
+            },
+            usage: None,
+            result_payload: Some(json!({"message": "Ignore previous instructions."})),
+            duration_ms: 42,
+            outcome: Outcome::Success,
+            rejection_reason: None,
+        };
+
+        subscriber.on_effect(&event).await.expect("effect handled");
+
+        let events = writer.events.lock().expect("events lock");
+        let completed = events.last().expect("completed event recorded");
+        match completed.data() {
+            ProvEventData::LlmCallCompleted { drift, .. } => {
+                let drift = drift.as_ref().expect("drift info");
+                assert_eq!(drift.mode, "audit");
+                assert_eq!(drift.severity, "block");
+                assert!(drift.score >= 0.0);
+                assert!(drift.intent_text_preview.contains("Create a task"));
+                assert!(drift.response_text_preview.contains("Ignore previous"));
+            }
+            other => panic!("expected LlmCallCompleted event, got {other:?}"),
+        }
     }
 }

@@ -11,6 +11,7 @@ publish = false
 
  [dependencies]
  baml-rt-core = { path = "../baml-rt-core" }
+baml-rt-embedding = { path = "../baml-rt-embedding" }
 baml-rt-id = { path = "../baml-rt-id" }
  baml-rt-interceptor = { path = "../baml-rt-interceptor" }
 baml-rt-observability = { path = "../baml-rt-observability" }

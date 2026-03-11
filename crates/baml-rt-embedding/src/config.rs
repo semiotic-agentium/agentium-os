@@ -1,8 +1,8 @@
-//! Configuration for the drift detection interceptor.
+//! Configuration for drift assessment.
 
 use std::collections::HashSet;
 
-/// Operating mode for the drift detector.
+/// Operating mode for drift handling.
 ///
 /// Using an enum (not a bool) to avoid boolean blindness and to leave room
 /// for future modes (e.g. `Sample(f32)` for probabilistic enforcement).
@@ -17,7 +17,7 @@ pub enum DriftMode {
     Enforce,
 }
 
-/// Configuration for [`super::DriftDetectorInterceptor`].
+/// Configuration for drift scoring and threshold classification.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DriftConfig {
     /// Cosine similarity below this emits a `tracing::warn!`.

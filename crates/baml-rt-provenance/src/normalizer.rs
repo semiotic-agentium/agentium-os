@@ -519,6 +519,7 @@ fn normalize_event_with_registry(
             usage,
             duration_ms,
             outcome,
+            drift,
         } => {
             let scope_key = build_call_scope_key(event, scope, metadata)?;
             let ordinal = get_ordinal_for_call(call_state, &scope_key, false);
@@ -592,6 +593,33 @@ fn normalize_event_with_registry(
                 a2a::DURATION_MS.to_string(),
                 Value::Number((*duration_ms).into()),
             );
+            if let Some(drift) = drift {
+                attrs.insert(a2a::DRIFT_SCORE.to_string(), serde_json::json!(drift.score));
+                attrs.insert(
+                    a2a::DRIFT_SEVERITY.to_string(),
+                    Value::String(drift.severity.clone()),
+                );
+                attrs.insert(
+                    a2a::DRIFT_MODE.to_string(),
+                    Value::String(drift.mode.clone()),
+                );
+                attrs.insert(
+                    a2a::DRIFT_WARN_THRESHOLD.to_string(),
+                    serde_json::json!(drift.warn_threshold),
+                );
+                attrs.insert(
+                    a2a::DRIFT_BLOCK_THRESHOLD.to_string(),
+                    serde_json::json!(drift.block_threshold),
+                );
+                attrs.insert(
+                    a2a::INTENT_TEXT_PREVIEW.to_string(),
+                    Value::String(drift.intent_text_preview.clone()),
+                );
+                attrs.insert(
+                    a2a::RESPONSE_TEXT_PREVIEW.to_string(),
+                    Value::String(drift.response_text_preview.clone()),
+                );
+            }
             let is_success = bool::from(*outcome);
             let failure_resolution = if is_success {
                 None

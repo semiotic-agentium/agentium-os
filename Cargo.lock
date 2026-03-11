@@ -603,7 +603,6 @@ dependencies = [
  "baml-rt-a2a",
  "baml-rt-api",
  "baml-rt-core",
- "baml-rt-embedding",
  "baml-rt-observability",
  "baml-rt-provenance",
  "baml-rt-quickjs",
@@ -905,22 +904,12 @@ name = "baml-rt-embedding"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "async-trait",
- "baml-rt-core",
- "baml-rt-id",
- "baml-rt-interceptor",
- "dashmap 6.1.0",
  "fastembed",
- "insta",
- "proptest",
  "regex",
  "serde",
  "serde_json",
- "test-support",
  "thiserror 2.0.18",
- "tokio",
  "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -972,6 +961,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "baml-rt-core",
+ "baml-rt-embedding",
  "baml-rt-id",
  "baml-rt-interceptor",
  "baml-rt-observability",
