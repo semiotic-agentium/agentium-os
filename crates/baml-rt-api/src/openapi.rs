@@ -12,6 +12,8 @@ pub struct AgentCardDto {
     pub agent_package: String,
     pub agent_instance_id: String,
     pub tools: Vec<String>,
+    /// BAML function names registered in the agent's runtime.
+    pub baml_functions: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub capabilities: Vec<String>,
@@ -36,6 +38,7 @@ impl From<baml_rt_core::AgentCard> for AgentCardDto {
             agent_package: c.agent_package,
             agent_instance_id: c.agent_instance_id,
             tools: c.tools,
+            baml_functions: c.baml_functions,
             description: c.description,
             capabilities: c.capabilities,
         }

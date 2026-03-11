@@ -360,6 +360,8 @@ impl AgentPackage {
 pub(crate) struct BootedAgent {
     agent: A2aAgent,
     manifest: AgentManifest,
+    /// BAML function names captured from the runtime at boot time (synchronous copy).
+    baml_functions: Vec<String>,
 }
 
 impl BootedAgent {
@@ -497,6 +499,7 @@ impl AgentRunner {
                     agent_package: pkg.clone(),
                     agent_instance_id: AgentInstanceId::DEFAULT.to_string(),
                     tools: m.tools.clone(),
+                    baml_functions: booted.baml_functions.clone(),
                     description: m.discovery.as_ref().and_then(|d| d.description.clone()),
                     capabilities: m
                         .discovery
@@ -1863,6 +1866,7 @@ globalThis.onChatMessage = async function(_message) {
             BootedAgent {
                 agent: build_test_agent().await,
                 manifest,
+                baml_functions: vec![],
             },
         );
     }
@@ -1996,7 +2000,11 @@ globalThis.onChatMessage = async function(_message) {
         runner.insert_agent(
             package_name.as_str().to_string(),
             default_key,
-            BootedAgent { agent, manifest },
+            BootedAgent {
+                agent,
+                manifest,
+                baml_functions: vec![],
+            },
         );
 
         let err = match runner

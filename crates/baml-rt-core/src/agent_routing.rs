@@ -128,6 +128,9 @@ pub struct AgentCard {
     /// Tool names declared in manifest.
     #[serde(default)]
     pub tools: Vec<String>,
+    /// BAML function names registered in the agent's runtime (populated at boot).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub baml_functions: Vec<String>,
     /// From manifest.discovery when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,

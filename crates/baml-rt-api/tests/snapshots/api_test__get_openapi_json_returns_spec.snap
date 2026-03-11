@@ -756,6 +756,7 @@ expression: snapshot
             "agent_package",
             "agent_instance_id",
             "tools",
+            "baml_functions",
             "capabilities"
           ],
           "properties": {
@@ -764,6 +765,13 @@ expression: snapshot
             },
             "agent_package": {
               "type": "string"
+            },
+            "baml_functions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "BAML function names registered in the agent's runtime."
             },
             "capabilities": {
               "type": "array",

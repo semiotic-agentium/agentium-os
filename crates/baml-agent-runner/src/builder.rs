@@ -82,9 +82,16 @@ impl RunnerBuilder<Loading> {
             )
             .await?;
         let manifest = package.manifest().clone();
+        // Capture BAML function names from the bridge's runtime manager at boot time.
+        let baml_functions: Vec<String> = {
+            let bridge_arc = agent.bridge();
+            let bridge = bridge_arc.lock().await;
+            bridge.list_baml_functions().await
+        };
         let booted = BootedAgent {
             agent,
             manifest: manifest.clone(),
+            baml_functions,
         };
         tracing::info!(agent = %name, "Agent loaded and booted successfully");
         self.runner.insert_agent(name.clone(), route_key, booted);

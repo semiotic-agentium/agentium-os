@@ -1983,10 +1983,14 @@ a.source-chip:hover {
 
 .settings-view {
   flex: 1;
+  min-height: 0;
   overflow: auto;
-  padding: 24px;
-  max-width: 900px;
+}
+
+.settings-scroll {
+  max-width: 860px;
   margin: 0 auto;
+  padding: 32px 24px;
 }
 
 .settings-header {
@@ -2467,6 +2471,22 @@ a.source-chip:hover {
   color: var(--text);
 }
 
+.config-clients-by-provider {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.config-provider-group-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+  margin-top: 4px;
+}
+
 .config-client-card {
   padding: 14px;
   background: var(--bg-subtle);
@@ -2481,6 +2501,18 @@ a.source-chip:hover {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.config-client-fields {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.config-client-fields .config-label {
+  text-align: right;
+  padding-right: 4px;
 }
 
 .config-badge-default {
@@ -2522,6 +2554,59 @@ a.source-chip:hover {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 8px;
+}
+
+.config-dirty-indicator {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.config-validation-errors {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ── Override table (agent/function routing) ── */
+
+.config-override-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.config-override-row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.config-override-row-fn {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.config-override-arrow {
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+  user-select: none;
+}
+
+.config-override-add {
+  margin-top: 4px;
+}
+
+.config-override-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 4px 0;
 }
 
 .config-secret-list {

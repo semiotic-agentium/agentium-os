@@ -358,6 +358,7 @@ fn entry_with_capabilities(
         agent_package: pkg.to_string(),
         agent_instance_id: "default".to_string(),
         tools: vec!["system/internal_a2a".to_string()],
+        baml_functions: vec![],
         description: description.map(str::to_string),
         capabilities: capabilities.into_iter().map(str::to_string).collect(),
     };

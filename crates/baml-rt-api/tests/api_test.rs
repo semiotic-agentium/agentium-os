@@ -638,6 +638,7 @@ fn discovery_entry(pkg: &str, inst: &str, name: &str, version: &str) -> AgentDis
         agent_package: pkg.to_string(),
         agent_instance_id: inst.to_string(),
         tools: vec![],
+        baml_functions: vec![],
         description: None,
         capabilities: vec![],
     };
@@ -667,6 +668,7 @@ fn discovery_entry_with_card(
             "system/internal_a2a".to_string(),
             "support/calculate".to_string(),
         ],
+        baml_functions: vec![],
         description: description.map(str::to_string),
         capabilities: capabilities.into_iter().map(str::to_string).collect(),
     };

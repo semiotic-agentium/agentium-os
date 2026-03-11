@@ -104,7 +104,7 @@ onMounted(() => fetchAgents());
 
     <div class="app-content-area">
       <Dashboard
-        v-show="view === 'dashboard'"
+        v-if="view === 'dashboard'"
         :agents="agents"
         :context-metrics="contextMetrics"
         :provenance-diagram="provenanceDiagram"
@@ -113,7 +113,7 @@ onMounted(() => fetchAgents());
         @open-settings="view = 'settings'"
       />
 
-      <div v-show="view === 'chat'" class="chat-layout">
+      <div v-else-if="view === 'chat'" class="chat-layout">
         <div class="chat-toolbar">
           <AgentSelector :agents="agents" :selected="selectedAgent" @select="selectAgent" />
         </div>
@@ -136,8 +136,8 @@ onMounted(() => fetchAgents());
           />
         </div>
       </div>
-    </div>
 
-    <SettingsView v-show="view === 'settings'" />
+      <SettingsView v-else-if="view === 'settings'" />
+    </div>
   </div>
 </template>

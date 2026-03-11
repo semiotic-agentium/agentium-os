@@ -5,6 +5,8 @@ export interface AgentCardInfo {
   agent_package: string;
   agent_instance_id: string;
   tools: string[];
+  /** BAML function names registered in the agent's runtime */
+  baml_functions: string[];
   description?: string | null;
   capabilities: string[];
 }
