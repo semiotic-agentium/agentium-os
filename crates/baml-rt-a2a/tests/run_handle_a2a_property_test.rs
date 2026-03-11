@@ -40,6 +40,14 @@ fn scaled_timeout_secs(base_secs: u64) -> Duration {
     Duration::from_secs(base_secs.saturating_mul(ci_timeout_scale()))
 }
 
+fn stream_collector_idle_secs() -> u64 {
+    if std::env::var_os("CI").is_some() {
+        300
+    } else {
+        90
+    }
+}
+
 fn proptest_cfg(cases: u32) -> ProptestConfig {
     let cases = if std::env::var_os("CI").is_some() {
         cases.min(3)
@@ -191,7 +199,8 @@ async fn setup_interleaving_agent() -> A2aAgent {
         .with_quickjs_config(
             baml_rt::QuickJSConfig::new()
                 .with_idle_timeout_ms(Some(45_000))
-                .with_max_attempts_ms(Some(45_000)),
+                .with_max_attempts_ms(Some(45_000))
+                .with_stream_collector_idle_secs(Some(stream_collector_idle_secs())),
         )
         .with_graphqlite_store(store)
         .build()
