@@ -105,7 +105,8 @@ flate2 = "1"
 tar = "0.4"
 # Minimal QuickJS runtime: no SWC/typescript (agents are pre-compiled by the builder),
 # no timer APIs (unused), no console (we inject our own sandboxed polyfill).
-quickjs_runtime = { version = "0.15", default-features = false, features = ["bellard"] }
+# quickjs-ng: actively maintained fork of QuickJS with better spec compliance.
+quickjs_runtime = { version = "0.17", default-features = false, features = ["quickjs-ng"] }
 # Agent memory
 agentic-memory = "0.2.6"
 # Embedding / drift detection
