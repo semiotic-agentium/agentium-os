@@ -257,48 +257,48 @@ function setOverridesAgentFunctionFromText(text: string) {
       <div v-for="(names, provider) in clientsByProvider" :key="provider" class="config-clients-by-provider">
         <h4 class="config-provider-group-title">{{ provider }}</h4>
         <div v-for="name in names" :key="name" class="config-client-card">
-        <div class="config-client-header">
-          <input
-            :value="getClient(name).name"
-            class="config-input config-input-inline"
-            placeholder="Client name"
-            @change="(e) => setClient(name, { ...getClient(name), name: (e.target as HTMLInputElement).value.trim() })"
-          />
-          <span v-if="name === defaultClientName" class="config-badge-default">Default</span>
-          <button
-            v-if="name !== defaultClientName"
-            type="button"
-            class="config-btn config-btn-ghost"
-            title="Remove client"
-            @click="removeClient(name)"
-          >
-            Remove
-          </button>
-        </div>
-        <div class="config-client-fields">
-          <label class="config-label">Provider</label>
-          <select
-            :value="getClient(name).provider"
-            class="config-input config-select"
-            @change="(e) => setClient(name, { ...getClient(name), provider: (e.target as HTMLSelectElement).value })"
-          >
-            <option v-for="p in LLM_PROVIDERS" :key="p" :value="p">{{ p }}</option>
-          </select>
-          <label class="config-label">Model</label>
-          <input
-            :value="getModel(name)"
-            class="config-input"
-            placeholder="e.g. openai/gpt-4o-mini or gpt-4o"
-            @input="(e) => setModel(name, (e.target as HTMLInputElement).value)"
-          />
-          <label class="config-label">Base URL (optional, for self-hosted)</label>
-          <input
-            :value="getBaseUrl(name)"
-            class="config-input"
-            placeholder="e.g. https://openrouter.ai/api/v1"
-            @input="(e) => setBaseUrl(name, (e.target as HTMLInputElement).value)"
-          />
-        </div>
+          <div class="config-client-header">
+            <input
+              :value="getClient(name).name"
+              class="config-input config-input-inline"
+              placeholder="Client name"
+              @change="(e) => setClient(name, { ...getClient(name), name: (e.target as HTMLInputElement).value.trim() })"
+            />
+            <span v-if="name === defaultClientName" class="config-badge-default">Default</span>
+            <button
+              v-if="name !== defaultClientName"
+              type="button"
+              class="config-btn config-btn-ghost"
+              title="Remove client"
+              @click="removeClient(name)"
+            >
+              Remove
+            </button>
+          </div>
+          <div class="config-client-fields">
+            <label class="config-label">Provider</label>
+            <select
+              :value="getClient(name).provider"
+              class="config-input config-select"
+              @change="(e) => setClient(name, { ...getClient(name), provider: (e.target as HTMLSelectElement).value })"
+            >
+              <option v-for="p in LLM_PROVIDERS" :key="p" :value="p">{{ p }}</option>
+            </select>
+            <label class="config-label">Model</label>
+            <input
+              :value="getModel(name)"
+              class="config-input"
+              placeholder="e.g. openai/gpt-4o-mini or gpt-4o"
+              @input="(e) => setModel(name, (e.target as HTMLInputElement).value)"
+            />
+            <label class="config-label">Base URL (optional)</label>
+            <input
+              :value="getBaseUrl(name)"
+              class="config-input"
+              placeholder="e.g. https://openrouter.ai/api/v1"
+              @input="(e) => setBaseUrl(name, (e.target as HTMLInputElement).value)"
+            />
+          </div>
         </div>
       </div>
     </div>

@@ -136,8 +136,8 @@ onMounted(() => fetchAgents());
           />
         </div>
       </div>
-    </div>
 
-    <SettingsView v-show="view === 'settings'" />
+      <SettingsView v-show="view === 'settings'" />
+    </div>
   </div>
 </template>
