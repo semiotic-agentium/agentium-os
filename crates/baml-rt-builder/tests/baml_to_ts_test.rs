@@ -67,13 +67,13 @@ async fn baml_to_ts_stream_baml_tool_full_snapshot() {
 async fn baml_to_ts_typed_function_declaration() {
     let ts = generate_ts_from_fixture("stream-baml-tool").expect("generate TS");
     assert!(
-        ts.contains("declare function ChooseCalcTool(args: { user_message: string }): Promise<SupportCalculateSessionPlan>"),
+        ts.contains("declare function ChooseCalcTool(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SupportCalculateSessionPlan>"),
         "expected typed function declaration; got snippet: {}",
         ts.lines().take(10).collect::<Vec<_>>().join("\n")
     );
     // BAML function declarations must be typed; BamlAgent.tools may still use Promise<unknown>
     assert!(
-        !ts.contains("ChooseCalcTool(args: { user_message: string }): Promise<unknown>"),
+        !ts.contains("ChooseCalcTool(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<unknown>"),
         "BAML function ChooseCalcTool should have typed return, not Promise<unknown>"
     );
     assert!(
