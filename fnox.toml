@@ -1,0 +1,30 @@
+# fnox secret store — local development template
+#
+# FnoxFileSecretResolver loads this file at startup and caches resolved values.
+# Add your secrets here for local development. Do NOT commit real values.
+#
+# In CI, this file is overwritten by the "Write fnox secrets" workflow step
+# which generates it with explicit `default` values from CI secret variables.
+#
+# Local dev: set `default = "your-actual-key"` for each secret you need,
+# or configure a [providers] block (1Password, AWS KMS, etc.) for team secrets.
+
+[secrets.OPENROUTER_API_KEY]
+description = "OpenRouter API key — LLM backend for all agents"
+# default = "sk-or-v1-..."
+
+[secrets.CLICKUP_API_KEY]
+description = "ClickUp personal API token (pk_...) — support/clickup tool"
+# default = "pk_..."
+
+[secrets.NOTION_API_TOKEN]
+description = "Notion integration token — support/notion* tools"
+# default = "secret_..."
+
+[secrets.SLACK_BOT_TOKEN]
+description = "Slack bot token (xoxb-...) — support/slack tool, bot-scoped reads"
+# default = "xoxb-..."
+
+[secrets.SLACK_USER_TOKEN]
+description = "Slack user token (xoxp-...) — support/slack tool, user-scoped search"
+# default = "xoxp-..."
