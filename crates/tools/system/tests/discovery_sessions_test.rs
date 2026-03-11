@@ -1,10 +1,6 @@
 //! Tests for system discovery sessions: discover_agents and discover_tools via SystemBundle.
 
-use std::{
-    path::PathBuf,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use baml_rt_core::{
@@ -150,13 +146,10 @@ async fn seeded_store_for_context(
     caller_agent: &AgentId,
     other_agent: &AgentId,
 ) -> Arc<baml_rt_provenance::GraphqliteProvenanceStore> {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
     let path: PathBuf = std::env::temp_dir().join(format!(
-        "baml-tools-system-provenance-{}-{unique}.db",
-        std::process::id()
+        "baml-tools-system-provenance-{}-{}.db",
+        std::process::id(),
+        uuid::Uuid::new_v4()
     ));
     let store = GraphqliteStoreBuilder::file(&path)
         .build()
