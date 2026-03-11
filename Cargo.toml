@@ -10,6 +10,7 @@ members = [
   "crates/baml-rt-a2a",
   "crates/baml-rt-builder",
   "crates/baml-rt-core",
+  "crates/baml-rt-embedding",
   "crates/baml-rt-hash",
   "crates/baml-rt-id",
   "crates/baml-rt-interceptor",
@@ -109,6 +110,9 @@ oxc_semantic = "0"
 quickjs_runtime = "0.15"
 # Agent memory
 agentic-memory = "0.2.6"
+# Embedding / drift detection
+fastembed = "4"
+dashmap = "6"
 axum = "0.8"
 # Testing / dev
 tokio-test = "0.4"
