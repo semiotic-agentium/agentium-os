@@ -4,9 +4,31 @@
  * Use these types and function declarations in your agent code (e.g. index.ts).
  */
 
-/** BAML functions: call these from your agent (e.g. await MyFunction(args)). */
-declare function ChooseNotionAction(args?: Record<string, unknown>): Promise<unknown>;
-declare function SummarizeNotionContent(args?: Record<string, unknown>): Promise<unknown>;
+/** Types for BAML function arguments and return values (classes, enums, aliases). */
+
+export interface NotionSummary { commitments: string[];
+conflicts: string[];
+missing: string[];
+sources: string[];
+ }
+
+export interface ReadOnlyResponse { message: string;
+next_step: string | null;
+ }
+
+export interface SupportNotionSessionPlan { steps: SupportNotionOpenStep | SupportNotionSendStep | SupportNotionNextStep | SupportNotionFinishStep | SupportNotionAbortStep[];
+reason: string | null;
+ }
+
+/** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
+
+declare global {
+
+declare function ChooseNotionAction(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<ReadOnlyResponse | SupportNotionSessionPlan>;
+
+declare function SummarizeNotionContent(args: { user_message: string; page_title: string | null; page_url: string | null; blocks_text: string } & { __baml_invocation_token?: string }): Promise<NotionSummary>;
+
+}
 
 /** Runtime interaction API: A2A task FSM (message-first, typestate rails). */
 
@@ -89,6 +111,108 @@ export interface A2aSessionClosed {
     closed: true;
 }
 declare function openA2aTaskSession<I = unknown>(token: string): Promise<A2aSessionAwaitingInput<I>>;
+/**
+ * Bootstrap-generated: handler types. Incoming message (parts only; IDs/context are host-managed).
+ * Session lifecycle: host invokes onChatMessage(message); agent uses session(message).run(...) to run work and emit outcomes.
+ */
+export interface Part { text?: string; data?: unknown; [key: string]: unknown; }
+export interface Message {
+  parts: Part[];
+  /** First text part. Present on messages from awaitInput(); for the initial message use session(message).text(). */
+  text?(): string;
+}
+export type ChatMessage = Message;
+/**
+ * Result shape for session.run() callback. Return { message } on success (runtime emits message and completed);
+ * return { error } on failure (runtime emits failed with that error). No need to call emit helpers yourself.
+ */
+export type SessionResult = { message: string } | { error: string };
+/**
+ * Emitter passed into run(emit => ...) for intermediate emissions (working message, artifact, status).
+ * Use when you need to stream artifacts or status before returning the final SessionResult.
+ */
+export interface SessionEmitter {
+  /** Emit a working message (task state remains WORKING). */
+  message(text: string): void;
+  /** Emit an artifact chunk (append/lastChunk optional). */
+  artifact(artifact: unknown, append?: boolean, lastChunk?: boolean): void;
+  /** Emit a status transition (e.g. TASK_STATE_WORKING). */
+  statusChanged(to: A2aTaskState): void;
+  /**
+   * Suspend this flow until the next message for the same task/context arrives.
+   * Runtime emits TASK_STATE_INPUT_REQUIRED before suspension. Optional prompt is attached to that status.
+   */
+  awaitInput(prompt?: string): Promise<ChatMessage>;
+}
+/**
+ * Fluent session builder. Entrypoint for agent logic: session(message).run(async () => ...).
+ * - .text() returns the first text part of the message (no manual extraction).
+ * - .run(fn) runs fn(); if it returns { message }, runtime emits that and completed; if { error }, runtime emits failed.
+ * - .run(emit => fn(emit)) receives an emitter for intermediate message/artifact/status and await-input suspension.
+ * - .onCompleted / .onFailed are optional side-effect callbacks; emission is always done by the runtime.
+ */
+export interface SessionBuilder {
+  /** First text part of the message; use for BAML/tool args. Defaults to "" if missing. */
+  text(): string;
+  /** Optional: called with the success message before the runtime emits completed. */
+  onCompleted(fn: (message: string) => void): SessionBuilder;
+  /** Optional: called with the error string before the runtime emits failed. */
+  onFailed(fn: (error: string) => void): SessionBuilder;
+  /**
+   * Run async work. Return { message } to succeed (runtime emits message + completed);
+   * return { error } to fail (runtime emits failed). Rejected promise is treated as { error: err.message }.
+   * Overload: run(emit => ...) receives SessionEmitter for intermediate emissions.
+   */
+  run(fn: (emit: SessionEmitter) => Promise<SessionResult>): Promise<void>;
+  run(fn: () => Promise<SessionResult>): Promise<void>;
+}
+/**
+ * Context passed to the run entrypoint when using __chat_register({ run }).
+ * The real entrypoint is run(ctx): you receive text, message, and emit; return SessionResult.
+ */
+export interface RunContext {
+  /** First text part of the message (same as session(message).text()). */
+  text: string;
+  /** Inbound message (parts, optional .text() from awaitInput). */
+  message: ChatMessage;
+  /** Emitter for working message, artifact, awaitInput; use when you need to stream or suspend. */
+  emit: SessionEmitter;
+}
+/** Agent contract: register this; host invokes onChatMessage per message. */
+export interface BamlAgent {
+  /** Optional: run(ctx) is the entrypoint; runtime wraps it into onChatMessage. Prefer this over onChatMessage. */
+  run?(ctx: RunContext): Promise<SessionResult>;
+  /** Optional: raw handler when run is not used. */
+  onChatMessage?(message: ChatMessage): Promise<void>;
+  tools?: Record<string, (args: unknown) => Promise<unknown>>;
+}
+declare global {
+  /** Minimal console interface matching the QuickJS sandbox polyfill (log, info, warn, error, debug). */
+  var console: {
+    log(...args: unknown[]): void;
+    info(...args: unknown[]): void;
+    warn(...args: unknown[]): void;
+    error(...args: unknown[]): void;
+    debug(...args: unknown[]): void;
+  };
+  /**
+   * Global alias for incoming chat messages in agent entrypoints.
+   * This keeps bootstrap/index.ts ergonomic without local type shims.
+   */
+  type ChatMessage = Message;
+  /**
+   * First text part of a message. Use for any ChatMessage (e.g. from awaitInput).
+   * For the initial message you can also use session(message).text().
+   */
+  function messageText(message: ChatMessage | null | undefined): string;
+  /**
+   * Start a session for this message. Use the returned builder to get .text(), then .run(async () => ...).
+   * Legal transitions and emission are handled by the runtime; you only return success or error from run().
+   */
+  function session(message: ChatMessage | null | undefined): SessionBuilder;
+  function __chat_register(agent: BamlAgent): void;
+  function __chat_yield(chunk: unknown): void;
+}
 export type ToolFailureKind =
     | "InvalidInput"
     | "ExecutionFailed"
