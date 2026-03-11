@@ -23,7 +23,7 @@ pub use provider_requirements::{
 pub use registry_builder::build_client_registry;
 pub use resolver::{LlmClientResolver, StaticResolver};
 pub use secret_resolver::{
-    EmptySecretResolver, EnvSecretResolver, FallbackSecretResolver, FnoxFileSecretResolver,
-    OverlaySecretResolver, RuntimeSecretStore, SECRET_LINKS_CONFIG_KEY, SecretLinksState,
-    SecretName, SecretRequestName, SecretResolver, SecretValue, StoreKey, apply_secret_links_state,
+    EmptySecretResolver, FnoxFileSecretResolver, OverlaySecretResolver, RuntimeSecretStore,
+    SECRET_LINKS_CONFIG_KEY, SecretLinksState, SecretName, SecretRequestName, SecretResolver,
+    SecretValue, StoreKey, apply_secret_links_state,
 };

@@ -155,7 +155,11 @@ impl ConfigWriter for SqliteConfigStore {
         let now_ms = Self::now_ms();
 
         let sqlite = conn.sqlite_connection();
-        let current_version: u64 = match sqlite.query_row(
+        let tx = sqlite
+            .unchecked_transaction()
+            .map_err(|e| ConfigStoreError::Storage(e.to_string()))?;
+
+        let current_version: u64 = match tx.query_row(
             "SELECT version FROM config_current WHERE bundle_name = ?1",
             [name],
             |row| row.get::<_, i64>(0),
@@ -166,19 +170,20 @@ impl ConfigWriter for SqliteConfigStore {
         };
         let new_version = current_version + 1;
 
-        sqlite
-            .execute(
+        tx.execute(
                 "INSERT INTO config_current (bundle_name, config_json, version, updated_at_ms) VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT(bundle_name) DO UPDATE SET config_json = excluded.config_json, version = excluded.version, updated_at_ms = excluded.updated_at_ms",
                 (name, config_json.as_str(), new_version as i64, now_ms.0 as i64),
             )
             .map_err(|e| ConfigStoreError::Storage(e.to_string()))?;
 
-        sqlite
-            .execute(
+        tx.execute(
                 "INSERT INTO config_version_history (bundle_name, version, config_json, created_at_ms) VALUES (?1, ?2, ?3, ?4)",
                 (name, new_version as i64, config_json.as_str(), now_ms.0 as i64),
             )
+            .map_err(|e| ConfigStoreError::Storage(e.to_string()))?;
+
+        tx.commit()
             .map_err(|e| ConfigStoreError::Storage(e.to_string()))?;
 
         Ok(ConfigVersion {
@@ -196,14 +201,19 @@ impl ConfigWriter for SqliteConfigStore {
             .map_err(|e| ConfigStoreError::LockPoisoned(e.to_string()))?;
         let name = bundle_name.as_str();
         let sqlite = conn.sqlite_connection();
-        sqlite
-            .execute("DELETE FROM config_current WHERE bundle_name = ?1", [name])
+        let tx = sqlite
+            .unchecked_transaction()
             .map_err(|e| ConfigStoreError::Storage(e.to_string()))?;
-        sqlite
-            .execute(
-                "DELETE FROM config_version_history WHERE bundle_name = ?1",
-                [name],
-            )
+
+        tx.execute("DELETE FROM config_current WHERE bundle_name = ?1", [name])
+            .map_err(|e| ConfigStoreError::Storage(e.to_string()))?;
+        tx.execute(
+            "DELETE FROM config_version_history WHERE bundle_name = ?1",
+            [name],
+        )
+        .map_err(|e| ConfigStoreError::Storage(e.to_string()))?;
+
+        tx.commit()
             .map_err(|e| ConfigStoreError::Storage(e.to_string()))?;
         Ok(())
     }

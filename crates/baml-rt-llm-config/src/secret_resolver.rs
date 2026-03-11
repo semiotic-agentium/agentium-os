@@ -152,21 +152,6 @@ pub trait RuntimeSecretStore: Send + Sync {
     fn remove(&self, request: &SecretRequestName);
 }
 
-/// Resolves "env.VAR_NAME" to `std::env::var(VAR_NAME)`.
-/// **For local/dev and testing only.** Production must use the configuration system's secret resolver.
-#[derive(Debug, Default, Clone)]
-pub struct EnvSecretResolver;
-
-impl SecretResolver for EnvSecretResolver {
-    fn resolve(&self, placeholder: &str) -> Option<SecretValue> {
-        let prefix = "env.";
-        placeholder
-            .strip_prefix(prefix)
-            .and_then(|var_name| std::env::var(var_name).ok())
-            .map(SecretValue::new)
-    }
-}
-
 /// Secret resolver backed by the **fnox** crate (fnox.toml). Loads config via fnox's discovery
 /// (or `BAML_FNOX_CONFIG` path), resolves all secrets for the profile at construction time
 /// using fnox's `resolve_secret`, and serves them synchronously.
@@ -295,39 +280,6 @@ impl SecretResolver for FnoxFileSecretResolver {
 
     fn list_store_keys(&self) -> Vec<StoreKey> {
         self.cache.keys().cloned().collect()
-    }
-}
-
-/// Tries multiple backends in order; first successful resolution wins.
-/// Use when multiple backends are configured (e.g. fnox then vault). No env fallback.
-#[derive(Clone)]
-pub struct FallbackSecretResolver {
-    backends: Arc<[Arc<dyn SecretResolver>]>,
-}
-
-impl FallbackSecretResolver {
-    pub fn new(backends: Vec<Arc<dyn SecretResolver>>) -> Self {
-        Self {
-            backends: backends.into(),
-        }
-    }
-}
-
-impl SecretResolver for FallbackSecretResolver {
-    fn resolve(&self, placeholder: &str) -> Option<SecretValue> {
-        self.backends
-            .iter()
-            .find_map(|backend| backend.resolve(placeholder))
-    }
-
-    fn list_store_keys(&self) -> Vec<StoreKey> {
-        let mut keys: std::collections::HashSet<StoreKey> = std::collections::HashSet::new();
-        for backend in self.backends.iter() {
-            keys.extend(backend.list_store_keys());
-        }
-        let mut v: Vec<StoreKey> = keys.into_iter().collect();
-        v.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-        v
     }
 }
 

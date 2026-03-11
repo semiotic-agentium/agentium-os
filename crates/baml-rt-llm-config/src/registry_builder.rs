@@ -24,11 +24,20 @@ pub fn build_client_registry(
 
         let mut options = BamlMap::new();
         for (k, v) in &client.options {
-            let value = if k == "api_key" && (v.starts_with("env.") || v.starts_with("vault:")) {
-                secret_resolver
-                    .resolve(v)
-                    .map(|s| BamlValue::String(s.into_string()))
-                    .unwrap_or(BamlValue::String(String::new()))
+            let is_secret_ref = v.starts_with("env.") || v.starts_with("vault:");
+            let value = if is_secret_ref {
+                match secret_resolver.resolve(v) {
+                    Some(s) => BamlValue::String(s.into_string()),
+                    None => {
+                        tracing::warn!(
+                            client = %name,
+                            option = %k,
+                            placeholder = %v,
+                            "secret not resolved; LLM calls using this client will likely fail"
+                        );
+                        BamlValue::String(String::new())
+                    }
+                }
             } else {
                 BamlValue::String(v.clone())
             };
