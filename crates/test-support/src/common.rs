@@ -45,10 +45,7 @@ pub async fn build_fixture_package_to_temp(fixture_name: &str) -> PathBuf {
             agent_dir.display()
         );
     }
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let unique = uuid::Uuid::new_v4();
     let pid = std::process::id();
     let tar_path = std::env::temp_dir().join(format!(
         "a2a-test-{}-{}-{}.tar.gz",
@@ -92,10 +89,7 @@ pub async fn build_agent_package_to_temp(agent_dir: PathBuf, package_label: &str
             agent_dir.display()
         );
     }
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let unique = uuid::Uuid::new_v4();
     let pid = std::process::id();
     let tar_path =
         std::env::temp_dir().join(format!("runner-test-{package_label}-{pid}-{unique}.tar.gz"));
