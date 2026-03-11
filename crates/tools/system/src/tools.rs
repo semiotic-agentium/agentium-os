@@ -111,6 +111,9 @@ pub struct DiscoverAgentsSendInput {
     /// Optional filter: only agents whose name, agent_package, or description contain this string. Omit or null to return all agents (e.g. when user asks "who is available?" or "list agents").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
+    /// Optional filter: only agents that declare all of these capabilities are returned.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_capabilities: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]

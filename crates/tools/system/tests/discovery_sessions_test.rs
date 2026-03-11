@@ -348,6 +348,16 @@ fn entry_with_card(
     version: &str,
     description: Option<&str>,
 ) -> AgentDiscoveryEntry {
+    entry_with_capabilities(pkg, name, version, description, vec!["a2a"])
+}
+
+fn entry_with_capabilities(
+    pkg: &str,
+    name: &str,
+    version: &str,
+    description: Option<&str>,
+    capabilities: Vec<&str>,
+) -> AgentDiscoveryEntry {
     let card = AgentCard {
         name: name.to_string(),
         version: version.to_string(),
@@ -355,7 +365,7 @@ fn entry_with_card(
         agent_instance_id: "default".to_string(),
         tools: vec!["system/internal_a2a".to_string()],
         description: description.map(str::to_string),
-        capabilities: vec!["a2a".to_string()],
+        capabilities: capabilities.into_iter().map(str::to_string).collect(),
     };
     AgentDiscoveryEntry {
         agent_package: pkg.to_string(),
@@ -420,6 +430,125 @@ async fn discover_agents_session_returns_paged_cards() {
     match &step2 {
         ToolStep::Done { output: None } => {}
         _ => panic!("expected Done(None), got {:?}", step2),
+    }
+}
+
+#[tokio::test]
+async fn discover_agents_session_filters_by_required_capabilities() {
+    let entries = vec![
+        entry_with_capabilities(
+            "clickup-agent",
+            "ClickUp Agent",
+            "1.0.0",
+            Some("Works with ClickUp tasks"),
+            vec!["clickup:get-task", "clickup:create-task", "a2a"],
+        ),
+        entry_with_capabilities(
+            "notion-agent",
+            "Notion Agent",
+            "1.0.0",
+            Some("Works with Notion pages"),
+            vec!["notion:read-page", "a2a"],
+        ),
+    ];
+    let agent_list = Arc::new(MockAgentList::new(entries));
+    let registry = Arc::new(ToolRegistry::new());
+    let a2a_handler = Arc::new(MockA2aHandler);
+    registry
+        .register_bundle(SystemBundle::new(agent_list, registry.clone(), a2a_handler))
+        .unwrap();
+
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000011").unwrap());
+    let session_id = registry
+        .open_session(
+            "system/discover_agents",
+            json!({}),
+            &ContextId::new(1, 11),
+            &agent_id,
+        )
+        .await
+        .unwrap();
+
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "requiredCapabilities": ["clickup:get-task", "clickup:create-task"],
+                "limit": 10
+            }),
+        )
+        .await
+        .unwrap();
+
+    let step = registry.session_next(&session_id).await.unwrap();
+    match &step {
+        ToolStep::Done {
+            output: Some(output),
+        } => {
+            let agents = output.get("agents").and_then(|a| a.as_array()).unwrap();
+            assert_eq!(agents.len(), 1);
+            assert_eq!(
+                agents[0].get("agentPackage").and_then(|v| v.as_str()),
+                Some("clickup-agent")
+            );
+        }
+        other => panic!("expected Done(Some(output)), got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn discover_agents_capability_filter_is_not_overridden_by_query_fallback() {
+    let entries = vec![entry_with_capabilities(
+        "clickup-agent",
+        "ClickUp Agent",
+        "1.0.0",
+        Some("Works with ClickUp tasks"),
+        vec!["clickup:get-task", "a2a"],
+    )];
+    let agent_list = Arc::new(MockAgentList::new(entries));
+    let registry = Arc::new(ToolRegistry::new());
+    let a2a_handler = Arc::new(MockA2aHandler);
+    registry
+        .register_bundle(SystemBundle::new(agent_list, registry.clone(), a2a_handler))
+        .unwrap();
+
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000012").unwrap());
+    let session_id = registry
+        .open_session(
+            "system/discover_agents",
+            json!({}),
+            &ContextId::new(1, 12),
+            &agent_id,
+        )
+        .await
+        .unwrap();
+
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "query": "no-match",
+                "requiredCapabilities": ["clickup:create-task"],
+                "limit": 10
+            }),
+        )
+        .await
+        .unwrap();
+
+    let step = registry.session_next(&session_id).await.unwrap();
+    match &step {
+        ToolStep::Done {
+            output: Some(output),
+        } => {
+            let agents = output.get("agents").and_then(|a| a.as_array()).unwrap();
+            assert!(
+                agents.is_empty(),
+                "capability filtering must remain authoritative when query fallback would otherwise return all agents"
+            );
+        }
+        other => panic!("expected Done(Some(output)), got {:?}", other),
     }
 }
 

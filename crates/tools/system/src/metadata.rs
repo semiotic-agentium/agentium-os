@@ -67,7 +67,9 @@ pub fn system_discover_agents_metadata() -> ToolFunctionMetadata {
     >(
         "system/discover_agents",
         "Lists running agents (cards). Open session, then send query/limit/offset; next() returns one page. Send can be called multiple times. \
-         query is a filter: only agents whose name, package, or description match the string are returned. To list all agents (e.g. 'who is available?', 'which agents are ready?'), omit query or send null—do not use a user phrase as the filter.",
+         query is a filter: only agents whose name, package, or description match the string are returned. \
+         requiredCapabilities is an exact-match filter over manifest discovery capabilities and all listed capabilities must be present. \
+         To list all agents (e.g. 'who is available?', 'which agents are ready?'), omit query or send null—do not use a user phrase as the filter.",
     )
 }
 
