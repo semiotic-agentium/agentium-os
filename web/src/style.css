@@ -2736,13 +2736,7 @@ a.source-chip:hover {
   padding: 8px 14px 8px 28px;
 }
 
-/* ── Clients block ── */
-
-.config-clients-block {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
+/* .config-clients-block removed — clients block now uses .config-routing-block */
 
 .config-override-empty {
   font-size: 12px;

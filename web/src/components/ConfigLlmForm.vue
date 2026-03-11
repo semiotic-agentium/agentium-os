@@ -257,12 +257,71 @@ function onSave() {
 <template>
   <div class="config-llm-form">
 
+    <!-- ══ Clients section ══ -->
+    <div class="config-routing-block">
+      <div class="config-routing-block-header">
+        <div>
+          <h3 class="config-section-title">Clients</h3>
+          <p class="config-hint">LLM backends available for routing.</p>
+        </div>
+        <button type="button" class="config-btn config-btn-secondary" @click="addClient">Add client</button>
+      </div>
+
+      <div class="config-agent-cards">
+        <div v-for="(names, provider) in clientsByProvider" :key="provider" class="config-clients-by-provider">
+          <h4 class="config-provider-group-title">{{ provider }}</h4>
+          <div v-for="name in names" :key="name" class="config-client-card">
+            <div class="config-client-header">
+              <input
+                :value="getClient(name).name"
+                class="config-input config-input-inline"
+                placeholder="Client name"
+                @change="(e) => setClient(name, { ...getClient(name), name: (e.target as HTMLInputElement).value.trim() })"
+              />
+              <span v-if="name === defaultClientName" class="config-badge-default">Default</span>
+              <button
+                v-if="name !== defaultClientName"
+                type="button"
+                class="config-btn config-btn-ghost"
+                title="Remove client"
+                @click="removeClient(name)"
+              >Remove</button>
+            </div>
+            <div class="config-client-fields">
+              <label class="config-label">Provider</label>
+              <select
+                :value="getClient(name).provider"
+                class="config-input config-select"
+                @change="(e) => setClient(name, { ...getClient(name), provider: (e.target as HTMLSelectElement).value })"
+              >
+                <option v-for="p in LLM_PROVIDERS" :key="p" :value="p">{{ p }}</option>
+              </select>
+              <label class="config-label">Model</label>
+              <input
+                :value="getModel(name)"
+                class="config-input"
+                placeholder="e.g. openai/gpt-4o-mini or gpt-4o"
+                @input="(e) => setModel(name, (e.target as HTMLInputElement).value)"
+              />
+              <label class="config-label">Base URL</label>
+              <input
+                :value="getBaseUrl(name)"
+                class="config-input"
+                placeholder="e.g. https://openrouter.ai/api/v1"
+                @input="(e) => setBaseUrl(name, (e.target as HTMLInputElement).value)"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ══ Routing section ══ -->
     <div class="config-routing-block">
       <div class="config-routing-block-header">
         <div>
           <h3 class="config-section-title">LLM Routing</h3>
-          <p class="config-hint">Controls which LLM client each agent and prompt uses.</p>
+          <p class="config-hint">Controls which client each agent and prompt uses.</p>
         </div>
       </div>
 
@@ -272,7 +331,7 @@ function onSave() {
           <span class="config-label" style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;">System default</span>
           <span class="config-hint" style="font-size:11px;">All agents inherit this unless overridden</span>
         </div>
-        <select v-model="defaultClientName" class="config-input config-select">
+        <select v-model="defaultClientName" class="config-input config-select config-select-sm">
           <option v-for="name in clientNames" :key="name" :value="name">{{ name }}</option>
         </select>
       </div>
@@ -289,7 +348,6 @@ function onSave() {
           class="config-agent-override-card"
           :class="{ 'is-expanded': isExpanded(agent.agent_package) }"
         >
-          <!-- Header row: expand toggle + agent name + agent-level client + badges -->
           <div
             class="config-agent-override-header"
             :class="{ 'is-expandable': functionsForAgent(agent.agent_package).length > 0 }"
@@ -305,7 +363,6 @@ function onSave() {
 
             <span class="config-agent-override-name">{{ agent.agent_package }}</span>
 
-            <!-- Fn override badge — shows how many function overrides are set -->
             <span
               v-if="hasFnOverrides(agent.agent_package)"
               class="config-agent-fn-badge"
@@ -326,7 +383,6 @@ function onSave() {
             </div>
           </div>
 
-          <!-- Per-function overrides — only shown when expanded -->
           <div v-if="isExpanded(agent.agent_package)" class="config-fn-override-list">
             <div
               v-for="fn in functionsForAgent(agent.agent_package)"
@@ -346,63 +402,6 @@ function onSave() {
                 </select>
               </div>
             </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ══ Clients section ══ -->
-    <div class="config-clients-block">
-      <div class="config-section-header">
-        <div>
-          <h3 class="config-section-title">Clients</h3>
-          <p class="config-hint">Define LLM clients available for routing above.</p>
-        </div>
-        <button type="button" class="config-btn config-btn-secondary" @click="addClient">Add client</button>
-      </div>
-
-      <div v-for="(names, provider) in clientsByProvider" :key="provider" class="config-clients-by-provider">
-        <h4 class="config-provider-group-title">{{ provider }}</h4>
-        <div v-for="name in names" :key="name" class="config-client-card">
-          <div class="config-client-header">
-            <input
-              :value="getClient(name).name"
-              class="config-input config-input-inline"
-              placeholder="Client name"
-              @change="(e) => setClient(name, { ...getClient(name), name: (e.target as HTMLInputElement).value.trim() })"
-            />
-            <span v-if="name === defaultClientName" class="config-badge-default">Default</span>
-            <button
-              v-if="name !== defaultClientName"
-              type="button"
-              class="config-btn config-btn-ghost"
-              title="Remove client"
-              @click="removeClient(name)"
-            >Remove</button>
-          </div>
-          <div class="config-client-fields">
-            <label class="config-label">Provider</label>
-            <select
-              :value="getClient(name).provider"
-              class="config-input config-select"
-              @change="(e) => setClient(name, { ...getClient(name), provider: (e.target as HTMLSelectElement).value })"
-            >
-              <option v-for="p in LLM_PROVIDERS" :key="p" :value="p">{{ p }}</option>
-            </select>
-            <label class="config-label">Model</label>
-            <input
-              :value="getModel(name)"
-              class="config-input"
-              placeholder="e.g. openai/gpt-4o-mini or gpt-4o"
-              @input="(e) => setModel(name, (e.target as HTMLInputElement).value)"
-            />
-            <label class="config-label">Base URL</label>
-            <input
-              :value="getBaseUrl(name)"
-              class="config-input"
-              placeholder="e.g. https://openrouter.ai/api/v1"
-              @input="(e) => setBaseUrl(name, (e.target as HTMLInputElement).value)"
-            />
           </div>
         </div>
       </div>
