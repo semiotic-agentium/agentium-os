@@ -6,11 +6,7 @@ authors = { workspace = true }
 publish = false
 
 [dependencies]
-baml-rt-core = { path = "../baml-rt-core" }
-baml-rt-interceptor = { path = "../baml-rt-interceptor" }
 fastembed = { workspace = true }
-dashmap = { workspace = true }
-async-trait = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -19,9 +15,3 @@ anyhow = { workspace = true }
 regex = { workspace = true }
 
 [dev-dependencies]
-test-support = { path = "../test-support" }
-tokio = { workspace = true }
-proptest = { workspace = true }
-insta = { workspace = true }
-baml-rt-id = { path = "../baml-rt-id" }
-uuid = { workspace = true }

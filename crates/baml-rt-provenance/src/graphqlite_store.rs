@@ -1920,6 +1920,11 @@ impl GraphqliteProvenanceStore {
                     c.a2a_client AS provider, c.a2a_model AS model, c.a2a_function_name AS baml_prompt, \
                     c.a2a_duration_ms AS duration_ms, c.a2a_usage_prompt_tokens AS prompt_tokens, \
                     c.a2a_usage_completion_tokens AS completion_tokens, c.a2a_usage_total_tokens AS total_tokens, \
+                    c.a2a_drift_score AS drift_score, c.a2a_drift_severity AS drift_severity, \
+                    c.a2a_drift_mode AS drift_mode, c.a2a_drift_warn_min_score AS drift_warn_min_score, \
+                    c.a2a_drift_block_min_score AS drift_block_min_score, \
+                    c.a2a_intent_text_preview AS intent_text_preview, \
+                    c.a2a_response_text_preview AS response_text_preview, \
                     c.a2a_activity_outcome AS activity_outcome, c.a2a_result AS llm_result_raw, \
                     c.a2a_error AS llm_error_raw, \
                     p.a2a_prompt AS llm_call, \
@@ -2008,6 +2013,7 @@ impl GraphqliteProvenanceStore {
             row.remove("llm_error_raw");
             row.remove("llm_call_payload_id");
             row.remove("llm_result_payload_id");
+            nest_llm_drift_fields(row);
             finalize_call_row(
                 row,
                 &identity_by_agent_id,
@@ -2398,6 +2404,67 @@ impl GraphqliteProvenanceStore {
             row.insert("activity_id".to_string(), Value::String(activity_id));
         }
         Ok(apply_common_filters(out, req))
+    }
+}
+
+fn nest_llm_drift_fields(row: &mut Map<String, Value>) {
+    let drift_score = row.remove("drift_score");
+    let drift_severity = row.remove("drift_severity");
+    let drift_mode = row.remove("drift_mode");
+    let drift_warn_min_score = row.remove("drift_warn_min_score");
+    let drift_block_min_score = row.remove("drift_block_min_score");
+    let intent_text_preview = row.remove("intent_text_preview");
+    let response_text_preview = row.remove("response_text_preview");
+
+    let has_any = drift_score.is_some()
+        || drift_severity.is_some()
+        || drift_mode.is_some()
+        || drift_warn_min_score.is_some()
+        || drift_block_min_score.is_some()
+        || intent_text_preview.is_some()
+        || response_text_preview.is_some();
+    if !has_any {
+        return;
+    }
+
+    let mut drift = Map::new();
+    if let Some(value) = drift_score
+        && !value.is_null()
+    {
+        drift.insert("score".to_string(), value);
+    }
+    if let Some(value) = drift_severity
+        && !value.is_null()
+    {
+        drift.insert("severity".to_string(), value);
+    }
+    if let Some(value) = drift_mode
+        && !value.is_null()
+    {
+        drift.insert("mode".to_string(), value);
+    }
+    if let Some(value) = drift_warn_min_score
+        && !value.is_null()
+    {
+        drift.insert("warnMinScore".to_string(), value);
+    }
+    if let Some(value) = drift_block_min_score
+        && !value.is_null()
+    {
+        drift.insert("blockMinScore".to_string(), value);
+    }
+    if let Some(value) = intent_text_preview
+        && !value.is_null()
+    {
+        drift.insert("intentTextPreview".to_string(), value);
+    }
+    if let Some(value) = response_text_preview
+        && !value.is_null()
+    {
+        drift.insert("responseTextPreview".to_string(), value);
+    }
+    if !drift.is_empty() {
+        row.insert("drift".to_string(), Value::Object(drift));
     }
 }
 
@@ -3012,6 +3079,7 @@ mod tests {
                     usage: LlmUsage::Unknown,
                     duration_ms: 3200,
                     outcome: Outcome::Success,
+                    drift: None,
                 },
             }),
             ProvEvent::Task(TaskScopedEvent {
@@ -3107,6 +3175,7 @@ mod tests {
                     usage: LlmUsage::Unknown,
                     duration_ms: 2100,
                     outcome: Outcome::Failure,
+                    drift: None,
                 },
             }),
             ProvEvent::Task(TaskScopedEvent {
@@ -3368,6 +3437,7 @@ mod tests {
                     usage: LlmUsage::Unknown,
                     duration_ms: 1800,
                     outcome: Outcome::Success,
+                    drift: None,
                 },
             }),
             ProvEvent::Task(TaskScopedEvent {
@@ -3792,6 +3862,7 @@ mod tests {
                     usage: LlmUsage::Unknown,
                     duration_ms: 100,
                     outcome: Outcome::Success,
+                    drift: None,
                 },
             }),
             ProvEvent::Task(TaskScopedEvent {
@@ -3961,6 +4032,7 @@ mod tests {
                     usage: LlmUsage::Unknown,
                     duration_ms: 800,
                     outcome: Outcome::Success,
+                    drift: None,
                 },
             }),
             ProvEvent::Task(TaskScopedEvent {
@@ -3997,6 +4069,7 @@ mod tests {
                     usage: LlmUsage::Unknown,
                     duration_ms: 600,
                     outcome: Outcome::Success,
+                    drift: None,
                 },
             }),
             ProvEvent::Task(TaskScopedEvent {

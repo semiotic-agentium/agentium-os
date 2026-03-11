@@ -17,14 +17,23 @@ expression: snapshot
         "provider": "openai",
         "model": "gpt-4o-mini",
         "baml_prompt": "SummarizePrompt",
-        "duration_ms": 180,
-        "prompt_tokens": 12,
-        "completion_tokens": 8,
-        "total_tokens": 20,
-        "activity_outcome": "Success",
-        "llm_result": null,
+        "duration_ms": 181,
+        "prompt_tokens": 10,
+        "completion_tokens": 7,
+        "total_tokens": 17,
         "llm_call": {
-          "input": "hello"
+          "input": "hello with drift"
+        },
+        "llm_result": null,
+        "activity_outcome": "Success",
+        "drift": {
+          "score": 0.6179999709,
+          "severity": "warn",
+          "mode": "audit",
+          "warnMinScore": 0.5,
+          "blockMinScore": 0.25,
+          "intentTextPreview": "Create a task titled Research",
+          "responseTextPreview": "Create task in list 901325431486"
         },
         "agent_package": "unknown",
         "agent_version": "unknown",
@@ -36,17 +45,17 @@ expression: snapshot
     "summary": {
       "count": 1,
       "failedCount": 0,
-      "durationMsTotal": 180,
-      "totalTokens": 20,
-      "promptTokensTotal": 12,
-      "completionTokensTotal": 8,
+      "durationMsTotal": 181,
+      "totalTokens": 17,
+      "promptTokensTotal": 10,
+      "completionTokensTotal": 7,
       "latencyHotspots": {
-        "p95": 180.0,
-        "p99": 180.0
+        "p95": 181.0,
+        "p99": 181.0
       },
       "tokenHotspots": {
-        "p95": 20.0,
-        "p99": 20.0
+        "p95": 17.0,
+        "p99": 17.0
       }
     },
     "hotspotGroups": [
@@ -63,8 +72,8 @@ expression: snapshot
         "count": 1,
         "failed": 0,
         "failureRate": 0.0,
-        "avgDurationMs": 180.0,
-        "avgTotalTokens": 20.0
+        "avgDurationMs": 181.0,
+        "avgTotalTokens": 17.0
       }
     ],
     "truncated": false,

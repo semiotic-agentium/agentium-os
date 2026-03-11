@@ -227,9 +227,10 @@ pub fn project(
                 other => content_to_string(other),
             };
             let agent_id = item.agent_id.as_ref().map(ToString::to_string);
+            let role = prompt_role(&item.role);
             projected_chars += content.len();
             serde_json::json!({
-                "role": item.role,
+                "role": role,
                 "source": item.source,
                 "agent_id": agent_id,
                 "content": content,
@@ -273,6 +274,20 @@ fn content_to_string(v: &Value) -> String {
             );
         })
         .unwrap_or_else(|_| v.to_string())
+}
+
+fn prompt_role(raw: &str) -> &str {
+    if raw.eq_ignore_ascii_case("ROLE_USER") || raw.eq_ignore_ascii_case("user") {
+        "user"
+    } else if raw.eq_ignore_ascii_case("ROLE_AGENT")
+        || raw.eq_ignore_ascii_case("assistant")
+        || raw.eq_ignore_ascii_case("ROLE_ASSISTANT")
+        || raw.eq_ignore_ascii_case("agent")
+    {
+        "assistant"
+    } else {
+        raw
+    }
 }
 
 #[cfg(test)]
@@ -344,10 +359,10 @@ mod tests {
         assert_eq!(stats.dropped_source_filtered, 0);
 
         // Verify envelope shape and chronological ordering.
-        assert_eq!(entries[0]["role"], "ROLE_USER");
+        assert_eq!(entries[0]["role"], "user");
         assert_eq!(entries[0]["content"], "hello");
         assert_eq!(entries[1]["source"], "tool_result");
-        assert_eq!(entries[2]["role"], "ROLE_AGENT");
+        assert_eq!(entries[2]["role"], "assistant");
         assert_eq!(entries[2]["content"], "done");
     }
 
@@ -631,5 +646,32 @@ mod tests {
             entries[0]["agent_id"],
             Value::String("00000000-0000-0000-0000-00000000000a".to_string())
         );
+    }
+
+    #[test]
+    fn test_prompt_roles_are_normalized_for_baml_templates() {
+        let items = vec![
+            make_item("ROLE_USER", "message", Value::String("hello".into()), 1000),
+            make_item("ROLE_AGENT", "message", Value::String("done".into()), 2000),
+            make_item(
+                "assistant",
+                "message",
+                Value::String("still done".into()),
+                3000,
+            ),
+            make_item(
+                "tool",
+                "tool_result",
+                json!({"tool_name": "x", "result": 1}),
+                4000,
+            ),
+        ];
+
+        let (entries, _) = project(items, &ProjectionConfig::default(), &empty_registry());
+
+        assert_eq!(entries[0]["role"], "user");
+        assert_eq!(entries[1]["role"], "assistant");
+        assert_eq!(entries[2]["role"], "assistant");
+        assert_eq!(entries[3]["role"], "tool");
     }
 }

@@ -1,8 +1,8 @@
-//! Configuration for the drift detection interceptor.
+//! Configuration for drift assessment.
 
 use std::collections::HashSet;
 
-/// Operating mode for the drift detector.
+/// Operating mode for drift handling.
 ///
 /// Using an enum (not a bool) to avoid boolean blindness and to leave room
 /// for future modes (e.g. `Sample(f32)` for probabilistic enforcement).
@@ -13,20 +13,20 @@ pub enum DriftMode {
     /// Safe default for initial rollout and threshold calibration.
     Audit,
     /// Log **and** block the next LLM call in the same ReAct loop when
-    /// the drift score falls below `block_threshold`.
+    /// the drift score falls below `block_min_score`.
     Enforce,
 }
 
-/// Configuration for [`super::DriftDetectorInterceptor`].
+/// Configuration for drift scoring and threshold classification.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct DriftConfig {
     /// Cosine similarity below this emits a `tracing::warn!`.
     /// Default: `0.5`.
-    pub warn_threshold: f32,
+    pub warn_min_score: f32,
 
     /// Cosine similarity below this triggers a block (in [`DriftMode::Enforce`]).
-    /// Must be ≤ `warn_threshold`.  Default: `0.25`.
-    pub block_threshold: f32,
+    /// Must be ≤ `warn_min_score`.  Default: `0.25`.
+    pub block_min_score: f32,
 
     /// Whether to log-only or log-and-block.
     pub mode: DriftMode,
@@ -45,8 +45,8 @@ pub struct DriftConfig {
 impl Default for DriftConfig {
     fn default() -> Self {
         Self {
-            warn_threshold: 0.5,
-            block_threshold: 0.25,
+            warn_min_score: 0.5,
+            block_min_score: 0.25,
             mode: DriftMode::Audit,
             monitored_functions: None,
             skip_functions: HashSet::new(),

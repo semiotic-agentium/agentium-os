@@ -1218,6 +1218,13 @@ fn emit_llm_call(out: &mut String, node: &ExportedNode, agent: &str) {
             escape_sequence_text(&response)
         );
     }
+    if let Some(drift_note) = llm_drift_summary(node) {
+        let _ = writeln!(
+            out,
+            "    Note right of {agent}: {}",
+            escape_note_content(&drift_note)
+        );
+    }
 }
 
 /// Emit a `Note over Agent` for a BAML prompt rejection/provenance failure marker.
@@ -1512,6 +1519,28 @@ fn llm_usage_summary(node: &ExportedNode) -> Option<String> {
     }
 }
 
+/// Build a compact drift summary from LLM call drift properties when present.
+fn llm_drift_summary(node: &ExportedNode) -> Option<String> {
+    let score = node
+        .properties
+        .get(a2a::DRIFT_SCORE)
+        .and_then(|value| match value {
+            serde_json::Value::Number(number) => number.as_f64(),
+            serde_json::Value::String(raw) => raw.parse::<f64>().ok(),
+            _ => None,
+        })?;
+    let severity = prop_str(node, a2a::DRIFT_SEVERITY);
+    let mut note = format!("Drift {score:.3}");
+    if let Some(severity) = severity
+        && !severity.eq_ignore_ascii_case("acceptable")
+        && !severity.is_empty()
+    {
+        note.push(' ');
+        note.push_str(&severity);
+    }
+    Some(note)
+}
+
 /// Heuristic: skip the synthetic "previous" status companion that shares the
 /// same timestamp as a transition node and echoes that transition's old status.
 /// Strip known tool name prefixes for brevity.
@@ -1659,6 +1688,24 @@ mod tests {
             properties: props,
             event_order: order,
         }
+    }
+
+    fn llm_node_with_drift(
+        id: &str,
+        model: &str,
+        duration_ms: u64,
+        order: Option<u64>,
+        drift_score: f64,
+        drift_severity: &str,
+    ) -> ExportedNode {
+        let mut node = llm_node(id, model, duration_ms, order);
+        node.properties
+            .insert(a2a::DRIFT_SCORE.to_string(), serde_json::json!(drift_score));
+        node.properties.insert(
+            a2a::DRIFT_SEVERITY.to_string(),
+            serde_json::json!(drift_severity),
+        );
+        node
     }
 
     fn tool_node(id: &str, tool_name: &str, duration_ms: u64, order: Option<u64>) -> ExportedNode {
@@ -1892,6 +1939,49 @@ mod tests {
         assert!(
             output.contains("clickupNavigate-->>-clickup_agent: 150ms ✓"),
             "tool response arrow: {output}"
+        );
+    }
+
+    #[test]
+    fn llm_call_drift_note_renders_after_response() {
+        let mut edges = vec![
+            edge("mp1", EDGE_WAS_RECEIVED_BY, "m1"),
+            edge("m2", EDGE_WAS_EMITTED_BY, "mp1"),
+            edge("mp1", EDGE_WAS_INVOKED_BY, "llm1"),
+            edge("mp1", EDGE_WAS_EXECUTED_BY, "a1"),
+        ];
+        edges.extend(agent_chain_edges("a1", "boot1", "arch1"));
+        let g = graph(
+            vec![
+                msg_node("m1", "user", "create a task", Some(1)),
+                agent_node("a1", "clickup_agent"),
+                mp_node("mp1"),
+                boot_node("boot1"),
+                archive_node("arch1", "clickup_agent"),
+                llm_node_with_drift("llm1", "deepseek/v3", 5000, Some(3), 0.618, "warn"),
+                msg_node("m2", "assistant", "Done!", Some(4)),
+            ],
+            edges,
+        );
+
+        let output = render_sequence_diagram(&g);
+        let response_pos = output
+            .find("LLM_deepseek_v3-->>-clickup_agent: 5000ms ✓")
+            .expect("LLM response arrow");
+        let drift_pos = output
+            .find("Note right of clickup_agent: \"Drift 0.618 warn\"")
+            .expect("drift note");
+        let reply_pos = output
+            .find("clickup_agent->>-User: Done!")
+            .expect("assistant reply");
+
+        assert!(
+            response_pos < drift_pos,
+            "drift note should follow LLM response: {output}"
+        );
+        assert!(
+            drift_pos < reply_pos,
+            "drift note should precede the next message: {output}"
         );
     }
 
