@@ -1921,8 +1921,8 @@ impl GraphqliteProvenanceStore {
                     c.a2a_duration_ms AS duration_ms, c.a2a_usage_prompt_tokens AS prompt_tokens, \
                     c.a2a_usage_completion_tokens AS completion_tokens, c.a2a_usage_total_tokens AS total_tokens, \
                     c.a2a_drift_score AS drift_score, c.a2a_drift_severity AS drift_severity, \
-                    c.a2a_drift_mode AS drift_mode, c.a2a_drift_warn_threshold AS drift_warn_threshold, \
-                    c.a2a_drift_block_threshold AS drift_block_threshold, \
+                    c.a2a_drift_mode AS drift_mode, c.a2a_drift_warn_min_score AS drift_warn_min_score, \
+                    c.a2a_drift_block_min_score AS drift_block_min_score, \
                     c.a2a_intent_text_preview AS intent_text_preview, \
                     c.a2a_response_text_preview AS response_text_preview, \
                     c.a2a_activity_outcome AS activity_outcome, c.a2a_result AS llm_result_raw, \
@@ -2411,16 +2411,16 @@ fn nest_llm_drift_fields(row: &mut Map<String, Value>) {
     let drift_score = row.remove("drift_score");
     let drift_severity = row.remove("drift_severity");
     let drift_mode = row.remove("drift_mode");
-    let drift_warn_threshold = row.remove("drift_warn_threshold");
-    let drift_block_threshold = row.remove("drift_block_threshold");
+    let drift_warn_min_score = row.remove("drift_warn_min_score");
+    let drift_block_min_score = row.remove("drift_block_min_score");
     let intent_text_preview = row.remove("intent_text_preview");
     let response_text_preview = row.remove("response_text_preview");
 
     let has_any = drift_score.is_some()
         || drift_severity.is_some()
         || drift_mode.is_some()
-        || drift_warn_threshold.is_some()
-        || drift_block_threshold.is_some()
+        || drift_warn_min_score.is_some()
+        || drift_block_min_score.is_some()
         || intent_text_preview.is_some()
         || response_text_preview.is_some();
     if !has_any {
@@ -2443,15 +2443,15 @@ fn nest_llm_drift_fields(row: &mut Map<String, Value>) {
     {
         drift.insert("mode".to_string(), value);
     }
-    if let Some(value) = drift_warn_threshold
+    if let Some(value) = drift_warn_min_score
         && !value.is_null()
     {
-        drift.insert("warnThreshold".to_string(), value);
+        drift.insert("warnMinScore".to_string(), value);
     }
-    if let Some(value) = drift_block_threshold
+    if let Some(value) = drift_block_min_score
         && !value.is_null()
     {
-        drift.insert("blockThreshold".to_string(), value);
+        drift.insert("blockMinScore".to_string(), value);
     }
     if let Some(value) = intent_text_preview
         && !value.is_null()

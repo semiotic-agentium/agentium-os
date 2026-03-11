@@ -30,8 +30,8 @@ expression: snapshot
           "score": 0.6179999709,
           "severity": "warn",
           "mode": "audit",
-          "warnThreshold": 0.5,
-          "blockThreshold": 0.25,
+          "warnMinScore": 0.5,
+          "blockMinScore": 0.25,
           "intentTextPreview": "Create a task titled Research",
           "responseTextPreview": "Create task in list 901325431486"
         },

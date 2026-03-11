@@ -182,8 +182,8 @@ impl ProvenanceEffectSubscriber {
             score: assessment.score,
             severity: assessment.severity_label().to_string(),
             mode: drift_mode_label(assessment.mode).to_string(),
-            warn_threshold: assessment.warn_threshold,
-            block_threshold: assessment.block_threshold,
+            warn_min_score: assessment.warn_min_score,
+            block_min_score: assessment.block_min_score,
             intent_text_preview: assessment.intent_text_preview,
             response_text_preview: assessment.response_text_preview,
         })

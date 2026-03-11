@@ -604,12 +604,12 @@ fn normalize_event_with_registry(
                     Value::String(drift.mode.clone()),
                 );
                 attrs.insert(
-                    a2a::DRIFT_WARN_THRESHOLD.to_string(),
-                    serde_json::json!(drift.warn_threshold),
+                    a2a::DRIFT_WARN_MIN_SCORE.to_string(),
+                    serde_json::json!(drift.warn_min_score),
                 );
                 attrs.insert(
-                    a2a::DRIFT_BLOCK_THRESHOLD.to_string(),
-                    serde_json::json!(drift.block_threshold),
+                    a2a::DRIFT_BLOCK_MIN_SCORE.to_string(),
+                    serde_json::json!(drift.block_min_score),
                 );
                 attrs.insert(
                     a2a::INTENT_TEXT_PREVIEW.to_string(),

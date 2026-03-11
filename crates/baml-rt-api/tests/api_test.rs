@@ -312,8 +312,8 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::GraphqliteProvenan
                 score: 0.618,
                 severity: "warn".to_string(),
                 mode: "audit".to_string(),
-                warn_threshold: 0.5,
-                block_threshold: 0.25,
+                warn_min_score: 0.5,
+                block_min_score: 0.25,
                 intent_text_preview: "Create a task titled Research".to_string(),
                 response_text_preview: "Create task in list 901325431486".to_string(),
             }),
@@ -956,8 +956,8 @@ async fn get_provenance_llm_calls_nests_drift_fields() {
     assert!((score - 0.618).abs() < 0.001, "unexpected score: {score}");
     assert_eq!(drift.get("severity"), Some(&serde_json::json!("warn")));
     assert_eq!(drift.get("mode"), Some(&serde_json::json!("audit")));
-    assert_eq!(drift.get("warnThreshold"), Some(&serde_json::json!(0.5)));
-    assert_eq!(drift.get("blockThreshold"), Some(&serde_json::json!(0.25)));
+    assert_eq!(drift.get("warnMinScore"), Some(&serde_json::json!(0.5)));
+    assert_eq!(drift.get("blockMinScore"), Some(&serde_json::json!(0.25)));
     assert!(drift.get("intentTextPreview").is_some());
     assert!(drift.get("responseTextPreview").is_some());
     assert!(drift_row.get("drift_score").is_none());

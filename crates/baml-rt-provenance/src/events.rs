@@ -88,8 +88,8 @@ pub struct LlmDriftInfo {
     pub score: f32,
     pub severity: String,
     pub mode: String,
-    pub warn_threshold: f32,
-    pub block_threshold: f32,
+    pub warn_min_score: f32,
+    pub block_min_score: f32,
     pub intent_text_preview: String,
     pub response_text_preview: String,
 }
