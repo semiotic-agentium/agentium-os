@@ -11,7 +11,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   "update:modelValue": [value: LlmClientConfig];
-  save: [value: LlmClientConfig];
 }>();
 
 const validationErrors = ref<string[]>([]);
@@ -238,20 +237,10 @@ function validate(): string[] {
   return errors;
 }
 
-function onSave() {
-  const errors = validate();
-  validationErrors.value = errors;
-  if (errors.length > 0) return;
-  const payload: LlmClientConfig = { ...local.value, clients: { ...local.value.clients } };
-  for (const name of Object.keys(payload.clients)) {
-    const def = payload.clients[name];
-    if (!def) continue;
-    const options = { ...(def.options ?? {}) };
-    delete options.api_key;
-    payload.clients[name] = { ...def, name: def.name, options };
-  }
-  emit("save", payload);
-}
+// Validate on every model update so errors are shown live.
+watch(local, () => {
+  validationErrors.value = validate();
+}, { deep: true });
 </script>
 
 <template>
@@ -410,9 +399,5 @@ function onSave() {
     <ul v-if="validationErrors.length > 0" class="config-validation-errors">
       <li v-for="(err, errIdx) in validationErrors" :key="errIdx" class="config-error">{{ err }}</li>
     </ul>
-
-    <div class="config-form-actions">
-      <button type="button" class="config-btn config-btn-primary" @click="onSave">Save</button>
-    </div>
   </div>
 </template>

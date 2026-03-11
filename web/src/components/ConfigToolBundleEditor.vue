@@ -11,15 +11,12 @@ const configJson = ref("");
 const savedJson = ref("");
 const secretRequests = ref<SecretRequestDto[]>([]);
 const error = ref<string | null>(null);
-const saveMessage = ref<"saved" | "error" | null>(null);
+const saveStatus = ref<"idle" | "saving" | "saved" | "error">("idle");
 const version = ref<number>(0);
-
-const dirty = ref(false);
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 function beforeUnloadHandler(e: BeforeUnloadEvent) {
-  if (dirty.value) {
-    e.preventDefault();
-  }
+  if (saveStatus.value === "saving") e.preventDefault();
 }
 
 onMounted(async () => {
@@ -43,47 +40,52 @@ onMounted(async () => {
 
 onUnmounted(() => {
   window.removeEventListener("beforeunload", beforeUnloadHandler);
+  if (debounceTimer) clearTimeout(debounceTimer);
 });
 
 function onInput() {
-  dirty.value = configJson.value !== savedJson.value;
-  if (dirty.value) saveMessage.value = null;
-}
-
-function resetToDefault() {
-  if (props.defaultConfig === undefined) return;
-  const json = JSON.stringify(props.defaultConfig, null, 2);
-  configJson.value = json;
-  dirty.value = json !== savedJson.value;
-}
-
-function tryClose() {
-  if (dirty.value && !confirm("You have unsaved changes. Discard them?")) {
+  error.value = null;
+  if (configJson.value === savedJson.value) {
+    saveStatus.value = "idle";
     return;
   }
-  emit("close");
+  saveStatus.value = "saving";
+  if (debounceTimer) clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(doSave, 1200);
 }
 
-async function save() {
-  saveMessage.value = null;
+async function doSave() {
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(configJson.value) as Record<string, unknown>;
   } catch (e) {
+    saveStatus.value = "error";
     error.value = "Invalid JSON: " + (e instanceof Error ? e.message : String(e));
     return;
   }
   const result = await putConfig(props.bundleName, parsed, version.value);
   if ("error" in result) {
-    saveMessage.value = "error";
+    saveStatus.value = "error";
     error.value = result.error.detail ?? result.error.title;
     return;
   }
   version.value = result.data.version;
   savedJson.value = configJson.value;
-  dirty.value = false;
-  saveMessage.value = "saved";
+  saveStatus.value = "saved";
   error.value = null;
+}
+
+function resetToDefault() {
+  if (props.defaultConfig === undefined) return;
+  configJson.value = JSON.stringify(props.defaultConfig, null, 2);
+  onInput();
+}
+
+function tryClose() {
+  if (saveStatus.value === "saving") {
+    if (!confirm("A save is in progress. Close anyway?")) return;
+  }
+  emit("close");
 }
 </script>
 
@@ -91,7 +93,12 @@ async function save() {
   <div class="config-tool-editor">
     <div class="config-tool-editor-header">
       <h3 class="config-section-title">{{ bundleName }}</h3>
-      <button type="button" class="config-btn config-btn-ghost" @click="tryClose">← Back to list</button>
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span v-if="saveStatus === 'saving'" class="config-autosave-saving">Saving…</span>
+        <span v-else-if="saveStatus === 'saved'" class="config-autosave-saved">Saved (v{{ version }})</span>
+        <span v-else-if="saveStatus === 'error'" class="config-autosave-error">Save failed</span>
+        <button type="button" class="config-btn config-btn-ghost" @click="tryClose">← Back</button>
+      </div>
     </div>
 
     <p v-if="error" class="config-error">{{ error }}</p>
@@ -119,17 +126,12 @@ async function save() {
       />
     </div>
 
-    <div class="config-form-actions">
-      <button type="button" class="config-btn config-btn-primary" @click="save">Save</button>
+    <div v-if="defaultConfig !== undefined" class="config-form-actions">
       <button
-        v-if="defaultConfig !== undefined"
         type="button"
         class="config-btn config-btn-ghost"
         @click="resetToDefault"
       >Reset to default</button>
-      <span v-if="dirty" class="config-dirty-indicator">Unsaved changes</span>
-      <p v-if="saveMessage === 'saved'" class="config-save-ok">Saved (v{{ version }}).</p>
-      <p v-else-if="saveMessage === 'error'" class="config-save-err">Save failed.</p>
     </div>
   </div>
 </template>

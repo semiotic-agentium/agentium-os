@@ -2562,6 +2562,31 @@ a.source-chip:hover {
   font-style: italic;
 }
 
+/* ── Auto-save status indicator ── */
+
+.config-autosave-bar {
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}
+
+.config-autosave-saving {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.config-autosave-saved {
+  font-size: 12px;
+  color: var(--status-green);
+}
+
+.config-autosave-error {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
 .config-validation-errors {
   list-style: none;
   display: flex;
