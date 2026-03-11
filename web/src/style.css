@@ -2569,37 +2569,103 @@ a.source-chip:hover {
   gap: 4px;
 }
 
-/* ── Override table (agent/function routing) ── */
+/* ── System default row ── */
 
-.config-override-rows {
+.config-override-system-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.config-override-system-label {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
 }
 
-.config-override-row {
-  display: grid;
-  grid-template-columns: 1fr auto 1fr auto;
+/* ── Agent override cards ── */
+
+.config-agent-override-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.config-agent-override-card:last-child {
+  margin-bottom: 0;
+}
+
+.config-agent-override-header {
+  display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
-.config-override-row-fn {
-  display: grid;
-  grid-template-columns: 1fr 1fr auto 1fr auto;
-  align-items: center;
-  gap: 8px;
-}
-
-.config-override-arrow {
+.config-agent-override-name {
   font-size: 13px;
-  color: var(--text-muted);
-  text-align: center;
-  user-select: none;
+  font-weight: 600;
+  color: var(--text);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
-.config-override-add {
-  margin-top: 4px;
+.config-agent-override-client {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.config-override-inherit-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ── Per-function override rows ── */
+
+.config-fn-override-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.config-fn-override-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 14px 8px 28px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.config-fn-override-row:last-child {
+  border-bottom: none;
+}
+
+.config-fn-override-name {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  flex: 1;
+  min-width: 0;
+}
+
+.config-fn-override-client {
+  flex-shrink: 0;
+}
+
+.config-fn-override-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 8px 14px 8px 28px;
 }
 
 .config-override-empty {

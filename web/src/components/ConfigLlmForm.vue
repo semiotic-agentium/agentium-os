@@ -33,7 +33,7 @@ watch(
   { immediate: true },
 );
 
-// ── Agent discovery for override dropdowns ──
+// ── Agent discovery ──
 
 const discoveredAgents = ref<AgentDiscoveryEntry[]>([]);
 
@@ -44,13 +44,9 @@ onMounted(async () => {
       discoveredAgents.value = (await res.json()) as AgentDiscoveryEntry[];
     }
   } catch {
-    // Non-fatal; dropdowns just show empty agents list
+    // non-fatal
   }
 });
-
-const agentPackages = computed(() =>
-  discoveredAgents.value.map((a) => a.agent_package),
-);
 
 function functionsForAgent(agentPackage: string): string[] {
   const agent = discoveredAgents.value.find((a) => a.agent_package === agentPackage);
@@ -61,7 +57,6 @@ function functionsForAgent(agentPackage: string): string[] {
 
 const clientNames = computed(() => Object.keys(local.value.clients));
 
-/** Group client names by provider for display. Default client is always first. */
 const clientsByProvider = computed(() => {
   const map: Record<string, string[]> = {};
   for (const name of clientNames.value) {
@@ -111,14 +106,10 @@ function getClient(name: string): LlmClientDef {
 
 function setClient(name: string, def: LlmClientDef) {
   const clients = { ...local.value.clients };
-  if (def.name !== name && clients[name]) {
-    delete clients[name];
-  }
+  if (def.name !== name && clients[name]) delete clients[name];
   clients[def.name] = def;
   local.value.clients = clients;
-  if (local.value.default === name && def.name !== name) {
-    local.value.default = def.name;
-  }
+  if (local.value.default === name && def.name !== name) local.value.default = def.name;
   emit("update:modelValue", local.value);
 }
 
@@ -135,28 +126,22 @@ function removeClient(name: string) {
   const clients = { ...local.value.clients };
   delete clients[name];
   local.value.clients = clients;
-  if (local.value.default === name) {
-    local.value.default = clientNames.value[0] ?? "";
-  }
+  if (local.value.default === name) local.value.default = clientNames.value[0] ?? "";
   emit("update:modelValue", local.value);
 }
 
-/** User-editable options only (model, base_url). api_key is never shown or sent; backend injects it. */
 function getModel(clientName: string): string {
   return getClient(clientName).options?.model ?? "";
 }
-
 function setModel(clientName: string, value: string) {
   const opts = { ...(getClient(clientName).options ?? {}) };
   delete opts.api_key;
   opts.model = value.trim();
   setClient(clientName, { ...getClient(clientName), options: opts });
 }
-
 function getBaseUrl(clientName: string): string {
   return getClient(clientName).options?.base_url ?? "";
 }
-
 function setBaseUrl(clientName: string, value: string) {
   const opts = { ...(getClient(clientName).options ?? {}) };
   delete opts.api_key;
@@ -165,120 +150,47 @@ function setBaseUrl(clientName: string, value: string) {
   setClient(clientName, { ...getClient(clientName), options: opts });
 }
 
-// ── Agent overrides (agent → client) ──
+// ── Overrides: card-per-agent model ──
+//
+// Three resolution levels:
+//   1. System default  → local.value.default
+//   2. Agent default   → local.value.overrides.agent[agentPkg]      (empty string = use system default)
+//   3. Per-prompt      → local.value.overrides.agent_function["agentPkg:fn"]  (empty string = use agent default)
 
-interface AgentOverrideRow {
-  agent: string;
-  client: string;
+function getAgentOverride(agentPkg: string): string {
+  return local.value.overrides?.agent?.[agentPkg] ?? "";
 }
 
-interface FnOverrideRow {
-  agent: string;
-  fn: string;
-  client: string;
-}
-
-// Local editing rows — kept as refs so empty in-progress rows stay visible.
-// These are ONLY synced from the model once (on the first prop change / immediate).
-// After that, they are the source of truth until Save.
-const agentOverrideRows = ref<AgentOverrideRow[]>([]);
-const fnOverrideRows = ref<FnOverrideRow[]>([]);
-let overrideRowsInitialized = false;
-
-// One-time sync from model on initial load. We deliberately do NOT watch overrides
-// changes after init to avoid fighting the user's in-progress edits.
-watch(
-  () => props.modelValue,
-  (v) => {
-    if (!overrideRowsInitialized) {
-      agentOverrideRows.value = Object.entries(v.overrides?.agent ?? {}).map(
-        ([agent, client]) => ({ agent, client }),
-      );
-      fnOverrideRows.value = Object.entries(
-        v.overrides?.agent_function ?? {},
-      ).map(([key, client]) => {
-        const colon = key.indexOf(":");
-        const agent = colon >= 0 ? key.slice(0, colon) : key;
-        const fn = colon >= 0 ? key.slice(colon + 1) : "";
-        return { agent, fn, client };
-      });
-      overrideRowsInitialized = true;
-    }
-  },
-  { immediate: true },
-);
-
-function flushAgentOverridesToModel() {
-  const map: Record<string, string> = {};
-  for (const r of agentOverrideRows.value) {
-    if (r.agent && r.client) map[r.agent] = r.client;
+function setAgentOverride(agentPkg: string, client: string) {
+  const agent = { ...(local.value.overrides?.agent ?? {}) };
+  if (client) {
+    agent[agentPkg] = client;
+  } else {
+    delete agent[agentPkg];
   }
-  local.value.overrides = { ...local.value.overrides, agent: map };
+  local.value.overrides = { ...local.value.overrides, agent };
   emit("update:modelValue", local.value);
 }
 
-function addAgentOverride() {
-  agentOverrideRows.value = [...agentOverrideRows.value, { agent: "", client: "" }];
+function getFnOverride(agentPkg: string, fn: string): string {
+  return local.value.overrides?.agent_function?.[`${agentPkg}:${fn}`] ?? "";
 }
 
-function updateAgentOverrideAgent(idx: number, agent: string) {
-  agentOverrideRows.value = agentOverrideRows.value.map((r, i) =>
-    i === idx ? { ...r, agent } : r,
-  );
-  flushAgentOverridesToModel();
-}
-
-function updateAgentOverrideClient(idx: number, client: string) {
-  agentOverrideRows.value = agentOverrideRows.value.map((r, i) =>
-    i === idx ? { ...r, client } : r,
-  );
-  flushAgentOverridesToModel();
-}
-
-function removeAgentOverride(idx: number) {
-  agentOverrideRows.value = agentOverrideRows.value.filter((_, i) => i !== idx);
-  flushAgentOverridesToModel();
-}
-
-// ── Agent:function overrides (agent + function → client) ──
-
-function flushFnOverridesToModel() {
-  const map: Record<string, string> = {};
-  for (const r of fnOverrideRows.value) {
-    if (r.agent && r.fn && r.client) map[`${r.agent}:${r.fn}`] = r.client;
+function setFnOverride(agentPkg: string, fn: string, client: string) {
+  const af = { ...(local.value.overrides?.agent_function ?? {}) };
+  const key = `${agentPkg}:${fn}`;
+  if (client) {
+    af[key] = client;
+  } else {
+    delete af[key];
   }
-  local.value.overrides = { ...local.value.overrides, agent_function: map };
+  local.value.overrides = { ...local.value.overrides, agent_function: af };
   emit("update:modelValue", local.value);
 }
 
-function addFnOverride() {
-  fnOverrideRows.value = [...fnOverrideRows.value, { agent: "", fn: "", client: "" }];
-}
-
-function updateFnOverrideAgent(idx: number, agent: string) {
-  fnOverrideRows.value = fnOverrideRows.value.map((r, i) =>
-    i === idx ? { ...r, agent, fn: "" } : r,
-  );
-  flushFnOverridesToModel();
-}
-
-function updateFnOverrideFn(idx: number, fn: string) {
-  fnOverrideRows.value = fnOverrideRows.value.map((r, i) =>
-    i === idx ? { ...r, fn } : r,
-  );
-  flushFnOverridesToModel();
-}
-
-function updateFnOverrideClient(idx: number, client: string) {
-  fnOverrideRows.value = fnOverrideRows.value.map((r, i) =>
-    i === idx ? { ...r, client } : r,
-  );
-  flushFnOverridesToModel();
-}
-
-function removeFnOverride(idx: number) {
-  fnOverrideRows.value = fnOverrideRows.value.filter((_, i) => i !== idx);
-  flushFnOverridesToModel();
+/** Effective inherited client label for a given agent (for display in function rows). */
+function agentEffectiveLabel(agentPkg: string): string {
+  return getAgentOverride(agentPkg) || local.value.default || "system default";
 }
 
 // ── Validation + Save ──
@@ -286,9 +198,7 @@ function removeFnOverride(idx: number) {
 function validate(): string[] {
   const errors: string[] = [];
   const names = Object.keys(local.value.clients);
-  if (names.length === 0) {
-    errors.push("At least one client is required.");
-  }
+  if (names.length === 0) errors.push("At least one client is required.");
   const seen = new Set<string>();
   for (const name of names) {
     const trimmed = name.trim();
@@ -313,11 +223,7 @@ function onSave() {
   const errors = validate();
   validationErrors.value = errors;
   if (errors.length > 0) return;
-
-  const payload: LlmClientConfig = {
-    ...local.value,
-    clients: { ...local.value.clients },
-  };
+  const payload: LlmClientConfig = { ...local.value, clients: { ...local.value.clients } };
   for (const name of Object.keys(payload.clients)) {
     const def = payload.clients[name];
     if (!def) continue;
@@ -331,13 +237,88 @@ function onSave() {
 
 <template>
   <div class="config-llm-form">
+
+    <!-- ── System default ── -->
     <div class="config-form-section">
-      <h3 class="config-section-title">Default client</h3>
-      <select v-model="defaultClientName" class="config-input config-select">
-        <option v-for="name in clientNames" :key="name" :value="name">{{ name }}</option>
-      </select>
+      <div class="config-override-system-row">
+        <div class="config-override-system-label">
+          <span class="config-section-title">System default</span>
+          <span class="config-hint">All agents use this unless overridden below.</span>
+        </div>
+        <select v-model="defaultClientName" class="config-input config-select">
+          <option v-for="name in clientNames" :key="name" :value="name">{{ name }}</option>
+        </select>
+      </div>
     </div>
 
+    <!-- ── Per-agent override cards ── -->
+    <div class="config-form-section">
+      <h3 class="config-section-title">Agent routing</h3>
+      <p class="config-hint">Set a default client per agent, and optionally override individual prompts.</p>
+
+      <p v-if="discoveredAgents.length === 0" class="config-override-empty">
+        No agents discovered — start the runner to populate this section.
+      </p>
+
+      <div
+        v-for="agent in discoveredAgents"
+        :key="agent.agent_package"
+        class="config-agent-override-card"
+      >
+        <!-- Agent header + agent-level override -->
+        <div class="config-agent-override-header">
+          <span class="config-agent-override-name">{{ agent.agent_package }}</span>
+          <div class="config-agent-override-client">
+            <span class="config-override-inherit-label">uses</span>
+            <select
+              :value="getAgentOverride(agent.agent_package)"
+              class="config-input config-select"
+              :aria-label="'Default client for ' + agent.agent_package"
+              @change="(e) => setAgentOverride(agent.agent_package, (e.target as HTMLSelectElement).value)"
+            >
+              <option value="">{{ local.default }} (system default)</option>
+              <option
+                v-for="c in clientNames"
+                :key="c"
+                :value="c"
+              >{{ c }}</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Per-function overrides -->
+        <div
+          v-if="functionsForAgent(agent.agent_package).length > 0"
+          class="config-fn-override-list"
+        >
+          <div
+            v-for="fn in functionsForAgent(agent.agent_package)"
+            :key="fn"
+            class="config-fn-override-row"
+          >
+            <span class="config-fn-override-name">{{ fn }}</span>
+            <div class="config-fn-override-client">
+              <select
+                :value="getFnOverride(agent.agent_package, fn)"
+                class="config-input config-select"
+                :aria-label="fn + ' client override'"
+                @change="(e) => setFnOverride(agent.agent_package, fn, (e.target as HTMLSelectElement).value)"
+              >
+                <option value="">{{ agentEffectiveLabel(agent.agent_package) }} (inherited)</option>
+                <option
+                  v-for="c in clientNames"
+                  :key="c"
+                  :value="c"
+                >{{ c }}</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <p v-else class="config-fn-override-empty">No BAML functions discovered for this agent.</p>
+      </div>
+    </div>
+
+    <!-- ── LLM clients ── -->
     <div class="config-form-section">
       <div class="config-section-header">
         <h3 class="config-section-title">Clients</h3>
@@ -360,9 +341,7 @@ function onSave() {
               class="config-btn config-btn-ghost"
               title="Remove client"
               @click="removeClient(name)"
-            >
-              Remove
-            </button>
+            >Remove</button>
           </div>
           <div class="config-client-fields">
             <label class="config-label">Provider</label>
@@ -388,116 +367,6 @@ function onSave() {
               @input="(e) => setBaseUrl(name, (e.target as HTMLInputElement).value)"
             />
           </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- ── Agent overrides ── -->
-    <div class="config-form-section">
-      <div class="config-section-header">
-        <h3 class="config-section-title">Agent overrides</h3>
-        <button type="button" class="config-btn config-btn-secondary config-override-add" @click="addAgentOverride">
-          Add
-        </button>
-      </div>
-      <p class="config-hint">Route all calls from a specific agent to a given LLM client.</p>
-
-      <div class="config-override-rows">
-        <p v-if="agentOverrideRows.length === 0" class="config-override-empty">
-          No agent overrides — all agents use the default client.
-        </p>
-        <div
-          v-for="(row, i) in agentOverrideRows"
-          :key="i"
-          class="config-override-row"
-        >
-          <select
-            :value="row.agent"
-            class="config-input"
-            :aria-label="'Agent for override ' + (i + 1)"
-            @change="(e) => updateAgentOverrideAgent(i, (e.target as HTMLSelectElement).value)"
-          >
-            <option value="">Select agent…</option>
-            <option v-for="pkg in agentPackages" :key="pkg" :value="pkg">{{ pkg }}</option>
-          </select>
-          <span class="config-override-arrow">→</span>
-          <select
-            :value="row.client"
-            class="config-input"
-            :aria-label="'Client for override ' + (i + 1)"
-            @change="(e) => updateAgentOverrideClient(i, (e.target as HTMLSelectElement).value)"
-          >
-            <option value="">Select client…</option>
-            <option v-for="c in clientNames" :key="c" :value="c">{{ c }}</option>
-          </select>
-          <button
-            type="button"
-            class="config-btn config-btn-ghost"
-            :aria-label="'Remove agent override ' + (i + 1)"
-            @click="removeAgentOverride(i)"
-          >✕</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- ── Agent:function overrides ── -->
-    <div class="config-form-section">
-      <div class="config-section-header">
-        <h3 class="config-section-title">Function overrides</h3>
-        <button type="button" class="config-btn config-btn-secondary config-override-add" @click="addFnOverride">
-          Add
-        </button>
-      </div>
-      <p class="config-hint">Route a specific BAML function in an agent to a given LLM client.</p>
-
-      <div class="config-override-rows">
-        <p v-if="fnOverrideRows.length === 0" class="config-override-empty">
-          No function overrides — all functions use the agent or default client.
-        </p>
-        <div
-          v-for="(row, i) in fnOverrideRows"
-          :key="i"
-          class="config-override-row-fn"
-        >
-          <select
-            :value="row.agent"
-            class="config-input"
-            :aria-label="'Agent for fn override ' + (i + 1)"
-            @change="(e) => updateFnOverrideAgent(i, (e.target as HTMLSelectElement).value)"
-          >
-            <option value="">Select agent…</option>
-            <option v-for="pkg in agentPackages" :key="pkg" :value="pkg">{{ pkg }}</option>
-          </select>
-          <select
-            :value="row.fn"
-            class="config-input"
-            :disabled="!row.agent"
-            :aria-label="'Function for fn override ' + (i + 1)"
-            @change="(e) => updateFnOverrideFn(i, (e.target as HTMLSelectElement).value)"
-          >
-            <option value="">Select function…</option>
-            <option
-              v-for="fn in functionsForAgent(row.agent)"
-              :key="fn"
-              :value="fn"
-            >{{ fn }}</option>
-          </select>
-          <span class="config-override-arrow">→</span>
-          <select
-            :value="row.client"
-            class="config-input"
-            :aria-label="'Client for fn override ' + (i + 1)"
-            @change="(e) => updateFnOverrideClient(i, (e.target as HTMLSelectElement).value)"
-          >
-            <option value="">Select client…</option>
-            <option v-for="c in clientNames" :key="c" :value="c">{{ c }}</option>
-          </select>
-          <button
-            type="button"
-            class="config-btn config-btn-ghost"
-            :aria-label="'Remove fn override ' + (i + 1)"
-            @click="removeFnOverride(i)"
-          >✕</button>
         </div>
       </div>
     </div>
