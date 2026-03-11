@@ -172,16 +172,45 @@ interface AgentOverrideRow {
   client: string;
 }
 
-const agentOverrideRows = computed<AgentOverrideRow[]>(() =>
-  Object.entries(local.value.overrides?.agent ?? {}).map(([agent, client]) => ({
-    agent,
-    client,
-  })),
+interface FnOverrideRow {
+  agent: string;
+  fn: string;
+  client: string;
+}
+
+// Local editing rows — kept as refs so empty in-progress rows stay visible.
+// These are ONLY synced from the model once (on the first prop change / immediate).
+// After that, they are the source of truth until Save.
+const agentOverrideRows = ref<AgentOverrideRow[]>([]);
+const fnOverrideRows = ref<FnOverrideRow[]>([]);
+let overrideRowsInitialized = false;
+
+// One-time sync from model on initial load. We deliberately do NOT watch overrides
+// changes after init to avoid fighting the user's in-progress edits.
+watch(
+  () => props.modelValue,
+  (v) => {
+    if (!overrideRowsInitialized) {
+      agentOverrideRows.value = Object.entries(v.overrides?.agent ?? {}).map(
+        ([agent, client]) => ({ agent, client }),
+      );
+      fnOverrideRows.value = Object.entries(
+        v.overrides?.agent_function ?? {},
+      ).map(([key, client]) => {
+        const colon = key.indexOf(":");
+        const agent = colon >= 0 ? key.slice(0, colon) : key;
+        const fn = colon >= 0 ? key.slice(colon + 1) : "";
+        return { agent, fn, client };
+      });
+      overrideRowsInitialized = true;
+    }
+  },
+  { immediate: true },
 );
 
-function setAgentOverrides(rows: AgentOverrideRow[]) {
+function flushAgentOverridesToModel() {
   const map: Record<string, string> = {};
-  for (const r of rows) {
+  for (const r of agentOverrideRows.value) {
     if (r.agent && r.client) map[r.agent] = r.client;
   }
   local.value.overrides = { ...local.value.overrides, agent: map };
@@ -189,49 +218,33 @@ function setAgentOverrides(rows: AgentOverrideRow[]) {
 }
 
 function addAgentOverride() {
-  const rows = [...agentOverrideRows.value, { agent: "", client: "" }];
-  setAgentOverrides(rows);
+  agentOverrideRows.value = [...agentOverrideRows.value, { agent: "", client: "" }];
 }
 
 function updateAgentOverrideAgent(idx: number, agent: string) {
-  const rows = agentOverrideRows.value.map((r, i) =>
+  agentOverrideRows.value = agentOverrideRows.value.map((r, i) =>
     i === idx ? { ...r, agent } : r,
   );
-  setAgentOverrides(rows);
+  flushAgentOverridesToModel();
 }
 
 function updateAgentOverrideClient(idx: number, client: string) {
-  const rows = agentOverrideRows.value.map((r, i) =>
+  agentOverrideRows.value = agentOverrideRows.value.map((r, i) =>
     i === idx ? { ...r, client } : r,
   );
-  setAgentOverrides(rows);
+  flushAgentOverridesToModel();
 }
 
 function removeAgentOverride(idx: number) {
-  const rows = agentOverrideRows.value.filter((_, i) => i !== idx);
-  setAgentOverrides(rows);
+  agentOverrideRows.value = agentOverrideRows.value.filter((_, i) => i !== idx);
+  flushAgentOverridesToModel();
 }
 
 // ── Agent:function overrides (agent + function → client) ──
 
-interface FnOverrideRow {
-  agent: string;
-  fn: string;
-  client: string;
-}
-
-const fnOverrideRows = computed<FnOverrideRow[]>(() =>
-  Object.entries(local.value.overrides?.agent_function ?? {}).map(([key, client]) => {
-    const colon = key.indexOf(":");
-    const agent = colon >= 0 ? key.slice(0, colon) : key;
-    const fn = colon >= 0 ? key.slice(colon + 1) : "";
-    return { agent, fn, client };
-  }),
-);
-
-function setFnOverrides(rows: FnOverrideRow[]) {
+function flushFnOverridesToModel() {
   const map: Record<string, string> = {};
-  for (const r of rows) {
+  for (const r of fnOverrideRows.value) {
     if (r.agent && r.fn && r.client) map[`${r.agent}:${r.fn}`] = r.client;
   }
   local.value.overrides = { ...local.value.overrides, agent_function: map };
@@ -239,34 +252,33 @@ function setFnOverrides(rows: FnOverrideRow[]) {
 }
 
 function addFnOverride() {
-  const rows = [...fnOverrideRows.value, { agent: "", fn: "", client: "" }];
-  setFnOverrides(rows);
+  fnOverrideRows.value = [...fnOverrideRows.value, { agent: "", fn: "", client: "" }];
 }
 
 function updateFnOverrideAgent(idx: number, agent: string) {
-  const rows = fnOverrideRows.value.map((r, i) =>
+  fnOverrideRows.value = fnOverrideRows.value.map((r, i) =>
     i === idx ? { ...r, agent, fn: "" } : r,
   );
-  setFnOverrides(rows);
+  flushFnOverridesToModel();
 }
 
 function updateFnOverrideFn(idx: number, fn: string) {
-  const rows = fnOverrideRows.value.map((r, i) =>
+  fnOverrideRows.value = fnOverrideRows.value.map((r, i) =>
     i === idx ? { ...r, fn } : r,
   );
-  setFnOverrides(rows);
+  flushFnOverridesToModel();
 }
 
 function updateFnOverrideClient(idx: number, client: string) {
-  const rows = fnOverrideRows.value.map((r, i) =>
+  fnOverrideRows.value = fnOverrideRows.value.map((r, i) =>
     i === idx ? { ...r, client } : r,
   );
-  setFnOverrides(rows);
+  flushFnOverridesToModel();
 }
 
 function removeFnOverride(idx: number) {
-  const rows = fnOverrideRows.value.filter((_, i) => i !== idx);
-  setFnOverrides(rows);
+  fnOverrideRows.value = fnOverrideRows.value.filter((_, i) => i !== idx);
+  flushFnOverridesToModel();
 }
 
 // ── Validation + Save ──
