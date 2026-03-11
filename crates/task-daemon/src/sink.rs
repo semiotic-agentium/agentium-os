@@ -63,6 +63,9 @@ impl TaskSink for SourceFilteredSink {
     }
 
     async fn deliver(&mut self, dispatch: &TaskDispatch) -> Result<()> {
+        if !self.accepts_source(dispatch.batch.source) {
+            return Ok(());
+        }
         self.inner.deliver(dispatch).await
     }
 }
@@ -1017,6 +1020,11 @@ fn correlation_id() -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     use super::*;
     use crate::{
         contract::{ContractSource, InterpretationRequestEvent},
@@ -1065,6 +1073,22 @@ mod tests {
             None,
         );
         TaskDispatch::from_batch(request, batch)
+    }
+
+    struct RecordingSink {
+        deliveries: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl TaskSink for RecordingSink {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        async fn deliver(&mut self, _dispatch: &TaskDispatch) -> Result<()> {
+            self.deliveries.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
     }
 
     #[test]
@@ -1280,6 +1304,35 @@ mod tests {
                 .contains("clickup sink cannot consume clickup-origin batches"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[tokio::test]
+    async fn source_filtered_sink_skips_direct_delivery_for_disallowed_source() {
+        let deliveries = Arc::new(AtomicUsize::new(0));
+        let recording_sink = RecordingSink {
+            deliveries: Arc::clone(&deliveries),
+        };
+        let mut sink =
+            SourceFilteredSink::new(Box::new(recording_sink), vec![TaskSourceKind::Slack]);
+        let dispatch = sample_dispatch(TaskBatch {
+            source: TaskSourceKind::Clickup,
+            source_label: "clickup:list:901325431486".to_string(),
+            generated_at_unix: 1_735_720_000,
+            messages_scanned: 1,
+            project: ProjectContext {
+                project_key: "agent-platform".to_string(),
+                repo_available: true,
+                repo_path: Some("/repo/agent-platform".to_string()),
+            },
+            interpretation: ProjectInterpretation::default(),
+            derived_tasks: Vec::new(),
+        });
+
+        sink.deliver(&dispatch)
+            .await
+            .expect("disallowed sources should be ignored");
+
+        assert_eq!(deliveries.load(Ordering::SeqCst), 0);
     }
 
     #[test]

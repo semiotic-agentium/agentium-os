@@ -40,7 +40,7 @@ fn filter_and_page(
             required_capabilities.iter().all(|required| {
                 dto.capabilities
                     .iter()
-                    .any(|capability| capability == required)
+                    .any(|capability| capability.trim().to_lowercase() == *required)
             })
         })
         .filter(|dto| {
@@ -61,7 +61,7 @@ fn filter_and_page(
 fn normalize_required_capabilities(raw: Option<Vec<String>>) -> BTreeSet<String> {
     raw.unwrap_or_default()
         .into_iter()
-        .map(|capability| capability.trim().to_string())
+        .map(|capability| capability.trim().to_lowercase())
         .filter(|capability| !capability.is_empty())
         .collect()
 }

@@ -166,6 +166,7 @@ impl InterpretationResultEvent {
     pub fn from_batch(request: &InterpretationRequestEvent, batch: &TaskBatch) -> Self {
         Self::from_request(
             request,
+            batch.messages_scanned,
             batch.interpretation.clone(),
             batch.derived_tasks.clone(),
         )
@@ -174,6 +175,7 @@ impl InterpretationResultEvent {
     /// Creates a result event from an interpretation request and its output.
     pub fn from_request(
         request: &InterpretationRequestEvent,
+        messages_scanned: usize,
         interpretation: ProjectInterpretation,
         derived_tasks: Vec<InvestigationTask>,
     ) -> Self {
@@ -190,7 +192,7 @@ impl InterpretationResultEvent {
             emitted_at_unix: unix_now(),
             source: request.source.clone(),
             project: request.project.clone(),
-            messages_scanned: request.messages.len(),
+            messages_scanned,
             interpretation,
             derived_tasks,
             provenance,
@@ -410,6 +412,7 @@ mod tests {
         );
         let result = InterpretationResultEvent::from_request(
             &request,
+            request.messages.len(),
             ProjectInterpretation {
                 executive_summary: "Interpretation summary".to_string(),
                 workflow_seed: WorkflowSeed {
@@ -450,6 +453,7 @@ mod tests {
         );
         let result = InterpretationResultEvent::from_request(
             &request,
+            request.messages.len(),
             ProjectInterpretation {
                 executive_summary: "Summary".to_string(),
                 ..ProjectInterpretation::default()
@@ -500,5 +504,26 @@ mod tests {
         let result = InterpretationResultEvent::from_batch(&request, &batch);
         assert_eq!(result.request_event_id, request.event_id);
         assert_eq!(result.derived_tasks.len(), 1);
+    }
+
+    #[test]
+    fn result_event_from_batch_uses_batch_messages_scanned_for_non_message_sources() {
+        let request =
+            InterpretationRequestEvent::new(sample_source(), sample_project(), vec![], None);
+        let batch = TaskBatch {
+            source: TaskSourceKind::Clickup,
+            source_label: "ClickUp list".to_string(),
+            generated_at_unix: 1_735_689_700,
+            messages_scanned: 4,
+            project: sample_project(),
+            interpretation: ProjectInterpretation {
+                executive_summary: "Summary".to_string(),
+                ..ProjectInterpretation::default()
+            },
+            derived_tasks: Vec::new(),
+        };
+
+        let result = InterpretationResultEvent::from_batch(&request, &batch);
+        assert_eq!(result.messages_scanned, 4);
     }
 }

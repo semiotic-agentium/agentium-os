@@ -1053,62 +1053,83 @@ impl<T> OptionalExt<T> for std::result::Result<T, rusqlite::Error> {
 }
 
 fn rebuild_entries_fts(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "DROP TABLE IF EXISTS entries_fts;
-         CREATE VIRTUAL TABLE entries_fts USING fts5(
-             hash,
-             agent_name,
-             source_text,
-             manifest_text,
-             tokenize='porter unicode61'
-         );",
-    )
-    .map_err(|e| RepositoryError::StorageWrite {
-        source: Box::new(e),
-    })?;
-
-    let mut stmt = conn
-        .prepare("SELECT hash, agent_name, source_json FROM entries ORDER BY rowid ASC")
-        .map_err(|e| RepositoryError::StorageRead {
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| RepositoryError::StorageWrite {
             source: Box::new(e),
         })?;
 
-    let entries = stmt
-        .query_map([], |row| {
-            let hash: String = row.get(0)?;
-            let agent_name: String = row.get(1)?;
-            let source_json: String = row.get(2)?;
-            Ok((hash, agent_name, source_json))
-        })
-        .map_err(|e| RepositoryError::StorageRead {
-            source: Box::new(e),
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|e| RepositoryError::StorageRead {
-            source: Box::new(e),
-        })?;
-
-    for (hash, agent_name, source_json) in entries {
-        let source: SourceBundle =
-            serde_json::from_str(&source_json).map_err(|e| RepositoryError::StorageRead {
-                source: Box::new(e),
-            })?;
-        conn.execute(
-            "INSERT INTO entries_fts (hash, agent_name, source_text, manifest_text)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                hash,
-                agent_name,
-                source_bundle_text(&source),
-                manifest_index_text(&source),
-            ],
+    let result = (|| -> Result<()> {
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS entries_fts;
+             CREATE VIRTUAL TABLE entries_fts USING fts5(
+                 hash,
+                 agent_name,
+                 source_text,
+                 manifest_text,
+                 tokenize='porter unicode61'
+             );",
         )
         .map_err(|e| RepositoryError::StorageWrite {
             source: Box::new(e),
         })?;
-    }
 
-    Ok(())
+        let mut stmt = conn
+            .prepare("SELECT hash, agent_name, source_json FROM entries ORDER BY rowid ASC")
+            .map_err(|e| RepositoryError::StorageRead {
+                source: Box::new(e),
+            })?;
+
+        let entries = stmt
+            .query_map([], |row| {
+                let hash: String = row.get(0)?;
+                let agent_name: String = row.get(1)?;
+                let source_json: String = row.get(2)?;
+                Ok((hash, agent_name, source_json))
+            })
+            .map_err(|e| RepositoryError::StorageRead {
+                source: Box::new(e),
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| RepositoryError::StorageRead {
+                source: Box::new(e),
+            })?;
+
+        for (hash, agent_name, source_json) in entries {
+            let source: SourceBundle =
+                serde_json::from_str(&source_json).map_err(|e| RepositoryError::StorageRead {
+                    source: Box::new(e),
+                })?;
+            conn.execute(
+                "INSERT INTO entries_fts (hash, agent_name, source_text, manifest_text)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    hash,
+                    agent_name,
+                    source_bundle_text(&source),
+                    manifest_index_text(&source),
+                ],
+            )
+            .map_err(|e| RepositoryError::StorageWrite {
+                source: Box::new(e),
+            })?;
+        }
+
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")
+                .map_err(|e| RepositoryError::StorageWrite {
+                    source: Box::new(e),
+                })?;
+            Ok(())
+        }
+        Err(err) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(err)
+        }
+    }
 }
 
 fn source_bundle_text(source: &SourceBundle) -> String {
@@ -1363,5 +1384,109 @@ fn row_to_header(row: &rusqlite::Row<'_>) -> RepositoryEntryHeader {
         description,
         tools,
         capabilities,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entry::{ManifestSource, SourceBundle, SourceContent, SourceFile, SourcePath};
+
+    fn sample_source_bundle(unique: &str) -> SourceBundle {
+        SourceBundle {
+            manifest: ManifestSource::new(serde_json::json!({
+                "name": "fts-test-agent",
+                "version": "1",
+                "tools": ["calculator"],
+                "discovery": {
+                    "description": "FTS rebuild test fixture",
+                    "capabilities": ["a2a"]
+                }
+            })),
+            ts_sources: vec![SourceFile {
+                path: SourcePath::new("src/index.ts").expect("valid path"),
+                content: SourceContent::new(format!("export const token = \"{unique}\";")),
+            }],
+            baml_sources: Vec::new(),
+        }
+    }
+
+    fn insert_entry_row(
+        conn: &Connection,
+        hash: &str,
+        agent_name: &str,
+        version: i64,
+        source_json: &str,
+    ) -> std::result::Result<(), rusqlite::Error> {
+        conn.execute(
+            "INSERT INTO entries (
+                hash, agent_name, version, generation, parentage_json,
+                source_json, change_rationale, created_at, manifest_description,
+                manifest_tools_json, manifest_capabilities_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                hash,
+                agent_name,
+                version,
+                0_i64,
+                serde_json::to_string(&Parentage::Original).expect("serialize parentage"),
+                source_json,
+                "test fixture",
+                "2026-03-11T00:00:00Z",
+                "fixture description",
+                "[]",
+                "[]",
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn rebuild_entries_fts_rolls_back_when_repopulation_fails() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        conn.execute_batch(SCHEMA_SQL).expect("create schema");
+
+        let valid_source = sample_source_bundle("valid");
+        let valid_hash = valid_source.compute_hash().to_string();
+        let valid_source_json =
+            serde_json::to_string(&valid_source).expect("serialize valid source bundle");
+        insert_entry_row(&conn, &valid_hash, "fts-test-agent", 1, &valid_source_json)
+            .expect("insert valid entry");
+
+        rebuild_entries_fts(&conn).expect("initial FTS rebuild");
+
+        let initial_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entries_fts", [], |row| row.get(0))
+            .expect("count initial FTS rows");
+        assert_eq!(initial_rows, 1);
+
+        insert_entry_row(
+            &conn,
+            "hash-invalid",
+            "fts-test-agent-invalid",
+            2,
+            "{not-json",
+        )
+        .expect("insert invalid entry");
+
+        let err = rebuild_entries_fts(&conn).expect_err("malformed source_json should fail");
+        assert!(
+            matches!(err, RepositoryError::StorageRead { .. }),
+            "unexpected error: {err:#}"
+        );
+
+        let fts_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entries_fts", [], |row| row.get(0))
+            .expect("FTS table should still exist after rollback");
+        assert_eq!(fts_rows, 1);
+
+        let hashes: Vec<String> = conn
+            .prepare("SELECT hash FROM entries_fts ORDER BY rowid")
+            .expect("prepare FTS hash query")
+            .query_map([], |row| row.get(0))
+            .expect("query FTS hashes")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("collect FTS hashes");
+        assert_eq!(hashes, vec![valid_hash]);
     }
 }
