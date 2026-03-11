@@ -21,7 +21,7 @@ async fn test_cli_package_agent() {
     let output_dir = TempDir::new().unwrap();
     let output_path = output_dir.path().join("test-agent.tar.gz");
 
-    baml_rt_builder::build_agent_package(&agent_dir, &output_path, false)
+    baml_rt_builder::build_agent_package(&agent_dir, &output_path)
         .await
         .expect("Packaging should succeed");
     assert!(output_path.exists(), "Package file should be created");
@@ -94,7 +94,7 @@ async fn test_full_integration_package_load_execute() {
     let package_dir = TempDir::new().unwrap();
     let package_path = package_dir.path().join("stream-baml-tool.tar.gz");
 
-    baml_rt_builder::build_agent_package(&agent_dir, &package_path, false)
+    baml_rt_builder::build_agent_package(&agent_dir, &package_path)
         .await
         .expect("Packaging failed");
 

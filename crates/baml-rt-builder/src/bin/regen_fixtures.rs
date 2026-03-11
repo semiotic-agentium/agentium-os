@@ -1,10 +1,9 @@
-use std::{
-    io::Write,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context as _, Result, bail};
-use baml_rt_builder::builder::{BuildDir, RuntimeTypeGenerator, TypeGenerator};
+use anyhow::{Context as _, Result};
+use baml_rt_builder::builder::{
+    AgentDir, BuildDir, RuntimeTypeGenerator, TypeGenerator, compiler::TSCONFIG_JSON,
+};
 use baml_rt_tools_claude as _; // Force link so claude tool metadata is in inventory
 #[cfg(feature = "slack")]
 use baml_tools_slack as _; // Force link so slack tool metadata is in inventory
@@ -25,28 +24,15 @@ fn agents_dir() -> Result<PathBuf> {
     Ok(workspace_root.join("tests").join("fixtures").join("agents"))
 }
 
-fn copy_runtime_d_ts(build_dir: &BuildDir, dest_src: &Path) -> Result<()> {
-    let d_ts_src = build_dir.join("dist").join("baml-runtime.d.ts");
-    let d_ts_dest = dest_src.join("baml-runtime.d.ts");
-    if !d_ts_src.exists() {
-        bail!("baml-runtime.d.ts was not generated");
-    }
-    std::fs::create_dir_all(dest_src)?;
-    let data = std::fs::read(&d_ts_src)?;
-    let mut tmp = tempfile::NamedTempFile::new_in(dest_src)?;
-    tmp.write_all(&data)?;
-    tmp.persist(&d_ts_dest).map_err(|e| e.error)?;
-    Ok(())
-}
-
 async fn regen_fixture(root: &Path) -> Result<()> {
-    let baml_src = root.join("baml_src");
-    let src_dir = root.join("src");
+    // Ensure canonical tsconfig.json
+    std::fs::write(root.join("tsconfig.json"), TSCONFIG_JSON)?;
 
+    let agent_dir = AgentDir::new(root.to_path_buf())?;
     let build_dir = BuildDir::new()?;
     let generator = RuntimeTypeGenerator::new();
-    generator.generate(&baml_src, &build_dir).await?;
-    copy_runtime_d_ts(&build_dir, &src_dir)?;
+    // This writes src/baml-runtime.d.ts directly into the agent's source tree.
+    generator.generate(&agent_dir, &build_dir).await?;
     Ok(())
 }
 

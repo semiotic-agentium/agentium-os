@@ -61,7 +61,7 @@ pub async fn build_fixture_package_to_temp(fixture_name: &str) -> PathBuf {
     let _ = fs::remove_dir_all(&extract_dir);
     fs::create_dir_all(&extract_dir).expect("create extract dir");
 
-    baml_rt_builder::build_agent_package(&agent_dir, &tar_path, false)
+    baml_rt_builder::build_agent_package(&agent_dir, &tar_path)
         .await
         .unwrap_or_else(|e| panic!("build fixture {fixture_name} failed: {e}"));
 
@@ -105,7 +105,7 @@ pub async fn build_agent_package_to_temp(agent_dir: PathBuf, package_label: &str
     let _ = fs::remove_dir_all(&extract_dir);
     fs::create_dir_all(&extract_dir).expect("create extract dir");
 
-    baml_rt_builder::build_agent_package(&agent_dir, &tar_path, false)
+    baml_rt_builder::build_agent_package(&agent_dir, &tar_path)
         .await
         .unwrap_or_else(|e| panic!("build agent {package_label} failed: {e}"));
 

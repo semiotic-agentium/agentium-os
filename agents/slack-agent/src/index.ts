@@ -1,29 +1,4 @@
-type ChatPart = {
-  text?: string;
-};
-
-type ChatMessage = {
-  parts?: ChatPart[];
-  __baml_invocation_token?: string;
-};
-
-type AgentTurnResponse = {
-  message?: string;
-  error?: string;
-};
-
-type SessionApi = {
-  run(
-    fn: () => Promise<AgentTurnResponse> | AgentTurnResponse,
-  ): Promise<void>;
-  text(): string | null;
-};
-
-declare function session(message: ChatMessage): SessionApi;
-
-declare function __chat_register(args: {
-  onChatMessage: (message: ChatMessage) => Promise<void> | void;
-}): void;
+/// <reference path="./baml-runtime.d.ts" />
 
 type ToolSessionHandle = {
   send(args: Record<string, unknown>): Promise<unknown>;

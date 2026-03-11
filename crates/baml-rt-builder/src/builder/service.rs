@@ -2,61 +2,50 @@
 
 use crate::builder::{
     error::Result,
-    traits::{Linter, Packager, TypeGenerator, TypeScriptCompiler},
+    traits::{Packager, TypeGenerator, TypeScriptCompiler},
     types::{AgentDir, BuildDir},
 };
 
-/// Service that orchestrates the agent building process
-pub struct BuilderService<L, TC, TG, P> {
-    linter: L,
+/// Service that orchestrates the agent building process.
+///
+/// Pipeline: generate types → compile TypeScript (with type checking) → package.
+pub struct BuilderService<TC, TG, P> {
     ts_compiler: TC,
     type_generator: TG,
     packager: P,
 }
 
-impl<L, TC, TG, P> BuilderService<L, TC, TG, P>
+impl<TC, TG, P> BuilderService<TC, TG, P>
 where
-    L: Linter,
     TC: TypeScriptCompiler,
     TG: TypeGenerator,
     P: Packager,
 {
-    pub fn new(linter: L, ts_compiler: TC, type_generator: TG, packager: P) -> Self {
+    pub fn new(ts_compiler: TC, type_generator: TG, packager: P) -> Self {
         Self {
-            linter,
             ts_compiler,
             type_generator,
             packager,
         }
     }
 
-    /// Build a complete agent package
+    /// Build a complete agent package.
     pub async fn build_package(
         &self,
         agent_dir: &AgentDir,
         build_dir: &BuildDir,
         output: &std::path::Path,
-        lint: bool,
     ) -> Result<()> {
-        // Stage 1: Lint (if enabled) — Oxlint (same project as OXC)
-        if lint {
-            println!("\n🔍 Linting source code...");
-            self.linter.lint(agent_dir).await?;
-        }
-
-        // Stage 2: Generate runtime type declarations from BAML runtime
+        // Stage 1: Generate runtime type declarations (writes src/baml-runtime.d.ts)
         println!("\n📝 Generating runtime type declarations...");
-        self.type_generator
-            .generate(&agent_dir.baml_src(), build_dir)
-            .await?;
+        self.type_generator.generate(agent_dir, build_dir).await?;
 
-        // Stage 3: Compile TypeScript
+        // Stage 2: Compile TypeScript (tsc performs full type checking during compilation)
         println!("\n⚙️  Compiling TypeScript...");
-        let src_dir = agent_dir.src();
         let dist_dir = build_dir.join("dist");
-        self.ts_compiler.compile(&src_dir, &dist_dir).await?;
+        self.ts_compiler.compile(agent_dir, &dist_dir).await?;
 
-        // Stage 4: Package
+        // Stage 3: Package
         println!("\n📦 Packaging agent...");
         self.packager.package(agent_dir, build_dir, output).await?;
 

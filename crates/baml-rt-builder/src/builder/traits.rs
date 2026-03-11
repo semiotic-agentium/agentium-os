@@ -10,26 +10,24 @@ use crate::builder::{
     types::{AgentDir, BuildDir},
 };
 
-/// Trait for linting source code
-#[async_trait::async_trait]
-pub trait Linter: Send + Sync {
-    /// Lint the source code in the given agent directory
-    async fn lint(&self, agent_dir: &AgentDir) -> Result<()>;
-}
-
-/// Trait for compiling TypeScript to JavaScript
+/// Trait for compiling TypeScript to JavaScript.
+///
+/// Implementations receive the full `AgentDir` (so they can locate the agent's
+/// `tsconfig.json` and `src/`) and a `dist_dir` for compiled output.
 #[async_trait::async_trait]
 pub trait TypeScriptCompiler: Send + Sync {
-    /// Compile TypeScript files from source directory to dist directory
-    async fn compile(&self, src_dir: &Path, dist_dir: &Path) -> Result<()>;
+    /// Compile TypeScript files from the agent's `src/` to `dist_dir`.
+    async fn compile(&self, agent_dir: &AgentDir, dist_dir: &Path) -> Result<()>;
 }
 
-/// Trait for generating runtime type declarations
+/// Trait for generating runtime type declarations.
+///
+/// Implementations receive the full `AgentDir` so they can write generated
+/// files (e.g. `src/baml-runtime.d.ts`) directly into the agent tree.
 #[async_trait::async_trait]
 pub trait TypeGenerator: Send + Sync {
-    /// Generate TypeScript type declarations for runtime host functions
-    /// Takes the baml_src directory to load the BAML runtime and discover functions
-    async fn generate(&self, baml_src: &Path, build_dir: &BuildDir) -> Result<()>;
+    /// Generate TypeScript type declarations and BAML tool interfaces.
+    async fn generate(&self, agent_dir: &AgentDir, build_dir: &BuildDir) -> Result<()>;
 }
 
 /// Trait for file system operations

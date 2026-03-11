@@ -13,10 +13,10 @@ use std::{fs, path::Path};
 use baml_rt_core::{AgentManifest, package::ManifestDiscovery};
 
 use crate::builder::{
-    compiler::RuntimeTypeGenerator,
+    compiler::{RuntimeTypeGenerator, TSCONFIG_JSON},
     error::{BamlBuilderError, Result},
     traits::TypeGenerator,
-    types::BuildDir,
+    types::{AgentDir, BuildDir},
 };
 
 /// Slug for directory/manifest: kebab-case, alphanumeric and hyphens only.
@@ -103,11 +103,17 @@ pub async fn run_bootstrap(
     let index_ts = index_ts_template(&prompt_name, tool_ids.is_empty());
     fs::write(src_dir.join("index.ts"), index_ts)?;
 
+    // Write the canonical tsconfig.json
+    fs::write(root.join("tsconfig.json"), TSCONFIG_JSON)?;
+
+    // Run type generation — writes src/baml-runtime.d.ts and generated BAML files
+    let agent_dir = AgentDir::new(root.to_path_buf())?;
     let build_dir = BuildDir::new()?;
     let generator = RuntimeTypeGenerator::new();
-    generator.generate(&baml_src, &build_dir).await?;
+    generator.generate(&agent_dir, &build_dir).await?;
 
-    // Copy generated BAML (e.g. generated_tools.baml, generated_session_coordination.baml) from build_dir/baml_src into the bootstrapped agent's baml_src.
+    // Copy generated BAML (e.g. generated_tools.baml, generated_session_coordination.baml)
+    // from build_dir/baml_src into the bootstrapped agent's baml_src.
     let baml_src_build = build_dir.join("baml_src");
     if baml_src_build.exists() {
         for entry in fs::read_dir(&baml_src_build).map_err(BamlBuilderError::Io)? {
@@ -119,22 +125,6 @@ pub async fn run_bootstrap(
             }
         }
     }
-
-    let d_ts_src = build_dir.join("dist").join("baml-runtime.d.ts");
-    let d_ts_dest = src_dir.join("baml-runtime.d.ts");
-    if !d_ts_src.exists() {
-        return Err(BamlBuilderError::InvalidArgument(
-            "baml-runtime.d.ts was not generated during bootstrap".to_string(),
-        ));
-    }
-    fs::copy(&d_ts_src, &d_ts_dest)?;
-
-    let tsconfig = r#"{
-  "compilerOptions": { "strict": true, "skipLibCheck": true },
-  "include": ["src/**/*"]
-}
-"#;
-    fs::write(root.join("tsconfig.json"), tsconfig)?;
 
     Ok(())
 }

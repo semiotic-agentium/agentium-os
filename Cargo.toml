@@ -100,13 +100,6 @@ sha2 = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 flate2 = "1"
 tar = "0.4"
-# OXC (TypeScript compilation)
-oxc_parser = "0"
-oxc_allocator = "0"
-oxc_span = "0"
-oxc_codegen = "0"
-oxc_transformer = "0"
-oxc_semantic = "0"
 quickjs_runtime = "0.15"
 # Agent memory
 agentic-memory = "0.2.6"

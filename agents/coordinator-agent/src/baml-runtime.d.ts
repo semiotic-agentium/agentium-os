@@ -6,9 +6,12 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface ActionableGoal { goal: string;
-owner: string | null;
-due_date: string | null;
+export interface AgentCandidate { agent_package: string;
+agent_instance_id: string;
+name: string;
+description: string | null;
+capabilities: string[];
+tools: string[];
  }
 
 export interface CoordinatorAnswer { answer: string;
@@ -19,11 +22,27 @@ gaps: string[];
 clarification_question: string | null;
  }
 
+export interface NormalizedIterableOutput { items_json: string;
+confidence: number;
+notes: string[];
+ }
+
+export interface WorkflowPlan { goal: string;
+nodes: WorkflowNode[];
+final_node_id: string | null;
+ }
+
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
 declare global {
 
-declare function SynthesizeCoordinatorResponse(args: { user_message: string; delegated_transcript: string; conversation_context?: string | null }): Promise<CoordinatorAnswer>;
+declare function NormalizeIterableOutput(args: { user_message: string; producer_output_text: string | null; producer_output_data_json: string | null; consumer_action_hint: string | null; required_item_fields: string[]; max_items: number | null } & { __baml_invocation_token?: string }): Promise<NormalizedIterableOutput>;
+
+declare function PlanCoordinatorWorkflow(args: { user_message: string; available_agents: AgentCandidate[]; conversation_context: string | null } & { __baml_invocation_token?: string }): Promise<WorkflowPlan>;
+
+declare function PlanCoordinatorWorkflowBestEffort(args: { user_message: string; available_agents: AgentCandidate[]; conversation_context: string | null } & { __baml_invocation_token?: string }): Promise<WorkflowPlan>;
+
+declare function SynthesizeCoordinatorResponse(args: { user_message: string; delegated_transcript: string; conversation_context: string | null } & { __baml_invocation_token?: string }): Promise<CoordinatorAnswer>;
 
 }
 
@@ -184,6 +203,14 @@ export interface BamlAgent {
   tools?: Record<string, (args: unknown) => Promise<unknown>>;
 }
 declare global {
+  /** Minimal console interface matching the QuickJS sandbox polyfill (log, info, warn, error, debug). */
+  var console: {
+    log(...args: unknown[]): void;
+    info(...args: unknown[]): void;
+    warn(...args: unknown[]): void;
+    error(...args: unknown[]): void;
+    debug(...args: unknown[]): void;
+  };
   /**
    * Global alias for incoming chat messages in agent entrypoints.
    * This keeps bootstrap/index.ts ergonomic without local type shims.

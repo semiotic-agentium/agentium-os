@@ -7,27 +7,30 @@
 import type { SessionResult } from "./baml-runtime";
 
 const FALLBACK = "Yes it is.";
-const TIMEOUT_MS = 1200;
 
 __chat_register({
   run: async (ctx): Promise<SessionResult> => {
     const text = ctx.text || "Nothing.";
     try {
-      const reply = await Promise.race([
-        ArgumentReply({ other_message: text }),
-        new Promise<string>((resolve) => setTimeout(() => resolve(FALLBACK), TIMEOUT_MS)),
-      ]);
-      const line = typeof reply === "string" ? reply : FALLBACK;
-      ctx.emit.message(line);
+      let reply: string;
+      try {
+        const result = await ArgumentReply({ other_message: text });
+        reply = typeof result === "string" ? result : FALLBACK;
+      } catch {
+        reply = FALLBACK;
+      }
+      ctx.emit.message(reply);
       const nextMessage = await ctx.emit.awaitInput("Your next line?");
       const nextText = messageText(nextMessage) || "Nothing.";
-      const secondReply = await Promise.race([
-        ArgumentReply({ other_message: nextText }),
-        new Promise<string>((resolve) => setTimeout(() => resolve(FALLBACK), TIMEOUT_MS)),
-      ]);
-      const secondLine = typeof secondReply === "string" ? secondReply : FALLBACK;
-      ctx.emit.message(secondLine);
-      return { message: secondLine };
+      let secondReply: string;
+      try {
+        const result = await ArgumentReply({ other_message: nextText });
+        secondReply = typeof result === "string" ? result : FALLBACK;
+      } catch {
+        secondReply = FALLBACK;
+      }
+      ctx.emit.message(secondReply);
+      return { message: secondReply };
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e);
       return { error: errMsg };

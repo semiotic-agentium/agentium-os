@@ -46,21 +46,21 @@ reason: string | null;
 
 declare global {
 
-declare function BuildDelegatePlan(args: { plan: StructuredPlan; step: PlanStep }): Promise<SystemInternal_a2aSessionPlan>;
+declare function BuildDelegatePlan(args: { plan: StructuredPlan; step: PlanStep } & { __baml_invocation_token?: string }): Promise<SystemInternal_a2aSessionPlan>;
 
-declare function FormatCapabilities(args: { user_message: string; agents: AgentCardDto[] }): Promise<string>;
+declare function FormatCapabilities(args: { user_message: string; agents: AgentCardDto[] } & { __baml_invocation_token?: string }): Promise<string>;
 
-declare function GetDiscoverAgentsPlan(args: { user_message: string }): Promise<SystemDiscover_agentsSessionPlan>;
+declare function GetDiscoverAgentsPlan(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSessionPlan>;
 
-declare function MakeStructuredPlan(args: { user_message: string; agents: AgentCardDto[] }): Promise<StructuredPlan>;
+declare function MakeStructuredPlan(args: { user_message: string; agents: AgentCardDto[] } & { __baml_invocation_token?: string }): Promise<StructuredPlan>;
 
-declare function PersonaChat(args: { user_message: string }): Promise<string>;
+declare function PersonaChat(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<string>;
 
-declare function RouteIntent(args: { user_message: string }): Promise<RoutePath>;
+declare function RouteIntent(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<RoutePath>;
 
-declare function SelectAgentForMessage(args: { user_message: string; agents: AgentCardDto[] }): Promise<SelectedAgent | null>;
+declare function SelectAgentForMessage(args: { user_message: string; agents: AgentCardDto[] } & { __baml_invocation_token?: string }): Promise<SelectedAgent | null>;
 
-declare function SummarizeDelegatedResult(args: { a2a_output: InternalA2aNextOutput }): Promise<string>;
+declare function SummarizeDelegatedResult(args: { a2a_output: InternalA2aNextOutput } & { __baml_invocation_token?: string }): Promise<string>;
 
 }
 
@@ -221,6 +221,14 @@ export interface BamlAgent {
   tools?: Record<string, (args: unknown) => Promise<unknown>>;
 }
 declare global {
+  /** Minimal console interface matching the QuickJS sandbox polyfill (log, info, warn, error, debug). */
+  var console: {
+    log(...args: unknown[]): void;
+    info(...args: unknown[]): void;
+    warn(...args: unknown[]): void;
+    error(...args: unknown[]): void;
+    debug(...args: unknown[]): void;
+  };
   /**
    * Global alias for incoming chat messages in agent entrypoints.
    * This keeps bootstrap/index.ts ergonomic without local type shims.

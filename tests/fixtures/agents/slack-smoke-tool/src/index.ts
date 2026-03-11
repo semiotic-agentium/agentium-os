@@ -1,5 +1,4 @@
-type ChatPart = { text?: string };
-type ChatMessage = { parts?: ChatPart[] };
+/// <reference path="./baml-runtime.d.ts" />
 
 type ToolSessionHandle = {
   send(args: Record<string, unknown>): Promise<unknown>;
@@ -8,14 +7,6 @@ type ToolSessionHandle = {
   abort(reason?: string): Promise<unknown>;
 };
 
-type SessionApi = {
-  run(fn: () => Promise<{ message: string }> | { message: string }): Promise<void>;
-};
-
-declare function session(message: ChatMessage): SessionApi;
-declare function __chat_register(args: {
-  onChatMessage: (message: ChatMessage) => Promise<void>;
-}): void;
 declare function openToolSession(
   toolName: string,
   openInput?: Record<string, unknown>,
