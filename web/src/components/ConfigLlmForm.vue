@@ -13,6 +13,8 @@ const emit = defineEmits<{
   save: [value: LlmClientConfig];
 }>();
 
+const validationErrors = ref<string[]>([]);
+
 const local = ref<LlmClientConfig>({ ...props.modelValue });
 watch(
   () => props.modelValue,
@@ -127,7 +129,37 @@ const overridesAgentFunction = computed({
   },
 });
 
+function validate(): string[] {
+  const errors: string[] = [];
+  const names = Object.keys(local.value.clients);
+  if (names.length === 0) {
+    errors.push("At least one client is required.");
+  }
+  const seen = new Set<string>();
+  for (const name of names) {
+    const trimmed = name.trim();
+    if (!trimmed) {
+      errors.push("Client name cannot be empty.");
+    } else if (seen.has(trimmed)) {
+      errors.push(`Duplicate client name: "${trimmed}".`);
+    }
+    seen.add(trimmed);
+    const def = local.value.clients[name];
+    if (def && !def.options?.model?.trim()) {
+      errors.push(`Client "${trimmed}" has no model specified.`);
+    }
+  }
+  if (local.value.default && !local.value.clients[local.value.default]) {
+    errors.push(`Default client "${local.value.default}" does not exist.`);
+  }
+  return errors;
+}
+
 function onSave() {
+  const errors = validate();
+  validationErrors.value = errors;
+  if (errors.length > 0) return;
+
   const payload: LlmClientConfig = {
     ...local.value,
     clients: { ...local.value.clients },
@@ -291,6 +323,10 @@ function setOverridesAgentFunctionFromText(text: string) {
         @input="(e) => setOverridesAgentFunctionFromText((e.target as HTMLTextAreaElement).value)"
       />
     </div>
+
+    <ul v-if="validationErrors.length > 0" class="config-validation-errors">
+      <li v-for="(err, i) in validationErrors" :key="i" class="config-error">{{ err }}</li>
+    </ul>
 
     <div class="config-form-actions">
       <button type="button" class="config-btn config-btn-primary" @click="onSave">Save</button>

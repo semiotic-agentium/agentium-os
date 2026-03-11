@@ -39,6 +39,7 @@ onUnmounted(() => {
 
 function onFormUpdate() {
   dirty.value = true;
+  saveMessage.value = null;
 }
 
 async function onSave(payload: LlmClientConfig) {
@@ -58,7 +59,6 @@ async function onSave(payload: LlmClientConfig) {
   config.value = payload;
   dirty.value = false;
   error.value = null;
-  setTimeout(() => { saveMessage.value = null; }, 2000);
 }
 </script>
 
@@ -72,7 +72,7 @@ async function onSave(payload: LlmClientConfig) {
         @update:model-value="onFormUpdate"
         @save="onSave"
       />
-      <p v-if="saveMessage === 'saved'" class="config-save-ok">Saved.</p>
+      <p v-if="saveMessage === 'saved'" class="config-save-ok">Saved (v{{ version }}).</p>
       <p v-else-if="saveMessage === 'error'" class="config-save-err">Save failed. See error above.</p>
     </template>
     <p v-else class="settings-empty">Loading…</p>

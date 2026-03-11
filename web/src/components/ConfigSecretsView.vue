@@ -68,7 +68,7 @@ function syncLinkSelectionFromOverview() {
   linkSelection.value = next;
 }
 
-async function onLinkSelect(targetName: string) {
+async function onLink(targetName: string) {
   const linkFrom = linkSelection.value[targetName]?.trim();
   if (!linkFrom) return;
   linkingKey.value = targetName;
@@ -168,14 +168,20 @@ function secretHint(name: string): string {
                 class="config-secret-combo"
                 :disabled="linkingKey === entry.name"
                 :aria-label="'Link ' + entry.name + ' to key from store'"
-                @change="onLinkSelect(entry.name)"
               >
                 <option value="">Choose a key…</option>
                 <option v-for="keyName in linkableKeyNames" :key="keyName" :value="keyName">
                   {{ keyName }}
                 </option>
               </select>
-              <span v-if="linkingKey === entry.name" class="config-secret-linking">Linking…</span>
+              <button
+                type="button"
+                class="config-btn config-btn-secondary"
+                :disabled="!linkSelection[entry.name] || linkingKey === entry.name"
+                @click="onLink(entry.name)"
+              >
+                {{ linkingKey === entry.name ? "Linking…" : "Link" }}
+              </button>
             </div>
             <p v-else class="config-secret-no-keys">No keys available to link. Add at least one secret to your store (e.g. fnox.toml or .env), restart the runner, then Refresh so it appears in the dropdown.</p>
 
@@ -232,14 +238,20 @@ function secretHint(name: string): string {
                 class="config-secret-combo"
                 :disabled="linkingKey === entry.name"
                 :aria-label="'Link ' + entry.name + ' to key from store'"
-                @change="onLinkSelect(entry.name)"
               >
                 <option value="">Choose a key…</option>
                 <option v-for="keyName in linkableKeyNames" :key="keyName" :value="keyName">
                   {{ keyName }}
                 </option>
               </select>
-              <span v-if="linkingKey === entry.name" class="config-secret-linking">Linking…</span>
+              <button
+                type="button"
+                class="config-btn config-btn-secondary"
+                :disabled="!linkSelection[entry.name] || linkingKey === entry.name"
+                @click="onLink(entry.name)"
+              >
+                {{ linkingKey === entry.name ? "Linking…" : "Link" }}
+              </button>
             </div>
             <div class="config-secret-unlink-section">
               <button

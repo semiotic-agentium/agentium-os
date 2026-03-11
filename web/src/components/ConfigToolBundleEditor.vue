@@ -3,7 +3,7 @@ import { onMounted, onUnmounted, ref } from "vue";
 import { useConfigApi } from "../composables/useConfigApi";
 import type { SecretRequestDto } from "../types/config";
 
-const props = defineProps<{ bundleName: string }>();
+const props = defineProps<{ bundleName: string; defaultConfig?: unknown }>();
 const emit = defineEmits<{ close: [] }>();
 
 const { fetchConfig, putConfig, fetchSecretRequests } = useConfigApi();
@@ -47,6 +47,14 @@ onUnmounted(() => {
 
 function onInput() {
   dirty.value = configJson.value !== savedJson.value;
+  if (dirty.value) saveMessage.value = null;
+}
+
+function resetToDefault() {
+  if (props.defaultConfig === undefined) return;
+  const json = JSON.stringify(props.defaultConfig, null, 2);
+  configJson.value = json;
+  dirty.value = json !== savedJson.value;
 }
 
 function tryClose() {
@@ -76,7 +84,6 @@ async function save() {
   dirty.value = false;
   saveMessage.value = "saved";
   error.value = null;
-  setTimeout(() => { saveMessage.value = null; }, 2000);
 }
 </script>
 
@@ -114,8 +121,14 @@ async function save() {
 
     <div class="config-form-actions">
       <button type="button" class="config-btn config-btn-primary" @click="save">Save</button>
+      <button
+        v-if="defaultConfig !== undefined"
+        type="button"
+        class="config-btn config-btn-ghost"
+        @click="resetToDefault"
+      >Reset to default</button>
       <span v-if="dirty" class="config-dirty-indicator">Unsaved changes</span>
-      <p v-if="saveMessage === 'saved'" class="config-save-ok">Saved.</p>
+      <p v-if="saveMessage === 'saved'" class="config-save-ok">Saved (v{{ version }}).</p>
       <p v-else-if="saveMessage === 'error'" class="config-save-err">Save failed.</p>
     </div>
   </div>

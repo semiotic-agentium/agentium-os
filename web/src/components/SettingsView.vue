@@ -29,8 +29,12 @@ onMounted(async () => {
   configList.value = result.data;
 });
 
+const selectedToolDefault = ref<unknown>(undefined);
+
 function openToolBundle(toolName: string) {
   selectedToolBundle.value = toolName;
+  const bundle = toolBundles.value.find((b) => b.tool_name === toolName);
+  selectedToolDefault.value = bundle?.default ?? undefined;
 }
 
 function closeToolEditor() {
@@ -85,15 +89,16 @@ function closeToolEditor() {
         </div>
 
         <div class="settings-panels">
-          <div v-show="activeTab === 'llm'" class="settings-panel">
+          <div v-if="activeTab === 'llm'" class="settings-panel">
             <ConfigLlmView v-if="llmBundle" />
             <p v-else class="settings-empty">LLM config bundle not available.</p>
           </div>
 
-          <div v-show="activeTab === 'tools'" class="settings-panel">
+          <div v-else-if="activeTab === 'tools'" class="settings-panel">
             <template v-if="selectedToolBundle">
               <ConfigToolBundleEditor
                 :bundle-name="selectedToolBundle"
+                :default-config="selectedToolDefault"
                 @close="closeToolEditor"
               />
             </template>
@@ -114,7 +119,7 @@ function closeToolEditor() {
             </template>
           </div>
 
-          <div v-show="activeTab === 'secrets'" class="settings-panel">
+          <div v-else-if="activeTab === 'secrets'" class="settings-panel">
             <ConfigSecretsView />
           </div>
         </div>
