@@ -1,4 +1,4 @@
-//! Runtime orchestration for poll -> interpret -> deliver cycles.
+//! Runs the poll, interpret, and deliver loop for task-daemon.
 
 use std::{collections::BTreeMap, time::Duration};
 
@@ -20,9 +20,9 @@ use crate::{
 const ERROR_ESCALATION_THRESHOLD: u32 = 3;
 
 #[derive(Debug, Clone)]
-/// Result of one source polling operation.
+/// Work collected from one source during one polling cycle.
 pub struct SourcePoll {
-    /// Stable key used to address source state in the state store.
+    /// Stable key used to resume this source safely.
     pub source_key: String,
     /// Human-readable source label (for example `#agentium-eng`).
     pub source_label: String,
@@ -32,18 +32,19 @@ pub struct SourcePoll {
 }
 
 #[derive(Debug, Clone)]
-/// Source-specific payload for one polling operation.
 enum SourcePollPayload {
-    /// Slack-source messages that require interpretation.
-    Slack { messages: Vec<SlackMessage> },
-    /// ClickUp lifecycle events already represented as investigation tasks.
+    // Slack messages that still need interpretation.
+    Slack {
+        messages: Vec<SlackMessage>,
+    },
+    // ClickUp lifecycle events already represented as investigation tasks.
     Clickup {
         inferred_tasks: Vec<InvestigationTask>,
     },
 }
 
 impl SourcePoll {
-    /// Builds a Slack-source poll payload.
+    /// Creates a source poll from Slack messages.
     pub fn slack(
         source_key: String,
         source_label: String,
@@ -58,7 +59,7 @@ impl SourcePoll {
         }
     }
 
-    /// Builds a ClickUp-source poll payload.
+    /// Creates a source poll from ClickUp-derived tasks.
     pub fn clickup(
         source_key: String,
         source_label: String,
@@ -73,12 +74,12 @@ impl SourcePoll {
         }
     }
 
-    /// Returns the source kind associated with this payload.
+    /// Returns the source kind for this poll result.
     pub fn source_kind(&self) -> TaskSourceKind {
         self.payload.source_kind()
     }
 
-    /// Returns Slack messages when the payload is Slack-origin; otherwise empty.
+    /// Returns Slack messages when the source is Slack; otherwise empty.
     pub fn messages(&self) -> &[SlackMessage] {
         match &self.payload {
             SourcePollPayload::Slack { messages } => messages,
@@ -86,7 +87,7 @@ impl SourcePoll {
         }
     }
 
-    /// Returns pre-derived tasks for non-Slack sources; otherwise empty.
+    /// Returns pre-derived tasks for sources that already provide them.
     pub fn inferred_tasks(&self) -> &[InvestigationTask] {
         match &self.payload {
             SourcePollPayload::Slack { .. } => &[],
@@ -114,7 +115,7 @@ impl SourcePollPayload {
 }
 
 #[async_trait]
-/// A polling source that can emit messages incrementally.
+/// A work source that task-daemon can poll.
 pub trait TaskSource: Send {
     /// Stable state key for this source instance.
     fn source_key(&self) -> String;

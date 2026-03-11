@@ -1,4 +1,4 @@
-//! Delivery sinks for interpreted batches.
+//! Destinations for task-daemon results.
 
 use std::{
     collections::BTreeSet,
@@ -24,26 +24,26 @@ use crate::{
 };
 
 #[async_trait]
-/// A destination for interpreted task batches.
+/// A place task-daemon can send results.
 pub trait TaskSink: Send {
     /// Stable sink identifier used in logs and error context.
     fn name(&self) -> &'static str;
-    /// Returns whether this sink accepts batches from a source kind.
+    /// Returns whether this sink accepts results from a given source kind.
     fn accepts_source(&self, _source: TaskSourceKind) -> bool {
         true
     }
-    /// Delivers one daemon dispatch envelope to the sink.
+    /// Delivers one task-daemon result to the sink.
     async fn deliver(&mut self, dispatch: &TaskDispatch) -> Result<()>;
 }
 
-/// Sink wrapper that limits delivery to an explicit set of source kinds.
+/// Restricts a sink to results from selected sources.
 pub struct SourceFilteredSink {
     inner: Box<dyn TaskSink>,
     allowed_sources: BTreeSet<TaskSourceKind>,
 }
 
 impl SourceFilteredSink {
-    /// Wraps `inner`, allowing only the specified source kinds through.
+    /// Wraps `inner`, allowing only the selected source kinds through.
     pub fn new(inner: Box<dyn TaskSink>, allowed_sources: Vec<TaskSourceKind>) -> Self {
         Self {
             inner,
@@ -68,7 +68,7 @@ impl TaskSink for SourceFilteredSink {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Delivery mode for write-capable sinks.
+/// Whether a sink only previews output or performs live writes.
 pub enum SinkDeliveryMode {
     DryRun,
     Live,
@@ -81,7 +81,7 @@ impl SinkDeliveryMode {
 }
 
 #[derive(Debug, Error)]
-/// Typed sink-construction failures.
+/// Problems configuring a sink.
 pub enum SinkConstructorError {
     #[error("clickup list_id must not be empty")]
     EmptyClickupListId,
@@ -100,7 +100,7 @@ pub enum SinkConstructorError {
 }
 
 #[derive(Debug, Error)]
-/// Typed sink-delivery failures grouped by operation category.
+/// Problems delivering work to a sink.
 pub enum SinkDeliveryError {
     #[error("serializing interpretation result event for stdout sink failed")]
     StdoutSerialize(#[source] serde_json::Error),
@@ -158,7 +158,7 @@ pub enum SinkDeliveryError {
     },
 }
 
-/// Sink that prints one JSON payload per batch to stdout.
+/// Sink that prints one structured result to stdout for each daemon cycle.
 pub struct StdoutSink {
     pretty: bool,
 }
@@ -190,7 +190,7 @@ impl TaskSink for StdoutSink {
     }
 }
 
-/// Sink that appends each batch as one JSON line to a file.
+/// Sink that appends one structured result per daemon cycle to a JSONL file.
 pub struct JsonlFileSink {
     path: PathBuf,
 }
@@ -256,7 +256,7 @@ fn truncate_title(raw: &str, max_len: usize) -> String {
     out
 }
 
-/// Sanitizes labels rendered in coordinator instructions (outside untrusted fences).
+/// Sanitizes labels rendered in plain-text handoff messages.
 fn sanitize_single_line(raw: &str) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -540,8 +540,7 @@ impl TaskSink for GithubIssueSink {
     }
 }
 
-/// Formats a [`TaskBatch`] into a natural-language prompt suitable for
-/// human-readable A2A compatibility/debugging.
+/// Formats a [`TaskBatch`] into a readable handoff message for another agent.
 pub fn format_coordinator_prompt(batch: &TaskBatch) -> String {
     let source_label = sanitize_single_line(&batch.source_label);
     let project_key = sanitize_single_line(&batch.project.project_key);
@@ -613,7 +612,7 @@ pub fn format_coordinator_prompt(batch: &TaskBatch) -> String {
     lines.join("\n")
 }
 
-/// Sink that bridges task-daemon dispatches to a running agent via the A2A protocol.
+/// Sends task-daemon results to another agent over A2A.
 pub struct A2aSink {
     a2a_base_url: reqwest::Url,
     target: AgentRouteKey,
@@ -626,9 +625,9 @@ const INTERPRETATION_RESULT_CONTENT_TYPE: &str =
 const A2A_ROLE_USER: &str = "user";
 
 impl A2aSink {
-    /// Creates an A2A sink targeting the default coordinator route.
+    /// Creates an A2A sink that sends to the standard coordinator route.
     ///
-    /// `SinkDeliveryMode::DryRun` logs the prompt without sending requests.
+    /// `SinkDeliveryMode::DryRun` logs the message instead of sending it.
     pub fn new(
         a2a_base_url: String,
         mode: SinkDeliveryMode,
@@ -641,7 +640,7 @@ impl A2aSink {
         )
     }
 
-    /// Creates an A2A sink targeting a specific agent package/instance route.
+    /// Creates an A2A sink for a specific target agent.
     pub fn for_agent(
         a2a_base_url: String,
         agent_package: String,
@@ -699,11 +698,10 @@ impl A2aSink {
         )
     }
 
-    /// Builds the JSON-RPC `message.sendStream` request body.
+    /// Builds the A2A request body sent to the downstream agent.
     ///
-    /// Includes both:
-    /// - a concise text instruction for human/debug compatibility
-    /// - a typed interpretation result payload in `parts[].data`
+    /// The request includes both a readable summary and the structured result
+    /// data.
     fn build_jsonrpc_body(dispatch: &TaskDispatch, prompt: &str) -> serde_json::Value {
         json!({
             "jsonrpc": "2.0",
@@ -967,8 +965,7 @@ fn has_input_required_status(response: &Value) -> bool {
     })
 }
 
-/// Validates that A2A JSON-RPC envelopes contain a final success result
-/// and no explicit error envelopes.
+/// Checks that the downstream agent returned a completed success response.
 fn validate_jsonrpc_responses(responses: &[Value]) -> Result<Option<String>> {
     if responses.is_empty() {
         return Err(anyhow!(

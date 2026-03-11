@@ -1,4 +1,4 @@
-//! Tool metadata registration for the system bundle (single mechanism: register_tool!).
+//! User-facing metadata for the system tool bundle.
 
 use std::sync::Arc;
 
@@ -27,7 +27,7 @@ fn build_a2a_metadata(tool_name: &str) -> ToolFunctionMetadata {
     TypeBasedMetadataBuilder::<InternalA2aOpenInput, InternalA2aSendInput, InternalA2aNextOutput>::new(
         name,
         class_name,
-        "Opens a session to another agent by route key. Send structured parts or text. Call Next repeatedly until the task is complete (session returns Done) or the output indicates INPUT_REQUIRED; then Finish. Each next() returns batched chunks.".to_string(),
+        "Starts a conversation with another agent by route key. Send text or structured parts, then call Next until the agent is done or asks for more input.".to_string(),
     )
     .with_tags(vec!["system".to_string(), "a2a".to_string()])
     .build_metadata()
@@ -66,17 +66,14 @@ pub fn system_discover_agents_metadata() -> ToolFunctionMetadata {
         DiscoverAgentsNextOutput,
     >(
         "system/discover_agents",
-        "Lists running agents (cards). Open session, then send query/limit/offset; next() returns one page. Send can be called multiple times. \
-         query is a filter: only agents whose name, package, or description match the string are returned. \
-         requiredCapabilities is an exact-match filter over manifest discovery capabilities and all listed capabilities must be present. \
-         To list all agents (e.g. 'who is available?', 'which agents are ready?'), omit query or send null—do not use a user phrase as the filter.",
+        "Browse available agents. You can optionally filter by query or requiredCapabilities. Omit query to list all agents.",
     )
 }
 
 pub fn system_discover_tools_metadata() -> ToolFunctionMetadata {
     build_discover_metadata::<DiscoverToolsOpenInput, DiscoverToolsSendInput, DiscoverToolsNextOutput>(
         "system/discover_tools",
-        "Searches registered tools by lexical rank. Open session, then send query/limit; next() returns results. Send can be called multiple times.",
+        "Browse available tools. You can optionally filter by query and limit the number of results.",
     )
 }
 

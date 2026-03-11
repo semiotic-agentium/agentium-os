@@ -1,13 +1,13 @@
-//! Interpretation-first daemon for turning project-channel discussion into actionable outputs.
+//! Task-daemon turns source activity such as Slack discussion and ClickUp task
+//! changes into structured work for people and agents.
 //!
-//! The crate is organized around three boundaries:
-//! - source polling (`daemon::TaskSource`)
-//! - interpretation (`extract::TaskExtractor`)
-//! - delivery (`sink::TaskSink`)
+//! The main pieces are:
+//! - polling work sources
+//! - interpreting what changed
+//! - sending the result to the chosen destination
 //!
-//! The daemon's typed handoff is [`InterpretationResultEvent`], with [`TaskDispatch`]
-//! carrying both the versioned contract events and the legacy [`TaskBatch`] view
-//! used by batch-oriented sinks.
+//! The primary structured output is [`InterpretationResultEvent`]. [`TaskDispatch`]
+//! carries that result together with the additional context some sinks still use.
 
 pub mod clickup_source;
 pub mod contract;

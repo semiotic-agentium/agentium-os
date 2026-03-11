@@ -190,9 +190,7 @@ async fn setup_workspace_coordinator_with_provenance()
     (agent, provenance, built)
 }
 
-/// LLM-gated integration test: builds the coordinator-smoke fixture, starts it
-/// as an A2A agent, sends a simple query, and verifies it produces a response
-/// (either via direct_answer or delegation to discovered agents).
+/// End-to-end coordinator smoke test covering a simple user query.
 #[tokio::test]
 async fn test_coordinator_smoke_direct_answer() {
     let _openrouter_api_key = require_api_key();
@@ -254,8 +252,7 @@ async fn test_coordinator_smoke_direct_answer() {
     runner_api.stop().await;
 }
 
-/// Verifies coordinator accepts a typed task-daemon handoff when no text part
-/// is present in the inbound message.
+/// End-to-end test covering a task-daemon handoff that arrives as structured data only.
 #[tokio::test]
 async fn test_coordinator_accepts_data_only_task_daemon_handoff() {
     let _openrouter_api_key = require_api_key();
@@ -353,8 +350,8 @@ async fn test_coordinator_accepts_data_only_task_daemon_handoff() {
     let texts = message_texts_from_chunks(&chunks);
     let merged_text = texts.join("\n");
 
-    // Core contract: coordinator MUST detect the structured handoff (hardcoded
-    // message emitted deterministically before any LLM call).
+    // The coordinator should recognize the structured handoff path before any
+    // model-dependent planning happens.
     assert!(
         texts.iter().any(|text| {
             text.contains(
@@ -364,7 +361,7 @@ async fn test_coordinator_accepts_data_only_task_daemon_handoff() {
         "Expected coordinator to confirm structured handoff path. Texts: {texts:?}"
     );
 
-    // Core contract: coordinator MUST NOT reject a data-only handoff as empty input.
+    // A data-only handoff should not be treated as empty user input.
     assert!(
         !merged_text.contains("Please share what you want me to coordinate."),
         "Coordinator should not reject data-only handoff as empty input. Texts: {texts:?}"
@@ -376,10 +373,9 @@ async fn test_coordinator_accepts_data_only_task_daemon_handoff() {
         "Expected non-empty response stream from coordinator. Responses: {responses:?}"
     );
 
-    // Downstream steps (agent discovery, workflow planning, execution) depend on
-    // real LLM calls whose output varies across models and runs.  Log warnings
-    // so CI surfaces regressions without hard-failing the handoff-detection
-    // contract this test guards.
+    // Later planning steps depend on live model behavior and can vary across
+    // providers and runs. Keep those as warnings so this test stays focused on
+    // whether the structured handoff path works at all.
     if merged_text.contains("Agent discovery failed:") {
         eprintln!(
             "WARN: agent discovery failed during coordinator handoff test \

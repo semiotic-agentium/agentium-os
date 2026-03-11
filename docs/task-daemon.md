@@ -116,7 +116,7 @@ cargo run -p baml-task-daemon -- run \
 Delegate daemon events to an A2A target agent:
 
 ```bash
-# dry-run (logs request payload intent, no network side-effects)
+# dry-run (shows what would be sent, without network side-effects)
 cargo run -p baml-task-daemon -- run --channel agentium-eng --a2a-base-url http://127.0.0.1:8082
 
 # live delegation
@@ -143,13 +143,13 @@ A typical interpretation result event includes:
 
 When using A2A delegation (`--a2a-base-url --a2a-live`), task-daemon
 sends a valid `message.sendStream` request with:
-- a concise text prompt for compatibility/debugging
-- a typed `InterpretationResultEvent` payload in `message.parts[].data`
+- a readable text summary for the receiving agent
+- a structured `InterpretationResultEvent` object in `message.parts[].data`
 
-## Event Contract
+## Event Format Reference
 
-For integration between poller, interpreter, and orchestration layers, use the
-versioned interpretation event contract:
+For integrations that consume task-daemon events, use the interpretation event
+format described here:
 - [task-daemon-event-contract.md](./task-daemon-event-contract.md)
 - [task-daemon-clickup-source-contract.md](./task-daemon-clickup-source-contract.md) (ClickUp lifecycle source semantics)
 
@@ -164,7 +164,7 @@ provenance timeline + mermaid), see:
 - With multiple `--source` flags, each interval (and `--once`) covers each selected source once.
 - `--route <source>:<sink>` overrides default fan-out. When routes are present, only explicitly routed source/sink pairs are active.
 - Startup validation rejects configurations where a selected source has no compatible sink.
-- ClickUp source lifecycle semantics (keys, revisions, loop-prevention) are defined in [task-daemon-clickup-source-contract.md](./task-daemon-clickup-source-contract.md).
+- ClickUp source behavior, including how task creation and status changes become daemon events, is defined in [task-daemon-clickup-source-contract.md](./task-daemon-clickup-source-contract.md).
 - Delivery is currently best-effort at-least-once: source cursor/task state is persisted only after sink delivery succeeds.
 
 ## Minimal Project Config Example
