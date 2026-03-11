@@ -39,6 +39,8 @@ async fn tool_index_creates_tool_nodes() {
             description: "Weather API key".to_string(),
             reason: "call provider".to_string(),
         }],
+        secret_requests: vec![],
+        config: None,
         access: None,
         origin: baml_rt_tools::ToolOrigin::Host,
     }];

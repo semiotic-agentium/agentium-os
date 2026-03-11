@@ -671,7 +671,7 @@ impl QuickJSBridge {
             max_attempts_ms: prepared.max_attempts_ms,
             lifecycle_guard: prepared.lifecycle_guard,
         };
-        Ok(EvalOnceResult::PromisePending(params))
+        Ok(EvalOnceResult::PromisePending(Box::new(params)))
     }
 
     /// Invoke a BAML function by name.

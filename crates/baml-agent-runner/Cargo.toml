@@ -12,6 +12,8 @@ baml-rt-api = { path = "../baml-rt-api" }
 baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-quickjs = { path = "../baml-rt-quickjs" }
+baml-rt-llm-config = { path = "../baml-rt-llm-config" }
+baml-rt-config = { path = "../baml-rt-config" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
 baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
 baml-rt-tools-claude = { path = "../tools/claude" }

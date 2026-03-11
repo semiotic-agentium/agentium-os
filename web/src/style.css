@@ -1522,6 +1522,20 @@ body {
   margin-top: 2px;
 }
 
+.stat-card-button {
+  cursor: pointer;
+  border: 1px solid var(--border);
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+}
+
+.stat-card-button:hover {
+  border-color: var(--primary);
+  background: var(--primary-subtle);
+}
+
 .dashboard-grid-bottom {
   display: grid;
   grid-template-columns: 2fr 1fr 1fr;
@@ -1959,6 +1973,582 @@ a.source-chip:hover {
   .navbar-tabs .nav-tab span:not(svg) {
     display: none;
   }
+
+  .dashboard-grid-top {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Settings view ── */
+
+.settings-view {
+  flex: 1;
+  overflow: auto;
+  padding: 24px;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.settings-header {
+  margin-bottom: 20px;
+}
+
+.settings-title {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+.settings-subtitle {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.settings-unavailable {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 24px;
+  color: var(--text-secondary);
+}
+
+.settings-unavailable-hint {
+  font-size: 12px;
+  margin-top: 8px;
+  color: var(--text-muted);
+}
+
+.settings-loading {
+  padding: 24px;
+  color: var(--text-muted);
+}
+
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-tab {
+  padding: 10px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.settings-tab:hover {
+  color: var(--text);
+}
+
+.settings-tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+.settings-panels {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 20px;
+}
+
+.settings-panel {
+  min-height: 120px;
+}
+
+.settings-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.tool-bundle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.tool-bundle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.tool-bundle-row:hover {
+  background: var(--border-subtle);
+  border-color: var(--primary);
+}
+
+.tool-bundle-name {
+  font-weight: 500;
+}
+
+.tool-bundle-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  background: var(--primary-subtle);
+  color: var(--primary);
+  border-radius: 999px;
+}
+
+/* ── Secrets overview (M:N) ── */
+
+.config-secrets-view {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.config-secrets-intro {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.config-secrets-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.config-secrets-refresh-btn {
+  font-size: 13px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.config-secrets-refresh-btn:hover:not(:disabled) {
+  background: var(--bg-subtle);
+}
+
+.config-secrets-refresh-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.config-secrets-list {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.config-secrets-group {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.config-secrets-group-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0;
+  padding-bottom: 4px;
+}
+
+.config-secrets-group-title-missing {
+  color: #ef4444;
+}
+
+.config-secrets-group-title-ok {
+  color: var(--status-green);
+}
+
+.config-secret-card {
+  padding: 16px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.config-secret-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.config-secret-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--primary);
+  background: var(--surface);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+}
+
+.config-secret-type {
+  font-size: 11px;
+  padding: 2px 6px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  border-radius: 4px;
+}
+
+.config-secret-status {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+  margin-left: auto;
+}
+
+.config-secret-status-ok {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--status-green);
+}
+
+.config-secret-status-missing {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.config-secret-card-unsatisfied {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.04);
+}
+
+.config-secrets-unsatisfied-alert {
+  padding: 12px 16px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.config-secret-justification,
+.config-secret-descriptor {
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.config-secret-link-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.config-secret-link-label {
+  display: block;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0 0 6px 0;
+}
+
+.config-secret-combo {
+  font-size: 13px;
+  padding: 8px 10px;
+  min-width: 200px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.config-secret-combo:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.config-secret-linking {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: 10px;
+}
+
+.config-secret-no-keys {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 12px 0 0 0;
+}
+
+.config-secret-unlink-section {
+  margin-top: 12px;
+}
+
+.config-secret-unlink-btn {
+  font-size: 13px;
+  padding: 6px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.config-secret-unlink-btn:hover:not(:disabled) {
+  background: var(--border-subtle);
+  color: var(--text-primary);
+}
+
+.config-secret-unlink-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.config-secret-consumers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.config-secret-consumer-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.config-secret-consumer-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+
+.config-secret-consumer-list {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.config-secret-consumer-list code {
+  font-size: 12px;
+  padding: 2px 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  color: var(--text-secondary);
+}
+
+.config-secret-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* ── Config form (LLM & tool bundle) ── */
+
+.config-llm-view,
+.config-llm-form,
+.config-tool-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.config-form-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.config-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.config-section-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.config-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.config-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.config-input {
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  transition: border-color 0.15s ease;
+}
+
+.config-input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.config-select {
+  max-width: 280px;
+}
+
+.config-input-inline {
+  flex: 1;
+  min-width: 0;
+}
+
+.config-textarea {
+  resize: vertical;
+  min-height: 60px;
+}
+
+.config-json-editor {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 12px;
+}
+
+.config-btn {
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: none;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.config-btn-primary {
+  background: var(--primary);
+  color: white;
+}
+
+.config-btn-primary:hover {
+  background: var(--primary-hover);
+}
+
+.config-btn-secondary {
+  background: var(--bg-subtle);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.config-btn-secondary:hover {
+  background: var(--border-subtle);
+}
+
+.config-btn-ghost {
+  background: none;
+  color: var(--text-secondary);
+}
+
+.config-btn-ghost:hover {
+  color: var(--text);
+}
+
+.config-client-card {
+  padding: 14px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.config-client-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.config-badge-default {
+  font-size: 11px;
+  padding: 2px 6px;
+  background: var(--primary-subtle);
+  color: var(--primary);
+  border-radius: 4px;
+}
+
+.config-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.config-save-ok {
+  font-size: 13px;
+  color: var(--status-green);
+}
+
+.config-save-err {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.config-error {
+  font-size: 13px;
+  color: var(--text-secondary);
+  padding: 10px 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.config-tool-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.config-secret-list {
+  list-style: none;
+}
+
+.config-secret-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 13px;
+}
+
+.config-secret-item:last-child {
+  border-bottom: none;
+}
+
+.config-secret-descriptor {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.config-secret-justification {
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 
 @media (max-width: 1200px) {

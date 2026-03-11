@@ -190,7 +190,7 @@ impl Drop for BriefPollParams {
 /// Result of running eval once: either sync value or params to poll with brief locks.
 pub(crate) enum EvalOnceResult {
     Sync(Value),
-    PromisePending(BriefPollParams),
+    PromisePending(Box<BriefPollParams>),
 }
 
 /// Prepared eval for brief-poll path; run without holding the bridge lock so the worker

@@ -128,6 +128,9 @@ mod tests {
             access: None,
             tags,
             secret_requirements: vec![],
+            secret_requests: vec![],
+            config: None,
+            config_bundle: None,
             origin: ToolOrigin::Host,
         }
     }

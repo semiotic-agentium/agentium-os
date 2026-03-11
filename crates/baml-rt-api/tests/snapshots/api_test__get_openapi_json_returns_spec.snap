@@ -157,6 +157,400 @@ expression: snapshot
           }
         }
       },
+      "/config": {
+        "get": {
+          "tags": [
+            "config"
+          ],
+          "summary": "List bundles with config schema and whether each has stored config (GET /config).",
+          "operationId": "list_config",
+          "responses": {
+            "200": {
+              "description": "List of bundles with config schema",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/ToolConfigSchemaDto"
+                    }
+                  }
+                }
+              }
+            },
+            "503": {
+              "description": "Config service not available"
+            }
+          }
+        }
+      },
+      "/config/secrets-overview": {
+        "get": {
+          "tags": [
+            "config"
+          ],
+          "summary": "List all required secrets with M:N consumers: tools and LLM clients (GET /config/secrets-overview).",
+          "operationId": "list_secrets_overview",
+          "responses": {
+            "200": {
+              "description": "Secrets and their tool/LLM consumers",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/SecretOverviewEntryDto"
+                    }
+                  }
+                }
+              }
+            },
+            "503": {
+              "description": "Tool catalog not available"
+            }
+          }
+        }
+      },
+      "/config/secrets/store-keys": {
+        "get": {
+          "tags": [
+            "config"
+          ],
+          "summary": "List keys in the secret store that have a value (for link dropdown). Returns only keys that the backend (e.g. fnox) actually resolved — not secret request names from the overview. M:N: each secret request is linked to one of these store keys.",
+          "operationId": "list_store_keys",
+          "responses": {
+            "200": {
+              "description": "Store key names that can be used as link_from",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "/config/secrets/{name}": {
+        "put": {
+          "tags": [
+            "config"
+          ],
+          "summary": "Link a secret by name (PUT /config/secrets/{name}).\nCopies the value of `link_from` from the secret store (fnox) into the runtime overlay for `name`. No raw values accepted.",
+          "operationId": "put_secret",
+          "parameters": [
+            {
+              "name": "name",
+              "in": "path",
+              "description": "Secret key to link (e.g. NOTION_API_TOKEN)",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvisionSecretDto"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "204": {
+              "description": "Secret linked"
+            },
+            "400": {
+              "description": "Invalid name or link_from has no value in store"
+            },
+            "501": {
+              "description": "Runtime secret store not available (add keys to fnox and restart)"
+            }
+          }
+        },
+        "delete": {
+          "tags": [
+            "config"
+          ],
+          "summary": "Unlink a secret (DELETE /config/secrets/{name}).\nRemoves the key from the runtime overlay; resolution then falls back to the secret store (fnox). Returns 501 when store not available.",
+          "operationId": "delete_secret",
+          "parameters": [
+            {
+              "name": "name",
+              "in": "path",
+              "description": "Secret key to unlink (e.g. NOTION_API_TOKEN)",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "204": {
+              "description": "Secret unlinked"
+            },
+            "400": {
+              "description": "Invalid name"
+            },
+            "501": {
+              "description": "Runtime secret store not available"
+            }
+          }
+        }
+      },
+      "/config/{bundle_name}": {
+        "get": {
+          "tags": [
+            "config"
+          ],
+          "summary": "Get config schema + current config for a bundle (GET /config/{bundle_name}).",
+          "operationId": "get_config",
+          "parameters": [
+            {
+              "name": "bundle_name",
+              "in": "path",
+              "description": "Bundle name (e.g. llm or a tool bundle that has config)",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Config schema and current config",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ToolConfigDto"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "Bundle not found or has no config schema"
+            },
+            "503": {
+              "description": "Config service not available"
+            }
+          }
+        },
+        "put": {
+          "tags": [
+            "config"
+          ],
+          "summary": "Create or update config (PUT /config/{bundle_name}).\nRequest body shape is defined by the bundle's config schema (GET /config/{bundle_name} returns it).",
+          "operationId": "put_config",
+          "parameters": [
+            {
+              "name": "bundle_name",
+              "in": "path",
+              "description": "Bundle name (e.g. llm or a tool bundle that has config)",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "requestBody": {
+            "description": "Config JSON (must match bundle schema from GET /config/{bundle_name})",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Config updated",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ConfigVersionDto"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Invalid config"
+            },
+            "404": {
+              "description": "Bundle not found"
+            },
+            "503": {
+              "description": "Config service not available"
+            }
+          }
+        },
+        "delete": {
+          "tags": [
+            "config"
+          ],
+          "summary": "Remove stored config (DELETE /config/{bundle_name}).",
+          "operationId": "delete_config",
+          "parameters": [
+            {
+              "name": "bundle_name",
+              "in": "path",
+              "description": "Bundle name (e.g. llm or a tool bundle that has config)",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "204": {
+              "description": "Config removed"
+            },
+            "404": {
+              "description": "Bundle not found"
+            },
+            "503": {
+              "description": "Config service not available"
+            }
+          }
+        }
+      },
+      "/config/{bundle_name}/versions": {
+        "get": {
+          "tags": [
+            "config"
+          ],
+          "summary": "List version history (GET /config/{bundle_name}/versions).",
+          "operationId": "list_config_versions",
+          "parameters": [
+            {
+              "name": "bundle_name",
+              "in": "path",
+              "description": "Bundle name (e.g. llm or a tool bundle that has config)",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Version history",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/ConfigVersionDto"
+                    }
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "Bundle not found"
+            },
+            "503": {
+              "description": "Config service not available"
+            }
+          }
+        }
+      },
+      "/config/{bundle_name}/versions/{version}": {
+        "get": {
+          "tags": [
+            "config"
+          ],
+          "summary": "Get config at specific version (GET /config/{bundle_name}/versions/{version}).",
+          "operationId": "get_config_version",
+          "parameters": [
+            {
+              "name": "bundle_name",
+              "in": "path",
+              "description": "Bundle name (e.g. llm or a tool bundle that has config)",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "version",
+              "in": "path",
+              "description": "Version number",
+              "required": true,
+              "schema": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Config at version",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/ConfigVersionDto"
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "Bundle or version not found"
+            },
+            "503": {
+              "description": "Config service not available"
+            }
+          }
+        }
+      },
+      "/config/{tool_name}/secret-requests": {
+        "get": {
+          "tags": [
+            "config"
+          ],
+          "summary": "List secret requests for a tool (GET /config/{tool_name}/secret-requests).",
+          "operationId": "list_secret_requests",
+          "parameters": [
+            {
+              "name": "tool_name",
+              "in": "path",
+              "description": "Tool name (bundle/local)",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Secret requests",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/SecretRequestDto"
+                    }
+                  }
+                }
+              }
+            },
+            "404": {
+              "description": "Tool not found"
+            },
+            "503": {
+              "description": "Tool catalog not available"
+            }
+          }
+        }
+      },
       "/contexts/{context_id}/mermaid": {
         "get": {
           "tags": [
@@ -423,6 +817,31 @@ expression: snapshot
             }
           }
         },
+        "ConfigVersionDto": {
+          "type": "object",
+          "description": "Config at a specific version.",
+          "required": [
+            "version",
+            "config",
+            "created_at_ms"
+          ],
+          "properties": {
+            "config": {
+              "type": "object",
+              "description": "Config snapshot. Shape defined by tool's config schema."
+            },
+            "created_at_ms": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            },
+            "version": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        },
         "ContextMetricsResponseDto": {
           "type": "object",
           "description": "API response for `GET /contexts/{context_id}/metrics`.",
@@ -516,6 +935,105 @@ expression: snapshot
             }
           }
         },
+        "ProvisionSecretDto": {
+          "type": "object",
+          "description": "Request body for linking a secret by name (PUT /config/secrets/{name}).\nOnly link_from is accepted; secrets are stored in the secret store (fnox), never sent as raw values.",
+          "required": [
+            "link_from"
+          ],
+          "properties": {
+            "link_from": {
+              "type": "string",
+              "description": "Key name in the secret store (fnox/env) to link from. The runner resolves this and uses its value for {name}."
+            }
+          }
+        },
+        "SecretOverviewEntryDto": {
+          "type": "object",
+          "description": "One secret in the M:N overview: which tools and LLM clients require it.",
+          "required": [
+            "name",
+            "tool_consumers",
+            "llm_consumers",
+            "satisfied"
+          ],
+          "properties": {
+            "descriptor": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "What the secret must provide (from first tool that declares it)."
+            },
+            "justification": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Why this secret is needed (from first tool that declares it)."
+            },
+            "linked_to": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "When satisfied and linked via the UI: the key in the secret store this secret is linked to (e.g. env.OPENROUTER_API_KEY). Omitted when not linked or loaded from defaults only."
+            },
+            "llm_consumers": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "LLM client names that reference this secret (e.g. api_key placeholder for OPENROUTER_API_KEY)."
+            },
+            "name": {
+              "type": "string",
+              "description": "Canonical secret name / key (e.g. NOTION_API_TOKEN)."
+            },
+            "satisfied": {
+              "type": "boolean",
+              "description": "True if the secret is provisioned (resolver returns a value for this key); false when missing or when resolver is unavailable. Always present (not optional)."
+            },
+            "secret_type": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Type from tool secret_requests (e.g. \"api_key\"); absent if only referenced by LLM."
+            },
+            "tool_consumers": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Tool names (bundle/local) that declare this secret."
+            }
+          }
+        },
+        "SecretRequestDto": {
+          "type": "object",
+          "description": "Secret request (for GET /config/{tool_name}/secret-requests).",
+          "required": [
+            "name",
+            "secret_type",
+            "justification",
+            "descriptor"
+          ],
+          "properties": {
+            "descriptor": {
+              "type": "string"
+            },
+            "justification": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "secret_type": {
+              "type": "string"
+            }
+          }
+        },
         "TokenUsageDto": {
           "type": "object",
           "description": "Token totals for a turn or session.",
@@ -541,6 +1059,56 @@ expression: snapshot
               "minimum": 0
             }
           }
+        },
+        "ToolConfigDto": {
+          "type": "object",
+          "description": "Tool config with version (GET /config/{tool_name} response).",
+          "required": [
+            "tool_name",
+            "config",
+            "version"
+          ],
+          "properties": {
+            "config": {
+              "type": "object",
+              "description": "Current config (with defaults merged). Shape defined by tool's config schema."
+            },
+            "tool_name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        },
+        "ToolConfigSchemaDto": {
+          "type": "object",
+          "description": "Tool config schema and default (for GET /config and GET /config/{tool_name}).",
+          "required": [
+            "tool_name",
+            "schema",
+            "has_config"
+          ],
+          "properties": {
+            "default": {
+              "type": "object",
+              "description": "Default config (from schema or explicit)."
+            },
+            "has_config": {
+              "type": "boolean",
+              "description": "Whether this tool has stored config."
+            },
+            "schema": {
+              "type": "object",
+              "description": "JSON Schema for the tool's config type (defines shape of PUT /config/{tool_name} body)."
+            },
+            "tool_name": {
+              "type": "string",
+              "description": "Tool name (bundle/local)."
+            }
+          }
         }
       }
     },
@@ -556,6 +1124,10 @@ expression: snapshot
       {
         "name": "provenance",
         "description": "Provenance-backed metrics and operational query APIs."
+      },
+      {
+        "name": "config",
+        "description": "Tool configuration and secret requests (schema includes config type schemas)"
       }
     ]
   }

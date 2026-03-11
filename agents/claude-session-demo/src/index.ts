@@ -209,7 +209,7 @@ __chat_register({
       // Emit a clear "still working" so UIs don't treat the plan as the final chunk
       ctx.emit.statusChanged("TASK_STATE_WORKING");
       // Yield so the stream collector can drain and forward the plan chunks to the client before the long ChooseClaudeDevAction/tool session runs.
-      await Promise.resolve();
+      await Promise.resolve()
 
       // ---------- Tool session: pure BAML-driven iteration. ChooseClaudeDevAction decides each step (Report | AskUser | session plan). TS only applies the result and updates context. ----------
       const validationCriteriaJson = JSON.stringify(spec.validation_criteria);

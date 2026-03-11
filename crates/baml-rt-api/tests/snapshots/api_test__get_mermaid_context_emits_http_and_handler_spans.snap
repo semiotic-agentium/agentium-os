@@ -1,0 +1,22 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+expression: snapshot
+---
+{
+  "status": 200,
+  "spans": [
+    {
+      "name": "baml_rt_api.get_mermaid_context",
+      "attributes": {
+        "code.filepath": "crates/baml-rt-api/src/spans.rs",
+        "code.namespace": "baml_rt_api::spans",
+        "code.lineno": 43,
+        "thread.id": "[redacted]",
+        "thread.name": "[redacted]",
+        "context_id": "ctx-1-1",
+        "busy_ns": "[redacted]",
+        "idle_ns": "[redacted]"
+      }
+    }
+  ]
+}

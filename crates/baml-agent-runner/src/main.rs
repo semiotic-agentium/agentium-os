@@ -36,6 +36,10 @@ use baml_rt_core::{
     ids::{AgentId, DerivedId, ExternalId, TaskId},
     route_key_from_request,
 };
+use baml_rt_llm_config::{
+    FnoxFileSecretResolver, OverlaySecretResolver, SECRET_LINKS_CONFIG_KEY, SecretLinksState,
+    apply_secret_links_state,
+};
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_provenance::{
     AgentType, GraphExporter, GraphQueryParams, GraphStore, GraphqliteStoreBuilder, ProvEvent,
@@ -43,9 +47,10 @@ use baml_rt_provenance::{
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
     index_tools,
 };
-use baml_rt_quickjs::BamlRuntimeManager;
+use baml_rt_quickjs::{BamlRuntimeManager, SecretResolverToLlmAdapter};
 use baml_rt_tools::{
-    ManifestToolNames, ToolAccessPolicy, parse_access_allowlist, register_manifest_tools,
+    InventoryCatalog, ManifestToolNames, ToolAccessPolicy, parse_access_allowlist,
+    register_manifest_tools,
 };
 use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
 use baml_tools_calculator as _;
@@ -101,7 +106,10 @@ impl AgentPackage {
         })
     }
 
-    async fn load_schema_phase(&self) -> Result<SchemaLoaded> {
+    async fn load_schema_phase(
+        &self,
+        _provenance_config: &ProvenanceConfig,
+    ) -> Result<SchemaLoaded> {
         let mut runtime_manager = BamlRuntimeManager::new()?;
         let schema_span = spans::load_baml_schema(&self.baml_src);
         let _schema_guard = schema_span.enter();
@@ -110,6 +118,7 @@ impl AgentPackage {
         })?;
         runtime_manager.load_schema(baml_src_str)?;
         info!(agent = self.manifest.name, "BAML schema loaded");
+
         Ok(SchemaLoaded { runtime_manager })
     }
 
@@ -143,11 +152,17 @@ impl AgentPackage {
                     path
                 } else {
                     std::env::current_dir()
-                        .unwrap_or_else(|_| PathBuf::from("."))
+                        .unwrap_or_else(|e| {
+                            tracing::warn!(error = %e, "current_dir failed, using .");
+                            PathBuf::from(".")
+                        })
                         .join(path)
                 };
                 std::fs::create_dir_all(&absolute).map_err(BamlRtError::Io)?;
-                let canonical = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+                let canonical = std::fs::canonicalize(&absolute).unwrap_or_else(|e| {
+                    tracing::warn!(path = %absolute.display(), error = %e, "canonicalize failed");
+                    absolute
+                });
                 info!(
                     env = base.trim(),
                     base = %canonical.display(),
@@ -197,7 +212,15 @@ impl AgentPackage {
     ) -> Result<JsInitialized> {
         use baml_rt_quickjs::QuickJSConfig;
 
-        let runtime_manager_arc = Arc::new(Mutex::new(registered.runtime_manager));
+        registered
+            .runtime_manager
+            .tool_registry()
+            .set_config_resolver(Some(provenance_config.config_service()));
+        let mut runtime_manager = registered.runtime_manager;
+        runtime_manager.set_llm_secret_resolver(Arc::new(SecretResolverToLlmAdapter::new(
+            provenance_config.llm_secret_resolver(),
+        )));
+        let runtime_manager_arc = Arc::new(Mutex::new(runtime_manager));
         let quickjs_config = QuickJSConfig::new().with_stream_collector_idle_secs(stream_idle_secs);
         let mut agent_builder = A2aAgent::builder()
             .with_runtime_handle(runtime_manager_arc.clone())
@@ -265,7 +288,7 @@ impl AgentPackage {
     ) -> Result<(A2aAgent, AgentId)> {
         let span = spans::load_agent_package(&self.extract_dir);
         let _guard = span.enter();
-        let loaded = self.load_schema_phase().await?;
+        let loaded = self.load_schema_phase(provenance_config).await?;
         let registered = self
             .register_tools_phase(
                 loaded,
@@ -365,6 +388,7 @@ impl BootedAgent {
 /// Agent runner (host) that manages agents and composes the tool catalogue at startup.
 /// Tools live in crates/tools; the relationship between an agent and its tools is indirect — mediated by the host.
 /// Uses interior mutability for agents so the runner can be shared as Arc before loading completes.
+/// RwLock poison is treated as fatal (unrecoverable); we do not handle poisoning.
 pub(crate) struct AgentRunner {
     agents: RwLock<HashMap<String, BootedAgent>>,
     provenance_config: ProvenanceConfig,
@@ -544,8 +568,7 @@ impl AgentRunner {
                 Ok(result) => result,
                 Err(err) => {
                     let response = map_a2a_error(request_id, err);
-                    let serialized = serde_json::to_string(&response)
-                        .unwrap_or_else(|_| "{\"error\":\"serialization failed\"}".to_string());
+                    let serialized = serialize_a2a_response(&response);
                     writer.write_all(serialized.as_bytes()).await?;
                     writer.write_all(b"\n").await?;
                     writer.flush().await?;
@@ -566,8 +589,7 @@ impl AgentRunner {
                     "Agent not found",
                     Some(Value::String(agent_name)),
                 );
-                let serialized = serde_json::to_string(&response)
-                    .unwrap_or_else(|_| "{\"error\":\"serialization failed\"}".to_string());
+                let serialized = serialize_a2a_response(&response);
                 writer.write_all(serialized.as_bytes()).await?;
                 writer.write_all(b"\n").await?;
                 writer.flush().await?;
@@ -597,8 +619,7 @@ impl AgentRunner {
                 Err(err) => vec![map_a2a_error(request_id, err)],
             };
             for response in responses {
-                let serialized = serde_json::to_string(&response)
-                    .unwrap_or_else(|_| "{\"error\":\"serialization failed\"}".to_string());
+                let serialized = serialize_a2a_response(&response);
                 writer.write_all(serialized.as_bytes()).await?;
                 writer.write_all(b"\n").await?;
             }
@@ -753,7 +774,8 @@ impl InternalA2aRouter {
         }
     }
 
-    /// Wire to the runner after construction (called once by the builder).
+    /// Wire to the runner after construction. The builder always calls this before any route;
+    /// route_from may assume the runner is set.
     pub(crate) fn set_runner(&self, runner: Arc<AgentRunner>) {
         if self.runner.set(runner).is_err() {
             tracing::warn!(
@@ -767,6 +789,7 @@ impl InternalA2aRouter {
         caller: &AgentRouteKey,
         request: A2aWireRequest,
     ) -> Result<BusStream<A2aStreamChunk>> {
+        // Builder guarantees set_runner is called before any route (see set_runner doc).
         let runner = self
             .runner
             .get()
@@ -909,6 +932,11 @@ fn select_implicit_stdio_agent(agents: &HashMap<String, BootedAgent>) -> Option<
 
 fn is_a2a_method(method: &str) -> bool {
     method.starts_with("message/") || method.starts_with("tasks/") || method.starts_with("agent/")
+}
+
+/// Serialize an A2A JSON-RPC response for stdio; on failure returns a minimal error JSON line.
+fn serialize_a2a_response(v: &Value) -> String {
+    serde_json::to_string(v).unwrap_or_else(|_| r#"{"error":"serialization failed"}"#.to_string())
 }
 
 fn map_a2a_error(id: Option<JSONRPCId>, err: BamlRtError) -> Value {
@@ -1077,11 +1105,17 @@ impl Cli {
     }
 }
 
-/// Provenance configuration: GraphQLite store
+/// Provenance configuration: GraphQLite store with required config and secret services.
 pub(crate) enum ProvenanceConfig {
     Graphqlite {
         store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
         mermaid_cache: Option<Arc<baml_rt_provenance::MermaidCache>>,
+        /// Config store for registry (session open) and HTTP API. Required; use builder to guarantee.
+        config_service: Arc<dyn baml_rt_config::ConfigService>,
+        /// Secret resolver for LLM config (same mechanism as configuration system; not env vars). Required; use builder to guarantee.
+        llm_secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver>,
+        /// When Some, PUT /config/secrets/{name} is enabled (UI provisioning). Usually the same Arc as llm_secret_resolver when it is an OverlaySecretResolver.
+        runtime_secret_store: Option<Arc<dyn baml_rt_llm_config::RuntimeSecretStore>>,
     },
 }
 
@@ -1095,9 +1129,107 @@ impl ProvenanceConfig {
         let ProvenanceConfig::Graphqlite { mermaid_cache, .. } = self;
         mermaid_cache.clone()
     }
+
+    pub(crate) fn config_service(&self) -> Arc<dyn baml_rt_config::ConfigService> {
+        let ProvenanceConfig::Graphqlite { config_service, .. } = self;
+        config_service.clone()
+    }
+
+    pub(crate) fn llm_secret_resolver(&self) -> Arc<dyn baml_rt_llm_config::SecretResolver> {
+        let ProvenanceConfig::Graphqlite {
+            llm_secret_resolver,
+            ..
+        } = self;
+        llm_secret_resolver.clone()
+    }
+
+    pub(crate) fn runtime_secret_store(
+        &self,
+    ) -> Option<Arc<dyn baml_rt_llm_config::RuntimeSecretStore>> {
+        let ProvenanceConfig::Graphqlite {
+            runtime_secret_store,
+            ..
+        } = self;
+        runtime_secret_store.clone()
+    }
 }
 
-fn build_provenance_config(db: &ProvenanceDb) -> Result<ProvenanceConfig> {
+/// Linear builder for provenance config. Call `with_config_service` and `with_llm_secret_resolver` to satisfy required dependencies, then `build`.
+pub(crate) struct ProvenanceConfigBuilder {
+    store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+    mermaid_cache: Option<Arc<baml_rt_provenance::MermaidCache>>,
+    config_service: Option<Arc<dyn baml_rt_config::ConfigService>>,
+    llm_secret_resolver: Option<Arc<dyn baml_rt_llm_config::SecretResolver>>,
+    runtime_secret_store: Option<Arc<dyn baml_rt_llm_config::RuntimeSecretStore>>,
+}
+
+impl ProvenanceConfigBuilder {
+    /// Start building from the given store (and optional mermaid cache). You must then call `with_config_service` and `with_llm_secret_resolver` before `build`.
+    fn new(
+        store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+        mermaid_cache: Option<Arc<baml_rt_provenance::MermaidCache>>,
+    ) -> Self {
+        Self {
+            store,
+            mermaid_cache,
+            config_service: None,
+            llm_secret_resolver: None,
+            runtime_secret_store: None,
+        }
+    }
+
+    /// Set the config service (required). Consumes `self` and returns the builder for chaining.
+    pub(crate) fn with_config_service(
+        mut self,
+        config_service: Arc<dyn baml_rt_config::ConfigService>,
+    ) -> Self {
+        self.config_service = Some(config_service);
+        self
+    }
+
+    /// Set the LLM secret resolver (required; same mechanism as configuration system). Consumes `self` and returns the builder for chaining.
+    pub(crate) fn with_llm_secret_resolver(
+        mut self,
+        llm_secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver>,
+    ) -> Self {
+        self.llm_secret_resolver = Some(llm_secret_resolver);
+        self
+    }
+
+    /// Set the runtime secret store (optional). When set, PUT /config/secrets/{name} is enabled for UI provisioning. Use the same Arc as the overlay when using OverlaySecretResolver.
+    pub(crate) fn with_runtime_secret_store(
+        mut self,
+        runtime_secret_store: Option<Arc<dyn baml_rt_llm_config::RuntimeSecretStore>>,
+    ) -> Self {
+        self.runtime_secret_store = runtime_secret_store;
+        self
+    }
+
+    /// Build provenance config. Returns `Err` if required dependencies were not set.
+    pub(crate) fn build(self) -> Result<ProvenanceConfig> {
+        let config_service = self.config_service.ok_or_else(|| {
+            BamlRtError::InvalidArgument(
+                "ProvenanceConfigBuilder: config_service required (call with_config_service)"
+                    .into(),
+            )
+        })?;
+        let llm_secret_resolver = self.llm_secret_resolver.ok_or_else(|| {
+            BamlRtError::InvalidArgument(
+                "ProvenanceConfigBuilder: llm_secret_resolver required (call with_llm_secret_resolver)".into(),
+            )
+        })?;
+        Ok(ProvenanceConfig::Graphqlite {
+            store: self.store,
+            mermaid_cache: self.mermaid_cache,
+            config_service,
+            llm_secret_resolver,
+            runtime_secret_store: self.runtime_secret_store,
+        })
+    }
+}
+
+/// Build the store and a linear builder for provenance config. Caller must call `with_config_service` and `with_llm_secret_resolver` then `build`.
+fn provenance_config_builder(db: &ProvenanceDb) -> Result<ProvenanceConfigBuilder> {
     match db {
         ProvenanceDb::InMemory => {
             let store = GraphqliteStoreBuilder::in_memory().build().map_err(|e| {
@@ -1105,10 +1237,7 @@ fn build_provenance_config(db: &ProvenanceDb) -> Result<ProvenanceConfig> {
                     "Provenance in-memory store failed to build: {e}",
                 ))
             })?;
-            Ok(ProvenanceConfig::Graphqlite {
-                store,
-                mermaid_cache: None,
-            })
+            Ok(ProvenanceConfigBuilder::new(store, None))
         }
         ProvenanceDb::File(path) => {
             let cache = baml_rt_provenance::MermaidCache::new();
@@ -1122,10 +1251,7 @@ fn build_provenance_config(db: &ProvenanceDb) -> Result<ProvenanceConfig> {
                         anyhow::Error::from(e),
                     ))
                 })?;
-            Ok(ProvenanceConfig::Graphqlite {
-                store,
-                mermaid_cache: Some(cache),
-            })
+            Ok(ProvenanceConfigBuilder::new(store, Some(cache)))
         }
     }
 }
@@ -1454,7 +1580,10 @@ async fn main() -> anyhow::Result<()> {
             base.clone()
         } else {
             std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "current_dir failed, using .");
+                    PathBuf::from(".")
+                })
                 .join(base)
         };
         if let Err(e) = std::fs::create_dir_all(&absolute) {
@@ -1465,7 +1594,10 @@ async fn main() -> anyhow::Result<()> {
             );
             std::process::exit(1);
         }
-        let canonical = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+        let canonical = std::fs::canonicalize(&absolute).unwrap_or_else(|e| {
+            tracing::warn!(path = %absolute.display(), error = %e, "canonicalize failed");
+            absolute
+        });
         // SAFETY: single-threaded at this point; no other thread reads this var before we load packages.
         unsafe {
             std::env::set_var(
@@ -1487,8 +1619,46 @@ async fn main() -> anyhow::Result<()> {
             info!(path = %path.display(), "Provenance backend: sqlite file")
         }
     }
-    let provenance_config = build_provenance_config(&config.provenance_db)
-        .context("Failed to initialize provenance storage")?;
+    let config_service: Arc<dyn baml_rt_config::ConfigService> = match &config.provenance_db {
+        ProvenanceDb::InMemory => Arc::new(
+            baml_rt_config::SqliteConfigStore::in_memory()
+                .context("Failed to create in-memory config store")?,
+        ),
+        ProvenanceDb::File(path) => Arc::new(
+            baml_rt_config::SqliteConfigStore::open(
+                path.parent()
+                    .unwrap_or_else(|| {
+                        tracing::debug!(path = %path.display(), "no parent, using path as config base");
+                        path.as_ref()
+                    })
+                    .join("config.db"),
+            )
+            .context("Failed to open config store (config.db)")?,
+        ),
+    };
+    let fnox_resolver = Arc::new(FnoxFileSecretResolver::default_path_resolver());
+    let overlay = Arc::new(OverlaySecretResolver::new(fnox_resolver.clone()));
+    // Apply persisted secret link/unlink state (internal config, not a bundle).
+    let link_state: SecretLinksState = match config_service.get_internal(SECRET_LINKS_CONFIG_KEY) {
+        Ok(Some(v)) => serde_json::from_value(v).unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "secret link state parse failed; using default");
+            SecretLinksState::default()
+        }),
+        Ok(None) => SecretLinksState::default(),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load secret link state; using default");
+            SecretLinksState::default()
+        }
+    };
+    apply_secret_links_state(&link_state, overlay.as_ref(), fnox_resolver.as_ref());
+
+    let provenance_config = provenance_config_builder(&config.provenance_db)
+        .context("Failed to initialize provenance storage")?
+        .with_config_service(config_service)
+        .with_llm_secret_resolver(overlay.clone())
+        .with_runtime_secret_store(Some(overlay))
+        .build()
+        .context("Failed to build provenance config")?;
     let access_allowlist = parse_access_allowlist();
     let tool_index = match &config.provenance_db {
         ProvenanceDb::InMemory => Some(ToolIndexConfig::in_memory()),
@@ -1550,30 +1720,29 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let http_handle = if let Some(bind) = config.serve_http.clone() {
-        let (mermaid, context_metrics, provenance_ops) = {
-            let runner = ready.runner();
-            let prov = runner.provenance_config();
-            let store = prov.store().clone();
-            (
-                Some(
-                    Arc::new(MermaidServiceImpl::new(store.clone(), prov.mermaid_cache()))
-                        as Arc<dyn baml_rt_api::MermaidService>,
-                ),
-                Some(Arc::new(ContextMetricsServiceImpl::new(store))
-                    as Arc<dyn baml_rt_api::ContextMetricsService>),
-                Some(
-                    Arc::new(ProvenanceOpsServiceImpl::new(prov.store().clone()))
-                        as Arc<dyn baml_rt_api::ProvenanceOpsService>,
-                ),
-            )
-        };
+        let runner = ready.runner();
+        let prov_config = runner.provenance_config();
+        let store = prov_config.store().clone();
+        let config_service = prov_config.config_service();
+        let secret_resolver = prov_config.llm_secret_resolver();
+        let tool_catalog: Arc<dyn baml_rt_tools::ToolCatalog> = Arc::new(InventoryCatalog::new());
+
+        let mermaid = Some(Arc::new(MermaidServiceImpl::new(
+            store.clone(),
+            prov_config.mermaid_cache(),
+        )) as Arc<dyn baml_rt_api::MermaidService>);
+        let context_metrics = Some(Arc::new(ContextMetricsServiceImpl::new(store.clone()))
+            as Arc<dyn baml_rt_api::ContextMetricsService>);
+        let provenance_ops = Some(Arc::new(ProvenanceOpsServiceImpl::new(store))
+            as Arc<dyn baml_rt_api::ProvenanceOpsService>);
         let registry_impl = ready.registry();
         let web_dir = config.web_dir.clone();
         info!(
             bind = %bind,
             web_dir = ?web_dir,
-            "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a/sse, GET /contexts/.../mermaid, GET /tasks/.../mermaid, GET /contexts/.../metrics, GET /provenance/..., GET /openapi.json)"
+            "A2A server mode: exposing HTTP API (GET /agents, POST /agents/.../a2a/sse, GET /config, GET /contexts/.../mermaid, GET /tasks/.../mermaid, GET /contexts/.../metrics, GET /provenance/..., GET /openapi.json)"
         );
+        let runtime_secret_store = prov_config.runtime_secret_store();
         Some(tokio::spawn(async move {
             baml_rt_api::serve_with_services(
                 registry_impl,
@@ -1581,6 +1750,10 @@ async fn main() -> anyhow::Result<()> {
                 mermaid,
                 context_metrics,
                 provenance_ops,
+                tool_catalog,
+                config_service,
+                secret_resolver,
+                runtime_secret_store,
                 web_dir.as_deref(),
             )
             .await
@@ -1636,18 +1809,20 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use baml_rt::baml::BamlRuntimeManager;
     use baml_rt_core::{bus::BusWithEffects, route_key_from_request};
+    use baml_rt_llm_config::EmptySecretResolver;
     use serde_json::json;
 
     use super::*;
 
     fn test_provenance_config() -> ProvenanceConfig {
-        let store = GraphqliteStoreBuilder::in_memory()
+        let config_service =
+            Arc::new(baml_rt_config::SqliteConfigStore::in_memory().expect("in-memory config"));
+        provenance_config_builder(&ProvenanceDb::InMemory)
+            .expect("provenance builder")
+            .with_config_service(config_service)
+            .with_llm_secret_resolver(Arc::new(EmptySecretResolver))
             .build()
-            .expect("in-memory provenance store for test");
-        ProvenanceConfig::Graphqlite {
-            store,
-            mermaid_cache: None,
-        }
+            .expect("provenance config")
     }
 
     async fn build_test_agent() -> A2aAgent {

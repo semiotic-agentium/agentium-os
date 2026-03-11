@@ -468,6 +468,9 @@ impl A2aAgent {
             access: None,
             tags: Vec::new(),
             secret_requirements: Vec::new(),
+            secret_requests: Vec::new(),
+            config: None,
+            config_bundle: None,
             origin: baml_rt_tools::ToolOrigin::Guest,
         };
 

@@ -104,6 +104,92 @@ fn looks_like_prov_event_id(s: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn prov_test_router(
+    registry: Arc<dyn AgentRegistry>,
+    provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
+) -> axum::Router {
+    use baml_rt_config::SqliteConfigStore;
+    use baml_rt_llm_config::EmptySecretResolver;
+    use baml_rt_tools::InventoryCatalog;
+
+    let tool_catalog: Arc<dyn baml_rt_tools::ToolCatalog> = Arc::new(InventoryCatalog::new());
+    let config_service: Arc<dyn baml_rt_config::ConfigService> =
+        Arc::new(SqliteConfigStore::in_memory().expect("in-memory config store for test"));
+    let secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver> =
+        Arc::new(EmptySecretResolver);
+    api_router_with_services(
+        registry,
+        None,
+        None,
+        provenance_ops,
+        tool_catalog,
+        config_service,
+        secret_resolver,
+        None,
+        None,
+    )
+}
+
+/// Snapshot-friendly representation of finished spans: name + attributes (variant values redacted).
+const SPAN_REDACT_KEYS: &[&str] = &["thread.id", "thread.name", "busy_ns", "idle_ns"];
+
+#[allow(dead_code)]
+fn spans_snapshot(spans: &[opentelemetry_sdk::export::trace::SpanData]) -> Value {
+    let refs: Vec<_> = spans.iter().collect();
+    spans_snapshot_impl(&refs, SPAN_REDACT_KEYS)
+}
+
+fn spans_snapshot_for_test(
+    spans: &[opentelemetry_sdk::export::trace::SpanData],
+    thread_name: &str,
+) -> Value {
+    let filtered: Vec<_> = spans
+        .iter()
+        .filter(|s| attr_value(s, "thread.name").as_deref() == Some(thread_name))
+        .collect();
+    spans_snapshot_impl(&filtered, SPAN_REDACT_KEYS)
+}
+
+fn spans_snapshot_impl(
+    spans: &[&opentelemetry_sdk::export::trace::SpanData],
+    redact_keys: &[&str],
+) -> Value {
+    use opentelemetry::Value as OtelValue;
+    let redact: std::collections::HashSet<&str> = redact_keys.iter().copied().collect();
+    let arr: Vec<Value> = spans
+        .iter()
+        .map(|s| {
+            let mut attrs = serde_json::Map::new();
+            for kv in &s.attributes {
+                let key = kv.key.as_str().to_string();
+                let val = if redact.contains(kv.key.as_str()) {
+                    Value::String("[redacted]".to_string())
+                } else {
+                    match &kv.value {
+                        OtelValue::String(v) => {
+                            let v = v.to_string();
+                            Value::String(if looks_like_uuid(&v) {
+                                "[uuid]".to_string()
+                            } else {
+                                v
+                            })
+                        }
+                        OtelValue::Bool(b) => Value::Bool(*b),
+                        OtelValue::I64(i) => Value::Number(serde_json::Number::from(*i)),
+                        OtelValue::F64(f) => serde_json::Number::from_f64(*f)
+                            .map(Value::Number)
+                            .unwrap_or(Value::Null),
+                        _ => Value::String(kv.value.to_string()),
+                    }
+                };
+                attrs.insert(key, val);
+            }
+            serde_json::json!({ "name": s.name.as_ref(), "attributes": attrs })
+        })
+        .collect();
+    Value::Array(arr)
+}
+
 /// Mock registry for testing: fixed list and configurable A2A response.
 struct MockRegistry {
     entries: Vec<AgentDiscoveryEntry>,
@@ -169,6 +255,8 @@ impl OtelTestFixture {
     }
 }
 
+/// Helper to find a span by name; reserved for future span assertions.
+#[allow(dead_code)]
 fn find_span<'a>(
     spans: &'a [opentelemetry_sdk::export::trace::SpanData],
     name: &str,
@@ -176,6 +264,8 @@ fn find_span<'a>(
     spans.iter().find(|span| span.name.as_ref() == name)
 }
 
+/// Helper to find a span by attribute key/value; reserved for future span assertions.
+#[allow(dead_code)]
 fn find_span_with_attr<'a>(
     spans: &'a [opentelemetry_sdk::export::trace::SpanData],
     key: &str,
@@ -722,31 +812,27 @@ async fn post_a2a_sse_returns_event_stream() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok()),
-        Some("text/event-stream")
-    );
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
-    let body_str = String::from_utf8_lossy(&body);
-    assert!(
-        body_str.contains("data:"),
-        "SSE response should contain data: lines"
-    );
-    assert!(
-        body_str.contains("totalSize"),
-        "SSE data should contain JSON-RPC result"
-    );
+    let body_str = String::from_utf8_lossy(&body).into_owned();
+
+    let snapshot = serde_json::json!({
+        "status": status.as_u16(),
+        "content_type": content_type,
+        "body": body_str,
+    });
+    insta::assert_json_snapshot!(snapshot);
 }
 
-/// Asserts that the server does not buffer the A2A stream: events must arrive incrementally.
-/// Mock yields three items with 80ms delay between each; if server buffered we would see nothing
-/// for ~240ms. We require the first SSE event to arrive within 200ms (client choice = no buffering).
+/// Server must not buffer the A2A stream: events arrive incrementally.
+/// Mock yields three items with 80ms delay between each; first SSE event must arrive within 200ms.
 #[tokio::test]
 async fn post_a2a_sse_no_buffering_events_arrive_incrementally() {
     let responses = vec![
@@ -774,22 +860,20 @@ async fn post_a2a_sse_no_buffering_events_arrive_incrementally() {
         .await
         .unwrap();
 
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok()),
-        Some("text/event-stream")
-    );
+    let status = response.status();
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
 
     let body = response.into_body();
     let mut stream = body.into_data_stream();
     let mut buf = Vec::new();
     let mut events_received = 0u32;
-    let mut first_event_elapsed: Option<std::time::Duration> = None;
+    let mut first_event_elapsed_ms: Option<u128> = None;
     let start = std::time::Instant::now();
-    const FIRST_EVENT_MAX_MS: u64 = 200;
+    const FIRST_EVENT_MAX_MS: u128 = 200;
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.expect("body chunk");
@@ -800,8 +884,8 @@ async fn post_a2a_sse_no_buffering_events_arrive_incrementally() {
             let line = &buf[line_start..line_end];
             if line.starts_with(b"data:") && line.len() > 5 {
                 events_received += 1;
-                if first_event_elapsed.is_none() {
-                    first_event_elapsed = Some(start.elapsed());
+                if first_event_elapsed_ms.is_none() {
+                    first_event_elapsed_ms = Some(start.elapsed().as_millis());
                 }
             }
             line_start = line_end;
@@ -809,16 +893,19 @@ async fn post_a2a_sse_no_buffering_events_arrive_incrementally() {
         buf.drain(..line_start);
     }
 
+    let first_within_limit = first_event_elapsed_ms.map(|ms| ms < FIRST_EVENT_MAX_MS);
     assert!(
-        events_received >= 3,
-        "expected at least 3 SSE data events, got {events_received}"
+        first_within_limit == Some(true),
+        "first SSE event must arrive within {FIRST_EVENT_MAX_MS}ms (no server buffering); got {:?}",
+        first_event_elapsed_ms
     );
-    let elapsed = first_event_elapsed.expect("at least one event");
-    assert!(
-        elapsed.as_millis() < FIRST_EVENT_MAX_MS as u128,
-        "first SSE event must arrive within {FIRST_EVENT_MAX_MS}ms (no server buffering); got {}ms",
-        elapsed.as_millis()
-    );
+    let snapshot = serde_json::json!({
+        "status": status.as_u16(),
+        "content_type": content_type,
+        "events_received": events_received,
+        "first_event_within_limit": true,
+    });
+    insta::assert_json_snapshot!(snapshot);
 }
 
 #[tokio::test]
@@ -882,12 +969,9 @@ async fn get_provenance_llm_calls_returns_snapshot() {
     let context_id = ContextId::new(100, 1).to_string();
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap());
-    let app = api_router_with_services(
+    let app = prov_test_router(
         registry,
-        None,
-        None,
         Some(Arc::new(RealProvenanceOps { store }) as Arc<dyn ProvenanceOpsService>),
-        None,
     );
     let uri = format!(
         "/provenance/llm-calls?contextId={}&agentId={}&groupBy=agent_id,model",
@@ -992,12 +1076,9 @@ async fn get_provenance_tool_calls_returns_snapshot() {
     let context_id = ContextId::new(100, 1).to_string();
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap());
-    let app = api_router_with_services(
+    let app = prov_test_router(
         registry,
-        None,
-        None,
         Some(Arc::new(RealProvenanceOps { store }) as Arc<dyn ProvenanceOpsService>),
-        None,
     );
     let uri = format!(
         "/provenance/tool-calls?contextId={}&agentId={}&groupBy=agent_id,tool_name&outcome=failed_only",
@@ -1023,12 +1104,9 @@ async fn get_provenance_messages_returns_snapshot() {
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
     let store = seeded_provenance_store().await;
     let context_id = ContextId::new(100, 1).to_string();
-    let app = api_router_with_services(
+    let app = prov_test_router(
         registry,
-        None,
-        None,
         Some(Arc::new(RealProvenanceOps { store }) as Arc<dyn ProvenanceOpsService>),
-        None,
     );
     let uri = format!(
         "/provenance/messages?contextId={context_id}&groupBy=agent_id,baml_prompt&sortBy=total_processing_ms&sortDir=desc"
@@ -1052,12 +1130,9 @@ async fn get_provenance_llm_calls_pagination_returns_snapshot() {
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
     let store = seeded_provenance_store().await;
     let context_id = ContextId::new(100, 1).to_string();
-    let app = api_router_with_services(
+    let app = prov_test_router(
         registry,
-        None,
-        None,
         Some(Arc::new(RealProvenanceOps { store }) as Arc<dyn ProvenanceOpsService>),
-        None,
     );
     let page_1_uri = format!(
         "/provenance/llm-calls?contextId={context_id}&sortBy=timestamp_ms&sortDir=asc&pageSize=1"
@@ -1109,12 +1184,9 @@ async fn get_provenance_llm_calls_filter_sort_and_drilldown_returns_snapshot() {
     let context_id = ContextId::new(100, 1).to_string();
     let drilldown_agent =
         AgentId::from_uuid(UuidId::parse_str("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb").unwrap());
-    let app = api_router_with_services(
+    let app = prov_test_router(
         registry,
-        None,
-        None,
         Some(Arc::new(RealProvenanceOps { store }) as Arc<dyn ProvenanceOpsService>),
-        None,
     );
     let filtered_uri = format!(
         "/provenance/llm-calls?contextId={context_id}&provider=anthropic&outcome=failed_only&sortBy=duration_ms&sortDir=desc&groupBy=agent_id,provider,model,baml_prompt"
@@ -1168,12 +1240,9 @@ async fn get_provenance_tool_calls_filter_sort_returns_snapshot() {
     let context_id = ContextId::new(100, 1).to_string();
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap());
-    let app = api_router_with_services(
+    let app = prov_test_router(
         registry,
-        None,
-        None,
         Some(Arc::new(RealProvenanceOps { store }) as Arc<dyn ProvenanceOpsService>),
-        None,
     );
     let uri = format!(
         "/provenance/tool-calls?contextId={}&agentId={}&toolName=support/calculate&sortBy=duration_ms&sortDir=desc&groupBy=agent_id,tool_name",
@@ -1198,12 +1267,9 @@ async fn get_provenance_failure_evidence_linked_modes_returns_snapshot() {
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(vec![]));
     let store = seeded_provenance_store().await;
     let context_id = ContextId::new(100, 1).to_string();
-    let app = api_router_with_services(
+    let app = prov_test_router(
         registry,
-        None,
-        None,
         Some(Arc::new(RealProvenanceOps { store }) as Arc<dyn ProvenanceOpsService>),
-        None,
     );
     let llm_uri = format!(
         "/provenance/llm-calls?contextId={context_id}&provider=anthropic&outcome=failed_only&sortBy=timestamp_ms&sortDir=asc&pageSize=5"
@@ -1262,31 +1328,11 @@ async fn get_mermaid_context_emits_http_and_handler_spans() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
 
     let spans = otel.spans();
-    // Require handler span (created in handler). HTTP span from TraceLayer may be missing with
-    // oneshot (route layer / Otel timing); never .expect() on it.
-    let handler_span =
-        find_span(&spans, "baml_rt_api.get_mermaid_context").expect("mermaid context handler span");
-    assert_eq!(
-        attr_value(handler_span, "context_id").as_deref(),
-        Some("ctx-1-1")
-    );
-    if let Some(http_span) = find_span(&spans, "baml_rt_api.http.request")
-        .or_else(|| find_span_with_attr(&spans, "http.route", "/contexts/{context_id}/mermaid"))
-        .or_else(|| find_span_with_attr(&spans, "url.path", "/contexts/ctx-1-1/mermaid"))
-    {
-        let route = attr_value(http_span, "http.route").unwrap_or_default();
-        assert!(
-            route == "/contexts/{context_id}/mermaid"
-                || route == "/contexts/ctx-1-1/mermaid"
-                || route == "<unmatched>",
-            "http.route should be template, concrete path, or <unmatched>, got {route:?}"
-        );
-        assert_eq!(
-            attr_value(http_span, "http.request.method").as_deref(),
-            Some("GET")
-        );
-    }
+    let snapshot = serde_json::json!({
+        "status": response.status().as_u16(),
+        "spans": spans_snapshot_for_test(&spans, "get_mermaid_context_emits_http_and_handler_spans"),
+    });
+    insta::assert_json_snapshot!(snapshot);
 }

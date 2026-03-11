@@ -13,17 +13,24 @@ use baml_rt_core::{
     ids::{AgentId, UuidId},
 };
 use serde_json::json;
-use test_support::common::{require_api_key, setup_baml_runtime_default, setup_bridge};
+use test_support::common::{fnox_has_openrouter_key, setup_baml_runtime_default, setup_bridge};
 use uuid::Uuid;
 
+/// Integration test: uses fnox.toml for LLM API keys (no env). Skips when fnox has no
+/// OPENROUTER_API_KEY (e.g. CI without secrets); runs and passes when fnox is configured.
 #[tokio::test]
 async fn test_e2e_simple_greeting_with_llm() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_test_writer()
         .try_init();
-    let api_key = require_api_key();
-    tracing::info!("Using OpenRouter API key (length: {})", api_key.len());
+
+    if !fnox_has_openrouter_key() {
+        eprintln!(
+            "Skipping test_e2e_simple_greeting_with_llm: fnox.toml has no OPENROUTER_API_KEY"
+        );
+        return;
+    }
 
     let baml_manager = setup_baml_runtime_default();
     // Single attempt: avoid retry flakiness (second attempt can return empty parsed response).
@@ -80,9 +87,12 @@ async fn test_e2e_simple_greeting_with_llm() {
 
 #[tokio::test]
 async fn test_e2e_streaming_greeting() {
-    let _ = require_api_key();
-
     tracing::info!("Testing streaming BAML function call");
+
+    if !fnox_has_openrouter_key() {
+        eprintln!("Skipping test_e2e_streaming_greeting: fnox.toml has no OPENROUTER_API_KEY");
+        return;
+    }
 
     let baml_manager = setup_baml_runtime_default();
     let mut bridge = setup_bridge(baml_manager).await;

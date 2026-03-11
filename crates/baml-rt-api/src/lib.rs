@@ -3,6 +3,7 @@
 //! Exposes strict routes `/agents` (discovery) and `/agents/{agent_package}/{agent_instance_id}/a2a`
 //! (A2A JSON-RPC forward). Delegates to an internal [`AgentRegistry`](baml_rt_a2a::AgentRegistry) implementation.
 
+mod config_handlers;
 mod context_metrics;
 mod handlers;
 mod mermaid;

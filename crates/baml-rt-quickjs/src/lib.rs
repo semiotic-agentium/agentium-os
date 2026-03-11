@@ -9,6 +9,8 @@ pub mod baml_execution;
 pub mod baml_pre_execution;
 pub mod context;
 pub mod js_value_converter;
+pub mod llm_client_registry;
+pub mod llm_resolver_adapter;
 pub mod quickjs_bridge;
 pub mod runtime;
 pub mod traits;
@@ -20,6 +22,10 @@ pub use a2a_stream::{
 };
 pub use baml::{BamlRuntimeManager, ToolSessionExecutionHandle};
 pub use context::{BamlContext, ContextMetadata};
+pub use llm_client_registry::{
+    LLM_SECRET_KEYS, LlmRegistryBuildResult, LlmSecretResolver, build_llm_client_registry,
+};
+pub use llm_resolver_adapter::SecretResolverToLlmAdapter;
 pub use quickjs_bridge::QuickJSBridge;
 pub use runtime::{QuickJSConfig, Runtime, RuntimeBuilder, RuntimeConfig};
 pub use traits::{

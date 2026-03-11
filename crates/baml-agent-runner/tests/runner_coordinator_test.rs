@@ -22,7 +22,7 @@ use common::{
 use serde_json::{Value, json};
 use test_support::common::{
     agent_fixture, chunks_from_responses, ensure_fixture_runtime_types, message_texts_from_chunks,
-    require_api_key, send_stream_request, workspace_root,
+    require_api_key, send_stream_request, workspace_fnox_path, workspace_root,
 };
 use tokio::time::{Duration, timeout};
 
@@ -74,7 +74,10 @@ async fn setup_coordinator_agent_with_provenance()
     ensure_fixture_runtime_types();
 
     let built = build_coordinator_smoke_fixture().await;
-    let mut manager = BamlRuntimeManager::new().expect("create manager");
+    let mut manager = BamlRuntimeManager::builder()
+        .with_fnox_llm_resolver(workspace_fnox_path())
+        .build()
+        .expect("create manager");
     manager
         .load_schema(built.to_str().expect("coordinator built path utf8"))
         .expect("load coordinator schema");
@@ -130,7 +133,10 @@ async fn setup_workspace_coordinator_with_provenance()
     ensure_fixture_runtime_types();
 
     let built = build_workspace_coordinator_agent().await;
-    let mut manager = BamlRuntimeManager::new().expect("create manager");
+    let mut manager = BamlRuntimeManager::builder()
+        .with_fnox_llm_resolver(workspace_fnox_path())
+        .build()
+        .expect("create manager");
     manager
         .load_schema(built.to_str().expect("coordinator built path utf8"))
         .expect("load coordinator schema");

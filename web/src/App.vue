@@ -5,6 +5,8 @@ import ChatWindow from "./components/ChatWindow.vue";
 import Dashboard from "./components/Dashboard.vue";
 import Navbar from "./components/Navbar.vue";
 import ProvenancePane from "./components/ProvenancePane.vue";
+import ReasoningPane from "./components/ReasoningPane.vue";
+import SettingsView from "./components/SettingsView.vue";
 import { useProvenanceOps } from "./composables/useProvenanceOps";
 import { useA2aClient } from "./composables/useA2aClient";
 import { useTheme } from "./composables/useTheme";
@@ -29,7 +31,7 @@ const { theme, toggle: toggleTheme } = useTheme();
 const { createQuery } = useProvenanceOps();
 
 // Active view — defaults to dashboard as landing page
-const view = ref<"dashboard" | "chat">("dashboard");
+const view = ref<"dashboard" | "chat" | "settings">("dashboard");
 
 // Diagrams: provenance sequence diagram first, then any mermaid blocks in agent messages.
 const diagrams = computed(() => {
@@ -108,6 +110,7 @@ onMounted(() => fetchAgents());
         :provenance-diagram="provenanceDiagram"
         :messages="messages"
         :provenance-summary="provenanceDashboardSummary"
+        @open-settings="view = 'settings'"
       />
 
       <div v-show="view === 'chat'" class="chat-layout">
@@ -134,5 +137,7 @@ onMounted(() => fetchAgents());
         </div>
       </div>
     </div>
+
+    <SettingsView v-show="view === 'settings'" />
   </div>
 </template>

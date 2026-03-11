@@ -174,11 +174,11 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "execution_failed",
             Retryability::Retryable,
         ),
-        BamlRtError::RequestBuildFailed(message) => mapping(
+        BamlRtError::RequestBuildFailed { source } => mapping(
             error,
             -32603,
             "Internal error",
-            Some(serde_json::json!({ "details": message, "layer": "request_build" })),
+            Some(serde_json::json!({ "details": source.to_string(), "layer": "request_build" })),
             "request_build_failed",
             Retryability::Retryable,
         ),
@@ -228,6 +228,22 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "Internal error",
             None,
             "runtime_load_failed",
+            Retryability::Retryable,
+        ),
+        BamlRtError::ClientRegistryBuild { .. } => mapping(
+            error,
+            -32603,
+            "Internal error",
+            None,
+            "client_registry_build",
+            Retryability::Retryable,
+        ),
+        BamlRtError::FunctionStreamCreation { .. } => mapping(
+            error,
+            -32603,
+            "Internal error",
+            None,
+            "function_stream_creation",
             Retryability::Retryable,
         ),
         BamlRtError::BamlRuntime(_) | BamlRtError::TypeConversion(_) => mapping(

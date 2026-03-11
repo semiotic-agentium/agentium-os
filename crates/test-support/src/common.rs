@@ -153,8 +153,31 @@ pub fn ensure_fixture_runtime_types() {
     }
 }
 
+/// Path to workspace-root fnox.toml. Use with
+/// `BamlRuntimeManager::builder().with_fnox_llm_resolver(workspace_fnox_path())` so resolution
+/// works regardless of test cwd (package dir vs workspace root).
+/// Canonicalizes when the file exists so the resolver always gets an absolute path.
+pub fn workspace_fnox_path() -> PathBuf {
+    let path = workspace_root().join("fnox.toml");
+    path.canonicalize().unwrap_or(path)
+}
+
+/// True if workspace fnox.toml resolves `OPENROUTER_API_KEY` for the default profile.
+/// Use to skip LLM integration tests when fnox has no key (e.g. CI without secrets).
+pub fn fnox_has_openrouter_key() -> bool {
+    use baml_rt_llm_config::{FnoxFileSecretResolver, SecretResolver};
+    let resolver = FnoxFileSecretResolver::from_path(Some(workspace_fnox_path().as_path()));
+    resolver
+        .resolve("OPENROUTER_API_KEY")
+        .or_else(|| resolver.resolve("env.OPENROUTER_API_KEY"))
+        .is_some()
+}
+
 pub fn setup_baml_runtime(schema_path: &str) -> Arc<Mutex<BamlRuntimeManager>> {
-    let mut manager = BamlRuntimeManager::new().expect("Should create manager");
+    let mut manager = BamlRuntimeManager::builder()
+        .with_fnox_llm_resolver(workspace_fnox_path())
+        .build()
+        .expect("Should create manager");
     manager
         .load_schema(schema_path)
         .expect("Should load schema");
@@ -162,7 +185,10 @@ pub fn setup_baml_runtime(schema_path: &str) -> Arc<Mutex<BamlRuntimeManager>> {
 }
 
 pub fn setup_baml_runtime_manager(schema_path: &str) -> BamlRuntimeManager {
-    let mut manager = BamlRuntimeManager::new().expect("Should create manager");
+    let mut manager = BamlRuntimeManager::builder()
+        .with_fnox_llm_resolver(workspace_fnox_path())
+        .build()
+        .expect("Should create manager");
     manager
         .load_schema(schema_path)
         .expect("Should load schema");
@@ -245,10 +271,14 @@ pub fn ensure_baml_src_exists() -> bool {
     true
 }
 
+/// Workspace root (repo root). Canonicalizes so paths are absolute and work regardless of test cwd.
+/// test-support lives at crates/test-support, so we go up two levels from CARGO_MANIFEST_DIR.
 pub fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let manifest_abs = manifest.canonicalize().unwrap_or(manifest);
+    manifest_abs
         .parent()
-        .and_then(|path| path.parent())
+        .and_then(|p| p.parent())
         .expect("test-support crate should be under crates/")
         .to_path_buf()
 }
@@ -407,8 +437,11 @@ pub async fn build_minimal_a2a_agent_with_stream_idle_secs(
 /// test QuickJS config. Call `ensure_fixture_runtime_types()` before this if not already done.
 /// Returns the agent; tests create scope via `InvocationScope::synthetic_message(agent.agent_id().clone())`.
 pub async fn setup_stream_baml_tool_agent_for_contract(init_js: Option<&str>) -> A2aAgent {
-    let mut baml_manager = BamlRuntimeManager::new().expect("create manager");
     let agent_dir = agent_fixture("stream-baml-tool");
+    let mut baml_manager = BamlRuntimeManager::builder()
+        .with_fnox_llm_resolver(workspace_fnox_path())
+        .build()
+        .expect("create manager");
     baml_manager
         .load_schema(agent_dir.to_str().expect("fixture path valid"))
         .expect("load schema");

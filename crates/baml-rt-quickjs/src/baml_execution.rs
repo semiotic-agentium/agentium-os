@@ -20,7 +20,28 @@ use tokio::{
 use crate::{
     baml_collector::{BamlLLMCollector, LLMCompletionHandle},
     baml_pre_execution::intercept_llm_call_pre_execution,
+    llm_client_registry::{LlmSecretResolver, build_llm_client_registry},
 };
+
+/// Bundles a BAML streaming invocation: stream, context manager, client registry, and env vars.
+/// Callers run the stream with these same components via `stream.run(..., &ctx_manager, None, client_registry_opt.as_ref(), env_vars)`.
+pub struct BamlStreamInvocation {
+    pub stream: FunctionResultStream,
+    pub ctx_manager: RuntimeContextManager,
+    pub client_registry_opt: Option<baml_runtime::client_registry::ClientRegistry>,
+    pub env_vars: HashMap<String, String>,
+}
+
+impl std::fmt::Debug for BamlStreamInvocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BamlStreamInvocation")
+            .field("stream", &"<FunctionResultStream>")
+            .field("ctx_manager", &self.ctx_manager)
+            .field("client_registry_opt", &self.client_registry_opt)
+            .field("env_vars", &self.env_vars)
+            .finish()
+    }
+}
 
 /// Policy for retrying BAML calls when the LLM response fails to parse.
 ///
@@ -64,34 +85,22 @@ pub struct BamlExecutor {
     effect_emitter: Option<Arc<dyn EffectEmitter>>,
     conversation_context_provider: Option<Arc<dyn ConversationContextProvider>>,
     parse_retry_policy: ParseRetryPolicy,
+    /// When set, LLM API keys are injected via ClientRegistry (not env vars).
+    llm_secret_resolver: Option<Arc<dyn LlmSecretResolver>>,
 }
 
 impl BamlExecutor {
     /// Load BAML IL from the compiled output
     ///
-    /// This loads the BAML runtime from the baml_src directory using from_directory
+    /// This loads the BAML runtime from the baml_src directory using from_directory.
+    /// LLM API keys are not passed via env vars here; they are injected via ClientRegistry
+    /// at call time when [`set_llm_secret_resolver`] is used, otherwise via env fallback.
     pub fn load_il(baml_src_dir: &Path, tool_registry: Arc<ToolRegistry>) -> Result<Self> {
         tracing::info!(?baml_src_dir, "Loading BAML runtime from directory");
 
-        // Use from_directory which handles feature flags internally
-        // Load environment variables - BAML uses these for API keys
-        let mut env_vars: HashMap<String, String> = HashMap::new();
-
-        // Load OPENROUTER_API_KEY from environment if present
-        if let Ok(api_key) = std::env::var("OPENROUTER_API_KEY") {
-            env_vars.insert("OPENROUTER_API_KEY".to_string(), api_key);
-            tracing::debug!("Loaded OPENROUTER_API_KEY from environment");
-        }
-
-        // Load other common API key environment variables
-        for key in &["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"] {
-            if let Ok(value) = std::env::var(key) {
-                env_vars.insert(key.to_string(), value);
-                tracing::debug!(api_key = key, "Loaded API key from environment");
-            }
-        }
-
         let feature_flags = internal_baml_core::feature_flags::FeatureFlags::default();
+        // Do not pass LLM API keys as env vars; they are injected via ClientRegistry or env fallback at call time.
+        let env_vars: HashMap<String, String> = HashMap::new();
 
         let runtime = BamlRuntime::from_directory(baml_src_dir, env_vars, feature_flags)
             .map_err(|e| BamlRtError::RuntimeLoadFailed { source: e })?;
@@ -102,7 +111,15 @@ impl BamlExecutor {
             effect_emitter: None,
             conversation_context_provider: None,
             parse_retry_policy: ParseRetryPolicy::default(),
+            llm_secret_resolver: None,
         })
+    }
+
+    /// Set the LLM secret resolver for ClientRegistry-based API key injection.
+    /// When set, API keys are resolved via the resolver (e.g. fnox + llm mapping) and
+    /// passed to BAML as ClientRegistry, not env vars.
+    pub fn set_llm_secret_resolver(&mut self, resolver: Arc<dyn LlmSecretResolver>) {
+        self.llm_secret_resolver = Some(resolver);
     }
 
     /// Set the policy for retrying on parse failure (e.g. use `max_attempts: 1` in tests).
@@ -142,17 +159,15 @@ impl BamlExecutor {
         // Convert JSON args to BamlValue map
         let params = self.json_to_baml_map(&args)?;
 
-        // Call the function
-        // Load environment variables for API keys
-        let mut env_vars = HashMap::new();
-        if let Ok(api_key) = std::env::var("OPENROUTER_API_KEY") {
-            env_vars.insert("OPENROUTER_API_KEY".to_string(), api_key);
-        }
-        for key in &["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"] {
-            if let Ok(value) = std::env::var(key) {
-                env_vars.insert(key.to_string(), value);
-            }
-        }
+        // Build ClientRegistry from resolver; LLM keys are never passed via env vars.
+        let scope_id = scope.agent_id().as_str();
+        let llm_registry_result = build_llm_client_registry(
+            self.runtime.as_ref(),
+            self.llm_secret_resolver.as_deref(),
+            scope_id,
+        )
+        .map_err(|e| BamlRtError::ClientRegistryBuild { source: e })?;
+        let env_vars = HashMap::new();
         let tags = None;
 
         // Track execution start time for effect completion (our clock, not BAML trace)
@@ -180,6 +195,8 @@ impl BamlExecutor {
                 &ctx_manager,
                 registry,
                 env_vars.clone(),
+                llm_registry_result.registry(),
+                llm_registry_result.secret_keys_accessed(),
                 InvocationKind::Invoke,
                 self.effect_emitter.as_ref(),
                 collector.as_ref().map(Arc::as_ref),
@@ -263,7 +280,7 @@ impl BamlExecutor {
                     &params,
                     &ctx_manager,
                     None, // type_builder
-                    None, // client_registry
+                    llm_registry_result.registry(),
                     attempt_collectors,
                     env_vars.clone(),
                     tags,
@@ -289,12 +306,11 @@ impl BamlExecutor {
                         )
                         .await;
                 }
-                return Err(BamlRtError::ExecutionFailed {
-                    source: result.unwrap_err(),
-                });
-            }
-
-            let function_result = result.unwrap();
+            };
+            let function_result = match result {
+                Ok(r) => r,
+                Err(e) => return Err(BamlRtError::ExecutionFailed { source: e }),
+            };
             let parsed_result = function_result.parsed().as_ref().ok_or_else(|| {
                 BamlRtError::BamlRuntime("Function returned no parsed result".to_string())
             })?;
@@ -385,7 +401,9 @@ impl BamlExecutor {
                                 .await;
                         }
                         return Err(BamlRtError::ParsedResultFailed {
-                            source: last_parse_err.unwrap(),
+                            source: last_parse_err.expect(
+                                "last_parse_err set in Err branch when max_attempts exhausted",
+                            ),
                         });
                     }
                 }
@@ -400,8 +418,8 @@ impl BamlExecutor {
 
     /// Execute a BAML function with streaming support
     ///
-    /// Returns a stream and the context manager used to create it. Caller must pass the same
-    /// ctx_manager to `stream.run(..., ctx_manager, ...)` so the stream can complete.
+    /// Returns a [`BamlStreamInvocation`] bundling stream, context manager, client registry, and env vars.
+    /// Run it with `invocation.stream.run(..., &invocation.ctx_manager, None, invocation.client_registry_opt.as_ref(), invocation.env_vars)`.
     /// Pass `context_tags` (e.g. from `build_conversation_context_tags`) for resume so BAML sees prior turns.
     pub fn execute_function_stream(
         &self,
@@ -409,7 +427,7 @@ impl BamlExecutor {
         function_name: &str,
         args: Value,
         context_tags: Option<HashMap<String, BamlValue>>,
-    ) -> Result<(FunctionResultStream, RuntimeContextManager)> {
+    ) -> Result<BamlStreamInvocation> {
         tracing::debug!(
             function = function_name,
             args = ?args,
@@ -421,17 +439,16 @@ impl BamlExecutor {
         let params = self.json_to_baml_map(&args)?;
         let ctx_manager = self.create_ctx_manager_for_scope(scope, context_tags)?;
 
-        // Create stream function call
-        // Load environment variables for API keys
-        let mut env_vars = HashMap::new();
-        if let Ok(api_key) = std::env::var("OPENROUTER_API_KEY") {
-            env_vars.insert("OPENROUTER_API_KEY".to_string(), api_key);
-        }
-        for key in &["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"] {
-            if let Ok(value) = std::env::var(key) {
-                env_vars.insert(key.to_string(), value);
-            }
-        }
+        // Build ClientRegistry from resolver; LLM keys are never passed via env vars.
+        let scope_id = scope.agent_id().as_str();
+        let llm_registry_result = build_llm_client_registry(
+            self.runtime.as_ref(),
+            self.llm_secret_resolver.as_deref(),
+            scope_id,
+        )
+        .map_err(|e| BamlRtError::ClientRegistryBuild { source: e })?;
+        let client_registry_opt = llm_registry_result.into_registry();
+        let env_vars = HashMap::new();
         let tags = None;
         let cancel_tripwire = baml_runtime::TripWire::new(None);
 
@@ -442,15 +459,20 @@ impl BamlExecutor {
                 &params,
                 &ctx_manager,
                 None, // type_builder
-                None, // client_registry
+                client_registry_opt.as_ref(),
                 None, // collectors
-                env_vars,
+                env_vars.clone(),
                 cancel_tripwire,
                 tags,
             )
-            .map_err(|e| BamlRtError::BamlRuntime(format!("Failed to create stream: {}", e)))?;
+            .map_err(|e| BamlRtError::FunctionStreamCreation { source: e })?;
 
-        Ok((stream, ctx_manager))
+        Ok(BamlStreamInvocation {
+            stream,
+            ctx_manager,
+            client_registry_opt,
+            env_vars,
+        })
     }
 
     /// Create a context manager tied to an explicit runtime scope.

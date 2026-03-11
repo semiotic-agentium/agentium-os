@@ -19,7 +19,9 @@ use common::{
     e2e_serial_gate, post_a2a_sse_collect, start_http_server, start_runner_api_server,
 };
 use serde_json::{Value, json};
-use test_support::common::{chunks_from_responses, message_texts_from_chunks, send_stream_request};
+use test_support::common::{
+    chunks_from_responses, message_texts_from_chunks, send_stream_request, workspace_fnox_path,
+};
 use tokio::time::{Duration, sleep, timeout};
 
 #[derive(Clone, Default)]
@@ -126,7 +128,10 @@ async fn start_slack_mock_server() -> std::io::Result<(RunningHttpServer, MockSl
 async fn setup_slack_agent_with_provenance()
 -> (baml_rt::A2aAgent, Arc<GraphqliteProvenanceStore>, PathBuf) {
     let built = build_slack_agent_to_temp_async().await;
-    let mut manager = BamlRuntimeManager::new().expect("create manager");
+    let mut manager = BamlRuntimeManager::builder()
+        .with_fnox_llm_resolver(workspace_fnox_path())
+        .build()
+        .expect("create manager");
     manager
         .load_schema(built.to_str().expect("slack built path utf8"))
         .expect("load slack schema");

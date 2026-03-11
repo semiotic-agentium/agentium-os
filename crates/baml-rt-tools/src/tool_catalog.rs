@@ -20,9 +20,15 @@ pub struct ToolProvider {
 
 inventory::collect!(ToolProvider);
 
-pub trait ToolCatalog {
+pub trait ToolCatalog: Send + Sync {
     fn by_name(&self, name: &ToolName) -> Option<&ToolFunctionMetadata>;
     fn iter<'a>(&'a self) -> Box<dyn Iterator<Item = &'a ToolFunctionMetadata> + 'a>;
+
+    /// Get config metadata for a bundle. Returns the first tool with this config_bundle.
+    fn bundle_config(&self, bundle_name: &crate::BundleName) -> Option<&ToolFunctionMetadata> {
+        self.iter()
+            .find(|m| m.config_bundle.as_ref() == Some(bundle_name))
+    }
 }
 
 pub struct InventoryCatalog {

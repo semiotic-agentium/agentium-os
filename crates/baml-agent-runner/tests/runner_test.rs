@@ -81,7 +81,16 @@ impl A2aRequestHandler for EmptyA2aHandler {
     }
 }
 
+use baml_rt_config::{ConfigReader, ConfigWriter, SqliteConfigStore};
+use baml_rt_core::{context::RuntimeScope, ids::MessageId};
+use baml_rt_llm_config::{
+    ClientDef, EmptySecretResolver, LLM_CONFIG_BUNDLE_NAME, LlmClientConfig, LlmClientResolver,
+    LlmProvider, StaticResolver,
+};
+use baml_rt_tools::BundleName;
 use common::e2e_serial_gate;
+#[cfg(feature = "llm-tests")]
+use test_support::common::workspace_fnox_path;
 use test_support::common::{
     CalculatorTool, chunks_from_responses, ensure_baml_src_exists, ensure_fixture_runtime_types,
     first_task_id_from_stream, message_texts_from_chunks, user_message, user_message_with_task,
@@ -308,7 +317,10 @@ async fn collect_stream_responses(
 async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
     ensure_fixture_runtime_types();
     let built = build_fixture_to_temp_async("stream-baml-tool").await;
-    let mut manager = BamlRuntimeManager::new().unwrap();
+    let mut manager = BamlRuntimeManager::builder()
+        .with_fnox_llm_resolver(workspace_fnox_path())
+        .build()
+        .unwrap();
     manager.load_schema(built.to_str().unwrap()).unwrap();
     manager.register_tool(CalculatorTool).await.unwrap();
     let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
@@ -329,7 +341,10 @@ async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
 async fn setup_tool_discovery_demo_agent() -> baml_rt::A2aAgent {
     ensure_fixture_runtime_types();
     let built = build_fixture_to_temp_async("tool-discovery-demo").await;
-    let mut manager = BamlRuntimeManager::new().unwrap();
+    let mut manager = BamlRuntimeManager::builder()
+        .with_fnox_llm_resolver(workspace_fnox_path())
+        .build()
+        .unwrap();
     manager.load_schema(built.to_str().unwrap()).unwrap();
     let allowlist: HashSet<String> = [
         "system/discover_tools",
@@ -369,7 +384,16 @@ async fn setup_tool_discovery_demo_agent() -> baml_rt::A2aAgent {
 async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
     ensure_fixture_runtime_types();
     let built = build_fixture_to_temp_async("stream-js-tool").await;
-    let mut manager = BamlRuntimeManager::new().unwrap();
+    let mut manager = {
+        #[cfg(feature = "llm-tests")]
+        let m = BamlRuntimeManager::builder()
+            .with_fnox_llm_resolver(workspace_fnox_path())
+            .build()
+            .unwrap();
+        #[cfg(not(feature = "llm-tests"))]
+        let m = BamlRuntimeManager::new().unwrap();
+        m
+    };
     manager.load_schema(built.to_str().unwrap()).unwrap();
     let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
         .expect("stream-js-tool dist/index.js");
@@ -669,7 +693,16 @@ globalThis.onChatMessage = async function(message) {
 async fn setup_task_lifecycle_demo_agent() -> baml_rt::A2aAgent {
     ensure_fixture_runtime_types();
     let built = build_fixture_to_temp_async("task-lifecycle-demo").await;
-    let mut manager = BamlRuntimeManager::new().unwrap();
+    let mut manager = {
+        #[cfg(feature = "llm-tests")]
+        let m = BamlRuntimeManager::builder()
+            .with_fnox_llm_resolver(workspace_fnox_path())
+            .build()
+            .unwrap();
+        #[cfg(not(feature = "llm-tests"))]
+        let m = BamlRuntimeManager::new().unwrap();
+        m
+    };
     manager.load_schema(built.to_str().unwrap()).unwrap();
     let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
         .expect("task-lifecycle-demo dist/index.js");
@@ -687,7 +720,10 @@ async fn setup_task_lifecycle_demo_agent() -> baml_rt::A2aAgent {
 async fn setup_argument_fixture_agent(fixture: &str) -> baml_rt::A2aAgent {
     ensure_fixture_runtime_types();
     let built = build_fixture_to_temp_async(fixture).await;
-    let mut manager = BamlRuntimeManager::new().unwrap();
+    let mut manager = BamlRuntimeManager::builder()
+        .with_fnox_llm_resolver(workspace_fnox_path())
+        .build()
+        .unwrap();
     manager.load_schema(built.to_str().unwrap()).unwrap();
     let agent_code = fs::read_to_string(built.join("dist").join("index.js"))
         .expect("argument fixture dist/index.js");
@@ -737,7 +773,16 @@ impl A2aRequestHandler for TwoAgentSessionRouter {
 async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::path::PathBuf) {
     let extract_dir = build_fixture_to_temp_async("stream-baml-tool").await;
 
-    let mut manager = BamlRuntimeManager::new().expect("runtime manager");
+    let mut manager = {
+        #[cfg(feature = "llm-tests")]
+        let m = BamlRuntimeManager::builder()
+            .with_fnox_llm_resolver(workspace_fnox_path())
+            .build()
+            .expect("runtime manager");
+        #[cfg(not(feature = "llm-tests"))]
+        let m = BamlRuntimeManager::new().expect("runtime manager");
+        m
+    };
     manager
         .load_schema(extract_dir.to_str().expect("utf8 path"))
         .expect("load schema from extracted package");
@@ -765,7 +810,10 @@ async fn setup_conversational_context_auto_agent()
 -> (baml_rt::A2aAgent, Arc<GraphqliteProvenanceStore>) {
     ensure_fixture_runtime_types();
     let built = build_fixture_to_temp_async("conversational-context-auto").await;
-    let mut manager = BamlRuntimeManager::new().unwrap();
+    let mut manager = BamlRuntimeManager::builder()
+        .with_fnox_llm_resolver(workspace_fnox_path())
+        .build()
+        .unwrap();
     manager.load_schema(built.to_str().unwrap()).unwrap();
     manager.register_tool(CalculatorTool).await.unwrap();
     let provenance = build_graphqlite_test_store();
@@ -809,7 +857,10 @@ async fn setup_coordinator_agent() -> baml_rt::A2aAgent {
     }
     let extract_dir = common::build_agent_dir_to_temp_async(agent_dir, "coordinator-agent").await;
 
-    let mut manager = BamlRuntimeManager::new().expect("runtime manager");
+    let mut manager = BamlRuntimeManager::builder()
+        .with_fnox_llm_resolver(workspace_fnox_path())
+        .build()
+        .expect("runtime manager");
     manager
         .load_schema(extract_dir.to_str().expect("utf8 path"))
         .expect("load coordinator schema");
@@ -975,6 +1026,62 @@ async fn test_runtime_manager_loads_schema() {
             panic!("Schema loading failed unexpectedly: {:?}", e);
         }
     }
+}
+
+/// E2E client substitution: fixture saves LLM config to the persistent config store, then we load
+/// from store and resolve. Asserts that config → store → load → StaticResolver → ClientRegistry
+/// works so BAML overrides the schema's minimal client at runtime from persistent configuration.
+#[tokio::test]
+async fn test_client_registry_substitution_from_config() {
+    let store =
+        SqliteConfigStore::in_memory().expect("in-memory config store for integration test");
+
+    let mut options = HashMap::new();
+    options.insert("model".to_string(), "openai/gpt-4o-mini".to_string());
+    let client = ClientDef {
+        name: "Default".to_string(),
+        provider: LlmProvider::Openrouter,
+        options,
+        retry_policy: None,
+    };
+    let mut clients = HashMap::new();
+    clients.insert("Default".to_string(), client);
+    let config = LlmClientConfig {
+        default: "Default".to_string(),
+        clients,
+        ..Default::default()
+    };
+
+    let bundle =
+        BundleName::new(LLM_CONFIG_BUNDLE_NAME).expect("LLM config bundle name must be valid");
+    store
+        .set(
+            &bundle,
+            serde_json::to_value(&config).expect("serialize LLM config"),
+        )
+        .expect("save LLM config to store");
+
+    let value = store
+        .get(&bundle)
+        .expect("read from store")
+        .expect("config present");
+    let loaded = LlmClientConfig::from_value(value).expect("deserialize LLM config from store");
+
+    let resolver = StaticResolver::new(Arc::new(loaded), Arc::new(EmptySecretResolver));
+    let scope = RuntimeScope::message_scope(
+        ContextId::new(1, 1),
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000001").unwrap()),
+        MessageId::from("msg-1"),
+    );
+    let registry_opt = resolver.resolve(&scope, "AddNumbers").await.unwrap();
+    assert!(
+        registry_opt.is_some(),
+        "Substitution: resolver must return Some(registry) so BAML overrides schema client"
+    );
+    assert!(
+        !registry_opt.unwrap().is_empty(),
+        "Substitution: registry from config must be non-empty"
+    );
 }
 
 #[tokio::test]

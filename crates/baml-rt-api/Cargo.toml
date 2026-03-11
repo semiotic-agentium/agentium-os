@@ -10,10 +10,14 @@ description = "HTTP API surface for BAML agent routing and discovery"
 async-trait = { workspace = true }
 axum = { workspace = true }
 baml-rt-a2a = { path = "../baml-rt-a2a" }
+baml-rt-config = { path = "../baml-rt-config" }
 baml-rt-core = { path = "../baml-rt-core" }
+baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
+baml-rt-tools = { path = "../baml-rt-tools" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+jsonschema = { workspace = true }
 tokio = { workspace = true }
 futures-util = { workspace = true }
 tracing = { workspace = true }

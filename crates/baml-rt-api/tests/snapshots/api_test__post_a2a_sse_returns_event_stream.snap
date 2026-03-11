@@ -1,0 +1,9 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+expression: snapshot
+---
+{
+  "status": 200,
+  "content_type": "text/event-stream",
+  "body": "data: {\"jsonrpc\":\"2.0\",\"result\":{\"tasks\":[],\"totalSize\":0,\"pageSize\":50},\"id\":null}\n\n"
+}

@@ -27,7 +27,7 @@ use common::{
 use serde_json::Value;
 use test_support::common::{
     agent_fixture, chunks_from_responses, ensure_fixture_runtime_types, message_texts_from_chunks,
-    require_api_key, send_stream_request,
+    require_api_key, send_stream_request, workspace_fnox_path,
 };
 use tokio::time::{Duration, timeout};
 
@@ -69,7 +69,10 @@ async fn setup_coordinator_agent() -> (baml_rt::A2aAgent, Arc<GraphqliteProvenan
 
     let agent_dir = agent_fixture("coordinator-smoke");
     let built = build_agent_dir_to_temp_async(agent_dir, "coordinator-smoke-eval").await;
-    let mut manager = BamlRuntimeManager::new().expect("create manager");
+    let mut manager = BamlRuntimeManager::builder()
+        .with_fnox_llm_resolver(workspace_fnox_path())
+        .build()
+        .expect("create manager");
     manager
         .load_schema(built.to_str().expect("path utf8"))
         .expect("load coordinator schema");
