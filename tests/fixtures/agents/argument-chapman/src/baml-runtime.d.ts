@@ -10,7 +10,7 @@
 
 declare global {
 
-declare function ArgumentReply(args: { other_message: string }): Promise<string>;
+declare function ArgumentReply(args: { other_message: string } & { __baml_invocation_token?: string }): Promise<string>;
 
 }
 
@@ -171,6 +171,14 @@ export interface BamlAgent {
   tools?: Record<string, (args: unknown) => Promise<unknown>>;
 }
 declare global {
+  /** Minimal console interface matching the QuickJS sandbox polyfill (log, info, warn, error, debug). */
+  var console: {
+    log(...args: unknown[]): void;
+    info(...args: unknown[]): void;
+    warn(...args: unknown[]): void;
+    error(...args: unknown[]): void;
+    debug(...args: unknown[]): void;
+  };
   /**
    * Global alias for incoming chat messages in agent entrypoints.
    * This keeps bootstrap/index.ts ergonomic without local type shims.

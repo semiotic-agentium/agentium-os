@@ -82,7 +82,7 @@ pub fn render_ts_declarations(ir_signature: &IRSignature, tool_names: &[String])
     quote_in!(tokens => $(global_open));
     tokens.line();
     for (name, args_type, return_type) in func_decls {
-        quote_in!(tokens =>   declare function $(name)(args: $(args_type)): Promise<$(return_type)>;);
+        quote_in!(tokens =>   declare function $(name)(args: $(args_type) & { __baml_invocation_token?: string }): Promise<$(return_type)>;);
         tokens.line();
     }
     quote_in!(tokens => $(global_close));

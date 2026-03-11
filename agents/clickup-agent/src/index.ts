@@ -1,11 +1,5 @@
 /// <reference path="./baml-runtime.d.ts" />
 
-import type { ChatMessage } from "./a2a";
-
-declare function ChooseClickUpAction(
-  args?: Record<string, unknown>
-): Promise<unknown>;
-
 type ToolSessionHandle = {
   send(args: Record<string, unknown>): Promise<unknown>;
   continue(): Promise<unknown>;
