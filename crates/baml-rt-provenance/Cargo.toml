@@ -40,3 +40,7 @@ cli = ["dep:clap", "dep:anyhow"]
 name = "graph_exporter"
 path = "src/bin/graph_exporter.rs"
 required-features = ["cli"]
+
+[[bin]]
+name = "pre_extract_graphqlite"
+path = "src/bin/pre_extract_graphqlite.rs"
