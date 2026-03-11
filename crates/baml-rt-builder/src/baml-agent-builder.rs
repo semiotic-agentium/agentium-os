@@ -1,9 +1,9 @@
 //! BAML Agent Builder
 //!
-//! This binary compiles, lints, and packages BAML + TypeScript agent applications
+//! This binary compiles, type-checks, and packages BAML + TypeScript agent applications
 //! into distributable tar.gz packages, and runs agents with stdin/stdout connectivity.
 //!
-//! Uses OXC for high-performance TypeScript compilation and linting.
+//! TypeScript compilation and type checking are delegated to `tsc`.
 
 #![recursion_limit = "256"]
 
@@ -17,8 +17,8 @@ use std::{
 
 use anyhow::{Context as _, Result};
 use baml_rt_builder::builder::{
-    AgentDir, BuildDir, BuilderService, FileSystem, FunctionName, Linter, OxcLinter,
-    OxcTypeScriptCompiler, PackagePath, RuntimeTypeGenerator, StdFileSystem, StdPackager,
+    AgentDir, BuildDir, BuilderService, FileSystem, FunctionName, PackagePath,
+    RuntimeTypeGenerator, StdFileSystem, StdPackager, TscCompiler, TypeGenerator,
     bootstrap::{run_bootstrap, slug_from_name},
 };
 use baml_rt_core::ids::AgentId;
@@ -44,7 +44,7 @@ use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(name = "baml-agent-builder")]
-#[command(about = "Build and run BAML agent packages with OXC", long_about = None)]
+#[command(about = "Build and run BAML agent packages", long_about = None)]
 #[command(version)]
 struct Cli {
     #[command(subcommand)]
@@ -53,14 +53,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Lint TypeScript/JavaScript source code
+    /// Type-check TypeScript source code (generates types then runs tsc --noEmit)
     Lint {
         /// Agent directory (default: current directory)
         #[arg(short, long, default_value = ".")]
         agent_dir: PathBuf,
     },
 
-    /// Package an agent into a tar.gz file
+    /// Package an agent into a tar.gz file (includes type checking)
     Package {
         /// Agent directory (default: current directory)
         #[arg(short, long, default_value = ".")]
@@ -69,10 +69,6 @@ enum Commands {
         /// Output file path
         #[arg(short, long, default_value = "agent-package.tar.gz")]
         output: PathBuf,
-
-        /// Skip linting
-        #[arg(long)]
-        skip_lint: bool,
     },
 
     /// Run an agent package with stdin/stdout connectivity
@@ -122,13 +118,9 @@ async fn main() -> Result<()> {
             let agent_dir = AgentDir::new(agent_dir)?;
             lint_agent(&agent_dir).await?;
         }
-        Commands::Package {
-            agent_dir,
-            output,
-            skip_lint,
-        } => {
+        Commands::Package { agent_dir, output } => {
             let agent_dir = AgentDir::new(agent_dir)?;
-            package_agent(&agent_dir, &output, !skip_lint).await?;
+            package_agent(&agent_dir, &output).await?;
         }
         Commands::Run {
             package,
@@ -236,13 +228,25 @@ async fn lint_agent(agent_dir: &AgentDir) -> Result<()> {
     let span = spans::lint_agent(agent_dir.as_path());
     let _guard = span.enter();
 
+    println!("🔍 Type-checking agent...");
+
+    // Generate runtime types first so tsc can resolve them
+    let build_dir = BuildDir::new()?;
     let filesystem = StdFileSystem;
-    let linter = OxcLinter::new(filesystem);
-    linter.lint(agent_dir).await?;
+    filesystem.copy_dir_all(&agent_dir.baml_src(), &build_dir.join("baml_src"))?;
+
+    let type_generator = RuntimeTypeGenerator::new();
+    type_generator.generate(agent_dir, &build_dir).await?;
+
+    // Run tsc --noEmit (type check only)
+    let ts_compiler = TscCompiler::new();
+    ts_compiler.typecheck(agent_dir).await?;
+
+    println!("✓ Type checking passed");
     Ok(())
 }
 
-async fn package_agent(agent_dir: &AgentDir, output: &std::path::Path, lint: bool) -> Result<()> {
+async fn package_agent(agent_dir: &AgentDir, output: &std::path::Path) -> Result<()> {
     let span = spans::package_agent(agent_dir.as_path(), output);
     let _guard = span.enter();
 
@@ -255,19 +259,18 @@ async fn package_agent(agent_dir: &AgentDir, output: &std::path::Path, lint: boo
 
     // Initialize services
     let filesystem = StdFileSystem;
-    let linter = OxcLinter::new(filesystem);
-    let ts_compiler = OxcTypeScriptCompiler::new(filesystem);
+    let ts_compiler = TscCompiler::new();
     let type_generator = RuntimeTypeGenerator::new();
     let packager = StdPackager::new(filesystem);
 
     // Copy baml_src to build directory (runtime loads from baml_src)
     filesystem.copy_dir_all(&agent_dir.baml_src(), &build_dir.join("baml_src"))?;
 
-    let builder_service = BuilderService::new(linter, ts_compiler, type_generator, packager);
+    let builder_service = BuilderService::new(ts_compiler, type_generator, packager);
 
     // Build the package
     builder_service
-        .build_package(agent_dir, &build_dir, output, lint)
+        .build_package(agent_dir, &build_dir, output)
         .await?;
 
     println!(

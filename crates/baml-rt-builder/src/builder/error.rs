@@ -55,6 +55,10 @@ pub enum BamlBuilderError {
     #[error("JSON error: {0}")]
     Json(#[source] serde_json::Error),
 
+    /// TypeScript compilation or type-checking failed (tsc diagnostics)
+    #[error("TypeScript compilation failed:\n{diagnostics}")]
+    TypeScriptCompilation { diagnostics: String },
+
     /// Invalid argument (catch-all for validation failures)
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
