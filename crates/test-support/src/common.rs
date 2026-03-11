@@ -169,8 +169,7 @@ pub fn fnox_has_openrouter_key() -> bool {
     let resolver = FnoxFileSecretResolver::from_path(Some(workspace_fnox_path().as_path()));
     resolver
         .resolve("OPENROUTER_API_KEY")
-        .or_else(|| resolver.resolve("env.OPENROUTER_API_KEY"))
-        .is_some()
+        .is_some_and(|v| !v.as_str().trim().is_empty())
 }
 
 pub fn setup_baml_runtime(schema_path: &str) -> Arc<Mutex<BamlRuntimeManager>> {
@@ -254,12 +253,22 @@ pub async fn setup_bridge(baml_manager: Arc<Mutex<BamlRuntimeManager>>) -> Quick
     bridge
 }
 
+/// Require that OPENROUTER_API_KEY is resolvable from the workspace fnox.toml.
+/// Panics with a clear message if not set.
+///
+/// Local dev: uncomment and fill `default = "sk-or-v1-..."` in fnox.toml.
+/// CI: the "Write fnox secrets" workflow step generates fnox.toml with the key before tests run.
 pub fn require_api_key() -> String {
-    let _ = dotenvy::dotenv();
-    let api_key = std::env::var("OPENROUTER_API_KEY")
-        .expect("OPENROUTER_API_KEY environment variable must be set");
-    assert!(!api_key.is_empty(), "OPENROUTER_API_KEY must not be empty");
-    api_key
+    use baml_rt_llm_config::{FnoxFileSecretResolver, SecretResolver};
+    let resolver = FnoxFileSecretResolver::from_path(Some(workspace_fnox_path().as_path()));
+    resolver
+        .resolve("OPENROUTER_API_KEY")
+        .map(|v| v.into_string())
+        .filter(|s| !s.is_empty())
+        .expect(
+            "OPENROUTER_API_KEY must be set in fnox.toml \
+             (local: uncomment and fill `default` in fnox.toml; CI: Write fnox secrets step)",
+        )
 }
 
 pub fn ensure_baml_src_exists() -> bool {
