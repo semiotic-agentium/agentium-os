@@ -80,10 +80,10 @@ fn config_err_500(e: impl std::fmt::Display) -> HttpApiProblem {
 
 fn load_secret_links_state(
     config_service: &dyn InternalConfigReader,
-) -> Result<SecretLinksState, HttpApiProblem> {
+) -> Result<SecretLinksState, Box<HttpApiProblem>> {
     let opt = config_service
         .get_internal(SECRET_LINKS_CONFIG_KEY)
-        .map_err(config_err_500)?;
+        .map_err(|e| Box::new(config_err_500(e)))?;
     let state: SecretLinksState = opt.map_or_else(SecretLinksState::default, |v| {
         serde_json::from_value(v).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "secret link state deserialize failed; using default");
@@ -96,14 +96,14 @@ fn load_secret_links_state(
 fn save_secret_links_state(
     config_service: &dyn InternalConfigWriter,
     state: &SecretLinksState,
-) -> Result<(), HttpApiProblem> {
+) -> Result<(), Box<HttpApiProblem>> {
     let value = serde_json::to_value(state).map_err(|e| {
         tracing::error!(error = %e, "failed to serialize secret links state");
-        problem(500, "Internal Error", "Serialization failure")
+        Box::new(problem(500, "Internal Error", "Serialization failure"))
     })?;
     config_service
         .set_internal(SECRET_LINKS_CONFIG_KEY, value)
-        .map_err(config_err_500)?;
+        .map_err(|e| Box::new(config_err_500(e)))?;
     Ok(())
 }
 
@@ -172,7 +172,7 @@ pub async fn list_secrets_overview(
     }
 
     for (client_name, client) in &llm_config.clients {
-        for (_opt_key, opt_value) in &client.options {
+        for opt_value in client.options.values() {
             if let Some(secret_name) = secret_name_from_option_value(opt_value) {
                 let e = by_name.entry(secret_name).or_default();
                 if !e.llm_consumers.contains(client_name) {
@@ -293,10 +293,10 @@ pub async fn put_secret(
         })?
         .into_string();
     store.set(&request_name, SecretValue::new(value));
-    let mut link_state = load_secret_links_state(state.config_service.as_ref())?;
+    let mut link_state = load_secret_links_state(state.config_service.as_ref()).map_err(|e| *e)?;
     link_state.links.insert(request_name, store_key);
     link_state.unlinked.retain(|r| r.as_str() != name);
-    save_secret_links_state(state.config_service.as_ref(), &link_state)?;
+    save_secret_links_state(state.config_service.as_ref(), &link_state).map_err(|e| *e)?;
     Ok(AxumStatus::NO_CONTENT)
 }
 
@@ -330,12 +330,12 @@ pub async fn delete_secret(
     }
     let request = SecretRequestName::new(name);
     store.remove(&request);
-    let mut link_state = load_secret_links_state(state.config_service.as_ref())?;
+    let mut link_state = load_secret_links_state(state.config_service.as_ref()).map_err(|e| *e)?;
     link_state.links.remove(&request);
     if !link_state.unlinked.iter().any(|r| r.as_str() == name) {
         link_state.unlinked.push(request);
     }
-    save_secret_links_state(state.config_service.as_ref(), &link_state)?;
+    save_secret_links_state(state.config_service.as_ref(), &link_state).map_err(|e| *e)?;
     Ok(AxumStatus::NO_CONTENT)
 }
 
@@ -370,7 +370,7 @@ pub async fn list_config(
     let llm_bundle = BundleName::new(LLM_CONFIG_BUNDLE_NAME).expect("llm bundle name is valid");
     seen.insert(llm_bundle.clone());
     let default_llm_value =
-        serde_json::to_value(&LlmClientConfig::sensible_default()).map_err(|e| {
+        serde_json::to_value(LlmClientConfig::sensible_default()).map_err(|e| {
             problem(
                 500,
                 "Internal Error",
@@ -438,7 +438,7 @@ pub async fn get_config(
         match config.get_with_version(&parsed).map_err(config_err_500)? {
             Some(s) => (s.config, s.version.into()),
             None => (
-                serde_json::to_value(&LlmClientConfig::sensible_default()).map_err(|e| {
+                serde_json::to_value(LlmClientConfig::sensible_default()).map_err(|e| {
                     problem(
                         500,
                         "Internal Error",
@@ -530,14 +530,14 @@ pub async fn put_config(
                 )
             })?;
 
-        if let Ok(validator) = jsonschema::JSONSchema::compile(&config_meta.schema) {
-            if let Err(err_iter) = validator.validate(&body) {
-                let msg: String = err_iter
-                    .map(|e| format!("{}: {}", e.instance_path, e))
-                    .collect::<Vec<_>>()
-                    .join("; ");
-                return Err(problem(400, "Invalid config", msg));
-            }
+        if let Ok(validator) = jsonschema::JSONSchema::compile(&config_meta.schema)
+            && let Err(err_iter) = validator.validate(&body)
+        {
+            let msg: String = err_iter
+                .map(|e| format!("{}: {}", e.instance_path, e))
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(problem(400, "Invalid config", msg));
         }
         body
     };

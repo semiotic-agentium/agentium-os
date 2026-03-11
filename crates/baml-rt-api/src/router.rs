@@ -68,6 +68,7 @@ pub fn api_router(
 
 /// Build the API router with injected dependencies (required: tool_catalog, config_service, secret_resolver).
 /// When `runtime_secret_store` is Some, PUT /config/secrets/{name} provisions secrets in the UI.
+#[allow(clippy::too_many_arguments)]
 pub fn api_router_with_services(
     registry: Arc<dyn AgentRegistry>,
     mermaid: Option<Arc<dyn MermaidService>>,
@@ -189,6 +190,7 @@ pub async fn serve(
 }
 
 /// Run the HTTP server with injected dependencies (required: tool_catalog, config_service, secret_resolver).
+#[allow(clippy::too_many_arguments)]
 pub async fn serve_with_services(
     registry: Arc<dyn AgentRegistry>,
     bind: &str,
