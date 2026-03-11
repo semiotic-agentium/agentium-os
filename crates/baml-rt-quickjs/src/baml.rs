@@ -996,6 +996,23 @@ impl BamlRuntimeManager {
         })
     }
 
+    /// Resolve all known LLM secret keys from the resolver as a HashMap for BAML's env_vars.
+    /// BAML schemas reference secrets as `api_key env.X`; BAML resolves these from env_vars
+    /// passed to `BamlRuntime::from_directory`. By resolving via fnox here, we avoid
+    /// depending on std::env::var — the fnox resolver is the single source of truth.
+    fn resolve_secrets_as_env_vars(&self) -> std::collections::HashMap<String, String> {
+        let Some(resolver) = &self.llm_secret_resolver else {
+            return std::collections::HashMap::new();
+        };
+        let mut env_vars = std::collections::HashMap::new();
+        for key in crate::llm_client_registry::LLM_SECRET_KEYS {
+            if let Some((value, _)) = resolver.resolve_llm_api_key("default", key) {
+                env_vars.insert((*key).to_string(), value);
+            }
+        }
+        env_vars
+    }
+
     /// Set the LLM secret resolver for ClientRegistry-based API key injection.
     /// When set, API keys are resolved via the resolver (e.g. fnox + llm mapping) and
     /// passed to BAML as ClientRegistry, not env vars. May be called before or after load_schema.
@@ -1094,9 +1111,11 @@ impl BamlRuntimeManager {
             ));
         }
 
-        // Load BAML IL into executor (pass tool registry)
+        // Resolve LLM secrets from fnox resolver and inject as env_vars so BAML schema's
+        // `api_key env.X` references resolve without relying on std::env::var.
+        let env_vars = self.resolve_secrets_as_env_vars();
         let tool_registry_clone = self.tool_registry.clone();
-        let mut executor = BamlExecutor::load_il(&baml_src_dir, tool_registry_clone)?;
+        let mut executor = BamlExecutor::load_il(&baml_src_dir, tool_registry_clone, env_vars)?;
 
         // Set effect emitter if available
         if let Some(ref emitter) = self.effect_emitter {

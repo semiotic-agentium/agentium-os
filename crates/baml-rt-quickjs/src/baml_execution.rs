@@ -93,14 +93,17 @@ impl BamlExecutor {
     /// Load BAML IL from the compiled output
     ///
     /// This loads the BAML runtime from the baml_src directory using from_directory.
-    /// LLM API keys are not passed via env vars here; they are injected via ClientRegistry
-    /// at call time when [`set_llm_secret_resolver`] is used, otherwise via env fallback.
-    pub fn load_il(baml_src_dir: &Path, tool_registry: Arc<ToolRegistry>) -> Result<Self> {
+    /// `env_vars` should include resolved LLM secrets (e.g. OPENROUTER_API_KEY) so that
+    /// BAML schema's `api_key env.X` references resolve correctly without relying on
+    /// std::env::var. Pass the result of `BamlRuntimeManager::resolve_secrets_as_env_vars()`.
+    pub fn load_il(
+        baml_src_dir: &Path,
+        tool_registry: Arc<ToolRegistry>,
+        env_vars: HashMap<String, String>,
+    ) -> Result<Self> {
         tracing::info!(?baml_src_dir, "Loading BAML runtime from directory");
 
         let feature_flags = internal_baml_core::feature_flags::FeatureFlags::default();
-        // Do not pass LLM API keys as env vars; they are injected via ClientRegistry or env fallback at call time.
-        let env_vars: HashMap<String, String> = HashMap::new();
 
         let runtime = BamlRuntime::from_directory(baml_src_dir, env_vars, feature_flags)
             .map_err(|e| BamlRtError::RuntimeLoadFailed { source: e })?;
