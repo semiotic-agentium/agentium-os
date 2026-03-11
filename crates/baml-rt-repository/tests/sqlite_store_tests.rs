@@ -7,7 +7,10 @@ use baml_rt_repository::{
     },
     ids::{AgentName, Generation, LineageEdgeId, Version, VersionRef},
     lineage::{EdgeDescription, LineageEdge, LineageKind, Parentage},
-    search::{GenerationFilter, SearchQuery, TagFilter, ToolFilter},
+    search::{
+        FitnessFilter, FullTextTerm, GenerationFilter, LineageFilter, LineageRelation, SearchOrder,
+        SearchQuery, TagFilter, ToolFilter,
+    },
     sqlite_store::SqliteStore,
     storage::{LineageStore, MetadataStore, SearchStore},
 };
@@ -509,6 +512,59 @@ async fn subgraph_includes_ancestors_and_descendants() {
 }
 
 #[tokio::test]
+async fn subgraph_edges_only_reference_returned_nodes() {
+    let store = setup_store().await;
+
+    let grandparent = store
+        .insert_entry(&test_new_entry_unique("subgraph-scope-agent", "scope-v1"))
+        .await
+        .unwrap();
+    let parent = store
+        .insert_entry(&test_new_entry_unique("subgraph-scope-agent", "scope-v2"))
+        .await
+        .unwrap();
+    let child = store
+        .insert_entry(&test_new_entry_unique("subgraph-scope-agent", "scope-v3"))
+        .await
+        .unwrap();
+
+    store
+        .record_edges(&[
+            LineageEdge {
+                id: LineageEdgeId::from_uuid(uuid::Uuid::new_v4()),
+                source: grandparent.hash.clone(),
+                target: parent.hash.clone(),
+                kind: LineageKind::Fork,
+                description: EdgeDescription::new("g to p").unwrap(),
+            },
+            LineageEdge {
+                id: LineageEdgeId::from_uuid(uuid::Uuid::new_v4()),
+                source: parent.hash.clone(),
+                target: child.hash.clone(),
+                kind: LineageKind::Fork,
+                description: EdgeDescription::new("p to c").unwrap(),
+            },
+        ])
+        .await
+        .unwrap();
+
+    let subgraph = store.subgraph(&child.hash, 1).await.unwrap();
+    let node_hashes: std::collections::BTreeSet<_> = subgraph
+        .ancestors
+        .iter()
+        .map(|node| node.hash.clone())
+        .chain(std::iter::once(subgraph.root.clone()))
+        .chain(subgraph.descendants.iter().map(|node| node.hash.clone()))
+        .collect();
+
+    assert_eq!(subgraph.edges.len(), 1);
+    for edge in &subgraph.edges {
+        assert!(node_hashes.contains(&edge.source));
+        assert!(node_hashes.contains(&edge.target));
+    }
+}
+
+#[tokio::test]
 async fn influenced_by_returns_influence_children() {
     let store = setup_store().await;
 
@@ -639,6 +695,155 @@ async fn search_by_generation_range() {
 }
 
 #[tokio::test]
+async fn search_by_full_text_matches_source_content() {
+    let store = setup_store().await;
+    store
+        .insert_entry(&test_new_entry_unique("fts-hit", "needle-token-fts"))
+        .await
+        .unwrap();
+    store
+        .insert_entry(&test_new_entry_unique("fts-miss", "different-token"))
+        .await
+        .unwrap();
+
+    let query = SearchQuery {
+        text: Some(FullTextTerm::new("needle-token-fts")),
+        ..Default::default()
+    };
+    let results = store.search(&query).await.unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].version_ref.name.as_str(), "fts-hit");
+}
+
+#[tokio::test]
+async fn search_by_lineage_descendant_of_filters_results() {
+    let store = setup_store().await;
+
+    let root = store
+        .insert_entry(&test_new_entry_unique("lineage-search", "lineage-root"))
+        .await
+        .unwrap();
+    let child = store
+        .insert_entry(&test_new_entry_unique("lineage-search", "lineage-child"))
+        .await
+        .unwrap();
+    let grandchild = store
+        .insert_entry(&test_new_entry_unique(
+            "lineage-search",
+            "lineage-grandchild",
+        ))
+        .await
+        .unwrap();
+    let unrelated = store
+        .insert_entry(&test_new_entry("lineage-unrelated"))
+        .await
+        .unwrap();
+
+    store
+        .record_edges(&[
+            LineageEdge {
+                id: LineageEdgeId::from_uuid(uuid::Uuid::new_v4()),
+                source: root.hash.clone(),
+                target: child.hash.clone(),
+                kind: LineageKind::Fork,
+                description: EdgeDescription::new("root to child").unwrap(),
+            },
+            LineageEdge {
+                id: LineageEdgeId::from_uuid(uuid::Uuid::new_v4()),
+                source: child.hash.clone(),
+                target: grandchild.hash.clone(),
+                kind: LineageKind::Fork,
+                description: EdgeDescription::new("child to grandchild").unwrap(),
+            },
+        ])
+        .await
+        .unwrap();
+
+    let query = SearchQuery {
+        lineage: Some(LineageFilter {
+            relation: LineageRelation::DescendantOf {
+                ancestor: root.hash.clone(),
+                kind: None,
+            },
+        }),
+        order: SearchOrder::Oldest,
+        limit: Some(10),
+        ..Default::default()
+    };
+    let results = store.search(&query).await.unwrap();
+
+    let hashes: Vec<_> = results.iter().map(|entry| entry.hash.clone()).collect();
+    assert_eq!(results.len(), 2);
+    assert!(hashes.contains(&child.hash));
+    assert!(hashes.contains(&grandchild.hash));
+    assert!(!hashes.contains(&unrelated.hash));
+    assert!(!hashes.contains(&root.hash));
+}
+
+#[tokio::test]
+async fn search_by_lineage_ancestor_of_filters_results() {
+    let store = setup_store().await;
+
+    let root = store
+        .insert_entry(&test_new_entry_unique("ancestor-search", "ancestor-root"))
+        .await
+        .unwrap();
+    let parent = store
+        .insert_entry(&test_new_entry_unique("ancestor-search", "ancestor-parent"))
+        .await
+        .unwrap();
+    let child = store
+        .insert_entry(&test_new_entry_unique("ancestor-search", "ancestor-child"))
+        .await
+        .unwrap();
+    let unrelated = store
+        .insert_entry(&test_new_entry("ancestor-unrelated"))
+        .await
+        .unwrap();
+
+    store
+        .record_edges(&[
+            LineageEdge {
+                id: LineageEdgeId::from_uuid(uuid::Uuid::new_v4()),
+                source: root.hash.clone(),
+                target: parent.hash.clone(),
+                kind: LineageKind::Fork,
+                description: EdgeDescription::new("root to parent").unwrap(),
+            },
+            LineageEdge {
+                id: LineageEdgeId::from_uuid(uuid::Uuid::new_v4()),
+                source: parent.hash.clone(),
+                target: child.hash.clone(),
+                kind: LineageKind::Fork,
+                description: EdgeDescription::new("parent to child").unwrap(),
+            },
+        ])
+        .await
+        .unwrap();
+
+    let query = SearchQuery {
+        lineage: Some(LineageFilter {
+            relation: LineageRelation::AncestorOf {
+                descendant: child.hash.clone(),
+                kind: None,
+            },
+        }),
+        order: SearchOrder::Oldest,
+        limit: Some(10),
+        ..Default::default()
+    };
+    let results = store.search(&query).await.unwrap();
+
+    let hashes: Vec<_> = results.iter().map(|entry| entry.hash.clone()).collect();
+    assert_eq!(results.len(), 2);
+    assert!(hashes.contains(&root.hash));
+    assert!(hashes.contains(&parent.hash));
+    assert!(!hashes.contains(&unrelated.hash));
+    assert!(!hashes.contains(&child.hash));
+}
+
+#[tokio::test]
 async fn search_with_limit() {
     let store = setup_store().await;
     for i in 1..=5 {
@@ -693,6 +898,117 @@ async fn top_by_fitness_orders_correctly() {
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].version_ref.name.as_str(), "fit-high");
     assert_eq!(results[1].version_ref.name.as_str(), "fit-low");
+}
+
+#[tokio::test]
+async fn search_highest_fitness_uses_requested_domain() {
+    let store = setup_store().await;
+
+    let accuracy_best = store
+        .insert_entry(&test_new_entry("accuracy-best"))
+        .await
+        .unwrap();
+    let latency_best = store
+        .insert_entry(&test_new_entry("latency-best"))
+        .await
+        .unwrap();
+
+    store
+        .record_fitness(
+            &accuracy_best.hash,
+            FitnessDomain::new("accuracy"),
+            0.80,
+            Timestamp::new("2026-03-01T00:00:00Z"),
+        )
+        .await
+        .unwrap();
+    store
+        .record_fitness(
+            &latency_best.hash,
+            FitnessDomain::new("accuracy"),
+            0.70,
+            Timestamp::new("2026-03-01T00:00:00Z"),
+        )
+        .await
+        .unwrap();
+    store
+        .record_fitness(
+            &latency_best.hash,
+            FitnessDomain::new("latency"),
+            0.99,
+            Timestamp::new("2026-03-01T00:01:00Z"),
+        )
+        .await
+        .unwrap();
+
+    let results = store
+        .search(&SearchQuery {
+            min_fitness: Some(FitnessFilter {
+                domain: FitnessDomain::new("accuracy"),
+                min_score: 0.0,
+            }),
+            order: SearchOrder::HighestFitness,
+            limit: Some(10),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].version_ref.name.as_str(), "accuracy-best");
+    assert_eq!(results[1].version_ref.name.as_str(), "latency-best");
+}
+
+#[tokio::test]
+async fn top_by_fitness_groups_multiple_scores_per_entry() {
+    let store = setup_store().await;
+
+    let repeated = store
+        .insert_entry(&test_new_entry("fit-repeated"))
+        .await
+        .unwrap();
+    let challenger = store
+        .insert_entry(&test_new_entry("fit-challenger"))
+        .await
+        .unwrap();
+
+    store
+        .record_fitness(
+            &repeated.hash,
+            FitnessDomain::new("accuracy"),
+            0.60,
+            Timestamp::new("2026-03-01T00:00:00Z"),
+        )
+        .await
+        .unwrap();
+    store
+        .record_fitness(
+            &repeated.hash,
+            FitnessDomain::new("accuracy"),
+            0.95,
+            Timestamp::new("2026-03-01T00:01:00Z"),
+        )
+        .await
+        .unwrap();
+    store
+        .record_fitness(
+            &challenger.hash,
+            FitnessDomain::new("accuracy"),
+            0.90,
+            Timestamp::new("2026-03-01T00:02:00Z"),
+        )
+        .await
+        .unwrap();
+
+    let results = store
+        .top_by_fitness(&FitnessDomain::new("accuracy"), 2)
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].version_ref.name.as_str(), "fit-repeated");
+    assert_eq!(results[1].version_ref.name.as_str(), "fit-challenger");
+    assert_ne!(results[0].hash, results[1].hash);
 }
 
 #[tokio::test]

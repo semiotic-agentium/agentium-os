@@ -161,6 +161,10 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 /// Build the data blob for a single file: `path || '\0' || content`.
 fn file_data(file: &HashInputFile<'_>) -> Vec<u8> {
+    assert!(
+        !file.path.contains('\0'),
+        "hash input file path must not contain NUL bytes"
+    );
     let mut data = Vec::with_capacity(file.path.len() + 1 + file.content.len());
     data.extend_from_slice(file.path.as_bytes());
     data.push(0); // null separator
@@ -377,5 +381,21 @@ mod tests {
             CanonicalHasher::hash(&input_baml),
             "ts and baml sections must produce different hashes"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "hash input file path must not contain NUL bytes")]
+    fn nul_path_is_rejected() {
+        let manifest = serde_json::json!({});
+        let input = HashInput {
+            manifest: &manifest,
+            ts_files: vec![HashInputFile {
+                path: "src/\0index.ts",
+                content: "export const ok = true;",
+            }],
+            baml_files: vec![],
+        };
+
+        let _ = CanonicalHasher::hash(&input);
     }
 }
