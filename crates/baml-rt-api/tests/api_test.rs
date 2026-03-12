@@ -1001,12 +1001,9 @@ async fn get_provenance_llm_calls_nests_drift_fields() {
     let context_id = ContextId::new(100, 1).to_string();
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa").unwrap());
-    let app = api_router_with_services(
+    let app = prov_test_router(
         registry,
-        None,
-        None,
         Some(Arc::new(RealProvenanceOps { store }) as Arc<dyn ProvenanceOpsService>),
-        None,
     );
     let uri = format!(
         "/provenance/llm-calls?contextId={}&agentId={}&sortBy=duration_ms&sortDir=desc&pageSize=10",
