@@ -1,7 +1,4 @@
-//! Tool-facing types for the system bundle (id-free, structured).
-//!
-//! These types are used for schema/TS generation and at the tool boundary.
-//! No JSON-RPC or runtime IDs are exposed.
+//! Structured request and response types for system tools.
 
 use baml_rt_core::ids::{AgentId, ContextId, TaskId};
 use schemars::JsonSchema;
@@ -70,8 +67,7 @@ pub struct ConversationChunk {
     pub artifact_update: Option<String>,
 }
 
-/// Completion reason for internal_a2a stream. When INPUT_REQUIRED, the delegated agent
-/// suspended for input; caller can resume with a new Send + Next using the same context_id.
+/// Why another agent stopped producing output.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -87,14 +83,14 @@ pub enum InternalA2aCompletion {
 #[serde(rename_all = "camelCase")]
 pub struct InternalA2aNextOutput {
     pub chunks: Vec<ConversationChunk>,
-    /// Set to INPUT_REQUIRED when the delegated agent yielded TASK_STATE_INPUT_REQUIRED.
+    /// Present when the delegated agent paused and needs more input.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completion: Option<InternalA2aCompletion>,
 }
 
 // --- system/discover_agents ---
 
-/// Open = session constructor only. Query/limit/offset go on Send.
+/// Starts an agent-discovery session.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -103,14 +99,17 @@ pub struct DiscoverAgentsOpenInput {
     pub reason: Option<String>,
 }
 
-/// Send = one list request. Multiple Send/Next = multiple pages.
+/// Requests one page of agents, optionally filtered by query or capability.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoverAgentsSendInput {
-    /// Optional filter: only agents whose name, agent_package, or description contain this string. Omit or null to return all agents (e.g. when user asks "who is available?" or "list agents").
+    /// Optional text filter over agent name, package, or description.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
+    /// Only return agents that declare every listed capability.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_capabilities: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -141,7 +140,7 @@ pub struct AgentCardDto {
 
 // --- system/discover_tools ---
 
-/// Open = session constructor; no per-request semantics. Query/limit go on Send.
+/// Starts a tool-discovery session.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -151,7 +150,7 @@ pub struct DiscoverToolsOpenInput {
     pub reason: Option<String>,
 }
 
-/// Send = one search request. Multiple Send/Next cycles = multiple queries per session.
+/// Requests one page of tools, optionally filtered by query.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]

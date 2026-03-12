@@ -1,12 +1,13 @@
-//! Interpretation-first daemon for turning project-channel discussion into actionable outputs.
+//! Task-daemon turns source activity such as Slack discussion and ClickUp task
+//! changes into structured work for people and agents.
 //!
-//! The crate is organized around three boundaries:
-//! - source polling (`daemon::TaskSource`)
-//! - interpretation (`extract::TaskExtractor`)
-//! - delivery (`sink::TaskSink`)
+//! The main pieces are:
+//! - polling work sources
+//! - interpreting what changed
+//! - sending the result to the chosen destination
 //!
-//! The main payload is [`TaskBatch`], which includes project interpretation,
-//! workflow seed data, and derived tasks for downstream systems.
+//! The primary structured output is [`InterpretationResultEvent`]. [`TaskDispatch`]
+//! carries that result together with the additional context some sinks still use.
 
 pub mod clickup_source;
 pub mod contract;
@@ -21,7 +22,7 @@ pub mod state;
 pub use clickup_source::{ClickupSourceConfig, ClickupSourceConfigError, ClickupTaskSource};
 pub use contract::{
     ContractProvenance, ContractSource, INTERPRETATION_EVENT_SCHEMA_VERSION,
-    InterpretationRequestEvent, InterpretationResultEvent,
+    InterpretationRequestEvent, InterpretationResultEvent, TaskDispatch,
 };
 pub use daemon::{
     RoundRobinTaskSource, RoundRobinTaskSourceError, SourcePoll, TaskDaemon, TaskSource,
@@ -35,7 +36,7 @@ pub use model::{
 };
 pub use sink::{
     A2aSink, ClickUpSink, GithubIssueSink, JsonlFileSink, SinkConstructorError, SinkDeliveryError,
-    SinkDeliveryMode, StdoutSink, TaskSink, format_coordinator_prompt,
+    SinkDeliveryMode, SourceFilteredSink, StdoutSink, TaskSink, format_coordinator_prompt,
 };
 pub use slack_source::{SlackChannelSelector, SlackSourceConfig, SlackTaskSource};
 pub use state::{SourceState, StateStore, TaskDaemonState};

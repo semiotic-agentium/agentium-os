@@ -1,4 +1,4 @@
-//! Runtime orchestration for poll -> interpret -> deliver cycles.
+//! Runs the poll, interpret, and deliver loop for task-daemon.
 
 use std::{collections::BTreeMap, time::Duration};
 
@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use thiserror::Error;
 
 use crate::{
+    contract::{InterpretationRequestEvent, TaskDispatch},
     extract::TaskExtractor,
     model::{
         InvestigationTask, ProjectContext, ProjectInterpretation, SlackMessage, TaskBatch,
@@ -19,9 +20,9 @@ use crate::{
 const ERROR_ESCALATION_THRESHOLD: u32 = 3;
 
 #[derive(Debug, Clone)]
-/// Result of one source polling operation.
+/// Work collected from one source during one polling cycle.
 pub struct SourcePoll {
-    /// Stable key used to address source state in the state store.
+    /// Stable key used to resume this source safely.
     pub source_key: String,
     /// Human-readable source label (for example `#agentium-eng`).
     pub source_label: String,
@@ -31,18 +32,19 @@ pub struct SourcePoll {
 }
 
 #[derive(Debug, Clone)]
-/// Source-specific payload for one polling operation.
 enum SourcePollPayload {
-    /// Slack-source messages that require interpretation.
-    Slack { messages: Vec<SlackMessage> },
-    /// ClickUp lifecycle events already represented as investigation tasks.
+    // Slack messages that still need interpretation.
+    Slack {
+        messages: Vec<SlackMessage>,
+    },
+    // ClickUp lifecycle events already represented as investigation tasks.
     Clickup {
         inferred_tasks: Vec<InvestigationTask>,
     },
 }
 
 impl SourcePoll {
-    /// Builds a Slack-source poll payload.
+    /// Creates a source poll from Slack messages.
     pub fn slack(
         source_key: String,
         source_label: String,
@@ -57,7 +59,7 @@ impl SourcePoll {
         }
     }
 
-    /// Builds a ClickUp-source poll payload.
+    /// Creates a source poll from ClickUp-derived tasks.
     pub fn clickup(
         source_key: String,
         source_label: String,
@@ -72,12 +74,12 @@ impl SourcePoll {
         }
     }
 
-    /// Returns the source kind associated with this payload.
+    /// Returns the source kind for this poll result.
     pub fn source_kind(&self) -> TaskSourceKind {
         self.payload.source_kind()
     }
 
-    /// Returns Slack messages when the payload is Slack-origin; otherwise empty.
+    /// Returns Slack messages when the source is Slack; otherwise empty.
     pub fn messages(&self) -> &[SlackMessage] {
         match &self.payload {
             SourcePollPayload::Slack { messages } => messages,
@@ -85,7 +87,7 @@ impl SourcePoll {
         }
     }
 
-    /// Returns pre-derived tasks for non-Slack sources; otherwise empty.
+    /// Returns pre-derived tasks for sources that already provide them.
     pub fn inferred_tasks(&self) -> &[InvestigationTask] {
         match &self.payload {
             SourcePollPayload::Slack { .. } => &[],
@@ -113,7 +115,7 @@ impl SourcePollPayload {
 }
 
 #[async_trait]
-/// A polling source that can emit messages incrementally.
+/// A work source that task-daemon can poll.
 pub trait TaskSource: Send {
     /// Stable state key for this source instance.
     fn source_key(&self) -> String;
@@ -222,13 +224,15 @@ impl TaskDaemon {
     /// Delivery is best-effort at-least-once for successfully interpreted polls:
     /// source cursor/task state is persisted only after sink delivery succeeds.
     /// If sink delivery fails, source state is not committed so the poll window can be retried.
-    pub async fn run_once(&mut self) -> Result<TaskBatch> {
+    pub async fn run_once(&mut self) -> Result<TaskDispatch> {
         let mut state = self.state_store.load().context("loading daemon state")?;
         let poll = self
             .source
             .poll(&mut state)
             .await
             .context("polling source")?;
+        let request_event =
+            InterpretationRequestEvent::from_source_poll(&poll, self.project_context.clone(), None);
         let (source_key, source_label, source_items_scanned, payload) = poll.into_parts();
         let source_kind = payload.source_kind();
 
@@ -262,13 +266,15 @@ impl TaskDaemon {
                 .retain(|task| !source_state.has_seen_task(&task.key));
         }
 
-        if !batch.derived_tasks.is_empty() || self.emit_empty_batches {
+        let dispatch = TaskDispatch::from_batch(request_event, batch);
+
+        if !dispatch.batch.derived_tasks.is_empty() || self.emit_empty_batches {
             let mut delivered_to_compatible_sink = false;
             for sink in &mut self.sinks {
-                if !sink.accepts_source(batch.source) {
+                if !sink.accepts_source(dispatch.batch.source) {
                     tracing::debug!(
-                        source = ?batch.source,
-                        source_label = %batch.source_label,
+                        source = ?dispatch.batch.source,
+                        source_label = %dispatch.batch.source_label,
                         sink = sink.name(),
                         "skipping incompatible sink for source batch"
                     );
@@ -276,15 +282,15 @@ impl TaskDaemon {
                 }
                 delivered_to_compatible_sink = true;
                 let sink_name = sink.name();
-                sink.deliver(&batch)
+                sink.deliver(&dispatch)
                     .await
                     .with_context(|| format!("delivering batch to sink {sink_name}"))?;
             }
-            if !delivered_to_compatible_sink && !batch.derived_tasks.is_empty() {
+            if !delivered_to_compatible_sink && !dispatch.batch.derived_tasks.is_empty() {
                 bail!(
                     "no compatible sinks configured for source {:?}; cannot deliver {} derived task(s)",
-                    batch.source,
-                    batch.derived_tasks.len()
+                    dispatch.batch.source,
+                    dispatch.batch.derived_tasks.len()
                 );
             }
         }
@@ -292,7 +298,7 @@ impl TaskDaemon {
         let seen_at = unix_now();
         {
             let source_state = state.source_state_mut(&source_key);
-            for task in &batch.derived_tasks {
+            for task in &dispatch.batch.derived_tasks {
                 source_state.mark_task_seen(task.key.clone(), seen_at);
             }
             source_state.prune_seen_tasks(self.state_store.max_seen_tasks_per_source);
@@ -301,7 +307,7 @@ impl TaskDaemon {
         self.state_store
             .save(&state)
             .context("saving daemon state")?;
-        Ok(batch)
+        Ok(dispatch)
     }
 
     /// Runs [`Self::run_once`] forever with a fixed delay between iterations.
@@ -313,7 +319,7 @@ impl TaskDaemon {
             for _ in 0..polls_per_interval {
                 let source_key = self.source.next_poll_source_key();
                 match self.run_once().await {
-                    Ok(batch) => {
+                    Ok(dispatch) => {
                         let consecutive_failures = consecutive_failures_by_source
                             .remove(&source_key)
                             .unwrap_or(0);
@@ -326,9 +332,9 @@ impl TaskDaemon {
                         }
                         tracing::info!(
                             source_key = %source_key,
-                            source = %batch.source_label,
-                            messages_scanned = batch.messages_scanned,
-                            derived_tasks = batch.derived_tasks.len(),
+                            source = %dispatch.batch.source_label,
+                            messages_scanned = dispatch.batch.messages_scanned,
+                            derived_tasks = dispatch.batch.derived_tasks.len(),
                             "task-daemon poll completed"
                         );
                     }
@@ -528,7 +534,7 @@ mod tests {
             "failing-sink"
         }
 
-        async fn deliver(&mut self, _batch: &TaskBatch) -> Result<()> {
+        async fn deliver(&mut self, _dispatch: &TaskDispatch) -> Result<()> {
             Err(anyhow!("intentional sink failure"))
         }
     }
@@ -545,7 +551,7 @@ mod tests {
             matches!(source, TaskSourceKind::Slack)
         }
 
-        async fn deliver(&mut self, _batch: &TaskBatch) -> Result<()> {
+        async fn deliver(&mut self, _dispatch: &TaskDispatch) -> Result<()> {
             Ok(())
         }
     }

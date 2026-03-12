@@ -12,7 +12,7 @@ use axum::{
 };
 use baml_task_daemon::{
     ExtractionMode, ProjectContext, SlackChannelSelector, SlackSourceConfig, SlackTaskSource,
-    StateStore, TaskBatch, TaskDaemon, TaskExtractor, TaskSink,
+    StateStore, TaskBatch, TaskDaemon, TaskDispatch, TaskExtractor, TaskSink,
 };
 use integrations_slack_read::SlackAuthPreference;
 use reqwest::Url;
@@ -69,8 +69,8 @@ impl TaskSink for CaptureSink {
         "capture"
     }
 
-    async fn deliver(&mut self, batch: &TaskBatch) -> Result<()> {
-        self.batches.lock().await.push(batch.clone());
+    async fn deliver(&mut self, dispatch: &TaskDispatch) -> Result<()> {
+        self.batches.lock().await.push(dispatch.batch.clone());
         Ok(())
     }
 }
@@ -192,10 +192,11 @@ async fn slack_poll_interprets_discussion_and_persists_cursor() {
     );
 
     let first = daemon.run_once().await.expect("first poll should succeed");
-    assert_eq!(first.source_label, "#agentium-eng");
-    assert!(!first.derived_tasks.is_empty());
+    assert_eq!(first.batch.source_label, "#agentium-eng");
+    assert!(!first.batch.derived_tasks.is_empty());
     assert!(
         !first
+            .batch
             .interpretation
             .workflow_seed
             .investigation_nodes
@@ -203,7 +204,7 @@ async fn slack_poll_interprets_discussion_and_persists_cursor() {
     );
 
     let second = daemon.run_once().await.expect("second poll should succeed");
-    assert!(second.derived_tasks.is_empty());
+    assert!(second.batch.derived_tasks.is_empty());
 
     let captured = sink_handle.snapshot().await;
     assert_eq!(

@@ -20,16 +20,18 @@ function ChatWithContext(user_message: string) -> string {
   client DefaultClient
   prompt #"
     You are in a multi-turn conversation.
-    Use prior turns if present in `ctx.tags.conversation_history`.
+    Use prior turns if present in the structured conversation history block below.
     If the user asks what to remember or asks for the codeword:
-    - Locate the most recent USER message in conversation history that contains the word "codeword".
+    - Locate the most recent `role: user` entry in the structured history that contains the word "codeword".
     - Extract the token immediately following "codeword".
     - Reply with ONLY that token, uppercase, no punctuation or extra words.
     - If no such token exists, reply exactly: UNKNOWN
 
+    Structured conversation history:
     {% for message in ctx.tags.conversation_history %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
+    ---
+    role: {{ message.role }}
+    content: {{ message.content }}
     {% endfor %}
 
     {{ _.role('user') }}

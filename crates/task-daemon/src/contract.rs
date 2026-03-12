@@ -1,11 +1,9 @@
-//! Versioned event contracts for the task-daemon interpretation pipeline.
+//! Event formats used when task-daemon hands work to interpreters and
+//! downstream agents.
 //!
-//! These envelopes formalize the handoff boundary:
-//! - polling output -> interpretation input (`InterpretationRequestEvent`)
-//! - interpretation output -> orchestration/sink input (`InterpretationResultEvent`)
-//!
-//! The contract carries provenance identifiers so downstream systems can stitch
-//! together Slack evidence, interpretation runs, and generated tasks.
+//! These types help integrators follow one piece of work from the source
+//! material that was polled, through interpretation, to the tasks produced
+//! from it.
 
 use baml_rt_core::ids::{ContextId, CorrelationId, EventId, TaskId};
 use serde::{Deserialize, Serialize};
@@ -15,22 +13,22 @@ use crate::model::{
     TaskSourceKind, unix_now,
 };
 
-/// Schema identifier for the interpretation handoff contract.
+/// Event format name used by task-daemon interpretation messages.
 pub const INTERPRETATION_EVENT_SCHEMA_VERSION: &str = "task-daemon.interpretation.v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// Source identity for a contract event.
+/// Where a task-daemon event came from.
 pub struct ContractSource {
-    /// Stable source state key used by the daemon state store.
+    /// Stable identifier for the source, used to resume polling safely.
     pub source_key: String,
-    /// Source category for routing logic.
+    /// Source category, such as Slack or ClickUp.
     pub source: TaskSourceKind,
     /// Human-readable source label (for example `#agentium-eng`).
     pub source_label: String,
 }
 
 impl ContractSource {
-    /// Builds a source descriptor.
+    /// Creates a source descriptor for one event.
     pub fn new(source_key: String, source: TaskSourceKind, source_label: String) -> Self {
         Self {
             source_key,
@@ -41,21 +39,21 @@ impl ContractSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-/// Provenance metadata used to correlate contract events with runtime traces.
+/// Optional links that help operators trace a result back to the run that produced it.
 pub struct ContractProvenance {
-    /// Runtime context identifier (typically provenance context id).
+    /// Context identifier for the surrounding run, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_id: Option<ContextId>,
-    /// Runtime task identifier when a task-scoped flow exists.
+    /// Task identifier for task-scoped runs, when available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<TaskId>,
-    /// Correlation identifier (for example request id) for distributed tracing.
+    /// Correlation identifier used to link related operations together.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<CorrelationId>,
-    /// Parent event id used to preserve causality between request/result events.
+    /// Parent event id used to show which earlier event this one came from.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_event_id: Option<EventId>,
-    /// Source cursor used for this poll window (for example latest Slack ts).
+    /// Source cursor used for this poll window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_cursor: Option<String>,
     /// Message timestamps included in this poll window.
@@ -75,27 +73,27 @@ impl ContractProvenance {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-/// Input event consumed by interpretation backends.
+/// Event sent to the component that interprets a poll window.
 pub struct InterpretationRequestEvent {
-    /// Versioned schema identifier.
+    /// Event format name.
     pub schema_version: String,
-    /// Stable id for this request event.
+    /// Stable identifier for this request.
     pub event_id: String,
-    /// Unix timestamp when the event envelope was emitted.
+    /// Unix timestamp for when the event was emitted.
     pub emitted_at_unix: u64,
-    /// Source metadata for routing and replay.
+    /// Where this work came from.
     pub source: ContractSource,
-    /// Resolved project context.
+    /// Project context attached to the event.
     pub project: ProjectContext,
-    /// Runtime/provenance correlation metadata.
+    /// Optional links back to the surrounding run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<ContractProvenance>,
-    /// Normalized Slack messages for interpretation.
+    /// Source messages to interpret.
     pub messages: Vec<SlackMessage>,
 }
 
 impl InterpretationRequestEvent {
-    /// Builds a request event from [`crate::daemon::SourcePoll`].
+    /// Creates a request event from one polled source window.
     pub fn from_source_poll(
         poll: &crate::daemon::SourcePoll,
         project: ProjectContext,
@@ -113,7 +111,7 @@ impl InterpretationRequestEvent {
         )
     }
 
-    /// Builds a request event from one poll window.
+    /// Creates a request event from one poll window.
     pub fn new(
         source: ContractSource,
         project: ProjectContext,
@@ -137,45 +135,47 @@ impl InterpretationRequestEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-/// Output event produced by interpretation backends.
+/// Event produced after a poll window has been interpreted.
 pub struct InterpretationResultEvent {
-    /// Versioned schema identifier.
+    /// Event format name.
     pub schema_version: String,
-    /// Stable id for this result event.
+    /// Stable identifier for this result.
     pub event_id: String,
     /// Request event id this result was derived from.
     pub request_event_id: String,
-    /// Unix timestamp when the result envelope was emitted.
+    /// Unix timestamp for when the result was emitted.
     pub emitted_at_unix: u64,
-    /// Source metadata for routing and replay.
+    /// Where this work came from.
     pub source: ContractSource,
-    /// Project context used by interpretation.
+    /// Project context used while producing the result.
     pub project: ProjectContext,
     /// Number of source messages included in this interpretation.
     pub messages_scanned: usize,
-    /// Structured interpretation payload.
+    /// Structured understanding of the source material.
     pub interpretation: ProjectInterpretation,
-    /// Derived downstream tasks.
+    /// Tasks or follow-up work produced from the interpretation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub derived_tasks: Vec<InvestigationTask>,
-    /// Runtime/provenance correlation metadata.
+    /// Optional links back to the surrounding run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<ContractProvenance>,
 }
 
 impl InterpretationResultEvent {
-    /// Builds a result event from a [`TaskBatch`] generated for a request event.
+    /// Creates a result event from a task batch produced for a request event.
     pub fn from_batch(request: &InterpretationRequestEvent, batch: &TaskBatch) -> Self {
         Self::from_request(
             request,
+            batch.messages_scanned,
             batch.interpretation.clone(),
             batch.derived_tasks.clone(),
         )
     }
 
-    /// Builds a result event from an interpretation request and extracted payloads.
+    /// Creates a result event from an interpretation request and its output.
     pub fn from_request(
         request: &InterpretationRequestEvent,
+        messages_scanned: usize,
         interpretation: ProjectInterpretation,
         derived_tasks: Vec<InvestigationTask>,
     ) -> Self {
@@ -192,11 +192,38 @@ impl InterpretationResultEvent {
             emitted_at_unix: unix_now(),
             source: request.source.clone(),
             project: request.project.clone(),
-            messages_scanned: request.messages.len(),
+            messages_scanned,
             interpretation,
             derived_tasks,
             provenance,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+/// Everything a sink receives for one daemon result.
+pub struct TaskDispatch {
+    pub request_event: InterpretationRequestEvent,
+    pub result_event: InterpretationResultEvent,
+    pub batch: TaskBatch,
+}
+
+impl TaskDispatch {
+    pub fn new(
+        request_event: InterpretationRequestEvent,
+        result_event: InterpretationResultEvent,
+        batch: TaskBatch,
+    ) -> Self {
+        Self {
+            request_event,
+            result_event,
+            batch,
+        }
+    }
+
+    pub fn from_batch(request_event: InterpretationRequestEvent, batch: TaskBatch) -> Self {
+        let result_event = InterpretationResultEvent::from_batch(&request_event, &batch);
+        Self::new(request_event, result_event, batch)
     }
 }
 
@@ -385,6 +412,7 @@ mod tests {
         );
         let result = InterpretationResultEvent::from_request(
             &request,
+            request.messages.len(),
             ProjectInterpretation {
                 executive_summary: "Interpretation summary".to_string(),
                 workflow_seed: WorkflowSeed {
@@ -425,6 +453,7 @@ mod tests {
         );
         let result = InterpretationResultEvent::from_request(
             &request,
+            request.messages.len(),
             ProjectInterpretation {
                 executive_summary: "Summary".to_string(),
                 ..ProjectInterpretation::default()
@@ -475,5 +504,26 @@ mod tests {
         let result = InterpretationResultEvent::from_batch(&request, &batch);
         assert_eq!(result.request_event_id, request.event_id);
         assert_eq!(result.derived_tasks.len(), 1);
+    }
+
+    #[test]
+    fn result_event_from_batch_uses_batch_messages_scanned_for_non_message_sources() {
+        let request =
+            InterpretationRequestEvent::new(sample_source(), sample_project(), vec![], None);
+        let batch = TaskBatch {
+            source: TaskSourceKind::Clickup,
+            source_label: "ClickUp list".to_string(),
+            generated_at_unix: 1_735_689_700,
+            messages_scanned: 4,
+            project: sample_project(),
+            interpretation: ProjectInterpretation {
+                executive_summary: "Summary".to_string(),
+                ..ProjectInterpretation::default()
+            },
+            derived_tasks: Vec::new(),
+        };
+
+        let result = InterpretationResultEvent::from_batch(&request, &batch);
+        assert_eq!(result.messages_scanned, 4);
     }
 }

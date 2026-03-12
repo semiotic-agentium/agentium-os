@@ -21,14 +21,14 @@ use tokio::sync::Mutex;
 use crate::{
     entry::{
         ChangeRationale, FitnessDomain, FitnessScore, NewEntry, RepositoryEntry,
-        RepositoryEntryHeader, Tag, Timestamp,
+        RepositoryEntryHeader, SourceBundle, Tag, Timestamp,
     },
     error::{RepositoryError, Result},
     ids::{AgentName, ContentHash, Generation, LineageEdgeId, Version, VersionRef},
     lineage::{
         AncestryNode, EdgeDescription, LineageEdge, LineageKind, LineageSubgraph, Parentage,
     },
-    search::{SearchOrder, SearchQuery},
+    search::{LineageRelation, SearchOrder, SearchQuery},
     storage::{LineageStore, MetadataStore, SearchStore},
 };
 
@@ -74,7 +74,8 @@ impl SqliteStore {
             conn.execute_batch(SCHEMA_SQL)
                 .map_err(|e| RepositoryError::StorageWrite {
                     source: Box::new(e),
-                })
+                })?;
+            rebuild_entries_fts(&conn)
         })
         .await
         .map_err(|e| RepositoryError::StorageWrite {
@@ -153,14 +154,6 @@ CREATE TABLE IF NOT EXISTS lineage_edges (
 CREATE INDEX IF NOT EXISTS idx_lineage_source ON lineage_edges(source_hash);
 CREATE INDEX IF NOT EXISTS idx_lineage_target ON lineage_edges(target_hash);
 
-CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(
-    hash,
-    agent_name,
-    source_text,
-    manifest_text,
-    content='',
-    tokenize='porter unicode61'
-);
 "#;
 
 // ---------------------------------------------------------------------------
@@ -175,17 +168,6 @@ impl MetadataStore for SqliteStore {
         let parentage_json =
             serde_json::to_string(&entry.parentage).expect("parentage serialization");
         let rationale = entry.change_rationale.as_str().to_string();
-
-        // Collect FTS text (does not depend on version)
-        let mut source_text = String::new();
-        for f in &entry.source.ts_sources {
-            source_text.push_str(f.content.as_str());
-            source_text.push('\n');
-        }
-        for f in &entry.source.baml_sources {
-            source_text.push_str(f.content.as_str());
-            source_text.push('\n');
-        }
 
         // Tags to insert
         let tags: Vec<String> = entry.tags.iter().map(|t| t.as_str().to_string()).collect();
@@ -241,8 +223,8 @@ impl MetadataStore for SqliteStore {
                     .collect::<Vec<_>>(),
             )
             .unwrap_or_default();
-            let manifest_text =
-                serde_json::to_string(versioned_source.manifest.as_value()).unwrap_or_default();
+            let source_text = source_bundle_text(&versioned_source);
+            let manifest_text = manifest_index_text(&versioned_source);
 
             conn.execute(
                 "INSERT INTO entries (hash, agent_name, version, generation, parentage_json,
@@ -687,7 +669,7 @@ impl LineageStore for SqliteStore {
                 let sql = format!(
                     "SELECT id, source_hash, target_hash, kind, description
                  FROM lineage_edges
-                 WHERE source_hash IN ({placeholders}) OR target_hash IN ({placeholders})"
+                 WHERE source_hash IN ({placeholders}) AND target_hash IN ({placeholders})"
                 );
                 let mut stmt = conn
                     .prepare(&sql)
@@ -766,10 +748,9 @@ impl SearchStore for SqliteStore {
             // Full-text search
             let mut fts_join = String::new();
             if let Some(ref text) = query.text {
-                fts_join = format!(
-                    " JOIN entries_fts fts ON fts.hash = e.hash AND entries_fts MATCH ?{param_idx}"
-                );
-                param_values.push(Box::new(text.as_str().to_string()));
+                fts_join = " JOIN entries_fts ON entries_fts.hash = e.hash".to_string();
+                conditions.push(format!("entries_fts MATCH ?{param_idx}"));
+                param_values.push(Box::new(fts_match_query(text.as_str())));
                 param_idx += 1;
             }
 
@@ -828,8 +809,102 @@ impl SearchStore for SqliteStore {
                 if let Some(max) = gen_filter.max {
                     conditions.push(format!("e.generation <= ?{param_idx}"));
                     param_values.push(Box::new(max.as_u32()));
-                    let _ = param_idx; // final increment unused but keeps pattern consistent
+                    param_idx += 1;
                 }
+            }
+
+            if let Some(ref lineage) = query.lineage {
+                let lineage_condition = match &lineage.relation {
+                    LineageRelation::DescendantOf { ancestor, kind } => {
+                        let hash_param_idx = param_idx;
+                        param_values.push(Box::new(ancestor.as_str().to_string()));
+                        param_idx += 1;
+
+                        if let Some(kind) = kind {
+                            let kind_param_idx = param_idx;
+                            let recursive_kind_param_idx = param_idx + 1;
+                            let kind_str = lineage_kind_as_str(kind).to_string();
+                            param_values.push(Box::new(kind_str.clone()));
+                            param_values.push(Box::new(kind_str));
+                            param_idx += 2;
+                            format!(
+                                "e.hash IN (
+                                    WITH RECURSIVE lineage(hash) AS (
+                                        SELECT le.target_hash
+                                        FROM lineage_edges le
+                                        WHERE le.source_hash = ?{hash_param_idx} AND le.kind = ?{kind_param_idx}
+                                        UNION
+                                        SELECT le.target_hash
+                                        FROM lineage_edges le
+                                        JOIN lineage l ON le.source_hash = l.hash
+                                        WHERE le.kind = ?{recursive_kind_param_idx}
+                                    )
+                                    SELECT hash FROM lineage
+                                )"
+                            )
+                        } else {
+                            format!(
+                                "e.hash IN (
+                                    WITH RECURSIVE lineage(hash) AS (
+                                        SELECT le.target_hash
+                                        FROM lineage_edges le
+                                        WHERE le.source_hash = ?{hash_param_idx}
+                                        UNION
+                                        SELECT le.target_hash
+                                        FROM lineage_edges le
+                                        JOIN lineage l ON le.source_hash = l.hash
+                                    )
+                                    SELECT hash FROM lineage
+                                )"
+                            )
+                        }
+                    }
+                    LineageRelation::AncestorOf { descendant, kind } => {
+                        let hash_param_idx = param_idx;
+                        param_values.push(Box::new(descendant.as_str().to_string()));
+                        param_idx += 1;
+
+                        if let Some(kind) = kind {
+                            let kind_param_idx = param_idx;
+                            let recursive_kind_param_idx = param_idx + 1;
+                            let kind_str = lineage_kind_as_str(kind).to_string();
+                            param_values.push(Box::new(kind_str.clone()));
+                            param_values.push(Box::new(kind_str));
+                            param_idx += 2;
+                            format!(
+                                "e.hash IN (
+                                    WITH RECURSIVE lineage(hash) AS (
+                                        SELECT le.source_hash
+                                        FROM lineage_edges le
+                                        WHERE le.target_hash = ?{hash_param_idx} AND le.kind = ?{kind_param_idx}
+                                        UNION
+                                        SELECT le.source_hash
+                                        FROM lineage_edges le
+                                        JOIN lineage l ON le.target_hash = l.hash
+                                        WHERE le.kind = ?{recursive_kind_param_idx}
+                                    )
+                                    SELECT hash FROM lineage
+                                )"
+                            )
+                        } else {
+                            format!(
+                                "e.hash IN (
+                                    WITH RECURSIVE lineage(hash) AS (
+                                        SELECT le.source_hash
+                                        FROM lineage_edges le
+                                        WHERE le.target_hash = ?{hash_param_idx}
+                                        UNION
+                                        SELECT le.source_hash
+                                        FROM lineage_edges le
+                                        JOIN lineage l ON le.target_hash = l.hash
+                                    )
+                                    SELECT hash FROM lineage
+                                )"
+                            )
+                        }
+                    }
+                };
+                conditions.push(lineage_condition);
             }
 
             let where_clause = if conditions.is_empty() {
@@ -839,17 +914,25 @@ impl SearchStore for SqliteStore {
             };
 
             let order = match query.order {
-                SearchOrder::Newest => "e.created_at DESC",
-                SearchOrder::Oldest => "e.created_at ASC",
+                SearchOrder::Newest => "e.created_at DESC".to_string(),
+                SearchOrder::Oldest => "e.created_at ASC".to_string(),
                 SearchOrder::HighestFitness => {
-                    // Order by max fitness score in the queried domain
-                    "COALESCE((SELECT MAX(fs.score) FROM fitness_scores fs WHERE fs.entry_hash = e.hash), 0) DESC"
+                    if let Some(ref fitness) = query.min_fitness {
+                        let domain_param_idx = param_idx;
+                        param_values.push(Box::new(fitness.domain.as_str().to_string()));
+                        format!(
+                            "COALESCE((SELECT MAX(fs.score) FROM fitness_scores fs WHERE fs.entry_hash = e.hash AND fs.domain = ?{domain_param_idx}), 0) DESC"
+                        )
+                    } else {
+                        "COALESCE((SELECT MAX(fs.score) FROM fitness_scores fs WHERE fs.entry_hash = e.hash), 0) DESC"
+                            .to_string()
+                    }
                 }
                 SearchOrder::Relevance => {
                     if query.text.is_some() {
-                        "rank" // FTS5 rank
+                        "entries_fts.rank".to_string()
                     } else {
-                        "e.created_at DESC"
+                        "e.created_at DESC".to_string()
                     }
                 }
             };
@@ -909,9 +992,15 @@ impl SearchStore for SqliteStore {
                         e.change_rationale, e.created_at, e.manifest_description,
                         e.manifest_tools_json, e.manifest_capabilities_json
                  FROM entries e
-                 JOIN fitness_scores fs ON fs.entry_hash = e.hash AND fs.domain = ?1
-                 ORDER BY fs.score DESC
-                 LIMIT ?2";
+                 JOIN (
+                    SELECT entry_hash, MAX(score) AS best_score
+                    FROM fitness_scores
+                    WHERE domain = ?1
+                    GROUP BY entry_hash
+                    ORDER BY best_score DESC
+                    LIMIT ?2
+                 ) ranked ON ranked.entry_hash = e.hash
+                 ORDER BY ranked.best_score DESC, e.created_at DESC";
 
             let mut stmt = conn
                 .prepare(sql)
@@ -960,6 +1049,124 @@ impl<T> OptionalExt<T> for std::result::Result<T, rusqlite::Error> {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+}
+
+fn rebuild_entries_fts(conn: &Connection) -> Result<()> {
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| RepositoryError::StorageWrite {
+            source: Box::new(e),
+        })?;
+
+    let result = (|| -> Result<()> {
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS entries_fts;
+             CREATE VIRTUAL TABLE entries_fts USING fts5(
+                 hash,
+                 agent_name,
+                 source_text,
+                 manifest_text,
+                 tokenize='porter unicode61'
+             );",
+        )
+        .map_err(|e| RepositoryError::StorageWrite {
+            source: Box::new(e),
+        })?;
+
+        let mut stmt = conn
+            .prepare("SELECT hash, agent_name, source_json FROM entries ORDER BY rowid ASC")
+            .map_err(|e| RepositoryError::StorageRead {
+                source: Box::new(e),
+            })?;
+
+        let entries = stmt
+            .query_map([], |row| {
+                let hash: String = row.get(0)?;
+                let agent_name: String = row.get(1)?;
+                let source_json: String = row.get(2)?;
+                Ok((hash, agent_name, source_json))
+            })
+            .map_err(|e| RepositoryError::StorageRead {
+                source: Box::new(e),
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| RepositoryError::StorageRead {
+                source: Box::new(e),
+            })?;
+
+        for (hash, agent_name, source_json) in entries {
+            let source: SourceBundle =
+                serde_json::from_str(&source_json).map_err(|e| RepositoryError::StorageRead {
+                    source: Box::new(e),
+                })?;
+            conn.execute(
+                "INSERT INTO entries_fts (hash, agent_name, source_text, manifest_text)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    hash,
+                    agent_name,
+                    source_bundle_text(&source),
+                    manifest_index_text(&source),
+                ],
+            )
+            .map_err(|e| RepositoryError::StorageWrite {
+                source: Box::new(e),
+            })?;
+        }
+
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            conn.execute_batch("COMMIT")
+                .map_err(|e| RepositoryError::StorageWrite {
+                    source: Box::new(e),
+                })?;
+            Ok(())
+        }
+        Err(err) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(err)
+        }
+    }
+}
+
+fn source_bundle_text(source: &SourceBundle) -> String {
+    let mut text = String::new();
+    for file in &source.ts_sources {
+        text.push_str(file.content.as_str());
+        text.push('\n');
+    }
+    for file in &source.baml_sources {
+        text.push_str(file.content.as_str());
+        text.push('\n');
+    }
+    text
+}
+
+fn manifest_index_text(source: &SourceBundle) -> String {
+    serde_json::to_string(source.manifest.as_value()).unwrap_or_default()
+}
+
+fn fts_match_query(term: &str) -> String {
+    let tokens: Vec<String> = term
+        .split_whitespace()
+        .filter(|token| !token.is_empty())
+        .map(|token| format!("\"{}\"", token.replace('"', "\"\"")))
+        .collect();
+
+    if tokens.is_empty() {
+        "\"\"".to_string()
+    } else {
+        tokens.join(" AND ")
+    }
+}
+
+fn lineage_kind_as_str(kind: &LineageKind) -> &'static str {
+    match kind {
+        LineageKind::Fork => "fork",
+        LineageKind::Influence => "influence",
     }
 }
 
@@ -1177,5 +1384,109 @@ fn row_to_header(row: &rusqlite::Row<'_>) -> RepositoryEntryHeader {
         description,
         tools,
         capabilities,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entry::{ManifestSource, SourceBundle, SourceContent, SourceFile, SourcePath};
+
+    fn sample_source_bundle(unique: &str) -> SourceBundle {
+        SourceBundle {
+            manifest: ManifestSource::new(serde_json::json!({
+                "name": "fts-test-agent",
+                "version": "1",
+                "tools": ["calculator"],
+                "discovery": {
+                    "description": "FTS rebuild test fixture",
+                    "capabilities": ["a2a"]
+                }
+            })),
+            ts_sources: vec![SourceFile {
+                path: SourcePath::new("src/index.ts").expect("valid path"),
+                content: SourceContent::new(format!("export const token = \"{unique}\";")),
+            }],
+            baml_sources: Vec::new(),
+        }
+    }
+
+    fn insert_entry_row(
+        conn: &Connection,
+        hash: &str,
+        agent_name: &str,
+        version: i64,
+        source_json: &str,
+    ) -> std::result::Result<(), rusqlite::Error> {
+        conn.execute(
+            "INSERT INTO entries (
+                hash, agent_name, version, generation, parentage_json,
+                source_json, change_rationale, created_at, manifest_description,
+                manifest_tools_json, manifest_capabilities_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                hash,
+                agent_name,
+                version,
+                0_i64,
+                serde_json::to_string(&Parentage::Original).expect("serialize parentage"),
+                source_json,
+                "test fixture",
+                "2026-03-11T00:00:00Z",
+                "fixture description",
+                "[]",
+                "[]",
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn rebuild_entries_fts_rolls_back_when_repopulation_fails() {
+        let conn = Connection::open_in_memory().expect("open in-memory sqlite");
+        conn.execute_batch(SCHEMA_SQL).expect("create schema");
+
+        let valid_source = sample_source_bundle("valid");
+        let valid_hash = valid_source.compute_hash().to_string();
+        let valid_source_json =
+            serde_json::to_string(&valid_source).expect("serialize valid source bundle");
+        insert_entry_row(&conn, &valid_hash, "fts-test-agent", 1, &valid_source_json)
+            .expect("insert valid entry");
+
+        rebuild_entries_fts(&conn).expect("initial FTS rebuild");
+
+        let initial_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entries_fts", [], |row| row.get(0))
+            .expect("count initial FTS rows");
+        assert_eq!(initial_rows, 1);
+
+        insert_entry_row(
+            &conn,
+            "hash-invalid",
+            "fts-test-agent-invalid",
+            2,
+            "{not-json",
+        )
+        .expect("insert invalid entry");
+
+        let err = rebuild_entries_fts(&conn).expect_err("malformed source_json should fail");
+        assert!(
+            matches!(err, RepositoryError::StorageRead { .. }),
+            "unexpected error: {err:#}"
+        );
+
+        let fts_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM entries_fts", [], |row| row.get(0))
+            .expect("FTS table should still exist after rollback");
+        assert_eq!(fts_rows, 1);
+
+        let hashes: Vec<String> = conn
+            .prepare("SELECT hash FROM entries_fts ORDER BY rowid")
+            .expect("prepare FTS hash query")
+            .query_map([], |row| row.get(0))
+            .expect("query FTS hashes")
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .expect("collect FTS hashes");
+        assert_eq!(hashes, vec![valid_hash]);
     }
 }

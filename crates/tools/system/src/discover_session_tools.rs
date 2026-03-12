@@ -1,7 +1,6 @@
-//! discover_agents and discover_tools built via create_multi_send_session_tool_from_async
-//! (open + multiple send/next).
+//! Handlers for browsing available agents and tools.
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use baml_rt_core::AgentLister;
 use baml_rt_tools::{
@@ -29,6 +28,7 @@ fn card_to_dto(c: &baml_rt_core::AgentCard) -> AgentCardDto {
 fn filter_and_page(
     entries: &[baml_rt_core::AgentDiscoveryEntry],
     query: Option<&str>,
+    required_capabilities: &BTreeSet<String>,
     limit: u32,
     offset: u32,
 ) -> Vec<AgentCardDto> {
@@ -36,6 +36,13 @@ fn filter_and_page(
     entries
         .iter()
         .map(|e| card_to_dto(&e.agent_card))
+        .filter(|dto| {
+            required_capabilities.iter().all(|required| {
+                dto.capabilities
+                    .iter()
+                    .any(|capability| capability.trim().to_lowercase() == *required)
+            })
+        })
         .filter(|dto| {
             query_lower.as_ref().is_none_or(|q| {
                 dto.name.to_lowercase().contains(q)
@@ -51,7 +58,15 @@ fn filter_and_page(
         .collect()
 }
 
-/// Build the discover_agents handler (metadata + async executor over agent list).
+fn normalize_required_capabilities(raw: Option<Vec<String>>) -> BTreeSet<String> {
+    raw.unwrap_or_default()
+        .into_iter()
+        .map(|capability| capability.trim().to_lowercase())
+        .filter(|capability| !capability.is_empty())
+        .collect()
+}
+
+/// Creates the handler behind `system/discover_agents`.
 pub fn discover_agents_handler(
     metadata: ToolFunctionMetadata,
     agent_list: Arc<dyn AgentLister>,
@@ -66,18 +81,30 @@ pub fn discover_agents_handler(
         Box::pin(async move {
             let limit = send_input.limit.unwrap_or(50).min(100);
             let offset = send_input.offset.unwrap_or(0);
+            let required_capabilities =
+                normalize_required_capabilities(send_input.required_capabilities);
             let entries = list.list_agents();
-            let mut agents = filter_and_page(&entries, send_input.query.as_deref(), limit, offset);
+            let mut agents = filter_and_page(
+                &entries,
+                send_input.query.as_deref(),
+                &required_capabilities,
+                limit,
+                offset,
+            );
             // If query filtered out everything but we have agents, return first page of all (e.g. "which agents are ready?").
-            if agents.is_empty() && !entries.is_empty() {
-                agents = filter_and_page(&entries, None, limit, offset);
+            if agents.is_empty()
+                && !entries.is_empty()
+                && send_input.query.is_some()
+                && required_capabilities.is_empty()
+            {
+                agents = filter_and_page(&entries, None, &required_capabilities, limit, offset);
             }
             Ok(DiscoverAgentsNextOutput { agents, done: true })
         })
     })
 }
 
-/// Build the discover_tools handler (metadata + async executor over tool registry).
+/// Creates the handler behind `system/discover_tools`.
 pub fn discover_tools_handler(
     metadata: ToolFunctionMetadata,
     tool_registry: Arc<ToolRegistry>,

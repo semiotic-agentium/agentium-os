@@ -1,23 +1,24 @@
-# Task Daemon Event Contract (Interpretation v1)
+# Task Daemon Event Format (Interpretation v1)
 
-This contract defines the interpretation handoff between:
-- Slack polling in `baml-task-daemon`
-- conversation interpretation (LLM/agent)
-- downstream orchestration and sinks (for example ClickUp)
+This document describes the event format used when `baml-task-daemon` hands
+source material to an interpreter and then passes the result on to another
+system or agent.
 
-The goal is to make every interpretation run traceable and replayable.
+The goal is to make integrations predictable: consumers should know what data
+to expect, where it came from, and how to link a result back to the poll window
+that produced it.
 
-This `interpretation.v1` contract is currently Slack-message based. For ClickUp
-source lifecycle semantics (`--source clickup`), see:
+This `interpretation.v1` event format currently covers Slack-message input. For
+ClickUp source behavior (`--source clickup`), see:
 - [task-daemon-clickup-source-contract.md](./task-daemon-clickup-source-contract.md)
 
-## Contract Version
+## Event Version
 
 - `schema_version`: `task-daemon.interpretation.v1`
 
 ## Request Event
 
-`InterpretationRequestEvent` is the payload produced from one poll window and consumed by an interpreter.
+`InterpretationRequestEvent` is the event sent for one poll window before interpretation happens.
 
 Key fields:
 - `event_id`: stable id for this request
@@ -70,7 +71,10 @@ Example:
 
 ## Result Event
 
-`InterpretationResultEvent` is the payload produced by interpretation and consumed by orchestration/sinks.
+`InterpretationResultEvent` is the event produced after interpretation.
+
+When task-daemon sends work to another agent over A2A, this structured result
+object appears in `message.parts[].data`.
 
 Key fields:
 - `request_event_id`: links back to the request event

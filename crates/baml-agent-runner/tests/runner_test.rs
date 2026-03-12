@@ -8,7 +8,6 @@ use std::{
     fs,
     path::Path,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -122,10 +121,7 @@ async fn create_test_agent_package(output_path: &Path) -> Result<(), Box<dyn std
     // Build fixture first so dist/index.js is guaranteed to exist.
     let agent_dir = build_fixture_to_temp_async("stream-baml-tool").await;
 
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
+    let unique = uuid::Uuid::new_v4();
     let temp_dir =
         std::env::temp_dir().join(format!("e2e-agent-{}-{}", std::process::id(), unique));
     fs::create_dir_all(&temp_dir)?;
@@ -853,13 +849,10 @@ async fn setup_coordinator_agent() -> baml_rt::A2aAgent {
 }
 
 fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time")
-        .as_nanos();
     let path = std::env::temp_dir().join(format!(
         "baml-rt-runner-test-{pid}-{unique}.db",
         pid = std::process::id(),
+        unique = uuid::Uuid::new_v4(),
     ));
     GraphqliteStoreBuilder::file(path)
         .build()
@@ -910,7 +903,8 @@ async fn test_agent_package_loading() {
     // This test verifies that we can load an agent package
 
     // Create a test agent package
-    let package_path = std::env::temp_dir().join("test-agent-package.tar.gz");
+    let unique = uuid::Uuid::new_v4();
+    let package_path = std::env::temp_dir().join(format!("test-agent-package-{unique}.tar.gz"));
 
     match create_test_agent_package(&package_path).await {
         Ok(_) => {
@@ -930,8 +924,10 @@ async fn test_agent_package_loading() {
     let tar = flate2::read::GzDecoder::new(tar_gz);
     let mut archive = tar::Archive::new(tar);
 
-    let extract_dir =
-        std::env::temp_dir().join(format!("test-agent-extract-{}", std::process::id()));
+    let extract_dir = std::env::temp_dir().join(format!(
+        "test-agent-extract-{}-{unique}",
+        std::process::id()
+    ));
     fs::create_dir_all(&extract_dir).unwrap();
     archive.unpack(&extract_dir).unwrap();
 

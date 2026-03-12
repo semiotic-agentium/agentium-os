@@ -2,12 +2,7 @@
 
 mod common;
 
-use std::{
-    fs,
-    path::PathBuf,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, path::PathBuf, sync::Arc};
 
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt_core::{
@@ -443,13 +438,10 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
 }
 
 fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time")
-        .as_nanos();
     let path = std::env::temp_dir().join(format!(
         "baml-rt-runner-notion-{pid}-{unique}.db",
         pid = std::process::id(),
+        unique = uuid::Uuid::new_v4(),
     ));
     GraphqliteStoreBuilder::file(path)
         .build()

@@ -2,13 +2,7 @@
 
 mod common;
 
-use std::{
-    collections::HashSet,
-    fs,
-    path::PathBuf,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use baml_rt::{A2aRequestHandler, baml::BamlRuntimeManager};
@@ -55,13 +49,10 @@ impl A2aRequestHandler for EmptyA2aHandler {
 }
 
 fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system time")
-        .as_nanos();
     let path = std::env::temp_dir().join(format!(
         "baml-rt-runner-coordinator-{pid}-{unique}.db",
         pid = std::process::id(),
+        unique = uuid::Uuid::new_v4(),
     ));
     GraphqliteStoreBuilder::file(path)
         .build()
@@ -190,9 +181,7 @@ async fn setup_workspace_coordinator_with_provenance()
     (agent, provenance, built)
 }
 
-/// LLM-gated integration test: builds the coordinator-smoke fixture, starts it
-/// as an A2A agent, sends a simple query, and verifies it produces a response
-/// (either via direct_answer or delegation to discovered agents).
+/// End-to-end coordinator smoke test covering a simple user query.
 #[tokio::test]
 async fn test_coordinator_smoke_direct_answer() {
     let _openrouter_api_key = require_api_key();
@@ -254,8 +243,7 @@ async fn test_coordinator_smoke_direct_answer() {
     runner_api.stop().await;
 }
 
-/// Verifies coordinator accepts a typed task-daemon handoff when no text part
-/// is present in the inbound message.
+/// End-to-end test covering a task-daemon handoff that arrives as structured data only.
 #[tokio::test]
 async fn test_coordinator_accepts_data_only_task_daemon_handoff() {
     let _openrouter_api_key = require_api_key();
@@ -287,44 +275,47 @@ async fn test_coordinator_accepts_data_only_task_daemon_handoff() {
                 "parts": [
                     {
                         "data": {
-                            "schema_version": "task-daemon.coordinator-handoff.v1",
-                            "batch": {
+                            "schema_version": "task-daemon.interpretation.v1",
+                            "event_id": "td-interpret-result-test-1",
+                            "request_event_id": "td-interpret-request-test-1",
+                            "emitted_at_unix": 1_735_720_001u64,
+                            "source": {
+                                "source_key": "slack:CAGENTIUM1",
                                 "source": "slack",
-                                "source_label": "#agentium-eng",
-                                "generated_at_unix": 1_735_720_000u64,
-                                "messages_scanned": 3,
-                                "project": {
-                                    "project_key": "agent-platform",
-                                    "repo_available": true,
-                                    "repo_path": "/repo/agent-platform"
-                                },
-                                "interpretation": {
-                                    "executive_summary": "Team needs investigation tasks created from discussion context.",
-                                    "current_objectives": [
-                                        "Convert structured interpretation into a runnable workflow"
-                                    ],
-                                    "workflow_seed": {
-                                        "goal": "Create investigation tasks and route follow-ups",
-                                        "investigation_nodes": [
-                                            {
-                                                "key": "investigate-routing",
-                                                "title": "Investigate routing behavior",
-                                                "goal": "Validate coordinator consumption path",
-                                                "prompt": "Inspect coordinator intake and prove structured handoff is used.",
-                                                "when_to_run": "repo_available"
-                                            }
-                                        ]
-                                    }
-                                },
-                                "derived_tasks": [
-                                    {
-                                        "key": "task-1",
-                                        "title": "Validate typed handoff ingestion",
-                                        "description": "Ensure coordinator can plan from parts[].data without text fallback.",
-                                        "priority": "high"
-                                    }
-                                ]
-                            }
+                                "source_label": "#agentium-eng"
+                            },
+                            "messages_scanned": 3,
+                            "project": {
+                                "project_key": "agent-platform",
+                                "repo_available": true,
+                                "repo_path": "/repo/agent-platform"
+                            },
+                            "interpretation": {
+                                "executive_summary": "Team needs investigation tasks created from discussion context.",
+                                "current_objectives": [
+                                    "Convert structured interpretation into a runnable workflow"
+                                ],
+                                "workflow_seed": {
+                                    "goal": "Create investigation tasks and route follow-ups",
+                                    "investigation_nodes": [
+                                        {
+                                            "key": "investigate-routing",
+                                            "title": "Investigate routing behavior",
+                                            "goal": "Validate coordinator consumption path",
+                                            "prompt": "Inspect coordinator intake and prove structured handoff is used.",
+                                            "when_to_run": "repo_available"
+                                        }
+                                    ]
+                                }
+                            },
+                            "derived_tasks": [
+                                {
+                                    "key": "task-1",
+                                    "title": "Validate typed handoff ingestion",
+                                    "description": "Ensure coordinator can plan from parts[].data without text fallback.",
+                                    "priority": "high"
+                                }
+                            ]
                         }
                     }
                 ],
@@ -350,8 +341,8 @@ async fn test_coordinator_accepts_data_only_task_daemon_handoff() {
     let texts = message_texts_from_chunks(&chunks);
     let merged_text = texts.join("\n");
 
-    // Core contract: coordinator MUST detect the structured handoff (hardcoded
-    // message emitted deterministically before any LLM call).
+    // The coordinator should recognize the structured handoff path before any
+    // model-dependent planning happens.
     assert!(
         texts.iter().any(|text| {
             text.contains(
@@ -361,7 +352,7 @@ async fn test_coordinator_accepts_data_only_task_daemon_handoff() {
         "Expected coordinator to confirm structured handoff path. Texts: {texts:?}"
     );
 
-    // Core contract: coordinator MUST NOT reject a data-only handoff as empty input.
+    // A data-only handoff should not be treated as empty user input.
     assert!(
         !merged_text.contains("Please share what you want me to coordinate."),
         "Coordinator should not reject data-only handoff as empty input. Texts: {texts:?}"
@@ -373,10 +364,9 @@ async fn test_coordinator_accepts_data_only_task_daemon_handoff() {
         "Expected non-empty response stream from coordinator. Responses: {responses:?}"
     );
 
-    // Downstream steps (agent discovery, workflow planning, execution) depend on
-    // real LLM calls whose output varies across models and runs.  Log warnings
-    // so CI surfaces regressions without hard-failing the handoff-detection
-    // contract this test guards.
+    // Later planning steps depend on live model behavior and can vary across
+    // providers and runs. Keep those as warnings so this test stays focused on
+    // whether the structured handoff path works at all.
     if merged_text.contains("Agent discovery failed:") {
         eprintln!(
             "WARN: agent discovery failed during coordinator handoff test \

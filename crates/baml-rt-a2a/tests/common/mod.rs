@@ -31,10 +31,7 @@ pub fn task_status(state: &str) -> TaskStatus {
 }
 
 pub mod provenance {
-    use std::{
-        sync::Arc,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::sync::Arc;
 
     use baml_rt::QuickJSConfig;
     use baml_rt_a2a::A2aAgent;
@@ -66,13 +63,10 @@ pub mod provenance {
     /// (task id on write path vs id in tasks.subscribe params), not connection scope.
     #[allow(dead_code)] // shared test helper; used by other test binaries
     pub fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time")
-            .as_nanos();
         let path = std::env::temp_dir().join(format!(
             "baml-rt-a2a-provenance-{pid}-{unique}.db",
             pid = std::process::id(),
+            unique = uuid::Uuid::new_v4(),
         ));
         GraphqliteStoreBuilder::file(path)
             .build()

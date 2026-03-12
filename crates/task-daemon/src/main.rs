@@ -1,11 +1,11 @@
-use std::{collections::BTreeMap, path::PathBuf, time::Duration};
+use std::{collections::BTreeMap, fmt, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use baml_task_daemon::{
     A2aSink, ClickUpSink, ClickupSourceConfig, ClickupTaskSource, ExtractionMode, GithubIssueSink,
     JsonlFileSink, ProjectContext, RoundRobinTaskSource, SinkDeliveryMode, SlackChannelSelector,
-    SlackSourceConfig, SlackTaskSource, StateStore, StdoutSink, TaskDaemon, TaskExtractor,
-    TaskSink, TaskSource, TaskSourceKind,
+    SlackSourceConfig, SlackTaskSource, SourceFilteredSink, StateStore, StdoutSink, TaskDaemon,
+    TaskExtractor, TaskSink, TaskSource, TaskSourceKind,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use integrations_slack_read::SlackAuthPreference;
@@ -58,6 +58,68 @@ impl SourceKindArg {
             Self::Clickup => TaskSourceKind::Clickup,
         }
     }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Slack => "slack",
+            Self::Clickup => "clickup",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+enum SinkKindArg {
+    Stdout,
+    Jsonl,
+    Clickup,
+    Github,
+    A2a,
+}
+
+impl SinkKindArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Jsonl => "jsonl",
+            Self::Clickup => "clickup",
+            Self::Github => "github",
+            Self::A2a => "a2a",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SourceSinkRouteArg {
+    source: SourceKindArg,
+    sink: SinkKindArg,
+}
+
+impl SourceSinkRouteArg {
+    fn parse(raw: &str) -> std::result::Result<Self, String> {
+        let Some((source_raw, sink_raw)) = raw.split_once(':') else {
+            return Err(format!(
+                "invalid route {raw:?}; expected <source>:<sink> (for example slack:clickup)"
+            ));
+        };
+
+        let source =
+            <SourceKindArg as ValueEnum>::from_str(source_raw.trim(), true).map_err(|_| {
+                format!(
+                    "invalid route {raw:?}; unknown source {:?}",
+                    source_raw.trim()
+                )
+            })?;
+        let sink = <SinkKindArg as ValueEnum>::from_str(sink_raw.trim(), true)
+            .map_err(|_| format!("invalid route {raw:?}; unknown sink {:?}", sink_raw.trim()))?;
+
+        Ok(Self { source, sink })
+    }
+}
+
+impl fmt::Display for SourceSinkRouteArg {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.source.as_str(), self.sink.as_str())
+    }
 }
 
 #[derive(Debug, Parser)]
@@ -80,6 +142,10 @@ struct RunArgs {
     /// Source(s) to poll; repeat flag to enable multiple (for example `--source slack --source clickup`).
     #[arg(long = "source", value_enum)]
     sources: Vec<SourceKindArg>,
+
+    /// Explicit source-to-sink routes (`<source>:<sink>`). When omitted, all compatible sinks receive each batch.
+    #[arg(long = "route", value_parser = parse_source_sink_route)]
+    routes: Vec<SourceSinkRouteArg>,
 
     /// Channel selector (`agentium-eng`, `#agentium-eng`, or `C...`).
     #[arg(long, default_value = "agentium-eng")]
@@ -178,11 +244,19 @@ struct RunArgs {
     #[arg(long, default_value_t = false)]
     github_live: bool,
 
-    /// Coordinator runner base URL for A2A delegation sink (for example `http://127.0.0.1:8082`).
-    #[arg(long)]
-    coordinator_url: Option<String>,
+    /// Runner base URL for A2A delegation sink (for example `http://127.0.0.1:8082`).
+    #[arg(long = "a2a-base-url")]
+    a2a_base_url: Option<String>,
 
-    /// When set with coordinator URL, sends live A2A requests instead of dry-run logging.
+    /// A2A target agent package for daemon event delivery.
+    #[arg(long, default_value = "coordinator-agent")]
+    a2a_agent_package: String,
+
+    /// A2A target agent instance id for daemon event delivery.
+    #[arg(long, default_value = "default")]
+    a2a_agent_instance_id: String,
+
+    /// When set with A2A base URL, sends live A2A requests instead of dry-run logging.
     #[arg(long, default_value_t = false)]
     a2a_live: bool,
 }
@@ -201,6 +275,17 @@ struct ProjectConfigEntry {
     repo_path: Option<String>,
     #[serde(default)]
     clickup_list_id: Option<String>,
+}
+
+struct ConfiguredSink {
+    kind: SinkKindArg,
+    sink: Box<dyn TaskSink>,
+}
+
+impl ConfiguredSink {
+    fn new(kind: SinkKindArg, sink: Box<dyn TaskSink>) -> Self {
+        Self { kind, sink }
+    }
 }
 
 #[tokio::main]
@@ -289,47 +374,66 @@ async fn run(args: RunArgs) -> Result<()> {
         Box::new(RoundRobinTaskSource::new(sources)?)
     };
 
-    let mut sinks: Vec<Box<dyn TaskSink>> = Vec::new();
+    let mut configured_sinks: Vec<ConfiguredSink> = Vec::new();
     if !args.no_stdout {
-        sinks.push(Box::new(StdoutSink::new(args.pretty)));
+        configured_sinks.push(ConfiguredSink::new(
+            SinkKindArg::Stdout,
+            Box::new(StdoutSink::new(args.pretty)),
+        ));
     }
 
     if let Some(path) = args.jsonl_out {
-        sinks.push(Box::new(JsonlFileSink::new(path)));
+        configured_sinks.push(ConfiguredSink::new(
+            SinkKindArg::Jsonl,
+            Box::new(JsonlFileSink::new(path)),
+        ));
     }
 
     if let Some(list_id) = clickup_list_id {
-        sinks.push(Box::new(ClickUpSink::new(
-            list_id,
-            SinkDeliveryMode::from_live_flag(args.clickup_live),
-        )?));
+        configured_sinks.push(ConfiguredSink::new(
+            SinkKindArg::Clickup,
+            Box::new(ClickUpSink::new(
+                list_id,
+                SinkDeliveryMode::from_live_flag(args.clickup_live),
+            )?),
+        ));
     }
 
     if let (Some(owner), Some(repo)) = (args.github_owner.clone(), args.github_repo.clone()) {
-        sinks.push(Box::new(GithubIssueSink::new(
-            owner,
-            repo,
-            SinkDeliveryMode::from_live_flag(args.github_live),
-        )?));
-    }
-
-    if let Some(url) = args.coordinator_url.clone() {
-        sinks.push(Box::new(A2aSink::new(
-            url,
-            SinkDeliveryMode::from_live_flag(args.a2a_live),
-        )?));
-    }
-
-    if sinks.is_empty() {
-        return Err(anyhow!(
-            "no sinks configured; enable stdout, --jsonl-out, --clickup-list-id, --github-owner/--github-repo, or --coordinator-url"
+        configured_sinks.push(ConfiguredSink::new(
+            SinkKindArg::Github,
+            Box::new(GithubIssueSink::new(
+                owner,
+                repo,
+                SinkDeliveryMode::from_live_flag(args.github_live),
+            )?),
         ));
     }
+
+    if let Some(url) = args.a2a_base_url.clone() {
+        configured_sinks.push(ConfiguredSink::new(
+            SinkKindArg::A2a,
+            Box::new(A2aSink::for_agent(
+                url,
+                args.a2a_agent_package.clone(),
+                args.a2a_agent_instance_id.clone(),
+                SinkDeliveryMode::from_live_flag(args.a2a_live),
+            )?),
+        ));
+    }
+
+    if configured_sinks.is_empty() {
+        return Err(anyhow!(
+            "no sinks configured; enable stdout, --jsonl-out, --clickup-list-id, --github-owner/--github-repo, or --a2a-base-url"
+        ));
+    }
+
+    let sinks = route_configured_sinks(configured_sinks, &selected_sources, &args.routes)?;
 
     for source_kind in selected_source_kinds(&selected_sources) {
         if !sinks.iter().any(|sink| sink.accepts_source(source_kind)) {
             return Err(anyhow!(
-                "no compatible sinks configured for source {:?}; add stdout/jsonl/github/a2a sink or change --source",
+                "no compatible sinks configured for source {:?}; add stdout/jsonl/github/a2a sink, update --route, or change --source",
                 source_kind
             ));
         }
@@ -342,12 +446,12 @@ async fn run(args: RunArgs) -> Result<()> {
 
     if args.once {
         for _ in 0..daemon.polls_per_cycle() {
-            let batch = daemon.run_once().await?;
+            let dispatch = daemon.run_once().await?;
             tracing::info!(
-                source = %batch.source_label,
-                derived_tasks = batch.derived_tasks.len(),
-                messages_scanned = batch.messages_scanned,
-                project_key = %batch.project.project_key,
+                source = %dispatch.batch.source_label,
+                derived_tasks = dispatch.batch.derived_tasks.len(),
+                messages_scanned = dispatch.batch.messages_scanned,
+                project_key = %dispatch.batch.project.project_key,
                 "task-daemon run-once completed"
             );
         }
@@ -447,6 +551,100 @@ fn normalize_selected_sources(raw: &[SourceKindArg]) -> Vec<SourceKindArg> {
     selected
 }
 
+fn normalize_selected_routes(raw: &[SourceSinkRouteArg]) -> Vec<SourceSinkRouteArg> {
+    let mut selected = Vec::new();
+    for route in raw.iter().copied() {
+        if !selected.contains(&route) {
+            selected.push(route);
+        }
+    }
+    selected
+}
+
+fn route_sources_for_sink(
+    sink_kind: SinkKindArg,
+    routes: &[SourceSinkRouteArg],
+) -> Vec<TaskSourceKind> {
+    let mut sources = Vec::new();
+    for route in routes {
+        if route.sink != sink_kind {
+            continue;
+        }
+        let source_kind = route.source.as_task_source_kind();
+        if !sources.contains(&source_kind) {
+            sources.push(source_kind);
+        }
+    }
+    sources
+}
+
+fn route_configured_sinks(
+    configured_sinks: Vec<ConfiguredSink>,
+    selected_sources: &[SourceKindArg],
+    raw_routes: &[SourceSinkRouteArg],
+) -> Result<Vec<Box<dyn TaskSink>>> {
+    let routes = normalize_selected_routes(raw_routes);
+    if routes.is_empty() {
+        return Ok(configured_sinks
+            .into_iter()
+            .map(|entry| entry.sink)
+            .collect());
+    }
+
+    for route in &routes {
+        if !selected_sources.contains(&route.source) {
+            return Err(anyhow!(
+                "route {} references source {} but --source {} is not selected",
+                route,
+                route.source.as_str(),
+                route.source.as_str()
+            ));
+        }
+
+        let Some(configured_sink) = configured_sinks
+            .iter()
+            .find(|configured_sink| configured_sink.kind == route.sink)
+        else {
+            return Err(anyhow!(
+                "route {} references sink {} but that sink is not configured",
+                route,
+                route.sink.as_str()
+            ));
+        };
+
+        if !configured_sink
+            .sink
+            .accepts_source(route.source.as_task_source_kind())
+        {
+            return Err(anyhow!(
+                "route {} is invalid because sink {} does not accept {} source batches",
+                route,
+                route.sink.as_str(),
+                route.source.as_str()
+            ));
+        }
+    }
+
+    Ok(configured_sinks
+        .into_iter()
+        .filter_map(|configured_sink| {
+            let allowed_sources = route_sources_for_sink(configured_sink.kind, &routes);
+            if allowed_sources.is_empty() {
+                tracing::debug!(
+                    sink = configured_sink.kind.as_str(),
+                    "sink excluded by explicit routing"
+                );
+                return None;
+            }
+
+            Some(Box::new(SourceFilteredSink::new(
+                configured_sink.sink,
+                allowed_sources,
+            )) as Box<dyn TaskSink>)
+        })
+        .collect())
+}
+
 fn parse_workspace_url(raw: &str) -> Result<Url> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -487,9 +685,20 @@ fn selected_source_kinds(sources: &[SourceKindArg]) -> Vec<TaskSourceKind> {
         .collect()
 }
 
+fn parse_source_sink_route(raw: &str) -> std::result::Result<SourceSinkRouteArg, String> {
+    SourceSinkRouteArg::parse(raw)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{SourceKindArg, normalize_selected_sources};
+    use anyhow::Result;
+    use async_trait::async_trait;
+    use baml_task_daemon::{TaskDispatch, TaskSink, TaskSourceKind};
+
+    use super::{
+        ConfiguredSink, SinkKindArg, SourceKindArg, SourceSinkRouteArg, normalize_selected_routes,
+        normalize_selected_sources, parse_source_sink_route, route_configured_sinks,
+    };
 
     #[test]
     fn normalize_selected_sources_defaults_to_slack() {
@@ -506,5 +715,148 @@ mod tests {
             ]),
             vec![SourceKindArg::Clickup, SourceKindArg::Slack]
         );
+    }
+
+    #[test]
+    fn parse_source_sink_route_accepts_known_values() {
+        assert_eq!(
+            parse_source_sink_route("slack:clickup").expect("valid route"),
+            SourceSinkRouteArg {
+                source: SourceKindArg::Slack,
+                sink: SinkKindArg::Clickup,
+            }
+        );
+    }
+
+    #[test]
+    fn normalize_selected_routes_deduplicates_preserving_order() {
+        assert_eq!(
+            normalize_selected_routes(&[
+                SourceSinkRouteArg {
+                    source: SourceKindArg::Slack,
+                    sink: SinkKindArg::Stdout,
+                },
+                SourceSinkRouteArg {
+                    source: SourceKindArg::Clickup,
+                    sink: SinkKindArg::A2a,
+                },
+                SourceSinkRouteArg {
+                    source: SourceKindArg::Slack,
+                    sink: SinkKindArg::Stdout,
+                },
+            ]),
+            vec![
+                SourceSinkRouteArg {
+                    source: SourceKindArg::Slack,
+                    sink: SinkKindArg::Stdout,
+                },
+                SourceSinkRouteArg {
+                    source: SourceKindArg::Clickup,
+                    sink: SinkKindArg::A2a,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn route_configured_sinks_filters_sources_per_sink() {
+        let sinks = route_configured_sinks(
+            vec![
+                ConfiguredSink::new(SinkKindArg::Stdout, Box::new(AcceptsAllSink)),
+                ConfiguredSink::new(SinkKindArg::A2a, Box::new(AcceptsAllSink)),
+            ],
+            &[SourceKindArg::Slack, SourceKindArg::Clickup],
+            &[
+                SourceSinkRouteArg {
+                    source: SourceKindArg::Slack,
+                    sink: SinkKindArg::Stdout,
+                },
+                SourceSinkRouteArg {
+                    source: SourceKindArg::Clickup,
+                    sink: SinkKindArg::A2a,
+                },
+            ],
+        )
+        .expect("routed sinks");
+
+        assert_eq!(sinks.len(), 2);
+        assert!(sinks[0].accepts_source(TaskSourceKind::Slack));
+        assert!(!sinks[0].accepts_source(TaskSourceKind::Clickup));
+        assert!(!sinks[1].accepts_source(TaskSourceKind::Slack));
+        assert!(sinks[1].accepts_source(TaskSourceKind::Clickup));
+    }
+
+    #[test]
+    fn route_configured_sinks_rejects_unconfigured_sink_reference() {
+        let err = route_configured_sinks(
+            vec![ConfiguredSink::new(
+                SinkKindArg::Stdout,
+                Box::new(AcceptsAllSink),
+            )],
+            &[SourceKindArg::Slack],
+            &[SourceSinkRouteArg {
+                source: SourceKindArg::Slack,
+                sink: SinkKindArg::A2a,
+            }],
+        )
+        .err()
+        .expect("route should fail");
+
+        assert!(
+            err.to_string()
+                .contains("references sink a2a but that sink is not configured")
+        );
+    }
+
+    #[test]
+    fn route_configured_sinks_rejects_incompatible_pairs() {
+        let err = route_configured_sinks(
+            vec![ConfiguredSink::new(
+                SinkKindArg::Clickup,
+                Box::new(ClickupOnlyRejectingSink),
+            )],
+            &[SourceKindArg::Clickup],
+            &[SourceSinkRouteArg {
+                source: SourceKindArg::Clickup,
+                sink: SinkKindArg::Clickup,
+            }],
+        )
+        .err()
+        .expect("route should fail");
+
+        assert!(
+            err.to_string()
+                .contains("sink clickup does not accept clickup source batches")
+        );
+    }
+
+    struct AcceptsAllSink;
+
+    #[async_trait]
+    impl TaskSink for AcceptsAllSink {
+        fn name(&self) -> &'static str {
+            "accepts-all"
+        }
+
+        async fn deliver(&mut self, _dispatch: &TaskDispatch) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    struct ClickupOnlyRejectingSink;
+
+    #[async_trait]
+    impl TaskSink for ClickupOnlyRejectingSink {
+        fn name(&self) -> &'static str {
+            "clickup-like"
+        }
+
+        fn accepts_source(&self, source: TaskSourceKind) -> bool {
+            !matches!(source, TaskSourceKind::Clickup)
+        }
+
+        async fn deliver(&mut self, _dispatch: &TaskDispatch) -> Result<()> {
+            Ok(())
+        }
     }
 }

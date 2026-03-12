@@ -50,6 +50,11 @@ impl SourcePath {
                 reason: "path must be relative (no leading slash)",
             });
         }
+        if s.contains('\0') {
+            return Err(SourcePathError {
+                reason: "path must not contain NUL bytes",
+            });
+        }
         if s.contains("..") {
             return Err(SourcePathError {
                 reason: "path must not contain '..' components",
@@ -248,6 +253,17 @@ impl ChangeRationale {
 impl std::fmt::Display for ChangeRationale {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SourcePath;
+
+    #[test]
+    fn source_path_rejects_nul_bytes() {
+        let err = SourcePath::new("src/\0index.ts").unwrap_err();
+        assert_eq!(err.reason, "path must not contain NUL bytes");
     }
 }
 

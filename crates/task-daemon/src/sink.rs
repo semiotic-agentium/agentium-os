@@ -1,6 +1,7 @@
-//! Delivery sinks for interpreted batches.
+//! Destinations for task-daemon results.
 
 use std::{
+    collections::BTreeSet,
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
@@ -8,30 +9,69 @@ use std::{
 
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
-use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
+use baml_rt_core::{
+    AgentInstanceId, AgentPackageName, AgentRouteKey,
+    ids::{ContextId, ExternalId, TaskId},
+};
 use integrations_clickup_client::ClickUpClient;
 use integrations_github_client::GitHubClient;
-use serde::Serialize;
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use crate::model::{InvestigationTask, TaskBatch, TaskSourceKind};
+use crate::{
+    contract::TaskDispatch,
+    model::{InvestigationTask, TaskBatch, TaskSourceKind},
+};
 
 #[async_trait]
-/// A destination for interpreted task batches.
+/// A place task-daemon can send results.
 pub trait TaskSink: Send {
     /// Stable sink identifier used in logs and error context.
     fn name(&self) -> &'static str;
-    /// Returns whether this sink accepts batches from a source kind.
+    /// Returns whether this sink accepts results from a given source kind.
     fn accepts_source(&self, _source: TaskSourceKind) -> bool {
         true
     }
-    /// Delivers a batch to the sink.
-    async fn deliver(&mut self, batch: &TaskBatch) -> Result<()>;
+    /// Delivers one task-daemon result to the sink.
+    async fn deliver(&mut self, dispatch: &TaskDispatch) -> Result<()>;
+}
+
+/// Restricts a sink to results from selected sources.
+pub struct SourceFilteredSink {
+    inner: Box<dyn TaskSink>,
+    allowed_sources: BTreeSet<TaskSourceKind>,
+}
+
+impl SourceFilteredSink {
+    /// Wraps `inner`, allowing only the selected source kinds through.
+    pub fn new(inner: Box<dyn TaskSink>, allowed_sources: Vec<TaskSourceKind>) -> Self {
+        Self {
+            inner,
+            allowed_sources: allowed_sources.into_iter().collect(),
+        }
+    }
+}
+
+#[async_trait]
+impl TaskSink for SourceFilteredSink {
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    fn accepts_source(&self, source: TaskSourceKind) -> bool {
+        self.allowed_sources.contains(&source) && self.inner.accepts_source(source)
+    }
+
+    async fn deliver(&mut self, dispatch: &TaskDispatch) -> Result<()> {
+        if !self.accepts_source(dispatch.batch.source) {
+            return Ok(());
+        }
+        self.inner.deliver(dispatch).await
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Delivery mode for write-capable sinks.
+/// Whether a sink only previews output or performs live writes.
 pub enum SinkDeliveryMode {
     DryRun,
     Live,
@@ -44,7 +84,7 @@ impl SinkDeliveryMode {
 }
 
 #[derive(Debug, Error)]
-/// Typed sink-construction failures.
+/// Problems configuring a sink.
 pub enum SinkConstructorError {
     #[error("clickup list_id must not be empty")]
     EmptyClickupListId,
@@ -52,18 +92,22 @@ pub enum SinkConstructorError {
     EmptyGithubOwner,
     #[error("github repo must not be empty")]
     EmptyGithubRepo,
-    #[error("coordinator URL must not be empty")]
-    EmptyCoordinatorUrl,
-    #[error("coordinator URL is invalid: {raw}")]
-    InvalidCoordinatorUrl { raw: String },
+    #[error("A2A base URL must not be empty")]
+    EmptyA2aBaseUrl,
+    #[error("A2A base URL is invalid: {raw}")]
+    InvalidA2aBaseUrl { raw: String },
+    #[error("A2A agent package is invalid: {raw}")]
+    InvalidA2aAgentPackage { raw: String },
+    #[error("A2A agent instance id is invalid: {raw}")]
+    InvalidA2aAgentInstanceId { raw: String },
 }
 
 #[derive(Debug, Error)]
-/// Typed sink-delivery failures grouped by operation category.
+/// Problems delivering work to a sink.
 pub enum SinkDeliveryError {
-    #[error("serializing task batch for stdout sink failed")]
+    #[error("serializing interpretation result event for stdout sink failed")]
     StdoutSerialize(#[source] serde_json::Error),
-    #[error("serializing task batch to jsonl failed")]
+    #[error("serializing interpretation result event to jsonl failed")]
     JsonlSerialize(#[source] serde_json::Error),
     #[error("jsonl sink I/O failed for {path}: {source}")]
     JsonlIo {
@@ -98,26 +142,26 @@ pub enum SinkDeliveryError {
         #[source]
         source: anyhow::Error,
     },
-    #[error("sending A2A request to coordinator failed: {source}")]
-    CoordinatorTransport {
+    #[error("sending A2A request to target agent failed: {source}")]
+    A2aTransport {
         #[source]
         source: anyhow::Error,
     },
-    #[error("coordinator A2A request failed with {status}: {body}")]
-    CoordinatorHttp { status: u16, body: String },
-    #[error("reading coordinator A2A response JSON failed: {source}")]
-    CoordinatorResponseJson {
+    #[error("A2A request failed with {status}: {body}")]
+    A2aHttp { status: u16, body: String },
+    #[error("reading A2A response JSON failed: {source}")]
+    A2aResponseJson {
         #[source]
         source: anyhow::Error,
     },
-    #[error("coordinator protocol validation failed: {source}")]
-    CoordinatorProtocol {
+    #[error("A2A protocol validation failed: {source}")]
+    A2aProtocol {
         #[source]
         source: anyhow::Error,
     },
 }
 
-/// Sink that prints one JSON payload per batch to stdout.
+/// Sink that prints one structured result to stdout for each daemon cycle.
 pub struct StdoutSink {
     pretty: bool,
 }
@@ -137,11 +181,11 @@ impl TaskSink for StdoutSink {
         "stdout"
     }
 
-    async fn deliver(&mut self, batch: &TaskBatch) -> Result<()> {
+    async fn deliver(&mut self, dispatch: &TaskDispatch) -> Result<()> {
         let serialized = if self.pretty {
-            serde_json::to_string_pretty(batch)
+            serde_json::to_string_pretty(&dispatch.result_event)
         } else {
-            serde_json::to_string(batch)
+            serde_json::to_string(&dispatch.result_event)
         }
         .map_err(SinkDeliveryError::StdoutSerialize)?;
         println!("{serialized}");
@@ -149,7 +193,7 @@ impl TaskSink for StdoutSink {
     }
 }
 
-/// Sink that appends each batch as one JSON line to a file.
+/// Sink that appends one structured result per daemon cycle to a JSONL file.
 pub struct JsonlFileSink {
     path: PathBuf,
 }
@@ -172,7 +216,7 @@ impl TaskSink for JsonlFileSink {
         "jsonl"
     }
 
-    async fn deliver(&mut self, batch: &TaskBatch) -> Result<()> {
+    async fn deliver(&mut self, dispatch: &TaskDispatch) -> Result<()> {
         if let Some(parent) = self.path.parent()
             && !parent.as_os_str().is_empty()
         {
@@ -182,7 +226,8 @@ impl TaskSink for JsonlFileSink {
             })?;
         }
 
-        let line = serde_json::to_string(batch).map_err(SinkDeliveryError::JsonlSerialize)?;
+        let line = serde_json::to_string(&dispatch.result_event)
+            .map_err(SinkDeliveryError::JsonlSerialize)?;
         let mut file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -214,7 +259,7 @@ fn truncate_title(raw: &str, max_len: usize) -> String {
     out
 }
 
-/// Sanitizes labels rendered in coordinator instructions (outside untrusted fences).
+/// Sanitizes labels rendered in plain-text handoff messages.
 fn sanitize_single_line(raw: &str) -> String {
     raw.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -308,7 +353,8 @@ impl TaskSink for ClickUpSink {
         !matches!(source, TaskSourceKind::Clickup)
     }
 
-    async fn deliver(&mut self, batch: &TaskBatch) -> Result<()> {
+    async fn deliver(&mut self, dispatch: &TaskDispatch) -> Result<()> {
+        let batch = &dispatch.batch;
         if batch.derived_tasks.is_empty() {
             return Ok(());
         }
@@ -432,7 +478,8 @@ impl TaskSink for GithubIssueSink {
         }
     }
 
-    async fn deliver(&mut self, batch: &TaskBatch) -> Result<()> {
+    async fn deliver(&mut self, dispatch: &TaskDispatch) -> Result<()> {
+        let batch = &dispatch.batch;
         if batch.derived_tasks.is_empty() {
             return Ok(());
         }
@@ -496,8 +543,7 @@ impl TaskSink for GithubIssueSink {
     }
 }
 
-/// Formats a [`TaskBatch`] into a natural-language prompt suitable for the
-/// coordinator's `PlanCoordinatorWorkflow`.
+/// Formats a [`TaskBatch`] into a readable handoff message for another agent.
 pub fn format_coordinator_prompt(batch: &TaskBatch) -> String {
     let source_label = sanitize_single_line(&batch.source_label);
     let project_key = sanitize_single_line(&batch.project.project_key);
@@ -569,74 +615,97 @@ pub fn format_coordinator_prompt(batch: &TaskBatch) -> String {
     lines.join("\n")
 }
 
-/// Sink that bridges task batches to a running coordinator agent via the A2A protocol.
+/// Sends task-daemon results to another agent over A2A.
 pub struct A2aSink {
-    coordinator_url: reqwest::Url,
+    a2a_base_url: reqwest::Url,
+    target: AgentRouteKey,
     client: reqwest::Client,
     mode: SinkDeliveryMode,
 }
 
-const COORDINATOR_HANDOFF_SCHEMA_VERSION: &str = "task-daemon.coordinator-handoff.v1";
+const INTERPRETATION_RESULT_CONTENT_TYPE: &str =
+    "application/vnd.baml.task-daemon.interpretation-result+json;version=1";
 const A2A_ROLE_USER: &str = "user";
 
-#[derive(Debug, Clone, Serialize)]
-struct CoordinatorWorkflowHandoff<'a> {
-    schema_version: &'static str,
-    batch: &'a TaskBatch,
-}
-
 impl A2aSink {
-    /// Creates an A2A coordinator sink.
+    /// Creates an A2A sink that sends to the standard coordinator route.
     ///
-    /// `SinkDeliveryMode::DryRun` logs the prompt without sending requests.
+    /// `SinkDeliveryMode::DryRun` logs the message instead of sending it.
     pub fn new(
-        coordinator_url: String,
+        a2a_base_url: String,
         mode: SinkDeliveryMode,
     ) -> std::result::Result<Self, SinkConstructorError> {
-        let coordinator_url = coordinator_url.trim().to_string();
-        if coordinator_url.is_empty() {
-            return Err(SinkConstructorError::EmptyCoordinatorUrl);
+        Self::for_agent(
+            a2a_base_url,
+            "coordinator-agent".to_string(),
+            AgentInstanceId::DEFAULT.to_string(),
+            mode,
+        )
+    }
+
+    /// Creates an A2A sink for a specific target agent.
+    pub fn for_agent(
+        a2a_base_url: String,
+        agent_package: String,
+        agent_instance_id: String,
+        mode: SinkDeliveryMode,
+    ) -> std::result::Result<Self, SinkConstructorError> {
+        let a2a_base_url = a2a_base_url.trim().to_string();
+        if a2a_base_url.is_empty() {
+            return Err(SinkConstructorError::EmptyA2aBaseUrl);
         }
-        let mut coordinator_url = reqwest::Url::parse(&coordinator_url).map_err(|_| {
-            SinkConstructorError::InvalidCoordinatorUrl {
-                raw: coordinator_url.clone(),
+        let mut a2a_base_url = reqwest::Url::parse(&a2a_base_url).map_err(|_| {
+            SinkConstructorError::InvalidA2aBaseUrl {
+                raw: a2a_base_url.clone(),
             }
         })?;
-        if !matches!(coordinator_url.scheme(), "http" | "https") {
-            return Err(SinkConstructorError::InvalidCoordinatorUrl {
-                raw: coordinator_url.to_string(),
+        if !matches!(a2a_base_url.scheme(), "http" | "https") {
+            return Err(SinkConstructorError::InvalidA2aBaseUrl {
+                raw: a2a_base_url.to_string(),
             });
         }
-        if !coordinator_url.path().ends_with('/') {
+        if !a2a_base_url.path().ends_with('/') {
             let normalized_path = {
-                let trimmed = coordinator_url.path().trim_end_matches('/');
+                let trimmed = a2a_base_url.path().trim_end_matches('/');
                 if trimmed.is_empty() {
                     "/".to_string()
                 } else {
                     format!("{trimmed}/")
                 }
             };
-            coordinator_url.set_path(&normalized_path);
+            a2a_base_url.set_path(&normalized_path);
         }
+        let agent_package = AgentPackageName::parse(&agent_package).ok_or_else(|| {
+            SinkConstructorError::InvalidA2aAgentPackage {
+                raw: agent_package.clone(),
+            }
+        })?;
+        let agent_instance_id = AgentInstanceId::parse(&agent_instance_id).ok_or_else(|| {
+            SinkConstructorError::InvalidA2aAgentInstanceId {
+                raw: agent_instance_id.clone(),
+            }
+        })?;
 
         Ok(Self {
-            coordinator_url,
+            a2a_base_url,
+            target: AgentRouteKey::new(agent_package, agent_instance_id),
             client: reqwest::Client::new(),
             mode,
         })
     }
 
-    /// Builds the JSON-RPC `message.sendStream` request body.
-    ///
-    /// Includes both:
-    /// - a concise text instruction for coordinator compatibility
-    /// - a typed handoff payload in `parts[].data` for machine-readability
-    fn build_jsonrpc_body(batch: &TaskBatch, prompt: &str) -> serde_json::Value {
-        let handoff = CoordinatorWorkflowHandoff {
-            schema_version: COORDINATOR_HANDOFF_SCHEMA_VERSION,
-            batch,
-        };
+    fn target_path(&self) -> String {
+        format!(
+            "agents/{}/{}/a2a",
+            self.target.agent_package, self.target.agent_instance_id
+        )
+    }
 
+    /// Builds the A2A request body sent to the downstream agent.
+    ///
+    /// The request includes both a readable summary and the structured result
+    /// data.
+    fn build_jsonrpc_body(dispatch: &TaskDispatch, prompt: &str) -> serde_json::Value {
         json!({
             "jsonrpc": "2.0",
             "method": "message.sendStream",
@@ -653,15 +722,15 @@ impl A2aSink {
                             }
                         },
                         {
-                            "data": handoff,
+                            "data": dispatch.result_event,
                             "metadata": {
-                                "content_type": "application/vnd.baml.task-daemon.coordinator-handoff+json;version=1"
+                                "content_type": INTERPRETATION_RESULT_CONTENT_TYPE
                             }
                         }
                     ],
                     "metadata": {
                         "source": "baml-task-daemon",
-                        "handoff_schema_version": COORDINATOR_HANDOFF_SCHEMA_VERSION,
+                        "event_schema_version": dispatch.result_event.schema_version,
                     }
                 }
             }
@@ -678,13 +747,18 @@ impl TaskSink for A2aSink {
         }
     }
 
-    async fn deliver(&mut self, batch: &TaskBatch) -> Result<()> {
-        let prompt = format_coordinator_prompt(batch);
+    async fn deliver(&mut self, dispatch: &TaskDispatch) -> Result<()> {
+        let prompt = format_coordinator_prompt(&dispatch.batch);
+        let target_label = format!(
+            "{}/{}",
+            self.target.agent_package, self.target.agent_instance_id
+        );
 
         if matches!(self.mode, SinkDeliveryMode::DryRun) {
             tracing::info!(
-                coordinator_url = %self.coordinator_url,
-                derived_tasks = batch.derived_tasks.len(),
+                a2a_base_url = %self.a2a_base_url,
+                target = target_label.as_str(),
+                derived_tasks = dispatch.batch.derived_tasks.len(),
                 prompt_len = prompt.len(),
                 "A2A sink dry-run; prompt:\n{prompt}"
             );
@@ -692,17 +766,18 @@ impl TaskSink for A2aSink {
         }
 
         let url = self
-            .coordinator_url
-            .join("agents/coordinator-agent/default/a2a")
-            .map_err(|source| SinkDeliveryError::CoordinatorTransport {
+            .a2a_base_url
+            .join(&self.target_path())
+            .map_err(|source| SinkDeliveryError::A2aTransport {
                 source: anyhow::Error::new(source),
             })?;
-        let body = Self::build_jsonrpc_body(batch, &prompt);
+        let body = Self::build_jsonrpc_body(dispatch, &prompt);
 
         tracing::info!(
-            coordinator_url = %self.coordinator_url,
-            derived_tasks = batch.derived_tasks.len(),
-            "Sending task batch to coordinator via A2A"
+            a2a_base_url = %self.a2a_base_url,
+            target = target_label.as_str(),
+            derived_tasks = dispatch.batch.derived_tasks.len(),
+            "Sending task-daemon dispatch to target agent via A2A"
         );
 
         let resp = self
@@ -712,7 +787,7 @@ impl TaskSink for A2aSink {
             .json(&body)
             .send()
             .await
-            .map_err(|source| SinkDeliveryError::CoordinatorTransport {
+            .map_err(|source| SinkDeliveryError::A2aTransport {
                 source: source.into(),
             })?;
 
@@ -722,7 +797,7 @@ impl TaskSink for A2aSink {
                 Ok(body) => body,
                 Err(error) => format!("<failed to read response body: {error}>"),
             };
-            return Err(SinkDeliveryError::CoordinatorHttp {
+            return Err(SinkDeliveryError::A2aHttp {
                 status,
                 body: body_text,
             }
@@ -732,48 +807,47 @@ impl TaskSink for A2aSink {
         let responses: Vec<Value> =
             resp.json()
                 .await
-                .map_err(|source| SinkDeliveryError::CoordinatorResponseJson {
+                .map_err(|source| SinkDeliveryError::A2aResponseJson {
                     source: source.into(),
                 })?;
 
         let final_text = validate_jsonrpc_responses(&responses)
-            .map_err(|source| SinkDeliveryError::CoordinatorProtocol { source })?;
+            .map_err(|source| SinkDeliveryError::A2aProtocol { source })?;
         let context_id = extract_context_id(&responses);
         let task_id = extract_task_id(&responses);
         tracing::info!(
-            coordinator_url = %self.coordinator_url,
+            a2a_base_url = %self.a2a_base_url,
+            target = target_label.as_str(),
             response_count = responses.len(),
             final_text_len = final_text.as_ref().map_or(0, |t| t.len()),
-            "Coordinator A2A response received"
+            "A2A response received"
         );
         if let Some(context_id) = context_id {
             let mermaid_endpoint = self
-                .coordinator_url
+                .a2a_base_url
                 .join(&format!("contexts/{context_id}/mermaid"))
                 .map(|url| url.to_string())
-                .unwrap_or_else(|_| {
-                    format!("{}/contexts/{context_id}/mermaid", self.coordinator_url)
-                });
+                .unwrap_or_else(|_| format!("{}/contexts/{context_id}/mermaid", self.a2a_base_url));
             let metrics_endpoint = self
-                .coordinator_url
+                .a2a_base_url
                 .join(&format!("contexts/{context_id}/metrics"))
                 .map(|url| url.to_string())
-                .unwrap_or_else(|_| {
-                    format!("{}/contexts/{context_id}/metrics", self.coordinator_url)
-                });
+                .unwrap_or_else(|_| format!("{}/contexts/{context_id}/metrics", self.a2a_base_url));
             tracing::info!(
-                coordinator_url = %self.coordinator_url,
+                a2a_base_url = %self.a2a_base_url,
+                target = target_label.as_str(),
                 context_id = %context_id,
                 mermaid_endpoint = %mermaid_endpoint,
                 metrics_endpoint = %metrics_endpoint,
-                "Captured coordinator context id for provenance replay"
+                "Captured A2A context id for provenance replay"
             );
         }
         if let Some(task_id) = task_id {
             tracing::info!(
-                coordinator_url = %self.coordinator_url,
+                a2a_base_url = %self.a2a_base_url,
+                target = target_label.as_str(),
                 task_id = %task_id,
-                "Captured coordinator task id"
+                "Captured A2A task id"
             );
         }
 
@@ -894,12 +968,11 @@ fn has_input_required_status(response: &Value) -> bool {
     })
 }
 
-/// Validates that coordinator JSON-RPC envelopes contain a final success result
-/// and no explicit error envelopes.
+/// Checks that the downstream agent returned a completed success response.
 fn validate_jsonrpc_responses(responses: &[Value]) -> Result<Option<String>> {
     if responses.is_empty() {
         return Err(anyhow!(
-            "coordinator A2A response did not contain any JSON-RPC envelopes"
+            "A2A response did not contain any JSON-RPC envelopes"
         ));
     }
 
@@ -909,7 +982,7 @@ fn validate_jsonrpc_responses(responses: &[Value]) -> Result<Option<String>> {
         .collect();
     if !errors.is_empty() {
         return Err(anyhow!(
-            "coordinator A2A response included JSON-RPC error envelope(s): {}",
+            "A2A response included JSON-RPC error envelope(s): {}",
             errors.join(" | ")
         ));
     }
@@ -917,14 +990,12 @@ fn validate_jsonrpc_responses(responses: &[Value]) -> Result<Option<String>> {
     let has_final = responses.iter().any(has_final_success_result);
     if !has_final {
         if responses.iter().any(has_input_required_status) {
-            tracing::info!(
-                "coordinator A2A response ended in TASK_STATE_INPUT_REQUIRED without final result"
-            );
+            tracing::info!("A2A response ended in TASK_STATE_INPUT_REQUIRED without final result");
             return Ok(extract_final_jsonrpc_text(responses));
         }
 
         return Err(anyhow!(
-            "coordinator A2A response did not include a final successful JSON-RPC result"
+            "A2A response did not include a final successful JSON-RPC result"
         ));
     }
 
@@ -949,11 +1020,76 @@ fn correlation_id() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::model::{
-        InvestigationTask, ProjectContext, ProjectInterpretation, SourceReference, TaskBatch,
-        TaskConfidence, TaskSourceKind,
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
     };
+
+    use super::*;
+    use crate::{
+        contract::{ContractSource, InterpretationRequestEvent},
+        model::{
+            InvestigationTask, ProjectContext, ProjectInterpretation, SourceReference, TaskBatch,
+            TaskConfidence, TaskSourceKind,
+        },
+    };
+
+    fn sample_batch() -> TaskBatch {
+        TaskBatch {
+            source: TaskSourceKind::Slack,
+            source_label: "#agentium-eng".to_string(),
+            generated_at_unix: 1_735_720_000,
+            messages_scanned: 2,
+            project: ProjectContext {
+                project_key: "agent-platform".to_string(),
+                repo_available: true,
+                repo_path: Some("/repo/agent-platform".to_string()),
+            },
+            interpretation: ProjectInterpretation::default(),
+            derived_tasks: vec![InvestigationTask {
+                key: "task-1".to_string(),
+                title: "Investigate cursor semantics".to_string(),
+                description: "Validate sink failure ordering".to_string(),
+                priority: TaskConfidence::High,
+                sources: Vec::new(),
+            }],
+        }
+    }
+
+    fn sample_dispatch(batch: TaskBatch) -> TaskDispatch {
+        let source_key = match batch.source {
+            TaskSourceKind::Slack => "slack:C123",
+            TaskSourceKind::Clickup => "clickup:list:901325431486",
+            TaskSourceKind::GithubIssues => "github:issues:test",
+        };
+        let request = InterpretationRequestEvent::new(
+            ContractSource::new(
+                source_key.to_string(),
+                batch.source,
+                batch.source_label.clone(),
+            ),
+            batch.project.clone(),
+            Vec::new(),
+            None,
+        );
+        TaskDispatch::from_batch(request, batch)
+    }
+
+    struct RecordingSink {
+        deliveries: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl TaskSink for RecordingSink {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
+        async fn deliver(&mut self, _dispatch: &TaskDispatch) -> Result<()> {
+            self.deliveries.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
 
     #[test]
     fn format_coordinator_prompt_produces_expected_structure() {
@@ -1152,6 +1288,7 @@ mod tests {
                 sources: Vec::new(),
             }],
         };
+        let dispatch = sample_dispatch(batch);
 
         assert!(
             !sink.accepts_source(TaskSourceKind::Clickup),
@@ -1159,7 +1296,7 @@ mod tests {
         );
 
         let err = sink
-            .deliver(&batch)
+            .deliver(&dispatch)
             .await
             .expect_err("clickup-origin batch should be rejected");
         assert!(
@@ -1167,6 +1304,35 @@ mod tests {
                 .contains("clickup sink cannot consume clickup-origin batches"),
             "unexpected error: {err:#}"
         );
+    }
+
+    #[tokio::test]
+    async fn source_filtered_sink_skips_direct_delivery_for_disallowed_source() {
+        let deliveries = Arc::new(AtomicUsize::new(0));
+        let recording_sink = RecordingSink {
+            deliveries: Arc::clone(&deliveries),
+        };
+        let mut sink =
+            SourceFilteredSink::new(Box::new(recording_sink), vec![TaskSourceKind::Slack]);
+        let dispatch = sample_dispatch(TaskBatch {
+            source: TaskSourceKind::Clickup,
+            source_label: "clickup:list:901325431486".to_string(),
+            generated_at_unix: 1_735_720_000,
+            messages_scanned: 1,
+            project: ProjectContext {
+                project_key: "agent-platform".to_string(),
+                repo_available: true,
+                repo_path: Some("/repo/agent-platform".to_string()),
+            },
+            interpretation: ProjectInterpretation::default(),
+            derived_tasks: Vec::new(),
+        });
+
+        sink.deliver(&dispatch)
+            .await
+            .expect("disallowed sources should be ignored");
+
+        assert_eq!(deliveries.load(Ordering::SeqCst), 0);
     }
 
     #[test]
@@ -1270,27 +1436,9 @@ mod tests {
 
     #[test]
     fn build_jsonrpc_body_contains_required_message_fields_and_typed_handoff() {
-        let batch = TaskBatch {
-            source: TaskSourceKind::Slack,
-            source_label: "#agentium-eng".to_string(),
-            generated_at_unix: 1_735_720_000,
-            messages_scanned: 2,
-            project: ProjectContext {
-                project_key: "agent-platform".to_string(),
-                repo_available: true,
-                repo_path: Some("/repo/agent-platform".to_string()),
-            },
-            interpretation: ProjectInterpretation::default(),
-            derived_tasks: vec![InvestigationTask {
-                key: "task-1".to_string(),
-                title: "Investigate cursor semantics".to_string(),
-                description: "Validate sink failure ordering".to_string(),
-                priority: TaskConfidence::High,
-                sources: Vec::new(),
-            }],
-        };
-        let prompt = format_coordinator_prompt(&batch);
-        let body = A2aSink::build_jsonrpc_body(&batch, &prompt);
+        let dispatch = sample_dispatch(sample_batch());
+        let prompt = format_coordinator_prompt(&dispatch.batch);
+        let body = A2aSink::build_jsonrpc_body(&dispatch, &prompt);
 
         assert_eq!(
             body.pointer("/method").and_then(Value::as_str),
@@ -1314,12 +1462,22 @@ mod tests {
         assert_eq!(
             body.pointer("/params/message/parts/1/data/schema_version")
                 .and_then(Value::as_str),
-            Some(COORDINATOR_HANDOFF_SCHEMA_VERSION)
+            Some(crate::contract::INTERPRETATION_EVENT_SCHEMA_VERSION)
         );
         assert_eq!(
-            body.pointer("/params/message/parts/1/data/batch/project/project_key")
+            body.pointer("/params/message/parts/1/data/project/project_key")
                 .and_then(Value::as_str),
             Some("agent-platform")
+        );
+        assert_eq!(
+            body.pointer("/params/message/parts/1/metadata/content_type")
+                .and_then(Value::as_str),
+            Some(INTERPRETATION_RESULT_CONTENT_TYPE)
+        );
+        assert_eq!(
+            body.pointer("/params/message/metadata/event_schema_version")
+                .and_then(Value::as_str),
+            Some(crate::contract::INTERPRETATION_EVENT_SCHEMA_VERSION)
         );
     }
 }
