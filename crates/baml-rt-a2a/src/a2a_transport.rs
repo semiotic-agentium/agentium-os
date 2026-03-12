@@ -17,9 +17,9 @@ use baml_rt_core::{
 };
 use baml_rt_observability::{metrics, spans};
 use baml_rt_provenance::{
-    A2aGraphStore, ProvEvent, ProvenanceContextMessage, ProvenanceContextReader,
-    ProvenanceConversationContextItem, ProvenanceEffectSubscriber, ProvenanceInterceptor,
-    ProvenanceWriter,
+    A2aGraphStore, BufferedProvenanceWriter, ProvEvent, ProvenanceContextMessage,
+    ProvenanceContextReader, ProvenanceConversationContextItem, ProvenanceEffectSubscriber,
+    ProvenanceInterceptor, ProvenanceWriter,
 };
 use baml_rt_quickjs::{
     BamlRuntimeManager, BridgeHandle, QuickJSBridge, QuickJSConfig,
@@ -971,14 +971,21 @@ impl A2aAgentBuilderWithEffectEmitter {
                 // Single construction: one GraphqliteRuntimeStore from the provided store Arc;
                 // same instance used as TaskStoreBackend and ProvenanceWriter for pipeline and handler.
                 let runtime_store = GraphqliteRuntimeStore::new(store, agent_id.clone());
-                let provenance_writer: Arc<dyn ProvenanceWriter> = runtime_store.clone();
+                // Wrap with BufferedProvenanceWriter so writes are fire-and-forget (try_send
+                // into a bounded channel; background task drains to the real store).
+                // ProvenanceTaskStore receives this buffered writer, so conversation_context
+                // reads trigger flush-before-read — no stale reads even when Cypher parsing
+                // makes individual writes >200ms.
+                let raw_writer: Arc<dyn ProvenanceWriter> = runtime_store.clone();
+                let buffered_writer: Arc<dyn ProvenanceWriter> =
+                    Arc::new(BufferedProvenanceWriter::new(raw_writer));
                 let task_store: Arc<dyn TaskStoreBackend> =
                     Arc::new(ProvenanceTaskStore::with_backend(
                         runtime_store,
-                        Some(provenance_writer.clone()),
+                        Some(buffered_writer.clone()),
                         agent_id.clone(),
                     ));
-                (task_store, Some(provenance_writer))
+                (task_store, Some(buffered_writer))
             }
         };
 

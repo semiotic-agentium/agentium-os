@@ -11,6 +11,7 @@
 
 pub mod a2a_graph_event_recorder;
 pub mod a2a_graph_store;
+pub mod buffered_writer;
 pub mod builders;
 pub mod bus_subscriber;
 pub mod cypher_build;
@@ -40,6 +41,7 @@ pub use a2a_graph_event_recorder::{
     record_status_update,
 };
 pub use baml_rt_vocabulary::{A2aGraphStore, GraphStore, TaskSubgraphNode, TaskSubgraphUpdateNode};
+pub use buffered_writer::BufferedProvenanceWriter;
 pub use bus_subscriber::ProvenanceBusSubscriber;
 pub use effect_subscriber::ProvenanceEffectSubscriber;
 pub use error::ProvenanceError;

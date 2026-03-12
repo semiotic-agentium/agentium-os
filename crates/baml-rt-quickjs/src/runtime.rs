@@ -370,6 +370,12 @@ impl RuntimeBuilder {
         let tool_pipeline = self.config.tool_interceptor_pipeline.take();
         let provenance_writer = self.config.provenance_writer.take();
 
+        // Wrap provenance writer with buffered writer for fire-and-forget writes.
+        let provenance_writer = provenance_writer.map(|w| {
+            Arc::new(baml_rt_provenance::BufferedProvenanceWriter::new(w))
+                as Arc<dyn baml_rt_provenance::ProvenanceWriter>
+        });
+
         // Create BusWithEffects if provenance writer is provided (bus-first system).
         let effect_bus: Option<Arc<BusWithEffects>> =
             if let Some(ref prov_writer) = provenance_writer {

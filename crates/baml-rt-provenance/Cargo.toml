@@ -38,6 +38,14 @@ criterion = "0.5"
 default = []
 cli = ["dep:clap", "dep:anyhow"]
 
+[[bench]]
+name = "sequence_render"
+harness = false
+
+[[bench]]
+name = "buffered_writer_bench"
+harness = false
+
 [[bin]]
 name = "graph_exporter"
 path = "src/bin/graph_exporter.rs"
