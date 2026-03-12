@@ -134,7 +134,7 @@ fn ensure_tsconfig(agent_dir: &AgentDir) -> Result<()> {
 ///
 /// Tries `tsc` on PATH first, then falls back to `npx tsc`.
 fn run_tsc(project_dir: &Path, extra_args: &[&str]) -> Result<()> {
-    let (program, base_args) = find_tsc()?;
+    let (program, base_args) = find_tsc(project_dir)?;
 
     let mut cmd = Command::new(&program);
     for arg in &base_args {
@@ -166,12 +166,38 @@ fn run_tsc(project_dir: &Path, extra_args: &[&str]) -> Result<()> {
 }
 
 /// Find a working `tsc` command. Returns `(program, extra_args)`.
-fn find_tsc() -> Result<(String, Vec<String>)> {
+fn find_tsc(start_dir: &Path) -> Result<(String, Vec<String>)> {
     // Try tsc directly
     if let Ok(output) = Command::new("tsc").arg("--version").output()
         && output.status.success()
     {
         return Ok(("tsc".to_string(), vec![]));
+    }
+
+    if let Ok(start_dir) = start_dir.canonicalize() {
+        for root in start_dir.ancestors() {
+            for candidate in [
+                root.join("node_modules").join(".bin").join("tsc"),
+                // Workspace convention: frontend deps are installed once under
+                // repo-root/web/node_modules, even when the builder runs from a crate dir.
+                root.join("web")
+                    .join("node_modules")
+                    .join(".bin")
+                    .join("tsc"),
+            ] {
+                if !candidate.is_file() {
+                    continue;
+                }
+                if let Ok(output) = Command::new(&candidate).arg("--version").output()
+                    && output.status.success()
+                {
+                    return Ok((candidate.to_string_lossy().into_owned(), vec![]));
+                }
+            }
+            if root.join(".git").exists() {
+                break;
+            }
+        }
     }
 
     // Try npx tsc (--yes to auto-install if needed)
