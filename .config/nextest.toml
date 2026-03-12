@@ -67,6 +67,11 @@ retries = { backoff = "fixed", count = 2, delay = "2s" }
 filter = 'package(baml-agent-runner) and test(~test_internal_a2a_)'
 retries = { backoff = "fixed", count = 2, delay = "2s" }
 
+# A2A interleaving property tests: timing-sensitive under CI resource contention.
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-a2a) and (test(~test_interleaved) or test(~interleaved))'
+retries = { backoff = "fixed", count = 2, delay = "2s" }
+
 # LLM-dependent e2e tests: throttle concurrency and allow generous timeouts.
 # These hit external LLM APIs (OpenRouter) whose latency varies wildly on CI.
 [[profile.ci.overrides]]

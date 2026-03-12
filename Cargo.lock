@@ -4604,9 +4604,9 @@ dependencies = [
 
 [[package]]
 name = "hirofa-quickjs-sys"
-version = "0.13.0"
+version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b7e4fc3a7970d5d1c5fee1c1f6cfac0c7e374365c41049d5ab12b55c58a6672d"
+checksum = "574391e0a15b207e30afa0910232e6b4756f55d804bd6fb36a062ae708190581"
 dependencies = [
  "bindgen",
  "cc",
@@ -6674,7 +6674,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.45.0",
 ]
 
 [[package]]
@@ -7224,7 +7224,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn",
@@ -7279,9 +7279,9 @@ checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
 
 [[package]]
 name = "quickjs_runtime"
-version = "0.17.1"
+version = "0.15.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cf3034e669b66465758282ffe0432eea93f7c830326684a4a0fd0aed10bde41"
+checksum = "efc6be1fb7638e502a1789ce537108f071b9d4cb057e9f7429a8532aa16b25fe"
 dependencies = [
  "anyhow",
  "backtrace",
