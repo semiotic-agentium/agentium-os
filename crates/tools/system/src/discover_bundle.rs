@@ -33,7 +33,7 @@ impl ToolBundle for DiscoverBundle {
             name,
             description: "System discovery tools (agents, tools).".to_string(),
             config_schema: None,
-            secret_requirements: Vec::new(),
+            secret_requests: Vec::new(),
         }
     }
 

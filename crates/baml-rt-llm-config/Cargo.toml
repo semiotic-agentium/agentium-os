@@ -1,0 +1,21 @@
+[package]
+name = "baml-rt-llm-config"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "Centralised LLM client configuration for BAML runtime"
+
+[dependencies]
+baml-rt-core = { path = "../baml-rt-core" }
+baml-runtime = { workspace = true }
+baml-types = { workspace = true }
+internal-llm-client = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+serde_yaml = "0.9"
+fnox = "0.1"
+tokio = { workspace = true }

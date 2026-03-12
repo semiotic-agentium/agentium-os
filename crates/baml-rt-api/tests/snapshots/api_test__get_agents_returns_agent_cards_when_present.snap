@@ -19,6 +19,7 @@ expression: snapshot
           "system/internal_a2a",
           "support/calculate"
         ],
+        "baml_functions": [],
         "description": "Does task A",
         "capabilities": [
           "a2a"
@@ -39,6 +40,7 @@ expression: snapshot
           "system/internal_a2a",
           "support/calculate"
         ],
+        "baml_functions": [],
         "capabilities": []
       }
     }

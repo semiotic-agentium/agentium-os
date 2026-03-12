@@ -58,6 +58,12 @@ impl RunnerBuilder<Loading> {
 
     /// Load one agent package. Registry (discover_agents, internal_a2a) sees agents already loaded.
     pub async fn load_agent(self, package_path: &Path) -> Result<RunnerBuilder<Loading>> {
+        let span = tracing::info_span!(
+            "baml_rt.load_agent",
+            package_path = %package_path.display(),
+        );
+        let _guard = span.enter();
+
         let package = AgentPackage::load_from_file(package_path).await?;
         let name = package.name().to_string();
         let package_name = AgentPackageName::parse(&name).ok_or_else(|| {
@@ -82,9 +88,16 @@ impl RunnerBuilder<Loading> {
             )
             .await?;
         let manifest = package.manifest().clone();
+        // Capture BAML function names from the bridge's runtime manager at boot time.
+        let baml_functions: Vec<String> = {
+            let bridge_arc = agent.bridge();
+            let bridge = bridge_arc.lock().await;
+            bridge.list_baml_functions().await
+        };
         let booted = BootedAgent {
             agent,
             manifest: manifest.clone(),
+            baml_functions,
         };
         tracing::info!(agent = %name, "Agent loaded and booted successfully");
         self.runner.insert_agent(name.clone(), route_key, booted);

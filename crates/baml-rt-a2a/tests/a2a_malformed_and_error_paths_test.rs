@@ -73,7 +73,7 @@ impl StreamPhaseCase {
 #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn test_concurrent_stream_phase_matrix_regression_under_load() {
     let agent = A2aAgent::builder()
-        .with_runtime_manager(BamlRuntimeManager::new().unwrap())
+        .with_runtime_manager(BamlRuntimeManager::builder().build().unwrap())
         .with_init_js(
         r#"
         globalThis.onChatMessage = async function(message) {
@@ -234,7 +234,7 @@ impl BamlTool for FailingTool {
 /// **Purpose:** When a tool opened during a stream returns `Err` on execute, the stream must contain error content (e.g. message part with error text) so the client can observe the failure.
 #[tokio::test(flavor = "current_thread")]
 async fn test_streaming_tool_failure_mid_stream() {
-    let mut runtime = BamlRuntimeManager::new().unwrap();
+    let mut runtime = BamlRuntimeManager::builder().build().unwrap();
     runtime.register_tool(FailingTool).await.unwrap();
     let store = common::provenance::build_graphqlite_test_store();
     let agent = A2aAgent::builder()
@@ -290,7 +290,7 @@ async fn test_allowlist_violation_during_stream() {
 
     use test_support::common::CalculatorTool;
 
-    let mut runtime = BamlRuntimeManager::new().unwrap();
+    let mut runtime = BamlRuntimeManager::builder().build().unwrap();
     runtime.register_tool(AddNumbersTool).await.unwrap();
     runtime.register_tool(CalculatorTool).await.unwrap();
     let mut allowlist = HashSet::new();

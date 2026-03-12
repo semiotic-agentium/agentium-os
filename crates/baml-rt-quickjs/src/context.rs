@@ -52,7 +52,7 @@ impl BamlContext {
     /// use tokio::sync::Mutex;
     ///
     /// # tokio_test::block_on(async {
-    /// let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::new()?));
+    /// let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::builder().build()?));
     /// baml_manager.lock().await.load_schema("baml_src")?;
     ///
     /// // Create isolated context for user/request

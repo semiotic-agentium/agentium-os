@@ -123,6 +123,7 @@ impl AgentLister for SingleAgentRegistry {
             agent_package: self.package.clone(),
             agent_instance_id: self.instance_id.clone(),
             tools: Vec::new(),
+            baml_functions: Vec::new(),
             description: None,
             capabilities: Vec::new(),
         };

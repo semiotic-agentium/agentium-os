@@ -45,7 +45,7 @@ use serde_json::json;
 use test_support::common::{
     CalculatorTool, WeatherTool, agent_fixture, assert_tool_registered_in_js,
     ensure_fixture_runtime_types, require_api_key, setup_baml_runtime_default,
-    setup_baml_runtime_from_fixture, setup_bridge,
+    setup_baml_runtime_from_fixture, setup_bridge, workspace_fnox_path,
 };
 use tokio::{
     sync::Barrier,
@@ -257,7 +257,10 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
 
     ensure_fixture_runtime_types();
     let agent_dir = agent_fixture("stream-baml-tool");
-    let mut manager = baml_rt::baml::BamlRuntimeManager::new().unwrap();
+    let mut manager = baml_rt::baml::BamlRuntimeManager::builder()
+        .with_fnox_llm_resolver(workspace_fnox_path())
+        .build()
+        .unwrap();
     manager.load_schema(agent_dir.to_str().unwrap()).unwrap();
     manager.register_tool(CalculatorTool).await.unwrap();
     let manager = Arc::new(manager);

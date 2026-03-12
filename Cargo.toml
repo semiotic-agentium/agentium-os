@@ -9,11 +9,13 @@ members = [
   "crates/baml-rt",
   "crates/baml-rt-a2a",
   "crates/baml-rt-builder",
+  "crates/baml-rt-config",
   "crates/baml-rt-core",
   "crates/baml-rt-embedding",
   "crates/baml-rt-hash",
   "crates/baml-rt-id",
   "crates/baml-rt-interceptor",
+  "crates/baml-rt-llm-config",
   "crates/baml-rt-observability",
   "crates/baml-rt-provenance",
   "crates/baml-rt-quickjs",
@@ -80,6 +82,7 @@ testcontainers = "0.23"
 insta = "1.46.3"
 uuid = { version = "1.10", features = ["v4", "serde"] }
 schemars = "1.1.0"
+jsonschema = "0.18"
 ts-rs = "11.1.0"
 genco = "0.19.0"
 inventory = "0.3.20"
@@ -100,7 +103,9 @@ sha2 = "0.10"
 rusqlite = { version = "0.32", features = ["bundled"] }
 flate2 = "1"
 tar = "0.4"
-quickjs_runtime = "0.15"
+# Minimal QuickJS runtime: no SWC/typescript (agents are pre-compiled by the builder),
+# no timer APIs (unused), no console (we inject our own sandboxed polyfill).
+quickjs_runtime = { version = "0.15", default-features = false, features = ["bellard"] }
 # Agent memory
 agentic-memory = "0.2.6"
 # Embedding / drift detection
@@ -125,9 +130,11 @@ tower-http = { version = "0.6", features = ["fs", "trace"] }
 # BAML (fork with minimal-runtime; branch for softer semver)
 baml-runtime = { git = "https://github.com/ryan-s-roberts/baml", branch = "canary", default-features = false, features = [
   "minimal-runtime",
+  "internal",
 ] }
 baml-types = { git = "https://github.com/ryan-s-roberts/baml", branch = "canary" }
 internal-baml-core = { git = "https://github.com/ryan-s-roberts/baml", branch = "canary" }
+internal-llm-client = { git = "https://github.com/ryan-s-roberts/baml", branch = "canary" }
 
 [profile.release]
 opt-level = 3

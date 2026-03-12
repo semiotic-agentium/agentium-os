@@ -1,6 +1,7 @@
 import { ref, computed, type Ref } from "vue";
 import type {
   AgentDiscoveryEntry,
+  A2aMessage,
   ChatMessage,
   ContentBlock,
   ContextMetricsResponse,

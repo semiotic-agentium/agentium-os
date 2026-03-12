@@ -20,7 +20,7 @@ use common::{
 };
 use insta::assert_snapshot;
 use serde_json::{Value, json};
-use test_support::common::{chunks_from_responses, send_stream_request};
+use test_support::common::{chunks_from_responses, send_stream_request, workspace_fnox_path};
 use tokio::time::{Duration, sleep, timeout};
 
 const RAW_BLOCK_ID: &str = "11111111111111111111111111111111";
@@ -208,7 +208,10 @@ async fn start_notion_mock_server() -> std::io::Result<(RunningHttpServer, MockN
 async fn setup_notion_agent_with_provenance()
 -> (baml_rt::A2aAgent, Arc<GraphqliteProvenanceStore>, PathBuf) {
     let built = build_notion_agent_to_temp_async().await;
-    let mut manager = BamlRuntimeManager::new().expect("create manager");
+    let mut manager = BamlRuntimeManager::builder()
+        .with_fnox_llm_resolver(workspace_fnox_path())
+        .build()
+        .expect("create manager");
     manager
         .load_schema(built.to_str().expect("notion built path utf8"))
         .expect("load notion schema");

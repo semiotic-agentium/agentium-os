@@ -37,25 +37,22 @@ fn tags_tokens(tags: &[syn::LitStr]) -> TokenStream {
     }
 }
 
-/// Emit the `with_secrets(...)` builder call (or nothing if empty).
+/// Emit the `with_secret_requests(...)` builder call.
+/// SecretDef.reason → justification, SecretDef.description → descriptor.
 fn secrets_tokens(secrets: &[crate::parse::SecretDef]) -> TokenStream {
     if secrets.is_empty() {
         return TokenStream::new();
     }
-    let secret_values = secrets.iter().map(|s| {
+    let values = secrets.iter().map(|s| {
         let name = &s.name;
-        let desc = &s.description;
-        let reason = &s.reason;
+        let justification = &s.reason;
+        let descriptor = &s.description;
         quote! {
-            ::baml_rt_tools::tools::ToolSecretRequirement {
-                name: ::std::string::String::from(#name),
-                description: ::std::string::String::from(#desc),
-                reason: ::std::string::String::from(#reason),
-            }
+            ::baml_rt_tools::tools::SecretRequest::api_key(#name, #justification, #descriptor)
         }
     });
     quote! {
-        .with_secrets(::std::vec![#(#secret_values),*])
+        .with_secret_requests(::std::vec![#(#values),*])
     }
 }
 

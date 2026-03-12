@@ -70,7 +70,6 @@ fn infer_provider_from_prompt_shape(prompt: &Value) -> Option<String> {
         return Some("google".to_string());
     }
     if map.contains_key("messages") || map.contains_key("input") {
-        // OpenAI-compatible request envelopes (including OpenRouter's compatibility surface).
         return Some("openai".to_string());
     }
     None
@@ -80,6 +79,35 @@ fn normalized_prompt_payload(prompt: &Value) -> Value {
     match prompt {
         Value::String(raw) => serde_json::from_str::<Value>(raw).unwrap_or_else(|_| prompt.clone()),
         _ => prompt.clone(),
+    }
+}
+
+/// Build a minimal LLM call context from scope and function name only.
+/// Used when request building fails (e.g. missing secrets) so interceptors can still
+/// return Substitute or Block without needing the full HTTP request.
+fn minimal_llm_context(scope: &context::RuntimeScope, function_name: &str) -> LLMCallContext {
+    let mut metadata_map = serde_json::Map::new();
+    metadata_map.insert(
+        "message_id".to_string(),
+        Value::String(scope.message_id().as_str().to_string()),
+    );
+    metadata_map.insert(
+        "agent_id".to_string(),
+        Value::String(scope.agent_id().as_str().to_string()),
+    );
+    if let Some(task_id) = scope.task_id_opt() {
+        metadata_map.insert(
+            "task_id".to_string(),
+            Value::String(task_id.as_str().to_string()),
+        );
+    }
+    LLMCallContext {
+        client: String::new(),
+        model: String::new(),
+        function_name: function_name.to_string(),
+        runtime_scope: scope.clone(),
+        prompt: Value::Null,
+        metadata: Value::Object(metadata_map),
     }
 }
 
@@ -200,6 +228,8 @@ pub async fn intercept_llm_call_pre_execution(
     ctx_manager: &RuntimeContextManager,
     interceptor_registry: &Arc<Mutex<InterceptorRegistry>>,
     env_vars: HashMap<String, String>,
+    client_registry: Option<&baml_runtime::client_registry::ClientRegistry>,
+    secret_keys_accessed: &[String],
     invocation: InvocationKind,
     effect_emitter: Option<&Arc<dyn EffectEmitter>>,
     collector: Option<&crate::baml_collector::BamlLLMCollector>,
@@ -212,20 +242,58 @@ pub async fn intercept_llm_call_pre_execution(
             params,
             ctx_manager,
             None, // type_builder
-            None, // client_registry
+            client_registry,
             env_vars,
             invocation.is_stream(),
         )
         .await;
 
-    let http_request =
-        http_request_result.map_err(|e| BamlRtError::RequestBuildFailed(e.to_string()))?;
+    let http_request = match http_request_result {
+        Ok(req) => req,
+        Err(build_err) => {
+            tracing::debug!(
+                function = function_name,
+                error = %build_err,
+                "build_request failed; giving interceptors a chance to Substitute/Block"
+            );
+            // Request build failed (e.g. missing API key). Give interceptors a chance to
+            // Substitute or Block so tests can stub LLM without real secrets.
+            let minimal = minimal_llm_context(scope, function_name);
+            let registry = interceptor_registry.lock().await;
+            let decision = registry.intercept_llm_call(&minimal).await?;
+            drop(registry);
+            return match decision {
+                InterceptorDecision::Substitute(value) => {
+                    Ok(InterceptorDecision::Substitute(value))
+                }
+                InterceptorDecision::Block(msg) => Err(BamlRtError::BamlRuntime(format!(
+                    "LLM call blocked by interceptor: {msg}"
+                ))),
+                InterceptorDecision::Allow => Err(BamlRtError::RequestBuildFailed {
+                    source: Box::new(std::io::Error::other(build_err.to_string())),
+                }),
+            };
+        }
+    };
 
     // Extract LLM call context from the HTTP request
     let context = extract_context_from_http_request(scope, &http_request, function_name)?;
 
     // Start effect and get token (type-safe start/complete pairing)
-    let effect_metadata = llm_effect_metadata_from_context(&context);
+    let mut effect_metadata = llm_effect_metadata_from_context(&context);
+    if !secret_keys_accessed.is_empty() {
+        let mut obj = effect_metadata
+            .metadata
+            .as_object()
+            .cloned()
+            .unwrap_or_default();
+        let value = serde_json::to_value(secret_keys_accessed).unwrap_or_else(|e| {
+            tracing::warn!(error = ?e, "Failed to serialize secret_keys_accessed for metadata");
+            json!([])
+        });
+        obj.insert("secret_keys_accessed".to_string(), value);
+        effect_metadata.metadata = Value::Object(obj);
+    }
     let context_id = context.runtime_scope.context_id().clone();
 
     if let Some(emitter) = effect_emitter {

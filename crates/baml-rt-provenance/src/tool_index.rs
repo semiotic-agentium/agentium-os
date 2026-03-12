@@ -81,7 +81,7 @@ fn upsert_tool_sync(conn: &Connection, tool: &ToolFunctionMetadataExport) -> Res
     let output_type = tool.output_type.name.clone();
     let input_schema = tool.input_schema.to_string();
     let output_schema = tool.output_schema.to_string();
-    let secret_requirements = serde_json::to_string(&tool.secret_requirements).unwrap_or_default();
+    let secret_requirements = serde_json::to_string(&tool.secret_requests).unwrap_or_default();
     let is_host_tool = tool.origin == baml_rt_tools::ToolOrigin::Host;
 
     // MERGE with literal id only: extension's MERGE path does not resolve $param in pattern

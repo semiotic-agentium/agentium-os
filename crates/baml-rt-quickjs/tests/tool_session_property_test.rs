@@ -72,7 +72,7 @@ proptest! {
             .build()
             .expect("runtime");
         rt.block_on(async {
-            let mut manager = BamlRuntimeManager::new().unwrap();
+            let mut manager = BamlRuntimeManager::builder().build().unwrap();
             manager.register_tool(EchoTool).await.unwrap();
             let agent_id = AgentId::from_uuid(
                 UuidId::parse_str("00000000-0000-0000-0000-000000000030").unwrap(),
@@ -125,7 +125,7 @@ proptest! {
             .build()
             .expect("runtime");
         rt.block_on(async {
-            let mut manager = BamlRuntimeManager::new().unwrap();
+            let mut manager = BamlRuntimeManager::builder().build().unwrap();
             manager.register_tool(EchoTool).await.unwrap();
             let agent_id = AgentId::from_uuid(
                 UuidId::parse_str("00000000-0000-0000-0000-000000000031").unwrap(),

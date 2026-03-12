@@ -23,6 +23,7 @@ use baml_rt_core::{
     types::FunctionSignature,
 };
 use baml_rt_interceptor::{InterceptorRegistry, ToolCallContext};
+use baml_rt_llm_config::FnoxFileSecretResolver;
 use baml_rt_observability::metrics;
 use baml_rt_tools::{
     ToolFunctionMetadataExport, ToolRegistry as ConcreteToolRegistry, ToolSessionId, ToolStep,
@@ -37,7 +38,11 @@ pub(crate) use tool_extraction::{
 };
 
 use crate::{
-    baml_execution::{BamlExecutor, ConversationContextProvider, ParseRetryPolicy},
+    baml_execution::{
+        BamlExecutor, BamlStreamInvocation, ConversationContextProvider, ParseRetryPolicy,
+    },
+    llm_client_registry::LlmSecretResolver,
+    llm_resolver_adapter::SecretResolverToLlmAdapter,
     traits::{BamlFunctionExecutor, SchemaLoader},
 };
 
@@ -125,6 +130,41 @@ fn extract_delegation_target_from_open_input(
 /// When set, the runtime resolves the tool from the invoking function name instead of requiring __type in the JSON.
 pub type SessionPlanFunctionsMap = std::collections::HashMap<String, String>;
 
+/// Linearly-typed builder for [`BamlRuntimeManager`]. Inject optional dependencies (e.g. LLM
+/// secret resolver from fnox) then call [`build`](BamlRuntimeManagerBuilder::build); then
+/// [`load_schema`](BamlRuntimeManager::load_schema) and register tools as usual.
+#[derive(Default)]
+pub struct BamlRuntimeManagerBuilder {
+    llm_secret_resolver: Option<Arc<dyn LlmSecretResolver>>,
+}
+
+impl BamlRuntimeManagerBuilder {
+    /// Set the LLM secret resolver (e.g. fnox-backed). API keys are resolved via this instead of env.
+    pub fn with_llm_secret_resolver(self, resolver: Arc<dyn LlmSecretResolver>) -> Self {
+        Self {
+            llm_secret_resolver: Some(resolver),
+        }
+    }
+
+    /// Set LLM secret resolver from a fnox config file at the given path. Use workspace-root
+    /// `fnox.toml` in integration tests so resolution works regardless of test cwd.
+    pub fn with_fnox_llm_resolver(self, path: impl AsRef<Path>) -> Self {
+        let resolver = Arc::new(SecretResolverToLlmAdapter::new(Arc::new(
+            FnoxFileSecretResolver::from_path(Some(path.as_ref())),
+        )));
+        self.with_llm_secret_resolver(resolver)
+    }
+
+    /// Build the manager. Call [`load_schema`](BamlRuntimeManager::load_schema) and register tools next.
+    pub fn build(self) -> Result<BamlRuntimeManager> {
+        let mut manager = BamlRuntimeManager::new()?;
+        if let Some(resolver) = self.llm_secret_resolver {
+            manager.set_llm_secret_resolver(resolver);
+        }
+        Ok(manager)
+    }
+}
+
 /// Manages the BAML runtime and function registry
 pub struct BamlRuntimeManager {
     function_registry: HashMap<String, FunctionSignature>,
@@ -140,6 +180,9 @@ pub struct BamlRuntimeManager {
     effect_emitter: Option<Arc<dyn EffectEmitter>>,
     conversation_context_provider: Option<Arc<dyn ConversationContextProvider>>,
     pending_parse_retry_policy: Option<ParseRetryPolicy>,
+    /// When set, LLM API keys are injected via ClientRegistry (not env vars).
+    /// Staged here until the executor exists; on load_schema it is mirrored into the executor.
+    llm_secret_resolver: Option<Arc<dyn LlmSecretResolver>>,
 }
 
 #[derive(Debug, Clone)]
@@ -683,7 +726,9 @@ impl ToolSessionExecutionHandle {
                     } else {
                         Outcome::Failure
                     };
-                    let _ = token.complete(emitter.as_ref(), duration_ms, outcome).await;
+                    if let Err(e) = token.complete(emitter.as_ref(), duration_ms, outcome).await {
+                        tracing::warn!(error = ?e, "Failed to complete tool effect");
+                    }
                 }
                 let interceptor_registry = self.interceptor_registry.lock().await;
                 interceptor_registry
@@ -769,7 +814,9 @@ impl ToolSessionExecutionHandle {
                     } else {
                         Outcome::Failure
                     };
-                    let _ = token.complete(emitter.as_ref(), duration_ms, outcome).await;
+                    if let Err(e) = token.complete(emitter.as_ref(), duration_ms, outcome).await {
+                        tracing::warn!(error = ?e, "Failed to complete tool effect");
+                    }
                 }
                 let completion_result: Result<Value> = match &result {
                     Ok(_) => Ok(Value::Null),
@@ -921,8 +968,16 @@ impl ToolSessionExecutionHandle {
 }
 
 impl BamlRuntimeManager {
-    /// Create a new BAML runtime manager
-    pub fn new() -> Result<Self> {
+    /// Start a fluent builder to configure the manager (e.g.
+    /// [`with_fnox_llm_resolver`](BamlRuntimeManagerBuilder::with_fnox_llm_resolver)) then
+    /// [`build`](BamlRuntimeManagerBuilder::build).
+    pub fn builder() -> BamlRuntimeManagerBuilder {
+        BamlRuntimeManagerBuilder::default()
+    }
+
+    /// Create a new BAML runtime manager with no optional dependencies.
+    /// Private to this crate — external code must use [`BamlRuntimeManager::builder()`].
+    pub(crate) fn new() -> Result<Self> {
         tracing::info!("Initializing BAML runtime manager");
 
         Ok(Self {
@@ -937,7 +992,35 @@ impl BamlRuntimeManager {
             effect_emitter: None,
             conversation_context_provider: None,
             pending_parse_retry_policy: None,
+            llm_secret_resolver: None,
         })
+    }
+
+    /// Resolve all known LLM secret keys from the resolver as a HashMap for BAML's env_vars.
+    /// BAML schemas reference secrets as `api_key env.X`; BAML resolves these from env_vars
+    /// passed to `BamlRuntime::from_directory`. By resolving via fnox here, we avoid
+    /// depending on std::env::var — the fnox resolver is the single source of truth.
+    fn resolve_secrets_as_env_vars(&self) -> std::collections::HashMap<String, String> {
+        let Some(resolver) = &self.llm_secret_resolver else {
+            return std::collections::HashMap::new();
+        };
+        let mut env_vars = std::collections::HashMap::new();
+        for key in crate::llm_client_registry::LLM_SECRET_KEYS {
+            if let Some((value, _)) = resolver.resolve_llm_api_key("default", key) {
+                env_vars.insert((*key).to_string(), value);
+            }
+        }
+        env_vars
+    }
+
+    /// Set the LLM secret resolver for ClientRegistry-based API key injection.
+    /// When set, API keys are resolved via the resolver (e.g. fnox + llm mapping) and
+    /// passed to BAML as ClientRegistry, not env vars. May be called before or after load_schema.
+    pub fn set_llm_secret_resolver(&mut self, resolver: Arc<dyn LlmSecretResolver>) {
+        self.llm_secret_resolver = Some(resolver.clone());
+        if let Some(executor) = self.executor.as_mut() {
+            executor.set_llm_secret_resolver(resolver);
+        }
     }
 
     /// Set the effect emitter (for effects-first liveness).
@@ -1028,9 +1111,11 @@ impl BamlRuntimeManager {
             ));
         }
 
-        // Load BAML IL into executor (pass tool registry)
+        // Resolve LLM secrets from fnox resolver and inject as env_vars so BAML schema's
+        // `api_key env.X` references resolve without relying on std::env::var.
+        let env_vars = self.resolve_secrets_as_env_vars();
         let tool_registry_clone = self.tool_registry.clone();
-        let mut executor = BamlExecutor::load_il(&baml_src_dir, tool_registry_clone)?;
+        let mut executor = BamlExecutor::load_il(&baml_src_dir, tool_registry_clone, env_vars)?;
 
         // Set effect emitter if available
         if let Some(ref emitter) = self.effect_emitter {
@@ -1041,6 +1126,9 @@ impl BamlRuntimeManager {
         }
         if let Some(policy) = self.pending_parse_retry_policy.take() {
             executor.set_parse_retry_policy(policy);
+        }
+        if let Some(ref resolver) = self.llm_secret_resolver {
+            executor.set_llm_secret_resolver(resolver.clone());
         }
 
         // Discover functions from the BAML runtime
@@ -1156,19 +1244,15 @@ impl BamlRuntimeManager {
 
     /// Invoke a BAML function with streaming support
     ///
-    /// Returns a stream and the context manager. Caller must pass the same ctx_manager to
-    /// `stream.run(..., ctx_manager, ...)`. Pass `context_tags` (e.g. from
-    /// `build_conversation_context_tags`) for resume so BAML sees prior turns.
+    /// Returns a [`BamlStreamInvocation`] bundling stream, context manager, client registry, and env vars.
+    /// Run with `inv.stream.run(..., &inv.ctx_manager, None, inv.client_registry_opt.as_ref(), inv.env_vars)`.
     pub fn invoke_function_stream(
         &self,
         scope: &context::RuntimeScope,
         function_name: &str,
         args: serde_json::Value,
         context_tags: Option<HashMap<String, BamlValue>>,
-    ) -> Result<(
-        baml_runtime::FunctionResultStream,
-        baml_runtime::RuntimeContextManager,
-    )> {
+    ) -> Result<BamlStreamInvocation> {
         tracing::debug!(
             function = function_name,
             args = ?args,
@@ -1277,7 +1361,7 @@ impl BamlRuntimeManager {
     /// }
     ///
     /// # tokio_test::block_on(async {
-    /// let mut manager = BamlRuntimeManager::new()?;
+    /// let mut manager = BamlRuntimeManager::builder().build()?;
     /// manager.register_tool(MyTool).await?;
     /// # Ok::<(), baml_rt::BamlRtError>(())
     /// # }).unwrap();
@@ -1490,7 +1574,7 @@ impl BamlRuntimeManager {
     /// #     }
     /// # }
     /// # tokio_test::block_on(async {
-    /// # let mut manager = BamlRuntimeManager::new()?;
+    /// # let mut manager = BamlRuntimeManager::builder().build()?;
     /// manager.register_tool(WeatherTool).await?;
     /// # Ok::<(), baml_rt::BamlRtError>(())
     /// # }).unwrap();
@@ -1915,6 +1999,7 @@ impl Default for BamlRuntimeManager {
             effect_emitter: None,
             conversation_context_provider: None,
             pending_parse_retry_policy: None,
+            llm_secret_resolver: None,
         }
     }
 }

@@ -155,12 +155,29 @@ pub enum BamlRtError {
     },
 
     /// Failed to build request
-    #[error("Failed to build request: {0}")]
-    RequestBuildFailed(String),
+    #[error("Failed to build request")]
+    RequestBuildFailed {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+
+    /// Failed to build LLM client registry (e.g. from secret resolver + IR)
+    #[error("Failed to build LLM client registry")]
+    ClientRegistryBuild {
+        #[source]
+        source: AnyhowError,
+    },
 
     /// Failed to load BAML runtime
     #[error("Failed to load BAML runtime")]
     RuntimeLoadFailed {
+        #[source]
+        source: AnyhowError,
+    },
+
+    /// Failed to create BAML function result stream
+    #[error("Failed to create stream")]
+    FunctionStreamCreation {
         #[source]
         source: AnyhowError,
     },

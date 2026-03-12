@@ -226,6 +226,12 @@ impl QuickJSBridge {
     pub(crate) fn baml_manager(&self) -> &Arc<Mutex<BamlRuntimeManager>> {
         &self.baml_manager
     }
+
+    /// List all BAML function names registered in this bridge's runtime manager.
+    /// Used by the runner to populate agent discovery entries at boot time.
+    pub async fn list_baml_functions(&self) -> Vec<String> {
+        self.baml_manager.lock().await.list_functions()
+    }
     pub(crate) fn invocation_context_registry(&self) -> &InvocationContextRegistrySlot {
         &self.invocation_context_registry
     }
@@ -671,7 +677,7 @@ impl QuickJSBridge {
             max_attempts_ms: prepared.max_attempts_ms,
             lifecycle_guard: prepared.lifecycle_guard,
         };
-        Ok(EvalOnceResult::PromisePending(params))
+        Ok(EvalOnceResult::PromisePending(Box::new(params)))
     }
 
     /// Invoke a BAML function by name.

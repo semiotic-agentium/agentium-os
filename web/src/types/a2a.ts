@@ -5,6 +5,8 @@ export interface AgentCardInfo {
   agent_package: string;
   agent_instance_id: string;
   tools: string[];
+  /** BAML function names registered in the agent's runtime */
+  baml_functions: string[];
   description?: string | null;
   capabilities: string[];
 }
@@ -99,14 +101,21 @@ export interface ChunkPayload {
 
 export interface StatusUpdatePayload {
   taskId?: string;
+  contextId?: string;
   status?: TaskStatus;
-  /** Nested event body for status updates. */
+  /** Nested event body (relay sends statusUpdate/status_update) */
   statusUpdate?: {
     message?: A2aMessage;
     metadata?: Record<string, unknown>;
     contextId?: string;
     taskId?: string;
     status?: TaskStatus;
+  };
+  status_update?: {
+    message?: A2aMessage;
+    metadata?: Record<string, unknown>;
+    contextId?: string;
+    taskId?: string;
   };
 }
 

@@ -5,8 +5,13 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     port: 5173,
+    host: true, // listen on 0.0.0.0 so 127.0.0.1 and localhost both work
     proxy: {
       "/agents": {
+        target: "http://127.0.0.1:8080",
+        changeOrigin: true,
+      },
+      "/config": {
         target: "http://127.0.0.1:8080",
         changeOrigin: true,
       },

@@ -11,9 +11,11 @@ baml-rt-tools = { path = "../baml-rt-tools" }
 baml-rt-interceptor = { path = "../baml-rt-interceptor" }
 baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
+baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-runtime = { workspace = true }
 baml-types = { workspace = true }
 internal-baml-core = { workspace = true }
+internal-llm-client = { workspace = true }
 quickjs_runtime = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

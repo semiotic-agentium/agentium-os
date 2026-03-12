@@ -467,7 +467,9 @@ impl A2aAgent {
             extra_ts_decls: Vec::new(),
             access: None,
             tags: Vec::new(),
-            secret_requirements: Vec::new(),
+            secret_requests: Vec::new(),
+            config: None,
+            config_bundle: None,
             origin: baml_rt_tools::ToolOrigin::Guest,
         };
 
@@ -824,7 +826,7 @@ impl A2aAgentBuilderWithEffectEmitter {
             }
             RuntimeConfig::Default => {
                 tracing::debug!("A2aAgentBuilder::build: Creating default runtime");
-                Arc::new(Mutex::new(BamlRuntimeManager::new()?))
+                Arc::new(Mutex::new(BamlRuntimeManager::builder().build()?))
             }
         };
 

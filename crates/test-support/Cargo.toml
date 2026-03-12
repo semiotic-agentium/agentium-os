@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 baml-rt = { path = "../baml-rt" }
+baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-rt-builder = { path = "../baml-rt-builder" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }
 baml-rt-tools = { path = "../baml-rt-tools" }

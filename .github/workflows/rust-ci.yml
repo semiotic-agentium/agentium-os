@@ -87,13 +87,44 @@ jobs:
         with:
           tool: cargo-nextest
 
+      - name: Write fnox secrets
+        # Generates fnox.toml with explicit `default` values from CI secret variables.
+        # FnoxFileSecretResolver reads values directly from the file — no env var fallback.
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          CLICKUP_API_KEY: ${{ secrets.CLICKUP_API_KEY }}
+          NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_USER_TOKEN: ${{ secrets.SLACK_USER_TOKEN }}
+        run: |
+          cat > fnox.toml << EOF
+          [secrets.OPENROUTER_API_KEY]
+          description = "OpenRouter API key"
+          default = "$OPENROUTER_API_KEY"
+
+          [secrets.CLICKUP_API_KEY]
+          description = "ClickUp personal API token"
+          default = "$CLICKUP_API_KEY"
+
+          [secrets.NOTION_API_TOKEN]
+          description = "Notion integration token"
+          default = "$NOTION_API_TOKEN"
+
+          [secrets.SLACK_BOT_TOKEN]
+          description = "Slack bot token (xoxb-...)"
+          default = "$SLACK_BOT_TOKEN"
+
+          [secrets.SLACK_USER_TOKEN]
+          description = "Slack user token (xoxp-...)"
+          default = "$SLACK_USER_TOKEN"
+          EOF
+
       - name: Run nextest
         run: |
           cargo nextest run --workspace --locked --profile ci --no-fail-fast \
             --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests
         env:
           RUSTUP_TOOLCHAIN: stable
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
       - name: Publish JUnit report
         if: always()

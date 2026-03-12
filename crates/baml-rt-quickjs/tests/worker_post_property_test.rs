@@ -36,7 +36,7 @@ proptest! {
             .build()
             .expect("runtime");
         rt.block_on(async move {
-            let runtime = Arc::new(Mutex::new(BamlRuntimeManager::new().expect("runtime")));
+            let runtime = Arc::new(Mutex::new(BamlRuntimeManager::builder().build().expect("runtime")));
             let agent_id =
                 AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-0000000000f2").unwrap());
             let bridge = QuickJSBridge::new(runtime, agent_id).await.expect("bridge");

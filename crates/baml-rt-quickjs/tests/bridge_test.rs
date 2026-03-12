@@ -31,7 +31,7 @@ impl BundleType for Test {
 #[tokio::test]
 async fn test_quickjs_bridge_creation() {
     // Test that we can create a QuickJS bridge
-    let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::new().unwrap()));
+    let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::builder().build().unwrap()));
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000010").unwrap());
     let bridge = QuickJSBridge::new(baml_manager, agent_id);
@@ -43,7 +43,7 @@ async fn test_quickjs_bridge_creation() {
 /// Property-style: for each of several expressions, evaluate returns Ok.
 #[tokio::test]
 async fn test_quickjs_evaluate_expressions() {
-    let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::new().unwrap()));
+    let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::builder().build().unwrap()));
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000011").unwrap());
     let mut bridge = QuickJSBridge::new(baml_manager, agent_id).await.unwrap();
@@ -63,7 +63,7 @@ async fn test_quickjs_evaluate_expressions() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_quickjs_concurrent_scope_propagation() {
-    let mut manager = BamlRuntimeManager::new().unwrap();
+    let mut manager = BamlRuntimeManager::builder().build().unwrap();
     manager
         .register_tool(ScopeEchoTool)
         .await
@@ -176,7 +176,7 @@ async fn test_quickjs_concurrent_scope_propagation() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn test_quickjs_concurrent_stream_scope_propagation() {
-    let mut manager = BamlRuntimeManager::new().unwrap();
+    let mut manager = BamlRuntimeManager::builder().build().unwrap();
     manager
         .register_tool(ScopeEchoTool)
         .await
@@ -346,7 +346,7 @@ impl BamlTool for ScopeEchoTool {
 /// 3. Assert the second stream succeeds (no leaked permit/session/globals)
 #[tokio::test]
 async fn test_failed_stream_does_not_leak_state() {
-    let manager = BamlRuntimeManager::new().unwrap();
+    let manager = BamlRuntimeManager::builder().build().unwrap();
     let manager = Arc::new(Mutex::new(manager));
     let effect_bus = Arc::new(BusWithEffects::new());
     {
@@ -455,7 +455,7 @@ async fn test_failed_stream_does_not_leak_state() {
 /// Unit-level: close_sessions_for_context clears all sessions for that context.
 #[tokio::test]
 async fn test_close_sessions_for_context_clears_sessions() {
-    let mut manager = BamlRuntimeManager::new().unwrap();
+    let mut manager = BamlRuntimeManager::builder().build().unwrap();
     manager.register_tool(ScopeEchoTool).await.unwrap();
     let manager = Arc::new(Mutex::new(manager));
     let agent_id =
@@ -505,7 +505,7 @@ async fn test_close_sessions_for_context_clears_sessions() {
 /// tool sessions for that context must be closed so we don't leak.
 #[tokio::test]
 async fn test_stream_finalize_closes_tool_sessions_no_leak() {
-    let mut manager = BamlRuntimeManager::new().unwrap();
+    let mut manager = BamlRuntimeManager::builder().build().unwrap();
     manager.register_tool(ScopeEchoTool).await.unwrap();
     let manager = Arc::new(Mutex::new(manager));
     let agent_id =
@@ -584,7 +584,7 @@ async fn test_tool_session_plan_requires_manifest_mapping() {
     use baml_rt::baml::BamlRuntimeManager;
     use serde_json::json;
 
-    let mut manager = BamlRuntimeManager::new().unwrap();
+    let mut manager = BamlRuntimeManager::builder().build().unwrap();
     manager.register_tool(ScopeEchoTool).await.unwrap();
 
     // Minimal plan with only FSM operations.
@@ -627,7 +627,7 @@ async fn test_tool_session_plan_open_send_next_finish_runs_finish() {
     use baml_rt::baml::BamlRuntimeManager;
     use serde_json::json;
 
-    let mut manager = BamlRuntimeManager::new().unwrap();
+    let mut manager = BamlRuntimeManager::builder().build().unwrap();
     manager.register_tool(ScopeEchoTool).await.unwrap();
     // ScopeEchoTool: Bundle Test, LOCAL_NAME scope_echo → class_name "TestScope_echo"
     let mut map = std::collections::HashMap::new();
@@ -669,11 +669,11 @@ async fn test_tool_session_plan_open_send_next_finish_runs_finish() {
 /// invoke_function requires explicit scope; missing function should produce a function-level error.
 #[tokio::test]
 async fn test_invoke_function_with_explicit_scope_fails_for_missing_function() {
-    let mut manager = BamlRuntimeManager::new().unwrap();
+    let mut manager = BamlRuntimeManager::builder().build().unwrap();
     manager.register_tool(ScopeEchoTool).await.unwrap();
 
     // invoke_function without scope (requires bridge)
-    let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::new().unwrap()));
+    let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::builder().build().unwrap()));
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000030").unwrap());
     let mut bridge = QuickJSBridge::new(baml_manager, agent_id).await.unwrap();

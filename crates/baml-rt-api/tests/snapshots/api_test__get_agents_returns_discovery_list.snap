@@ -16,6 +16,7 @@ expression: snapshot
         "agent_package": "pkg-a",
         "agent_instance_id": "default",
         "tools": [],
+        "baml_functions": [],
         "capabilities": []
       }
     },
@@ -30,6 +31,7 @@ expression: snapshot
         "agent_package": "pkg-b",
         "agent_instance_id": "default",
         "tools": [],
+        "baml_functions": [],
         "capabilities": []
       }
     }

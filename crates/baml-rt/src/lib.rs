@@ -110,4 +110,7 @@ pub use baml_rt_interceptor::{TracingInterceptor, TracingLLMInterceptor, Tracing
 #[cfg(feature = "quickjs")]
 pub use baml_rt_quickjs::{BamlContext, BamlRuntimeManager, ContextMetadata};
 #[cfg(feature = "quickjs")]
-pub use baml_rt_quickjs::{QuickJSBridge, QuickJSConfig, Runtime, RuntimeBuilder, RuntimeConfig};
+pub use baml_rt_quickjs::{
+    QuickJSBridge, QuickJSConfig, Runtime, RuntimeBuilder, RuntimeConfig,
+    SecretResolverToLlmAdapter,
+};

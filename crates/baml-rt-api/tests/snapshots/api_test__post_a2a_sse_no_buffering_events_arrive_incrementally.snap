@@ -1,0 +1,10 @@
+---
+source: crates/baml-rt-api/tests/api_test.rs
+expression: snapshot
+---
+{
+  "status": 200,
+  "content_type": "text/event-stream",
+  "events_received": 3,
+  "first_event_within_limit": true
+}

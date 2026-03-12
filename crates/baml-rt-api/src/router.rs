@@ -1,9 +1,16 @@
 //! Axum router and API state for the HTTP surface.
+//!
+//! Config, tool catalog, and secret resolver are **injected as required dependencies** (no Option).
+//! Use `api_router()` for a minimal router with in-memory config and empty catalog/resolver;
+//! use `api_router_with_services()` to inject real implementations.
 
 use std::{path::Path, sync::Arc};
 
 use axum::{Router, extract::MatchedPath, http::Request};
 use baml_rt_a2a::AgentRegistry;
+use baml_rt_config::{ConfigService, SqliteConfigStore};
+use baml_rt_llm_config::{EmptySecretResolver, RuntimeSecretStore, SecretResolver};
+use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use tower_http::{
     services::{ServeDir, ServeFile},
     trace::TraceLayer,
@@ -11,9 +18,11 @@ use tower_http::{
 use utoipa::openapi::OpenApi as OpenApiSpec;
 use utoipa_axum::router::OpenApiRouter;
 
-use crate::{ContextMetricsService, MermaidService, ProvenanceOpsService, handlers};
+use crate::{
+    ContextMetricsService, MermaidService, ProvenanceOpsService, config_handlers, handlers,
+};
 
-/// Shared state for API handlers: registry (from runner), OpenAPI spec, optional Mermaid service.
+/// Shared state for API handlers: registry, OpenAPI spec, and **injected** config/catalog/resolver.
 #[derive(Clone)]
 pub struct ApiState {
     pub registry: Arc<dyn AgentRegistry>,
@@ -21,6 +30,10 @@ pub struct ApiState {
     pub mermaid: Option<Arc<dyn MermaidService>>,
     pub context_metrics: Option<Arc<dyn ContextMetricsService>>,
     pub provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
+    pub tool_catalog: Arc<dyn ToolCatalog>,
+    pub config_service: Arc<dyn ConfigService>,
+    pub secret_resolver: Arc<dyn SecretResolver>,
+    pub runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
 }
 
 async fn serve_openapi_json(
@@ -29,23 +42,42 @@ async fn serve_openapi_json(
     axum::Json(state.openapi.as_ref().clone())
 }
 
-/// Build the API router with discovery, A2A forward (POST + SSE), optional Mermaid, OpenAPI spec, and Swagger UI.
-/// When `web_dir` is provided, serves static files from that directory as a fallback
-/// (API routes always take priority). Unmatched paths fall back to `index.html` for SPA routing.
+/// Build a minimal API router with default config/catalog/resolver (in-memory config, empty catalog, no-op resolver).
+/// For production, use `api_router_with_services` and inject real implementations.
 pub fn api_router(
     registry: Arc<dyn AgentRegistry>,
     mermaid: Option<Arc<dyn MermaidService>>,
     web_dir: Option<&Path>,
 ) -> Router {
-    api_router_with_services(registry, mermaid, None, None, web_dir)
+    let tool_catalog: Arc<dyn ToolCatalog> = Arc::new(InventoryCatalog::new());
+    let config_service: Arc<dyn ConfigService> =
+        Arc::new(SqliteConfigStore::in_memory().expect("in-memory config store for API"));
+    let secret_resolver: Arc<dyn SecretResolver> = Arc::new(EmptySecretResolver);
+    api_router_with_services(
+        registry,
+        mermaid,
+        None,
+        None,
+        tool_catalog,
+        config_service,
+        secret_resolver,
+        None,
+        web_dir,
+    )
 }
 
-/// Build the API router with optional Mermaid and optional context metrics services.
+/// Build the API router with injected dependencies (required: tool_catalog, config_service, secret_resolver).
+/// When `runtime_secret_store` is Some, PUT /config/secrets/{name} provisions secrets in the UI.
+#[allow(clippy::too_many_arguments)]
 pub fn api_router_with_services(
     registry: Arc<dyn AgentRegistry>,
     mermaid: Option<Arc<dyn MermaidService>>,
     context_metrics: Option<Arc<dyn ContextMetricsService>>,
     provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
+    tool_catalog: Arc<dyn ToolCatalog>,
+    config_service: Arc<dyn ConfigService>,
+    secret_resolver: Arc<dyn SecretResolver>,
+    runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
     web_dir: Option<&Path>,
 ) -> Router {
     // Route-level tracing layer to capture HTTP semantic fields (including matched route template).
@@ -75,6 +107,17 @@ pub fn api_router_with_services(
         .routes(utoipa_axum::routes!(handlers::get_provenance_tool_calls))
         .routes(utoipa_axum::routes!(handlers::get_provenance_messages))
         .routes(utoipa_axum::routes!(handlers::get_provenance_aggregates))
+        .routes(utoipa_axum::routes!(config_handlers::list_secrets_overview))
+        .routes(utoipa_axum::routes!(config_handlers::list_store_keys))
+        .routes(utoipa_axum::routes!(config_handlers::put_secret))
+        .routes(utoipa_axum::routes!(config_handlers::delete_secret))
+        .routes(utoipa_axum::routes!(config_handlers::list_config))
+        .routes(utoipa_axum::routes!(config_handlers::get_config))
+        .routes(utoipa_axum::routes!(config_handlers::put_config))
+        .routes(utoipa_axum::routes!(config_handlers::delete_config))
+        .routes(utoipa_axum::routes!(config_handlers::list_config_versions))
+        .routes(utoipa_axum::routes!(config_handlers::get_config_version))
+        .routes(utoipa_axum::routes!(config_handlers::list_secret_requests))
         .split_for_parts();
 
     let mut openapi = openapi;
@@ -87,7 +130,11 @@ pub fn api_router_with_services(
     let mut tag_provenance = utoipa::openapi::Tag::new("provenance");
     tag_provenance.description =
         Some("Provenance-backed metrics and operational query APIs.".to_string());
-    openapi.tags = Some(vec![tag_agents, tag_mermaid, tag_provenance]);
+    let mut tag_config = utoipa::openapi::Tag::new("config");
+    tag_config.description = Some(
+        "Tool configuration and secret requests (schema includes config type schemas)".to_string(),
+    );
+    openapi.tags = Some(vec![tag_agents, tag_mermaid, tag_provenance, tag_config]);
 
     let state = Arc::new(ApiState {
         registry,
@@ -95,6 +142,10 @@ pub fn api_router_with_services(
         mermaid,
         context_metrics,
         provenance_ops,
+        tool_catalog,
+        config_service,
+        secret_resolver,
+        runtime_secret_store,
     });
 
     let mut router = api_router
@@ -112,27 +163,57 @@ pub fn api_router_with_services(
     router
 }
 
-/// Run the HTTP server on the given bind address.
-/// When `web_dir` is provided, the server also serves static files from that directory.
+/// Run the HTTP server with default config/catalog/resolver (see `api_router`).
 pub async fn serve(
     registry: Arc<dyn AgentRegistry>,
     bind: &str,
     mermaid: Option<Arc<dyn MermaidService>>,
     web_dir: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    serve_with_services(registry, bind, mermaid, None, None, web_dir).await
+    let tool_catalog: Arc<dyn ToolCatalog> = Arc::new(InventoryCatalog::new());
+    let config_service: Arc<dyn ConfigService> =
+        Arc::new(SqliteConfigStore::in_memory().expect("in-memory config store for API"));
+    let secret_resolver: Arc<dyn SecretResolver> = Arc::new(EmptySecretResolver);
+    serve_with_services(
+        registry,
+        bind,
+        mermaid,
+        None,
+        None,
+        tool_catalog,
+        config_service,
+        secret_resolver,
+        None,
+        web_dir,
+    )
+    .await
 }
 
-/// Run the HTTP server with optional Mermaid and context metrics services.
+/// Run the HTTP server with injected dependencies (required: tool_catalog, config_service, secret_resolver).
+#[allow(clippy::too_many_arguments)]
 pub async fn serve_with_services(
     registry: Arc<dyn AgentRegistry>,
     bind: &str,
     mermaid: Option<Arc<dyn MermaidService>>,
     context_metrics: Option<Arc<dyn ContextMetricsService>>,
     provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
+    tool_catalog: Arc<dyn ToolCatalog>,
+    config_service: Arc<dyn ConfigService>,
+    secret_resolver: Arc<dyn SecretResolver>,
+    runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
     web_dir: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let app = api_router_with_services(registry, mermaid, context_metrics, provenance_ops, web_dir);
+    let app = api_router_with_services(
+        registry,
+        mermaid,
+        context_metrics,
+        provenance_ops,
+        tool_catalog,
+        config_service,
+        secret_resolver,
+        runtime_secret_store,
+        web_dir,
+    );
     let listener = tokio::net::TcpListener::bind(bind).await?;
     let addr = listener.local_addr()?;
     tracing::info!(%addr, web_dir = ?web_dir, "HTTP API listening");

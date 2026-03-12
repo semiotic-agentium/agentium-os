@@ -3,7 +3,7 @@
 //! All __baml_invoke, __baml_stream, __set_eval_result, await helpers, and
 //! per-function registration live here so the main bridge focuses on coordination.
 
-use std::{collections::HashMap, sync::atomic::Ordering};
+use std::sync::atomic::Ordering;
 
 use baml_rt_core::{
     BamlRtError, Result,
@@ -316,7 +316,7 @@ pub(super) async fn register_baml_stream_helper(bridge: &QuickJSBridge) -> Resul
                 let _in_flight_guard = InFlightGuard(guard_counter);
                 let run = async move {
                     context::with_scope(scope_for_scope.clone(), async move {
-                        let (mut stream, ctx_manager) = {
+                        let inv = {
                             let manager = manager_for_promise.lock().await;
                             manager.invoke_function_stream(
                                 &scope_for_scope,
@@ -327,18 +327,15 @@ pub(super) async fn register_baml_stream_helper(bridge: &QuickJSBridge) -> Resul
                             .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?
                         };
 
-                        let mut env_vars = HashMap::new();
-                        if let Ok(api_key) = std::env::var("OPENROUTER_API_KEY") {
-                            env_vars.insert("OPENROUTER_API_KEY".to_string(), api_key);
-                        }
-                        for key in &["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"] {
-                            if let Ok(value) = std::env::var(key) {
-                                env_vars.insert(key.to_string(), value);
-                            }
-                        }
-
                         let (tx, mut rx) = mpsc::channel::<Value>(64);
                         let tx_closure = tx.clone();
+
+                        let crate::baml_execution::BamlStreamInvocation {
+                            mut stream,
+                            ctx_manager,
+                            client_registry_opt,
+                            env_vars,
+                        } = inv;
 
                         stream_yield::scope_stream_yield(Some(tx), async move {
                             let (_result, _call_id) = stream
@@ -357,12 +354,14 @@ pub(super) async fn register_baml_stream_helper(bridge: &QuickJSBridge) -> Resul
                                                     serde_json::Value::from(session_id),
                                                 );
                                             }
-                                            let _ = tx_closure.try_send(v);
+                                            if let Err(e) = tx_closure.try_send(v) {
+                                                tracing::warn!(error = ?e, "Stream chunk dropped: channel full");
+                                            }
                                         }
                                     }),
                                     &ctx_manager,
                                     None,
-                                    None,
+                                    client_registry_opt.as_ref(),
                                     env_vars,
                                 )
                                 .await;
@@ -546,7 +545,7 @@ pub(super) async fn register_baml_stream_session_helper(bridge: &QuickJSBridge) 
                 let _in_flight_guard = InFlightGuard(guard_counter);
                 let run = async move {
                     context::with_scope(scope, async move {
-                        let (mut stream, ctx_manager) = manager_for_promise
+                        let inv = manager_for_promise
                             .lock()
                             .await
                             .invoke_function_stream(
@@ -557,18 +556,15 @@ pub(super) async fn register_baml_stream_session_helper(bridge: &QuickJSBridge) 
                             )
                             .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
 
-                        let mut env_vars = HashMap::new();
-                        if let Ok(api_key) = std::env::var("OPENROUTER_API_KEY") {
-                            env_vars.insert("OPENROUTER_API_KEY".to_string(), api_key);
-                        }
-                        for key in &["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY"] {
-                            if let Ok(value) = std::env::var(key) {
-                                env_vars.insert(key.to_string(), value);
-                            }
-                        }
-
                         let (tx, mut rx) = mpsc::channel::<Value>(64);
                         let tx_closure = tx.clone();
+
+                        let crate::baml_execution::BamlStreamInvocation {
+                            mut stream,
+                            ctx_manager,
+                            client_registry_opt,
+                            env_vars,
+                        } = inv;
 
                         stream_yield::scope_stream_yield(Some(tx), async move {
                             let (_result, _call_id) = stream
@@ -585,12 +581,14 @@ pub(super) async fn register_baml_stream_session_helper(bridge: &QuickJSBridge) 
                                                     serde_json::Value::from(stream_session_id_for_chunks),
                                                 );
                                             }
-                                            let _ = tx_closure.try_send(v);
+                                            if let Err(e) = tx_closure.try_send(v) {
+                                                tracing::warn!(error = ?e, "Stream chunk dropped: channel full");
+                                            }
                                         }
                                     }),
                                     &ctx_manager,
                                     None,
-                                    None,
+                                    client_registry_opt.as_ref(),
                                     env_vars,
                                 )
                                 .await;

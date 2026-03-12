@@ -1,7 +1,7 @@
 //! Tool index tests using GraphQLite (temp path per test).
 
 use baml_rt_provenance::{ToolIndexConfig, index_tools_into_connection};
-use baml_rt_tools::{ToolFunctionMetadataExport, ToolName, ToolSecretRequirement, ToolTypeSpec};
+use baml_rt_tools::{SecretRequest, ToolFunctionMetadataExport, ToolName, ToolTypeSpec};
 use serde_json::json;
 use tempfile::tempdir;
 
@@ -34,11 +34,12 @@ async fn tool_index_creates_tool_nodes() {
         baml_decl: None,
         extra_ts_decls: Vec::new(),
         tags: vec!["weather".to_string(), "forecast".to_string()],
-        secret_requirements: vec![ToolSecretRequirement {
-            name: "WEATHER_KEY".to_string(),
-            description: "Weather API key".to_string(),
-            reason: "call provider".to_string(),
-        }],
+        secret_requests: vec![SecretRequest::api_key(
+            "WEATHER_KEY",
+            "Required to call the weather provider",
+            "Weather API key",
+        )],
+        config: None,
         access: None,
         origin: baml_rt_tools::ToolOrigin::Host,
     }];

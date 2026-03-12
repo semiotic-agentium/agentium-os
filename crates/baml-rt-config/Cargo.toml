@@ -1,0 +1,19 @@
+[package]
+name = "baml-rt-config"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "Tool configuration storage and resolution"
+
+[dependencies]
+baml-rt-core = { path = "../baml-rt-core" }
+baml-rt-tools = { path = "../baml-rt-tools" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+graphqlite = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

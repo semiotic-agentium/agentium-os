@@ -43,7 +43,7 @@ impl ToolBundle for MemoryBundle {
             name,
             description: "Persistent graph-based cognitive memory (add, search, traverse, resolve, impact, link, stats).".to_string(),
             config_schema: None,
-            secret_requirements: Vec::new(),
+            secret_requests: Vec::new(),
         }
     }
 

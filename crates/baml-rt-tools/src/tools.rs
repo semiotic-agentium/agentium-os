@@ -20,6 +20,7 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::{
     bundles::BundleType,
+    config_resolver::ConfigResolver,
     tool_catalog::{InventoryCatalog, ToolCatalog},
     tool_fsm::{SessionPhase, ToolFailure, ToolSession, ToolSessionError, ToolSessionId, ToolStep},
     tool_schema::{ToolType, json_schema_value},
@@ -241,17 +242,126 @@ pub trait BamlTool: Send + Sync + 'static {
     fn compact_result(&self, _content: &mut Value) {}
 }
 
+/// Type of secret required by a tool (determines provisioning UX and validation).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SecretType {
+    /// Static API key (e.g. pk_..., sk_...).
+    ApiKey,
+    /// OAuth 2.0 access token (bearer).
+    OAuthAccessToken,
+    /// OAuth 2.0 refresh token.
+    OAuthRefreshToken,
+    /// Username + password pair.
+    BasicAuth,
+    /// TLS certificate or private key.
+    Certificate,
+    /// Custom / vendor-specific.
+    Other(String),
+}
+
+impl SecretType {
+    pub fn other(value: impl Into<String>) -> Self {
+        Self::Other(value.into())
+    }
+
+    /// Snake_case string for API/JSON (e.g. "api_key", "oauth_access_token").
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::ApiKey => "api_key",
+            Self::OAuthAccessToken => "oauth_access_token",
+            Self::OAuthRefreshToken => "oauth_refresh_token",
+            Self::BasicAuth => "basic_auth",
+            Self::Certificate => "certificate",
+            Self::Other(s) => s.as_str(),
+        }
+    }
+}
+
+/// Declares a secret required by a tool to access a remote service.
+///
+/// The `descriptor` field describes what the secret must provide — access level,
+/// OAuth scopes, permissions, format hints — so operators know exactly what to provision.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolSecretRequirement {
+pub struct SecretRequest {
+    /// Canonical name for the secret (e.g. env var name, config field).
     pub name: String,
-    pub description: String,
-    pub reason: String,
+
+    /// Type of secret (determines provisioning UX and validation).
+    pub secret_type: SecretType,
+
+    /// Human-readable justification: why this tool needs this secret.
+    pub justification: String,
+
+    /// Descriptor of what the secret must provide: access level, OAuth scopes,
+    /// service-specific permissions, etc.
+    pub descriptor: String,
+}
+
+impl SecretRequest {
+    pub fn api_key(
+        name: impl Into<String>,
+        justification: impl Into<String>,
+        descriptor: impl Into<String>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            secret_type: SecretType::ApiKey,
+            justification: justification.into(),
+            descriptor: descriptor.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolTypeSpec {
     pub name: String,
     pub ts_decl: Option<String>,
+}
+
+/// Per-tool config metadata; absent means tool has no config.
+/// Every config bundle **must** specify a default (required field); use
+/// [`ToolConfigMetadata::default_from_schema`] when building from a schema that has
+/// `properties.<key>.default`, or pass an explicit value (e.g. `json!({})`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolConfigMetadata {
+    /// JSON Schema for the config.
+    pub schema: Value,
+    /// Default config. Required: metadata must specify a default (strict typing).
+    pub default: Value,
+    /// Type name for TS/BAML generation.
+    pub type_name: Option<String>,
+}
+
+impl ToolConfigMetadata {
+    /// Build metadata with required schema and default. Use this to enforce that every
+    /// bundle specifies a default at construction time.
+    pub fn new(schema: Value, default: Value, type_name: Option<String>) -> Self {
+        Self {
+            schema,
+            default,
+            type_name,
+        }
+    }
+
+    /// Derive a default config object from JSON Schema when `properties` entries have a `default` key.
+    /// Returns `None` if the schema is not an object with `properties` or no property has a default.
+    /// Use when building [`ToolConfigMetadata`]: pass this or an explicit value so the bundle always has a default.
+    pub fn default_from_schema(schema: &Value) -> Option<Value> {
+        let obj = schema.as_object()?;
+        let props = obj.get("properties")?.as_object()?;
+        let mut out = serde_json::Map::new();
+        for (k, v) in props {
+            let prop_schema = v.as_object()?;
+            if let Some(default) = prop_schema.get("default") {
+                out.insert(k.clone(), default.clone());
+            }
+        }
+        if out.is_empty() {
+            return None;
+        }
+        Some(Value::Object(out))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -478,8 +588,13 @@ pub struct ToolFunctionMetadata {
     pub access: Option<ToolAccess>,
     /// Tool tags for indexing/search
     pub tags: Vec<String>,
-    /// Secrets required to execute this tool
-    pub secret_requirements: Vec<ToolSecretRequirement>,
+    /// Declared secrets required by this tool (name, type, justification, descriptor).
+    pub secret_requests: Vec<SecretRequest>,
+    /// Config schema and defaults; absent when tool has no config.
+    pub config: Option<ToolConfigMetadata>,
+    /// Bundle key for config store lookup. When set, config is resolved by this bundle name
+    /// (tools in the same config scope share config). Must be set when `config` is `Some`.
+    pub config_bundle: Option<BundleName>,
     /// Origin of this tool (host vs guest)
     pub origin: ToolOrigin,
 }
@@ -511,13 +626,13 @@ impl ToolFunctionMetadata {
     ///
     /// This helper consolidates the common pattern of building metadata
     /// from type information, reducing duplication across registration sites.
-    #[allow(clippy::too_many_arguments)] // prefer TypeBasedMetadataBuilder for new call sites
+    #[allow(clippy::too_many_arguments)]
     pub fn from_types<OpenInput, Input, Output>(
         name: ToolName,
         class_name: String,
         description: String,
         tags: Vec<String>,
-        secret_requirements: Vec<ToolSecretRequirement>,
+        secret_requests: Vec<SecretRequest>,
         origin: ToolOrigin,
         extra_ts_decls: Vec<String>,
         access: Option<ToolAccess>,
@@ -551,7 +666,9 @@ impl ToolFunctionMetadata {
             extra_ts_decls,
             access,
             tags,
-            secret_requirements,
+            secret_requests,
+            config: None,
+            config_bundle: None,
             origin,
         }
     }
@@ -564,7 +681,9 @@ pub struct TypeBasedMetadataBuilder<OpenInput, Input, Output> {
     description: String,
     baml_decl: Option<String>,
     tags: Vec<String>,
-    secret_requirements: Vec<ToolSecretRequirement>,
+    secret_requests: Vec<SecretRequest>,
+    config: Option<ToolConfigMetadata>,
+    config_bundle: Option<BundleName>,
     origin: ToolOrigin,
     extra_ts_decls: Vec<String>,
     access: Option<ToolAccess>,
@@ -587,7 +706,9 @@ where
             extra_ts_decls: Vec::new(),
             access: None,
             tags: Vec::new(),
-            secret_requirements: Vec::new(),
+            secret_requests: Vec::new(),
+            config: None,
+            config_bundle: None,
             origin: ToolOrigin::Host,
             _phantom: std::marker::PhantomData,
         }
@@ -608,9 +729,21 @@ where
         self
     }
 
-    /// Set secret requirements for the tool
-    pub fn with_secrets(mut self, secrets: Vec<ToolSecretRequirement>) -> Self {
-        self.secret_requirements = secrets;
+    /// Set declared secret requests for the tool.
+    pub fn with_secret_requests(mut self, requests: Vec<SecretRequest>) -> Self {
+        self.secret_requests = requests;
+        self
+    }
+
+    /// Set config schema and defaults for the tool.
+    pub fn with_config(mut self, config: ToolConfigMetadata) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// Set the bundle key for config store lookup. Required when config is set.
+    pub fn with_config_bundle(mut self, bundle_name: BundleName) -> Self {
+        self.config_bundle = Some(bundle_name);
         self
     }
 
@@ -646,12 +779,14 @@ where
             self.class_name,
             self.description,
             self.tags,
-            self.secret_requirements,
+            self.secret_requests,
             self.origin,
             self.extra_ts_decls,
             self.access,
         );
         metadata.baml_decl = self.baml_decl;
+        metadata.config = self.config;
+        metadata.config_bundle = self.config_bundle;
         metadata
     }
 }
@@ -671,7 +806,8 @@ pub struct ToolFunctionMetadataExport {
     pub extra_ts_decls: Vec<String>,
     pub access: Option<ToolAccess>,
     pub tags: Vec<String>,
-    pub secret_requirements: Vec<ToolSecretRequirement>,
+    pub secret_requests: Vec<SecretRequest>,
+    pub config: Option<ToolConfigMetadata>,
     pub origin: ToolOrigin,
 }
 
@@ -691,7 +827,8 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
             extra_ts_decls: metadata.extra_ts_decls.clone(),
             access: metadata.access,
             tags: metadata.tags.clone(),
-            secret_requirements: metadata.secret_requirements.clone(),
+            secret_requests: metadata.secret_requests.clone(),
+            config: metadata.config.clone(),
             origin: metadata.origin,
         }
     }
@@ -727,7 +864,7 @@ pub struct ToolBundleMetadata {
     pub name: BundleName,
     pub description: String,
     pub config_schema: Option<Value>,
-    pub secret_requirements: Vec<ToolSecretRequirement>,
+    pub secret_requests: Vec<SecretRequest>,
 }
 
 /// Declares whether this tool ever emits `ToolStep::Streaming` from `next()`.
@@ -767,6 +904,10 @@ pub struct ToolSessionContext {
     pub context_id: ContextId,
     /// Invocation scope agent_id; used for workspace resolution and attribution.
     pub agent_id: AgentId,
+    /// Resolved config at session open; None if tool has no config schema or no config stored.
+    pub config: Option<Value>,
+    /// Config version when config was resolved; used for provenance linkage.
+    pub config_version: Option<u64>,
 }
 
 #[async_trait]
@@ -795,12 +936,15 @@ pub trait ToolBundle: Send + Sync {
 pub struct ToolRegistry {
     inner: StdMutex<ToolRegistryInner>,
     sessions: DashMap<ToolSessionId, Arc<TokioMutex<Box<dyn ToolSession>>>>,
+    /// Config version used when session was opened (for provenance linkage).
+    session_config_version: DashMap<ToolSessionId, u64>,
 }
 
 struct ToolRegistryInner {
     tools: HashMap<ToolName, (ToolFunctionMetadata, Arc<dyn ToolHandler>)>,
     bundles: HashMap<BundleName, ToolBundleMetadata>,
     allowlist: Option<HashSet<ToolName>>,
+    config_resolver: Option<Arc<dyn ConfigResolver>>,
 }
 
 fn map_session_error(error: ToolSessionError) -> BamlRtError {
@@ -1173,8 +1317,10 @@ impl ToolRegistry {
                 tools: HashMap::new(),
                 bundles: HashMap::new(),
                 allowlist: None,
+                config_resolver: None,
             }),
             sessions: DashMap::new(),
+            session_config_version: DashMap::new(),
         }
     }
 
@@ -1196,6 +1342,13 @@ impl ToolRegistry {
     pub fn clear_allowlist(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.allowlist = None;
+    }
+
+    /// Set the config resolver for session open. When set and the tool has config metadata,
+    /// config is resolved and passed to the session context.
+    pub fn set_config_resolver(&self, resolver: Option<Arc<dyn ConfigResolver>>) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.config_resolver = resolver;
     }
 
     /// Register a tool that implements the BamlTool trait
@@ -1507,15 +1660,38 @@ impl ToolRegistry {
             (metadata.clone(), handler.clone())
         };
 
+        let (config, config_version) = {
+            let inner = self.inner.lock().unwrap();
+            let resolver = inner.config_resolver.as_ref();
+            let config_key = metadata.config_bundle.as_ref();
+            match (resolver, &metadata.config, config_key) {
+                (Some(r), Some(config_meta), Some(bundle_name)) => {
+                    let opt = r
+                        .get_config_with_version(bundle_name)
+                        .ok()
+                        .flatten()
+                        .or_else(|| Some((config_meta.default.clone(), 0u64)));
+                    opt.map(|(v, ver)| (Some(v), Some(ver)))
+                        .unwrap_or((None, None))
+                }
+                _ => (metadata.config.as_ref().map(|m| m.default.clone()), None),
+            }
+        };
+
         let ctx = ToolSessionContext {
             session_id: session_id.clone(),
             tool_name: metadata.name.clone(),
             context_id: context_id.clone(),
             agent_id: agent_id.clone(),
+            config,
+            config_version,
         };
         let session = handler.open_session(ctx, open_input).await?;
         self.sessions
             .insert(session_id.clone(), Arc::new(TokioMutex::new(session)));
+        if let Some(ver) = config_version {
+            self.session_config_version.insert(session_id.clone(), ver);
+        }
 
         let duration = start.elapsed();
         crate::metrics::record_session_open(&parsed.to_string());
@@ -1589,6 +1765,7 @@ impl ToolRegistry {
         let span = crate::spans::session_finish(session_id);
         let _guard = span.enter();
 
+        self.session_config_version.remove(session_id);
         let session = self.sessions.remove(session_id).map(|(_, session)| session);
         if let Some(session) = session {
             let mut guard = session.lock().await;
@@ -1610,6 +1787,7 @@ impl ToolRegistry {
         let span = crate::spans::session_abort(session_id, reason.as_deref());
         let _guard = span.enter();
 
+        self.session_config_version.remove(session_id);
         let session = self.sessions.remove(session_id).map(|(_, session)| session);
         if let Some(session) = session {
             let mut guard = session.lock().await;
@@ -1620,6 +1798,11 @@ impl ToolRegistry {
         crate::metrics::record_session_operation("abort", duration);
 
         Ok(())
+    }
+
+    /// Config version used when this session was opened (for provenance linkage).
+    pub fn get_config_version_for_session(&self, session_id: &ToolSessionId) -> Option<u64> {
+        self.session_config_version.get(session_id).map(|r| *r)
     }
 
     /// Execute a tool function by name (single-shot convenience). `context_id` and `agent_id` from invocation scope.
@@ -1904,5 +2087,66 @@ impl ToolSession for OneShotSession {
     ) -> std::result::Result<(), ToolSessionError> {
         self.state.close();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tool_config_metadata_tests {
+    use serde_json::json;
+
+    use super::{ToolConfigMetadata, Value};
+
+    #[test]
+    fn default_from_schema_builds_object_from_property_defaults() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "api_key": { "type": "string", "default": "env.NOTION_API_KEY" },
+                "base_url": { "type": "string", "default": "https://api.notion.com" }
+            }
+        });
+        let got = ToolConfigMetadata::default_from_schema(&schema).unwrap();
+        let obj = got.as_object().unwrap();
+        assert_eq!(
+            obj.get("api_key").and_then(Value::as_str),
+            Some("env.NOTION_API_KEY")
+        );
+        assert_eq!(
+            obj.get("base_url").and_then(Value::as_str),
+            Some("https://api.notion.com")
+        );
+    }
+
+    #[test]
+    fn default_from_schema_none_when_no_properties_defaults() {
+        let schema = json!({ "type": "object", "properties": { "x": { "type": "string" } } });
+        assert!(ToolConfigMetadata::default_from_schema(&schema).is_none());
+    }
+
+    /// Metadata requires a default at construction; no optional default. Explicit value is stored as-is.
+    #[test]
+    fn explicit_default_is_stored() {
+        let schema =
+            json!({ "type": "object", "properties": { "k": { "default": "from_schema" } } });
+        let meta = ToolConfigMetadata {
+            schema: schema.clone(),
+            default: json!({ "k": "explicit" }),
+            type_name: None,
+        };
+        assert_eq!(meta.default, json!({ "k": "explicit" }));
+    }
+
+    /// When building from a schema with property defaults, use default_from_schema and pass the result (or json!({})) so default is never optional.
+    #[test]
+    fn default_from_schema_supplies_required_default() {
+        let schema =
+            json!({ "type": "object", "properties": { "k": { "default": "from_schema" } } });
+        let default = ToolConfigMetadata::default_from_schema(&schema).unwrap();
+        let meta = ToolConfigMetadata {
+            schema: schema.clone(),
+            default: default.clone(),
+            type_name: None,
+        };
+        assert_eq!(meta.default, json!({ "k": "from_schema" }));
     }
 }

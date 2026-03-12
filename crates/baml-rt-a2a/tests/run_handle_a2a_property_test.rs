@@ -179,7 +179,9 @@ fn interleaving_js_handler() -> String {
 
 async fn setup_interleaving_agent() -> A2aAgent {
     ensure_fixture_runtime_types();
-    let mut manager = baml_rt::BamlRuntimeManager::new().expect("create manager");
+    let mut manager = baml_rt::BamlRuntimeManager::builder()
+        .build()
+        .expect("create manager");
     let agent_dir = agent_fixture("stream-baml-tool");
     manager
         .load_schema(agent_dir.to_str().expect("fixture path"))
