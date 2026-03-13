@@ -20,7 +20,7 @@ use baml_rt_api::{
 };
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister, AgentRouteKey,
-    BamlRtError, BusStream, Outcome, Result,
+    BamlRtError, BusStream, EventSubscription, Outcome, Result,
     ids::{AgentId, ContextId, EventId, ExternalId, MessageId, UuidId},
 };
 use baml_rt_provenance::{
@@ -641,6 +641,7 @@ fn discovery_entry(pkg: &str, inst: &str, name: &str, version: &str) -> AgentDis
         baml_functions: vec![],
         description: None,
         capabilities: vec![],
+        subscriptions: vec![],
     };
     AgentDiscoveryEntry {
         agent_package: pkg.to_string(),
@@ -671,6 +672,34 @@ fn discovery_entry_with_card(
         baml_functions: vec![],
         description: description.map(str::to_string),
         capabilities: capabilities.into_iter().map(str::to_string).collect(),
+        subscriptions: vec![],
+    };
+    AgentDiscoveryEntry {
+        agent_package: pkg.to_string(),
+        agent_instance_id: inst.to_string(),
+        name: name.to_string(),
+        version: version.to_string(),
+        agent_card: card,
+    }
+}
+
+fn discovery_entry_with_subscriptions(
+    pkg: &str,
+    inst: &str,
+    name: &str,
+    version: &str,
+    subscriptions: Vec<EventSubscription>,
+) -> AgentDiscoveryEntry {
+    let card = AgentCard {
+        name: name.to_string(),
+        version: version.to_string(),
+        agent_package: pkg.to_string(),
+        agent_instance_id: inst.to_string(),
+        tools: vec!["system/internal_a2a".to_string()],
+        baml_functions: vec![],
+        description: Some(format!("{name} subscribes to task-daemon events")),
+        capabilities: vec!["a2a".to_string()],
+        subscriptions,
     };
     AgentDiscoveryEntry {
         agent_package: pkg.to_string(),
@@ -763,6 +792,73 @@ async fn get_agents_returns_agent_cards_when_present() {
         .unwrap();
     let snapshot = response_snapshot(status, &body);
     insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn get_agents_returns_declared_subscriptions_when_present() {
+    let entries = vec![discovery_entry_with_subscriptions(
+        "workflow-subscriber",
+        "default",
+        "Workflow Subscriber",
+        "0.1.0",
+        vec![EventSubscription {
+            schema_versions: vec!["task-daemon.interpretation.v1".to_string()],
+            source_kinds: vec!["slack".to_string(), "clickup".to_string()],
+            source_keys: vec!["slack:C123".to_string()],
+            source_key_prefixes: vec!["clickup:list:".to_string()],
+        }],
+    )];
+    let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(entries));
+    let app = api_router(registry, None, None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/agents")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&body).expect("valid json response");
+    let subscriptions = parsed
+        .pointer("/0/agent_card/subscriptions")
+        .and_then(|value| value.as_array())
+        .expect("subscriptions array should be present");
+    assert_eq!(subscriptions.len(), 1);
+    assert_eq!(
+        subscriptions[0]
+            .get("schema_versions")
+            .and_then(|value| value.as_array())
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        subscriptions[0]
+            .get("source_kinds")
+            .and_then(|value| value.as_array())
+            .map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(
+        subscriptions[0]
+            .get("source_keys")
+            .and_then(|value| value.as_array())
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        subscriptions[0]
+            .get("source_key_prefixes")
+            .and_then(|value| value.as_array())
+            .map(Vec::len),
+        Some(1)
+    );
 }
 
 #[tokio::test]

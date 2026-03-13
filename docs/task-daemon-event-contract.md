@@ -1,12 +1,14 @@
 # Task Daemon Event Format (Interpretation v1)
 
-This document describes the event format used when `baml-task-daemon` hands
-source material to an interpreter and then passes the result on to another
-system or agent.
+This document describes the event format used when `baml-task-daemon` publishes
+source material and interpretation results as structured events.
 
 The goal is to make integrations predictable: consumers should know what data
 to expect, where it came from, and how to link a result back to the poll window
 that produced it.
+
+For the intended host/agent boundary around these events, see:
+- [task-daemon.md](./task-daemon.md)
 
 This `interpretation.v1` event format currently covers Slack-message input. For
 ClickUp source behavior (`--source clickup`), see:
@@ -73,8 +75,8 @@ Example:
 
 `InterpretationResultEvent` is the event produced after interpretation.
 
-When task-daemon sends work to another agent over A2A, this structured result
-object appears in `message.parts[].data`.
+When a host delivers task-daemon events to another agent, this structured
+result object can appear in `message.parts[].data`.
 
 Key fields:
 - `request_event_id`: links back to the request event

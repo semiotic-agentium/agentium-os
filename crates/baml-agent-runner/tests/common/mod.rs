@@ -125,6 +125,7 @@ impl AgentLister for SingleAgentRegistry {
             baml_functions: Vec::new(),
             description: None,
             capabilities: Vec::new(),
+            subscriptions: Vec::new(),
         };
         vec![AgentDiscoveryEntry {
             agent_package: self.package.clone(),

@@ -2,10 +2,42 @@
 
 `baml-task-daemon` polls project work sources and emits actionable outputs for humans and agents. Use repeatable `--source` flags to select sources (for example `--source slack --source clickup`).
 
+Architecturally, task-daemon should be understood as an event publisher.
+
+- The host publishes structured events.
+- Agents declare which events they want.
+- The host matches published events to subscribed agents.
+- The host delivers the event into an agent task/context.
+- The receiving agent decides what to do.
+
+That means task-daemon should stay focused on:
+
+- source polling
+- dedupe and persisted state
+- event emission
+
+It should not become the place where downstream workflow policy lives.
+
 Each poll produces:
 - a project interpretation (what changed, decisions, risks, open questions)
 - a workflow seed (investigations, clarifications, follow-ups)
 - derived tasks (for ClickUp or other consumers)
+
+## Core Concepts
+
+- `capabilities`: what an agent can do
+- `subscriptions`: which published events an agent wants delivered
+
+Those are different concerns. Using capabilities as a proxy for event interest
+creates ambiguity about whether the host is discovering execution skills or
+deciding who should receive events.
+
+`workflow_seed` is the handoff surface for orchestration:
+
+- `goal`: what successful follow-through should accomplish now
+- `investigation_nodes`: concrete investigative actions
+- `clarification_nodes`: questions required to de-risk or unblock execution
+- `follow_up_nodes`: stakeholder or decision actions when code action is premature
 
 ## Who this is for
 
@@ -152,10 +184,6 @@ For integrations that consume task-daemon events, use the interpretation event
 format described here:
 - [task-daemon-event-contract.md](./task-daemon-event-contract.md)
 - [task-daemon-clickup-source-contract.md](./task-daemon-clickup-source-contract.md) (ClickUp lifecycle source semantics)
-
-For a leadership-focused end-to-end demo flow (Slack -> coordinator handoff ->
-provenance timeline + mermaid), see:
-- [task-daemon-demo.md](./task-daemon-demo.md)
 
 ## Important Behavior
 
