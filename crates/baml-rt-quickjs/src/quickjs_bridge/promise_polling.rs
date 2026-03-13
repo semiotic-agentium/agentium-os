@@ -118,7 +118,7 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
         "poll_promise: start"
     );
 
-    /// Run pending jobs (spawn_blocking or run_brief) so the worker can make progress.
+    /// Run pending jobs (async event-loop hop or run_brief) so the worker can make progress.
     async fn run_pending_jobs_once(
         runtime: &Option<Arc<QuickJsRuntimeFacade>>,
         run_pending_jobs_brief: &Option<RunPendingJobsBrief>,
@@ -126,12 +126,10 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
         if let Some(run_brief) = run_pending_jobs_brief {
             run_brief().await;
         } else if let Some(rt) = runtime {
-            let rt_clone = rt.clone();
-            tokio::task::spawn_blocking(move || {
-                rt_clone.exe_rt_task_in_event_loop(|r| r.run_pending_jobs_if_any());
+            rt.loop_realm(None, |r, _realm| {
+                r.run_pending_jobs_if_any();
             })
-            .await
-            .map_err(|e| BamlRtError::QuickJs(format!("spawn_blocking join: {}", e)))?;
+            .await;
         } else {
             return Err(BamlRtError::QuickJs(
                 "poll_promise_until_result: either runtime or run_pending_jobs_brief must be set"

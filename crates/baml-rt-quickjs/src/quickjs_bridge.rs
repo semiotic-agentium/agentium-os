@@ -538,7 +538,18 @@ impl QuickJSBridge {
                     .to_string(),
             )
         })?;
-        let result_str =
+
+        // Notify-first path for normal evaluate(): __set_eval_result(token, ...) will wake
+        // the poll loop so we do not rely only on fixed sleep pacing.
+        let result_notify = Arc::new(tokio::sync::Notify::new());
+        {
+            let mut guard = self.eval_notify_by_token.lock().map_err(|_| {
+                BamlRtError::QuickJs("eval_notify_by_token lock poisoned".to_string())
+            })?;
+            guard.insert(eval_token.clone(), Arc::clone(&result_notify));
+        }
+
+        let poll_result =
             promise_polling::poll_promise_until_result(promise_polling::PollPromiseParams {
                 runtime: Some(Arc::clone(&self.runtime)),
                 eval_results_by_token: &self.eval_results_by_token,
@@ -550,9 +561,13 @@ impl QuickJSBridge {
                 idle_timeout_ms: self.idle_timeout_ms,
                 max_attempts_ms: self.max_attempts_ms,
                 run_pending_jobs_brief: None,
-                result_notify: None,
+                result_notify: Some(result_notify),
             })
-            .await?;
+            .await;
+        if let Ok(mut guard) = self.eval_notify_by_token.lock() {
+            guard.remove(&eval_token);
+        }
+        let result_str = poll_result?;
 
         serde_json::from_str(result_str.as_str()).map_err(|e| {
             let len = result_str.len();
