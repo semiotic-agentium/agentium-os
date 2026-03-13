@@ -99,7 +99,7 @@ pub struct DiscoverAgentsOpenInput {
     pub reason: Option<String>,
 }
 
-/// Requests one page of agents, optionally filtered by query or capability.
+/// Requests one page of agents, optionally filtered by text, capability, or event subscription.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -110,6 +110,12 @@ pub struct DiscoverAgentsSendInput {
     /// Only return agents that declare every listed capability.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required_capabilities: Option<Vec<String>>,
+    /// Only return agents with a matching event subscription for any listed schema version.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_schema_versions: Option<Vec<String>>,
+    /// Only return agents with a matching event subscription for any listed source kind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_source_kinds: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -136,6 +142,24 @@ pub struct AgentCardDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subscriptions: Vec<AgentEventSubscriptionDto>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentEventSubscriptionDto {
+    // Keep these fields in sync with the OpenAPI `AgentEventSubscriptionDto`.
+    // This tool surface uses camelCase because system tool JSON is JS/TS-facing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub schema_versions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_kinds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_key_prefixes: Vec<String>,
 }
 
 // --- system/discover_tools ---

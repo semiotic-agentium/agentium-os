@@ -506,6 +506,11 @@ impl AgentRunner {
                         .as_ref()
                         .map(|d| d.capabilities.clone())
                         .unwrap_or_default(),
+                    subscriptions: m
+                        .discovery
+                        .as_ref()
+                        .map(|d| d.subscriptions.clone())
+                        .unwrap_or_default(),
                 };
                 AgentDiscoveryEntry {
                     agent_package: pkg.clone(),

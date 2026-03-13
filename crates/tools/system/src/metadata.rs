@@ -66,7 +66,7 @@ pub fn system_discover_agents_metadata() -> ToolFunctionMetadata {
         DiscoverAgentsNextOutput,
     >(
         "system/discover_agents",
-        "Browse available agents. You can optionally filter by query or requiredCapabilities. Omit query to list all agents.",
+        "Browse available agents. You can optionally filter by query, requiredCapabilities, or matching event subscriptions. Omit filters to list all agents.",
     )
 }
 

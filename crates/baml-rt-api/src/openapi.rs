@@ -4,6 +4,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AgentEventSubscriptionDto {
+    // Keep these fields in sync with the system-tool `AgentEventSubscriptionDto`.
+    // `/agents` uses snake_case because this HTTP API mirrors the core discovery JSON.
+    pub schema_versions: Vec<String>,
+    pub source_kinds: Vec<String>,
+    pub source_keys: Vec<String>,
+    pub source_key_prefixes: Vec<String>,
+}
+
 /// Cut-down agent card (included in every GET /agents item).
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct AgentCardDto {
@@ -17,6 +27,8 @@ pub struct AgentCardDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subscriptions: Vec<AgentEventSubscriptionDto>,
 }
 
 /// Discovery entry for one running agent (GET /agents response item).
@@ -41,6 +53,16 @@ impl From<baml_rt_core::AgentCard> for AgentCardDto {
             baml_functions: c.baml_functions,
             description: c.description,
             capabilities: c.capabilities,
+            subscriptions: c
+                .subscriptions
+                .into_iter()
+                .map(|subscription| AgentEventSubscriptionDto {
+                    schema_versions: subscription.schema_versions,
+                    source_kinds: subscription.source_kinds,
+                    source_keys: subscription.source_keys,
+                    source_key_prefixes: subscription.source_key_prefixes,
+                })
+                .collect(),
         }
     }
 }

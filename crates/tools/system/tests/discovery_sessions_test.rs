@@ -5,7 +5,7 @@ use std::{path::PathBuf, sync::Arc};
 use async_trait::async_trait;
 use baml_rt_core::{
     A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister,
-    BusStream, ContextId, Outcome, Result,
+    BusStream, ContextId, EventSubscription, Outcome, Result,
     ids::{AgentId, EventId, ExternalId, MessageId, UuidId},
 };
 use baml_rt_provenance::{
@@ -361,6 +361,34 @@ fn entry_with_capabilities(
         baml_functions: vec![],
         description: description.map(str::to_string),
         capabilities: capabilities.into_iter().map(str::to_string).collect(),
+        subscriptions: vec![],
+    };
+    AgentDiscoveryEntry {
+        agent_package: pkg.to_string(),
+        agent_instance_id: "default".to_string(),
+        name: name.to_string(),
+        version: version.to_string(),
+        agent_card: card,
+    }
+}
+
+fn entry_with_subscriptions(
+    pkg: &str,
+    name: &str,
+    version: &str,
+    description: Option<&str>,
+    subscriptions: Vec<EventSubscription>,
+) -> AgentDiscoveryEntry {
+    let card = AgentCard {
+        name: name.to_string(),
+        version: version.to_string(),
+        agent_package: pkg.to_string(),
+        agent_instance_id: "default".to_string(),
+        tools: vec!["system/internal_a2a".to_string()],
+        baml_functions: vec![],
+        description: description.map(str::to_string),
+        capabilities: vec!["a2a".to_string()],
+        subscriptions,
     };
     AgentDiscoveryEntry {
         agent_package: pkg.to_string(),
@@ -605,6 +633,145 @@ async fn discover_agents_capability_filter_is_case_insensitive() {
             assert_eq!(
                 agents[0].get("agentPackage").and_then(|v| v.as_str()),
                 Some("clickup-agent")
+            );
+        }
+        other => panic!("expected Done(Some(output)), got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn discover_agents_session_returns_declared_subscriptions() {
+    let entries = vec![entry_with_subscriptions(
+        "workflow-intake-agent",
+        "Workflow Intake",
+        "1.0.0",
+        Some("Consumes task-daemon events"),
+        vec![EventSubscription {
+            schema_versions: vec!["task-daemon.interpretation.v1".to_string()],
+            source_kinds: vec!["slack".to_string(), "clickup".to_string()],
+            ..EventSubscription::default()
+        }],
+    )];
+    let agent_list = Arc::new(MockAgentList::new(entries));
+    let registry = Arc::new(ToolRegistry::new());
+    let a2a_handler = Arc::new(MockA2aHandler);
+    registry
+        .register_bundle(SystemBundle::new(agent_list, registry.clone(), a2a_handler))
+        .unwrap();
+
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000001a").unwrap());
+    let session_id = registry
+        .open_session(
+            "system/discover_agents",
+            json!({}),
+            &ContextId::new(1, 26),
+            &agent_id,
+        )
+        .await
+        .unwrap();
+
+    registry
+        .session_send(&session_id, json!({ "limit": 10 }))
+        .await
+        .unwrap();
+
+    let step = registry.session_next(&session_id).await.unwrap();
+    match &step {
+        ToolStep::Done {
+            output: Some(output),
+        } => {
+            let subscriptions = output
+                .pointer("/agents/0/subscriptions")
+                .and_then(|value| value.as_array())
+                .expect("subscriptions should be present");
+            assert_eq!(subscriptions.len(), 1);
+            assert_eq!(
+                subscriptions[0]
+                    .get("schemaVersions")
+                    .or_else(|| subscriptions[0].get("schema_versions"))
+                    .and_then(|value| value.as_array())
+                    .map(|items| items.len()),
+                Some(1)
+            );
+        }
+        other => panic!("expected Done(Some(output)), got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn discover_agents_session_filters_by_event_subscription() {
+    let entries = vec![
+        entry_with_subscriptions(
+            "workflow-intake-agent",
+            "Workflow Intake",
+            "1.0.0",
+            Some("Consumes task-daemon Slack events"),
+            vec![EventSubscription {
+                schema_versions: vec!["task-daemon.interpretation.v1".to_string()],
+                source_kinds: vec!["slack".to_string()],
+                ..EventSubscription::default()
+            }],
+        ),
+        entry_with_subscriptions(
+            "clickup-reconciler",
+            "ClickUp Reconciler",
+            "1.0.0",
+            Some("Consumes task-daemon ClickUp events"),
+            vec![EventSubscription {
+                schema_versions: vec!["task-daemon.interpretation.v1".to_string()],
+                source_kinds: vec!["clickup".to_string()],
+                ..EventSubscription::default()
+            }],
+        ),
+    ];
+    let agent_list = Arc::new(MockAgentList::new(entries));
+    let registry = Arc::new(ToolRegistry::new());
+    let a2a_handler = Arc::new(MockA2aHandler);
+    registry
+        .register_bundle(SystemBundle::new(agent_list, registry.clone(), a2a_handler))
+        .unwrap();
+
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000001b").unwrap());
+    let session_id = registry
+        .open_session(
+            "system/discover_agents",
+            json!({}),
+            &ContextId::new(1, 27),
+            &agent_id,
+        )
+        .await
+        .unwrap();
+
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "requiredSchemaVersions": ["task-daemon.interpretation.v1"],
+                "requiredSourceKinds": ["clickup"],
+                "limit": 10
+            }),
+        )
+        .await
+        .unwrap();
+
+    let step = registry.session_next(&session_id).await.unwrap();
+    match &step {
+        ToolStep::Done {
+            output: Some(output),
+        } => {
+            let agents = output
+                .get("agents")
+                .and_then(|value| value.as_array())
+                .unwrap();
+            assert_eq!(agents.len(), 1);
+            assert_eq!(
+                agents[0]
+                    .get("agentPackage")
+                    .or_else(|| agents[0].get("agent_package"))
+                    .and_then(|value| value.as_str()),
+                Some("clickup-reconciler")
             );
         }
         other => panic!("expected Done(Some(output)), got {:?}", other),

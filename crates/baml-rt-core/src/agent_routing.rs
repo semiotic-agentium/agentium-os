@@ -6,7 +6,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{BamlRtError, Result};
+use crate::{BamlRtError, EventSubscription, Result};
 
 fn is_valid_identifier(value: &str) -> bool {
     value
@@ -136,6 +136,9 @@ pub struct AgentCard {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
+    /// Event subscriptions declared by this agent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subscriptions: Vec<EventSubscription>,
 }
 
 /// Narrow trait: lists running agents. HTTP GET /agents and system/discover_agents depend on this.
