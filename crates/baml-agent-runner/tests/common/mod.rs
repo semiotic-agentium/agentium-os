@@ -1,5 +1,4 @@
 use std::{
-    fs,
     path::PathBuf,
     sync::{Arc, OnceLock},
 };
@@ -53,7 +52,7 @@ use serde_json::Value;
     feature = "llm-tests"
 ))]
 #[allow(unused_imports)] // Used by clickup/notion/slack test binaries, not all.
-pub use test_support::common::TempEnvVar;
+pub use test_support::common::{TempDirCleanup, TempEnvVar};
 use tokio::sync::Semaphore;
 
 pub fn init_test_tracing() {
@@ -296,41 +295,6 @@ impl Drop for RunningHttpServer {
         if let Some(handle) = self.handle.take() {
             handle.abort();
         }
-    }
-}
-
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
-#[derive(Debug)]
-pub struct TempDirCleanup {
-    path: PathBuf,
-}
-
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
-impl TempDirCleanup {
-    pub fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-}
-
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
-impl Drop for TempDirCleanup {
-    fn drop(&mut self) {
-        fs::remove_dir_all(&self.path).ok();
     }
 }
 

@@ -302,6 +302,24 @@ pub fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Removes a temporary directory tree on drop.
+#[derive(Debug)]
+pub struct TempDirCleanup {
+    path: PathBuf,
+}
+
+impl TempDirCleanup {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for TempDirCleanup {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.path).ok();
+    }
+}
+
 /// Temporarily sets an environment variable for the lifetime of this guard.
 ///
 /// Restores the previous value on drop.
