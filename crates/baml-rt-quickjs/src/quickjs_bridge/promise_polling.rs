@@ -49,11 +49,11 @@ const EFFECT_EARLY_CHECK_WINDOW: u32 = 500;
 /// For the first N attempts, never use the short idle timeout so the promise executor has time
 /// to run and emit effects on slow CI (where run_pending_jobs may be scheduled late).
 const EFFECT_WARMUP_ATTEMPTS: u32 = 2000;
-/// Absolute cap on polling attempts (~30 s at 1 ms/sleep). Prevents unbounded spin when
+/// Absolute cap on polling wall-clock time (ms). Prevents unbounded spin when
 /// effect-gated policy keeps extending. Also surfaces deadlock when deliver_resume_input
 /// calls invoke_js_function → evaluate() → poll: the bridge lock is held across the poll
 /// so the LLM completion task cannot acquire it to resolve the promise (ctx-1-2 stall).
-const ABSOLUTE_CAP_ATTEMPTS: u32 = 30_000;
+const ABSOLUTE_CAP_MS: u64 = 30_000;
 
 /// Parameters for promise resolution polling (keeps `poll_promise_until_result` under clippy's arg limit).
 ///
@@ -108,7 +108,7 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
             max_attempts_ms,
         )
     });
-    let mut timeout_attempts: Option<u32> = None;
+    let mut timeout_budget_ms: Option<u64> = None;
     let mut attempts = 0u32;
     let is_resume_poll = result_notify.is_some();
     let poll_mode = if is_resume_poll { "notify" } else { "plain" };
@@ -175,7 +175,7 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
             tracing::trace!(
                 token = %eval_token.0,
                 attempts,
-                timeout_attempts = ?timeout_attempts,
+                timeout_budget_ms = ?timeout_budget_ms,
                 resume_poll = is_resume_poll,
                 "poll_promise: interleaving checkpoint"
             );
@@ -219,7 +219,7 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
 
         // First iteration or periodic re-check: sample effect-gated timeout. Early window
         // uses a shorter interval so we see effects soon after they start.
-        let should_recheck = if timeout_attempts.is_none() {
+        let should_recheck = if timeout_budget_ms.is_none() {
             true
         } else if attempts < EFFECT_EARLY_CHECK_WINDOW {
             attempts > 0 && attempts.is_multiple_of(EFFECT_EARLY_CHECK_INTERVAL)
@@ -227,31 +227,34 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
             attempts.is_multiple_of(EFFECT_CHECK_INTERVAL)
         };
         if should_recheck && let Some(poller) = poller.as_ref() {
-            let new_timeout = poller.timeout_attempts().await;
+            let new_timeout_ms = poller.timeout_attempts().await as u64;
             tracing::trace!(
                 attempts,
                 context_id = %scope.context_id(),
-                timeout_attempts = new_timeout,
+                timeout_ms = new_timeout_ms,
                 "poll_promise: effect-gated timeout sample"
             );
-            timeout_attempts = Some(timeout_attempts.map_or(new_timeout, |t| t.max(new_timeout)));
+            timeout_budget_ms =
+                Some(timeout_budget_ms.map_or(new_timeout_ms, |t| t.max(new_timeout_ms)));
         }
 
         if result_notify.is_none() {
             tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
         }
         attempts += 1;
-        let mut limit = timeout_attempts.unwrap_or(u32::MAX);
+        let mut limit_ms = timeout_budget_ms.unwrap_or(u64::MAX);
         if attempts < EFFECT_WARMUP_ATTEMPTS {
-            limit = limit.max(max_attempts_ms as u32);
+            limit_ms = limit_ms.max(max_attempts_ms);
         }
         // Hard cap so we never spin unbounded (e.g. promise never resolves for stream/nested ctx).
-        limit = limit.min(ABSOLUTE_CAP_ATTEMPTS);
-        if attempts >= limit {
+        limit_ms = limit_ms.min(ABSOLUTE_CAP_MS);
+        let elapsed_ms = poll_started_at.elapsed().as_millis() as u64;
+        if elapsed_ms >= limit_ms {
             tracing::warn!(
                 attempts,
                 context_id = %scope.context_id(),
-                limit,
+                limit_ms,
+                elapsed_ms,
                 "Promise did not resolve within cap; possible deadlock or unresolved stream/nested eval"
             );
             if let Some(t) = token_to_remove
@@ -267,8 +270,8 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
             }
             metrics::record_quickjs_promise_poll(poll_mode, "timeout", poll_started_at.elapsed());
             return Err(BamlRtError::QuickJs(format!(
-                "Promise did not resolve after {} attempts ({}ms)",
-                limit, limit
+                "Promise did not resolve after {}ms (limit={}ms, attempts={})",
+                elapsed_ms, limit_ms, attempts
             )));
         }
     }
