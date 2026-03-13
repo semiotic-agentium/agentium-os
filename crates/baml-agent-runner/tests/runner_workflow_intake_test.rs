@@ -137,6 +137,7 @@ fn discovery_entry(package: &str, capabilities: &[&str]) -> AgentDiscoveryEntry 
             .iter()
             .map(|value| (*value).to_string())
             .collect(),
+        subscriptions: Vec::new(),
     };
 
     AgentDiscoveryEntry {

@@ -8,11 +8,11 @@
 //! This module implements a collector that hooks into BAML's execution lifecycle
 //! to intercept LLM calls and route them through our interceptor system.
 
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
 use baml_rt_core::{
     Outcome, Result,
-    bus::{EffectEmitter, EffectStartToken, LlmKind},
+    bus::{EffectEmitter, EffectStartToken, LlmKind, LlmUsage},
     context,
     ids::ContextId,
 };
@@ -30,8 +30,8 @@ pub struct BamlLLMCollector {
     interceptor_registry: Arc<Mutex<InterceptorRegistry>>,
     function_name: String,
     effect_emitter: Option<Arc<dyn EffectEmitter>>,
-    /// Store effect tokens keyed by context_id for type-safe completion
-    effect_tokens: Arc<Mutex<HashMap<ContextId, EffectStartToken<LlmKind>>>>,
+    /// Pending effect tokens to complete after function execution.
+    effect_tokens: Arc<Mutex<Vec<EffectStartToken<LlmKind>>>>,
 }
 
 /// Handle to complete the LLM effect after tool/plan execution (e.g. so plan extraction failure emits PromptRejected).
@@ -70,6 +70,55 @@ impl LLMCompletionHandle {
     }
 }
 
+impl Drop for BamlLLMCollector {
+    fn drop(&mut self) {
+        let Some(emitter) = self.effect_emitter.clone() else {
+            return;
+        };
+        let mut guard = match self.effect_tokens.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+        if guard.is_empty() {
+            return;
+        }
+        let leaked_tokens = std::mem::take(&mut *guard);
+        drop(guard);
+        tracing::warn!(
+            leaked = leaked_tokens.len(),
+            function = %self.function_name,
+            "BamlLLMCollector dropped with pending LLM effect tokens; completing as cancellation"
+        );
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn(async move {
+                    for token in leaked_tokens {
+                        if let Err(e) = token
+                            .complete(
+                                emitter.as_ref(),
+                                None,
+                                Some(json!({ "error": "invocation_cancelled" })),
+                                0,
+                                Outcome::Failure,
+                                Some("invocation_cancelled".to_string()),
+                            )
+                            .await
+                        {
+                            tracing::warn!(error = ?e, "Failed to complete leaked cancelled LLM effect");
+                        }
+                    }
+                });
+            }
+            Err(_) => {
+                tracing::error!(
+                    leaked = leaked_tokens.len(),
+                    "No Tokio runtime while dropping collector with pending tokens; cannot emit cancellation completions"
+                );
+            }
+        }
+    }
+}
+
 impl BamlLLMCollector {
     /// Create a new BAML LLM collector
     pub fn new(
@@ -85,7 +134,7 @@ impl BamlLLMCollector {
             interceptor_registry,
             function_name,
             effect_emitter: None,
-            effect_tokens: Arc::new(Mutex::new(HashMap::new())),
+            effect_tokens: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -100,11 +149,11 @@ impl BamlLLMCollector {
     /// post-execution completion. Completion is never tied to BAML trace.
     pub async fn store_effect_token(
         &self,
-        context_id: ContextId,
+        _context_id: ContextId,
         token: EffectStartToken<LlmKind>,
     ) {
         let mut tokens = self.effect_tokens.lock().await;
-        tokens.insert(context_id, token);
+        tokens.push(token);
     }
 
     /// Complete all pending LLM effects using our token(s), clock, and outcome.
@@ -122,15 +171,16 @@ impl BamlLLMCollector {
             Some(e) => e.clone(),
             None => return,
         };
+        let usage = self.extract_usage_from_trace();
         let tokens: Vec<EffectStartToken<LlmKind>> = {
             let mut guard = self.effect_tokens.lock().await;
-            guard.drain().map(|(_, t)| t).collect()
+            std::mem::take(&mut *guard)
         };
         for token in tokens {
             if let Err(e) = token
                 .complete(
                     emitter.as_ref(),
-                    None,
+                    usage.clone(),
                     llm_result_payload.clone(),
                     duration_ms,
                     outcome,
@@ -205,6 +255,20 @@ impl BamlLLMCollector {
         Ok(())
     }
 
+    fn extract_usage_from_trace(&self) -> Option<LlmUsage> {
+        let mut function_log = self.inner.last_function_log()?;
+        let mut latest_known: Option<LlmUsage> = None;
+        for call_kind in function_log.calls() {
+            if let Some(llm_call) = call_kind.as_request() {
+                let usage_value = serde_json::to_value(&llm_call.usage).ok()?;
+                if let Some(parsed) = parse_llm_usage(&usage_value) {
+                    latest_known = Some(parsed);
+                }
+            }
+        }
+        latest_known
+    }
+
     /// Extract LLM call context from an LLMCall
     fn extract_context_from_llm_call(
         &self,
@@ -237,4 +301,58 @@ impl BamlLLMCollector {
             }),
         }
     }
+}
+
+fn parse_llm_usage(usage: &serde_json::Value) -> Option<LlmUsage> {
+    if usage.is_null() {
+        return None;
+    }
+    let prompt_tokens = usage
+        .get("prompt_tokens")
+        .and_then(parse_u64_value)
+        .or_else(|| usage.get("input_tokens").and_then(parse_u64_value));
+    let completion_tokens = usage
+        .get("completion_tokens")
+        .and_then(parse_u64_value)
+        .or_else(|| usage.get("output_tokens").and_then(parse_u64_value));
+    let total_tokens = usage.get("total_tokens").and_then(parse_u64_value);
+    let cached_input_tokens = usage
+        .get("cached_input_tokens")
+        .and_then(parse_u64_value)
+        .or_else(|| {
+            usage
+                .get("input_tokens_details")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|details| details.get("cached_tokens"))
+                .and_then(parse_u64_value)
+        })
+        .or_else(|| {
+            usage
+                .get("prompt_tokens_details")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|details| details.get("cached_tokens"))
+                .and_then(parse_u64_value)
+        });
+    match (prompt_tokens, completion_tokens, total_tokens) {
+        (Some(prompt), Some(completion), Some(total)) => Some(LlmUsage::Known {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: total,
+            cached_input_tokens,
+        }),
+        (Some(prompt), Some(completion), None) => Some(LlmUsage::Known {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: prompt.saturating_add(completion),
+            cached_input_tokens,
+        }),
+        _ => None,
+    }
+}
+
+fn parse_u64_value(value: &serde_json::Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_i64().and_then(|v| u64::try_from(v).ok()))
+        .or_else(|| value.as_str().and_then(|s| s.parse::<u64>().ok()))
 }

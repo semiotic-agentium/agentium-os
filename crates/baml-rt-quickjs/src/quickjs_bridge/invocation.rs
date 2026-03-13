@@ -5,24 +5,6 @@
 //! Registration of natives lives in baml_registration; this module only
 //! generates the call-site code.
 
-/// Build IIFE that calls __baml_invoke(function_name, JSON.stringify(args)) and __awaitAndStringify.
-pub(crate) fn build_baml_invoke_js_code(function_name: &str, args_json: &str) -> String {
-    format!(
-        r#"
-        (function() {{
-            try {{
-                const args = {};
-                const promise = __baml_invoke("{}", JSON.stringify(args));
-                return __awaitAndStringify(promise);
-            }} catch (error) {{
-                return JSON.stringify({{ error: error.message || String(error) }});
-            }}
-        }})()
-        "#,
-        args_json, function_name
-    )
-}
-
 /// Build IIFE that gets globalThis.__js_tools[name], calls it with args, and __awaitAndStringify.
 pub(crate) fn build_js_tool_invoke_js_code(tool_name: &str, args_json: &str) -> String {
     format!(

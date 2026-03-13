@@ -134,7 +134,10 @@ fn dot_node_attrs(label: &str) -> (&'static str, &'static str) {
         ) => ("ellipse", "#dbeafe"),
         Some(GraphNodeLabel::AgentRuntimeInstance) => ("hexagon", "#e2e8f0"),
         Some(
-            GraphNodeLabel::Message
+            GraphNodeLabel::Intent
+            | GraphNodeLabel::Plan
+            | GraphNodeLabel::PlanStep
+            | GraphNodeLabel::Message
             | GraphNodeLabel::LlmPrompt
             | GraphNodeLabel::ToolArgs
             | GraphNodeLabel::Task

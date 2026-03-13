@@ -28,14 +28,17 @@ setup = 'pre-extract-graphqlite'
 [profile.ci]
 # Do not stop scheduling on first failure; surface full suite results in CI.
 fail-fast = false
-# Limit overall parallelism to reduce CI runner contention.
-test-threads = 6
 # JUnit output for GitHub Actions junit-report-action.
 [profile.ci.junit]
 path = "junit.xml"
 store-failure-output = true
 
 # Rate-limit provenance/heavy tests (max 1 at a time) to avoid resource contention.
+# The graphqlite C extension serialises all Cypher operations process-wide via
+# GRAPHQLITE_SERIAL; running graphqlite-heavy test binaries concurrently would
+# cause each test to queue on that mutex, inflating wall-clock time dramatically.
+# Routing them to the "provenance" group (max-threads = 1) eliminates contention.
+#
 # LLM e2e tests hit external APIs with variable latency; cap concurrency to reduce
 # scheduler pressure and timeout flakes on resource-constrained CI runners.
 [test-groups]
@@ -48,6 +51,16 @@ test-group = "provenance"
 
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-a2a) and (binary(provenance_context_test) or binary(provenance_property_test))'
+test-group = "provenance"
+
+# baml-rt-api integration tests write to graphqlite stores; serialise to avoid mutex contention.
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-api)'
+test-group = "provenance"
+
+# baml-tools-system discovery/introspection/extrospection tests write to graphqlite stores.
+[[profile.ci.overrides]]
+filter = 'package(baml-tools-system)'
 test-group = "provenance"
 
 # E2E: build fixture (OXC + BAML + tar) + agent setup; allow long run.
@@ -91,3 +104,19 @@ filter = 'package(baml-rt-a2a) and binary(task_streaming_test)'
 test-group = "llm"
 slow-timeout = { period = "60s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "3s" }
+
+# A2A GraphQLite-using test binaries: route to provenance group so they don't
+# contend on GRAPHQLITE_SERIAL with baml-tools-system snapshot tests. Both
+# run_handle_a2a_property_test and a2a_malformed_and_error_paths_test create
+# graphqlite stores; running them alongside snapshot tests causes the serial
+# mutex to queue for hundreds of seconds, making snapshot tests appear to hang.
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-a2a) and (binary(run_handle_a2a_property_test) or binary(a2a_malformed_and_error_paths_test))'
+test-group = "provenance"
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+# A2A property test drives many concurrent INPUT_REQUIRED/resume cycles;
+# allow up to 5 minutes for the proptest + async overhead.
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-a2a) and test(prop_input_required_resume_positive_and_no_auto_final)'
+slow-timeout = { period = "300s", terminate-after = 1 }

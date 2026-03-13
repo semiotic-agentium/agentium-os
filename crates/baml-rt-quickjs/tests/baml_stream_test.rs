@@ -90,7 +90,7 @@ async fn test_js_stream_baml_function() {
     let scope = context::InvocationScope::synthetic_message(agent_id);
 
     let result = context::with_scope(scope.as_scope().clone(), async {
-        bridge.evaluate(Some(&scope), js_code).await
+        bridge.eval_scoped(&scope, js_code).await
     })
     .await;
 

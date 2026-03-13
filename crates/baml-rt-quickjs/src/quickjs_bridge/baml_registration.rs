@@ -2,13 +2,57 @@
 //!
 //! All __baml_invoke, __baml_stream, __set_eval_result, await helpers, and
 //! per-function registration live here so the main bridge focuses on coordination.
+//!
+//! ## Execution Session Invariants
+//!
+//! The `ExecutionSession` typestate FSM is the single source of truth for
+//! intent/plan/step lifecycle within a task. It is shared (via `Arc<StdMutex>`)
+//! with the tool execution layer so `resolve_planning_step` can read
+//! `current_step_id` to attribute tool/LLM calls to plan steps.
+//!
+//! 1. **Typestate lifecycle** (compile-time):
+//!    `AwaitIntent → AwaitPlan → Executable → Closed`
+//!    Invalid transitions return `Err`; the enum prevents skipping phases.
+//!
+//! 2. **Scope immutability**:
+//!    ∀ commands on session S: `scope == S.base.owner_scope`
+//!    Enforced by `ensure_execution_session_scope_matches` on every command.
+//!
+//! 3. **Step coordinate availability**:
+//!    ∀ tool/LLM calls during an in-progress step:
+//!    `resolve_planning_step()` returns `Some((plan_id, step_id))`.
+//!    Enforced by `startStep` setting `current_step_id`; `completeStep` clearing it.
+//!
+//! 4. **Known step membership**:
+//!    ∀ `startStep`/`completeStep(step_id)`: `step_id ∈ step_status.keys()`
+//!    Enforced by `apply_start_step` / `apply_complete_step` returning `Err`.
+//!
+//! 5. **Dependency ordering**:
+//!    ∀ `startStep(step_id)`: all `depends_on(step_id) ⊆ completed`
+//!    Enforced by `apply_start_step` checking `completed` set.
+//!
+//! 6. **Epoch monotonicity**:
+//!    Supersessions increment epoch; non-supersessions preserve it.
+//!    Enforced by `ensure_lineage_epoch_matches`.
+//!
+//! 7. **Current step exclusivity** (sequential execution):
+//!    `current_step_id` tracks the most recent `startStep` call within a task.
+//!    Concurrent step execution requires coroutine-local attribution (future work).
 
-use std::sync::atomic::Ordering;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use baml_rt_core::{
     BamlRtError, Result,
+    bus::PlanningSupersessionKind,
     context::{self, InvocationScope},
     correlation,
+    ids::ExecutionSessionId,
 };
 use quickjs_runtime::{
     jsutils::Script, quickjsrealmadapter::QuickJsRealmAdapter, values::JsValueFacade,
@@ -23,7 +67,500 @@ use super::{
     types::InFlightGuard,
     wrappers,
 };
-use crate::js_value_converter::value_to_js_value_facade;
+use crate::{
+    execution_session_types::ExecutionSessionCommand, js_value_converter::value_to_js_value_facade,
+};
+
+/// Base scope owned by every execution session variant.
+#[derive(Debug, Clone)]
+pub(crate) struct SessionBase {
+    pub(crate) owner_scope: context::RuntimeScope,
+    pub(crate) owner_task_id: String,
+    pub(crate) owner_context_id: String,
+}
+
+/// Lineage epoch: incremented on supersession to reject stale step mutations.
+type LineageEpoch = u64;
+
+/// Step-transition event emitted by `apply_start_step` / `apply_complete_step`.
+struct StepTransitionEvent {
+    intent_id: String,
+    plan_id: String,
+    scope: context::RuntimeScope,
+    step_id: String,
+    old_status: String,
+    new_status: String,
+    evidence_text: String,
+    epoch: LineageEpoch,
+}
+
+/// Abort event emitted per non-terminal step by `apply_abort`.
+struct StepAbortEvent {
+    intent_id: String,
+    plan_id: String,
+    scope: context::RuntimeScope,
+    step_id: String,
+    old_status: String,
+    reason: String,
+    epoch: LineageEpoch,
+}
+
+/// Typestate: invalid transitions are unrepresentable.
+#[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)] // Executable is large by design; all fields are needed for step lifecycle
+pub(crate) enum ExecutionSession {
+    AwaitIntent(SessionBase),
+    AwaitPlan {
+        base: SessionBase,
+        intent_id: String,
+        epoch: LineageEpoch,
+    },
+    Executable {
+        base: SessionBase,
+        intent_id: String,
+        plan_id: String,
+        plan_steps: Vec<String>,
+        step_status: HashMap<String, String>,
+        step_deps: HashMap<String, Vec<String>>,
+        completed: HashSet<String>,
+        epoch: LineageEpoch,
+        current_step_id: Option<String>,
+    },
+    Closed(SessionBase),
+}
+
+impl ExecutionSession {
+    fn base(&self) -> &SessionBase {
+        match self {
+            Self::AwaitIntent(b) => b,
+            Self::AwaitPlan { base, .. } => base,
+            Self::Executable { base, .. } => base,
+            Self::Closed(b) => b,
+        }
+    }
+
+    fn epoch(&self) -> Option<LineageEpoch> {
+        match self {
+            Self::AwaitPlan { epoch, .. } | Self::Executable { epoch, .. } => Some(*epoch),
+            _ => None,
+        }
+    }
+
+    fn new(owner_scope: context::RuntimeScope, owner_task_id: String) -> Self {
+        let base = SessionBase {
+            owner_context_id: owner_scope.context_id().as_str().to_string(),
+            owner_scope,
+            owner_task_id,
+        };
+        Self::AwaitIntent(base)
+    }
+
+    fn into_await_plan(
+        self,
+        intent_id: String,
+        epoch: LineageEpoch,
+    ) -> std::result::Result<Self, quickjs_runtime::jsutils::JsError> {
+        match self {
+            Self::AwaitIntent(base) => Ok(Self::AwaitPlan {
+                base,
+                intent_id,
+                epoch,
+            }),
+            _ => Err(quickjs_runtime::jsutils::JsError::new_str(
+                "execution session cannot submitIntent in current phase",
+            )),
+        }
+    }
+
+    fn into_executable(
+        self,
+        plan_id: String,
+        plan_steps: Vec<String>,
+        step_status: HashMap<String, String>,
+        step_deps: HashMap<String, Vec<String>>,
+        epoch: LineageEpoch,
+    ) -> std::result::Result<Self, quickjs_runtime::jsutils::JsError> {
+        match self {
+            Self::AwaitPlan {
+                base,
+                intent_id,
+                epoch: _,
+            } => Ok(Self::Executable {
+                base,
+                intent_id,
+                plan_id,
+                plan_steps,
+                step_status,
+                step_deps,
+                completed: HashSet::new(),
+                epoch,
+                current_step_id: None,
+            }),
+            _ => Err(quickjs_runtime::jsutils::JsError::new_str(
+                "execution session cannot submitPlan in current phase",
+            )),
+        }
+    }
+
+    fn into_closed(self) -> std::result::Result<Self, quickjs_runtime::jsutils::JsError> {
+        match self {
+            Self::Executable { base, .. }
+            | Self::AwaitPlan { base, .. }
+            | Self::AwaitIntent(base) => Ok(Self::Closed(base)),
+            Self::Closed(_) => Err(quickjs_runtime::jsutils::JsError::new_str(
+                "execution session already closed",
+            )),
+        }
+    }
+
+    /// INVARIANT 3: Sets current_step_id for step coordinate availability.
+    /// INVARIANT 4: Rejects unknown step_ids (known step membership).
+    /// INVARIANT 5: Rejects if dependencies not completed (dependency ordering).
+    fn apply_start_step(
+        self,
+        step_id: &str,
+        evidence_text: &str,
+    ) -> std::result::Result<(Self, StepTransitionEvent), quickjs_runtime::jsutils::JsError> {
+        let Self::Executable {
+            base,
+            intent_id,
+            plan_id,
+            plan_steps,
+            mut step_status,
+            step_deps,
+            completed,
+            epoch,
+            current_step_id: _,
+        } = self
+        else {
+            return Err(quickjs_runtime::jsutils::JsError::new_str(
+                "execution session is not executable",
+            ));
+        };
+        if !step_status.contains_key(step_id) {
+            return Err(quickjs_runtime::jsutils::JsError::new_str(
+                "stepId does not exist in plan",
+            ));
+        }
+        let old_status = step_status
+            .get(step_id)
+            .cloned()
+            .unwrap_or_else(|| "pending".to_string());
+        if old_status != "pending" {
+            return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
+                "step cannot transition to in_progress from {old_status}: {step_id}"
+            )));
+        }
+        let deps = step_deps.get(step_id).cloned().unwrap_or_default();
+        for dep in &deps {
+            if !completed.contains(dep) {
+                return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
+                    "cannot start step before dependency: {dep}"
+                )));
+            }
+        }
+        step_status.insert(step_id.to_string(), "in_progress".to_string());
+        let new_session = Self::Executable {
+            base: base.clone(),
+            intent_id: intent_id.clone(),
+            plan_id: plan_id.clone(),
+            plan_steps,
+            step_status,
+            step_deps,
+            completed,
+            epoch,
+            current_step_id: Some(step_id.to_string()),
+        };
+        let event = StepTransitionEvent {
+            intent_id,
+            plan_id,
+            scope: base.owner_scope.clone(),
+            step_id: step_id.to_string(),
+            old_status,
+            new_status: "in_progress".to_string(),
+            evidence_text: evidence_text.to_string(),
+            epoch,
+        };
+        Ok((new_session, event))
+    }
+
+    /// INVARIANT 3: Clears current_step_id when the completed step matches.
+    /// INVARIANT 4: Rejects unknown step_ids.
+    fn apply_complete_step(
+        self,
+        step_id: &str,
+        evidence_text: &str,
+    ) -> std::result::Result<(Self, StepTransitionEvent), quickjs_runtime::jsutils::JsError> {
+        let Self::Executable {
+            base,
+            intent_id,
+            plan_id,
+            plan_steps,
+            mut step_status,
+            step_deps,
+            mut completed,
+            epoch,
+            current_step_id,
+        } = self
+        else {
+            return Err(quickjs_runtime::jsutils::JsError::new_str(
+                "execution session is not executable",
+            ));
+        };
+        if !step_status.contains_key(step_id) {
+            return Err(quickjs_runtime::jsutils::JsError::new_str(
+                "stepId does not exist in plan",
+            ));
+        }
+        let old_status = step_status
+            .get(step_id)
+            .cloned()
+            .unwrap_or_else(|| "pending".to_string());
+        if old_status != "in_progress" {
+            return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
+                "step cannot transition to completed from {old_status}: {step_id}"
+            )));
+        }
+        step_status.insert(step_id.to_string(), "completed".to_string());
+        completed.insert(step_id.to_string());
+        let new_current_step_id = if current_step_id.as_deref() == Some(step_id) {
+            None
+        } else {
+            current_step_id
+        };
+        let new_session = Self::Executable {
+            base: base.clone(),
+            intent_id: intent_id.clone(),
+            plan_id: plan_id.clone(),
+            plan_steps,
+            step_status,
+            step_deps,
+            completed,
+            epoch,
+            current_step_id: new_current_step_id,
+        };
+        let event = StepTransitionEvent {
+            intent_id,
+            plan_id,
+            scope: base.owner_scope.clone(),
+            step_id: step_id.to_string(),
+            old_status,
+            new_status: "completed".to_string(),
+            evidence_text: evidence_text.to_string(),
+            epoch,
+        };
+        Ok((new_session, event))
+    }
+
+    /// Returns (new_session, abort_events). Abort events: (intent_id, plan_id, scope, step_id, old_status, reason, epoch).
+    fn apply_abort(self, reason: &str) -> (Self, Vec<StepAbortEvent>) {
+        let (base, abort_events) = match self {
+            Self::Executable {
+                base,
+                intent_id,
+                plan_id,
+                plan_steps,
+                mut step_status,
+                step_deps: _,
+                completed: _,
+                epoch,
+                current_step_id: _,
+            } => {
+                let mut events = Vec::new();
+                for step_id in &plan_steps {
+                    let current_status = step_status
+                        .get(step_id)
+                        .cloned()
+                        .unwrap_or_else(|| "pending".to_string());
+                    if current_status == "completed" || current_status == "aborted" {
+                        continue;
+                    }
+                    step_status.insert(step_id.clone(), "aborted".to_string());
+                    events.push(StepAbortEvent {
+                        intent_id: intent_id.clone(),
+                        plan_id: plan_id.clone(),
+                        scope: base.owner_scope.clone(),
+                        step_id: step_id.clone(),
+                        old_status: current_status,
+                        reason: reason.to_string(),
+                        epoch,
+                    });
+                }
+                (base, events)
+            }
+            Self::AwaitIntent(base) | Self::AwaitPlan { base, .. } | Self::Closed(base) => {
+                (base, Vec::new())
+            }
+        };
+        (Self::Closed(base), abort_events)
+    }
+}
+
+static PLANNING_SESSION_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn next_execution_session_id() -> ExecutionSessionId {
+    let n = PLANNING_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
+    ExecutionSessionId::new(format!("execution:{}:{n}", uuid::Uuid::new_v4()))
+}
+
+fn parse_supersession(s: Option<&str>) -> Option<PlanningSupersessionKind> {
+    match s.map(str::trim) {
+        Some("replaced") | Some("replaced_by") | Some("replacedBy") => {
+            Some(PlanningSupersessionKind::ReplacedBy)
+        }
+        Some("refined") | Some("refined_by") | Some("refinedBy") => {
+            Some(PlanningSupersessionKind::RefinedBy)
+        }
+        _ => None,
+    }
+}
+
+/// INVARIANT 6: Epoch monotonicity — session epoch must match the task's current epoch.
+fn ensure_lineage_epoch_matches(
+    session: &ExecutionSession,
+    lineage_epoch: &HashMap<String, LineageEpoch>,
+    task_id: &str,
+) -> std::result::Result<(), quickjs_runtime::jsutils::JsError> {
+    let Some(session_epoch) = session.epoch() else {
+        return Ok(());
+    };
+    let current_epoch = lineage_epoch.get(task_id).copied().unwrap_or(0);
+    if session_epoch != current_epoch {
+        return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
+            "stale lineage: session epoch {session_epoch} does not match current {current_epoch} (session was superseded)"
+        )));
+    }
+    Ok(())
+}
+
+/// INVARIANT 2: Scope immutability — every command must match the session's owner scope.
+fn ensure_execution_session_scope_matches(
+    base: &SessionBase,
+    scope: &context::RuntimeScope,
+) -> std::result::Result<(), quickjs_runtime::jsutils::JsError> {
+    let current_task = scope
+        .task_id_opt()
+        .map(|id| id.as_str().to_string())
+        .ok_or_else(|| {
+            quickjs_runtime::jsutils::JsError::new_str(
+                "execution session action requires task scope",
+            )
+        })?;
+    if current_task != base.owner_task_id
+        || scope.context_id().as_str() != base.owner_context_id.as_str()
+    {
+        tracing::warn!(
+            expected_task_id = %base.owner_task_id,
+            actual_task_id = %current_task,
+            expected_context_id = %base.owner_context_id,
+            actual_context_id = %scope.context_id(),
+            "Execution session scope mismatch"
+        );
+        return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
+            "execution session scope mismatch: action rejected (expected task/context {}/{}, got {}/{})",
+            base.owner_task_id,
+            base.owner_context_id,
+            current_task,
+            scope.context_id().as_str()
+        )));
+    }
+    Ok(())
+}
+
+/// Compute the set of legal step-executor ops for the current FSM position.
+///
+/// Policy is resolved from tool metadata (not from function names). Both known
+/// policies produce identical sequences for `sent` → `Read`; they differ only
+/// in whether `done` allows re-sends (`MultiSend`) or gates to `Finish` only
+/// (`Strict`).  `Strict` is the safe default and correct for every tool
+/// currently in the system.
+fn step_executor_allowed_ops(
+    session_open: bool,
+    last_status: Option<&str>,
+    policy: baml_rt_tools::SessionPolicy,
+) -> Vec<&'static str> {
+    if !session_open {
+        return vec!["Open"];
+    }
+    match policy {
+        baml_rt_tools::SessionPolicy::Strict => match last_status {
+            Some("open") => vec!["Send"],
+            Some("sent") | Some("streaming") | Some("suspended") => vec!["Read"],
+            Some("done") => vec!["Finish", "Read"],
+            Some("aborted") => vec!["Abort"],
+            _ => vec!["Read"],
+        },
+        baml_rt_tools::SessionPolicy::MultiSend => match last_status {
+            Some("open") => vec!["Send"],
+            Some("sent") | Some("streaming") | Some("suspended") => vec!["Read"],
+            Some("done") => vec!["Read", "Send", "Finish"],
+            Some("aborted") => vec!["Abort"],
+            _ => vec!["Read"],
+        },
+    }
+}
+
+fn validate_step_executor_transition(
+    session_open_before_hop: bool,
+    last_status_before_hop: Option<&str>,
+    op: Option<&str>,
+    status: &str,
+    step_executor: &str,
+) -> std::result::Result<(), quickjs_runtime::jsutils::JsError> {
+    if !session_open_before_hop {
+        if status != "open" {
+            return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
+                "runtime step executor contract violation ({step_executor}): expected Open-first hop to yield status 'open', got '{status}'"
+            )));
+        }
+        return Ok(());
+    }
+
+    if last_status_before_hop == Some("open") {
+        if status != "sent" {
+            return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
+                "runtime step executor contract violation ({step_executor}): expected Send-hop status 'sent', got '{status}'"
+            )));
+        }
+        return Ok(());
+    }
+
+    if op == Some("Read")
+        && matches!(
+            last_status_before_hop,
+            Some("sent") | Some("streaming") | Some("suspended") | Some("done")
+        )
+    {
+        if !(status == "streaming" || status == "suspended" || status == "done") {
+            return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
+                "runtime step executor contract violation ({step_executor}): expected Read-hop status in [streaming,suspended,done], got '{status}'"
+            )));
+        }
+        return Ok(());
+    }
+
+    if op == Some("Send")
+        && matches!(
+            last_status_before_hop,
+            Some("sent") | Some("streaming") | Some("suspended") | Some("done")
+        )
+    {
+        if status != "sent" {
+            return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
+                "runtime step executor contract violation ({step_executor}): expected Send-hop status 'sent', got '{status}'"
+            )));
+        }
+        return Ok(());
+    }
+
+    if last_status_before_hop == Some("done") && !(status == "done" || status == "finished") {
+        return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
+            "runtime step executor contract violation ({step_executor}): expected Finish-hop terminal status in [done,finished], got '{status}'"
+        )));
+    }
+
+    Ok(())
+}
 
 /// Register __baml_invoke. Tokenless: host resolves scope from active context.
 pub(super) async fn register_baml_invoke_helper(bridge: &QuickJSBridge) -> Result<()> {
@@ -84,6 +621,7 @@ pub(super) async fn register_baml_invoke_helper(bridge: &QuickJSBridge) -> Resul
                                 &scope_for_tools,
                                 value,
                                 Some(&func_name_clone),
+                                None,
                             )
                             .await
                             .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
@@ -155,24 +693,17 @@ pub(super) async fn register_await_helper(bridge: &QuickJSBridge) -> Result<()> 
                 return Err(quickjs_runtime::jsutils::JsError::new_str("json_string must be a string"));
             };
             let key = InvocationToken(token);
-            {
-                let mut guard = eval_results
-                    .lock()
-                    .map_err(|_| quickjs_runtime::jsutils::JsError::new_str("eval_results lock poisoned"))?;
-                if !guard.contains_key(&key) {
-                    // Late promise resolution after host cleanup (e.g. bounded resume poll timeout).
-                    // Ignore stale writes so we do not surface an unhandled rejection in JS.
-                    tracing::debug!(
-                        token = %key.0,
-                        "stale eval result: token slot already removed"
-                    );
-                    return Ok(JsValueFacade::Undefined);
-                }
-                guard.insert(key.clone(), Some(json_str));
+            if !eval_results.contains_key(&key) {
+                // Late promise resolution after host cleanup (e.g. bounded resume poll timeout).
+                // Ignore stale writes so we do not surface an unhandled rejection in JS.
+                tracing::debug!(
+                    token = %key.0,
+                    "stale eval result: token slot already removed"
+                );
+                return Ok(JsValueFacade::Undefined);
             }
-            if let Ok(mut notify_guard) = eval_notify_by_token.lock()
-                && let Some(notify) = notify_guard.remove(&key)
-            {
+            eval_results.insert(key.clone(), Some(json_str));
+            if let Some((_, notify)) = eval_notify_by_token.remove(&key) {
                 tracing::debug!(token = %key.0, "eval result set, notifying poll loop");
                 notify.notify_one();
             }
@@ -185,6 +716,648 @@ pub(super) async fn register_await_helper(bridge: &QuickJSBridge) -> Result<()> 
     })?;
 
     tracing::debug!("Registered __awaitAndStringify helper function");
+    Ok(())
+}
+
+/// Resolve the `SessionPolicy` for a BAML step-executor function name.
+///
+/// Delegates to `BamlRuntimeManager::resolve_session_policy_for_function`.
+/// Returns `Strict` (the safe default) when the manager lock cannot be
+/// acquired or the function is not in the session-plan-functions manifest.
+fn resolve_session_policy(
+    manager: &crate::baml::BamlRuntimeManager,
+    step_executor: Option<&str>,
+) -> baml_rt_tools::SessionPolicy {
+    match step_executor {
+        Some(f) => manager.resolve_session_policy_for_function(f),
+        None => baml_rt_tools::SessionPolicy::default(),
+    }
+}
+
+/// Register Step Executor runtime helpers so shim JS stays coordination-only.
+pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridge) -> Result<()> {
+    let manager_clone = bridge.baml_manager().clone();
+    bridge
+        .runtime()
+        .set_function(
+            &[],
+            "__step_executor_allowed_ops",
+            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<
+                JsValueFacade,
+                quickjs_runtime::jsutils::JsError,
+            > {
+                if args.is_empty() || !args[0].is_string() {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str(
+                        "Expected step-executor context JSON string",
+                    ));
+                }
+                let payload: Value = serde_json::from_str(args[0].get_str()).map_err(|e| {
+                    quickjs_runtime::jsutils::JsError::new_str(&format!(
+                        "Failed to parse step-executor context JSON: {e}"
+                    ))
+                })?;
+                let session_open = payload
+                    .get("session_open")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let last_status = payload.get("last_status").and_then(Value::as_str);
+                let step_executor = payload.get("step_executor").and_then(Value::as_str);
+                let policy = manager_clone
+                    .try_lock()
+                    .map(|guard| resolve_session_policy(&guard, step_executor))
+                    .unwrap_or_default();
+                let allowed = step_executor_allowed_ops(session_open, last_status, policy);
+                let json = serde_json::to_string(&allowed).map_err(|e| {
+                    quickjs_runtime::jsutils::JsError::new_str(&format!(
+                        "Failed to encode allowed ops JSON: {e}"
+                    ))
+                })?;
+                Ok(JsValueFacade::new_string(json))
+            },
+        )
+        .map_err(|e| BamlRtError::QuickJsWithSource {
+            context: "Failed to register __step_executor_allowed_ops helper".to_string(),
+            source: Box::new(e),
+        })?;
+
+    bridge
+        .runtime()
+        .set_function(
+            &[],
+            "__step_executor_validate_transition",
+            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<
+                JsValueFacade,
+                quickjs_runtime::jsutils::JsError,
+            > {
+                if args.is_empty() || !args[0].is_string() {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str(
+                        "Expected step-executor transition JSON string",
+                    ));
+                }
+                let payload: Value = serde_json::from_str(args[0].get_str()).map_err(|e| {
+                    quickjs_runtime::jsutils::JsError::new_str(&format!(
+                        "Failed to parse step-executor transition JSON: {e}"
+                    ))
+                })?;
+                let session_open_before_hop = payload
+                    .get("session_open_before_hop")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let last_status_before_hop =
+                    payload.get("last_status_before_hop").and_then(Value::as_str);
+                let op = payload.get("op").and_then(Value::as_str);
+                let status = payload
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| {
+                        quickjs_runtime::jsutils::JsError::new_str(
+                            "step-executor transition requires status",
+                        )
+                    })?;
+                let step_executor = payload
+                    .get("step_executor")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown_step_executor");
+                validate_step_executor_transition(
+                    session_open_before_hop,
+                    last_status_before_hop,
+                    op,
+                    status,
+                    step_executor,
+                )?;
+                Ok(JsValueFacade::Null)
+            },
+        )
+        .map_err(|e| BamlRtError::QuickJsWithSource {
+            context: "Failed to register __step_executor_validate_transition helper".to_string(),
+            source: Box::new(e),
+        })?;
+
+    tracing::debug!("Registered step-executor runtime helpers");
+    Ok(())
+}
+
+/// Register `__execution_session_invoke(payload_json)` so execution-session state lives in Rust.
+pub(super) async fn register_execution_session_helper(bridge: &QuickJSBridge) -> Result<()> {
+    let manager_clone = bridge.baml_manager().clone();
+    let registry = bridge.invocation_context_registry().clone();
+    let in_flight = bridge.in_flight_invoke_count_arc().clone();
+    let session_state = bridge.execution_sessions().clone();
+    let lineage_epoch = Arc::new(StdMutex::new(HashMap::<String, LineageEpoch>::new()));
+
+    bridge.runtime().set_function(
+        &[],
+        "__execution_session_invoke",
+        move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
+            if args.is_empty() || !args[0].is_string() {
+                return Err(quickjs_runtime::jsutils::JsError::new_str(
+                    "Expected execution-session payload JSON string",
+                ));
+            }
+            let payload: Value = serde_json::from_str(args[0].get_str()).map_err(|e| {
+                quickjs_runtime::jsutils::JsError::new_str(&format!(
+                    "Failed to parse execution-session payload JSON: {e}"
+                ))
+            })?;
+            let cmd: ExecutionSessionCommand = serde_json::from_value(payload.clone()).map_err(|e| {
+                quickjs_runtime::jsutils::JsError::new_str(&format!(
+                    "Failed to parse execution-session command: {e}"
+                ))
+            })?;
+            let session_id_for_scope = match &cmd {
+                ExecutionSessionCommand::Open => None,
+                ExecutionSessionCommand::SubmitIntent { session_id, .. }
+                | ExecutionSessionCommand::SubmitPlan { session_id, .. }
+                | ExecutionSessionCommand::StartStep { session_id, .. }
+                | ExecutionSessionCommand::CompleteStep { session_id, .. }
+                | ExecutionSessionCommand::Finish { session_id }
+                | ExecutionSessionCommand::Abort { session_id, .. } => Some(session_id.clone()),
+            };
+            let invocation_scope = match &cmd {
+                ExecutionSessionCommand::Open => resolve_scope_from_active_context(&registry)?,
+                _ => {
+                    let session_id = session_id_for_scope.as_ref().ok_or_else(|| {
+                        quickjs_runtime::jsutils::JsError::new_str(
+                            "execution-session payload requires non-empty session_id",
+                        )
+                    })?;
+                    let session_ref = session_state.get(session_id.as_str()).ok_or_else(|| {
+                        quickjs_runtime::jsutils::JsError::new_str("execution session not found")
+                    })?;
+                    session_ref.base().owner_scope.clone()
+                }
+            };
+            let cmd_for_run = cmd.clone();
+
+            let manager_for_promise = manager_clone.clone();
+            let scope_for_run = invocation_scope.clone();
+            let correlation_id = registry
+                .lock()
+                .ok()
+                .and_then(|g| g.current_frame().ok())
+                .and_then(|f| f.correlation_id);
+            let state_store = session_state.clone();
+            let lineage_epoch_store = lineage_epoch.clone();
+
+            in_flight.fetch_add(1, Ordering::Release);
+            let guard_counter = in_flight.clone();
+
+            Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
+                let _in_flight_guard = InFlightGuard(guard_counter);
+                let run = async move {
+                    context::with_scope(invocation_scope, async move {
+                        match &cmd_for_run {
+                            ExecutionSessionCommand::Open => {
+                                let task_id = scope_for_run.task_id_opt().ok_or_else(|| {
+                                    quickjs_runtime::jsutils::JsError::new_str(
+                                        "execution session open requires task scope",
+                                    )
+                                })?;
+                                let session_id = next_execution_session_id();
+                                state_store.insert(
+                                    session_id.as_str().to_string(),
+                                    ExecutionSession::new(
+                                        scope_for_run.clone(),
+                                        task_id.as_str().to_string(),
+                                    ),
+                                );
+                                let out = serde_json::json!({
+                                    "sessionId": session_id.as_str(),
+                                    "phase": "await_intent"
+                                });
+                                Ok(JsValueFacade::new_string(
+                                    serde_json::to_string(&out).map_err(|e| {
+                                        quickjs_runtime::jsutils::JsError::new_str(&format!(
+                                            "Failed to encode execution-session open response: {e}"
+                                        ))
+                                    })?,
+                                ))
+                            }
+                            ExecutionSessionCommand::SubmitIntent { session_id, intent } => {
+                                let supersession = match intent.supersession.as_deref() {
+                                    Some(s) => Some(
+                                        parse_supersession(Some(s)).ok_or_else(|| {
+                                            quickjs_runtime::jsutils::JsError::new_str(&format!(
+                                                "intent.supersession must be replaced|refined, got {s}"
+                                            ))
+                                        })?,
+                                    ),
+                                    None => None,
+                                };
+
+                                let task_id = scope_for_run.task_id_opt().ok_or_else(|| {
+                                    quickjs_runtime::jsutils::JsError::new_str(
+                                        "execution session submitIntent requires task scope",
+                                    )
+                                })?;
+                                let task_id_str = task_id.as_str().to_string();
+
+                                let (emit_scope, epoch) = {
+                                    let mut epoch_guard = lineage_epoch_store.lock().map_err(|_| {
+                                        quickjs_runtime::jsutils::JsError::new_str(
+                                            "lineage epoch lock poisoned",
+                                        )
+                                    })?;
+                                    let epoch = if supersession.is_some() {
+                                        let next = epoch_guard
+                                            .get(&task_id_str)
+                                            .copied()
+                                            .unwrap_or(0)
+                                            .saturating_add(1);
+                                        epoch_guard.insert(task_id_str.clone(), next);
+                                        next
+                                    } else {
+                                        *epoch_guard.entry(task_id_str.clone()).or_insert(0)
+                                    };
+                                    drop(epoch_guard);
+
+                                    let (_, session) = state_store.remove(session_id.as_str()).ok_or_else(|| {
+                                        quickjs_runtime::jsutils::JsError::new_str(
+                                            "execution session not found",
+                                        )
+                                    })?;
+                                    ensure_execution_session_scope_matches(
+                                        session.base(),
+                                        &scope_for_run,
+                                    )?;
+                                    let session = session.into_await_plan(
+                                        intent.intent_id.as_str().to_string(),
+                                        epoch,
+                                    )?;
+                                    let scope = session.base().owner_scope.clone();
+                                    state_store.insert(session_id.as_str().to_string(), session);
+                                    (scope, epoch)
+                                };
+
+                                let manager = manager_for_promise.lock().await;
+                                manager
+                                    .emit_planning_intent_resolved(
+                                        &emit_scope,
+                                        intent.intent_id.as_str().to_string(),
+                                        intent.description.clone(),
+                                        intent.derived_from_message_ids.clone(),
+                                        supersession,
+                                        Some(epoch),
+                                    )
+                                    .await
+                                    .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
+
+                                let out = serde_json::json!({
+                                    "sessionId": session_id.as_str(),
+                                    "phase": "await_plan"
+                                });
+                                Ok(JsValueFacade::new_string(
+                                    serde_json::to_string(&out).map_err(|e| {
+                                        quickjs_runtime::jsutils::JsError::new_str(&format!(
+                                            "Failed to encode execution-session submit_intent response: {e}"
+                                        ))
+                                    })?,
+                                ))
+                            }
+                            ExecutionSessionCommand::SubmitPlan { session_id, plan } => {
+                                let supersession = match plan.supersession.as_deref() {
+                                    Some(s) => Some(
+                                        parse_supersession(Some(s)).ok_or_else(|| {
+                                            quickjs_runtime::jsutils::JsError::new_str(&format!(
+                                                "plan.supersession must be replaced|refined, got {s}"
+                                            ))
+                                        })?,
+                                    ),
+                                    None => None,
+                                };
+
+                                let task_id = scope_for_run.task_id_opt().ok_or_else(|| {
+                                    quickjs_runtime::jsutils::JsError::new_str(
+                                        "execution session submitPlan requires task scope",
+                                    )
+                                })?;
+                                let task_id_str = task_id.as_str().to_string();
+
+                                let mut plan_steps_emit = Vec::with_capacity(plan.steps.len());
+                                let mut plan_steps_ids = Vec::with_capacity(plan.steps.len());
+                                let mut step_status = HashMap::new();
+                                let mut step_deps = HashMap::new();
+                                let mut seen = HashSet::new();
+
+                                for step in &plan.steps {
+                                    let step_id = step.step_id.as_str().to_string();
+                                    if !seen.insert(step_id.clone()) {
+                                        return Err(quickjs_runtime::jsutils::JsError::new_str(
+                                            &format!("duplicate plan stepId: {step_id}"),
+                                        ));
+                                    }
+                                    let deps: Vec<String> = step
+                                        .depends_on
+                                        .iter()
+                                        .filter_map(|v| {
+                                            let s = v.trim();
+                                            if s.is_empty() { None } else { Some(s.to_string()) }
+                                        })
+                                        .collect();
+                                    plan_steps_emit.push(serde_json::json!({
+                                        "step_id": step_id,
+                                        "description": step.description,
+                                        "order": step.order,
+                                        "depends_on": deps,
+                                    }));
+                                    plan_steps_ids.push(step_id.clone());
+                                    step_status.insert(step_id.clone(), "pending".to_string());
+                                    step_deps.insert(step_id, deps);
+                                }
+
+                                let (emit_scope, epoch) = {
+                                    let mut epoch_guard = lineage_epoch_store.lock().map_err(|_| {
+                                        quickjs_runtime::jsutils::JsError::new_str(
+                                            "lineage epoch lock poisoned",
+                                        )
+                                    })?;
+                                    let epoch = if supersession.is_some() {
+                                        let next = epoch_guard
+                                            .get(&task_id_str)
+                                            .copied()
+                                            .unwrap_or(0)
+                                            .saturating_add(1);
+                                        epoch_guard.insert(task_id_str.clone(), next);
+                                        next
+                                    } else {
+                                        *epoch_guard.entry(task_id_str.clone()).or_insert(0)
+                                    };
+                                    drop(epoch_guard);
+
+                                    let (_, session) = state_store.remove(session_id.as_str()).ok_or_else(|| {
+                                        quickjs_runtime::jsutils::JsError::new_str(
+                                            "execution session not found",
+                                        )
+                                    })?;
+                                    ensure_execution_session_scope_matches(
+                                        session.base(),
+                                        &scope_for_run,
+                                    )?;
+                                    if let ExecutionSession::AwaitPlan {
+                                        intent_id: session_intent_id,
+                                        ..
+                                    } = &session
+                                    {
+                                        if session_intent_id != plan.intent_id.as_str() {
+                                            state_store.insert(session_id.as_str().to_string(), session);
+                                            return Err(quickjs_runtime::jsutils::JsError::new_str(
+                                                "plan.intentId must match submitted intentId",
+                                            ));
+                                        }
+                                    } else {
+                                        state_store.insert(session_id.as_str().to_string(), session);
+                                        return Err(quickjs_runtime::jsutils::JsError::new_str(
+                                            "execution session cannot submitPlan in current phase",
+                                        ));
+                                    }
+                                    let session = session.into_executable(
+                                        plan.plan_id.as_str().to_string(),
+                                        plan_steps_ids,
+                                        step_status,
+                                        step_deps,
+                                        epoch,
+                                    )?;
+                                    let scope = session.base().owner_scope.clone();
+                                    state_store.insert(session_id.as_str().to_string(), session);
+                                    (scope, epoch)
+                                };
+
+                                let manager = manager_for_promise.lock().await;
+                                manager
+                                    .emit_planning_plan_generated(
+                                        &emit_scope,
+                                        plan.intent_id.as_str().to_string(),
+                                        plan.plan_id.as_str().to_string(),
+                                        Value::Array(plan_steps_emit),
+                                        supersession,
+                                        Some(epoch),
+                                    )
+                                    .await
+                                    .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
+
+                                let out = serde_json::json!({
+                                    "sessionId": session_id.as_str(),
+                                    "phase": "executable"
+                                });
+                                Ok(JsValueFacade::new_string(
+                                    serde_json::to_string(&out).map_err(|e| {
+                                        quickjs_runtime::jsutils::JsError::new_str(&format!(
+                                            "Failed to encode execution-session submit_plan response: {e}"
+                                        ))
+                                    })?,
+                                ))
+                            }
+                            ExecutionSessionCommand::StartStep { session_id, step_id, evidence_text }
+                            | ExecutionSessionCommand::CompleteStep { session_id, step_id, evidence_text } => {
+                                let is_start = matches!(&cmd_for_run, ExecutionSessionCommand::StartStep { .. });
+                                let step_id_str = step_id.as_str().to_string();
+                                let event = {
+                                    let (_, session) = state_store.remove(session_id.as_str()).ok_or_else(|| {
+                                        quickjs_runtime::jsutils::JsError::new_str(
+                                            "execution session not found",
+                                        )
+                                    })?;
+                                    ensure_execution_session_scope_matches(
+                                        session.base(),
+                                        &scope_for_run,
+                                    )?;
+                                    let epoch_guard = lineage_epoch_store.lock().map_err(|_| {
+                                        quickjs_runtime::jsutils::JsError::new_str(
+                                            "lineage epoch lock poisoned",
+                                        )
+                                    })?;
+                                    ensure_lineage_epoch_matches(
+                                        &session,
+                                        &epoch_guard,
+                                        &session.base().owner_task_id,
+                                    )?;
+                                    drop(epoch_guard);
+                                    let (session, event) = if is_start {
+                                        session.apply_start_step(&step_id_str, evidence_text)?
+                                    } else {
+                                        session.apply_complete_step(&step_id_str, evidence_text)?
+                                    };
+                                    state_store.insert(session_id.as_str().to_string(), session);
+                                    event
+                                };
+
+                                let manager = manager_for_promise.lock().await;
+                                manager
+                                    .emit_planning_step_status_changed(
+                                        &event.scope,
+                                        event.intent_id,
+                                        event.plan_id,
+                                        event.step_id,
+                                        Some(event.old_status),
+                                        event.new_status,
+                                        event.evidence_text,
+                                        Some(event.epoch),
+                                    )
+                                    .await
+                                    .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;
+                                let out = serde_json::json!({ "sessionId": session_id.as_str(), "ok": true });
+                                Ok(JsValueFacade::new_string(
+                                    serde_json::to_string(&out).map_err(|e| {
+                                        quickjs_runtime::jsutils::JsError::new_str(&format!(
+                                            "Failed to encode execution-session step response: {e}"
+                                        ))
+                                    })?,
+                                ))
+                            }
+                            ExecutionSessionCommand::Finish { session_id } => {
+                                {
+                                    // Validate with read-only access first, then remove+mutate.
+                                    {
+                                        let session_ref = state_store.get(session_id.as_str()).ok_or_else(|| {
+                                            quickjs_runtime::jsutils::JsError::new_str(
+                                                "execution session not found",
+                                            )
+                                        })?;
+                                        ensure_execution_session_scope_matches(
+                                            session_ref.base(),
+                                            &scope_for_run,
+                                        )?;
+                                        let epoch_guard = lineage_epoch_store.lock().map_err(|_| {
+                                            quickjs_runtime::jsutils::JsError::new_str(
+                                                "lineage epoch lock poisoned",
+                                            )
+                                        })?;
+                                        ensure_lineage_epoch_matches(
+                                            session_ref.value(),
+                                            &epoch_guard,
+                                            &session_ref.base().owner_task_id,
+                                        )?;
+                                        drop(epoch_guard);
+                                        if matches!(session_ref.value(), ExecutionSession::Closed(_)) {
+                                            let out = serde_json::json!({ "sessionId": session_id.as_str(), "closed": true });
+                                            return Ok(JsValueFacade::new_string(
+                                                serde_json::to_string(&out).map_err(|e| {
+                                                    quickjs_runtime::jsutils::JsError::new_str(&format!(
+                                                        "Failed to encode execution-session finish response: {e}"
+                                                    ))
+                                                })?,
+                                            ));
+                                        }
+                                    }
+                                    let (_, session) = state_store.remove(session_id.as_str()).unwrap();
+                                    if !matches!(session, ExecutionSession::Executable { .. }) {
+                                        state_store.insert(session_id.as_str().to_string(), session);
+                                        return Err(quickjs_runtime::jsutils::JsError::new_str(
+                                            "execution session cannot finish in current phase",
+                                        ));
+                                    }
+                                    if let ExecutionSession::Executable {
+                                        plan_steps,
+                                        completed,
+                                        ..
+                                    } = &session
+                                    {
+                                        for step_id in plan_steps {
+                                            if !completed.contains(step_id) {
+                                                state_store.insert(session_id.as_str().to_string(), session);
+                                                return Err(quickjs_runtime::jsutils::JsError::new_str(
+                                                    "cannot finish before all steps are completed",
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    let session_clone = session.clone();
+                                    let session = session
+                                        .into_closed()
+                                        .inspect_err(|_| {
+                                            state_store.insert(session_id.as_str().to_string(), session_clone);
+                                        })?;
+                                    state_store.insert(session_id.as_str().to_string(), session);
+                                }
+                                let out = serde_json::json!({ "sessionId": session_id.as_str(), "closed": true });
+                                Ok(JsValueFacade::new_string(
+                                    serde_json::to_string(&out).map_err(|e| {
+                                        quickjs_runtime::jsutils::JsError::new_str(&format!(
+                                            "Failed to encode execution-session finish response: {e}"
+                                        ))
+                                    })?,
+                                ))
+                            }
+                            ExecutionSessionCommand::Abort { session_id, reason } => {
+                                let reason = if reason.trim().is_empty() {
+                                    "execution session aborted".to_string()
+                                } else {
+                                    reason.trim().to_string()
+                                };
+                                let abort_events = {
+                                    let (_, session) = state_store.remove(session_id.as_str()).ok_or_else(|| {
+                                        quickjs_runtime::jsutils::JsError::new_str(
+                                            "execution session not found",
+                                        )
+                                    })?;
+                                    ensure_execution_session_scope_matches(
+                                        session.base(),
+                                        &scope_for_run,
+                                    )?;
+                                    let epoch_guard = lineage_epoch_store.lock().map_err(|_| {
+                                        quickjs_runtime::jsutils::JsError::new_str(
+                                            "lineage epoch lock poisoned",
+                                        )
+                                    })?;
+                                    ensure_lineage_epoch_matches(
+                                        &session,
+                                        &epoch_guard,
+                                        &session.base().owner_task_id,
+                                    )?;
+                                    drop(epoch_guard);
+                                    let (session, abort_events) = session.apply_abort(&reason);
+                                    state_store.insert(session_id.as_str().to_string(), session);
+                                    abort_events
+                                };
+
+                                if !abort_events.is_empty() {
+                                    let manager = manager_for_promise.lock().await;
+                                    for evt in abort_events {
+                                        manager
+                                            .emit_planning_step_status_changed(
+                                                &evt.scope,
+                                                evt.intent_id,
+                                                evt.plan_id,
+                                                evt.step_id,
+                                                Some(evt.old_status),
+                                                "aborted".to_string(),
+                                                evt.reason,
+                                                Some(evt.epoch),
+                                            )
+                                            .await
+                                            .map_err(|e| {
+                                                quickjs_runtime::jsutils::JsError::new_str(&e.to_string())
+                                            })?;
+                                    }
+                                }
+
+                                let out = serde_json::json!({ "sessionId": session_id.as_str(), "closed": true });
+                                Ok(JsValueFacade::new_string(
+                                    serde_json::to_string(&out).map_err(|e| {
+                                        quickjs_runtime::jsutils::JsError::new_str(&format!(
+                                            "Failed to encode execution-session abort response: {e}"
+                                        ))
+                                    })?,
+                                ))
+                            }
+                        }
+                    })
+                    .await
+                };
+                if let Some(correlation_id) = correlation_id {
+                    correlation::with_correlation_id(correlation_id, run).await
+                } else {
+                    run.await
+                }
+            }))
+        },
+    )
+    .map_err(|e| BamlRtError::QuickJsWithSource {
+        context: "Failed to register __execution_session_invoke helper".to_string(),
+        source: Box::new(e),
+    })?;
+
+    tracing::debug!("Registered __execution_session_invoke helper");
     Ok(())
 }
 
@@ -291,13 +1464,9 @@ pub(super) async fn register_baml_stream_helper(bridge: &QuickJSBridge) -> Resul
             })?;
 
             let (context_tags, stream_session_id_for_chunks) = stream_sessions
-                .lock()
-                .ok()
-                .and_then(|g| {
-                    g.iter()
-                        .find(|(_sid, session)| !session.is_terminated() && session.scope == scope)
-                        .map(|(sid, session)| (session.context_tags.clone(), Some(sid.0)))
-                })
+                .iter()
+                .find(|entry| !entry.value().is_terminated() && entry.value().scope == scope)
+                .map(|entry| (entry.value().context_tags.clone(), Some(entry.key().0)))
                 .unwrap_or((None, None));
 
             let func_name_clone = func_name.clone();
@@ -463,6 +1632,7 @@ pub(super) async fn register_baml_invoke_session_helper(bridge: &QuickJSBridge) 
                                 &scope_for_tools,
                                 value,
                                 Some(&func_name),
+                                None,
                             )
                             .await
                             .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?;

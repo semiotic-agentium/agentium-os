@@ -6,7 +6,10 @@ use std::{
 
 use baml_rt_core::{
     Outcome,
-    ids::{AgentId, ArtifactId, ContextId, EventId, MessageId, TaskId},
+    bus::PlanningSupersessionKind,
+    ids::{
+        AgentId, ArtifactId, ContextId, EventId, IntentId, MessageId, PlanId, PlanStepId, TaskId,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, Value as JsonValue};
@@ -79,6 +82,7 @@ pub enum LlmUsage {
         prompt_tokens: u64,
         completion_tokens: u64,
         total_tokens: u64,
+        cached_input_tokens: Option<u64>,
     },
     Unknown,
 }
@@ -98,6 +102,15 @@ pub struct LlmDriftInfo {
 pub enum CallScope {
     Message { message_id: MessageId },
     Task { task_id: TaskId },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlanStepSpec {
+    pub step_id: PlanStepId,
+    pub description: String,
+    pub order: u32,
+    #[serde(default)]
+    pub depends_on: Vec<PlanStepId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -174,6 +187,29 @@ pub enum ProvEventData {
         task_id: TaskId,
         artifact_id: Option<ArtifactId>,
         artifact_type: Option<String>,
+    },
+    IntentResolved {
+        task_id: TaskId,
+        intent_id: IntentId,
+        description: String,
+        derived_from_messages: Vec<MessageId>,
+        supersession: Option<PlanningSupersessionKind>,
+    },
+    PlanGenerated {
+        task_id: TaskId,
+        intent_id: IntentId,
+        plan_id: PlanId,
+        steps: Vec<PlanStepSpec>,
+        supersession: Option<PlanningSupersessionKind>,
+    },
+    PlanStepStatusChanged {
+        task_id: TaskId,
+        intent_id: IntentId,
+        plan_id: PlanId,
+        step_id: PlanStepId,
+        old_status: Option<String>,
+        new_status: String,
+        evidence_text: String,
     },
     MessageReceived {
         id: MessageId,
@@ -705,6 +741,86 @@ impl ProvEvent {
                 task_id,
                 artifact_id,
                 artifact_type,
+            },
+        })
+    }
+
+    pub fn intent_resolved(
+        context_id: ContextId,
+        task_id: TaskId,
+        intent_id: impl Into<IntentId>,
+        description: String,
+        derived_from_messages: Vec<MessageId>,
+        supersession: Option<PlanningSupersessionKind>,
+    ) -> Self {
+        let intent_id = intent_id.into();
+        ProvEvent::Task(TaskScopedEvent {
+            id: next_event_id(),
+            context_id,
+            task_id: task_id.clone(),
+            timestamp_ms: now_millis(),
+            data: ProvEventData::IntentResolved {
+                task_id,
+                intent_id,
+                description,
+                derived_from_messages,
+                supersession,
+            },
+        })
+    }
+
+    pub fn plan_generated(
+        context_id: ContextId,
+        task_id: TaskId,
+        intent_id: impl Into<IntentId>,
+        plan_id: impl Into<PlanId>,
+        steps: Vec<PlanStepSpec>,
+        supersession: Option<PlanningSupersessionKind>,
+    ) -> Self {
+        let intent_id = intent_id.into();
+        let plan_id = plan_id.into();
+        ProvEvent::Task(TaskScopedEvent {
+            id: next_event_id(),
+            context_id,
+            task_id: task_id.clone(),
+            timestamp_ms: now_millis(),
+            data: ProvEventData::PlanGenerated {
+                task_id,
+                intent_id,
+                plan_id,
+                steps,
+                supersession,
+            },
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn plan_step_status_changed(
+        context_id: ContextId,
+        task_id: TaskId,
+        intent_id: impl Into<IntentId>,
+        plan_id: impl Into<PlanId>,
+        step_id: impl Into<PlanStepId>,
+        old_status: Option<String>,
+        new_status: String,
+        evidence_text: String,
+    ) -> Self {
+        let intent_id = intent_id.into();
+        let plan_id = plan_id.into();
+        let step_id = step_id.into();
+        ProvEvent::Task(TaskScopedEvent {
+            id: next_event_id(),
+            context_id,
+            task_id: task_id.clone(),
+            timestamp_ms: now_millis(),
+            data: ProvEventData::PlanStepStatusChanged {
+                task_id,
+                intent_id,
+                plan_id,
+                step_id,
+                old_status,
+                new_status,
+                evidence_text,
             },
         })
     }

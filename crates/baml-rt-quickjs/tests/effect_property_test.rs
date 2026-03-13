@@ -158,6 +158,7 @@ async fn test_liveness_gating_timeout_inner() {
         metadata,
         duration_ms: 100,
         outcome: Outcome::Success,
+        result: None,
     })
     .await
     .unwrap();
@@ -315,6 +316,7 @@ async fn test_timeout_monotonicity_effect_completion() {
         metadata,
         duration_ms: 1,
         outcome: Outcome::Success,
+        result: None,
     })
     .await
     .unwrap();
@@ -467,7 +469,8 @@ proptest! {
                                 metadata,
                                 duration_ms: 100,
                                 outcome: Outcome::Success,
-                            })
+                            result: None,
+        })
                             .await
                             .unwrap();
                             completed_count += 1;
@@ -487,7 +490,8 @@ proptest! {
                             metadata,
                             duration_ms: 0,
                             outcome: Outcome::Success,
-                        })
+                        result: None,
+        })
                         .await
                         .unwrap();
                         running = (running - 1).max(0);

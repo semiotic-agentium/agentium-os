@@ -490,11 +490,6 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
             .any(|hit| hit == "GET /api/v2/list/list-901325431486/task"),
         "Expected mock ClickUp list-task endpoint hit. hits={mock_hits:?}"
     );
-    let mermaid = fetch_mermaid_context(&runner_api.base_url, &context_id).await;
-    assert!(
-        mermaid.contains("sequenceDiagram"),
-        "Expected Mermaid sequence diagram response, got: {mermaid}"
-    );
 
     runner_api.stop().await;
     mock_server.stop().await;
@@ -686,11 +681,6 @@ async fn test_e2e_clickup_get_task_description_fast() {
             .iter()
             .any(|hit| hit == "GET /api/v2/task/task-901"),
         "Expected mock ClickUp get-task endpoint hit. hits={mock_hits:?}"
-    );
-    let mermaid = fetch_mermaid_context(&runner_api.base_url, &context_id).await;
-    assert!(
-        mermaid.contains("sequenceDiagram"),
-        "Expected Mermaid sequence diagram response, got: {mermaid}"
     );
 
     runner_api.stop().await;

@@ -155,11 +155,19 @@ pub fn render_a2a_shim() -> Result<String> {
             return;
           }
           var err = (out != null && typeof out === 'object' && 'error' in out) ? String(out.error) : 'Unknown error';
-          if (typeof onFailedCb === 'function') onFailedCb(err);
+          if (typeof onFailedCb === 'function') {
+            return Promise.resolve(onFailedCb(err)).catch(function () {}).then(function () {
+              emitFailed(err, false);
+            });
+          }
           emitFailed(err, false);
         }).catch(function (err) {
           var msg = (err && err != null && typeof err.message === 'string') ? err.message : String(err);
-          if (typeof onFailedCb === 'function') onFailedCb(msg);
+          if (typeof onFailedCb === 'function') {
+            return Promise.resolve(onFailedCb(msg)).catch(function () {}).then(function () {
+              emitFailed(msg, false);
+            });
+          }
           emitFailed(msg, false);
         });
       }
@@ -168,13 +176,269 @@ pub fn render_a2a_shim() -> Result<String> {
   globalThis.session = session;
   globalThis.messageText = messageText;
 
+  function extractStepExecutorStatus(raw) {
+    if (raw != null && typeof raw === "object") {
+      if (typeof raw.status === "string") return raw.status;
+      if (raw.output != null && typeof raw.output === "object" && typeof raw.output.status === "string") {
+        return raw.output.status;
+      }
+    }
+    return null;
+  }
+
+  function executionStatusKeepsSessionOpen(status) {
+    return status === "open"
+      || status === "sent"
+      || status === "streaming"
+      || status === "suspended";
+  }
+
+  function executionStatusTerminal(status) {
+    return status === "done" || status === "finished" || status === "aborted";
+  }
+
+  function canonicalizeStepExecutorValue(value) {
+    if (value == null || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+      var arr = [];
+      for (var i = 0; i < value.length; i++) {
+        arr.push(canonicalizeStepExecutorValue(value[i]));
+      }
+      return arr;
+    }
+    var out = {};
+    var keys = Object.keys(value).sort();
+    for (var j = 0; j < keys.length; j++) {
+      var key = keys[j];
+      out[key] = canonicalizeStepExecutorValue(value[key]);
+    }
+    return out;
+  }
+
+  function allowedStepExecutorOps(sessionOpen, lastStatus, stepExecutor) {
+    if (typeof globalThis.__step_executor_allowed_ops !== "function") {
+      throw new Error("__step_executor_allowed_ops host helper is not registered");
+    }
+    var payload = {
+      session_open: !!sessionOpen,
+      last_status: lastStatus == null ? null : String(lastStatus),
+      step_executor: stepExecutor == null ? "unknown_step_executor" : String(stepExecutor)
+    };
+    var encoded = globalThis.__step_executor_allowed_ops(JSON.stringify(payload));
+    var parsed = JSON.parse(encoded);
+    return Array.isArray(parsed) ? parsed : ["Read"];
+  }
+
+  function validateStepExecutorTransition(sessionOpenBeforeHop, lastStatusBeforeHop, op, status, stepExecutor) {
+    if (typeof globalThis.__step_executor_validate_transition !== "function") {
+      throw new Error("__step_executor_validate_transition host helper is not registered");
+    }
+    var payload = {
+      session_open_before_hop: !!sessionOpenBeforeHop,
+      last_status_before_hop: lastStatusBeforeHop == null ? null : String(lastStatusBeforeHop),
+      op: op == null ? null : String(op),
+      status: status == null ? "" : String(status),
+      step_executor: stepExecutor == null ? "unknown_step_executor" : String(stepExecutor)
+    };
+    globalThis.__step_executor_validate_transition(JSON.stringify(payload));
+  }
+
+  function buildSessionContext(sessionOpen, allowedOps) {
+    return {
+      contract_version: "session_context",
+      session_open: !!sessionOpen,
+      allowed_ops: allowedOps
+    };
+  }
+
+  function extractStepExecutorOp(raw) {
+    if (raw != null && typeof raw === "object") {
+      if (typeof raw.op === "string") return raw.op;
+      if (raw.step != null && typeof raw.step === "object" && typeof raw.step.op === "string") {
+        return raw.step.op;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Generated Step Executor runtime helper.
+   * Calls a step-executor function repeatedly under strict single-fragment mode and
+   * threads runtime-owned `session_context` only.
+   */
+  async function runGeneratedStepExecutor(stepExecutor, args, options) {
+    var stepExecutorFn = globalThis[stepExecutor];
+    if (typeof stepExecutorFn !== "function") {
+      throw new Error("Step Executor function '" + String(stepExecutor) + "' is not registered on globalThis");
+    }
+    var baseArgs = canonicalizeStepExecutorValue((args != null && typeof args === "object") ? args : {});
+    var maxSteps = 8;
+    if (options != null && typeof options === "object" && Number.isFinite(options.max_steps)) {
+      var requested = Math.trunc(options.max_steps);
+      if (requested > 0) maxSteps = requested;
+    }
+    var sessionOpen = false;
+    var lastStatus = null;
+    var history = [];
+    var last = null;
+    var finalContext = buildSessionContext(sessionOpen, ["Open"]);
+
+    for (var i = 0; i < maxSteps; i++) {
+      var allowedOps = allowedStepExecutorOps(sessionOpen, lastStatus, stepExecutor);
+      finalContext = buildSessionContext(
+        sessionOpen,
+        allowedOps
+      );
+      var stepExecutorArgs = Object.assign({}, baseArgs, {
+        session_context: finalContext
+      });
+      stepExecutorArgs = canonicalizeStepExecutorValue(stepExecutorArgs);
+      var stepRaw = await stepExecutorFn(stepExecutorArgs);
+      var step = canonicalizeStepExecutorValue(stepRaw);
+      last = step;
+      history.push(step);
+      var op = extractStepExecutorOp(step);
+      if (op != null && allowedOps.indexOf(op) < 0) {
+        throw new Error(
+          "runtime step executor contract violation (" + String(stepExecutor)
+          + "): expected op in [" + allowedOps.join(",") + "], got '" + String(op) + "'"
+        );
+      }
+
+      var status = extractStepExecutorStatus(step);
+      if (status != null) {
+        validateStepExecutorTransition(sessionOpen, lastStatus, op, status, stepExecutor);
+      }
+      if (status == null) {
+        break;
+      }
+      lastStatus = status;
+      if (executionStatusKeepsSessionOpen(status)) {
+        sessionOpen = true;
+      }
+      if (executionStatusTerminal(status)) {
+        break;
+      }
+    }
+
+    finalContext = buildSessionContext(
+      sessionOpen,
+      allowedStepExecutorOps(sessionOpen, lastStatus, stepExecutor)
+    );
+
+    return {
+      last: last,
+      steps: history,
+      session_context: finalContext
+    };
+  }
+  globalThis.runGeneratedStepExecutor = runGeneratedStepExecutor;
+
+  function assertNonEmptyString(value, field) {
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new Error(field + " must be a non-empty string");
+    }
+  }
+
+  async function openA2aExecutionSession(_token) {
+    if (typeof globalThis.__execution_session_invoke !== "function") {
+      throw new Error("__execution_session_invoke host helper is not registered");
+    }
+    var invokeExecutionSession = async function(payload) {
+      var encoded = await globalThis.__execution_session_invoke(JSON.stringify(payload));
+      return JSON.parse(encoded);
+    };
+    var opened = await invokeExecutionSession({
+      action: "open"
+    });
+    var sessionId = String(opened.sessionId);
+
+    var api = {
+      sessionId: sessionId,
+      submitIntent: async function(intent) {
+        await invokeExecutionSession({
+          action: "submit_intent",
+          session_id: sessionId,
+          intent: intent
+        });
+        return this;
+      },
+      submitPlan: async function(incomingPlan) {
+        await invokeExecutionSession({
+          action: "submit_plan",
+          session_id: sessionId,
+          plan: incomingPlan
+        });
+        return this;
+      },
+      startStep: async function(stepId, evidenceText) {
+        await invokeExecutionSession({
+          action: "start_step",
+          session_id: sessionId,
+          step_id: stepId,
+          evidence_text: evidenceText
+        });
+      },
+      completeStep: async function(stepId, evidenceText) {
+        await invokeExecutionSession({
+          action: "complete_step",
+          session_id: sessionId,
+          step_id: stepId,
+          evidence_text: evidenceText
+        });
+      },
+      finish: async function() {
+        return invokeExecutionSession({
+          action: "finish",
+          session_id: sessionId
+        });
+      },
+      abort: async function(reason) {
+        return invokeExecutionSession({
+          action: "abort",
+          session_id: sessionId,
+          reason: reason
+        });
+      }
+    };
+    var currentRunSessions = globalThis.__a2a_current_execution_sessions;
+    if (Array.isArray(currentRunSessions)) {
+      currentRunSessions.push(api);
+    }
+    return api;
+  }
+  globalThis.openA2aExecutionSession = openA2aExecutionSession;
+
   function __chat_register(agent) {
     if (agent.run != null && typeof agent.run === 'function') {
       globalThis.onChatMessage = async function (message) {
         var s = session(message);
-        await s.run(function (emit) {
-          return agent.run({ text: s.text() || '', message: message, emit: emit });
-        });
+        var executionSessions = [];
+        globalThis.__a2a_current_execution_sessions = executionSessions;
+        var abortExecutionSessions = function(reason) {
+          var tasks = [];
+          for (var i = 0; i < executionSessions.length; i++) {
+            var executionSession = executionSessions[i];
+            if (executionSession != null && typeof executionSession.abort === "function") {
+              tasks.push(Promise.resolve(executionSession.abort(reason)).catch(function() {}));
+            }
+          }
+          if (tasks.length === 0) return Promise.resolve();
+          return Promise.all(tasks).then(function() {});
+        };
+        try {
+          s.onFailed(function(err) {
+            var reason = (typeof err === "string" && err.trim().length > 0) ? err : "chat run failed";
+            return abortExecutionSessions("runtime enforced abort: " + reason);
+          });
+          await s.run(function (emit) {
+            return agent.run({ text: s.text() || '', message: message, emit: emit });
+          });
+        } finally {
+          if (globalThis.__a2a_current_execution_sessions === executionSessions) {
+            delete globalThis.__a2a_current_execution_sessions;
+          }
+        }
       };
     } else if (agent.onChatMessage != null) {
       globalThis.onChatMessage = agent.onChatMessage;

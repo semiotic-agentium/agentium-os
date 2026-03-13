@@ -1,8 +1,11 @@
 use std::collections::HashMap;
 
-use baml_rt_core::ids::{
-    AgentId, ArtifactId, ContextId, EventId, ExternalId, MessageId, ProvVocabularyType, TaskId,
-    UuidId,
+use baml_rt_core::{
+    bus::PlanningSupersessionKind,
+    ids::{
+        AgentId, ArtifactId, ContextId, EventId, ExternalId, IntentId, MessageId, PlanId,
+        PlanStepId, ProvVocabularyType, TaskId, UuidId,
+    },
 };
 use serde_json::Value;
 
@@ -17,20 +20,21 @@ use crate::{
         ArtifactByTypeEntityId, ArtifactByTypeEntityInput, ArtifactIdentity,
         DelegationTargetEntityId, DelegationTargetEntityInput, FailureClassificationActivityId,
         FailureClassificationActivityInput, FailureClassificationEntityId,
-        FailureClassificationEntityInput, LlmCallActivityId, LlmCallActivityInput,
-        LlmPromptEntityId, LlmPromptEntityInput, MessageEntityId, MessageEntityInput,
-        MessageProcessingActivityId, MessageProcessingActivityInput, PromptRejectedActivityId,
-        PromptRejectedActivityInput, RunnerRuntimeInstanceId, TaskEntityId, TaskEntityInput,
-        TaskExecutionActivityId, TaskExecutionActivityInput, TaskStateEntityId,
-        TaskStateEntityInput, ToolArgsEntityId, ToolArgsEntityInput, ToolCallActivityId,
-        ToolCallActivityInput,
+        FailureClassificationEntityInput, IntentEntityId, IntentEntityInput, LlmCallActivityId,
+        LlmCallActivityInput, LlmPromptEntityId, LlmPromptEntityInput, MessageEntityId,
+        MessageEntityInput, MessageProcessingActivityId, MessageProcessingActivityInput,
+        PlanEntityId, PlanEntityInput, PlanStepEntityId, PlanStepEntityInput,
+        PromptRejectedActivityId, PromptRejectedActivityInput, RunnerRuntimeInstanceId,
+        TaskEntityId, TaskEntityInput, TaskExecutionActivityId, TaskExecutionActivityInput,
+        TaskStateEntityId, TaskStateEntityInput, ToolArgsEntityId, ToolArgsEntityInput,
+        ToolCallActivityId, ToolCallActivityInput,
     },
     types::{
         Activity, Agent, Entity, ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef,
         QualifiedGeneration, Used, WasAssociatedWith, WasDerivedFrom, WasGeneratedBy,
     },
     vocabulary::{
-        a2a, a2a_relation_types, a2a_relations, a2a_roles, agent_types, message_directions,
+        a2a, a2a_relation_types, a2a_relations, a2a_roles, agent_types, message_directions, prov,
         prov_roles,
     },
 };
@@ -110,6 +114,10 @@ pub struct CallOrdinalState {
     pub call_counts: HashMap<String, u64>,
     /// event_id.as_str() -> (scope_key, ordinal) for completed LLM calls; used by PromptRejected.
     pub llm_event_to_scope_ordinal: HashMap<String, (String, u64)>,
+    /// task_id.as_str() -> latest canonical intent entity id.
+    pub latest_intent_entity_by_task: HashMap<String, ProvEntityId>,
+    /// task_id.as_str() -> latest canonical plan entity id.
+    pub latest_plan_entity_by_task: HashMap<String, ProvEntityId>,
 }
 
 #[derive(Debug, Default)]
@@ -148,6 +156,10 @@ pub enum A2aRelationType {
     TaskCall,
     TaskStatusTransition,
     MessageCall,
+    IntentReplacedBy,
+    IntentRefinedBy,
+    PlanReplacedBy,
+    PlanRefinedBy,
 }
 
 impl A2aRelationType {
@@ -158,6 +170,10 @@ impl A2aRelationType {
             A2aRelationType::TaskCall => a2a_relations::TASK_CALL,
             A2aRelationType::TaskStatusTransition => a2a_relations::TASK_STATUS_TRANSITION,
             A2aRelationType::MessageCall => a2a_relations::MESSAGE_CALL,
+            A2aRelationType::IntentReplacedBy => a2a_relations::INTENT_REPLACED_BY,
+            A2aRelationType::IntentRefinedBy => a2a_relations::INTENT_REFINED_BY,
+            A2aRelationType::PlanReplacedBy => a2a_relations::PLAN_REPLACED_BY,
+            A2aRelationType::PlanRefinedBy => a2a_relations::PLAN_REFINED_BY,
         }
     }
 }
@@ -453,6 +469,12 @@ fn normalize_event_with_registry(
                 a2a::AGENT_ID.to_string(),
                 Value::String(agent_id.to_string()),
             );
+            if let Some(plan_id) = metadata_string_field(metadata, "plan_id") {
+                attrs.insert(a2a::PLAN_ID.to_string(), Value::String(plan_id));
+            }
+            if let Some(step_id) = metadata_string_field(metadata, "step_id") {
+                attrs.insert(a2a::STEP_ID.to_string(), Value::String(step_id));
+            }
             if let Some(message_id) = scoped_message_id(scope, metadata) {
                 attrs.insert(
                     a2a::MESSAGE_ID.to_string(),
@@ -548,6 +570,12 @@ fn normalize_event_with_registry(
                 a2a::AGENT_ID.to_string(),
                 Value::String(agent_id.to_string()),
             );
+            if let Some(plan_id) = metadata_string_field(metadata, "plan_id") {
+                attrs.insert(a2a::PLAN_ID.to_string(), Value::String(plan_id));
+            }
+            if let Some(step_id) = metadata_string_field(metadata, "step_id") {
+                attrs.insert(a2a::STEP_ID.to_string(), Value::String(step_id));
+            }
             if let Some(message_id) = scoped_message_id(scope, metadata) {
                 attrs.insert(
                     a2a::MESSAGE_ID.to_string(),
@@ -573,6 +601,7 @@ fn normalize_event_with_registry(
                     prompt_tokens,
                     completion_tokens,
                     total_tokens,
+                    cached_input_tokens,
                 } => {
                     attrs.insert(
                         a2a::USAGE_PROMPT_TOKENS.to_string(),
@@ -586,6 +615,12 @@ fn normalize_event_with_registry(
                         a2a::USAGE_TOTAL_TOKENS.to_string(),
                         Value::Number((*total_tokens).into()),
                     );
+                    if let Some(cached) = cached_input_tokens {
+                        attrs.insert(
+                            a2a::USAGE_CACHED_INPUT_TOKENS.to_string(),
+                            Value::Number((*cached).into()),
+                        );
+                    }
                 }
                 crate::events::LlmUsage::Unknown => {}
             }
@@ -743,25 +778,33 @@ fn normalize_event_with_registry(
                 Some(a2a_roles::REJECTED_OUTPUT.to_string()),
             );
             let reason_lower = reason.to_ascii_lowercase();
+            let evidence = {
+                let trimmed = reason.trim();
+                if trimmed.is_empty() {
+                    "linked_prompt_rejected".to_string()
+                } else {
+                    trimmed.to_string()
+                }
+            };
             let resolution = if reason_lower.contains("baml")
                 || reason_lower.contains("schema")
                 || reason_lower.contains("validation")
             {
                 FailureResolution {
                     class: "baml_validation_error".to_string(),
-                    evidence: "linked_prompt_rejected".to_string(),
+                    evidence: evidence.clone(),
                     code: Some("baml_validation".to_string()),
                 }
             } else if reason_lower.contains("policy") || reason_lower.contains("reject") {
                 FailureResolution {
                     class: "prompt_rejected".to_string(),
-                    evidence: "linked_prompt_rejected".to_string(),
+                    evidence: evidence.clone(),
                     code: Some("prompt_rejected".to_string()),
                 }
             } else {
                 FailureResolution {
                     class: "prompt_rejected".to_string(),
-                    evidence: "linked_prompt_rejected".to_string(),
+                    evidence,
                     code: None,
                 }
             };
@@ -827,6 +870,12 @@ fn normalize_event_with_registry(
                 a2a::AGENT_ID.to_string(),
                 Value::String(agent_id.to_string()),
             );
+            if let Some(plan_id) = metadata_string_field(metadata, "plan_id") {
+                attrs.insert(a2a::PLAN_ID.to_string(), Value::String(plan_id));
+            }
+            if let Some(step_id) = metadata_string_field(metadata, "step_id") {
+                attrs.insert(a2a::STEP_ID.to_string(), Value::String(step_id));
+            }
             if let Some(message_id) = scoped_message_id(scope, metadata) {
                 attrs.insert(
                     a2a::MESSAGE_ID.to_string(),
@@ -939,6 +988,12 @@ fn normalize_event_with_registry(
                 a2a::AGENT_ID.to_string(),
                 Value::String(agent_id.to_string()),
             );
+            if let Some(plan_id) = metadata_string_field(metadata, "plan_id") {
+                attrs.insert(a2a::PLAN_ID.to_string(), Value::String(plan_id));
+            }
+            if let Some(step_id) = metadata_string_field(metadata, "step_id") {
+                attrs.insert(a2a::STEP_ID.to_string(), Value::String(step_id));
+            }
             if let Some(message_id) = scoped_message_id(scope, metadata) {
                 attrs.insert(
                     a2a::MESSAGE_ID.to_string(),
@@ -1396,19 +1451,230 @@ fn normalize_event_with_registry(
                 attributes: derived_attrs(event),
             });
         }
+        ProvEventData::IntentResolved {
+            task_id,
+            intent_id,
+            description,
+            derived_from_messages,
+            supersession,
+        } => {
+            let _task_entity = ensure_task_entity(&mut doc, task_id);
+            let intent_entity = intent_entity_id(task_id, intent_id);
+            let mut intent_attrs = base_attrs(event);
+            intent_attrs.insert(
+                a2a::INTENT_ID.to_string(),
+                Value::String(intent_id.to_string()),
+            );
+            intent_attrs.insert(
+                a2a::STATUS.to_string(),
+                Value::String("resolved".to_string()),
+            );
+            intent_attrs.insert(prov::LABEL.to_string(), Value::String(description.clone()));
+            doc.insert_entity(
+                intent_entity.clone(),
+                Entity {
+                    prov_type: Some(prov_type::<IntentEntityId>()),
+                    attributes: intent_attrs,
+                },
+            );
+
+            for message_id in derived_from_messages {
+                let msg_entity = message_entity_id(event.context_id(), message_id);
+                let mut msg_attrs = doc
+                    .entity(&msg_entity)
+                    .map(|entity| entity.attributes.clone())
+                    .unwrap_or_default();
+                msg_attrs.insert(
+                    a2a::CONTEXT_ID.to_string(),
+                    Value::String(event.context_id().as_str().to_string()),
+                );
+                msg_attrs.insert(
+                    a2a::MESSAGE_ID.to_string(),
+                    Value::String(message_id.as_str().to_string()),
+                );
+                doc.insert_entity(
+                    msg_entity.clone(),
+                    Entity {
+                        prov_type: Some(prov_type::<MessageEntityId>()),
+                        attributes: msg_attrs,
+                    },
+                );
+                insert_was_derived_from(&mut doc, intent_entity.clone(), msg_entity, None, None);
+            }
+
+            let task_key = task_id.as_str().to_string();
+            if let Some(previous) = call_state
+                .latest_intent_entity_by_task
+                .get(&task_key)
+                .cloned()
+                && previous != intent_entity
+            {
+                derived_relations.push(A2aDerivedRelation {
+                    relation: match supersession.unwrap_or(PlanningSupersessionKind::ReplacedBy) {
+                        PlanningSupersessionKind::ReplacedBy => A2aRelationType::IntentReplacedBy,
+                        PlanningSupersessionKind::RefinedBy => A2aRelationType::IntentRefinedBy,
+                    },
+                    from: ProvNodeRef::Entity(previous),
+                    to: ProvNodeRef::Entity(intent_entity.clone()),
+                    attributes: base_attrs(event),
+                });
+            }
+            call_state
+                .latest_intent_entity_by_task
+                .insert(task_key, intent_entity);
+        }
+        ProvEventData::PlanGenerated {
+            task_id,
+            intent_id,
+            plan_id,
+            steps,
+            supersession,
+        } => {
+            let _task_entity = ensure_task_entity(&mut doc, task_id);
+            let intent_entity = intent_entity_id(task_id, intent_id);
+            let mut intent_attrs = doc
+                .entity(&intent_entity)
+                .map(|entity| entity.attributes.clone())
+                .unwrap_or_default();
+            intent_attrs.insert(
+                a2a::INTENT_ID.to_string(),
+                Value::String(intent_id.to_string()),
+            );
+            doc.insert_entity(
+                intent_entity.clone(),
+                Entity {
+                    prov_type: Some(prov_type::<IntentEntityId>()),
+                    attributes: intent_attrs,
+                },
+            );
+
+            let plan_entity = plan_entity_id(task_id, plan_id);
+            let mut plan_attrs = base_attrs(event);
+            plan_attrs.insert(
+                a2a::INTENT_ID.to_string(),
+                Value::String(intent_id.to_string()),
+            );
+            plan_attrs.insert(a2a::PLAN_ID.to_string(), Value::String(plan_id.to_string()));
+            plan_attrs.insert(
+                a2a::STATUS.to_string(),
+                Value::String("generated".to_string()),
+            );
+            doc.insert_entity(
+                plan_entity.clone(),
+                Entity {
+                    prov_type: Some(prov_type::<PlanEntityId>()),
+                    attributes: plan_attrs,
+                },
+            );
+            insert_was_derived_from(&mut doc, plan_entity.clone(), intent_entity, None, None);
+
+            for step in steps {
+                let step_entity = plan_step_entity_id(task_id, plan_id, &step.step_id);
+                let mut step_attrs = base_attrs(event);
+                step_attrs.insert(a2a::PLAN_ID.to_string(), Value::String(plan_id.to_string()));
+                step_attrs.insert(
+                    a2a::STEP_ID.to_string(),
+                    Value::String(step.step_id.to_string()),
+                );
+                step_attrs.insert(
+                    prov::LABEL.to_string(),
+                    Value::String(step.description.clone()),
+                );
+                step_attrs.insert(a2a::STATUS.to_string(), Value::String("ready".to_string()));
+                step_attrs.insert(
+                    a2a::DEPENDS_ON.to_string(),
+                    Value::Array(
+                        step.depends_on
+                            .iter()
+                            .map(|dep| Value::String(dep.to_string()))
+                            .collect(),
+                    ),
+                );
+                step_attrs.insert(
+                    a2a::STEP_ORDER.to_string(),
+                    Value::Number((step.order as u64).into()),
+                );
+                doc.insert_entity(
+                    step_entity.clone(),
+                    Entity {
+                        prov_type: Some(prov_type::<PlanStepEntityId>()),
+                        attributes: step_attrs,
+                    },
+                );
+                insert_was_derived_from(&mut doc, step_entity, plan_entity.clone(), None, None);
+            }
+
+            let task_key = task_id.as_str().to_string();
+            if let Some(previous) = call_state
+                .latest_plan_entity_by_task
+                .get(&task_key)
+                .cloned()
+                && previous != plan_entity
+            {
+                derived_relations.push(A2aDerivedRelation {
+                    relation: match supersession.unwrap_or(PlanningSupersessionKind::ReplacedBy) {
+                        PlanningSupersessionKind::ReplacedBy => A2aRelationType::PlanReplacedBy,
+                        PlanningSupersessionKind::RefinedBy => A2aRelationType::PlanRefinedBy,
+                    },
+                    from: ProvNodeRef::Entity(previous),
+                    to: ProvNodeRef::Entity(plan_entity.clone()),
+                    attributes: base_attrs(event),
+                });
+            }
+            call_state
+                .latest_plan_entity_by_task
+                .insert(task_key, plan_entity);
+        }
+        ProvEventData::PlanStepStatusChanged {
+            task_id,
+            intent_id,
+            plan_id,
+            step_id,
+            old_status,
+            new_status,
+            evidence_text,
+        } => {
+            let _task_entity = ensure_task_entity(&mut doc, task_id);
+            let step_entity = plan_step_entity_id(task_id, plan_id, step_id);
+            let mut step_attrs = doc
+                .entity(&step_entity)
+                .map(|entity| entity.attributes.clone())
+                .unwrap_or_default();
+            step_attrs.insert(
+                a2a::INTENT_ID.to_string(),
+                Value::String(intent_id.to_string()),
+            );
+            step_attrs.insert(a2a::PLAN_ID.to_string(), Value::String(plan_id.to_string()));
+            step_attrs.insert(a2a::STEP_ID.to_string(), Value::String(step_id.to_string()));
+            step_attrs.insert(a2a::STATUS.to_string(), Value::String(new_status.clone()));
+            step_attrs.insert(
+                a2a::REASON.to_string(),
+                Value::String(evidence_text.clone()),
+            );
+            if let Some(old) = old_status {
+                step_attrs.insert(a2a::OLD_STATUS.to_string(), Value::String(old.clone()));
+            }
+            doc.insert_entity(
+                step_entity,
+                Entity {
+                    prov_type: Some(prov_type::<PlanStepEntityId>()),
+                    attributes: step_attrs,
+                },
+            );
+        }
         ProvEventData::MessageReceived {
             id,
             role,
             content,
             metadata: _,
-            agent_id,
+            agent_id: _,
         }
         | ProvEventData::MessageSent {
             id,
             role,
             content,
             metadata: _,
-            agent_id,
+            agent_id: _,
         } => {
             let canonical_role = canonical_message_role(event, role)?;
             let message_id = message_entity_id(event.context_id(), id);
@@ -1426,10 +1692,6 @@ fn normalize_event_with_registry(
                 .map(|line| Value::String(line.clone()))
                 .collect();
             message_attrs.insert(a2a::CONTENT.to_string(), Value::Array(content_values));
-            message_attrs.insert(
-                a2a::AGENT_ID.to_string(),
-                Value::String(agent_id.as_str().to_string()),
-            );
 
             let direction = if matches!(event.data(), ProvEventData::MessageReceived { .. }) {
                 message_directions::RECEIVED
@@ -1462,10 +1724,6 @@ fn normalize_event_with_registry(
             processing_attrs.insert(
                 a2a::ROLE.to_string(),
                 Value::String(canonical_role.to_string()),
-            );
-            processing_attrs.insert(
-                a2a::AGENT_ID.to_string(),
-                Value::String(agent_id.as_str().to_string()),
             );
             doc.insert_activity(
                 processing_id.clone(),
@@ -1622,6 +1880,11 @@ pub fn validate_event(event: &ProvEvent) -> Result<()> {
                     reason: "TaskExecutionEnded context_id must match event context_id".to_string(),
                 });
             }
+        }
+        ProvEventData::IntentResolved { task_id, .. }
+        | ProvEventData::PlanGenerated { task_id, .. }
+        | ProvEventData::PlanStepStatusChanged { task_id, .. } => {
+            validate_task_scoped_event(event, task_id, "Plan/Intent event")?;
         }
         ProvEventData::MessageReceived { role, content, .. }
         | ProvEventData::MessageSent { role, content, .. } => {
@@ -2338,6 +2601,28 @@ fn associate_call_with_agent(
 
 fn task_state_entity_id(task_id: &TaskId, status: &str) -> ProvEntityId {
     ProvEntityId::derived::<TaskStateEntityId>(TaskStateEntityInput { task_id, status })
+}
+
+fn intent_entity_id(task_id: &TaskId, intent_id: &IntentId) -> ProvEntityId {
+    ProvEntityId::derived::<IntentEntityId>(IntentEntityInput {
+        task_id,
+        intent_id: intent_id.as_str(),
+    })
+}
+
+fn plan_entity_id(task_id: &TaskId, plan_id: &PlanId) -> ProvEntityId {
+    ProvEntityId::derived::<PlanEntityId>(PlanEntityInput {
+        task_id,
+        plan_id: plan_id.as_str(),
+    })
+}
+
+fn plan_step_entity_id(task_id: &TaskId, plan_id: &PlanId, step_id: &PlanStepId) -> ProvEntityId {
+    ProvEntityId::derived::<PlanStepEntityId>(PlanStepEntityInput {
+        task_id,
+        plan_id: plan_id.as_str(),
+        step_id: step_id.as_str(),
+    })
 }
 
 fn artifact_entity_id(

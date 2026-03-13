@@ -110,6 +110,8 @@ pub struct LiveStreamSession {
     pub turn_tx: async_channel::Sender<TurnInput>,
     /// Optional: relay pushes raw chunks here; collect path drains and emits in order (single stream). Set when stream starts, cleared when stream ends.
     pub relay_tx: Option<mpsc::Sender<Value>>,
+    /// True while one `message.sendStream` turn is actively executing for this session key.
+    pub in_flight: bool,
 }
 
 /// Single capability: push a raw chunk to the session's relay channel for this scope key.
@@ -190,6 +192,7 @@ mod tests {
                 LiveStreamSession {
                     turn_tx: turn_tx.clone(),
                     relay_tx: Some(ctx_tx),
+                    in_flight: false,
                 },
             ),
             (
@@ -197,6 +200,7 @@ mod tests {
                 LiveStreamSession {
                     turn_tx,
                     relay_tx: Some(task_tx),
+                    in_flight: false,
                 },
             ),
         ])));
@@ -224,6 +228,7 @@ mod tests {
             LiveStreamSession {
                 turn_tx,
                 relay_tx: Some(ctx_tx),
+                in_flight: false,
             },
         )])));
 

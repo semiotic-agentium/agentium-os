@@ -21,8 +21,11 @@ __chat_register({
     const text = ctx.text || "unknown";
     if (shouldCompute(text)) {
       const toolResult = await ChooseCalcTool({ ...ctx.message, user_message: text });
-      if (toolResult != null && typeof toolResult === "object" && "result" in toolResult) {
-        const result = (toolResult as { result: number }).result;
+      const result =
+        (toolResult as any)?.output?.result ??
+        (toolResult as any)?.result ??
+        null;
+      if (result != null) {
         return { message: `Computed result is ${result}. I will remember this conversation.` };
       }
       return { error: "BAML tool returned no output" };

@@ -205,14 +205,6 @@ async fn setup_agent_with_a2a_session_tool() -> A2aAgent {
     agent
 }
 
-fn test_timeout_secs() -> u64 {
-    if std::env::var_os("CI").is_some() {
-        45
-    } else {
-        20
-    }
-}
-
 #[tokio::test]
 async fn test_message_send_deterministic_task() {
     let _permit = acquire_test_permit().await;
@@ -226,38 +218,22 @@ async fn test_message_send_deterministic_task() {
     );
 
     let responses = tokio::time::timeout(
-        std::time::Duration::from_secs(test_timeout_secs()),
+        std::time::Duration::from_secs(20),
         collect_responses(&agent, request),
     )
     .await
     .expect("stream request timed out")
     .unwrap();
-    // Find first chunk with task.id (may be in result.chunk or statusUpdate)
-    let task_id = responses.iter().find_map(|r| {
-        let result = r.get("result")?;
-        let chunk = result.get("chunk")?;
-        chunk
-            .get("task")
-            .and_then(|t| t.get("id"))
-            .and_then(Value::as_str)
-            .or_else(|| {
-                chunk
-                    .get("statusUpdate")
-                    .and_then(|s| s.get("status"))
-                    .and_then(|s| s.get("taskId"))
-                    .and_then(Value::as_str)
-            })
-    });
-    // Live path: context_id or live-task:...; JS path: js-task-*; fallback: stream-{context_id}
-    let valid = task_id.is_some_and(|id| {
-        id.starts_with("js-task-")
-            || id.starts_with("live-task:")
-            || id.starts_with("stream-")
-            || id == context_id.as_str()
-    });
+    // Use first_task_id_from_stream to scan all chunks: the task.id may not appear in
+    // responses[0] if the runtime emits a status chunk before the task-bearing chunk.
+    let task_id = first_task_id_from_stream(&responses);
+    // Live path first turn may synthesize a deterministic live-task id from (context_id,message_id),
+    // remain context-stable, or use js-task-* when emitted directly by JS fixture.
     assert!(
-        valid,
-        "expected deterministic task id (js-task-*, live-task:*, stream-*, or context-stable), got {:?}",
+        task_id.as_deref().is_some_and(|id| {
+            id.starts_with("js-task-") || id == context_id.as_str() || id.starts_with("live-task:")
+        }),
+        "expected deterministic task id (js-task-*, context-stable, or live-task:*), got {:?}",
         task_id
     );
 }
@@ -574,7 +550,7 @@ async fn test_a2a_session_send_returns_fast_and_next_drains() {
         for _ in 0..8 {
             let next = tokio::time::timeout(
                 std::time::Duration::from_millis(500),
-                handle.tool_session_next(primary),
+                handle.tool_session_read(primary, serde_json::Value::Null),
             )
             .await;
             let Ok(Ok(step)) = next else {
@@ -639,7 +615,7 @@ async fn test_a2a_session_send_after_finish_fails() {
         for _ in 0..8 {
             let next = tokio::time::timeout(
                 std::time::Duration::from_millis(500),
-                handle.tool_session_next(&session_id),
+                handle.tool_session_read(&session_id, serde_json::Value::Null),
             )
             .await;
             let Ok(Ok(step)) = next else {

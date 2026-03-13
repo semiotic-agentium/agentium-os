@@ -464,8 +464,14 @@ impl StreamChunkView {
     pub fn new(value: Value) -> Self {
         let task_id = Self::parse_task_id(&value);
         let task_state = Self::parse_task_state(&value);
-        let has_status_update = value.get("statusUpdate").is_some();
-        let has_artifact_update = value.get("artifactUpdate").is_some();
+        let has_status_update = value
+            .get("statusUpdate")
+            .or_else(|| value.get("status_update"))
+            .is_some();
+        let has_artifact_update = value
+            .get("artifactUpdate")
+            .or_else(|| value.get("artifact_update"))
+            .is_some();
         let has_task = value.get("task").is_some();
         Self {
             task_id,
@@ -517,7 +523,7 @@ impl StreamChunkView {
             Self::extract_task_id_str_with_depth(&parsed, depth + 1)
         };
         let from_status_update = || {
-            let status_update = v.get("statusUpdate")?;
+            let status_update = v.get("statusUpdate").or_else(|| v.get("status_update"))?;
             status_update
                 .get("taskId")
                 .or_else(|| {
@@ -525,11 +531,19 @@ impl StreamChunkView {
                         .get("statusUpdate")
                         .and_then(|nested| nested.get("taskId"))
                 })
+                .or_else(|| {
+                    status_update
+                        .get("status_update")
+                        .and_then(|nested| nested.get("taskId"))
+                })
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned)
         };
         let from_stringified_status_update = || {
-            let raw = v.get("statusUpdate").and_then(Value::as_str)?;
+            let raw = v
+                .get("statusUpdate")
+                .or_else(|| v.get("status_update"))
+                .and_then(Value::as_str)?;
             let parsed = serde_json::from_str::<Value>(raw).ok()?;
             Self::extract_task_id_str_with_depth(&parsed, depth + 1)
         };
@@ -581,11 +595,16 @@ impl StreamChunkView {
             .as_ref()
             .and_then(state_from)
             .or_else(|| {
-                let su = v.get("statusUpdate").and_then(Self::value_or_parsed_json)?;
+                let su = v
+                    .get("statusUpdate")
+                    .or_else(|| v.get("status_update"))
+                    .and_then(Self::value_or_parsed_json)?;
                 let ev = if su.get("status").is_some() {
                     su
                 } else {
-                    su.get("statusUpdate")?.clone()
+                    su.get("statusUpdate")
+                        .or_else(|| su.get("status_update"))?
+                        .clone()
                 };
                 state_from(&ev)
             })
@@ -655,10 +674,10 @@ mod tests {
     use super::{StreamChunk, StreamChunkView, Task, TaskState, TaskStatus, TaskStatusUpdateEvent};
 
     #[test]
-    fn stream_chunk_view_parses_task_id_from_nested_status_update_wrapper() {
+    fn stream_chunk_view_parses_task_id_from_nested_status_update_alias() {
         let chunk = json!({
             "statusUpdate": {
-                "statusUpdate": {
+                "status_update": {
                     "contextId": "ctx-1-1",
                     "taskId": "a2a-child-123",
                     "status": { "state": "TASK_STATE_WORKING" }
@@ -691,17 +710,14 @@ mod tests {
     }
 
     #[test]
-    fn stream_chunk_view_parses_task_id_from_top_level_status_update() {
+    fn stream_chunk_view_parses_task_id_from_top_level_status_update_alias() {
         let view = StreamChunkView::new(json!({
-            "statusUpdate": {
-                "taskId": "task-top-level-1",
+            "status_update": {
+                "taskId": "task-snake-1",
                 "status": { "state": "TASK_STATE_WORKING" }
             }
         }));
-        assert_eq!(
-            view.task_id().map(|id| id.as_str()),
-            Some("task-top-level-1")
-        );
+        assert_eq!(view.task_id().map(|id| id.as_str()), Some("task-snake-1"));
     }
 
     #[test]

@@ -74,6 +74,14 @@ pub fn map_error(error: &BamlRtError) -> A2aErrorMapping {
             "invalid_argument",
             Retryability::Permanent,
         ),
+        BamlRtError::Conflict(message) => mapping(
+            error,
+            -32009,
+            "Conflict",
+            Some(serde_json::json!({ "details": message })),
+            "conflict",
+            Retryability::Retryable,
+        ),
         BamlRtError::InvalidArgumentWithSource { .. } => mapping(
             error,
             -32600,

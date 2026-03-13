@@ -2,18 +2,26 @@
 //!
 //! Uses insta snapshots to verify generated output, reducing round trips
 //! during development and catching regressions.
+#![recursion_limit = "256"]
 
 use std::{collections::HashMap, path::PathBuf};
 
 use baml_rt_builder::builder::{
+    a2a_shim_gen::render_a2a_shim,
     baml_gen::render_baml_tool_interfaces,
-    baml_signature_gen::extract_baml_signatures,
+    baml_signature_gen::{extract_baml_signatures, session_plan_functions_map},
     schema_to_baml::generate_baml_types_from_schemas,
     ts_gen::{load_manifest_tools, render_ts_declarations},
+};
+use baml_rt_core::{
+    bus::EffectEvent,
+    context::{self, InvocationScope, RuntimeScope},
+    ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_runtime::BamlRuntime;
 use internal_baml_core::feature_flags::FeatureFlags;
 use serde_json::Value;
+use test_support::common::make_capturing_bridge;
 
 #[cfg(feature = "clickup")]
 #[test]
@@ -140,7 +148,8 @@ async fn test_typescript_declaration_generation() {
     let ir_signature = extract_baml_signatures(&runtime).expect("extract IR signatures");
     let tool_names = load_manifest_tools(&baml_src).expect("load manifest tools");
 
-    let ts_output = render_ts_declarations(&ir_signature, &tool_names)
+    let session_plan_map = session_plan_functions_map(&ir_signature);
+    let ts_output = render_ts_declarations(&ir_signature, &tool_names, &session_plan_map)
         .expect("Should generate TypeScript declarations");
 
     insta::assert_snapshot!("typescript_declarations", ts_output);
@@ -412,4 +421,191 @@ fn test_schema_to_baml_primitive_types() {
         .expect("Should generate BAML class with primitives");
 
     insta::assert_snapshot!("baml_primitives_in_class", baml_output);
+}
+
+#[tokio::test]
+async fn test_generated_a2a_shim_emits_planning_effects() {
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000bb10").unwrap());
+    let (mut bridge, capture) = make_capturing_bridge(agent_id.clone()).await;
+
+    let shim_js = render_a2a_shim().expect("render generated shim");
+    bridge
+        .eval_sync(&shim_js)
+        .await
+        .expect("evaluate generated a2a shim");
+
+    let context_id = ContextId::new(7_001, 1);
+    let message_id = MessageId::from_external(ExternalId::new("msg-shim-1"));
+    let task_id = TaskId::from_external(ExternalId::new("task-shim-1"));
+    let scope = RuntimeScope::task_scope(context_id, agent_id, message_id, task_id);
+    let invoke_scope = InvocationScope::new(scope.clone());
+
+    let js = r#"
+      (async function() {
+        const session = await openA2aExecutionSession("tok-generated-shim");
+        await session.submitIntent({
+          intentId: "intent-shim-1",
+          description: "Generated shim planning intent",
+          derivedFromMessageIds: ["msg-shim-1"]
+        });
+        await session.submitPlan({
+          intentId: "intent-shim-1",
+          planId: "plan-shim-1",
+          steps: [
+            { stepId: "step-shim-1", description: "Execute generated step", order: 0, dependsOn: [] }
+          ]
+        });
+        await session.startStep("step-shim-1", "begin generated step execution");
+        await session.completeStep("step-shim-1", "generated step finished successfully");
+        return { ok: true };
+      })()
+    "#;
+
+    let result = context::with_scope(scope, async {
+        bridge
+            .eval_scoped(&invoke_scope, js)
+            .await
+            .expect("run execution session through generated shim")
+    })
+    .await;
+    assert_eq!(result.get("ok").and_then(Value::as_bool), Some(true));
+
+    let events = capture.events.lock().await.clone();
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, EffectEvent::IntentResolved { intent_id, .. } if intent_id.as_str() == "intent-shim-1")),
+        "expected IntentResolved effect from generated shim; got {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| {
+            matches!(
+                e,
+                EffectEvent::PlanGenerated {
+                    intent_id,
+                    plan_id,
+                    ..
+                } if intent_id.as_str() == "intent-shim-1" && plan_id.as_str() == "plan-shim-1"
+            )
+        }),
+        "expected PlanGenerated effect from generated shim; got {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| {
+            matches!(
+                e,
+                EffectEvent::PlanStepStatusChanged {
+                    plan_id,
+                    step_id,
+                    new_status,
+                    ..
+                } if plan_id.as_str() == "plan-shim-1" && step_id.as_str() == "step-shim-1" && new_status == "completed"
+            )
+        }),
+        "expected PlanStepStatusChanged(completed) from generated shim; got {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_generated_a2a_shim_aborts_planning_on_run_failure() {
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000bb11").unwrap());
+    let (mut bridge, capture) = make_capturing_bridge(agent_id.clone()).await;
+    bridge
+        .eval_sync("globalThis.__chat_yield = function(_chunk) {};")
+        .await
+        .expect("install dummy chat yield host");
+
+    let shim_js = render_a2a_shim().expect("render generated shim");
+    bridge
+        .eval_sync(&shim_js)
+        .await
+        .expect("evaluate generated a2a shim");
+
+    let context_id = ContextId::new(7_002, 1);
+    let message_id = MessageId::from_external(ExternalId::new("msg-shim-fail-1"));
+    let task_id = TaskId::from_external(ExternalId::new("task-shim-fail-1"));
+    let scope = RuntimeScope::task_scope(context_id, agent_id, message_id, task_id);
+    let invoke_scope = InvocationScope::new(scope.clone());
+
+    let js = r#"
+      (async function() {
+        __chat_register({
+          run: async function(ctx) {
+            const session = await openA2aExecutionSession("tok-generated-fail");
+            const intent = await session.submitIntent({
+              intentId: "intent-shim-fail",
+              description: "Generated shim failure path",
+              derivedFromMessageIds: ["msg-shim-fail-1"]
+            });
+            const executable = await intent.submitPlan({
+              intentId: "intent-shim-fail",
+              planId: "plan-shim-fail",
+              steps: [
+                { stepId: "step-shim-fail-1", description: "Run then fail", order: 0, dependsOn: [] }
+              ]
+            });
+            await executable.startStep("step-shim-fail-1", "step started before failure");
+            throw new Error("forced failure for generated shim abort path");
+          }
+        });
+        await onChatMessage({
+          messageId: "msg-shim-fail-1",
+          taskId: "task-shim-fail-1",
+          parts: [{ text: "trigger fail" }]
+        });
+        return { ok: true };
+      })()
+    "#;
+
+    let result = context::with_scope(scope, async {
+        bridge
+            .eval_scoped(&invoke_scope, js)
+            .await
+            .expect("run generated shim failure flow")
+    })
+    .await;
+    assert_eq!(result.get("ok").and_then(Value::as_bool), Some(true));
+
+    let events = capture.events.lock().await.clone();
+    assert!(
+        events.iter().any(|e| {
+            matches!(
+                e,
+                EffectEvent::PlanStepStatusChanged {
+                    plan_id,
+                    step_id,
+                    new_status,
+                    ..
+                } if plan_id.as_str() == "plan-shim-fail" && step_id.as_str() == "step-shim-fail-1" && new_status == "aborted"
+            )
+        }),
+        "expected PlanStepStatusChanged(aborted) from generated shim failure path; got {events:?}"
+    );
+}
+
+#[test]
+fn test_generated_a2a_shim_planner_loop_uses_session_context_only() {
+    let shim_js = render_a2a_shim().expect("render generated shim");
+    assert!(
+        shim_js.contains("session_context"),
+        "step-executor loop contract must include session_context"
+    );
+    assert!(
+        !shim_js.contains("session_context_v1"),
+        "step-executor loop contract must not include versioned session_context_v1 alias"
+    );
+    assert!(
+        !shim_js.contains("last_tool_output"),
+        "step-executor loop contract must not expose legacy last_tool_output"
+    );
+    assert!(
+        !shim_js.contains("last_output_mode"),
+        "step-executor loop contract must not expose legacy last_output_mode"
+    );
+    assert!(
+        !shim_js.contains("hopMetrics"),
+        "step-executor loop contract must not expose hopMetrics in step-executor args"
+    );
 }

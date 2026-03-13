@@ -1,7 +1,7 @@
 //! claude/dev tool: host-owned Claude session orchestration.
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     path::PathBuf,
     pin::Pin,
     sync::Arc,
@@ -13,7 +13,10 @@ use baml_rt_tools::{
     BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
     ToolSession, ToolSessionError, ToolStep,
     bundles::BundleType,
-    tools::{ToolFunctionMetadata, ToolSessionContext, validate_open_input},
+    tools::{
+        HistoryContextV1, ToolFunctionMetadata, ToolProjectionSemantics, ToolSessionContext,
+        validate_open_input,
+    },
 };
 use claude_agent_sdk_rs::{
     ClaudeAgentOptions, ClaudeClient, ContentBlock, Message, PermissionMode, ToolResultContent,
@@ -490,8 +493,18 @@ impl ToolBundle for ClaudeSessionBundle {
     }
 
     fn functions(&self) -> Vec<Arc<dyn ToolHandler>> {
+        let mut metadata = claude_dev_metadata();
+        metadata.projection_semantics = Some(ToolProjectionSemantics {
+            identity:
+                "Stream frame identity only (event kind and lifecycle marker) without text bodies."
+                    .to_string(),
+            summary: "Compact hop digest: event count and completion state for this read cycle."
+                .to_string(),
+            detail: "Full Claude event batch for this read hop, including assistant/tool payloads."
+                .to_string(),
+        });
         vec![Arc::new(ClaudeSessionToolHandler {
-            metadata: claude_dev_metadata(),
+            metadata,
             workspace_registry: self.workspace_registry.clone(),
             stream_factory: self.stream_factory.clone(),
         })]
@@ -558,6 +571,7 @@ impl ToolHandler for ClaudeSessionToolHandler {
             stream_handle: None,
             closed: false,
             awaiting_input: false,
+            read_hop: 0,
         }))
     }
 }
@@ -573,6 +587,7 @@ struct ClaudeSession {
     stream_handle: Option<JoinHandle<()>>,
     closed: bool,
     awaiting_input: bool,
+    read_hop: u32,
 }
 
 impl ClaudeSession {
@@ -771,7 +786,7 @@ impl ToolSession for ClaudeSession {
         Ok(())
     }
 
-    async fn next(&mut self) -> std::result::Result<ToolStep, ToolSessionError> {
+    async fn read(&mut self, _input: Value) -> std::result::Result<ToolStep, ToolSessionError> {
         self.ensure_open()?;
         let session_id_str = self.ctx.session_id.to_string();
         let next_span = spans::session_next(&session_id_str);
@@ -817,9 +832,30 @@ impl ToolSession for ClaudeSession {
 
         if self.pending.is_empty() {
             if self.awaiting_input {
+                self.read_hop = self.read_hop.saturating_add(1);
                 let output = ClaudeToolNextOutput {
                     events: Vec::new(),
                     completion: Some(ClaudeCompletion::InputRequired),
+                    history_context: Some(HistoryContextV1 {
+                        hop: self.read_hop,
+                        op: "Read".to_string(),
+                        status: "suspended".to_string(),
+                        truncated: false,
+                        cursor: None,
+                        payload: Some(
+                            serde_json::json!({
+                                "eventCount": 0,
+                                "completion": "INPUT_REQUIRED",
+                            })
+                            .as_object()
+                            .map(|obj| {
+                                obj.iter()
+                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                    .collect::<BTreeMap<_, _>>()
+                            })
+                            .unwrap_or_default(),
+                        ),
+                    }),
                 };
                 let value = serde_json::to_value(output).map_err(|e| {
                     ToolSessionError::Tool(ToolFailure::execution_failed(e.to_string()))
@@ -862,9 +898,36 @@ impl ToolSession for ClaudeSession {
         }
 
         let event_count = events.len();
+        self.read_hop = self.read_hop.saturating_add(1);
         let output = ClaudeToolNextOutput {
             events,
             completion: completion.clone(),
+            history_context: Some(HistoryContextV1 {
+                hop: self.read_hop,
+                op: "Read".to_string(),
+                status: match &completion {
+                    Some(ClaudeCompletion::InputRequired) => "suspended".to_string(),
+                    Some(ClaudeCompletion::Done) | Some(ClaudeCompletion::Interrupted) => {
+                        "done".to_string()
+                    }
+                    None => "streaming".to_string(),
+                },
+                truncated: false,
+                cursor: None,
+                payload: Some(
+                    serde_json::json!({
+                        "eventCount": event_count,
+                        "completion": completion.as_ref().map(|c| format!("{:?}", c)),
+                    })
+                    .as_object()
+                    .map(|obj| {
+                        obj.iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect::<BTreeMap<_, _>>()
+                    })
+                    .unwrap_or_default(),
+                ),
+            }),
         };
         let value = serde_json::to_value(output)
             .map_err(|e| ToolSessionError::Tool(ToolFailure::execution_failed(e.to_string())))?;

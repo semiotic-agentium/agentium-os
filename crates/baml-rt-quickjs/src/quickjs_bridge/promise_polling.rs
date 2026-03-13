@@ -15,24 +15,21 @@
 //! (`.then(__set_eval_result)`) only runs when we call `run_pending_jobs_if_any()`
 //! on the same QuickJS runtime (single worker).
 
-use std::{
-    collections::HashMap,
-    pin::Pin,
-    sync::{Arc, Mutex as StdMutex},
-};
+use std::{pin::Pin, sync::Arc};
 
 use baml_rt_core::{
     BamlRtError, Result,
     bus::EffectLiveness,
     context::{InvocationScope, RuntimeScope},
 };
+use dashmap::DashMap;
 use quickjs_runtime::facades::QuickJsRuntimeFacade;
 
 use super::scope::InvocationToken;
 use crate::quickjs_bridge::eval::EffectGatedTimeoutPolicy;
 
-type EvalResultMap = Arc<StdMutex<HashMap<InvocationToken, Option<String>>>>;
-type InvocationScopeMap = Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>>;
+type EvalResultMap = Arc<DashMap<InvocationToken, Option<String>>>;
+type InvocationScopeMap = Arc<DashMap<InvocationToken, RuntimeScope>>;
 
 /// When set, the poll loop uses this each iteration instead of `runtime` so the bridge
 /// lock is held only briefly (lock → run pending jobs → unlock) and never across an await.
@@ -110,7 +107,9 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
     let mut attempts = 0u32;
     let is_resume_poll = result_notify.is_some();
 
-    let _poll_guard = tracing::trace_span!("baml_rt.poll_promise_resolution").entered();
+    // .entered() is !Send (holds a raw pointer) — cannot be used here because the future
+    // must be Send for tokio::spawn. Use tracing events directly; callers that need span
+    // attribution can wrap this future with .instrument(span) at the call site.
     tracing::debug!(
         token = %eval_token.0,
         context_id = %scope.context_id(),
@@ -172,32 +171,20 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
             );
         }
 
-        let result_str = {
-            let mut guard = eval_results_by_token
-                .lock()
-                .map_err(|_| BamlRtError::QuickJs("eval_results lock poisoned".to_string()))?;
-            match guard.get_mut(eval_token) {
-                Some(slot) => slot.take(),
-                None => {
-                    return Err(BamlRtError::QuickJs(
-                        "Missing eval result slot for token".to_string(),
-                    ));
-                }
+        let result_str = match eval_results_by_token.get_mut(eval_token) {
+            Some(mut slot) => slot.take(),
+            None => {
+                return Err(BamlRtError::QuickJs(
+                    "Missing eval result slot for token".to_string(),
+                ));
             }
         };
 
         if let Some(result_str) = result_str {
-            if let Some(t) = token_to_remove
-                && let Ok(mut map) = invocation_scope_by_token.lock()
-            {
-                map.remove(t);
+            if let Some(t) = token_to_remove {
+                invocation_scope_by_token.remove(t);
             }
-            {
-                let mut guard = eval_results_by_token
-                    .lock()
-                    .map_err(|_| BamlRtError::QuickJs("eval_results lock poisoned".to_string()))?;
-                guard.remove(eval_token);
-            }
+            eval_results_by_token.remove(eval_token);
             tracing::trace!(attempts = attempts, "Promise resolved");
             return Ok(result_str);
         }
@@ -237,17 +224,10 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
                 limit,
                 "Promise did not resolve within cap; possible deadlock or unresolved stream/nested eval"
             );
-            if let Some(t) = token_to_remove
-                && let Ok(mut map) = invocation_scope_by_token.lock()
-            {
-                map.remove(t);
+            if let Some(t) = token_to_remove {
+                invocation_scope_by_token.remove(t);
             }
-            {
-                let mut guard = eval_results_by_token
-                    .lock()
-                    .map_err(|_| BamlRtError::QuickJs("eval_results lock poisoned".to_string()))?;
-                guard.remove(eval_token);
-            }
+            eval_results_by_token.remove(eval_token);
             return Err(BamlRtError::QuickJs(format!(
                 "Promise did not resolve after {} attempts ({}ms)",
                 limit, limit

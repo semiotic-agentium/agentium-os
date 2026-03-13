@@ -14,6 +14,10 @@ use crate::builder::{
     schema_to_baml,
 };
 
+fn escape_baml_description(raw: &str) -> String {
+    raw.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 /// Generate BAML tool interface file with FSM-aware prompting hints
 pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     // Force link so inventory sees these metadata registrations (regen_fixtures + builder).
@@ -21,11 +25,11 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     let _ = baml_rt_tools_claude::metadata::claude_dev_metadata;
     let _ = baml_tools_system::metadata::system_internal_a2a_metadata;
     #[cfg(feature = "clickup")]
-    let _ = baml_tools_clickup::support_clickup_metadata;
+    let _ = baml_tools_clickup::ClickUpTool::new;
     #[cfg(feature = "notion")]
-    let _ = baml_tools_notion::support_notion_metadata;
+    let _ = baml_tools_notion::NotionTool::new;
     #[cfg(feature = "slack")]
-    let _ = baml_tools_slack::support_slack_metadata;
+    let _ = baml_tools_slack::SlackTool::new;
     let tool_metadata = resolve_manifest_tools(tool_names)?;
 
     let mut output = String::new();
@@ -51,11 +55,11 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     )?;
     write_line(
         &mut output,
-        "// 2. Send: Can only occur AFTER Open - sends input to the session",
+        "// 2. Send: Can occur AFTER Open, including multiple times across a session",
     )?;
     write_line(
         &mut output,
-        "// 3. Next: Retrieves output from the session (after Send)",
+        "// 3. Read: Retrieves output/progress using explicit read input",
     )?;
     write_line(&mut output, "// 4. Finish: Closes the session gracefully")?;
     write_line(&mut output, "// 5. Abort: Closes the session with an error")?;
@@ -72,39 +76,44 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     )?;
     write_line(
         &mut output,
-        "// - After Send, call Next to retrieve results",
+        "// - Use Read to fetch pending output/chunks; Read may repeat between Send steps",
     )?;
     write_line(
         &mut output,
         "// - Always Finish or Abort to close the session",
     )?;
     write_line(&mut output, "")?;
-
-    // Generate ToolSessionOp enum with descriptions
-    write_line(&mut output, "enum ToolSessionOp {")?;
-    write_line(
-        &mut output,
-        "  Open @description(\"Open a new tool session. MUST be the first step in any plan. Include 'initial_input' only when the step schema defines that field.\")",
-    )?;
-    write_line(
-        &mut output,
-        "  Send @description(\"Send input to an already-open session. Can ONLY be used after an Open step. Use 'input' field (NOT 'initial_input').\")",
-    )?;
-    write_line(
-        &mut output,
-        "  Next @description(\"Retrieve the next output from the session. Call this after Send to get results. For streaming tools, call Next multiple times until Done.\")",
-    )?;
-    write_line(
-        &mut output,
-        "  Finish @description(\"Close the session gracefully after completing all operations. Always call Finish when done with a tool session.\")",
-    )?;
-    write_line(
-        &mut output,
-        "  Abort @description(\"Close the session with an error. Use this if something went wrong and you need to terminate the session.\")",
-    )?;
+    write_line(&mut output, "// Shared standard planning types")?;
+    write_line(&mut output, "class StandardAgentPlanStep {")?;
+    write_line(&mut output, "  agent_package string")?;
+    write_line(&mut output, "  agent_instance_id string")?;
+    write_line(&mut output, "  sub_message string")?;
     write_line(&mut output, "}")?;
     write_line(&mut output, "")?;
-
+    write_line(&mut output, "class StandardStructuredPlan {")?;
+    write_line(&mut output, "  intent_description string")?;
+    write_line(&mut output, "  objective string")?;
+    write_line(&mut output, "  plan_steps StandardAgentPlanStep[]")?;
+    write_line(&mut output, "}")?;
+    write_line(&mut output, "")?;
+    write_line(&mut output, "class SessionContext {")?;
+    write_line(&mut output, "  contract_version string")?;
+    write_line(&mut output, "  session_open bool")?;
+    write_line(&mut output, "  allowed_ops string[]")?;
+    write_line(&mut output, "  scope_ref string?")?;
+    write_line(&mut output, "  output_ref string?")?;
+    write_line(&mut output, "  evidence_ref string?")?;
+    write_line(&mut output, "}")?;
+    write_line(&mut output, "")?;
+    write_line(&mut output, "class HistoryContext {")?;
+    write_line(&mut output, "  hop int")?;
+    write_line(&mut output, "  op string")?;
+    write_line(&mut output, "  status string")?;
+    write_line(&mut output, "  truncated bool")?;
+    write_line(&mut output, "  cursor string?")?;
+    write_line(&mut output, "  payload string?")?;
+    write_line(&mut output, "}")?;
+    write_line(&mut output, "")?;
     // --- Domain type generation ---
     //
     // Tools that carry a `baml_decl` (generated by `#[derive(BamlType)]`) emit
@@ -196,6 +205,60 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     Ok(output)
 }
 
+fn schema_allows_empty_or_null_open_input(schema: &Value) -> bool {
+    match schema {
+        Value::Null => true,
+        Value::Object(map) => {
+            if let Some(any_of) = map.get("anyOf").and_then(Value::as_array)
+                && any_of.iter().any(schema_allows_empty_or_null_open_input)
+            {
+                return true;
+            }
+            if let Some(one_of) = map.get("oneOf").and_then(Value::as_array)
+                && one_of.iter().any(schema_allows_empty_or_null_open_input)
+            {
+                return true;
+            }
+            if map
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|t| t == "null")
+            {
+                return true;
+            }
+
+            let type_allows_object = match map.get("type") {
+                Some(Value::String(t)) => t == "object",
+                Some(Value::Array(types)) => types
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .any(|t| t == "object" || t == "null"),
+                Some(_) => false,
+                None => map.contains_key("properties") || map.contains_key("required"),
+            };
+            if !type_allows_object {
+                return false;
+            }
+
+            let has_required = map
+                .get("required")
+                .and_then(Value::as_array)
+                .map(|arr| !arr.is_empty())
+                .unwrap_or(false);
+            if has_required {
+                return false;
+            }
+
+            let min_properties = map
+                .get("minProperties")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            min_properties == 0
+        }
+        _ => false,
+    }
+}
+
 fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata) -> Result<()> {
     // Use the derived class name from metadata
     let class_name = &tool.class_name;
@@ -206,7 +269,7 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
 
     let open_step_name = format!("{}OpenStep", class_name);
     let send_step_name = format!("{}SendStep", class_name);
-    let next_step_name = format!("{}NextStep", class_name);
+    let read_step_name = format!("{}ReadStep", class_name);
     let finish_step_name = format!("{}FinishStep", class_name);
     let abort_step_name = format!("{}AbortStep", class_name);
     let step_union_name = format!("{}SessionStep", class_name);
@@ -216,26 +279,53 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
         .map(|access| format!(" Access: {}.", access))
         .unwrap_or_default();
 
+    let tool_name = tool.name.to_string();
+    let is_claude_or_a2a = tool_name.starts_with("claude/")
+        || tool_name.contains("/a2a")
+        || tool_name.contains("_a2a");
+
+    let send_input_desc = if is_claude_or_a2a {
+        "Conversational message payload. Set text to a non-empty string. Never null, never omit text."
+    } else {
+        "Payload for this step."
+    };
+    let step_desc = if is_claude_or_a2a {
+        "Emit exactly one FSM step. Choose op from allowed_ops. For Send, input.text MUST be a non-empty string message — never null. After Send, use Read to receive the response before sending again or finishing."
+    } else {
+        "Emit exactly one FSM step. Choose op from allowed_ops. After Send, prefer Read before further Send/Finish so you consume tool output and status."
+    };
+    let read_input_desc = "Read payload for this step.";
+
     // Generate distinct step types for each FSM operation
     write_line(output, &format!("class {} {{", open_step_name))?;
     write_line(output, "  op \"Open\"")?;
-    // Only include initial_input if it's not unit type (void/() - skip field entirely)
+    // Skip initial_input for unit types or schemas with no properties (no meaningful open payload).
+    let open_schema_has_properties = tool
+        .open_input_schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .map(|m| !m.is_empty())
+        .unwrap_or(false);
     if open_input_type_name != "()"
         && open_input_type_name != "null"
         && open_input_type_name != "void"
+        && open_schema_has_properties
     {
+        let open_is_optional = schema_allows_empty_or_null_open_input(&tool.open_input_schema);
+        let optional_suffix = if open_is_optional { "?" } else { "" };
+        let initial_input_desc = if open_is_optional {
+            "Optional open payload."
+        } else {
+            "Required open payload."
+        };
         write_line(
             output,
             &format!(
-                "  initial_input {}? @description(\"Optional open-time configuration payload for the session. This is used only by Open and is not auto-sent as a Send input.\")",
-                open_input_type_name
+                "  initial_input {}{} @description(\"{}\")",
+                open_input_type_name, optional_suffix, initial_input_desc
             ),
         )?;
     }
-    write_line(
-        output,
-        "  reason string? @description(\"Optional explanation for this step.\")",
-    )?;
     write_line(output, "}")?;
     write_line(output, "")?;
 
@@ -244,41 +334,33 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
     write_line(
         output,
         &format!(
-            "  input {} @description(\"Input to send to the already-open session.\")",
-            input_type_name
+            "  input {} @description(\"{}\")",
+            input_type_name, send_input_desc
         ),
-    )?;
-    write_line(
-        output,
-        "  reason string? @description(\"Optional explanation for this step.\")",
     )?;
     write_line(output, "}")?;
     write_line(output, "")?;
 
-    write_line(output, &format!("class {} {{", next_step_name))?;
-    write_line(output, "  op \"Next\"")?;
+    write_line(output, &format!("class {} {{", read_step_name))?;
+    write_line(output, "  op \"Read\"")?;
     write_line(
         output,
-        "  reason string? @description(\"Optional explanation for this step.\")",
+        &format!(
+            "  input {} @description(\"{}\")",
+            input_type_name,
+            escape_baml_description(read_input_desc)
+        ),
     )?;
     write_line(output, "}")?;
     write_line(output, "")?;
 
     write_line(output, &format!("class {} {{", finish_step_name))?;
     write_line(output, "  op \"Finish\"")?;
-    write_line(
-        output,
-        "  reason string? @description(\"Optional explanation for this step.\")",
-    )?;
     write_line(output, "}")?;
     write_line(output, "")?;
 
     write_line(output, &format!("class {} {{", abort_step_name))?;
     write_line(output, "  op \"Abort\"")?;
-    write_line(
-        output,
-        "  reason string? @description(\"Optional explanation for aborting the session.\")",
-    )?;
     write_line(output, "}")?;
     write_line(output, "")?;
 
@@ -290,7 +372,7 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
             step_union_name,
             open_step_name,
             send_step_name,
-            next_step_name,
+            read_step_name,
             finish_step_name,
             abort_step_name
         ),
@@ -303,13 +385,9 @@ fn generate_tool_baml_interface(output: &mut String, tool: &ToolFunctionMetadata
     write_line(
         output,
         &format!(
-            "  steps {}[] @description(\"Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Runtime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Return a top-level JSON object containing this steps field; do not return the steps array by itself. Example object: {{steps: [{{op: \\\"Open\\\"}}, {{op: \\\"Send\\\", input: {{...}}}}, {{op: \\\"Next\\\"}}, {{op: \\\"Finish\\\"}}], reason: null}}.{}\")",
-            step_union_name, access_note
+            "  step {} @description(\"{}{}\")",
+            step_union_name, step_desc, access_note
         ),
-    )?;
-    write_line(
-        output,
-        "  reason string? @description(\"Optional plan-level intent or rationale. Logged when plan is rejected (e.g. empty steps).\")",
     )?;
     write_line(output, "}")?;
 

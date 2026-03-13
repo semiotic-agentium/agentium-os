@@ -44,8 +44,8 @@ pub use bus_subscriber::ProvenanceBusSubscriber;
 pub use effect_subscriber::ProvenanceEffectSubscriber;
 pub use error::ProvenanceError;
 pub use events::{
-    AgentBootedEvent, AgentType, CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData,
-    TaskScopedEvent,
+    AgentBootedEvent, AgentType, CallScope, GlobalEvent, LlmUsage, PlanStepSpec, ProvEvent,
+    ProvEventData, TaskScopedEvent,
 };
 pub use graph_export::{ExportScope, ExportedGraph, GraphExporter};
 pub use graph_model::{
@@ -68,11 +68,13 @@ pub use normalizer::{
     ProvNormalizer, normalize_event, task_entity_id_string, validate_event,
 };
 pub use store::{
+    ActivityRef, ArchiveRef, PayloadRef, PlanningIntentRecord, PlanningPlanRecord,
+    PlanningPlanStepRecord, ProvenanceArchivePayload, ProvenanceArchiveRecord,
     ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
     ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest,
     ProvenanceOpsQueryResponse, ProvenanceOpsResource, ProvenanceOutcomeSegment,
-    ProvenanceQueryApi, ProvenanceReadIntent, ProvenanceResponseProfile, ProvenanceWriter,
-    ToolSessionPhase,
+    ProvenancePlanningQuery, ProvenanceQueryApi, ProvenanceReadIntent, ProvenanceResponseProfile,
+    ProvenanceWriter, ToolSessionPhase,
 };
 pub use tool_index::{ToolIndexConfig, index_tools, index_tools_into_connection};
 pub use types::{ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef};

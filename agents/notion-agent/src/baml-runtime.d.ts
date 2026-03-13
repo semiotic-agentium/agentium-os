@@ -6,6 +6,41 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
+export type BlockRenderMode = "Raw" | "Enriched";
+
+export interface NeedClarification { question: string;
+ }
+
+export interface NotRelevant { reason: string;
+ }
+
+export interface NotionGetPageBlocksInput { block_id: string;
+start_cursor: string | null;
+page_size: number | null;
+raw_blocks: BlockRenderMode | null;
+max_depth: number | null;
+ }
+
+export interface NotionGetPageInput { page_id: string;
+ }
+
+export interface NotionIntent { intent: string;
+ }
+
+export interface NotionPlan { goal: string;
+steps: NotionPlanStep[];
+ }
+
+export interface NotionPlanStep { id: string;
+description: string;
+kind: "discover" | "read" | "synthesize";
+ }
+
+export interface NotionSearchPagesInput { query: string | null;
+start_cursor: string | null;
+page_size: number | null;
+ }
+
 export interface NotionSummary { commitments: string[];
 conflicts: string[];
 missing: string[];
@@ -16,15 +51,45 @@ export interface ReadOnlyResponse { message: string;
 next_step: string | null;
  }
 
-export interface SupportNotionSessionPlan { steps: SupportNotionOpenStep | SupportNotionSendStep | SupportNotionNextStep | SupportNotionFinishStep | SupportNotionAbortStep[];
-reason: string | null;
+export interface SessionContext { contract_version: string;
+session_open: boolean;
+allowed_ops: string[];
+scope_ref: string | null;
+output_ref: string | null;
+evidence_ref: string | null;
+ }
+
+export interface SupportNotionAbortStep { op: "Abort";
+ }
+
+export interface SupportNotionFinishStep { op: "Finish";
+ }
+
+export interface SupportNotionOpenStep { op: "Open";
+ }
+
+export interface SupportNotionReadStep { op: "Read";
+input: NotionSearchPagesInput | NotionGetPageInput | NotionGetPageBlocksInput;
+ }
+
+export interface SupportNotionSendStep { op: "Send";
+input: NotionSearchPagesInput | NotionGetPageInput | NotionGetPageBlocksInput;
+ }
+
+export interface SupportNotionSessionPlan { step: SupportNotionOpenStep | SupportNotionSendStep | SupportNotionReadStep | SupportNotionFinishStep | SupportNotionAbortStep;
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
 declare global {
 
-declare function ChooseNotionAction(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<ReadOnlyResponse | SupportNotionSessionPlan>;
+declare function ChooseNotionAction(args: { goal: string; step_description: string; prior_results: string | null; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ReadOnlyResponse | SupportNotionSessionPlan>;
+
+declare function InferNotionIntent(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<NeedClarification | NotRelevant | NotionIntent>;
+
+declare function PlanNotionWork(args: { intent: string } & { __baml_invocation_token?: string }): Promise<NotionPlan>;
+
+declare function ReactToNotionResults(args: { goal: string; user_message: string; tool_results_json: string } & { __baml_invocation_token?: string }): Promise<string>;
 
 declare function SummarizeNotionContent(args: { user_message: string; page_title: string | null; page_url: string | null; blocks_text: string } & { __baml_invocation_token?: string }): Promise<NotionSummary>;
 
@@ -82,10 +147,22 @@ export interface A2aTerminalTask<S extends A2aTerminalTaskState> extends A2aTask
 export interface A2aStateDispatcher<S extends A2aNonTerminalTaskState> {
     on<N extends A2aNextStates<S>>(state: N, handler: (ctx: A2aTaskContext<N>) => Promise<void> | void): A2aStateDispatcher<S>;
 }
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonObject = { [key: string]: JsonValue };
+export type JsonArray = JsonValue[];
+export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
+/** A chunk emitted via __chat_yield. Must be a JSON-serializable object following A2A wire format. */
+export type YieldChunk =
+  | { message: { parts: Part[]; role?: string; [key: string]: JsonValue | undefined }; [key: string]: JsonValue | undefined }
+  | { task: { id?: string; contextId?: string; status?: { state?: A2aTaskState; [key: string]: JsonValue | undefined }; [key: string]: JsonValue | undefined }; [key: string]: JsonValue | undefined }
+  | { statusUpdate: JsonObject; [key: string]: JsonValue | undefined }
+  | { artifactUpdate: JsonObject; [key: string]: JsonValue | undefined }
+  | { final: boolean; [key: string]: JsonValue | undefined }
+  | JsonObject;
 export type A2aMessageEvent<S extends A2aTaskState = A2aTaskState> =
     | { kind: "assistantMessage"; text: string; task: A2aTaskView<S> }
     | { kind: "statusChanged"; from?: A2aTaskState; to: S; task: A2aTaskView<S> }
-    | { kind: "artifactPublished"; task: A2aTaskView<S>; artifact: unknown; append?: boolean; lastChunk?: boolean }
+    | { kind: "artifactPublished"; task: A2aTaskView<S>; artifact: JsonValue; append?: boolean; lastChunk?: boolean }
     | { kind: "completed"; task: A2aTerminalTask<Extract<S, A2aTerminalTaskState>> }
     | { kind: "failed"; task: A2aTerminalTask<Extract<S, A2aTerminalTaskState>>; error: ToolFailure };
 /**
@@ -110,12 +187,52 @@ export interface A2aSessionClosed {
     sessionId: string;
     closed: true;
 }
-declare function openA2aTaskSession<I = unknown>(token: string): Promise<A2aSessionAwaitingInput<I>>;
+/**
+ * Intent/Plan protocol rails (breaking contract):
+ * 1) submitIntent(...)
+ * 2) submitPlan(...)
+ * 3) execute and complete steps with strict evidence references
+ */
+export interface IntentSubmission {
+    intentId: string;
+    description: string;
+    derivedFromMessageIds: string[];
+    supersession?: "replaced" | "refined";
+}
+export interface PlanStepSubmission {
+    stepId: string;
+    description: string;
+    order: number;
+    dependsOn?: string[];
+}
+export interface PlanSubmission {
+    intentId: string;
+    planId: string;
+    steps: PlanStepSubmission[];
+    supersession?: "replaced" | "refined";
+}
+export interface A2aExecutionSessionAwaitIntent {
+    sessionId: string;
+    submitIntent(intent: IntentSubmission): Promise<A2aExecutionSessionAwaitPlan>;
+    abort(reason?: string): Promise<A2aSessionClosed>;
+}
+export interface A2aExecutionSessionAwaitPlan {
+    sessionId: string;
+    submitPlan(plan: PlanSubmission): Promise<A2aExecutionSessionExecutable>;
+    abort(reason?: string): Promise<A2aSessionClosed>;
+}
+export interface A2aExecutionSessionExecutable {
+    sessionId: string;
+    startStep(stepId: string, evidenceText: string): Promise<void>;
+    completeStep(stepId: string, evidenceText: string): Promise<void>;
+    finish(): Promise<A2aSessionClosed>;
+    abort(reason?: string): Promise<A2aSessionClosed>;
+}
 /**
  * Bootstrap-generated: handler types. Incoming message (parts only; IDs/context are host-managed).
  * Session lifecycle: host invokes onChatMessage(message); agent uses session(message).run(...) to run work and emit outcomes.
  */
-export interface Part { text?: string; data?: unknown; [key: string]: unknown; }
+export interface Part { text?: string; data?: JsonValue; [key: string]: JsonValue | undefined; }
 export interface Message {
   parts: Part[];
   /** First text part. Present on messages from awaitInput(); for the initial message use session(message).text(). */
@@ -135,7 +252,7 @@ export interface SessionEmitter {
   /** Emit a working message (task state remains WORKING). */
   message(text: string): void;
   /** Emit an artifact chunk (append/lastChunk optional). */
-  artifact(artifact: unknown, append?: boolean, lastChunk?: boolean): void;
+  artifact(artifact: JsonValue, append?: boolean, lastChunk?: boolean): void;
   /** Emit a status transition (e.g. TASK_STATE_WORKING). */
   statusChanged(to: A2aTaskState): void;
   /**
@@ -184,7 +301,7 @@ export interface BamlAgent {
   run?(ctx: RunContext): Promise<SessionResult>;
   /** Optional: raw handler when run is not used. */
   onChatMessage?(message: ChatMessage): Promise<void>;
-  tools?: Record<string, (args: unknown) => Promise<unknown>>;
+  tools?: Record<string, (args: JsonObject) => Promise<JsonValue>>;
 }
 declare global {
   /** Minimal console interface matching the QuickJS sandbox polyfill (log, info, warn, error, debug). */
@@ -211,7 +328,10 @@ declare global {
    */
   function session(message: ChatMessage | null | undefined): SessionBuilder;
   function __chat_register(agent: BamlAgent): void;
-  function __chat_yield(chunk: unknown): void;
+  /** Emit a stream chunk following A2A wire format. */
+  function __chat_yield(chunk: YieldChunk): void;
+  function openA2aTaskSession<I = Record<string, unknown>>(token: string): Promise<A2aSessionAwaitingInput<I>>;
+  function openA2aExecutionSession(token: string): Promise<A2aExecutionSessionAwaitIntent>;
 }
 export type ToolFailureKind =
     | "InvalidInput"
@@ -224,4 +344,54 @@ export interface ToolFailure {
     kind: ToolFailureKind;
     message: string;
     retryable: boolean;
+}
+
+/** Generated Step Executor bindings (function -> typed step-executor args/result). */
+
+export type StepExecutorFunctionName = "ChooseNotionAction";
+
+export interface SessionContext {
+    contract_version: "session_context";
+    session_open: boolean;
+    allowed_ops: ("Open" | "Send" | "Read" | "Finish" | "Abort")[];
+    scope_ref: string | null;
+    output_ref: string | null;
+    evidence_ref: string | null;
+}
+
+export interface HistoryContext {
+    hop: number;
+    op: string;
+    status: string;
+    truncated: boolean;
+    cursor: string | null;
+    payload: Record<string, unknown> | null;
+}
+
+export interface StepExecutorStateInput {
+    session_context?: SessionContext | null;
+    history_context?: HistoryContext | null;
+}
+
+export interface StepExecutorRunOptions {
+    max_steps?: number;
+}
+
+export interface StepExecutorRunResult<R = unknown> {
+    last: R;
+    steps: R[];
+    session_context: SessionContext;
+    history_context: HistoryContext | null;
+}
+
+export interface StepExecutorFunctionMap {
+  ChooseNotionAction: { args: Parameters<typeof ChooseNotionAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseNotionAction>>; };
+}
+
+declare global {
+  function runGeneratedStepExecutor<F extends StepExecutorFunctionName>(
+    stepExecutor: F,
+    args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
+    options?: StepExecutorRunOptions
+  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F]["result"]>>;
 }

@@ -1,17 +1,33 @@
-//! Handlers for browsing available agents and tools.
+//! discover_agents and discover_tools built via create_multi_send_session_tool_from_async
+//! (open + multiple send/read).
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
-use baml_rt_core::AgentLister;
+use baml_rt_core::{
+    AgentLister, EventSubscription, EventSubscriptionFilter, subscriptions_match_filter,
+};
 use baml_rt_tools::{
-    ToolRegistry, create_multi_send_session_tool_from_async, tools::ToolFunctionMetadata,
+    ToolRegistry, create_multi_send_session_tool_from_async,
+    tools::{HistoryContextV1, ToolFunctionMetadata},
 };
 
 use crate::tools::{
-    AgentCardDto, DiscoverAgentsNextOutput, DiscoverAgentsOpenInput, DiscoverAgentsSendInput,
-    DiscoverToolsNextOutput, DiscoverToolsOpenInput, DiscoverToolsSendInput,
-    ToolDiscoveryRecordDto,
+    AgentCardDto, AgentEventSubscriptionDto, DiscoverAgentsNextOutput, DiscoverAgentsOpenInput,
+    DiscoverAgentsSendInput, DiscoverToolsNextOutput, DiscoverToolsOpenInput,
+    DiscoverToolsSendInput, ToolDiscoveryRecordDto,
 };
+
+fn subscription_to_dto(subscription: &EventSubscription) -> AgentEventSubscriptionDto {
+    AgentEventSubscriptionDto {
+        schema_versions: subscription.schema_versions.clone(),
+        source_kinds: subscription.source_kinds.clone(),
+        source_keys: subscription.source_keys.clone(),
+        source_key_prefixes: subscription.source_key_prefixes.clone(),
+    }
+}
 
 fn card_to_dto(c: &baml_rt_core::AgentCard) -> AgentCardDto {
     AgentCardDto {
@@ -22,6 +38,7 @@ fn card_to_dto(c: &baml_rt_core::AgentCard) -> AgentCardDto {
         tools: c.tools.clone(),
         description: c.description.clone(),
         capabilities: c.capabilities.clone(),
+        subscriptions: c.subscriptions.iter().map(subscription_to_dto).collect(),
     }
 }
 
@@ -29,30 +46,37 @@ fn filter_and_page(
     entries: &[baml_rt_core::AgentDiscoveryEntry],
     query: Option<&str>,
     required_capabilities: &BTreeSet<String>,
+    subscription_filter: &EventSubscriptionFilter,
     limit: u32,
     offset: u32,
 ) -> Vec<AgentCardDto> {
     let query_lower = query.map(|q| q.to_lowercase());
     entries
         .iter()
-        .map(|e| card_to_dto(&e.agent_card))
-        .filter(|dto| {
+        .filter(|entry| {
             required_capabilities.iter().all(|required| {
-                dto.capabilities
+                entry
+                    .agent_card
+                    .capabilities
                     .iter()
                     .any(|capability| capability.trim().to_lowercase() == *required)
             })
         })
-        .filter(|dto| {
+        .filter(|entry| {
+            subscriptions_match_filter(&entry.agent_card.subscriptions, subscription_filter)
+        })
+        .filter(|entry| {
             query_lower.as_ref().is_none_or(|q| {
-                dto.name.to_lowercase().contains(q)
-                    || dto.agent_package.to_lowercase().contains(q)
-                    || dto
+                entry.agent_card.name.to_lowercase().contains(q)
+                    || entry.agent_card.agent_package.to_lowercase().contains(q)
+                    || entry
+                        .agent_card
                         .description
                         .as_ref()
                         .is_some_and(|s| s.to_lowercase().contains(q))
             })
         })
+        .map(|entry| card_to_dto(&entry.agent_card))
         .skip(offset as usize)
         .take(limit as usize)
         .collect()
@@ -81,13 +105,24 @@ pub fn discover_agents_handler(
         Box::pin(async move {
             let limit = send_input.limit.unwrap_or(50).min(100);
             let offset = send_input.offset.unwrap_or(0);
+            let normalized_query = send_input
+                .query
+                .as_deref()
+                .map(str::trim)
+                // Treat empty/sentinel values as "no filter" to default to broad discovery.
+                .filter(|q| !q.is_empty() && !q.eq_ignore_ascii_case("null") && *q != "*");
             let required_capabilities =
                 normalize_required_capabilities(send_input.required_capabilities);
+            let subscription_filter = EventSubscriptionFilter::new(
+                send_input.required_schema_versions.unwrap_or_default(),
+                send_input.required_source_kinds.unwrap_or_default(),
+            );
             let entries = list.list_agents();
             let mut agents = filter_and_page(
                 &entries,
-                send_input.query.as_deref(),
+                normalized_query,
                 &required_capabilities,
+                &subscription_filter,
                 limit,
                 offset,
             );
@@ -96,10 +131,32 @@ pub fn discover_agents_handler(
                 && !entries.is_empty()
                 && send_input.query.is_some()
                 && required_capabilities.is_empty()
+                && subscription_filter.is_empty()
             {
-                agents = filter_and_page(&entries, None, &required_capabilities, limit, offset);
+                agents = filter_and_page(
+                    &entries,
+                    None,
+                    &required_capabilities,
+                    &subscription_filter,
+                    limit,
+                    offset,
+                );
             }
-            Ok(DiscoverAgentsNextOutput { agents, done: true })
+            Ok(DiscoverAgentsNextOutput {
+                agents: agents.clone(),
+                done: true,
+                history_context: Some(HistoryContextV1 {
+                    hop: 1,
+                    op: "Read".to_string(),
+                    status: "done".to_string(),
+                    truncated: false,
+                    cursor: None,
+                    payload: Some(BTreeMap::from([
+                        ("count".to_string(), serde_json::json!(agents.len())),
+                        ("query".to_string(), serde_json::json!(normalized_query)),
+                    ])),
+                }),
+            })
         })
     })
 }
@@ -129,7 +186,21 @@ pub fn discover_tools_handler(
                     tags: r.tags,
                 })
                 .collect();
-            Ok(DiscoverToolsNextOutput { tools, done: true })
+            Ok(DiscoverToolsNextOutput {
+                tools: tools.clone(),
+                done: true,
+                history_context: Some(HistoryContextV1 {
+                    hop: 1,
+                    op: "Read".to_string(),
+                    status: "done".to_string(),
+                    truncated: false,
+                    cursor: None,
+                    payload: Some(BTreeMap::from([
+                        ("count".to_string(), serde_json::json!(tools.len())),
+                        ("query".to_string(), serde_json::json!(send_input.query)),
+                    ])),
+                }),
+            })
         })
     })
 }

@@ -55,6 +55,12 @@ pub(crate) fn get_context_metrics(context_id: &str) -> Span {
     tracing::debug_span!("baml_rt_api.get_context_metrics", context_id = %context_id)
 }
 
+/// Create span for GET /contexts/{context_id}/planning.
+#[inline]
+pub(crate) fn get_context_planning(context_id: &str) -> Span {
+    tracing::debug_span!("baml_rt_api.get_context_planning", context_id = %context_id)
+}
+
 #[inline]
 pub(crate) fn get_provenance_llm_calls() -> Span {
     tracing::debug_span!("baml_rt_api.get_provenance_llm_calls")

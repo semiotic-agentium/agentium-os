@@ -172,7 +172,8 @@ pub enum ToolSessionOp {
         input: Value,
         reason: Option<String>,
     },
-    Next {
+    Read {
+        input: Value,
         reason: Option<String>,
     },
     Finish {
@@ -183,113 +184,93 @@ pub enum ToolSessionOp {
     },
 }
 
-/// Plan-level result of extracting a tool session plan (steps + optional reason).
+/// Plan-level result of extracting a single tool session fragment plus optional plan reason.
 #[derive(Debug, Clone)]
 pub(crate) struct ToolSessionPlan {
-    pub steps: Vec<ToolSessionOp>,
-    /// Optional plan-level intent or rationale. Logged when plan is rejected (e.g. empty steps).
-    pub reason: Option<String>,
+    pub step: ToolSessionOp,
 }
 
-/// Extract and convert JSON tool session plan into typed operations and optional plan-level reason.
+/// Extract and convert a JSON tool session fragment into one typed operation and optional plan-level reason.
 pub(crate) fn extract_tool_session_plan(result: &Value) -> Result<Option<ToolSessionPlan>> {
     let obj = match result.as_object() {
         Some(obj) => obj,
         None => return Ok(None),
     };
-    let steps_value = match obj.get("steps") {
+    let step_value = match obj.get("step") {
         Some(value) => value,
         None => return Ok(None),
     };
-    let steps_array = steps_value.as_array().ok_or_else(|| {
-        BamlRtError::InvalidArgument("ToolSessionPlan.steps must be an array".to_string())
+    let step_obj = step_value.as_object().ok_or_else(|| {
+        BamlRtError::InvalidArgument("ToolSessionPlan.step must be an object".to_string())
     })?;
+    if step_obj.contains_key("tool_name") {
+        return Err(BamlRtError::InvalidArgument(
+            "ToolSessionPlan step must not include tool_name; tool identity is bound by plan type"
+                .to_string(),
+        ));
+    }
+    let op_str = match step_obj.get("op").and_then(|v| v.as_str()) {
+        Some(s) => s.to_ascii_lowercase(),
+        None => {
+            tracing::warn!(raw_step = ?step_obj, "ToolSessionPlan step missing op");
+            return Err(BamlRtError::InvalidArgument(
+                "ToolSessionPlan step missing op".to_string(),
+            ));
+        }
+    };
 
-    let plan_reason = obj
+    let reason = step_obj
         .get("reason")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
-    let mut steps = Vec::new();
-    for (step_index, step_value) in steps_array.iter().enumerate() {
-        let step_obj = step_value.as_object().ok_or_else(|| {
-            BamlRtError::InvalidArgument("ToolSessionPlan step must be an object".to_string())
-        })?;
-        if step_obj.contains_key("tool_name") {
-            return Err(BamlRtError::InvalidArgument(
-                "ToolSessionPlan step must not include tool_name; tool identity is bound by plan type"
-                    .to_string(),
-            ));
+    let step = match op_str.as_str() {
+        "open" => {
+            let initial_input = step_obj.get("initial_input").cloned();
+            ToolSessionOp::Open {
+                initial_input,
+                reason,
+            }
         }
-
-        let step_type = step_obj.get("__type").and_then(|v| v.as_str());
-        let op_str = match step_obj.get("op").and_then(|v| v.as_str()) {
-            Some(s) => s.to_ascii_lowercase(),
-            None => {
-                tracing::warn!(
-                    step_index,
-                    raw_step = ?step_obj,
-                    "ToolSessionPlan step missing op"
-                );
-                return Err(BamlRtError::InvalidArgument(
-                    "ToolSessionPlan step missing op".to_string(),
-                ));
-            }
-        };
-
-        let reason = step_obj
-            .get("reason")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let op = match op_str.as_str() {
-            "open" => {
-                let initial_input = match step_type {
-                    Some("SupportCalculateOpenStep") | Some(_) => {
-                        step_obj.get("initial_input").cloned()
+        "send" => {
+            let input = step_obj
+                .get("input")
+                .cloned()
+                .ok_or_else(|| {
+                    BamlRtError::InvalidArgument(
+                        "Send step missing required input field".to_string(),
+                    )
+                })
+                .and_then(|v| {
+                    if v.is_null() {
+                        Err(BamlRtError::InvalidArgument(
+                            "Send step input must not be null — provide a non-empty object"
+                                .to_string(),
+                        ))
+                    } else {
+                        Ok(v)
                     }
-                    _ => step_obj.get("initial_input").cloned(),
-                };
-                ToolSessionOp::Open {
-                    initial_input,
-                    reason,
-                }
-            }
-            "send" => {
-                let input = match step_type {
-                    Some("SupportCalculateSendStep") | Some(_) => {
-                        step_obj.get("input").cloned().ok_or_else(|| {
-                            BamlRtError::InvalidArgument(
-                                "Send step missing required 'input' field".to_string(),
-                            )
-                        })?
-                    }
-                    _ => step_obj.get("input").cloned().ok_or_else(|| {
-                        BamlRtError::InvalidArgument(
-                            "Send step missing required 'input' field".to_string(),
-                        )
-                    })?,
-                };
-                ToolSessionOp::Send { input, reason }
-            }
-            "next" => ToolSessionOp::Next { reason },
-            "finish" => ToolSessionOp::Finish { reason },
-            "abort" => ToolSessionOp::Abort { reason },
-            other => {
-                return Err(BamlRtError::InvalidArgument(format!(
-                    "Unknown tool session op '{}'",
-                    other
-                )));
-            }
-        };
+                })?;
+            ToolSessionOp::Send { input, reason }
+        }
+        "read" => {
+            let input = step_obj
+                .get("input")
+                .cloned()
+                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+            ToolSessionOp::Read { input, reason }
+        }
+        "finish" => ToolSessionOp::Finish { reason },
+        "abort" => ToolSessionOp::Abort { reason },
+        other => {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "Unknown tool session op {}",
+                other
+            )));
+        }
+    };
 
-        steps.push(op);
-    }
-
-    Ok(Some(ToolSessionPlan {
-        steps,
-        reason: plan_reason,
-    }))
+    Ok(Some(ToolSessionPlan { step }))
 }
 
 /// Normalize plan input (string JSON → parsed Value).
@@ -376,21 +357,15 @@ mod tests {
         }
     }
 
-    /// Steps array with valid op values, no tool_name.
-    fn valid_steps_array() -> impl Strategy<Value = Value> {
-        let op_strategy = prop_oneof![Just("open"), Just("next"), Just("finish"), Just("abort"),];
-        prop::collection::vec(
-            op_strategy.prop_map(|op| {
-                let mut step = serde_json::Map::new();
-                step.insert("op".to_string(), Value::String(op.to_string()));
-                step.insert("__type".to_string(), Value::String("Step".to_string()));
-                Value::Object(step)
-            }),
-            1..6,
-        )
-        .prop_map(|steps| {
+    /// Single step object with valid op values, no tool_name.
+    fn valid_step_object() -> impl Strategy<Value = Value> {
+        let op_strategy = prop_oneof![Just("open"), Just("finish"), Just("abort"),];
+        op_strategy.prop_map(|op| {
+            let mut step = serde_json::Map::new();
+            step.insert("op".to_string(), Value::String(op.to_string()));
+            step.insert("__type".to_string(), Value::String("Step".to_string()));
             let mut obj = serde_json::Map::new();
-            obj.insert("steps".to_string(), Value::Array(steps));
+            obj.insert("step".to_string(), Value::Object(step));
             Value::Object(obj)
         })
     }
@@ -400,11 +375,16 @@ mod tests {
 
         /// Invariant: Extracted plan steps have valid op and no tool_name in payload.
         #[test]
-        fn prop_extract_plan_steps_valid(v in valid_steps_array()) {
+        fn prop_extract_plan_step_valid(v in valid_step_object()) {
             let plan = extract_tool_session_plan(&v).unwrap().expect("plan");
-            assert!(!plan.steps.is_empty());
-            // All steps were parsed; type system enforces ToolSessionOp variants (no tool_name).
-            assert_eq!(plan.steps.len(), v.get("steps").and_then(|a| a.as_array()).map(|a| a.len()).unwrap_or(0));
+            // Parsed step must exist and encode one valid variant.
+            match plan.step {
+                ToolSessionOp::Open { .. }
+                | ToolSessionOp::Send { .. }
+                | ToolSessionOp::Read { .. }
+                | ToolSessionOp::Finish { .. }
+                | ToolSessionOp::Abort { .. } => {}
+            }
         }
     }
 }

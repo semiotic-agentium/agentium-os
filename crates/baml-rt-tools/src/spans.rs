@@ -33,7 +33,7 @@ pub(crate) fn execute_tool(tool_name: &str) -> Span {
 /// Create span for opening a tool session.
 ///
 /// Parent: Tool execution span or caller's span
-/// Children: Session operations (send, next, finish)
+/// Children: Session operations (send, read, finish)
 #[inline]
 pub(crate) fn open_session(session_id: &ToolSessionId, tool_name: &ToolName) -> Span {
     tracing::debug_span!(
@@ -55,14 +55,14 @@ pub(crate) fn session_send(session_id: &ToolSessionId) -> Span {
     )
 }
 
-/// Create span for advancing a tool session.
+/// Create span for read operation on a tool session.
 ///
 /// Parent: Session span
 /// Children: None
 #[inline]
-pub(crate) fn session_next(session_id: &ToolSessionId) -> Span {
+pub(crate) fn session_read(session_id: &ToolSessionId) -> Span {
     tracing::debug_span!(
-        "baml_rt_tools.session_next",
+        "baml_rt_tools.session_read",
         session_id = %session_id,
     )
 }

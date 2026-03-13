@@ -17,13 +17,13 @@ expression: redact_runtime_fields(payload)
     "durationMsTotal": 0,
     "failedCount": 0,
     "latencyHotspots": {
-      "p95": 0.0,
-      "p99": 0.0
+      "p95": 0,
+      "p99": 0
     },
     "promptTokensTotal": 0,
     "tokenHotspots": {
-      "p95": 0.0,
-      "p99": 0.0
+      "p95": 0,
+      "p99": 0
     },
     "totalTokens": 0
   },

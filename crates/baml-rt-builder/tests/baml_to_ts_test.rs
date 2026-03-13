@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 
 use baml_rt_builder::builder::{
-    baml_signature_gen::extract_baml_signatures,
+    baml_signature_gen::{extract_baml_signatures, session_plan_functions_map},
     ts_gen::{load_manifest_tools, render_ts_declarations},
 };
 use baml_runtime::BamlRuntime;
@@ -43,7 +43,8 @@ fn generate_ts_from_fixture(fixture_name: &str) -> Result<String, Box<dyn std::e
         extract_baml_signatures(&runtime).map_err(|e| format!("extract_baml_signatures: {}", e))?;
     let tool_names =
         load_manifest_tools(&baml_src).map_err(|e| format!("load_manifest_tools: {}", e))?;
-    let ts = render_ts_declarations(&ir_signature, &tool_names)
+    let session_plan_map = session_plan_functions_map(&ir_signature);
+    let ts = render_ts_declarations(&ir_signature, &tool_names, &session_plan_map)
         .map_err(|e| format!("render_ts_declarations: {}", e))?;
     Ok(ts)
 }
@@ -66,19 +67,21 @@ async fn baml_to_ts_stream_baml_tool_full_snapshot() {
 #[tokio::test]
 async fn baml_to_ts_typed_function_declaration() {
     let ts = generate_ts_from_fixture("stream-baml-tool").expect("generate TS");
+    // ChooseCalcTool takes user_message + session_context (step-executor pattern).
     assert!(
-        ts.contains("declare function ChooseCalcTool(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SupportCalculateSessionPlan>"),
-        "expected typed function declaration; got snippet: {}",
-        ts.lines().take(10).collect::<Vec<_>>().join("\n")
+        ts.contains("declare function ChooseCalcTool(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SupportCalculateSessionPlan>"),
+        "expected typed function declaration with session_context; got snippet:\n{}",
+        ts.lines().take(30).collect::<Vec<_>>().join("\n")
     );
-    // BAML function declarations must be typed; BamlAgent.tools may still use Promise<unknown>
+    // BAML function declarations must be typed; BamlAgent.tools may still use Promise<JsonValue>
     assert!(
-        !ts.contains("ChooseCalcTool(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<unknown>"),
+        !ts.contains("Promise<unknown>"),
         "BAML function ChooseCalcTool should have typed return, not Promise<unknown>"
     );
+    // `Record<string, unknown>` must NOT appear on BAML function argument shapes (those must be concretely typed).
     assert!(
-        !ts.contains("Record<string, unknown>"),
-        "generated TS should not use Record<string, unknown> for BAML function args"
+        !ts.contains("ChooseCalcTool(args: Record<string, unknown>)"),
+        "generated TS should not use Record<string, unknown> for ChooseCalcTool args"
     );
 }
 

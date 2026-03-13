@@ -1,0 +1,14 @@
+---
+source: crates/baml-rt-provenance/tests/store_test.rs
+expression: summary
+---
+{
+  "entity_count": 2,
+  "activity_count": 2,
+  "used_count": 2,
+  "used_roles_sorted": [
+    "a2a:args",
+    "input_message"
+  ],
+  "derived_relation_count": 1
+}

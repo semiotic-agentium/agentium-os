@@ -190,6 +190,8 @@ pub struct StreamHandle {
     pub receiver: StreamReceiver,
     /// When present, next message for same context_id is sent here to resume the same JS run.
     pub resume_tx: Option<mpsc::Sender<Value>>,
+    /// When present, send a unit value to request immediate upstream stream abort.
+    pub abort_tx: Option<mpsc::Sender<()>>,
 }
 
 #[derive(Debug)]

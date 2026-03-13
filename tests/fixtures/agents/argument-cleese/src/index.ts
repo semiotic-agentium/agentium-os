@@ -27,7 +27,7 @@ function emitFromToolResult(emit: { message: (text: string) => void }, value: un
 
 __chat_register({
   run: async (ctx): Promise<SessionResult> => {
-    const text = ctx.text || "Start the argument.";
+    const text = ctx.text || "It certainly is not.";
     try {
       const firstLine = await ArgumentReply({ other_message: text });
       const myLine = typeof firstLine === "string" ? firstLine : "No it isn't.";

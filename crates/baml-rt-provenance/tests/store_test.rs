@@ -1,4 +1,4 @@
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use baml_rt_core::{
     Outcome,
@@ -12,15 +12,10 @@ use baml_rt_provenance::{
 use insta::assert_snapshot;
 use serde_json::json;
 
-fn build_isolated_store(test_name: &str) -> Arc<baml_rt_provenance::GraphqliteProvenanceStore> {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("system clock after epoch")
-        .as_nanos();
-    let db_path: PathBuf = std::env::temp_dir().join(format!("prov-{test_name}-{unique}.db"));
-    GraphqliteStoreBuilder::file(&db_path)
+fn build_isolated_store(_test_name: &str) -> Arc<baml_rt_provenance::GraphqliteProvenanceStore> {
+    GraphqliteStoreBuilder::in_memory_isolated()
         .build()
-        .expect("build isolated file-backed store")
+        .expect("build isolated in-memory store")
 }
 
 #[tokio::test]
@@ -38,14 +33,23 @@ async fn test_normalize_event_snapshot_for_tool_call_started() {
     assert_eq!(event.context_id(), &ContextId::new(1, 1));
 
     let normalized = normalize_event(&event).expect("normalize event");
-    let has_args_used = normalized
+
+    // Snapshot the structural summary: counts + relation roles/types.
+    // This catches schema renames without requiring ProvDocument to implement Serialize.
+    let mut used_roles: Vec<String> = normalized
         .document
         .used()
-        .any(|(_, used)| used.role.as_deref() == Some("a2a:args"));
-    assert!(
-        has_args_used,
-        "normalized tool call must include USED relation with role a2a:args"
-    );
+        .filter_map(|(_, used)| used.role.clone())
+        .collect();
+    used_roles.sort();
+    let summary = serde_json::json!({
+        "entity_count":   normalized.document.entities().count(),
+        "activity_count": normalized.document.activities().count(),
+        "used_count":     normalized.document.used().count(),
+        "used_roles_sorted": used_roles,
+        "derived_relation_count": normalized.derived_relations.len(),
+    });
+    insta::assert_json_snapshot!("tool_call_started_normalized_summary", summary);
 
     let store = build_isolated_store("normalize-event");
     store.add_event(event).await.expect("persist event");

@@ -84,6 +84,10 @@ pub enum BamlRtError {
     #[error("Invalid argument: {0}")]
     InvalidArgument(String),
 
+    /// Request conflicts with current runtime/session state
+    #[error("Conflict: {0}")]
+    Conflict(String),
+
     /// Invalid argument with source error
     #[error("{message}")]
     InvalidArgumentWithSource {

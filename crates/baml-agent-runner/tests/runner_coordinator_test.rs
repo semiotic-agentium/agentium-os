@@ -281,47 +281,44 @@ async fn test_coordinator_accepts_data_only_task_daemon_handoff() {
                 "parts": [
                     {
                         "data": {
-                            "schema_version": "task-daemon.interpretation.v1",
-                            "event_id": "td-interpret-result-test-1",
-                            "request_event_id": "td-interpret-request-test-1",
-                            "emitted_at_unix": 1_735_720_001u64,
-                            "source": {
+                            "schema_version": "task-daemon.coordinator-handoff.v1",
+                            "batch": {
                                 "source_key": "slack:CAGENTIUM1",
                                 "source": "slack",
-                                "source_label": "#agentium-eng"
-                            },
-                            "messages_scanned": 3,
-                            "project": {
-                                "project_key": "agent-platform",
-                                "repo_available": true,
-                                "repo_path": "/repo/agent-platform"
-                            },
-                            "interpretation": {
-                                "executive_summary": "Team needs investigation tasks created from discussion context.",
-                                "current_objectives": [
-                                    "Convert structured interpretation into a runnable workflow"
-                                ],
-                                "workflow_seed": {
-                                    "goal": "Create investigation tasks and route follow-ups",
-                                    "investigation_nodes": [
-                                        {
-                                            "key": "investigate-routing",
-                                            "title": "Investigate routing behavior",
-                                            "goal": "Validate coordinator consumption path",
-                                            "prompt": "Inspect coordinator intake and prove structured handoff is used.",
-                                            "when_to_run": "repo_available"
-                                        }
-                                    ]
-                                }
-                            },
-                            "derived_tasks": [
-                                {
-                                    "key": "task-1",
-                                    "title": "Validate typed handoff ingestion",
-                                    "description": "Ensure coordinator can plan from parts[].data without text fallback.",
-                                    "priority": "high"
-                                }
-                            ]
+                                "source_label": "#agentium-eng",
+                                "messages_scanned": 3,
+                                "project": {
+                                    "project_key": "agent-platform",
+                                    "repo_available": true,
+                                    "repo_path": "/repo/agent-platform"
+                                },
+                                "interpretation": {
+                                    "executive_summary": "Team needs investigation tasks created from discussion context.",
+                                    "current_objectives": [
+                                        "Convert structured interpretation into a runnable workflow"
+                                    ],
+                                    "workflow_seed": {
+                                        "goal": "Create investigation tasks and route follow-ups",
+                                        "investigation_nodes": [
+                                            {
+                                                "key": "investigate-routing",
+                                                "title": "Investigate routing behavior",
+                                                "goal": "Validate coordinator consumption path",
+                                                "prompt": "Inspect coordinator intake and prove structured handoff is used.",
+                                                "when_to_run": "repo_available"
+                                            }
+                                        ]
+                                    }
+                                },
+                                "derived_tasks": [
+                                    {
+                                        "key": "task-1",
+                                        "title": "Validate typed handoff ingestion",
+                                        "description": "Ensure coordinator can plan from parts[].data without text fallback.",
+                                        "priority": "high"
+                                    }
+                                ]
+                            }
                         }
                     }
                 ],

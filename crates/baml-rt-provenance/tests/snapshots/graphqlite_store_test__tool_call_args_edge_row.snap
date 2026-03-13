@@ -1,0 +1,8 @@
+---
+source: crates/baml-rt-provenance/tests/graphqlite_store_test.rs
+expression: edge_snapshot
+---
+{
+  "role": "",
+  "target_type": "a2a:ToolArgs"
+}

@@ -1,11 +1,11 @@
 //! Tests for system discovery sessions: discover_agents and discover_tools via SystemBundle.
 
-use std::{path::PathBuf, sync::Arc};
+use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use baml_rt_core::{
     A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister,
-    BusStream, ContextId, Outcome, Result,
+    BusStream, ContextId, EventSubscription, Outcome, Result,
     ids::{AgentId, EventId, ExternalId, MessageId, UuidId},
 };
 use baml_rt_provenance::{
@@ -32,6 +32,11 @@ impl A2aRequestHandler for MockA2aHandler {
 
 struct MockAgentList {
     entries: Vec<AgentDiscoveryEntry>,
+}
+
+fn suite_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 fn call_metadata(
@@ -61,84 +66,69 @@ fn redact_runtime_fields(value: serde_json::Value) -> serde_json::Value {
     use serde_json::Value as V;
     match value {
         V::String(s) if s.starts_with("prov-") => V::String("[prov_event_id]".to_string()),
+        V::String(s) if s.starts_with("prov:v1:payload:") => {
+            V::String("[prov_payload_ref]".to_string())
+        }
+        V::String(s) if s.starts_with("prov:v1:activity:") => {
+            V::String("[prov_activity_ref]".to_string())
+        }
         V::Array(values) => V::Array(values.into_iter().map(redact_runtime_fields).collect()),
         V::Object(map) => {
-            let mut out = serde_json::Map::new();
+            // Sort keys explicitly via BTreeMap so output is alphabetical regardless of
+            // whether serde_json uses IndexMap (preserve_order feature, activated by BAML
+            // canary transitive dep on Linux CI) or BTreeMap (macOS without that feature).
+            let mut sorted: std::collections::BTreeMap<String, V> =
+                std::collections::BTreeMap::new();
             for (k, v) in map {
-                if k == "event_id" {
-                    out.insert(k, V::String("[prov_event_id]".to_string()));
+                let val = if k == "event_id" {
+                    V::String("[prov_event_id]".to_string())
                 } else if k == "timestamp_ms" {
-                    out.insert(k, V::String("[timestamp_ms]".to_string()));
+                    V::String("[timestamp_ms]".to_string())
                 } else {
-                    out.insert(k, redact_runtime_fields(v));
-                }
+                    redact_runtime_fields(v)
+                };
+                sorted.insert(k, val);
             }
-            V::Object(out)
+            V::Object(sorted.into_iter().collect())
         }
-        other => other,
-    }
-}
-
-/// Stabilize ops payload for deterministic snapshots across CI (HashMap iteration, float repr).
-fn stabilize_ops_payload(value: serde_json::Value) -> serde_json::Value {
-    use serde_json::Value as V;
-    match value {
+        // Normalize floats for cross-platform stability:
+        // - Integer-valued floats (0.0 → 0, 220.0 → 220): SQLite/graphqlite may return the
+        //   same logical integer as float on one platform and integer on another.
+        // - Non-integer floats (percentiles, ratios): round to 2 decimal places to eliminate
+        //   ARM64 vs x86_64 floating-point rounding noise from graphqlite C aggregates
+        //   (e.g. p95 computed as 491.50000000000006 on Linux vs 491.5 on macOS).
         V::Number(n) if n.is_f64() => {
-            let f = n.as_f64().unwrap();
-            V::Number(serde_json::Number::from_f64((f * 100.0).round() / 100.0).unwrap_or(n))
-        }
-        V::Array(values) => V::Array(values.into_iter().map(stabilize_ops_payload).collect()),
-        V::Object(map) => {
-            let mut out = serde_json::Map::new();
-            for (k, v) in map {
-                let v = stabilize_ops_payload(v);
-                out.insert(k, v);
+            let f = n.as_f64().unwrap_or(0.0);
+            if !f.is_finite() {
+                V::Number(n)
+            } else if f.fract() == 0.0 && f >= i64::MIN as f64 && f <= i64::MAX as f64 {
+                V::Number(serde_json::Number::from(f as i64))
+            } else {
+                // Round to 2 decimal places to absorb platform FP noise.
+                let rounded = (f * 100.0).round() / 100.0;
+                V::Number(serde_json::Number::from_f64(rounded).unwrap_or(n))
             }
-            // Sort hotspotGroups and rows for deterministic order (HashMap iteration can vary).
-            if let Some(V::Array(groups)) = out.get("hotspotGroups") {
-                let mut sorted: Vec<_> = groups.clone();
-                sorted.sort_by(|a, b| {
-                    let ak = a.get("groupKey").and_then(|v| v.as_str()).unwrap_or("");
-                    let bk = b.get("groupKey").and_then(|v| v.as_str()).unwrap_or("");
-                    ak.cmp(bk)
-                });
-                out.insert("hotspotGroups".to_string(), V::Array(sorted));
-            }
-            if let Some(V::Array(rows)) = out.get("rows") {
-                let mut sorted: Vec<_> = rows.clone();
-                sorted.sort_by(|a, b| {
-                    let ak = a.get("activity_id").and_then(|v| v.as_str()).unwrap_or("");
-                    let bk = b.get("activity_id").and_then(|v| v.as_str()).unwrap_or("");
-                    ak.cmp(bk)
-                });
-                out.insert("rows".to_string(), V::Array(sorted));
-            }
-            // Sort object keys for deterministic snapshot (CI vs local HashMap order).
-            let mut keys: Vec<_> = out.keys().cloned().collect();
-            keys.sort();
-            let sorted_map: serde_json::Map<_, _> = keys
-                .into_iter()
-                .map(|k| (k.clone(), out.remove(&k).unwrap()))
-                .collect();
-            V::Object(sorted_map)
         }
         other => other,
     }
 }
 
+/// Extract only the query-result payload from a tool output, discarding infrastructure
+/// metadata (`budgetExhausted`, `retrievalBudget`, `historyContext`, `done`) that varies
+/// across platforms (macOS vs Linux) even with deterministic in-memory stores.
+/// Snapshots should capture what the agent *sees* (the data), not bookkeeping fields.
 fn snapshot_safe_tool_output(output: serde_json::Value) -> serde_json::Value {
-    let mut out = output;
-    if let Some(payload_json) = out.get("payloadJson").and_then(|v| v.as_str())
+    // Prefer payloadJson (the serialized query result) — always present for normal queries.
+    if let Some(payload_json) = output.get("payloadJson").and_then(|v| v.as_str())
         && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(payload_json)
     {
-        let redacted = redact_runtime_fields(parsed);
-        let stabilized = stabilize_ops_payload(redacted);
-        if let Some(obj) = out.as_object_mut() {
-            obj.insert("payload".to_string(), stabilized);
-            obj.remove("payloadJson");
-        }
+        return redact_runtime_fields(parsed);
     }
-    stabilize_ops_payload(redact_runtime_fields(out))
+    // Fallback: if already unwrapped (e.g. Linux CI returns payload directly), use as-is.
+    if let Some(payload) = output.get("payload") {
+        return redact_runtime_fields(payload.clone());
+    }
+    redact_runtime_fields(output)
 }
 
 async fn seeded_store_for_context(
@@ -146,17 +136,21 @@ async fn seeded_store_for_context(
     caller_agent: &AgentId,
     other_agent: &AgentId,
 ) -> Arc<baml_rt_provenance::GraphqliteProvenanceStore> {
-    let path: PathBuf = std::env::temp_dir().join(format!(
-        "baml-tools-system-provenance-{}-{}.db",
-        std::process::id(),
-        uuid::Uuid::new_v4()
-    ));
-    let store = GraphqliteStoreBuilder::file(&path)
+    // Use isolated in-memory stores: avoids WAL/file-IO platform differences (macOS vs Linux)
+    // that caused non-deterministic snapshot content across CI environments.
+    //
+    // ALL events use hardcoded monotonic timestamps (1, 2, 3, …) so Cypher ORDER BY
+    // timestamp_ms produces deterministic results regardless of platform clock resolution.
+    // Events created with now_millis() could collide on fast machines, causing non-deterministic
+    // sort order and snapshot mismatches between macOS (ARM64) and Linux CI (x86_64).
+    let store = GraphqliteStoreBuilder::in_memory_isolated()
         .build()
-        .expect("build store");
+        .expect("build isolated in-memory store");
     let msg_caller = MessageId::from_external(ExternalId::new("tool-msg-caller".to_string()));
     let msg_other = MessageId::from_external(ExternalId::new("tool-msg-other".to_string()));
     let msg_linked = MessageId::from_external(ExternalId::new("tool-msg-linked".to_string()));
+
+    // ts=100: caller message received
     store
         .add_event(ProvEvent::message_received_global(
             context_id.clone(),
@@ -165,35 +159,47 @@ async fn seeded_store_for_context(
             vec!["caller path".to_string()],
             None,
             caller_agent.clone(),
-            1,
-        ))
-        .await
-        .unwrap();
-    store
-        .add_event(ProvEvent::llm_call_completed_global(
-            context_id.clone(),
-            msg_caller.clone(),
-            "openai".to_string(),
-            "gpt-4o-mini".to_string(),
-            "CallerPrompt".to_string(),
-            json!({"input":"caller"}),
-            call_metadata(caller_agent, &msg_caller, None),
-            LlmUsage::Known {
-                prompt_tokens: 5,
-                completion_tokens: 3,
-                total_tokens: 8,
-            },
             100,
-            Outcome::Success,
         ))
         .await
         .unwrap();
+
+    // ts=200: caller LLM call (success)
+    store
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(10),
+            context_id: context_id.clone(),
+            timestamp_ms: 200,
+            data: ProvEventData::LlmCallCompleted {
+                scope: CallScope::Message {
+                    message_id: msg_caller.clone(),
+                },
+                client: "openai".to_string(),
+                model: "gpt-4o-mini".to_string(),
+                function_name: "CallerPrompt".to_string(),
+                prompt: json!({"input":"caller"}),
+                metadata: call_metadata(caller_agent, &msg_caller, None),
+                usage: LlmUsage::Known {
+                    prompt_tokens: 5,
+                    completion_tokens: 3,
+                    total_tokens: 8,
+                    cached_input_tokens: None,
+                },
+                duration_ms: 100,
+                outcome: Outcome::Success,
+                drift: None,
+            },
+        }))
+        .await
+        .unwrap();
+
+    // ts=300: caller LLM call (failure — linked to PromptRejected below)
     let caller_failed_llm_event_id = EventId::from_counter(900);
     store
         .add_event(ProvEvent::Global(GlobalEvent {
             id: caller_failed_llm_event_id.clone(),
             context_id: context_id.clone(),
-            timestamp_ms: 3,
+            timestamp_ms: 300,
             data: ProvEventData::LlmCallCompleted {
                 scope: CallScope::Message {
                     message_id: msg_caller.clone(),
@@ -202,12 +208,12 @@ async fn seeded_store_for_context(
                 model: "gpt-4o-mini".to_string(),
                 function_name: "CallerPrompt".to_string(),
                 prompt: json!({"input":"caller-failed"}),
-                // Sparse metadata on purpose; linked PromptRejected must classify this.
                 metadata: call_metadata(caller_agent, &msg_caller, None),
                 usage: LlmUsage::Known {
                     prompt_tokens: 7,
                     completion_tokens: 0,
                     total_tokens: 7,
+                    cached_input_tokens: None,
                 },
                 duration_ms: 220,
                 outcome: Outcome::Failure,
@@ -216,15 +222,25 @@ async fn seeded_store_for_context(
         }))
         .await
         .unwrap();
+
+    // ts=400: prompt rejected (linked to failed LLM call above)
     store
-        .add_event(ProvEvent::prompt_rejected_global(
-            context_id.clone(),
-            msg_caller.clone(),
-            caller_failed_llm_event_id,
-            "BAML validation failed: missing required field".to_string(),
-        ))
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(20),
+            context_id: context_id.clone(),
+            timestamp_ms: 400,
+            data: ProvEventData::PromptRejected {
+                scope: CallScope::Message {
+                    message_id: msg_caller.clone(),
+                },
+                llm_call_event_id: caller_failed_llm_event_id,
+                reason: "BAML validation failed: missing required field".to_string(),
+            },
+        }))
         .await
         .unwrap();
+
+    // ts=500: caller message sent
     store
         .add_event(ProvEvent::message_sent_global(
             context_id.clone(),
@@ -233,24 +249,34 @@ async fn seeded_store_for_context(
             vec!["BAML validation failed: missing required field".to_string()],
             None,
             caller_agent.clone(),
-            4,
-        ))
-        .await
-        .unwrap();
-    store
-        .add_event(ProvEvent::tool_call_completed_global(
-            context_id.clone(),
-            msg_caller.clone(),
-            "support/calculate".to_string(),
-            Some("CalcPrompt".to_string()),
-            json!({"expression":"1+1"}),
-            call_metadata(caller_agent, &msg_caller, Some("timeout")),
             500,
-            Outcome::Failure,
-            None,
         ))
         .await
         .unwrap();
+
+    // ts=600: tool call (support/calculate, failure)
+    store
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(30),
+            context_id: context_id.clone(),
+            timestamp_ms: 600,
+            data: ProvEventData::ToolCallCompleted {
+                scope: CallScope::Message {
+                    message_id: msg_caller.clone(),
+                },
+                tool_name: "support/calculate".to_string(),
+                function_name: Some("CalcPrompt".to_string()),
+                args: json!({"expression":"1+1"}),
+                metadata: call_metadata(caller_agent, &msg_caller, Some("timeout")),
+                duration_ms: 500,
+                outcome: Outcome::Failure,
+                delegation_target: None,
+            },
+        }))
+        .await
+        .unwrap();
+
+    // ts=700: linked message received
     store
         .add_event(ProvEvent::message_received_global(
             context_id.clone(),
@@ -259,24 +285,34 @@ async fn seeded_store_for_context(
             vec!["linked evidence path".to_string()],
             None,
             caller_agent.clone(),
-            5,
+            700,
         ))
         .await
         .unwrap();
+
+    // ts=800: tool call (support/delegate, failure)
     store
-        .add_event(ProvEvent::tool_call_completed_global(
-            context_id.clone(),
-            msg_linked.clone(),
-            "support/delegate".to_string(),
-            Some("DelegatePrompt".to_string()),
-            json!({"objective":"linked emitted message evidence"}),
-            call_metadata(caller_agent, &msg_linked, None),
-            330,
-            Outcome::Failure,
-            None,
-        ))
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(40),
+            context_id: context_id.clone(),
+            timestamp_ms: 800,
+            data: ProvEventData::ToolCallCompleted {
+                scope: CallScope::Message {
+                    message_id: msg_linked.clone(),
+                },
+                tool_name: "support/delegate".to_string(),
+                function_name: Some("DelegatePrompt".to_string()),
+                args: json!({"objective":"linked emitted message evidence"}),
+                metadata: call_metadata(caller_agent, &msg_linked, None),
+                duration_ms: 330,
+                outcome: Outcome::Failure,
+                delegation_target: None,
+            },
+        }))
         .await
         .unwrap();
+
+    // ts=900: linked message sent
     store
         .add_event(ProvEvent::message_sent_global(
             context_id.clone(),
@@ -285,11 +321,12 @@ async fn seeded_store_for_context(
             vec!["authentication failed: 401 unauthorized invalid api key".to_string()],
             None,
             caller_agent.clone(),
-            6,
+            900,
         ))
         .await
         .unwrap();
 
+    // ts=1000: other agent message received
     store
         .add_event(ProvEvent::message_received_global(
             context_id.clone(),
@@ -298,29 +335,40 @@ async fn seeded_store_for_context(
             vec!["other path".to_string()],
             None,
             other_agent.clone(),
-            2,
+            1000,
         ))
         .await
         .unwrap();
+
+    // ts=1100: other agent LLM call (success)
     store
-        .add_event(ProvEvent::llm_call_completed_global(
-            context_id.clone(),
-            msg_other.clone(),
-            "anthropic".to_string(),
-            "claude-3-7-sonnet".to_string(),
-            "OtherPrompt".to_string(),
-            json!({"input":"other"}),
-            call_metadata(other_agent, &msg_other, None),
-            LlmUsage::Known {
-                prompt_tokens: 20,
-                completion_tokens: 5,
-                total_tokens: 25,
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(50),
+            context_id: context_id.clone(),
+            timestamp_ms: 1100,
+            data: ProvEventData::LlmCallCompleted {
+                scope: CallScope::Message {
+                    message_id: msg_other.clone(),
+                },
+                client: "anthropic".to_string(),
+                model: "claude-3-7-sonnet".to_string(),
+                function_name: "OtherPrompt".to_string(),
+                prompt: json!({"input":"other"}),
+                metadata: call_metadata(other_agent, &msg_other, None),
+                usage: LlmUsage::Known {
+                    prompt_tokens: 20,
+                    completion_tokens: 5,
+                    total_tokens: 25,
+                    cached_input_tokens: None,
+                },
+                duration_ms: 300,
+                outcome: Outcome::Success,
+                drift: None,
             },
-            300,
-            Outcome::Success,
-        ))
+        }))
         .await
         .unwrap();
+
     store
 }
 
@@ -361,6 +409,34 @@ fn entry_with_capabilities(
         baml_functions: vec![],
         description: description.map(str::to_string),
         capabilities: capabilities.into_iter().map(str::to_string).collect(),
+        subscriptions: vec![],
+    };
+    AgentDiscoveryEntry {
+        agent_package: pkg.to_string(),
+        agent_instance_id: "default".to_string(),
+        name: name.to_string(),
+        version: version.to_string(),
+        agent_card: card,
+    }
+}
+
+fn entry_with_subscriptions(
+    pkg: &str,
+    name: &str,
+    version: &str,
+    description: Option<&str>,
+    subscriptions: Vec<EventSubscription>,
+) -> AgentDiscoveryEntry {
+    let card = AgentCard {
+        name: name.to_string(),
+        version: version.to_string(),
+        agent_package: pkg.to_string(),
+        agent_instance_id: "default".to_string(),
+        tools: vec!["system/internal_a2a".to_string()],
+        baml_functions: vec![],
+        description: description.map(str::to_string),
+        capabilities: vec!["a2a".to_string()],
+        subscriptions,
     };
     AgentDiscoveryEntry {
         agent_package: pkg.to_string(),
@@ -373,6 +449,7 @@ fn entry_with_capabilities(
 
 #[tokio::test]
 async fn discover_agents_session_returns_paged_cards() {
+    let _suite_guard = suite_lock().lock().await;
     let entries = vec![
         entry_with_card("pkg-a", "Agent A", "0.1.0", Some("Does A")),
         entry_with_card("pkg-b", "Agent B", "0.2.0", None),
@@ -401,7 +478,10 @@ async fn discover_agents_session_returns_paged_cards() {
         .await
         .unwrap();
 
-    let step = registry.session_next(&session_id).await.unwrap();
+    let step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
     match &step {
         ToolStep::Done {
             output: Some(output),
@@ -421,10 +501,79 @@ async fn discover_agents_session_returns_paged_cards() {
         other => panic!("expected Done(Some(output)), got {:?}", other),
     }
 
-    let step2 = registry.session_next(&session_id).await.unwrap();
+    let step2 = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
     match &step2 {
-        ToolStep::Done { output: None } => {}
-        _ => panic!("expected Done(None), got {:?}", step2),
+        ToolStep::Done {
+            output: Some(output),
+        } => {
+            assert_eq!(output.get("done").and_then(|v| v.as_bool()), Some(true));
+        }
+        _ => panic!("expected Done(Some(output)), got {:?}", step2),
+    }
+}
+
+#[tokio::test]
+async fn discover_agents_null_send_filter_defaults_to_all_agents() {
+    let _suite_guard = suite_lock().lock().await;
+    let entries = vec![
+        entry_with_card("pkg-a", "Agent A", "0.1.0", Some("Does A")),
+        entry_with_card("pkg-b", "Agent B", "0.2.0", Some("Does B")),
+    ];
+    let agent_list = Arc::new(MockAgentList::new(entries));
+    let registry = Arc::new(ToolRegistry::new());
+    let a2a_handler = Arc::new(MockA2aHandler);
+    registry
+        .register_bundle(SystemBundle::new(agent_list, registry.clone(), a2a_handler))
+        .unwrap();
+
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000011").unwrap());
+    let session_id = registry
+        .open_session(
+            "system/discover_agents",
+            json!({}),
+            &ContextId::new(1, 11),
+            &agent_id,
+        )
+        .await
+        .unwrap();
+
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "query": null,
+                "limit": null,
+                "offset": null
+            }),
+        )
+        .await
+        .unwrap();
+
+    let step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
+
+    match &step {
+        ToolStep::Done {
+            output: Some(output),
+        } => {
+            let agents = output.get("agents").and_then(|a| a.as_array()).unwrap();
+            assert_eq!(agents.len(), 2);
+            assert_eq!(
+                agents[0].get("name").and_then(|v| v.as_str()),
+                Some("Agent A")
+            );
+            assert_eq!(
+                agents[1].get("name").and_then(|v| v.as_str()),
+                Some("Agent B")
+            );
+        }
+        other => panic!("expected Done(Some(output)), got {:?}", other),
     }
 }
 
@@ -476,7 +625,10 @@ async fn discover_agents_session_filters_by_required_capabilities() {
         .await
         .unwrap();
 
-    let step = registry.session_next(&session_id).await.unwrap();
+    let step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
     match &step {
         ToolStep::Done {
             output: Some(output),
@@ -532,7 +684,10 @@ async fn discover_agents_capability_filter_is_not_overridden_by_query_fallback()
         .await
         .unwrap();
 
-    let step = registry.session_next(&session_id).await.unwrap();
+    let step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
     match &step {
         ToolStep::Done {
             output: Some(output),
@@ -595,7 +750,10 @@ async fn discover_agents_capability_filter_is_case_insensitive() {
         .await
         .unwrap();
 
-    let step = registry.session_next(&session_id).await.unwrap();
+    let step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
     match &step {
         ToolStep::Done {
             output: Some(output),
@@ -612,7 +770,153 @@ async fn discover_agents_capability_filter_is_case_insensitive() {
 }
 
 #[tokio::test]
+async fn discover_agents_session_returns_declared_subscriptions() {
+    let entries = vec![entry_with_subscriptions(
+        "workflow-intake-agent",
+        "Workflow Intake",
+        "1.0.0",
+        Some("Consumes task-daemon events"),
+        vec![EventSubscription {
+            schema_versions: vec!["task-daemon.interpretation.v1".to_string()],
+            source_kinds: vec!["slack".to_string(), "clickup".to_string()],
+            ..EventSubscription::default()
+        }],
+    )];
+    let agent_list = Arc::new(MockAgentList::new(entries));
+    let registry = Arc::new(ToolRegistry::new());
+    let a2a_handler = Arc::new(MockA2aHandler);
+    registry
+        .register_bundle(SystemBundle::new(agent_list, registry.clone(), a2a_handler))
+        .unwrap();
+
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000001a").unwrap());
+    let session_id = registry
+        .open_session(
+            "system/discover_agents",
+            json!({}),
+            &ContextId::new(1, 26),
+            &agent_id,
+        )
+        .await
+        .unwrap();
+
+    registry
+        .session_send(&session_id, json!({ "limit": 10 }))
+        .await
+        .unwrap();
+
+    let step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
+    match &step {
+        ToolStep::Done {
+            output: Some(output),
+        } => {
+            let subscriptions = output
+                .pointer("/agents/0/subscriptions")
+                .and_then(|value| value.as_array())
+                .expect("subscriptions should be present");
+            assert_eq!(subscriptions.len(), 1);
+            assert_eq!(
+                subscriptions[0]
+                    .get("schemaVersions")
+                    .or_else(|| subscriptions[0].get("schema_versions"))
+                    .and_then(|value| value.as_array())
+                    .map(|items| items.len()),
+                Some(1)
+            );
+        }
+        other => panic!("expected Done(Some(output)), got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn discover_agents_session_filters_by_event_subscription() {
+    let entries = vec![
+        entry_with_subscriptions(
+            "workflow-intake-agent",
+            "Workflow Intake",
+            "1.0.0",
+            Some("Consumes task-daemon Slack events"),
+            vec![EventSubscription {
+                schema_versions: vec!["task-daemon.interpretation.v1".to_string()],
+                source_kinds: vec!["slack".to_string()],
+                ..EventSubscription::default()
+            }],
+        ),
+        entry_with_subscriptions(
+            "clickup-reconciler",
+            "ClickUp Reconciler",
+            "1.0.0",
+            Some("Consumes task-daemon ClickUp events"),
+            vec![EventSubscription {
+                schema_versions: vec!["task-daemon.interpretation.v1".to_string()],
+                source_kinds: vec!["clickup".to_string()],
+                ..EventSubscription::default()
+            }],
+        ),
+    ];
+    let agent_list = Arc::new(MockAgentList::new(entries));
+    let registry = Arc::new(ToolRegistry::new());
+    let a2a_handler = Arc::new(MockA2aHandler);
+    registry
+        .register_bundle(SystemBundle::new(agent_list, registry.clone(), a2a_handler))
+        .unwrap();
+
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000001b").unwrap());
+    let session_id = registry
+        .open_session(
+            "system/discover_agents",
+            json!({}),
+            &ContextId::new(1, 27),
+            &agent_id,
+        )
+        .await
+        .unwrap();
+
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "requiredSchemaVersions": ["task-daemon.interpretation.v1"],
+                "requiredSourceKinds": ["clickup"],
+                "limit": 10
+            }),
+        )
+        .await
+        .unwrap();
+
+    let step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
+    match &step {
+        ToolStep::Done {
+            output: Some(output),
+        } => {
+            let agents = output
+                .get("agents")
+                .and_then(|value| value.as_array())
+                .unwrap();
+            assert_eq!(agents.len(), 1);
+            assert_eq!(
+                agents[0]
+                    .get("agentPackage")
+                    .or_else(|| agents[0].get("agent_package"))
+                    .and_then(|value| value.as_str()),
+                Some("clickup-reconciler")
+            );
+        }
+        other => panic!("expected Done(Some(output)), got {:?}", other),
+    }
+}
+
+#[tokio::test]
 async fn discover_tools_session_returns_search_results() {
+    let _suite_guard = suite_lock().lock().await;
     let registry = Arc::new(ToolRegistry::new());
     registry.register(CalculatorTool).unwrap();
     registry
@@ -640,7 +944,10 @@ async fn discover_tools_session_returns_search_results() {
         .await
         .unwrap();
 
-    let step = registry.session_next(&session_id).await.unwrap();
+    let step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
     match &step {
         ToolStep::Done {
             output: Some(output),
@@ -667,6 +974,7 @@ async fn discover_tools_session_returns_search_results() {
 
 #[tokio::test]
 async fn introspection_session_snapshots_compact_result_and_agent_scope() {
+    let _suite_guard = suite_lock().lock().await;
     let registry = Arc::new(ToolRegistry::new());
     let context = ContextId::new(9, 9);
     registry
@@ -703,40 +1011,44 @@ async fn introspection_session_snapshots_compact_result_and_agent_scope() {
                 "resource": "llm_calls",
                 "agentId": requested_agent.as_str(),
                 "groupBy": ["agent_id"],
+                "sortBy": "timestamp_ms",
+                "sortDir": "asc",
                 "pageSize": 20
             }),
         )
         .await
         .unwrap();
 
-    let step = registry.session_next(&session_id).await.unwrap();
+    let step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
     let output = match step {
         ToolStep::Done {
             output: Some(output),
         } => output,
         other => panic!("expected Done(Some(output)), got {:?}", other),
     };
-    insta::with_settings!({sort_maps => true}, {
-        insta::assert_json_snapshot!(
-            "introspection_tool_output",
-            snapshot_safe_tool_output(output.clone())
-        );
-    });
+    insta::assert_json_snapshot!(
+        "introspection_tool_output",
+        snapshot_safe_tool_output(output.clone())
+    );
+    // Extract the payload from payloadJson or from "payload" key (platform-independent path).
     let payload = output
         .get("payloadJson")
         .and_then(|v| v.as_str())
-        .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap())
-        .expect("payloadJson string");
-    insta::with_settings!({sort_maps => true}, {
-        insta::assert_json_snapshot!(
-            "introspection_tool_request_scope",
-            redact_runtime_fields(payload)
-        );
-    });
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .or_else(|| output.get("payload").cloned())
+        .expect("payloadJson or payload field must be present");
+    insta::assert_json_snapshot!(
+        "introspection_tool_request_scope",
+        redact_runtime_fields(payload)
+    );
 }
 
 #[tokio::test]
 async fn extrospection_session_snapshots_cross_scope_request() {
+    let _suite_guard = suite_lock().lock().await;
     let registry = Arc::new(ToolRegistry::new());
     let context = ContextId::new(9, 10);
     registry
@@ -775,6 +1087,8 @@ async fn extrospection_session_snapshots_cross_scope_request() {
                 "contextId": cross_context,
                 "agentId": cross_agent.as_str(),
                 "groupBy": ["agent_id", "tool_name"],
+                "sortBy": "timestamp_ms",
+                "sortDir": "asc",
                 "outcome": "failed_only",
                 "pageSize": 5
             }),
@@ -782,34 +1096,416 @@ async fn extrospection_session_snapshots_cross_scope_request() {
         .await
         .unwrap();
 
-    let step = registry.session_next(&session_id).await.unwrap();
+    let step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
     let output = match step {
         ToolStep::Done {
             output: Some(output),
         } => output,
         other => panic!("expected Done(Some(output)), got {:?}", other),
     };
-    insta::with_settings!({sort_maps => true}, {
-        insta::assert_json_snapshot!(
-            "extrospection_tool_output",
-            snapshot_safe_tool_output(output.clone())
-        );
-    });
+    insta::assert_json_snapshot!(
+        "extrospection_tool_output",
+        snapshot_safe_tool_output(output.clone())
+    );
     let payload = output
         .get("payloadJson")
         .and_then(|v| v.as_str())
-        .map(|s| serde_json::from_str::<serde_json::Value>(s).unwrap())
-        .expect("payloadJson string");
-    insta::with_settings!({sort_maps => true}, {
-        insta::assert_json_snapshot!(
-            "extrospection_tool_request_scope",
-            redact_runtime_fields(payload)
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .or_else(|| output.get("payload").cloned())
+        .expect("payloadJson or payload field must be present");
+    insta::assert_json_snapshot!(
+        "extrospection_tool_request_scope",
+        redact_runtime_fields(payload)
+    );
+}
+
+#[tokio::test]
+async fn extrospection_session_defaults_to_invocation_scope_without_overrides() {
+    let _suite_guard = suite_lock().lock().await;
+    let registry = Arc::new(ToolRegistry::new());
+    let context = ContextId::new(9, 16);
+    let caller =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000712").unwrap());
+    let other =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000713").unwrap());
+    registry
+        .register_bundle(SystemBundle::new_with_provenance(
+            Arc::new(MockAgentList::new(vec![])),
+            registry.clone(),
+            Arc::new(MockA2aHandler),
+            seeded_store_for_context(&context, &caller, &other).await,
+        ))
+        .unwrap();
+
+    let session_id = registry
+        .open_session("system/extrospection", json!({}), &context, &caller)
+        .await
+        .unwrap();
+
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "resource": "llm_calls",
+                "pageSize": 50
+            }),
+        )
+        .await
+        .unwrap();
+
+    let step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
+    let output = match step {
+        ToolStep::Done {
+            output: Some(output),
+        } => output,
+        other => panic!("expected Done(Some(output)), got {:?}", other),
+    };
+    let payload = output
+        .get("payloadJson")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .or_else(|| output.get("payload").cloned())
+        .expect("payloadJson or payload field must be present");
+    let rows = payload
+        .get("rows")
+        .and_then(|v| v.as_array())
+        .expect("rows array");
+    assert!(!rows.is_empty(), "expected scoped extrospection rows");
+    for row in rows {
+        assert_eq!(
+            row.get("context_id").and_then(|v| v.as_str()),
+            Some(context.as_str())
         );
-    });
+        assert_eq!(
+            row.get("agent_id").and_then(|v| v.as_str()),
+            Some(caller.as_str())
+        );
+    }
+}
+
+#[tokio::test]
+async fn extrospection_session_retrieve_ref_returns_typed_archive_record() {
+    let _suite_guard = suite_lock().lock().await;
+    let registry = Arc::new(ToolRegistry::new());
+    let context = ContextId::new(9, 17);
+    let caller =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000714").unwrap());
+    let other =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000715").unwrap());
+    registry
+        .register_bundle(SystemBundle::new_with_provenance(
+            Arc::new(MockAgentList::new(vec![])),
+            registry.clone(),
+            Arc::new(MockA2aHandler),
+            seeded_store_for_context(&context, &caller, &other).await,
+        ))
+        .unwrap();
+
+    let session_id = registry
+        .open_session("system/extrospection", json!({}), &context, &caller)
+        .await
+        .unwrap();
+
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "resource": "llm_calls",
+                "agentId": caller.as_str(),
+                "pageSize": 1
+            }),
+        )
+        .await
+        .unwrap();
+
+    let first = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
+    let first_output = match first {
+        ToolStep::Done {
+            output: Some(output),
+        } => output,
+        other => panic!("expected first Done(Some(output)), got {:?}", other),
+    };
+    let first_payload = first_output
+        .get("payloadJson")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .or_else(|| first_output.get("payload").cloned())
+        .expect("payloadJson or payload field must be present");
+    let rows = first_payload
+        .get("rows")
+        .and_then(|v| v.as_array())
+        .expect("rows array");
+    let retrieve_ref = rows
+        .iter()
+        .find_map(|row| row.get("llm_call_ref").and_then(|v| v.as_str()))
+        .map(str::to_string)
+        .expect("llm_call_ref in rows");
+
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "resource": "llm_calls",
+                "read": {
+                    "refId": retrieve_ref
+                }
+            }),
+        )
+        .await
+        .unwrap();
+
+    let second = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
+    let second_output = match second {
+        ToolStep::Done {
+            output: Some(output),
+        } => output,
+        other => panic!("expected second Done(Some(output)), got {:?}", other),
+    };
+    assert!(
+        second_output.get("payloadJson").is_none(),
+        "read envelope path must return typed readResult without payloadJson wrapper"
+    );
+    let read_result = second_output
+        .get("readResult")
+        .and_then(|v| v.as_object())
+        .expect("readResult object");
+    assert_eq!(
+        read_result.get("projection").and_then(|v| v.as_str()),
+        Some("summary"),
+        "default projection should be summary when omitted"
+    );
+    let refs = read_result
+        .get("refs")
+        .and_then(|v| v.as_array())
+        .expect("readResult.refs array");
+    assert_eq!(
+        refs.first().and_then(|v| v.as_str()),
+        Some(retrieve_ref.as_str()),
+        "refs must prepend the traversal ref"
+    );
+    let archive_summary = read_result
+        .get("archiveSummary")
+        .and_then(|v| v.as_object())
+        .expect("readResult.archiveSummary object");
+    assert!(
+        archive_summary
+            .get("payloadCount")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "archiveSummary.payloadCount should be present"
+    );
+    let archive_record = read_result.get("archiveRecord").and_then(|v| v.as_object());
+    assert!(
+        archive_record.is_none(),
+        "summary projection should not include archiveRecord detail payloads"
+    );
+
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "resource": "llm_calls",
+                "read": {
+                    "refId": retrieve_ref,
+                    "projection": "identity"
+                }
+            }),
+        )
+        .await
+        .unwrap();
+    let identity_step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
+    let identity_output = match identity_step {
+        ToolStep::Done {
+            output: Some(output),
+        } => output,
+        other => panic!("expected identity Done(Some(output)), got {:?}", other),
+    };
+    let identity_result = identity_output
+        .get("readResult")
+        .and_then(|v| v.as_object())
+        .expect("identity readResult object");
+    assert_eq!(
+        identity_result.get("projection").and_then(|v| v.as_str()),
+        Some("identity")
+    );
+    assert!(
+        identity_result.get("archiveSummary").is_none(),
+        "identity projection should omit archive summary"
+    );
+    assert!(
+        identity_result.get("archiveRecord").is_none(),
+        "identity projection should omit archive record"
+    );
+
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "resource": "llm_calls",
+                "read": {
+                    "refId": retrieve_ref,
+                    "projection": "detail"
+                }
+            }),
+        )
+        .await
+        .unwrap();
+    let detail_step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
+    let detail_output = match detail_step {
+        ToolStep::Done {
+            output: Some(output),
+        } => output,
+        other => panic!("expected detail Done(Some(output)), got {:?}", other),
+    };
+    let detail_result = detail_output
+        .get("readResult")
+        .and_then(|v| v.as_object())
+        .expect("detail readResult object");
+    assert_eq!(
+        detail_result.get("projection").and_then(|v| v.as_str()),
+        Some("detail")
+    );
+    let detail_record = detail_result
+        .get("archiveRecord")
+        .and_then(|v| v.as_object())
+        .expect("detail archiveRecord");
+    let payloads = detail_record
+        .get("payloads")
+        .and_then(|v| v.as_array())
+        .expect("detail archiveRecord.payloads array");
+    assert!(
+        !payloads.is_empty(),
+        "detail projection should include archive payload entries"
+    );
+    let source = payloads[0].get("source").and_then(|v| v.as_str());
+    assert!(
+        matches!(
+            source,
+            Some("llm_call") | Some("llm_result") | Some("tool_call") | Some("tool_result")
+        ),
+        "unexpected archive payload source: {:?}",
+        source
+    );
+}
+
+#[tokio::test]
+async fn extrospection_retrieve_ref_enforces_hard_budget_caps() {
+    let _suite_guard = suite_lock().lock().await;
+    let registry = Arc::new(ToolRegistry::new());
+    let context = ContextId::new(9, 19);
+    let caller =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000716").unwrap());
+    let other =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000717").unwrap());
+    registry
+        .register_bundle(SystemBundle::new_with_provenance(
+            Arc::new(MockAgentList::new(vec![])),
+            registry.clone(),
+            Arc::new(MockA2aHandler),
+            seeded_store_for_context(&context, &caller, &other).await,
+        ))
+        .unwrap();
+
+    let session_id = registry
+        .open_session("system/extrospection", json!({}), &context, &caller)
+        .await
+        .unwrap();
+    registry
+        .session_send(
+            &session_id,
+            json!({
+                "resource": "llm_calls",
+                "agentId": caller.as_str(),
+                "pageSize": 1
+            }),
+        )
+        .await
+        .unwrap();
+    let initial = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
+    let initial_output = match initial {
+        ToolStep::Done {
+            output: Some(output),
+        } => output,
+        other => panic!("expected Done(Some(output)), got {:?}", other),
+    };
+    let payload = initial_output
+        .get("payloadJson")
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok())
+        .or_else(|| initial_output.get("payload").cloned())
+        .expect("payloadJson or payload field must be present");
+    let rows = payload
+        .get("rows")
+        .and_then(|v| v.as_array())
+        .expect("rows array");
+    let retrieve_ref = rows
+        .iter()
+        .find_map(|row| row.get("llm_call_ref").and_then(|v| v.as_str()))
+        .map(str::to_string)
+        .expect("llm_call_ref in rows");
+
+    let mut exhausted = false;
+    for _ in 0..10 {
+        registry
+            .session_send(
+                &session_id,
+                json!({
+                    "resource": "llm_calls",
+                "read": {
+                    "refId": retrieve_ref
+                }
+                }),
+            )
+            .await
+            .unwrap();
+        let step = registry
+            .session_read(&session_id, serde_json::Value::Null)
+            .await
+            .unwrap();
+        let output = match step {
+            ToolStep::Done {
+                output: Some(output),
+            } => output,
+            other => panic!("expected Done(Some(output)), got {:?}", other),
+        };
+        exhausted = output
+            .get("budgetExhausted")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if exhausted {
+            break;
+        }
+    }
+    assert!(
+        exhausted,
+        "read envelope loop should eventually hit hard budget cap"
+    );
 }
 
 #[tokio::test]
 async fn introspection_session_pagination_snapshots() {
+    let _suite_guard = suite_lock().lock().await;
     let registry = Arc::new(ToolRegistry::new());
     let context = ContextId::new(9, 11);
     registry
@@ -850,7 +1546,10 @@ async fn introspection_session_pagination_snapshots() {
         )
         .await
         .unwrap();
-    let first = registry.session_next(&session_id).await.unwrap();
+    let first = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
 
     registry
         .session_send(
@@ -866,7 +1565,10 @@ async fn introspection_session_pagination_snapshots() {
         )
         .await
         .unwrap();
-    let second = registry.session_next(&session_id).await.unwrap();
+    let second = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
 
     let first_output = match first {
         ToolStep::Done {
@@ -881,19 +1583,18 @@ async fn introspection_session_pagination_snapshots() {
         other => panic!("expected second Done(Some(output)), got {:?}", other),
     };
 
-    insta::with_settings!({sort_maps => true}, {
-        insta::assert_json_snapshot!(
-            "introspection_tool_pagination",
-            redact_runtime_fields(serde_json::json!({
-                "page1": snapshot_safe_tool_output(first_output),
-                "page2": snapshot_safe_tool_output(second_output)
-            }))
-        );
-    });
+    insta::assert_json_snapshot!(
+        "introspection_tool_pagination",
+        redact_runtime_fields(serde_json::json!({
+            "page1": snapshot_safe_tool_output(first_output),
+            "page2": snapshot_safe_tool_output(second_output)
+        }))
+    );
 }
 
 #[tokio::test]
 async fn extrospection_session_filter_sort_and_drilldown_snapshots() {
+    let _suite_guard = suite_lock().lock().await;
     let registry = Arc::new(ToolRegistry::new());
     let context = ContextId::new(9, 12);
     let caller =
@@ -930,7 +1631,10 @@ async fn extrospection_session_filter_sort_and_drilldown_snapshots() {
         )
         .await
         .unwrap();
-    let filtered = registry.session_next(&session_id).await.unwrap();
+    let filtered = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
 
     registry
         .session_send(
@@ -947,7 +1651,10 @@ async fn extrospection_session_filter_sort_and_drilldown_snapshots() {
         )
         .await
         .unwrap();
-    let drilldown = registry.session_next(&session_id).await.unwrap();
+    let drilldown = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
 
     let filtered_output = match filtered {
         ToolStep::Done {
@@ -962,19 +1669,18 @@ async fn extrospection_session_filter_sort_and_drilldown_snapshots() {
         other => panic!("expected drilldown Done(Some(output)), got {:?}", other),
     };
 
-    insta::with_settings!({sort_maps => true}, {
-        insta::assert_json_snapshot!(
-            "extrospection_tool_filter_sort_drilldown",
-            redact_runtime_fields(serde_json::json!({
-                "filtered": snapshot_safe_tool_output(filtered_output),
-                "drilldown": snapshot_safe_tool_output(drilldown_output)
-            }))
-        );
-    });
+    insta::assert_json_snapshot!(
+        "extrospection_tool_filter_sort_drilldown",
+        redact_runtime_fields(serde_json::json!({
+            "filtered": snapshot_safe_tool_output(filtered_output),
+            "drilldown": snapshot_safe_tool_output(drilldown_output)
+        }))
+    );
 }
 
 #[tokio::test]
 async fn extrospection_session_auto_drilldown_from_hotspot_snapshot() {
+    let _suite_guard = suite_lock().lock().await;
     let registry = Arc::new(ToolRegistry::new());
     let context = ContextId::new(9, 14);
     let caller =
@@ -1012,7 +1718,10 @@ async fn extrospection_session_auto_drilldown_from_hotspot_snapshot() {
         )
         .await
         .unwrap();
-    let pass1 = registry.session_next(&session_id).await.unwrap();
+    let pass1 = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
     let pass1_output = match pass1 {
         ToolStep::Done {
             output: Some(output),
@@ -1035,20 +1744,21 @@ async fn extrospection_session_auto_drilldown_from_hotspot_snapshot() {
         .get("hotspotGroups")
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.first())
-        && let Some(values) = group0.get("groupValues").and_then(|v| v.as_array())
     {
-        derived_agent_id = values
-            .first()
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string);
-        derived_tool_name = values
-            .get(1)
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string);
-        derived_prompt = values
-            .get(2)
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string);
+        if let Some(values) = group0.get("groupValues").and_then(|v| v.as_array()) {
+            derived_agent_id = values
+                .first()
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+            derived_tool_name = values
+                .get(1)
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+            derived_prompt = values
+                .get(2)
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+        }
     }
 
     if let Some(row0) = pass1_payload
@@ -1095,7 +1805,10 @@ async fn extrospection_session_auto_drilldown_from_hotspot_snapshot() {
         )
         .await
         .unwrap();
-    let pass2 = registry.session_next(&session_id).await.unwrap();
+    let pass2 = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
     let pass2_output = match pass2 {
         ToolStep::Done {
             output: Some(output),
@@ -1103,24 +1816,23 @@ async fn extrospection_session_auto_drilldown_from_hotspot_snapshot() {
         other => panic!("expected pass2 Done(Some(output)), got {:?}", other),
     };
 
-    insta::with_settings!({sort_maps => true}, {
-        insta::assert_json_snapshot!(
-            "extrospection_tool_auto_drilldown_from_hotspot",
-            redact_runtime_fields(serde_json::json!({
-                "pass1": snapshot_safe_tool_output(pass1_output),
-                "derived_filters": {
-                    "agentId": derived_agent_id,
-                    "toolName": derived_tool_name,
-                    "bamlPrompt": derived_prompt
-                },
-                "pass2": snapshot_safe_tool_output(pass2_output)
-            }))
-        );
-    });
+    insta::assert_json_snapshot!(
+        "extrospection_tool_auto_drilldown_from_hotspot",
+        redact_runtime_fields(serde_json::json!({
+            "pass1": snapshot_safe_tool_output(pass1_output),
+            "derived_filters": {
+                "agentId": derived_agent_id,
+                "toolName": derived_tool_name,
+                "bamlPrompt": derived_prompt
+            },
+            "pass2": snapshot_safe_tool_output(pass2_output)
+        }))
+    );
 }
 
 #[tokio::test]
 async fn extrospection_session_failure_evidence_linked_modes_snapshots() {
+    let _suite_guard = suite_lock().lock().await;
     let registry = Arc::new(ToolRegistry::new());
     let context = ContextId::new(9, 13);
     let caller =
@@ -1157,7 +1869,10 @@ async fn extrospection_session_failure_evidence_linked_modes_snapshots() {
         )
         .await
         .unwrap();
-    let llm = registry.session_next(&session_id).await.unwrap();
+    let llm = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
 
     registry
         .session_send(
@@ -1174,7 +1889,10 @@ async fn extrospection_session_failure_evidence_linked_modes_snapshots() {
         )
         .await
         .unwrap();
-    let tool = registry.session_next(&session_id).await.unwrap();
+    let tool = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
 
     let llm_output = match llm {
         ToolStep::Done {
@@ -1189,13 +1907,11 @@ async fn extrospection_session_failure_evidence_linked_modes_snapshots() {
         other => panic!("expected tool Done(Some(output)), got {:?}", other),
     };
 
-    insta::with_settings!({sort_maps => true}, {
-        insta::assert_json_snapshot!(
-            "extrospection_tool_failure_evidence_linked_modes",
-            redact_runtime_fields(serde_json::json!({
-                "llm_linked_prompt_rejected": snapshot_safe_tool_output(llm_output),
-                "tool_linked_emitted_message": snapshot_safe_tool_output(tool_output)
-            }))
-        );
-    });
+    insta::assert_json_snapshot!(
+        "extrospection_tool_failure_evidence_linked_modes",
+        redact_runtime_fields(serde_json::json!({
+            "llm_linked_prompt_rejected": snapshot_safe_tool_output(llm_output),
+            "tool_linked_emitted_message": snapshot_safe_tool_output(tool_output)
+        }))
+    );
 }

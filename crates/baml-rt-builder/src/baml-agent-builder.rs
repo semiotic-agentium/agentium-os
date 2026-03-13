@@ -392,10 +392,13 @@ impl LoadedAgent {
     async fn invoke_function(&self, function_name: &str, args: Value) -> Result<Value> {
         let scope =
             baml_rt_core::context::InvocationScope::synthetic_message(self.agent_id.clone());
-        let mut bridge_guard = self.js_bridge.lock().await;
-        Ok(bridge_guard
-            .invoke_js_function(&scope, function_name, args)
-            .await?)
+        Ok(QuickJSBridge::invoke_js_function_nonblocking(
+            self.js_bridge.clone(),
+            &scope,
+            function_name,
+            args,
+        )
+        .await?)
     }
 }
 
@@ -498,7 +501,7 @@ async fn load_agent_package(
             format!("Failed to read entry point {}", entry_point_path.display())
         })?;
         // Execute agent code - this should set up functions on globalThis
-        if let Err(e) = js_bridge.evaluate(None, &agent_code).await {
+        if let Err(e) = js_bridge.eval_sync(&agent_code).await {
             tracing::warn!(error = ?e, "Agent init script evaluation failed");
         }
     } else {

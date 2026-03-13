@@ -45,6 +45,8 @@ llm-tests = []
 tools = ["dep:baml-rt-tools"]
 interceptor = ["dep:baml-rt-interceptor"]
 quickjs = ["dep:baml-rt-quickjs", "tools", "interceptor", "observability"]
+# Propagates baml-rt-quickjs/testing to expose single-context test APIs (eval_scoped).
+testing = ["baml-rt-quickjs?/testing"]
 a2a = ["dep:baml-rt-a2a", "quickjs"]
 builder = ["dep:baml-rt-builder", "observability"]
 observability = ["dep:baml-rt-observability"]

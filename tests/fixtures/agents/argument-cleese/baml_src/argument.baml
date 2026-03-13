@@ -12,16 +12,22 @@ function ArgumentReply(other_message: string) -> string {
   "#
 }
 
-// Returns a session plan to send Cleese's line to Chapman; runtime executes the plan (chat in the prompt, not in agent logic).
+// Returns one session step at a time to send Cleese's line to Chapman; keep chat policy in prompt, not agent logic.
 function CleeseSendToChapman(first_line: string) -> SystemInternal_a2aSessionPlan {
   client DefaultClient
   prompt #"
-    You are coordinating the argument sketch. Cleese said: "{{ first_line }}"
-    Output a session plan with exactly these steps in order:
-    1. Open: initial_input only { "target": { "agent_package": "argument-chapman", "agent_instance_id": "default" } }. No other fields in initial_input.
-    2. Send: input must be { "parts": [{ "text": "{{ first_line }}" }] } (structured message parts).
-    3. Next: to retrieve Chapman's reply.
-    4. Finish: to close the session.
+    You are coordinating the argument sketch.
+    Return ONLY a valid JSON object for a strict incremental system/internal_a2a session fragment.
+    Emit exactly one `step` object per reply.
+
+    If no session is open, return Open with:
+    { "initial_input": { "target": { "agent_package": "argument-chapman", "agent_instance_id": "default" } } }
+
+    If session is open and message not sent yet, return Send with:
+    { "input": { "parts": [{ "text": "{{ first_line }}" }] } }
+
+    Then use Next, and Finish when done.
+    No prose. No markdown.
     {{ ctx.output_format }}
     {{ _.role('user') }}
     Cleese's line to send to Chapman: {{ first_line }}

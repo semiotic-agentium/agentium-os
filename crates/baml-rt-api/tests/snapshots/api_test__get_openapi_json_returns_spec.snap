@@ -1,5 +1,6 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
+assertion_line: 884
 expression: snapshot
 ---
 {
@@ -150,6 +151,9 @@ expression: snapshot
             },
             "404": {
               "description": "Agent not found"
+            },
+            "409": {
+              "description": "Conflicting concurrent stream request"
             },
             "500": {
               "description": "Internal error"
@@ -634,6 +638,45 @@ expression: snapshot
           }
         }
       },
+      "/contexts/{context_id}/planning": {
+        "get": {
+          "tags": [
+            "provenance"
+          ],
+          "summary": "Get context-scoped planning state (intent/plan/step progress) from provenance.",
+          "operationId": "get_context_planning",
+          "parameters": [
+            {
+              "name": "context_id",
+              "in": "path",
+              "description": "A2A context id",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Context planning snapshot",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            },
+            "404": {
+              "description": "No planning data found for context"
+            },
+            "500": {
+              "description": "Internal error"
+            },
+            "501": {
+              "description": "Planning service unavailable"
+            }
+          }
+        }
+      },
       "/provenance/aggregates": {
         "get": {
           "tags": [
@@ -788,6 +831,12 @@ expression: snapshot
             "name": {
               "type": "string"
             },
+            "subscriptions": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/AgentEventSubscriptionDto"
+              }
+            },
             "tools": {
               "type": "array",
               "items": {
@@ -825,6 +874,41 @@ expression: snapshot
             },
             "version": {
               "type": "string"
+            }
+          }
+        },
+        "AgentEventSubscriptionDto": {
+          "type": "object",
+          "required": [
+            "schema_versions",
+            "source_kinds",
+            "source_keys",
+            "source_key_prefixes"
+          ],
+          "properties": {
+            "schema_versions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "source_key_prefixes": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "source_keys": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "source_kinds": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             }
           }
         },

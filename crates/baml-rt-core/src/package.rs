@@ -2,11 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::EventSubscription;
+
 fn default_entry_point() -> String {
     "dist/index.js".to_string()
 }
 
-/// Optional non-derivable card metadata for discovery (description, capabilities).
+/// Optional non-derivable card metadata for discovery (description, capabilities, subscriptions).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ManifestDiscovery {
     /// Description for discovery listing.
@@ -15,6 +17,9 @@ pub struct ManifestDiscovery {
     /// Capability labels for filtering.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub capabilities: Vec<String>,
+    /// Event subscriptions this agent wants the host to deliver.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subscriptions: Vec<EventSubscription>,
 }
 
 /// Canonical agent package manifest (manifest.json).

@@ -3,14 +3,17 @@
 //! This module executes BAML functions using the compiled IL (Intermediate Language)
 //! from the BAML compiler.
 
-use std::{collections::HashMap, path::Path, sync::Arc, time::Instant};
+use std::{collections::HashMap, path::Path, str::FromStr, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, InvocationKind, Outcome, Result, bus::EffectEmitter, context};
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry};
 use baml_rt_tools::ToolRegistry;
-use baml_runtime::{BamlRuntime, FunctionResultStream, RuntimeContextManager};
-use baml_types::BamlValue;
+use baml_runtime::{
+    BamlRuntime, FunctionResultStream, RuntimeContextManager,
+    client_registry::{ClientProperty, ClientProvider, ClientRegistry},
+};
+use baml_types::{BamlMap, BamlValue};
 use serde_json::Value;
 use tokio::{
     sync::Mutex,
@@ -19,12 +22,138 @@ use tokio::{
 
 use crate::{
     baml_collector::{BamlLLMCollector, LLMCompletionHandle},
-    baml_pre_execution::intercept_llm_call_pre_execution,
+    baml_pre_execution::{extract_context_from_http_request, intercept_llm_call_pre_execution},
     llm_client_registry::{LlmSecretResolver, build_llm_client_registry},
 };
 
+fn planner_state_telemetry(args: &Value) -> Option<(usize, bool, usize, Option<String>)> {
+    let obj = args.as_object()?;
+    let context = obj.get("session_context").and_then(Value::as_object)?;
+    let args_bytes = serde_json::to_vec(args).map_or(0, |v| v.len());
+    let session_open = context
+        .get("session_open")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let status_token = context
+        .get("status_token")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let allowed_ops_len = context
+        .get("allowed_ops")
+        .and_then(Value::as_array)
+        .map_or(0usize, std::vec::Vec::len);
+    let payload_bytes = serde_json::to_vec(context).map_or(0, |v| v.len());
+    let token = if status_token.is_empty() {
+        None
+    } else {
+        Some(status_token.to_string())
+    };
+    Some((
+        args_bytes,
+        session_open,
+        payload_bytes.saturating_add(allowed_ops_len),
+        token,
+    ))
+}
+
+fn derive_base_url(url: &str) -> Option<String> {
+    for suffix in [
+        "/chat/completions",
+        "/responses",
+        "/v1/messages",
+        "/messages",
+    ] {
+        if let Some(idx) = url.rfind(suffix) {
+            return Some(url[..idx].to_string());
+        }
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn build_session_fsm_client_registry(
+    runtime: &BamlRuntime,
+    scope: &context::RuntimeScope,
+    function_name: &str,
+    args: &Value,
+    force_session_fsm_client: bool,
+    params: &BamlMap<String, BamlValue>,
+    ctx_manager: &RuntimeContextManager,
+    llm_secret_resolver: Option<&dyn LlmSecretResolver>,
+    planning_step: Option<(&str, &str)>,
+) -> Result<Option<ClientRegistry>> {
+    if !force_session_fsm_client && planner_state_telemetry(args).is_none() {
+        return Ok(None);
+    }
+
+    let request = runtime
+        .build_request(
+            function_name.to_string(),
+            params,
+            ctx_manager,
+            None,
+            None,
+            HashMap::new(),
+            false,
+        )
+        .await
+        .map_err(|e| BamlRtError::RequestBuildFailed { source: e.into() })?;
+    let context = extract_context_from_http_request(scope, &request, function_name, planning_step)?;
+    let Some(url) = context
+        .metadata
+        .get("url")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+    else {
+        return Ok(None);
+    };
+
+    let provider = if url.contains("openrouter.ai") {
+        "openai-generic"
+    } else {
+        "openai"
+    };
+    let scope_id = scope.agent_id().as_str();
+    let api_key = if provider == "openai-generic" {
+        llm_secret_resolver.and_then(|r| {
+            r.resolve_llm_api_key(scope_id, "OPENROUTER_API_KEY")
+                .map(|(v, _)| v)
+        })
+    } else {
+        llm_secret_resolver.and_then(|r| {
+            r.resolve_llm_api_key(scope_id, "OPENAI_API_KEY")
+                .map(|(v, _)| v)
+        })
+    };
+
+    let mut options = BamlMap::new();
+    options.insert("model".to_string(), BamlValue::String(context.model));
+    let mut reasoning_options = BamlMap::new();
+    reasoning_options.insert("enabled".to_string(), BamlValue::Bool(false));
+    options.insert("reasoning".to_string(), BamlValue::Map(reasoning_options));
+    if let Some(base_url) = derive_base_url(&url) {
+        options.insert("base_url".to_string(), BamlValue::String(base_url));
+    }
+    if let Some(key) = api_key {
+        options.insert("api_key".to_string(), BamlValue::String(key));
+    }
+
+    let client_name = "__session_fsm_runtime_client";
+    let client_provider = ClientProvider::from_str(provider).map_err(|e| {
+        BamlRtError::InvalidArgument(format!(
+            "unsupported runtime session client provider '{provider}': {e}"
+        ))
+    })?;
+    let client_property =
+        ClientProperty::new(client_name.to_string(), client_provider, None, options);
+
+    let mut registry = ClientRegistry::new();
+    registry.add_client(client_property);
+    registry.set_primary(client_name.to_string());
+    Ok(Some(registry))
+}
+
 /// Bundles a BAML streaming invocation: stream, context manager, client registry, and env vars.
-/// Callers run the stream with these same components via `stream.run(..., &ctx_manager, None, client_registry_opt.as_ref(), env_vars)`.
 pub struct BamlStreamInvocation {
     pub stream: FunctionResultStream,
     pub ctx_manager: RuntimeContextManager,
@@ -151,7 +280,9 @@ impl BamlExecutor {
         scope: &context::RuntimeScope,
         function_name: &str,
         args: Value,
+        force_session_fsm_client: bool,
         interceptor_registry: Option<Arc<Mutex<InterceptorRegistry>>>,
+        planning_step: Option<(String, String)>,
     ) -> Result<(Value, Option<LLMCompletionHandle>)> {
         tracing::debug!(
             function = function_name,
@@ -189,6 +320,21 @@ impl BamlExecutor {
         // Pre-execution interception: intercept LLM calls before they're sent
         let context_tags = self.build_conversation_context_tags(scope).await?;
         let ctx_manager = self.create_ctx_manager_for_scope(scope, context_tags)?;
+        let planning_step_refs = planning_step
+            .as_ref()
+            .map(|(plan_id, step_id)| (plan_id.as_str(), step_id.as_str()));
+        let session_client_registry = build_session_fsm_client_registry(
+            &self.runtime,
+            scope,
+            function_name,
+            &args,
+            force_session_fsm_client,
+            &params,
+            &ctx_manager,
+            self.llm_secret_resolver.as_deref(),
+            planning_step_refs,
+        )
+        .await?;
         if let Some(ref registry) = interceptor_registry {
             match intercept_llm_call_pre_execution(
                 &self.runtime,
@@ -198,11 +344,14 @@ impl BamlExecutor {
                 &ctx_manager,
                 registry,
                 env_vars.clone(),
-                llm_registry_result.registry(),
+                session_client_registry
+                    .as_ref()
+                    .or(llm_registry_result.registry()),
                 llm_registry_result.secret_keys_accessed(),
                 InvocationKind::Invoke,
                 self.effect_emitter.as_ref(),
                 collector.as_ref().map(Arc::as_ref),
+                planning_step_refs,
             )
             .await
             {
@@ -261,14 +410,23 @@ impl BamlExecutor {
                 sleep(Duration::from_millis(backoff_ms)).await;
             }
 
+            let planner_metrics = planner_state_telemetry(&args);
             tracing::info!(
                 function = function_name,
                 context_id = %scope.context_id().as_str(),
                 message_id = %scope.message_id().as_str(),
                 task_id = %scope.task_id_opt().map(|id| id.as_str()).unwrap_or("none"),
                 attempt = attempt + 1,
+                planner_hop = planner_metrics.is_some(),
+                planner_args_bytes = planner_metrics.as_ref().map(|(bytes, _, _, _)| *bytes),
+                planner_session_open = planner_metrics.as_ref().map(|(_, open, _, _)| *open),
+                planner_last_tool_output_bytes = planner_metrics.as_ref().map(|(_, _, bytes, _)| *bytes),
+                planner_last_status_token = planner_metrics
+                    .as_ref()
+                    .and_then(|(_, _, _, token)| token.clone()),
                 "BAML call_function: start"
             );
+            let attempt_start = Instant::now();
             let cancel_tripwire = baml_runtime::TripWire::new(None);
             // Use collectors only on first attempt to avoid duplicate trace events on retries
             let attempt_collectors = if attempt == 0 {
@@ -283,7 +441,9 @@ impl BamlExecutor {
                     &params,
                     &ctx_manager,
                     None, // type_builder
-                    llm_registry_result.registry(),
+                    session_client_registry
+                        .as_ref()
+                        .or(llm_registry_result.registry()),
                     attempt_collectors,
                     env_vars.clone(),
                     tags,
@@ -295,6 +455,7 @@ impl BamlExecutor {
                 tracing::warn!(
                     function = function_name,
                     error = ?e,
+                    hop_elapsed_ms = attempt_start.elapsed().as_millis() as u64,
                     elapsed_ms = start_time.elapsed().as_millis() as u64,
                     "BAML call_function: error"
                 );
@@ -322,6 +483,7 @@ impl BamlExecutor {
                 Ok(parsed) => {
                     tracing::info!(
                         function = function_name,
+                        hop_elapsed_ms = attempt_start.elapsed().as_millis() as u64,
                         elapsed_ms = start_time.elapsed().as_millis() as u64,
                         "BAML call_function: ok"
                     );
@@ -512,10 +674,20 @@ impl BamlExecutor {
         };
 
         let mut tags = HashMap::new();
-        tags.insert(
-            "conversation_history".to_string(),
-            self.json_to_baml_value(&payload)?,
-        );
+        if let Some(obj) = payload.as_object()
+            && obj.contains_key("conversation_history")
+        {
+            for key in ["conversation_history", "event_log", "session_state"] {
+                if let Some(value) = obj.get(key) {
+                    tags.insert(key.to_string(), self.json_to_baml_value(value)?);
+                }
+            }
+        } else {
+            tags.insert(
+                "conversation_history".to_string(),
+                self.json_to_baml_value(&payload)?,
+            );
+        }
         Ok(Some(tags))
     }
 

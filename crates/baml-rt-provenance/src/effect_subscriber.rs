@@ -14,7 +14,7 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::{
-    events::{LlmDriftInfo, LlmUsage, ProvEvent},
+    events::{LlmDriftInfo, LlmUsage, PlanStepSpec, ProvEvent},
     store::ProvenanceWriter,
 };
 
@@ -229,10 +229,23 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 metadata,
                 duration_ms,
                 outcome,
+                result,
             } => {
+                // Merge the result (if any) into the metadata map so the provenance store
+                // can write it to the tool_result payload. Without this the result is null.
+                let enriched_metadata = if let Some(result_value) = result {
+                    let mut map = match &metadata.metadata {
+                        serde_json::Value::Object(m) => m.clone(),
+                        _ => serde_json::Map::new(),
+                    };
+                    map.insert("result".to_string(), result_value.clone());
+                    serde_json::Value::Object(map)
+                } else {
+                    metadata.metadata.clone()
+                };
                 match build_prov_event_completion(
                     context_id,
-                    &metadata.metadata,
+                    &enriched_metadata,
                     ProvenanceEventType::ToolCall,
                     |ctx_id, task_id| {
                         ProvEvent::tool_call_completed_task(
@@ -241,7 +254,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             metadata.tool_name.clone(),
                             metadata.function_name.clone(),
                             metadata.args.clone(),
-                            metadata.metadata.clone(),
+                            enriched_metadata.clone(),
                             *duration_ms,
                             *outcome,
                             metadata.delegation_target.clone(),
@@ -254,7 +267,7 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                             metadata.tool_name.clone(),
                             metadata.function_name.clone(),
                             metadata.args.clone(),
-                            metadata.metadata.clone(),
+                            enriched_metadata.clone(),
                             *duration_ms,
                             *outcome,
                             metadata.delegation_target.clone(),
@@ -312,10 +325,12 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                         prompt_tokens,
                         completion_tokens,
                         total_tokens,
+                        cached_input_tokens,
                     }) => LlmUsage::Known {
                         prompt_tokens: *prompt_tokens,
                         completion_tokens: *completion_tokens,
                         total_tokens: *total_tokens,
+                        cached_input_tokens: *cached_input_tokens,
                     },
                     Some(baml_rt_core::bus::LlmUsage::Unknown) | None => LlmUsage::Unknown,
                 };
@@ -414,10 +429,76 @@ impl EffectSubscriber for ProvenanceEffectSubscriber {
                 return Ok(());
             }
             // A2A effects are primarily for liveness gating, not provenance
-            // Skip provenance emission for A2A events
+            // Skip provenance emission for A2A lifecycle events.
             EffectEvent::A2aStarted { .. } | EffectEvent::A2aCompleted { .. } => {
                 return Ok(());
             }
+            EffectEvent::IntentResolved {
+                context_id,
+                task_id,
+                intent_id,
+                description,
+                derived_from_message_ids,
+                supersession,
+                epoch: _,
+            } => {
+                let message_ids = derived_from_message_ids
+                    .iter()
+                    .map(|id| MessageId::from_external(ExternalId::new(id.clone())))
+                    .collect::<Vec<_>>();
+                ProvEvent::intent_resolved(
+                    context_id.clone(),
+                    task_id.clone(),
+                    intent_id.clone(),
+                    description.clone(),
+                    message_ids,
+                    *supersession,
+                )
+            }
+            EffectEvent::PlanGenerated {
+                context_id,
+                task_id,
+                intent_id,
+                plan_id,
+                steps,
+                supersession,
+                epoch: _,
+            } => {
+                let steps: Vec<PlanStepSpec> =
+                    serde_json::from_value(steps.clone()).map_err(|e| {
+                        baml_rt_core::BamlRtError::InvalidArgument(format!(
+                            "plan generated effect steps must decode as PlanStepSpec[]: {e}"
+                        ))
+                    })?;
+                ProvEvent::plan_generated(
+                    context_id.clone(),
+                    task_id.clone(),
+                    intent_id.clone(),
+                    plan_id.clone(),
+                    steps,
+                    *supersession,
+                )
+            }
+            EffectEvent::PlanStepStatusChanged {
+                context_id,
+                task_id,
+                intent_id,
+                plan_id,
+                step_id,
+                old_status,
+                new_status,
+                evidence_text,
+                epoch: _,
+            } => ProvEvent::plan_step_status_changed(
+                context_id.clone(),
+                task_id.clone(),
+                intent_id.clone(),
+                plan_id.clone(),
+                step_id.clone(),
+                old_status.clone(),
+                new_status.clone(),
+                evidence_text.clone(),
+            ),
             // Tool stream chunks are relay-only; tools are already recorded via the tool interceptor
             EffectEvent::ToolStreamChunk { .. } => return Ok(()),
         };

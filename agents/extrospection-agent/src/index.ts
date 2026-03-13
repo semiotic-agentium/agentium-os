@@ -5,6 +5,7 @@ declare function DetermineExtrospectionIntent(args: {
 }): Promise<unknown>;
 declare function GetDiscoverAgentsPlan(args: {
   user_message: string;
+  session_context: unknown | null;
 }): Promise<unknown>;
 declare function SelectAgentFocus(args: {
   user_message: string;
@@ -13,30 +14,44 @@ declare function SelectAgentFocus(args: {
 declare function BuildExtrospectionPlan(args: {
   intent: unknown;
   selected_agent: unknown | null;
-}): Promise<unknown>;
-declare function BuildExtrospectionDrilldownPlan(args: {
-  intent: unknown;
-  selected_agent: unknown | null;
-  pass1_payload_json: string;
+  session_context: unknown | null;
 }): Promise<unknown>;
 declare function SummarizeExtrospectionReport(args: {
   user_message: string;
   intent: unknown;
   selected_agent: unknown | null;
   agents: unknown[];
-  pass1_payload_json: string;
-  pass2_payload_json: string;
+  primary_payload_json: string;
+  secondary_payload_json: string;
 }): Promise<string>;
+declare function openA2aExecutionSession(token: string): Promise<{
+  submitIntent: (intent: {
+    intentId: string;
+    description: string;
+    derivedFromMessageIds: string[];
+  }) => Promise<{
+    submitPlan: (plan: {
+      intentId: string;
+      planId: string;
+      steps: Array<{
+        stepId: string;
+        description: string;
+        order: number;
+        dependsOn: string[];
+      }>;
+    }) => Promise<{
+      startStep: (stepId: string, evidenceText: string) => Promise<unknown>;
+      completeStep: (stepId: string, evidenceText: string) => Promise<unknown>;
+      finish: () => Promise<unknown>;
+      abort: (reason: string) => Promise<unknown>;
+    }>;
+  }>;
+}>;
 
 type NeedClarification = { question: string };
-type QueryIntent = {
-  resource: string;
-  outcome: string;
-  priority_sort: string;
-  page_size: number;
-  top_k: number;
-  reason: string;
-};
+// QueryIntent is declared in baml-runtime.d.ts; the local alias just re-exports it
+// for type-narrowing guards below.
+type QueryIntent = import("./baml-runtime").QueryIntent;
 
 type DiscoverAgentsOutput = {
   agents?: unknown[];
@@ -48,6 +63,15 @@ type ExtrospectionOutput = {
   payload_json?: string;
   done?: boolean;
 };
+const RESPONSE_CHAR_LIMIT = 1800;
+
+function executionMessageId(message: unknown): string {
+  if (isObject(message)) {
+    if (typeof message.messageId === "string" && message.messageId.trim().length > 0) return message.messageId;
+    if (typeof message.id === "string" && message.id.trim().length > 0) return message.id;
+  }
+  return "msg-extrospection-fallback";
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object";
@@ -94,6 +118,11 @@ function extractPayloadJson(raw: unknown): string {
   return "{}";
 }
 
+function clampResponse(message: string): string {
+  if (message.length <= RESPONSE_CHAR_LIMIT) return message;
+  return message.slice(0, RESPONSE_CHAR_LIMIT) + "…";
+}
+
 function parseDiscoverAgentsOutput(raw: unknown): DiscoverAgentsOutput {
   if (isObject(raw) && ("agents" in raw || "done" in raw)) return raw as DiscoverAgentsOutput;
   if (isObject(raw) && isObject(raw.output)) {
@@ -106,6 +135,32 @@ function parseDiscoverAgentsOutput(raw: unknown): DiscoverAgentsOutput {
 function toText(value: unknown): string {
   if (typeof value === "string") return value.trim();
   return "";
+}
+
+function normalizeDelegatedText(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = JSON.parse(trimmed) as {
+      objective?: unknown;
+      plan_steps?: Array<{ agent_package?: unknown; sub_message?: unknown }>;
+    };
+    if (Array.isArray(parsed.plan_steps)) {
+      for (const step of parsed.plan_steps) {
+        if (!isObject(step)) continue;
+        const agentPackage = typeof step.agent_package === "string" ? step.agent_package : "";
+        if (agentPackage !== "extrospection-agent") continue;
+        const subMessage = typeof step.sub_message === "string" ? step.sub_message.trim() : "";
+        if (subMessage) return subMessage.slice(0, 500);
+      }
+    }
+    if (typeof parsed.objective === "string" && parsed.objective.trim().length > 0) {
+      return parsed.objective.trim().slice(0, 500);
+    }
+  } catch (_) {
+    // Best-effort compaction only.
+  }
+  return trimmed.slice(0, 500);
 }
 
 function fallbackIntentFromOpenInput(userText: string): QueryIntent {
@@ -142,7 +197,7 @@ function fallbackIntentFromOpenInput(userText: string): QueryIntent {
 
 __chat_register({
   run: async (ctx) => {
-    let userText = toText(ctx.text);
+    let userText = normalizeDelegatedText(toText(ctx.text));
     if (!userText) {
       return {
         message:
@@ -150,51 +205,144 @@ __chat_register({
       };
     }
 
-    const intentRaw = await DetermineExtrospectionIntent({ user_message: userText });
-    const intent = isNeedClarification(intentRaw)
-      ? fallbackIntentFromOpenInput(userText)
-      : isQueryIntent(intentRaw)
-        ? normalizeQueryIntent(intentRaw)
-        : fallbackIntentFromOpenInput(userText);
-
-    // BAML orchestrates both tool session plans; TS only executes A2A FSM turns.
-    const discoveredRaw = await GetDiscoverAgentsPlan({ user_message: userText });
-    const discovered = parseDiscoverAgentsOutput(discoveredRaw);
-    const agents = Array.isArray(discovered.agents) ? discovered.agents : [];
-
-    const selectedAgent = await SelectAgentFocus({
-      user_message: userText,
-      agents,
-    });
-
-    const pass1Raw = await BuildExtrospectionPlan({
-      intent,
-      selected_agent: selectedAgent ?? null,
-    });
-    const pass1PayloadJson = extractPayloadJson(pass1Raw);
-
-    let pass2PayloadJson = "{}";
-    try {
-      const pass2Raw = await BuildExtrospectionDrilldownPlan({
-        intent,
-        selected_agent: selectedAgent ?? null,
-        pass1_payload_json: pass1PayloadJson,
-      });
-      pass2PayloadJson = extractPayloadJson(pass2Raw);
-    } catch {
-      // Keep pass-1 evidence when drilldown continuation fails.
-      pass2PayloadJson = "{}";
+    // Clarification loop: ask the user when intent is too vague before opening any sessions.
+    // Capped at 2 rounds so the agent never loops indefinitely.
+    const MAX_CLARIFY = 2;
+    let intent: QueryIntent | null = null;
+    for (let i = 0; i < MAX_CLARIFY; i++) {
+      const intentRaw = await DetermineExtrospectionIntent({ user_message: userText });
+      if (isQueryIntent(intentRaw)) {
+        intent = normalizeQueryIntent(intentRaw);
+        break;
+      }
+      if (isNeedClarification(intentRaw)) {
+        const reply = await ctx.emit.awaitInput(intentRaw.question);
+        userText = normalizeDelegatedText(messageText(reply));
+        // Re-classify with clarified text on next iteration.
+      } else {
+        // Unexpected shape — use heuristic fallback and proceed.
+        intent = fallbackIntentFromOpenInput(userText);
+        break;
+      }
+    }
+    // If all clarification rounds were consumed without a clean intent, fall back.
+    if (!intent) {
+      intent = fallbackIntentFromOpenInput(userText);
     }
 
-    const response = await SummarizeExtrospectionReport({
-      user_message: userText,
-      intent,
-      selected_agent: selectedAgent ?? null,
-      agents,
-      pass1_payload_json: pass1PayloadJson,
-      pass2_payload_json: pass2PayloadJson,
-    });
-    return { message: response };
+    const executionSession = typeof openA2aExecutionSession === "function"
+      ? await openA2aExecutionSession("extrospection-" + Date.now().toString())
+      : null;
+    const messageId = executionMessageId(ctx.message);
+    let executable: {
+      startStep?: (stepId: string, evidenceText: string) => Promise<unknown>;
+      completeStep?: (stepId: string, evidenceText: string) => Promise<unknown>;
+      finish?: () => Promise<unknown>;
+      abort?: (reason: string) => Promise<unknown>;
+    } | null = null;
+
+    try {
+      const intentId = "intent-extrospection-" + intent.resource.toLowerCase();
+      const intentDescription =
+        `Analyze ${intent.resource} with outcome=${intent.outcome} sorted by ${intent.priority_sort}; reason: ${intent.reason}`;
+      const intentPhase = executionSession
+        ? await executionSession.submitIntent({
+            intentId,
+            description: intentDescription,
+            derivedFromMessageIds: [messageId],
+          })
+        : null;
+
+      // Drive discover_agents via strict step-executor loop to keep Open/Send/Next/Finish sequencing canonical.
+      // Deterministic guard: skip discover_agents execution loop here.
+      // The parent persona agent already performs discovery/routing; repeating this inside delegated
+      // extrospection introduces additional execution drift risk from generated step-schema envelopes.
+      const agents: unknown[] = [];
+      const selectedAgent = null;
+
+      executable = intentPhase
+        ? await intentPhase.submitPlan({
+            intentId,
+            planId: "plan-extrospection-main",
+            steps: [
+              {
+                stepId: "step-extrospection-query",
+                description: "Execute extrospection query and collect machine telemetry.",
+                order: 0,
+                dependsOn: [],
+              },
+              {
+                stepId: "step-extrospection-summarize",
+                description: "Summarize findings for operator response.",
+                order: 1,
+                dependsOn: ["step-extrospection-query"],
+              },
+            ],
+          })
+        : null;
+      if (executable != null) {
+        await executable.startStep?.(
+          "step-extrospection-query",
+          "Starting telemetry query pass over extrospection data.",
+        );
+      }
+
+      const extrospectionRun = await runGeneratedStepExecutor(
+        "BuildExtrospectionPlan",
+        {
+          intent,
+          selected_agent: selectedAgent ?? null,
+        },
+        { max_steps: 6 },
+      );
+
+      const payloadCandidates: unknown[] = [extrospectionRun.last, ...extrospectionRun.steps.slice().reverse()];
+      const payloads: string[] = [];
+      for (const candidate of payloadCandidates) {
+        const payload = extractPayloadJson(candidate);
+        if (payload && payload !== "{}") payloads.push(payload);
+      }
+      const primaryPayloadJson = payloads[0] ?? "{}";
+      const secondaryPayloadJson = payloads[1] ?? primaryPayloadJson;
+      if (executable != null) {
+        await executable.completeStep?.(
+          "step-extrospection-query",
+          "Telemetry query payload extracted and normalized.",
+        );
+        await executable.startStep?.(
+          "step-extrospection-summarize",
+          "Starting synthesis of extrospection findings into user response.",
+        );
+      }
+
+      const responseRaw = await SummarizeExtrospectionReport({
+        user_message: userText,
+        intent,
+        selected_agent: selectedAgent ?? null,
+        agents,
+        primary_payload_json: primaryPayloadJson,
+        secondary_payload_json: secondaryPayloadJson,
+      });
+      const response = clampResponse(String(responseRaw));
+      if (executable != null) {
+        await executable.completeStep?.(
+          "step-extrospection-summarize",
+          "Final extrospection summary generated for operator output.",
+        );
+        await executable.finish?.();
+      }
+      return { message: response };
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      if (executable != null) {
+        try {
+          await executable.abort?.("Extrospection flow aborted due to error: " + errMsg);
+        } catch (_) {
+          // Best-effort abort only.
+        }
+      }
+      return { error: errMsg };
+    }
 
   },
 });

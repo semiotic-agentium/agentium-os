@@ -36,7 +36,9 @@ function toolUseSummary(ev: ToolEvent): { name: string; detail: string } | null 
   return { name, detail };
 }
 
-function eventDisplay(ev: ToolEvent): { kind: string; text: string; toolUse?: { name: string; detail: string } } {
+type DisplayEvent = { kind: string; text: string; toolUse?: { name: string; detail: string }; count?: number };
+
+function eventDisplay(ev: ToolEvent): DisplayEvent {
   if (ev.kind === "assistant_thinking" && typeof ev.thinking === "string") {
     return { kind: "thinking", text: ev.thinking.trim() };
   }
@@ -57,17 +59,36 @@ function eventDisplay(ev: ToolEvent): { kind: string; text: string; toolUse?: { 
   }
   if (ev.kind === "system_notice") {
     const raw = ev.subtype ?? ev.text ?? "Status";
-    const phaseMatch = raw.match(/Calling model: unknown \((.+)\)/);
+    // Extract BAML function name from "Calling model: <any model> (<FunctionName>)"
+    const phaseMatch = raw.match(/Calling model:[^(]+\((.+?)\)/);
     const toolMatch = raw.match(/Invoking tool: (.+)/);
-    let label = phaseMatch ? phaseMatch[1]! : toolMatch ? `Tool: ${toolMatch[1]}` : (raw.startsWith("System: ") ? raw : `System: ${raw}`);
-    const model = typeof ev.model === "string" ? ev.model : undefined;
-    const text = model ? `${label} · ${model}` : label;
-    return { kind: "system", text };
+    const label = phaseMatch
+      ? phaseMatch[1]!
+      : toolMatch
+        ? `Tool: ${toolMatch[1]}`
+        : raw.startsWith("System: ")
+          ? raw.slice("System: ".length)
+          : raw;
+    return { kind: "system", text: label };
   }
   return { kind: ev.kind || "event", text: String(ev.kind || "event") };
 }
 
-const displayEvents = computed(() => props.block.events.map(eventDisplay));
+// Collapse consecutive identical system events into a single row with a count.
+// Non-system events (tool use, thinking, text) are always shown individually.
+const displayEvents = computed<DisplayEvent[]>(() => {
+  const collapsed: DisplayEvent[] = [];
+  for (const raw of props.block.events) {
+    const ev = eventDisplay(raw);
+    const last = collapsed[collapsed.length - 1];
+    if (last && last.kind === "system" && ev.kind === "system" && last.text === ev.text) {
+      last.count = (last.count ?? 1) + 1;
+    } else {
+      collapsed.push({ ...ev, count: ev.kind === "system" ? 1 : undefined });
+    }
+  }
+  return collapsed;
+});
 
 /** Show base name for repeated blocks: "Status 2" → "Status", "toolName 2" → "toolName". */
 const displayName = computed(() => {
@@ -111,10 +132,16 @@ watch(
         :key="i"
         class="tool-event"
         :data-kind="disp.kind"
+        :class="{ 'system-active': disp.kind === 'system' && i === displayEvents.length - 1 && block.status === 'Running' }"
       >
         <template v-if="disp.toolUse">
           <div class="tool-use-name">{{ disp.toolUse.name }}</div>
           <div v-if="disp.toolUse.detail" class="tool-use-detail">{{ disp.toolUse.detail }}</div>
+        </template>
+        <template v-else-if="disp.kind === 'system'">
+          <span class="system-dot" aria-hidden="true" />
+          <span class="system-label">{{ disp.text }}</span>
+          <span v-if="disp.count && disp.count > 1" class="system-count">×{{ disp.count }}</span>
         </template>
         <template v-else>
           {{ disp.text }}
@@ -192,5 +219,51 @@ watch(
   margin-top: 0.2rem;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* System notice rows */
+.tool-event[data-kind="system"] {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.system-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  opacity: 0.5;
+}
+
+.system-active .system-dot {
+  background: var(--primary, #6366f1);
+  opacity: 1;
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
+.system-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.system-count {
+  flex-shrink: 0;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 3px;
+  padding: 0 0.3rem;
+  font-variant-numeric: tabular-nums;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
 }
 </style>

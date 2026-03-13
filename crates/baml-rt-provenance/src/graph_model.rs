@@ -6,6 +6,9 @@ use crate::{
 /// Canonical node labels in the persisted provenance graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GraphNodeLabel {
+    Intent,
+    Plan,
+    PlanStep,
     Message,
     MessageProcessing,
     LlmCall,
@@ -27,6 +30,9 @@ pub enum GraphNodeLabel {
 impl GraphNodeLabel {
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Intent => "Intent",
+            Self::Plan => "Plan",
+            Self::PlanStep => "PlanStep",
             Self::Message => "Message",
             Self::MessageProcessing => "A2AMessageProcessing",
             Self::LlmCall => "LlmCall",
@@ -48,6 +54,9 @@ impl GraphNodeLabel {
 
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            "Intent" => Some(Self::Intent),
+            "Plan" => Some(Self::Plan),
+            "PlanStep" => Some(Self::PlanStep),
             "Message" => Some(Self::Message),
             "A2AMessageProcessing" => Some(Self::MessageProcessing),
             "LlmCall" => Some(Self::LlmCall),
@@ -85,6 +94,9 @@ pub const EDGE_TASK_EMITTED_MESSAGE: &str = semantic_labels::TASK_EMITTED_MESSAG
 /// Event kinds mapped to graph relations/properties.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EventGraphKind {
+    IntentResolved,
+    PlanGenerated,
+    PlanStepStatusChanged,
     LlmCallStarted,
     LlmCallCompleted,
     PromptRejected,
@@ -100,7 +112,10 @@ pub enum EventGraphKind {
     MessageSent,
 }
 
-pub const ALL_EVENT_KINDS: [EventGraphKind; 13] = [
+pub const ALL_EVENT_KINDS: [EventGraphKind; 16] = [
+    EventGraphKind::IntentResolved,
+    EventGraphKind::PlanGenerated,
+    EventGraphKind::PlanStepStatusChanged,
     EventGraphKind::LlmCallStarted,
     EventGraphKind::LlmCallCompleted,
     EventGraphKind::PromptRejected,
@@ -146,6 +161,27 @@ const MAPPING_LLM_CALL_STARTED: EventGraphMapping = EventGraphMapping {
     primary_node: GraphNodeLabel::LlmCall,
     expected_edges: &[EDGE_WAS_USED_BY, EDGE_WAS_INVOKED_BY],
     required_properties: &[a2a::CLIENT, a2a::MODEL, a2a::FUNCTION_NAME, a2a::AGENT_ID],
+};
+
+const MAPPING_INTENT_RESOLVED: EventGraphMapping = EventGraphMapping {
+    kind: EventGraphKind::IntentResolved,
+    primary_node: GraphNodeLabel::Intent,
+    expected_edges: &[],
+    required_properties: &[a2a::INTENT_ID, a2a::TASK_ID, a2a::CONTEXT_ID],
+};
+
+const MAPPING_PLAN_GENERATED: EventGraphMapping = EventGraphMapping {
+    kind: EventGraphKind::PlanGenerated,
+    primary_node: GraphNodeLabel::Plan,
+    expected_edges: &[],
+    required_properties: &[a2a::INTENT_ID, a2a::PLAN_ID, a2a::TASK_ID, a2a::CONTEXT_ID],
+};
+
+const MAPPING_PLAN_STEP_STATUS_CHANGED: EventGraphMapping = EventGraphMapping {
+    kind: EventGraphKind::PlanStepStatusChanged,
+    primary_node: GraphNodeLabel::PlanStep,
+    expected_edges: &[],
+    required_properties: &[a2a::INTENT_ID, a2a::PLAN_ID, a2a::STEP_ID, a2a::TASK_ID],
 };
 
 const MAPPING_LLM_CALL_COMPLETED: EventGraphMapping = EventGraphMapping {
@@ -234,30 +270,21 @@ const MAPPING_MESSAGE_RECEIVED: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::MessageReceived,
     primary_node: GraphNodeLabel::Message,
     expected_edges: &[EDGE_WAS_RECEIVED_BY, EDGE_TASK_TRIGGERED_BY_MESSAGE],
-    required_properties: &[
-        a2a::MESSAGE_ID,
-        a2a::ROLE,
-        a2a::CONTENT,
-        a2a::DIRECTION,
-        a2a::AGENT_ID,
-    ],
+    required_properties: &[a2a::MESSAGE_ID, a2a::ROLE, a2a::CONTENT, a2a::DIRECTION],
 };
 
 const MAPPING_MESSAGE_SENT: EventGraphMapping = EventGraphMapping {
     kind: EventGraphKind::MessageSent,
     primary_node: GraphNodeLabel::Message,
     expected_edges: &[EDGE_WAS_EMITTED_BY, EDGE_TASK_EMITTED_MESSAGE],
-    required_properties: &[
-        a2a::MESSAGE_ID,
-        a2a::ROLE,
-        a2a::CONTENT,
-        a2a::DIRECTION,
-        a2a::AGENT_ID,
-    ],
+    required_properties: &[a2a::MESSAGE_ID, a2a::ROLE, a2a::CONTENT, a2a::DIRECTION],
 };
 
 pub fn event_kind_from_data(data: &ProvEventData) -> EventGraphKind {
     match data {
+        ProvEventData::IntentResolved { .. } => EventGraphKind::IntentResolved,
+        ProvEventData::PlanGenerated { .. } => EventGraphKind::PlanGenerated,
+        ProvEventData::PlanStepStatusChanged { .. } => EventGraphKind::PlanStepStatusChanged,
         ProvEventData::LlmCallStarted { .. } => EventGraphKind::LlmCallStarted,
         ProvEventData::LlmCallCompleted { .. } => EventGraphKind::LlmCallCompleted,
         ProvEventData::PromptRejected { .. } => EventGraphKind::PromptRejected,
@@ -276,6 +303,9 @@ pub fn event_kind_from_data(data: &ProvEventData) -> EventGraphKind {
 
 pub fn mapping_for_event_kind(kind: EventGraphKind) -> &'static EventGraphMapping {
     match kind {
+        EventGraphKind::IntentResolved => &MAPPING_INTENT_RESOLVED,
+        EventGraphKind::PlanGenerated => &MAPPING_PLAN_GENERATED,
+        EventGraphKind::PlanStepStatusChanged => &MAPPING_PLAN_STEP_STATUS_CHANGED,
         EventGraphKind::LlmCallStarted => &MAPPING_LLM_CALL_STARTED,
         EventGraphKind::LlmCallCompleted => &MAPPING_LLM_CALL_COMPLETED,
         EventGraphKind::PromptRejected => &MAPPING_PROMPT_REJECTED,
@@ -300,13 +330,13 @@ pub fn mapping_for_event_data(data: &ProvEventData) -> &'static EventGraphMappin
 pub struct ConversationReadModel;
 
 impl ConversationReadModel {
-    pub const MESSAGE_COLUMN_COUNT: usize = 6;
-    pub const TOOL_COLUMN_COUNT: usize = 8;
+    pub const MESSAGE_COLUMN_COUNT: usize = 5;
+    pub const TOOL_COLUMN_COUNT: usize = 7;
 
     /// Typed parameterised message query for cypher_builder().params().run().
     pub fn message_query_storage_safe_params(context: &str) -> (String, serde_json::Value) {
         let query = "MATCH (m:Message) WHERE m.a2a_context_id = $context \
-             RETURN m.a2a_event_id, m.a2a_message_id, m.a2a_direction, m.a2a_role, m.a2a_content, m.a2a_agent_id \
+             RETURN m.a2a_event_id, m.a2a_message_id, m.a2a_direction, m.a2a_role, m.a2a_content \
              ORDER BY m.a2a_event_id";
         (query.to_string(), serde_json::json!({ "context": context }))
     }
@@ -315,7 +345,7 @@ impl ConversationReadModel {
     pub fn tool_query_storage_safe_params(context: &str) -> (String, serde_json::Value) {
         let query = "MATCH (t:ToolCall) WHERE t.a2a_context_id = $context \
              MATCH (t)-[used:WAS_USED_BY]->(args:ToolArgs) \
-             RETURN DISTINCT t.a2a_event_id, t.a2a_tool_name, t.a2a_metadata, args.a2a_args, used.prov_role, args.prov_type, t.a2a_activity_outcome, t.a2a_agent_id \
+             RETURN DISTINCT t.a2a_event_id, t.a2a_tool_name, t.a2a_metadata, args.a2a_args, used.prov_role, args.prov_type, t.a2a_activity_outcome \
              ORDER BY t.a2a_event_id";
         (query.to_string(), serde_json::json!({ "context": context }))
     }

@@ -1,9 +1,11 @@
 use baml_rt_core::{
     Outcome,
-    ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
+    bus::PlanningSupersessionKind,
+    ids::{AgentId, ContextId, ExternalId, IntentId, MessageId, PlanId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    A2aRelationType, LlmUsage, ProvEvent, normalize_event, vocabulary::a2a_roles,
+    A2aRelationType, DefaultProvNormalizer, LlmUsage, ProvEvent, ProvNormalizer, normalize_event,
+    vocabulary::{a2a_relations, a2a_roles},
 };
 
 #[test]
@@ -21,6 +23,130 @@ fn normalize_status_change_includes_derived_relation() {
             .derived_relations
             .iter()
             .any(|rel| matches!(rel.relation, A2aRelationType::TaskStatusTransition))
+    );
+}
+
+#[test]
+fn normalize_intent_and_plan_revisions_emit_replaced_by_relations() {
+    let context_id = ContextId::new(2, 1);
+    let task_id = TaskId::from_external(ExternalId::new("task-revision-1"));
+    let message_id = MessageId::from_external(ExternalId::new("msg-revision-1"));
+    let normalizer = DefaultProvNormalizer::default();
+
+    normalizer
+        .normalize(&ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            IntentId::from("intent-v1".to_string()),
+            "v1".to_string(),
+            vec![message_id.clone()],
+            None,
+        ))
+        .expect("intent v1");
+    let intent_v2 = normalizer
+        .normalize(&ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            IntentId::from("intent-v2".to_string()),
+            "v2".to_string(),
+            vec![message_id.clone()],
+            None,
+        ))
+        .expect("intent v2");
+    assert!(intent_v2.derived_relations.iter().any(|rel| {
+        matches!(rel.relation, A2aRelationType::IntentReplacedBy)
+            && rel
+                .attributes
+                .get("a2a:relation")
+                .and_then(serde_json::Value::as_str)
+                .is_none()
+    }));
+
+    normalizer
+        .normalize(&ProvEvent::plan_generated(
+            context_id.clone(),
+            task_id.clone(),
+            IntentId::from("intent-v2".to_string()),
+            PlanId::from("plan-v1".to_string()),
+            vec![],
+            None,
+        ))
+        .expect("plan v1");
+    let plan_v2 = normalizer
+        .normalize(&ProvEvent::plan_generated(
+            context_id,
+            task_id,
+            IntentId::from("intent-v2".to_string()),
+            PlanId::from("plan-v2".to_string()),
+            vec![],
+            None,
+        ))
+        .expect("plan v2");
+    assert!(plan_v2.derived_relations.iter().any(|rel| {
+        matches!(rel.relation, A2aRelationType::PlanReplacedBy)
+            && rel.relation.as_str() == a2a_relations::PLAN_REPLACED_BY
+    }));
+}
+
+#[test]
+fn normalize_intent_and_plan_revisions_emit_refined_by_relations() {
+    let context_id = ContextId::new(3, 1);
+    let task_id = TaskId::from_external(ExternalId::new("task-refine-1"));
+    let message_id = MessageId::from_external(ExternalId::new("msg-refine-1"));
+    let normalizer = DefaultProvNormalizer::default();
+
+    normalizer
+        .normalize(&ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            IntentId::from("intent-v1".to_string()),
+            "v1".to_string(),
+            vec![message_id.clone()],
+            None,
+        ))
+        .expect("intent v1");
+    let intent_v2 = normalizer
+        .normalize(&ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            IntentId::from("intent-v2".to_string()),
+            "v2".to_string(),
+            vec![message_id.clone()],
+            Some(PlanningSupersessionKind::RefinedBy),
+        ))
+        .expect("intent v2");
+    assert!(
+        intent_v2
+            .derived_relations
+            .iter()
+            .any(|rel| matches!(rel.relation, A2aRelationType::IntentRefinedBy))
+    );
+
+    normalizer
+        .normalize(&ProvEvent::plan_generated(
+            context_id.clone(),
+            task_id.clone(),
+            IntentId::from("intent-v2".to_string()),
+            PlanId::from("plan-v1".to_string()),
+            vec![],
+            None,
+        ))
+        .expect("plan v1");
+    let plan_v2 = normalizer
+        .normalize(&ProvEvent::plan_generated(
+            context_id,
+            task_id,
+            IntentId::from("intent-v2".to_string()),
+            PlanId::from("plan-v2".to_string()),
+            vec![],
+            Some(PlanningSupersessionKind::RefinedBy),
+        ))
+        .expect("plan v2");
+    assert!(
+        plan_v2
+            .derived_relations
+            .iter()
+            .any(|rel| matches!(rel.relation, A2aRelationType::PlanRefinedBy))
     );
 }
 
@@ -114,6 +240,7 @@ fn normalize_task_scoped_call_with_metadata_message_id_attaches_message_context(
             prompt_tokens: 1,
             completion_tokens: 2,
             total_tokens: 3,
+            cached_input_tokens: None,
         },
         12,
         Outcome::Success,
@@ -266,6 +393,7 @@ fn normalize_llm_call_rejects_unknown_provider_type() {
             prompt_tokens: 10,
             completion_tokens: 5,
             total_tokens: 15,
+            cached_input_tokens: None,
         },
         20,
         Outcome::Success,
@@ -299,6 +427,7 @@ fn normalize_llm_call_backfills_model_from_prompt() {
             prompt_tokens: 10,
             completion_tokens: 5,
             total_tokens: 15,
+            cached_input_tokens: None,
         },
         20,
         Outcome::Success,

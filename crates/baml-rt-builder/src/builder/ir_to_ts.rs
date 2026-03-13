@@ -107,13 +107,28 @@ pub fn collect_type_decl_deps(frag: &TsTypeFrag) -> HashSet<String> {
 }
 
 /// Emit TypeScript type declarations (interfaces, enums, type aliases) for the given set of type names.
-/// Only emits types that exist in the IR; ignores unknown names. Order: enums, classes, type aliases (deterministic).
+/// Transitively collects field-type deps so nested types are always emitted alongside their parents.
 /// Returns genco tokens for embedding in the main declaration file.
 pub fn emit_type_declarations_tokens(
     ir: &IRSignature,
     needed: &HashSet<String>,
 ) -> Result<js::Tokens> {
-    let mut names: Vec<&String> = needed.iter().collect();
+    // Expand `needed` transitively: for each class, collect its field type deps too.
+    let mut all_needed = needed.clone();
+    let mut worklist: Vec<String> = needed.iter().cloned().collect();
+    while let Some(name) = worklist.pop() {
+        if let Some((_, class_details)) = ir.classes.get(&name) {
+            for (_, fty) in class_details.fields.iter() {
+                let frag = type_to_ts_expr(fty.as_ref(), ir)?;
+                for dep in frag.deps {
+                    if all_needed.insert(dep.clone()) {
+                        worklist.push(dep);
+                    }
+                }
+            }
+        }
+    }
+    let mut names: Vec<&String> = all_needed.iter().collect();
     names.sort();
     let mut out: js::Tokens = quote!();
     for name in names {

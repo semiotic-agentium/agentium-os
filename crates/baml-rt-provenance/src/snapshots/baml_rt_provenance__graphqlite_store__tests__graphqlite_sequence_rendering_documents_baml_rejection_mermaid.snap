@@ -9,8 +9,10 @@ sequenceDiagram
     participant LLM_openai_generic
 
     User->>+planner_1_0_0: Produce structured plan output
+    rect rgb(220, 230, 241)
     Note over planner_1_0_0,LLM_openai_generic: "task-baml-reject-1"
     planner_1_0_0->>+LLM_openai_generic: PlannerStep
     LLM_openai_generic-->>-planner_1_0_0: 1800ms ✓
     Note over planner_1_0_0: "✗ BAML rejection: BAML validation failed: missing field plan_steps"
     planner_1_0_0->>-User: Model output rejected by BAML validator.
+    end

@@ -60,6 +60,7 @@ fn claude_next_output_serializes_completion_and_events() {
             text: "hello".to_string(),
         }],
         completion: Some(ClaudeCompletion::InputRequired),
+        history_context: None,
     };
     let value = serde_json::to_value(output).expect("serialize");
     assert_eq!(value["events"][0]["kind"], "assistant_text");

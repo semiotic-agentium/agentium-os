@@ -14,7 +14,7 @@
 //!   WORKING chunks to. Session lookup uses a single key type derived only from `ContextId`
 //!   at both registration and push; no fallback.
 //! - **Chunk shape**: Status chunks may be flat (e.g. `make_submitted_chunk`) or nested
-//!   (`statusUpdate` wrapper). Helpers `status_update_event(su)` and
+//!   (legacy `statusUpdate` / `status_update` wrapper). Helpers `status_update_event(su)` and
 //!   `task_state_from_chunk(chunk)` handle both.
 //! - **Tool WORKING contract**: At least one chunk must have `state === "TASK_STATE_WORKING"`,
 //!   message text indicating the tool (e.g. "Invoking tool: support/calculate"), and when
@@ -57,7 +57,7 @@ fn task_state_from_chunk(chunk: &Value) -> Option<String> {
         })
         .or_else(|| {
             let su = chunk.get("statusUpdate")?;
-            // Flat (e.g. make_submitted_chunk) has status directly; nested (StreamChunk) has statusUpdate.
+            // Flat (e.g. make_submitted_chunk) has status directly; nested (StreamChunk) has statusUpdate/status_update.
             let ev = if su.get("status").is_some() {
                 su
             } else {
@@ -67,12 +67,12 @@ fn task_state_from_chunk(chunk: &Value) -> Option<String> {
         })
 }
 
-/// Returns the status-update event body from either the flat wire shape or nested wrapper.
+/// Returns the status-update event body from either the flat wire shape or legacy nested aliases.
 fn status_update_event(su: &Value) -> Option<&Value> {
     if su.get("status").is_some() {
         Some(su)
     } else {
-        su.get("statusUpdate")
+        su.get("statusUpdate").or_else(|| su.get("status_update"))
     }
 }
 

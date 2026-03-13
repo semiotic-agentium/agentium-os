@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_tools::{
-    ToolHandler, parse_tool_name_and_class, register_tool,
+    SessionPolicy, ToolHandler, parse_tool_name_and_class, register_tool,
     tools::{ToolFunctionMetadata, ToolMetadataBuilder, TypeBasedMetadataBuilder},
 };
 
@@ -27,9 +27,15 @@ fn build_a2a_metadata(tool_name: &str) -> ToolFunctionMetadata {
     TypeBasedMetadataBuilder::<InternalA2aOpenInput, InternalA2aSendInput, InternalA2aNextOutput>::new(
         name,
         class_name,
-        "Starts a conversation with another agent by route key. Send text or structured parts, then call Next until the agent is done or asks for more input.".to_string(),
+        "Opens a conversational session to another agent. Send a message (text or parts), Read the response, then Send follow-ups or Finish. Multiple Send/Read rounds are allowed within one session — use this for multi-turn conversations with the delegated agent.".to_string(),
     )
     .with_tags(vec!["system".to_string(), "a2a".to_string()])
+    .with_session_policy(SessionPolicy::MultiSend)
+    .with_projection_semantics(
+        "Chunk envelope and task-state identity only, without full message text bodies.",
+        "Compact stream digest: chunk counts, completion state, and high-level task movement.",
+        "Full batched conversation chunks and status/artifact updates for this read hop.",
+    )
     .build_metadata()
 }
 
@@ -56,6 +62,11 @@ where
         description.to_string(),
     )
     .with_tags(vec!["system".to_string(), "discovery".to_string()])
+    .with_projection_semantics(
+        "Identifiers only for discovered entities (agent or tool names and stable ids).",
+        "Compact list summary for this read hop (count and query constraints).",
+        "Full read payload for the hop (paged agent cards or tool records).",
+    )
     .build_metadata()
 }
 
@@ -66,37 +77,57 @@ pub fn system_discover_agents_metadata() -> ToolFunctionMetadata {
         DiscoverAgentsNextOutput,
     >(
         "system/discover_agents",
-        "Browse available agents. You can optionally filter by query or requiredCapabilities. Omit query to list all agents.",
+        "Browse available agents. You can optionally filter by query, requiredCapabilities, or matching event subscriptions. Omit filters to list all agents.",
     )
 }
 
 pub fn system_discover_tools_metadata() -> ToolFunctionMetadata {
     build_discover_metadata::<DiscoverToolsOpenInput, DiscoverToolsSendInput, DiscoverToolsNextOutput>(
         "system/discover_tools",
-        "Browse available tools. You can optionally filter by query and limit the number of results.",
+        "Searches registered tools by lexical rank. Open session, then send query/limit; read() returns results. Send can be called multiple times.",
     )
 }
 
 pub fn system_introspection_metadata() -> ToolFunctionMetadata {
-    build_discover_metadata::<
+    let (name, class_name) =
+        parse_tool_name_and_class("system/introspection").expect("static tool name");
+    TypeBasedMetadataBuilder::<
         ProvenanceQueryOpenInput,
         ProvenanceQuerySendInput,
         ProvenanceQueryNextOutput,
-    >(
-        "system/introspection",
-        "Queries provenance rows for the current context with compact token-aware output. Open session, send filters/grouping, then next() returns one result page.",
+    >::new(
+        name,
+        class_name,
+        "Queries provenance rows for the current context with compact token-aware output. Open session, send filters/grouping, then read() returns one result page.".to_string(),
     )
+    .with_tags(vec!["system".to_string(), "discovery".to_string()])
+    .with_projection_semantics(
+        "Only addressing graph: current traversal ref plus reachable refs, without payload bodies.",
+        "Compact aggregate over the selected ref: counts/totals and source kinds, without full payload bodies.",
+        "Full selected archive payload for the requested ref, including typed payload records.",
+    )
+    .build_metadata()
 }
 
 pub fn system_extrospection_metadata() -> ToolFunctionMetadata {
-    build_discover_metadata::<
+    let (name, class_name) =
+        parse_tool_name_and_class("system/extrospection").expect("static tool name");
+    TypeBasedMetadataBuilder::<
         ProvenanceQueryOpenInput,
         ProvenanceQuerySendInput,
         ProvenanceQueryNextOutput,
-    >(
-        "system/extrospection",
-        "Queries provenance rows across contexts and agents with compact token-aware output. Open session, send filters/grouping, then next() returns one result page.",
+    >::new(
+        name,
+        class_name,
+        "Queries provenance rows across contexts and agents with compact token-aware output. Open session, send filters/grouping, then read() returns one result page.".to_string(),
     )
+    .with_tags(vec!["system".to_string(), "discovery".to_string()])
+    .with_projection_semantics(
+        "Only addressing graph: current traversal ref plus reachable refs, without payload bodies.",
+        "Compact aggregate over the selected ref: counts/totals and source kinds, without full payload bodies.",
+        "Full selected archive payload for the requested ref, including typed payload records.",
+    )
+    .build_metadata()
 }
 
 register_tool!(system_discover_agents_metadata, system_tool_build_unused);

@@ -1,5 +1,6 @@
 //! Tool-facing types for the Claude bundle.
 
+use baml_rt_tools::tools::HistoryContextV1;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -92,4 +93,6 @@ pub struct ClaudeToolNextOutput {
     pub events: Vec<ClaudeEventDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completion: Option<ClaudeCompletion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_context: Option<HistoryContextV1>,
 }

@@ -74,11 +74,10 @@ impl QuickJSBridge {
                             resolve_scope_from_active_context(&invocation_context_registry)
                                 .ok()
                                 .and_then(|scope| {
-                                    stream_sessions.lock().ok().and_then(|guard| {
-                                        guard.iter().find_map(|(sid, session)| {
-                                            (!session.is_terminated() && session.scope == scope)
-                                                .then_some(*sid)
-                                        })
+                                    stream_sessions.iter().find_map(|entry| {
+                                        (!entry.value().is_terminated()
+                                            && entry.value().scope == scope)
+                                            .then_some(*entry.key())
                                     })
                                 })
                         });
@@ -95,12 +94,7 @@ impl QuickJSBridge {
                         if std::env::var("BAML_STREAM_DEBUG").is_ok() {
                             eprintln!("stream_yield_route: routed session={sid}");
                         }
-                        let guard = tx_by_session.lock().map_err(|_| {
-                            quickjs_runtime::jsutils::JsError::new_str(
-                                "a2a_yield_tx_by_session lock poisoned",
-                            )
-                        })?;
-                        if let Some(tx) = guard.get(&sid) {
+                        if let Some(tx) = tx_by_session.get(&sid) {
                             if tx.send(value).is_err() {
                                 tracing::debug!(
                                     %sid,
@@ -118,11 +112,7 @@ impl QuickJSBridge {
                             let scope = resolve_scope_from_active_context(&invocation_context_registry)
                                 .ok()
                                 .map(|scope| format!("{:?}", scope));
-                            let in_flight_sessions = stream_sessions
-                                .lock()
-                                .ok()
-                                .map(|guard| guard.len())
-                                .unwrap_or(0);
+                            let in_flight_sessions = stream_sessions.len();
                             eprintln!(
                                 "stream_yield_route: no active session; scope={scope:?}; in_flight={in_flight_sessions}; chunk={chunk_json}"
                             );
@@ -167,13 +157,20 @@ impl QuickJSBridge {
     ///
     /// **INVARIANT (stream progress):** Before every drain we run pending JS jobs once so
     /// async stream continuations can produce chunks (align with main).
+    ///
+    /// Uses `spawn_blocking` for the `exe_rt_task_in_event_loop` call so the OS thread
+    /// is not blocked — other `spawn_local` tasks (concurrent stream contexts) can
+    /// make progress while the QuickJS worker processes pending jobs.
     pub async fn drain_yield_buffer(
         &mut self,
         rx: &mut tokio::sync::mpsc::UnboundedReceiver<Value>,
     ) -> Result<BufferDrain> {
-        self.runtime.exe_rt_task_in_event_loop(|rt| {
-            rt.run_pending_jobs_if_any();
-        });
+        let rt = Arc::clone(&self.runtime);
+        tokio::task::spawn_blocking(move || {
+            rt.exe_rt_task_in_event_loop(|r| r.run_pending_jobs_if_any());
+        })
+        .await
+        .map_err(|e| BamlRtError::QuickJs(format!("drain_yield_buffer spawn_blocking: {e}")))?;
 
         let mut chunks = Vec::new();
         let mut channel_closed = false;
@@ -219,9 +216,8 @@ impl QuickJSBridge {
         // --- 1. Resolve runtime scope for teardown (read-only; don't close session yet) ---
         let invocation_context_id = self
             .stream_sessions
-            .lock()
-            .ok()
-            .and_then(|g| g.get(&session_id).and_then(|s| s.context_id.clone()));
+            .get(&session_id)
+            .and_then(|s| s.context_id.clone());
 
         // Extract the full scope from the registry so we have both context_id and task_id.
         let runtime_scope = invocation_context_id.as_ref().and_then(|id| {
@@ -239,9 +235,7 @@ impl QuickJSBridge {
             .exe_rt_task_in_event_loop(|r| r.run_pending_jobs_if_any());
 
         // --- 3. Close + cancel session (only after drain so natives see valid session) ---
-        if let Ok(guard) = self.stream_sessions.lock()
-            && let Some(session) = guard.get(&session_id)
-        {
+        if let Some(session) = self.stream_sessions.get(&session_id) {
             session.closed.store(true, Ordering::Release);
             session.cancel.cancel();
         }
@@ -270,12 +264,8 @@ impl QuickJSBridge {
         }
 
         // --- 6. Remove session (drops permit) and yield sender ---
-        if let Ok(mut guard) = self.stream_sessions.lock() {
-            guard.remove(&session_id);
-        }
-        if let Ok(mut guard) = self.a2a_yield_tx_by_session.lock() {
-            guard.remove(&session_id);
-        }
+        self.stream_sessions.remove(&session_id);
+        self.a2a_yield_tx_by_session.remove(&session_id);
         tracing::debug!(%session_id, "finalize_a2a_stream_invocation: session closed and removed");
 
         // Do NOT restore or remove global JS helpers (__baml_invoke, __baml_stream, etc.).
@@ -377,22 +367,8 @@ impl QuickJSBridge {
             context_id: Some(context_id),
             context_tags,
         });
-        {
-            let mut guard = self.stream_sessions.lock().map_err(|_| {
-                BamlRtError::QuickJs("stream session map lock poisoned".to_string())
-            })?;
-            guard.insert(session_id, session);
-        }
-        if let Ok(mut g) = self.a2a_yield_tx_by_session.lock() {
-            g.insert(session_id, tx);
-        } else {
-            if let Ok(mut guard) = self.stream_sessions.lock() {
-                guard.remove(&session_id);
-            }
-            return Err(BamlRtError::QuickJs(
-                "a2a_yield_tx_by_session lock poisoned".to_string(),
-            ));
-        }
+        self.stream_sessions.insert(session_id, session);
+        self.a2a_yield_tx_by_session.insert(session_id, tx);
         tracing::debug!(
             context_id = %scope.context_id(),
             %session_id,
@@ -403,59 +379,10 @@ impl QuickJSBridge {
         let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
         let session_id_num = session_id.0;
 
-        // Override openToolSession per-stream to use session-aware natives.
-        // The global openToolSession uses tokenless __tool_session_* functions that
-        // resolve scope from the LIFO invocation context registry. Under concurrent
-        // streams, LIFO resolution returns the wrong scope (last-entered), causing
-        // all tool sessions to share one context_id. When one stream finalizes and
-        // tears down tool sessions by context_id, sibling streams' sessions are
-        // destroyed too.
-        //
-        // The session-aware variants (__tool_session_*_session) resolve scope from
-        // the stream session map by stream session id, which is always correct.
         let js_code = format!(
             r#"
             (function() {{
                 const sid = {session_id_num};
-                const _openToolSession = async function(toolName, openInput) {{
-                    const toolSessionId = await __tool_session_open_session(sid, toolName, JSON.stringify(openInput ?? {{}}));
-                    let phase = "Open";
-                    const isTerminal = () => phase === "Finish" || phase === "Abort";
-                    const assertNotTerminal = (op) => {{
-                        if (isTerminal()) {{
-                            throw new Error("Tool session " + toolSessionId + " cannot " + op + " after terminal phase " + phase);
-                        }}
-                    }};
-                    return {{
-                        sessionId: toolSessionId,
-                        phase: function() {{ return phase; }},
-                        send: async function(args) {{
-                            assertNotTerminal("send");
-                            const argObj = args ?? {{}};
-                            const out = await __tool_session_send_session(sid, toolSessionId, JSON.stringify(argObj));
-                            phase = "Send";
-                            return out;
-                        }},
-                        continue: async function() {{
-                            assertNotTerminal("continue");
-                            const out = await __tool_session_next_session(sid, toolSessionId);
-                            phase = "Next";
-                            return out;
-                        }},
-                        finish: async function() {{
-                            assertNotTerminal("finish");
-                            const out = await __tool_session_finish_session(sid, toolSessionId);
-                            phase = "Finish";
-                            return out;
-                        }},
-                        abort: async function(reason) {{
-                            assertNotTerminal("abort");
-                            const out = await __tool_session_abort_session(sid, toolSessionId, reason);
-                            phase = "Abort";
-                            return out;
-                        }}
-                    }};
-                }};
                 try {{
                     const args = {args_json};
                     if (Array.isArray(args) && args[0] && typeof args[0] === 'object') {{
@@ -467,10 +394,6 @@ impl QuickJSBridge {
                     if (func === undefined || typeof func !== 'function') {{
                         throw new Error("JS function not found: {function_name}");
                     }}
-                    // Shadow globalThis.openToolSession with session-aware version
-                    // for the duration of this stream invocation.
-                    const _origOpenToolSession = globalThis.openToolSession;
-                    globalThis.openToolSession = _openToolSession;
                     function wrapSession(p) {{
                         if (!p || typeof p.then !== 'function') return p;
                         return p.then(

@@ -15,7 +15,6 @@ pub mod graphqlite_task_subgraph_store;
 pub mod handlers;
 pub(crate) mod live_stream;
 pub(crate) mod live_stream_working_relay;
-pub(crate) mod projection;
 pub mod request_router;
 pub mod response;
 pub mod result_deduplicator;

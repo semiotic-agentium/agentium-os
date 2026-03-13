@@ -140,7 +140,7 @@ async fn test_full_integration_package_load_execute() {
     let agent_code = fs::read_to_string(&dist_index).unwrap();
     let agent_eval_result = {
         let mut guard = bridge.lock().await;
-        guard.evaluate(None, &agent_code).await
+        guard.eval_sync(&agent_code).await
     };
 
     if let Err(e) = agent_eval_result {
@@ -158,7 +158,7 @@ async fn test_full_integration_package_load_execute() {
 
     let check_result = {
         let mut guard = bridge.lock().await;
-        guard.evaluate(None, check_code).await.unwrap()
+        guard.eval_sync(check_code).await.unwrap()
     };
     let check_obj = check_result.as_object().expect("Expected object");
     let exists_global = check_obj
@@ -194,9 +194,20 @@ async fn test_full_integration_package_load_execute() {
             .expect("invoke onChatMessage")
     };
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-    collect_into_channel_owned(bridge.clone(), session_id, yield_rx, tx, None, None, scope)
-        .await
-        .expect("collect yielded chunks");
+    let (_abort_tx, abort_rx) = tokio::sync::mpsc::channel(1);
+    collect_into_channel_owned(
+        bridge.clone(),
+        session_id,
+        yield_rx,
+        tx,
+        abort_rx,
+        None,
+        None,
+        scope,
+        baml_rt_quickjs::HandoverSender::noop(),
+    )
+    .await
+    .expect("collect yielded chunks");
     let mut chunks = Vec::new();
     let mut completion = None;
     while let Some(output) = rx.recv().await {

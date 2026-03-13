@@ -261,7 +261,13 @@ async fn test_streaming_tool_failure_mid_stream() {
         .unwrap();
 
     let request = send_stream_request("fail-1", "trigger", "corr-1700000000020-1", None);
-    let responses = collect_responses(&agent, request).await.unwrap();
+    let responses = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        collect_responses(&agent, request),
+    )
+    .await
+    .expect("stream must complete within 60s (live stream did not finalize)")
+    .unwrap();
     assert!(
         !responses.is_empty(),
         "stream should return at least one chunk"

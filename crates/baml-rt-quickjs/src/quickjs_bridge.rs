@@ -4,9 +4,9 @@
 //! allowing JavaScript code to invoke BAML functions.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashSet,
     sync::{
-        Arc, Mutex as StdMutex,
+        Arc,
         atomic::{AtomicU32, AtomicU64},
     },
     thread,
@@ -15,6 +15,7 @@ use std::{
 use baml_rt_core::{
     BamlRtError, Result, bus::EffectLiveness, context::InvocationScope, correlation,
 };
+use dashmap::DashMap;
 use quickjs_runtime::{
     builder::QuickJsRuntimeBuilder, facades::QuickJsRuntimeFacade, jsutils::Script,
     values::JsValueFacade,
@@ -25,6 +26,7 @@ use tokio::sync::{Mutex, Semaphore, mpsc};
 use crate::baml::BamlRuntimeManager;
 
 mod baml_registration;
+pub(crate) use baml_registration::ExecutionSession;
 mod eval;
 mod invocation;
 mod js_codegen;
@@ -88,9 +90,12 @@ pub struct QuickJSBridge {
     /// from this map instead of the LIFO `invocation_context_registry`.
     stream_sessions: StreamSessionMap,
     /// Per-session yield senders used by host routing from the active invocation context.
-    a2a_yield_tx_by_session: Arc<StdMutex<HashMap<StreamSessionId, mpsc::UnboundedSender<Value>>>>,
+    a2a_yield_tx_by_session: Arc<DashMap<StreamSessionId, mpsc::UnboundedSender<Value>>>,
     /// Monotonic counter for allocating unique `StreamSessionId` values.
     next_stream_session_id: AtomicU64,
+    /// Shared execution session state (planning FSM). Passed into `register_execution_session_helper`
+    /// and read by `resolve_planning_step` for step coordinate injection.
+    execution_sessions: Arc<DashMap<String, ExecutionSession>>,
 }
 
 impl QuickJSBridge {
@@ -167,16 +172,19 @@ impl QuickJSBridge {
                 .max_attempts_ms
                 .unwrap_or(EffectGatedTimeoutPolicy::DEFAULT_MAX_ATTEMPTS as u64), // Default 30 minutes
             stream_collector_idle_secs: config.stream_collector_idle_secs.unwrap_or(60),
-            invocation_context_registry: Arc::new(StdMutex::new(InvocationContextRegistry::new())),
-            invocation_scope_by_token: Arc::new(StdMutex::new(HashMap::new())),
-            correlation_id_by_token: Arc::new(StdMutex::new(HashMap::new())),
-            eval_results_by_token: Arc::new(StdMutex::new(HashMap::new())),
-            eval_notify_by_token: Arc::new(StdMutex::new(HashMap::new())),
+            invocation_context_registry: Arc::new(std::sync::Mutex::new(
+                InvocationContextRegistry::new(),
+            )),
+            invocation_scope_by_token: Arc::new(DashMap::new()),
+            correlation_id_by_token: Arc::new(DashMap::new()),
+            eval_results_by_token: Arc::new(DashMap::new()),
+            eval_notify_by_token: Arc::new(DashMap::new()),
             stream_semaphore: Arc::new(Semaphore::new(stream_permits.max(1))),
             in_flight_invoke_count: Arc::new(AtomicU32::new(0)),
-            stream_sessions: Arc::new(StdMutex::new(HashMap::new())),
-            a2a_yield_tx_by_session: Arc::new(StdMutex::new(HashMap::new())),
+            stream_sessions: Arc::new(DashMap::new()),
+            a2a_yield_tx_by_session: Arc::new(DashMap::new()),
             next_stream_session_id: AtomicU64::new(1),
+            execution_sessions: Arc::new(DashMap::new()),
         };
 
         // Initialize sandbox - remove dangerous globals and implement safe console
@@ -247,6 +255,9 @@ impl QuickJSBridge {
     }
     pub(crate) fn stream_sessions(&self) -> &StreamSessionMap {
         &self.stream_sessions
+    }
+    pub(crate) fn execution_sessions(&self) -> &Arc<DashMap<String, ExecutionSession>> {
+        &self.execution_sessions
     }
 
     /// Initialize the sandbox environment
@@ -327,6 +338,11 @@ impl QuickJSBridge {
     pub async fn register_baml_functions(&mut self) -> Result<()> {
         tracing::info!("Registering BAML functions with QuickJS");
 
+        {
+            let mut manager = self.baml_manager.lock().await;
+            manager.set_execution_sessions(self.execution_sessions.clone());
+        }
+
         let manager = self.baml_manager.lock().await;
         let functions = manager.list_functions();
         drop(manager); // Release lock before async operation
@@ -335,6 +351,8 @@ impl QuickJSBridge {
         self.register_baml_invoke_helper().await?;
         self.register_baml_stream_helper().await?;
         self.register_await_helper().await?;
+        self.register_step_executor_runtime_helpers().await?;
+        self.register_execution_session_helper().await?;
 
         // Session-aware natives for stream paths (resolve scope from session map).
         self.register_baml_invoke_session_helper().await?;
@@ -360,6 +378,14 @@ impl QuickJSBridge {
     /// This helps with the synchronous eval() limitation
     async fn register_await_helper(&mut self) -> Result<()> {
         baml_registration::register_await_helper(self).await
+    }
+
+    async fn register_step_executor_runtime_helpers(&mut self) -> Result<()> {
+        baml_registration::register_step_executor_runtime_helpers(self).await
+    }
+
+    async fn register_execution_session_helper(&mut self) -> Result<()> {
+        baml_registration::register_execution_session_helper(self).await
     }
 
     /// Register __baml_stream. Tokenless: host resolves scope from active context. JS calls (function_name, args).
@@ -395,13 +421,11 @@ impl QuickJSBridge {
             "const __baml_invocation_token = \"{}\";",
             token.0.replace('\\', "\\\\").replace('"', "\\\"")
         );
-        if let Ok(mut map) = self.invocation_scope_by_token.lock() {
-            map.insert(token.clone(), scope.as_scope().clone());
-        }
-        if let Some(correlation_id) = correlation::current_correlation_id()
-            && let Ok(mut map) = self.correlation_id_by_token.lock()
-        {
-            map.insert(token.clone(), correlation_id);
+        self.invocation_scope_by_token
+            .insert(token.clone(), scope.as_scope().clone());
+        if let Some(correlation_id) = correlation::current_correlation_id() {
+            self.correlation_id_by_token
+                .insert(token.clone(), correlation_id);
         }
         (token, prelude)
     }
@@ -410,12 +434,8 @@ impl QuickJSBridge {
     /// post-invocation cleanup of scope/correlation maps.
     #[allow(dead_code)] // reserved for post-invocation scope/correlation cleanup when re-enabled
     fn remove_invocation_token(&mut self, token: &InvocationToken) {
-        if let Ok(mut map) = self.invocation_scope_by_token.lock() {
-            map.remove(token);
-        }
-        if let Ok(mut map) = self.correlation_id_by_token.lock() {
-            map.remove(token);
-        }
+        self.invocation_scope_by_token.remove(token);
+        self.correlation_id_by_token.remove(token);
     }
 
     /// Run a single script with explicit invocation scope available through token prelude.
@@ -455,6 +475,27 @@ impl QuickJSBridge {
         self.runtime.loop_realm(None, move |_rt, _realm| f()).await
     }
 
+    /// Execute synchronous JavaScript code with no invocation scope.
+    ///
+    /// Use for setup/init code that does not invoke BAML functions or JS tools and
+    /// therefore cannot return a promise that awaits an LLM response. If the code
+    /// returns `"__EVAL_PROMISE_PENDING__"` this will return an error rather than poll.
+    ///
+    /// For concurrent-safe async invocations use [`invoke_js_function_nonblocking`](Self::invoke_js_function_nonblocking).
+    pub async fn eval_sync(&mut self, code: &str) -> Result<Value> {
+        self.evaluate(None, code).await
+    }
+
+    /// Execute JavaScript code that may return a promise, with an explicit invocation scope.
+    ///
+    /// **Only available in test builds.** This holds `&mut self` (and thus the outer
+    /// `Mutex<QuickJSBridge>`) across the polling loop, which blocks concurrent contexts.
+    /// For production concurrent paths use [`eval_brief_lock`](Self::eval_brief_lock).
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn eval_scoped(&mut self, scope: &InvocationScope, code: &str) -> Result<Value> {
+        self.evaluate(Some(scope), code).await
+    }
+
     /// Execute JavaScript code in the QuickJS context.
     ///
     /// The code should return a JSON string or a promise that resolves to a JSON string.
@@ -463,53 +504,32 @@ impl QuickJSBridge {
     /// **Scope:** When `scope` is `Some`, we push it on the host invocation-context stack so
     /// native callbacks resolve scope tokenlessly. We also create an eval token for result
     /// tracking. Cleanup is guarded so it always runs on success, error, or cancellation.
-    pub async fn evaluate(&mut self, scope: Option<&InvocationScope>, code: &str) -> Result<Value> {
+    pub(crate) async fn evaluate(
+        &mut self,
+        scope: Option<&InvocationScope>,
+        code: &str,
+    ) -> Result<Value> {
         tracing::trace!(code = code, "Executing JavaScript code");
 
-        // Enter host invocation context so natives can resolve scope without a token from JS.
-        let context_id_to_exit: Option<InvocationContextId> = if let Some(s) = scope {
-            let correlation_id = correlation::current_correlation_id();
-            let mut guard = self.invocation_context_registry.lock().map_err(|_| {
-                BamlRtError::QuickJs("invocation context registry lock poisoned".to_string())
-            })?;
-            Some(guard.enter(s.as_scope().clone(), correlation_id))
-        } else {
-            None
+        // Scoped path: use the brief-poll pattern so the bridge lock is released before
+        // the promise-polling loop. This allows concurrent contexts on the same agent
+        // to make progress (LLM calls, tool sessions, drain iterations) while one
+        // context is awaiting an LLM or BAML result in the poll loop.
+        if let Some(scope) = scope {
+            let prepared = self.prepare_brief_poll_eval(scope, code)?;
+            // `&mut self` is released here — all polling runs lock-free below.
+            let eval_result = QuickJSBridge::run_prepared_brief_poll_eval(prepared).await?;
+            return Self::resolve_eval_once_result(eval_result, scope).await;
+        }
+
+        // scope=None fast-path: no promise polling expected (e.g. evaluate_js ad-hoc code).
+        let direct_code = {
+            let code_expr_body = eval::normalize_code_to_expr_body(code);
+            let token_literal = format!("__noscope_{}", next_invocation_token().0);
+            eval::build_eval_direct_code(&code_expr_body, &token_literal)
         };
-
-        let eval_token = next_invocation_token();
-        let mut lifecycle_guard = EvalLifecycleGuard::new(
-            self.eval_results_by_token.clone(),
-            self.invocation_context_registry.clone(),
-            eval_token.clone(),
-            context_id_to_exit,
-            self.baml_manager.clone(),
-        );
-
-        {
-            let mut guard = self
-                .eval_results_by_token
-                .lock()
-                .map_err(|_| BamlRtError::QuickJs("eval_results lock poisoned".to_string()))?;
-            if guard.contains_key(&eval_token) {
-                return Err(BamlRtError::QuickJs("eval token collision".to_string()));
-            }
-            guard.insert(eval_token.clone(), None);
-        }
-        lifecycle_guard.mark_eval_slot_registered();
-
-        let code_expr_body = eval::normalize_code_to_expr_body(code);
-        let token_literal = eval_token.0.replace('\\', "\\\\").replace('"', "\\\"");
-        let direct_code = eval::build_eval_direct_code(&code_expr_body, &token_literal);
         let direct_script = Script::new("eval_direct.js", &direct_code);
-        let js_result = match scope {
-            Some(s) => {
-                self.run_eval_with_scope(s, direct_script.clone(), scope::ClearPolicy::Clear)
-                    .await
-            }
-            None => self.runtime.eval(None, direct_script).await,
-        }
-        .map_err(|e| {
+        let js_result = self.runtime.eval(None, direct_script).await.map_err(|e| {
             let message = e.to_string();
             BamlRtError::QuickJsWithSource {
                 context: format!("Failed to execute JavaScript: {}", message),
@@ -518,55 +538,61 @@ impl QuickJSBridge {
         })?;
 
         if !js_result.is_string() {
-            // Non-string result (rare edge cases such as unserializable values).
             return Ok(serde_json::json!({}));
         }
-
         let json_str = js_result.get_str();
-        if json_str != "__EVAL_PROMISE_PENDING__" {
-            // Sync fast-path: parse JSON; if it's a plain string, keep compatibility.
-            if let Ok(parsed) = serde_json::from_str::<Value>(json_str) {
-                return Ok(parsed);
-            }
-            return Ok(serde_json::json!({ "result": json_str }));
-        }
-
-        // Promise path: wait for __set_eval_result(token, json) from inline handlers above.
-        let invocation_scope = scope.ok_or_else(|| {
-            BamlRtError::QuickJs(
+        if json_str == "__EVAL_PROMISE_PENDING__" {
+            return Err(BamlRtError::QuickJs(
                 "Promise polling requires invocation scope; evaluate(scope=None) must not await promises"
                     .to_string(),
-            )
-        })?;
-        let result_str =
-            promise_polling::poll_promise_until_result(promise_polling::PollPromiseParams {
-                runtime: Some(Arc::clone(&self.runtime)),
-                eval_results_by_token: &self.eval_results_by_token,
-                eval_token: &eval_token,
-                token_to_remove: None,
-                invocation_scope_by_token: &self.invocation_scope_by_token,
-                scope: invocation_scope,
-                effect_liveness: self.effect_liveness.clone(),
-                idle_timeout_ms: self.idle_timeout_ms,
-                max_attempts_ms: self.max_attempts_ms,
-                run_pending_jobs_brief: None,
-                result_notify: None,
-            })
-            .await?;
+            ));
+        }
+        if let Ok(parsed) = serde_json::from_str::<Value>(json_str) {
+            return Ok(parsed);
+        }
+        Ok(serde_json::json!({ "result": json_str }))
+    }
 
-        serde_json::from_str(result_str.as_str()).map_err(|e| {
-            let len = result_str.len();
-            let prefix = result_str
-                .get(..50.min(len))
-                .unwrap_or("")
-                .replace('\n', "\\n")
-                .replace('\r', "\\r");
-            BamlRtError::JsonWithRaw {
-                source: e,
-                raw_length: len,
-                raw_prefix: prefix,
+    /// Resolve an [`EvalOnceResult`]: for sync results return directly; for pending promises
+    /// run the poll loop lock-free using the `BriefPollParams` from the setup step.
+    async fn resolve_eval_once_result(
+        eval_result: EvalOnceResult,
+        scope: &InvocationScope,
+    ) -> Result<Value> {
+        match eval_result {
+            EvalOnceResult::Sync(value) => Ok(value),
+            EvalOnceResult::PromisePending(params) => {
+                let result_str = promise_polling::poll_promise_until_result(
+                    promise_polling::PollPromiseParams {
+                        runtime: Some(params.runtime.clone()),
+                        eval_results_by_token: &params.eval_results_by_token,
+                        eval_token: &params.eval_token,
+                        token_to_remove: None,
+                        invocation_scope_by_token: &params.invocation_scope_by_token,
+                        scope,
+                        effect_liveness: params.effect_liveness.clone(),
+                        idle_timeout_ms: params.idle_timeout_ms,
+                        max_attempts_ms: params.max_attempts_ms,
+                        run_pending_jobs_brief: None,
+                        result_notify: Some(params.result_notify.clone()),
+                    },
+                )
+                .await?;
+                serde_json::from_str(result_str.as_str()).map_err(|e| {
+                    let len = result_str.len();
+                    let prefix = result_str
+                        .get(..50.min(len))
+                        .unwrap_or("")
+                        .replace('\n', "\\n")
+                        .replace('\r', "\\r");
+                    BamlRtError::JsonWithRaw {
+                        source: e,
+                        raw_length: len,
+                        raw_prefix: prefix,
+                    }
+                })
             }
-        })
+        }
     }
 
     /// Prepares eval for brief-poll path (sync only). Caller runs the eval without holding the bridge lock.
@@ -592,16 +618,10 @@ impl QuickJSBridge {
             self.baml_manager.clone(),
         );
 
-        {
-            let mut guard = self
-                .eval_results_by_token
-                .lock()
-                .map_err(|_| BamlRtError::QuickJs("eval_results lock poisoned".to_string()))?;
-            if guard.contains_key(&eval_token) {
-                return Err(BamlRtError::QuickJs("eval token collision".to_string()));
-            }
-            guard.insert(eval_token.clone(), None);
+        if self.eval_results_by_token.contains_key(&eval_token) {
+            return Err(BamlRtError::QuickJs("eval token collision".to_string()));
         }
+        self.eval_results_by_token.insert(eval_token.clone(), None);
         lifecycle_guard.mark_eval_slot_registered();
 
         let code_expr_body = eval::normalize_code_to_expr_body(code);
@@ -609,12 +629,8 @@ impl QuickJSBridge {
         let direct_code = eval::build_eval_direct_code(&code_expr_body, &token_literal);
         let direct_script = Script::new("eval_direct.js", &direct_code);
         let result_notify = Arc::new(tokio::sync::Notify::new());
-        {
-            let mut guard = self.eval_notify_by_token.lock().map_err(|_| {
-                BamlRtError::QuickJs("eval_notify_by_token lock poisoned".to_string())
-            })?;
-            guard.insert(eval_token.clone(), Arc::clone(&result_notify));
-        }
+        self.eval_notify_by_token
+            .insert(eval_token.clone(), Arc::clone(&result_notify));
         Ok(PreparedBriefPollEval {
             direct_script,
             scope: scope.clone(),
@@ -680,78 +696,61 @@ impl QuickJSBridge {
         Ok(EvalOnceResult::PromisePending(Box::new(params)))
     }
 
-    /// Invoke a BAML function by name.
+    /// Lock briefly for setup, release the lock, then poll to completion.
     ///
-    /// This is a helper method that generates and executes JavaScript code to:
-    /// 1. Call the BAML runtime via __baml_invoke
-    /// 2. Handle promises correctly using __awaitAndStringify
-    ///
-    /// # Arguments
-    /// * `function_name` - Name of the function to invoke
-    /// * `args` - JSON arguments to pass to the function
-    ///
-    /// # Returns
-    /// The result of the function call, either as a string (for successful calls)
-    /// or as an error object if the call failed.
-    ///
-    /// **Scope:** Requires an invocation scope (e.g. run inside `context::with_scope`). A per-invocation
-    /// token is bound for `__baml_invoke` calls within the eval scope.
-    pub async fn invoke_function(
-        &mut self,
+    /// This is the canonical pattern for concurrent contexts: the `Mutex<QuickJSBridge>` is
+    /// released before the promise-polling loop so other contexts can make progress (LLM calls,
+    /// tool sessions, drain iterations) while this one awaits an async result.
+    pub async fn eval_brief_lock(
+        bridge: Arc<Mutex<Self>>,
+        scope: &InvocationScope,
+        js_code: &str,
+    ) -> Result<Value> {
+        let prepared = {
+            let mut guard = bridge.lock().await;
+            guard.prepare_brief_poll_eval(scope, js_code)?
+        }; // MutexGuard dropped here — bridge lock released before polling
+        let eval_result = Self::run_prepared_brief_poll_eval(prepared).await?;
+        Self::resolve_eval_once_result(eval_result, scope).await
+    }
+
+    /// Invoke a JS global function (e.g. `onChatMessage`) with the brief-lock pattern.
+    /// The bridge lock is released before the promise-polling loop so concurrent contexts
+    /// are not blocked behind this invocation's LLM/BAML awaits.
+    pub async fn invoke_js_function_nonblocking(
+        bridge: Arc<Mutex<Self>>,
         scope: &InvocationScope,
         function_name: &str,
         args: Value,
     ) -> Result<Value> {
         let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
-        let js_code = invocation::build_baml_invoke_js_code(function_name, &args_json);
-
+        let js_code = invocation::build_js_function_invoke_js_code(function_name, &args_json);
         if correlation::current_correlation_id().is_some() {
-            self.evaluate(Some(scope), &js_code).await
+            Self::eval_brief_lock(bridge, scope, &js_code).await
         } else {
-            let correlation_id = correlation::generate_correlation_id();
-            correlation::with_correlation_id(correlation_id, async {
-                self.evaluate(Some(scope), &js_code).await
-            })
-            .await
+            let cid = correlation::generate_correlation_id();
+            correlation::with_correlation_id(cid, Self::eval_brief_lock(bridge, scope, &js_code))
+                .await
         }
     }
 
-    /// Invoke a JavaScript tool by name.
-    ///
-    /// This only executes a JavaScript function from globalThis and does not fall back to BAML.
-    /// Requires an invocation scope (e.g. run inside `context::with_scope`) so that
-    /// a per-invocation token is available for nested __tool_invoke / __baml_invoke calls.
-    pub async fn invoke_js_tool(
-        &mut self,
-        invocation_scope: &InvocationScope,
-        tool_name: &str,
-        args: Value,
-    ) -> Result<Value> {
-        self.invoke_js_tool_with_scope(invocation_scope, tool_name, args)
-            .await
-    }
-
-    /// Invoke a JavaScript tool with an explicit scope.
-    ///
-    /// Use when scope is not task-local (e.g. when running on the A2A handover lane after
-    /// capturing scope). Same behavior as [`invoke_js_tool`](Self::invoke_js_tool).
-    pub async fn invoke_js_tool_with_scope(
-        &mut self,
-        invocation_scope: &InvocationScope,
+    /// Invoke a JS tool with the brief-lock pattern.
+    /// The bridge lock is released before the promise-polling loop so concurrent contexts
+    /// are not blocked behind this invocation's async tool execution.
+    pub async fn invoke_js_tool_nonblocking(
+        bridge: Arc<Mutex<Self>>,
+        scope: &InvocationScope,
         tool_name: &str,
         args: Value,
     ) -> Result<Value> {
         let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
         let js_code = invocation::build_js_tool_invoke_js_code(tool_name, &args_json);
-
         if correlation::current_correlation_id().is_some() {
-            self.evaluate(Some(invocation_scope), &js_code).await
+            Self::eval_brief_lock(bridge, scope, &js_code).await
         } else {
-            let correlation_id = correlation::generate_correlation_id();
-            correlation::with_correlation_id(correlation_id, async {
-                self.evaluate(Some(invocation_scope), &js_code).await
-            })
-            .await
+            let cid = correlation::generate_correlation_id();
+            correlation::with_correlation_id(cid, Self::eval_brief_lock(bridge, scope, &js_code))
+                .await
         }
     }
 
@@ -780,8 +779,6 @@ impl QuickJSBridge {
                 let guard = bridge.lock().await;
                 guard
                     .stream_sessions
-                    .lock()
-                    .map_err(|_| BamlRtError::QuickJs("stream_sessions lock poisoned".to_string()))?
                     .get(&session_id)
                     .map(|s| s.scope.clone())
                     .ok_or_else(|| {
@@ -936,39 +933,6 @@ impl QuickJSBridge {
                 "resume: deliver input end"
             );
             result
-        }
-    }
-
-    /// **INVARIANT:** For non-stream functions, the promise MUST resolve within bounded time.
-    /// For stream functions, use `invoke_js_function_stream()` instead.
-    pub async fn invoke_js_function(
-        &mut self,
-        scope: &InvocationScope,
-        function_name: &str,
-        args: Value,
-    ) -> Result<Value> {
-        let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
-        let js_code = invocation::build_js_function_invoke_js_code(function_name, &args_json);
-
-        let result = if correlation::current_correlation_id().is_some() {
-            self.evaluate(Some(scope), &js_code).await
-        } else {
-            let correlation_id = correlation::generate_correlation_id();
-            correlation::with_correlation_id(correlation_id, async {
-                self.evaluate(Some(scope), &js_code).await
-            })
-            .await
-        }?;
-
-        match &result {
-            Value::Object(map) if map.get("error").is_some() => Err(BamlRtError::QuickJs(format!(
-                "JS function invocation error ({}): {}",
-                function_name,
-                map.get("error")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown")
-            ))),
-            _ => Ok(result),
         }
     }
 

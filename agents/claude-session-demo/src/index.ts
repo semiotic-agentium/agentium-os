@@ -7,10 +7,34 @@ declare function ChooseClaudeDevAction(args: {
   validation_criteria_json: string;
   last_tool_output: string;
   user_approval_intent: string;
+  session_context?: unknown;
 }): Promise<unknown>;
 declare function SummarizeDevWorkInPersonality(args: {
   session_report: string;
 }): Promise<string>;
+declare function openA2aExecutionSession(token: string): Promise<{
+  submitIntent: (intent: {
+    intentId: string;
+    description: string;
+    derivedFromMessageIds: string[];
+  }) => Promise<{
+    submitPlan: (plan: {
+      intentId: string;
+      planId: string;
+      steps: Array<{
+        stepId: string;
+        description: string;
+        order: number;
+        dependsOn: string[];
+      }>;
+    }) => Promise<{
+      startStep?: (stepId: string, evidenceText: string) => Promise<unknown>;
+      completeStep?: (stepId: string, evidenceText: string) => Promise<unknown>;
+      finish: () => Promise<unknown>;
+      abort?: (reason: string) => Promise<unknown>;
+    }>;
+  }>;
+}>;
 
 // --- BAML return types and guards ---
 type NeedMoreInput = { question: string };
@@ -66,6 +90,14 @@ type ClaudeNextOutput = { events?: ClaudeEvent[]; completion?: ClaudeCompletion 
 
 const MAX_REQUIREMENTS_TURNS = 5;
 const MAX_DEV_ACTIONS = 40;
+
+function executionMessageId(message: unknown): string {
+  if (isObject(message)) {
+    if (typeof message.messageId === "string" && message.messageId.trim().length > 0) return message.messageId;
+    if (typeof message.id === "string" && message.id.trim().length > 0) return message.id;
+  }
+  return "msg-claude-session-fallback";
+}
 
 function asNextOutput(value: unknown): ClaudeNextOutput {
   if (isObject(value) && Array.isArray((value as ClaudeNextOutput).events)) {
@@ -141,10 +173,40 @@ function formatLastToolOutputFromChunks(chunks: ClaudeNextOutput[]): string {
   return parts.join("\n\n").trim() || "";
 }
 
+function formatLastToolOutputFromExecutorRun(rawRun: unknown): string {
+  const candidates: unknown[] = [];
+  if (isObject(rawRun)) {
+    const run = rawRun as { last?: unknown; steps?: unknown[] };
+    candidates.push(run.last);
+    if (Array.isArray(run.steps)) {
+      candidates.push(...run.steps.slice().reverse());
+    }
+  } else {
+    candidates.push(rawRun);
+  }
+
+  for (const candidate of candidates) {
+    if (candidate == null) continue;
+    const rendered = formatLastToolOutputFromChunks(asChunkArray(candidate));
+    if (rendered.length > 0) return rendered;
+  }
+  return "";
+}
+
 __chat_register({
   run: async (ctx) => {
+    let executionExecutable: {
+      startStep?: (stepId: string, evidenceText: string) => Promise<unknown>;
+      completeStep?: (stepId: string, evidenceText: string) => Promise<unknown>;
+      finish: () => Promise<unknown>;
+      abort?: (reason: string) => Promise<unknown>;
+    } | null = null;
     try {
       let currentUserMessage = ctx.text?.trim() ?? "";
+      const executionSession = typeof openA2aExecutionSession === "function"
+        ? await openA2aExecutionSession("claude-session-" + Date.now().toString())
+        : null;
+      const messageId = executionMessageId(ctx.message);
 
       // ---------- Phase 1: Requirements ----------
       let requirementsSummary: string | undefined;
@@ -171,6 +233,16 @@ __chat_register({
         };
       }
 
+      const intentDescription =
+        "Translate user requirements into implementation spec and execute iterative development workflow.";
+      const intentPhase = executionSession
+        ? await executionSession.submitIntent({
+            intentId: "intent-claude-dev-workflow",
+            description: intentDescription,
+            derivedFromMessageIds: [messageId],
+          })
+        : null;
+
       // Report requirements back to the user before writing the spec.
       const requirementsMessage = [
         "--- Requirements ---",
@@ -189,6 +261,52 @@ __chat_register({
         return { error: "Spec phase returned an invalid specification." };
       }
       const spec = specResult;
+
+      if (intentPhase != null) {
+        executionExecutable = await intentPhase.submitPlan({
+          intentId: "intent-claude-dev-workflow",
+          planId: "plan-claude-dev-workflow",
+          steps: [
+            {
+              stepId: "step-requirements",
+              description: "Gather and validate software requirements.",
+              order: 0,
+              dependsOn: [],
+            },
+            {
+              stepId: "step-specification",
+              description: "Produce implementation specification and validation criteria.",
+              order: 1,
+              dependsOn: ["step-requirements"],
+            },
+            {
+              stepId: "step-development",
+              description: "Execute claude/dev workflow and deliver final report.",
+              order: 2,
+              dependsOn: ["step-specification"],
+            },
+          ],
+        });
+      }
+
+      if (executionExecutable != null) {
+        await executionExecutable.startStep?.(
+          "step-requirements",
+          "Requirements synthesis started.",
+        );
+        await executionExecutable.completeStep?.(
+          "step-requirements",
+          "Requirements captured and validated.",
+        );
+        await executionExecutable.startStep?.(
+          "step-specification",
+          "Specification drafting started from validated requirements.",
+        );
+        await executionExecutable.completeStep?.(
+          "step-specification",
+          "Specification and validation criteria produced.",
+        );
+      }
 
       // Send the plan to the user in one message (so the client cannot show only the follow-up line).
       const planMessage = [
@@ -211,56 +329,65 @@ __chat_register({
       // Yield so the stream collector can drain and forward the plan chunks to the client before the long ChooseClaudeDevAction/tool session runs.
       await Promise.resolve()
 
-      // ---------- Tool session: pure BAML-driven iteration. ChooseClaudeDevAction decides each step (Report | AskUser | session plan). TS only applies the result and updates context. ----------
+      // ---------- Tool session: host-driven step executor loop (same pattern as coordinator agents). ----------
       const validationCriteriaJson = JSON.stringify(spec.validation_criteria);
       let lastToolOutput = "";
       const messageParts = (ctx.message as { parts?: unknown })?.parts;
       let userApprovalIntent = userApprovalIntentFromParts(messageParts);
+      if (executionExecutable != null) {
+        await executionExecutable.startStep?.(
+          "step-development",
+          "Development session delegation started.",
+        );
+      }
 
-      for (let step = 0; step < MAX_DEV_ACTIONS; step++) {
-        const result = await ChooseClaudeDevAction({
-          spec_text: spec.specification_text,
-          validation_criteria_json: validationCriteriaJson,
-          last_tool_output: lastToolOutput,
-          user_approval_intent: userApprovalIntent,
-        });
+      for (let operatorRound = 0; operatorRound < MAX_DEV_ACTIONS; operatorRound++) {
+        const run = await runGeneratedStepExecutor(
+          "ChooseClaudeDevAction",
+          {
+            spec_text: spec.specification_text,
+            validation_criteria_json: validationCriteriaJson,
+            last_tool_output: lastToolOutput,
+            user_approval_intent: userApprovalIntent,
+          },
+          { max_steps: MAX_DEV_ACTIONS },
+        );
 
+        const result = isObject(run) ? (run as { last?: unknown }).last : run;
         if (isClaudeDevReport(result)) {
+          if (executionExecutable != null) {
+            await executionExecutable.completeStep?.(
+              "step-development",
+              "Delegated development completed with final report.",
+            );
+            await executionExecutable.finish();
+          }
           const summary = await SummarizeDevWorkInPersonality({
             session_report: result.message,
           });
           return { message: summary };
         }
 
+        lastToolOutput = formatLastToolOutputFromExecutorRun(run);
+
         if (isClaudeDevAskUser(result)) {
-          // AskUser when last_tool_output is empty is invalid (BAML rule: never AskUser on first call). Retry once.
-          if (lastToolOutput === "") {
-            const retryResult = await ChooseClaudeDevAction({
-              spec_text: spec.specification_text,
-              validation_criteria_json: validationCriteriaJson,
-              last_tool_output: lastToolOutput,
-              user_approval_intent: userApprovalIntent,
-            });
-            if (isClaudeDevReport(retryResult)) {
-              const summary = await SummarizeDevWorkInPersonality({
-                session_report: retryResult.message,
-              });
-              return { message: summary };
-            }
-            if (!isClaudeDevAskUser(retryResult)) {
-              lastToolOutput = formatLastToolOutputFromChunks(asChunkArray(retryResult));
-              continue;
-            }
-          }
           const neutralPrompt = "Your next message will be sent to Claude.";
           ctx.emit.message(neutralPrompt);
           const reply = await ctx.emit.awaitInput(neutralPrompt);
           userApprovalIntent = userApprovalIntentFromParts((reply as { parts?: unknown })?.parts);
+          if (!userApprovalIntent) {
+            // Preserve free-text operator replies for the next hop.
+            lastToolOutput = [
+              lastToolOutput,
+              "[operator_reply]",
+              messageText(reply) || "",
+            ]
+              .filter((part) => part.length > 0)
+              .join("\n")
+              .trim();
+          }
           continue;
         }
-
-        // Session plan was executed by runtime; tool output is in result. Client already got toolStreamChunk events.
-        lastToolOutput = formatLastToolOutputFromChunks(asChunkArray(result));
       }
 
       return {
@@ -268,6 +395,13 @@ __chat_register({
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      if (executionExecutable != null) {
+        try {
+          await executionExecutable.abort?.("Claude session workflow aborted: " + msg);
+        } catch (_) {
+          // Best-effort abort only.
+        }
+      }
       return {
         error: `An error occurred: ${msg}`,
       };

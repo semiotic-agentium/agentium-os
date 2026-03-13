@@ -11,6 +11,7 @@ use baml_rt::{
     A2aAgent, QuickJSConfig,
     baml::BamlRuntimeManager,
     interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor},
+    quickjs_bridge::QuickJSBridge,
 };
 use baml_rt_core::{
     bus::{BusWithEffects, EffectEmitter, EffectLiveness},
@@ -39,7 +40,6 @@ impl LLMInterceptor for StubChooseCalcToolInterceptor {
         if context.function_name == "ChooseCalcTool" {
             Ok(InterceptorDecision::Substitute(json!({
                 "steps": [
-                    { "op": "Open", "reason": "stub open" },
                     {
                         "op": "Send",
                         "input": {
@@ -50,9 +50,7 @@ impl LLMInterceptor for StubChooseCalcToolInterceptor {
                             }
                         },
                         "reason": "stub send"
-                    },
-                    { "op": "Next", "reason": "stub next" },
-                    { "op": "Finish", "reason": "stub finish" }
+                    }
                 ]
             })))
         } else {
@@ -112,18 +110,17 @@ async fn test_baml_function_returns_actual_result() {
     let bridge_handle = agent.bridge();
     let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
     let result = context::with_scope(scope.as_scope().clone(), async {
-        let mut bridge = bridge_handle.lock().await;
-        bridge
-            .invoke_function(
-                &scope,
-                "ChooseCalcTool",
-                json!({"user_message": "compute 2+3"}),
-            )
-            .await
+        QuickJSBridge::invoke_js_function_nonblocking(
+            bridge_handle.clone(),
+            &scope,
+            "ChooseCalcTool",
+            json!({"user_message": "compute 2+3"}),
+        )
+        .await
     })
     .await;
 
-    // Contract assertion: Result must be the actual value (plan with "steps" or tool output with "result"/"formatted"), not a wrapper
+    // Contract assertion: Result must be the actual value (strict status, plan, or tool output), not a wrapper.
     match result {
         Ok(val) => {
             assert!(
@@ -139,9 +136,25 @@ async fn test_baml_function_returns_actual_result() {
             );
             let has_steps = val.get("steps").and_then(|v| v.as_array()).is_some();
             let has_tool_output = obj.contains_key("result") || obj.contains_key("formatted");
+            let has_strict_status = val
+                .get("status")
+                .and_then(|v| v.as_str())
+                .map(|s| {
+                    matches!(
+                        s,
+                        "open"
+                            | "sent"
+                            | "streaming"
+                            | "suspended"
+                            | "done"
+                            | "finished"
+                            | "aborted"
+                    )
+                })
+                .unwrap_or(false);
             assert!(
-                has_steps || has_tool_output,
-                "Expected object with 'steps' (plan) or 'result'/'formatted' (tool output), got: {:?}",
+                has_steps || has_tool_output || has_strict_status,
+                "Expected object with strict status, 'steps' (plan), or 'result'/'formatted' (tool output), got: {:?}",
                 val
             );
         }
@@ -190,13 +203,16 @@ async fn test_js_function_invocation_returns_actual_result() {
         .unwrap();
     wire_bridge_effect_liveness(&agent, effect_bus).await;
     let bridge_handle = agent.bridge();
-    let mut bridge = bridge_handle.lock().await;
     let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
 
     let result = context::with_scope(scope.as_scope().clone(), async {
-        bridge
-            .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
-            .await
+        QuickJSBridge::invoke_js_function_nonblocking(
+            bridge_handle.clone(),
+            &scope,
+            "getCalcPlan",
+            json!({"message": "compute 2+3"}),
+        )
+        .await
     })
     .await;
 
@@ -215,9 +231,25 @@ async fn test_js_function_invocation_returns_actual_result() {
             );
             let has_steps = val.get("steps").and_then(|v| v.as_array()).is_some();
             let has_tool_output = obj.contains_key("result") || obj.contains_key("formatted");
+            let has_strict_status = val
+                .get("status")
+                .and_then(|v| v.as_str())
+                .map(|s| {
+                    matches!(
+                        s,
+                        "open"
+                            | "sent"
+                            | "streaming"
+                            | "suspended"
+                            | "done"
+                            | "finished"
+                            | "aborted"
+                    )
+                })
+                .unwrap_or(false);
             assert!(
-                has_steps || has_tool_output,
-                "Expected object with 'steps' or 'result'/'formatted', got: {:?}",
+                has_steps || has_tool_output || has_strict_status,
+                "Expected object with strict status, 'steps', or 'result'/'formatted', got: {:?}",
                 val
             );
         }
@@ -266,13 +298,16 @@ async fn test_invoke_function_api_contract() {
         .unwrap();
     wire_bridge_effect_liveness(&agent, effect_bus).await;
     let bridge_handle = agent.bridge();
-    let mut bridge = bridge_handle.lock().await;
     let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
 
     let result = context::with_scope(scope.as_scope().clone(), async {
-        bridge
-            .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
-            .await
+        QuickJSBridge::invoke_js_function_nonblocking(
+            bridge_handle.clone(),
+            &scope,
+            "getCalcPlan",
+            json!({"message": "compute 2+3"}),
+        )
+        .await
     })
     .await;
 
@@ -291,9 +326,25 @@ async fn test_invoke_function_api_contract() {
             );
             let has_steps = val.get("steps").and_then(|v| v.as_array()).is_some();
             let has_tool_output = obj.contains_key("result") || obj.contains_key("formatted");
+            let has_strict_status = val
+                .get("status")
+                .and_then(|v| v.as_str())
+                .map(|s| {
+                    matches!(
+                        s,
+                        "open"
+                            | "sent"
+                            | "streaming"
+                            | "suspended"
+                            | "done"
+                            | "finished"
+                            | "aborted"
+                    )
+                })
+                .unwrap_or(false);
             assert!(
-                has_steps || has_tool_output,
-                "Expected object with 'steps' or 'result'/'formatted', got: {:?}",
+                has_steps || has_tool_output || has_strict_status,
+                "Expected object with strict status, 'steps', or 'result'/'formatted', got: {:?}",
                 val
             );
         }
@@ -356,13 +407,16 @@ async fn test_loaded_agent_invoke_function_contract() {
         .unwrap();
     wire_bridge_effect_liveness(&agent, effect_bus).await;
     let bridge_handle = agent.bridge();
-    let mut bridge = bridge_handle.lock().await;
     let scope = InvocationScope::synthetic_message(agent.agent_id().clone());
 
     let result = context::with_scope(scope.as_scope().clone(), async {
-        bridge
-            .invoke_js_function(&scope, "getCalcPlan", json!({"message": "compute 2+3"}))
-            .await
+        QuickJSBridge::invoke_js_function_nonblocking(
+            bridge_handle.clone(),
+            &scope,
+            "getCalcPlan",
+            json!({"message": "compute 2+3"}),
+        )
+        .await
     })
     .await;
 
@@ -381,9 +435,25 @@ async fn test_loaded_agent_invoke_function_contract() {
             );
             let has_steps = val.get("steps").and_then(|v| v.as_array()).is_some();
             let has_tool_output = obj.contains_key("result") || obj.contains_key("formatted");
+            let has_strict_status = val
+                .get("status")
+                .and_then(|v| v.as_str())
+                .map(|s| {
+                    matches!(
+                        s,
+                        "open"
+                            | "sent"
+                            | "streaming"
+                            | "suspended"
+                            | "done"
+                            | "finished"
+                            | "aborted"
+                    )
+                })
+                .unwrap_or(false);
             assert!(
-                has_steps || has_tool_output,
-                "Expected object with 'steps' or 'result'/'formatted', got: {:?}",
+                has_steps || has_tool_output || has_strict_status,
+                "Expected object with strict status, 'steps', or 'result'/'formatted', got: {:?}",
                 val
             );
         }

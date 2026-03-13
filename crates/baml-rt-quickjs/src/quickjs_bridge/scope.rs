@@ -179,15 +179,15 @@ pub(crate) fn resolve_scope_from_session(
     (RuntimeScope, std::sync::Arc<super::StreamInvocationSession>),
     quickjs_runtime::jsutils::JsError,
 > {
-    let guard = sessions.lock().map_err(|_| {
-        quickjs_runtime::jsutils::JsError::new_str("stream session map lock poisoned")
-    })?;
-    let session = guard.get(&session_id).cloned().ok_or_else(|| {
-        quickjs_runtime::jsutils::JsError::new_str(&format!(
-            "Stream session {} not found (already finalized or never created)",
-            session_id
-        ))
-    })?;
+    let session = sessions
+        .get(&session_id)
+        .map(|r| r.clone())
+        .ok_or_else(|| {
+            quickjs_runtime::jsutils::JsError::new_str(&format!(
+                "Stream session {} not found (already finalized or never created)",
+                session_id
+            ))
+        })?;
     if session.is_terminated() {
         return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
             "Stream session {} has been cancelled or closed",

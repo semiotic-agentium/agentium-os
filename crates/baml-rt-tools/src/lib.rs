@@ -5,6 +5,7 @@ pub mod bundles;
 pub mod config_resolver;
 pub mod host_registration;
 mod metrics;
+pub mod prompt_projection;
 pub mod session_coordination;
 mod spans;
 pub mod tool_catalog;
@@ -30,9 +31,9 @@ pub use tool_fsm::{
 };
 pub use tool_schema::{ToolType, json_schema_value, ts_decl, ts_name};
 pub use tools::{
-    BamlTool, BundleName, LocalToolName, SecretRequest, SecretType, ToolAccess, ToolBundle,
-    ToolBundleMetadata, ToolCapability, ToolConfigMetadata, ToolDiscoveryRecord, ToolExecutor,
-    ToolFunctionMetadataExport, ToolHandler, ToolMetadataBuilder, ToolName, ToolOrigin,
-    ToolRegistry, ToolSessionAdvance, ToolSessionHandle, ToolTypeSpec, TypeBasedMetadataBuilder,
-    create_multi_send_session_tool_from_async, parse_tool_name_and_class,
+    BamlTool, BundleName, LocalToolName, SecretRequest, SecretType, SessionPolicy, ToolAccess,
+    ToolBundle, ToolBundleMetadata, ToolCapability, ToolConfigMetadata, ToolDiscoveryRecord,
+    ToolExecutor, ToolFunctionMetadataExport, ToolHandler, ToolMetadataBuilder, ToolName,
+    ToolOrigin, ToolRegistry, ToolSessionAdvance, ToolSessionHandle, ToolTypeSpec,
+    TypeBasedMetadataBuilder, create_multi_send_session_tool_from_async, parse_tool_name_and_class,
 };

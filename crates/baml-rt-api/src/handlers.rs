@@ -34,6 +34,7 @@ use crate::{
     mermaid::MermaidError,
     metrics,
     openapi::AgentDiscoveryEntryDto,
+    planning::{ContextPlanningResponse, PlanningError},
     provenance_ops::ProvenanceOpsError,
     spans,
 };
@@ -41,7 +42,7 @@ use crate::{
 /// HTTP result type for handlers that return RFC 7807 problem details on error.
 type HttpResult<T> = Result<T, HttpApiProblem>;
 
-/// Build HttpApiProblem for known-valid status codes (400, 404, 500 per RFC 7231).
+/// Build HttpApiProblem for known-valid status codes (400, 404, 409, 500 per RFC 7231).
 /// Caller must only pass these codes; unwrap is justified here with this invariant.
 fn problem(status: u16, title: &str, detail: impl Into<String>) -> HttpApiProblem {
     HttpApiProblem::try_new(status)
@@ -52,6 +53,7 @@ fn problem(status: u16, title: &str, detail: impl Into<String>) -> HttpApiProble
 
 fn result_label_for_domain_error(error: &BamlRtError) -> &'static str {
     match error {
+        BamlRtError::Conflict(_) => "conflict",
         BamlRtError::InvalidArgument(msg) if msg.contains("not found") => "not_found",
         BamlRtError::InvalidArgument(_) => "bad_request",
         BamlRtError::SessionLifecycle(
@@ -173,6 +175,7 @@ pub async fn post_a2a(
     responses(
         (status = 200, description = "SSE stream of JSON-RPC responses", content_type = "text/event-stream"),
         (status = 400, description = "Malformed request"),
+        (status = 409, description = "Conflicting concurrent stream request"),
         (status = 404, description = "Agent not found"),
         (status = 500, description = "Internal error")
     )
@@ -431,6 +434,64 @@ pub async fn get_context_metrics(
     }
 }
 
+/// Get context-scoped planning state (intent/plan/step progress) from provenance.
+#[utoipa::path(
+    get,
+    path = "/contexts/{context_id}/planning",
+    tag = "provenance",
+    params(
+        ("context_id" = String, Path, description = "A2A context id")
+    ),
+    responses(
+        (status = 200, description = "Context planning snapshot", body = Value),
+        (status = 404, description = "No planning data found for context"),
+        (status = 501, description = "Planning service unavailable"),
+        (status = 500, description = "Internal error"),
+    )
+)]
+pub async fn get_context_planning(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path(context_id): axum::extract::Path<String>,
+) -> HttpResult<Json<ContextPlanningResponse>> {
+    let span = spans::get_context_planning(&context_id);
+    let _guard = span.enter();
+    let start = Instant::now();
+    let Some(svc) = &state.planning else {
+        metrics::record_request("get_context_planning", "unavailable", start.elapsed());
+        return Err(problem(
+            501,
+            "Not Implemented",
+            "Planning service not configured",
+        ));
+    };
+    match svc.planning_for_context(&context_id).await {
+        Ok(resp) => {
+            metrics::record_request("get_context_planning", "success", start.elapsed());
+            Ok(Json(resp))
+        }
+        Err(PlanningError::NotFound) => {
+            metrics::record_request("get_context_planning", "not_found", start.elapsed());
+            Err(problem(
+                404,
+                "Not Found",
+                format!("no planning data for context {context_id}"),
+            ))
+        }
+        Err(PlanningError::Unavailable) => {
+            metrics::record_request("get_context_planning", "unavailable", start.elapsed());
+            Err(problem(
+                501,
+                "Not Implemented",
+                "Planning service unavailable",
+            ))
+        }
+        Err(PlanningError::Other(e)) => {
+            metrics::record_request("get_context_planning", "internal", start.elapsed());
+            Err(problem(500, "Internal Server Error", e.to_string()))
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvenanceQueryParams {
@@ -653,6 +714,7 @@ fn domain_to_problem(
             "Not Found",
             format!("Agent {agent_package}/{agent_instance_id} not found"),
         ),
+        BamlRtError::Conflict(msg) => (409u16, "Conflict", msg.clone()),
         BamlRtError::InvalidArgument(msg) => (400u16, "Bad Request", msg.clone()),
         BamlRtError::SessionLifecycle(
             baml_rt_core::SessionLifecycleError::ToolSessionNotFound { session_id },

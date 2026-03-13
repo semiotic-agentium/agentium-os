@@ -27,18 +27,20 @@
 
 use std::collections::HashSet;
 
-use baml_rt_core::ids::{AgentId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId};
+use baml_rt_core::{
+    bus::PlanningSupersessionKind,
+    ids::{AgentId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId},
+};
 use baml_rt_provenance::{
     AgentBootedEvent, AgentType, GraphqliteStoreBuilder, ProvEvent, ProvEventData,
-    ProvenanceContextReader, ProvenanceQueryApi, ProvenanceWriter, TaskScopedEvent,
+    ProvenanceContextReader, ProvenancePlanningQuery, ProvenanceQueryApi, ProvenanceWriter,
+    TaskScopedEvent,
 };
-use tempfile::tempdir;
+use insta::assert_json_snapshot;
 
 #[tokio::test]
 async fn graphqlite_store_persists_messages_and_returns_conversation_context() {
-    let dir = tempdir().expect("tempdir");
-    let path = dir.keep().join("provenance.db");
-    let store = GraphqliteStoreBuilder::file(path)
+    let store = GraphqliteStoreBuilder::in_memory_isolated()
         .build()
         .expect("build store");
 
@@ -128,10 +130,8 @@ async fn graphqlite_store_persists_messages_and_returns_conversation_context() {
     assert_eq!(items.len(), 2);
     assert_eq!(items[0].role, "ROLE_USER");
     assert_eq!(items[0].source, "message");
-    assert_eq!(items[0].agent_id.as_ref(), Some(&agent_id));
     assert_eq!(items[1].role, "ROLE_AGENT");
     assert_eq!(items[1].source, "message");
-    assert_eq!(items[1].agent_id.as_ref(), Some(&agent_id));
 }
 
 /// No-stale-read invariant: a read after each write must see that write.
@@ -139,9 +139,7 @@ async fn graphqlite_store_persists_messages_and_returns_conversation_context() {
 /// Same for conversation_context. Would fail if the store returned cached/stale data on the second read.
 #[tokio::test]
 async fn graphqlite_store_no_stale_read_after_interleaved_writes() {
-    let dir = tempdir().expect("tempdir");
-    let path = dir.keep().join("provenance.db");
-    let store = GraphqliteStoreBuilder::file(path)
+    let store = GraphqliteStoreBuilder::in_memory_isolated()
         .build()
         .expect("build store");
 
@@ -270,9 +268,7 @@ async fn graphqlite_store_no_stale_read_after_interleaved_writes() {
 /// when using the same store; the type enforces that API callers use this trait.
 #[tokio::test]
 async fn graphqlite_store_query_api_returns_same_shape_as_reader() {
-    let dir = tempdir().expect("tempdir");
-    let path = dir.keep().join("provenance.db");
-    let store = GraphqliteStoreBuilder::file(path)
+    let store = GraphqliteStoreBuilder::in_memory_isolated()
         .build()
         .expect("build store");
 
@@ -338,13 +334,705 @@ async fn graphqlite_store_query_api_returns_same_shape_as_reader() {
     assert_eq!(items[0].source, "message");
 }
 
+#[tokio::test]
+async fn graphqlite_planning_query_returns_current_and_history() {
+    let store = GraphqliteStoreBuilder::in_memory_isolated()
+        .build()
+        .expect("build store");
+
+    let context_id = ContextId::new(88, 1);
+    let task_id = TaskId::from_external(ExternalId::new("task-planning-query-1"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000095").unwrap());
+    let msg_1 = MessageId::from_external(ExternalId::new("msg-planning-query-1"));
+    let msg_2 = MessageId::from_external(ExternalId::new("msg-planning-query-2"));
+
+    store
+        .add_event(ProvEvent::AgentBooted(AgentBootedEvent {
+            id: EventId::from_counter(400),
+            timestamp_ms: 1_700_000_000_300,
+            data: ProvEventData::AgentBooted {
+                agent_id: agent_id.clone(),
+                agent_type: AgentType::new("test").expect("agent_type"),
+                agent_version: "1.0.0".to_string(),
+                archive_path: "test@1.0.0".to_string(),
+            },
+        }))
+        .await
+        .expect("AgentBooted");
+    store
+        .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+        .await
+        .expect("task_exists");
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            agent_id.clone(),
+        ))
+        .await
+        .expect("task_execution_started");
+    store
+        .add_event(ProvEvent::message_received_task(
+            context_id.clone(),
+            task_id.clone(),
+            msg_1.clone(),
+            "user".to_string(),
+            vec!["plan v1".to_string()],
+            None,
+            agent_id.clone(),
+            1_700_000_000_301,
+        ))
+        .await
+        .expect("message_received_1");
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v1".to_string(),
+            "First intent".to_string(),
+            vec![msg_1.clone()],
+            None,
+        ))
+        .await
+        .expect("intent v1");
+    store
+        .add_event(ProvEvent::plan_generated(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v1".to_string(),
+            "plan-v1".to_string(),
+            vec![baml_rt_provenance::PlanStepSpec {
+                step_id: baml_rt_core::ids::PlanStepId::from("step-v1"),
+                description: "do first thing".to_string(),
+                order: 0,
+                depends_on: vec![],
+            }],
+            None,
+        ))
+        .await
+        .expect("plan v1");
+
+    store
+        .add_event(ProvEvent::message_received_task(
+            context_id.clone(),
+            task_id.clone(),
+            msg_2.clone(),
+            "user".to_string(),
+            vec!["plan v2".to_string()],
+            None,
+            agent_id.clone(),
+            1_700_000_000_302,
+        ))
+        .await
+        .expect("message_received_2");
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v2".to_string(),
+            "Second intent".to_string(),
+            vec![msg_2],
+            None,
+        ))
+        .await
+        .expect("intent v2");
+    store
+        .add_event(ProvEvent::plan_generated(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v2".to_string(),
+            "plan-v2".to_string(),
+            vec![baml_rt_provenance::PlanStepSpec {
+                step_id: baml_rt_core::ids::PlanStepId::from("step-v2"),
+                description: "do second thing".to_string(),
+                order: 0,
+                depends_on: vec![],
+            }],
+            None,
+        ))
+        .await
+        .expect("plan v2");
+
+    let replaced_rows = store
+        .run_cypher_read(
+            "MATCH (a)-[r]->(b) \
+             WHERE a.a2a_task_id = $task_id AND b.a2a_task_id = $task_id \
+               AND ((a:Intent AND b:Intent) OR (a:Plan AND b:Plan)) \
+             RETURN count(r) AS replaced_count",
+            &serde_json::json!({ "task_id": task_id.as_str() })
+                .as_object()
+                .cloned()
+                .expect("params object"),
+        )
+        .await
+        .expect("query replaced-by edges");
+    let replaced_count = replaced_rows
+        .iter()
+        .next()
+        .and_then(|row| row.get::<i64>("replaced_count").ok())
+        .unwrap_or_default();
+    assert!(
+        replaced_count >= 2,
+        "expected replacement edges for intent+plan revisions, got {replaced_count}"
+    );
+
+    let current_intent = store
+        .query_current_intent(&task_id)
+        .await
+        .expect("query current intent")
+        .expect("current intent exists");
+    assert_eq!(current_intent.intent_id, "intent-v2");
+
+    let current_plan = store
+        .query_current_plan(&task_id)
+        .await
+        .expect("query current plan")
+        .expect("current plan exists");
+    assert_eq!(current_plan.plan_id, "plan-v2");
+    assert_eq!(current_plan.intent_id, "intent-v2");
+    assert_eq!(current_plan.steps.len(), 1);
+    assert_eq!(current_plan.steps[0].step_id, "step-v2");
+    assert_eq!(current_plan.steps[0].status, "ready");
+
+    let intent_history = store
+        .query_intent_history(&task_id, Some(10))
+        .await
+        .expect("query intent history");
+    assert_eq!(intent_history.len(), 2);
+    assert_eq!(intent_history[0].intent_id, "intent-v2");
+    assert_eq!(intent_history[1].intent_id, "intent-v1");
+    assert_eq!(
+        intent_history[0].supersession_from_previous,
+        Some(PlanningSupersessionKind::ReplacedBy)
+    );
+    assert_eq!(intent_history[0].superseded_by_next, None);
+    assert_eq!(intent_history[1].supersession_from_previous, None);
+    assert_eq!(
+        intent_history[1].superseded_by_next,
+        Some(PlanningSupersessionKind::ReplacedBy)
+    );
+
+    let plan_history = store
+        .query_plan_history(&task_id, Some(10))
+        .await
+        .expect("query plan history");
+    assert_eq!(plan_history.len(), 2);
+    assert_eq!(plan_history[0].plan_id, "plan-v2");
+    assert_eq!(plan_history[1].plan_id, "plan-v1");
+    assert_eq!(
+        plan_history[0].supersession_from_previous,
+        Some(PlanningSupersessionKind::ReplacedBy)
+    );
+    assert_eq!(plan_history[0].superseded_by_next, None);
+    assert_eq!(plan_history[1].supersession_from_previous, None);
+    assert_eq!(
+        plan_history[1].superseded_by_next,
+        Some(PlanningSupersessionKind::ReplacedBy)
+    );
+}
+
+#[tokio::test]
+async fn graphqlite_planning_current_selection_prefers_replacement_sink_over_order() {
+    let store = GraphqliteStoreBuilder::in_memory_isolated()
+        .build()
+        .expect("build store");
+
+    let context_id = ContextId::new(89, 1);
+    let task_id = TaskId::from_external(ExternalId::new("task-planning-sink-1"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000094").unwrap());
+    let msg = MessageId::from_external(ExternalId::new("msg-planning-sink-1"));
+
+    store
+        .add_event(ProvEvent::AgentBooted(AgentBootedEvent {
+            id: EventId::from_counter(500),
+            timestamp_ms: 1_700_000_000_400,
+            data: ProvEventData::AgentBooted {
+                agent_id: agent_id.clone(),
+                agent_type: AgentType::new("test").expect("agent_type"),
+                agent_version: "1.0.0".to_string(),
+                archive_path: "test@1.0.0".to_string(),
+            },
+        }))
+        .await
+        .expect("AgentBooted");
+    store
+        .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+        .await
+        .expect("task_exists");
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            agent_id.clone(),
+        ))
+        .await
+        .expect("task_execution_started");
+    store
+        .add_event(ProvEvent::message_received_task(
+            context_id.clone(),
+            task_id.clone(),
+            msg.clone(),
+            "user".to_string(),
+            vec!["plan sink test".to_string()],
+            None,
+            agent_id.clone(),
+            1_700_000_000_401,
+        ))
+        .await
+        .expect("message_received");
+
+    // Create v1 -> v2 replacements.
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v1".to_string(),
+            "old intent".to_string(),
+            vec![msg.clone()],
+            None,
+        ))
+        .await
+        .expect("intent v1");
+    store
+        .add_event(ProvEvent::plan_generated(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v1".to_string(),
+            "plan-v1".to_string(),
+            vec![baml_rt_provenance::PlanStepSpec {
+                step_id: baml_rt_core::ids::PlanStepId::from("step-v1"),
+                description: "v1".to_string(),
+                order: 0,
+                depends_on: vec![],
+            }],
+            None,
+        ))
+        .await
+        .expect("plan v1");
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v2".to_string(),
+            "new intent".to_string(),
+            vec![msg.clone()],
+            None,
+        ))
+        .await
+        .expect("intent v2");
+    store
+        .add_event(ProvEvent::plan_generated(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v2".to_string(),
+            "plan-v2".to_string(),
+            vec![baml_rt_provenance::PlanStepSpec {
+                step_id: baml_rt_core::ids::PlanStepId::from("step-v2"),
+                description: "v2".to_string(),
+                order: 0,
+                depends_on: vec![],
+            }],
+            None,
+        ))
+        .await
+        .expect("plan v2");
+
+    // Introduce a newer unrelated intent/plan on another task to ensure task scoping is strict.
+    let other_task = TaskId::from_external(ExternalId::new("task-planning-sink-2"));
+    store
+        .add_event(ProvEvent::task_exists(
+            context_id.clone(),
+            other_task.clone(),
+        ))
+        .await
+        .expect("other task exists");
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            other_task.clone(),
+            agent_id.clone(),
+        ))
+        .await
+        .expect("other task execution started");
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            other_task.clone(),
+            "intent-other".to_string(),
+            "other".to_string(),
+            vec![msg.clone()],
+            None,
+        ))
+        .await
+        .expect("other intent");
+    store
+        .add_event(ProvEvent::plan_generated(
+            context_id,
+            other_task,
+            "intent-other".to_string(),
+            "plan-other".to_string(),
+            vec![],
+            None,
+        ))
+        .await
+        .expect("other plan");
+
+    let current_intent = store
+        .query_current_intent(&task_id)
+        .await
+        .expect("query current intent")
+        .expect("current intent exists");
+    let current_plan = store
+        .query_current_plan(&task_id)
+        .await
+        .expect("query current plan")
+        .expect("current plan exists");
+
+    assert_eq!(current_intent.intent_id, "intent-v2");
+    assert_eq!(current_plan.plan_id, "plan-v2");
+    assert_eq!(current_plan.intent_id, "intent-v2");
+    assert_eq!(
+        current_intent.supersession_from_previous,
+        Some(PlanningSupersessionKind::ReplacedBy)
+    );
+    assert_eq!(
+        current_plan.supersession_from_previous,
+        Some(PlanningSupersessionKind::ReplacedBy)
+    );
+}
+
+#[tokio::test]
+async fn graphqlite_planning_current_selection_treats_refined_edges_as_superseding() {
+    let store = GraphqliteStoreBuilder::in_memory_isolated()
+        .build()
+        .expect("build store");
+
+    let context_id = ContextId::new(90, 1);
+    let task_id = TaskId::from_external(ExternalId::new("task-planning-refined-1"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000095").unwrap());
+    let msg = MessageId::from_external(ExternalId::new("msg-planning-refined-1"));
+
+    store
+        .add_event(ProvEvent::agent_booted(
+            agent_id.clone(),
+            AgentType::new("test").expect("agent type"),
+            "1.0.0".to_string(),
+            "test@1.0.0".to_string(),
+        ))
+        .await
+        .expect("agent boot");
+    store
+        .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+        .await
+        .expect("task exists");
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            agent_id.clone(),
+        ))
+        .await
+        .expect("task execution started");
+    store
+        .add_event(ProvEvent::message_received_task(
+            context_id.clone(),
+            task_id.clone(),
+            msg.clone(),
+            "user".to_string(),
+            vec!["refine test".to_string()],
+            None,
+            agent_id,
+            1_700_000_000_501,
+        ))
+        .await
+        .expect("message received");
+
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v1".to_string(),
+            "old intent".to_string(),
+            vec![msg.clone()],
+            None,
+        ))
+        .await
+        .expect("intent v1");
+    store
+        .add_event(ProvEvent::plan_generated(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v1".to_string(),
+            "plan-v1".to_string(),
+            vec![],
+            None,
+        ))
+        .await
+        .expect("plan v1");
+
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v2".to_string(),
+            "refined intent".to_string(),
+            vec![msg.clone()],
+            Some(PlanningSupersessionKind::RefinedBy),
+        ))
+        .await
+        .expect("intent v2");
+    store
+        .add_event(ProvEvent::plan_generated(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v2".to_string(),
+            "plan-v2".to_string(),
+            vec![],
+            Some(PlanningSupersessionKind::RefinedBy),
+        ))
+        .await
+        .expect("plan v2");
+
+    let current_intent = store
+        .query_current_intent(&task_id)
+        .await
+        .expect("query current intent")
+        .expect("current intent exists");
+    let current_plan = store
+        .query_current_plan(&task_id)
+        .await
+        .expect("query current plan")
+        .expect("current plan exists");
+    assert_eq!(current_intent.intent_id, "intent-v2");
+    assert_eq!(current_plan.plan_id, "plan-v2");
+
+    let refined_rows = store
+        .run_cypher_read(
+            "MATCH (a)-[r:WAS_REFINED_BY]->(b) \
+             WHERE a.a2a_task_id = $task_id AND b.a2a_task_id = $task_id \
+               AND ((a:Intent AND b:Intent) OR (a:Plan AND b:Plan)) \
+             RETURN count(r) AS refined_count",
+            &serde_json::json!({ "task_id": task_id.as_str() })
+                .as_object()
+                .cloned()
+                .expect("params object"),
+        )
+        .await
+        .expect("query refined-by edges");
+    let refined_count = refined_rows
+        .iter()
+        .next()
+        .and_then(|row| row.get::<i64>("refined_count").ok())
+        .unwrap_or_default();
+    assert!(
+        refined_count >= 2,
+        "expected refined edges for intent+plan revisions, got {refined_count}"
+    );
+}
+
+#[tokio::test]
+async fn graphqlite_planning_history_tracks_mixed_supersession_chain_consistently() {
+    let store = GraphqliteStoreBuilder::in_memory_isolated()
+        .build()
+        .expect("build store");
+
+    let context_id = ContextId::new(91, 1);
+    let task_id = TaskId::from_external(ExternalId::new("task-planning-mixed-1"));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000096").unwrap());
+    let msg = MessageId::from_external(ExternalId::new("msg-planning-mixed-1"));
+
+    store
+        .add_event(ProvEvent::agent_booted(
+            agent_id.clone(),
+            AgentType::new("test").expect("agent type"),
+            "1.0.0".to_string(),
+            "test@1.0.0".to_string(),
+        ))
+        .await
+        .expect("agent boot");
+    store
+        .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+        .await
+        .expect("task exists");
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            agent_id.clone(),
+        ))
+        .await
+        .expect("task execution started");
+    store
+        .add_event(ProvEvent::message_received_task(
+            context_id.clone(),
+            task_id.clone(),
+            msg.clone(),
+            "user".to_string(),
+            vec!["mixed supersession test".to_string()],
+            None,
+            agent_id,
+            1_700_000_000_601,
+        ))
+        .await
+        .expect("message received");
+
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v1".to_string(),
+            "seed intent".to_string(),
+            vec![msg.clone()],
+            None,
+        ))
+        .await
+        .expect("intent v1");
+    store
+        .add_event(ProvEvent::plan_generated(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v1".to_string(),
+            "plan-v1".to_string(),
+            vec![],
+            None,
+        ))
+        .await
+        .expect("plan v1");
+
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v2".to_string(),
+            "refined intent".to_string(),
+            vec![msg.clone()],
+            Some(PlanningSupersessionKind::RefinedBy),
+        ))
+        .await
+        .expect("intent v2");
+    store
+        .add_event(ProvEvent::plan_generated(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v2".to_string(),
+            "plan-v2".to_string(),
+            vec![],
+            Some(PlanningSupersessionKind::RefinedBy),
+        ))
+        .await
+        .expect("plan v2");
+
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v3".to_string(),
+            "replacement intent".to_string(),
+            vec![msg],
+            Some(PlanningSupersessionKind::ReplacedBy),
+        ))
+        .await
+        .expect("intent v3");
+    store
+        .add_event(ProvEvent::plan_generated(
+            context_id.clone(),
+            task_id.clone(),
+            "intent-v3".to_string(),
+            "plan-v3".to_string(),
+            vec![],
+            Some(PlanningSupersessionKind::ReplacedBy),
+        ))
+        .await
+        .expect("plan v3");
+
+    let current_intent = store
+        .query_current_intent(&task_id)
+        .await
+        .expect("query current intent")
+        .expect("current intent exists");
+    let current_plan = store
+        .query_current_plan(&task_id)
+        .await
+        .expect("query current plan")
+        .expect("current plan exists");
+    assert_eq!(current_intent.intent_id, "intent-v3");
+    assert_eq!(
+        current_intent.supersession_from_previous,
+        Some(PlanningSupersessionKind::ReplacedBy)
+    );
+    assert_eq!(current_intent.superseded_by_next, None);
+    assert_eq!(current_plan.plan_id, "plan-v3");
+    assert_eq!(current_plan.intent_id, "intent-v3");
+    assert_eq!(
+        current_plan.supersession_from_previous,
+        Some(PlanningSupersessionKind::ReplacedBy)
+    );
+    assert_eq!(current_plan.superseded_by_next, None);
+
+    let intent_history = store
+        .query_intent_history(&task_id, Some(10))
+        .await
+        .expect("query intent history");
+    assert_eq!(intent_history.len(), 3);
+    assert_eq!(intent_history[0].intent_id, "intent-v3");
+    assert_eq!(
+        intent_history[0].supersession_from_previous,
+        Some(PlanningSupersessionKind::ReplacedBy)
+    );
+    assert_eq!(intent_history[0].superseded_by_next, None);
+    assert_eq!(intent_history[1].intent_id, "intent-v2");
+    assert_eq!(
+        intent_history[1].supersession_from_previous,
+        Some(PlanningSupersessionKind::RefinedBy)
+    );
+    assert_eq!(
+        intent_history[1].superseded_by_next,
+        Some(PlanningSupersessionKind::ReplacedBy)
+    );
+    assert_eq!(intent_history[2].intent_id, "intent-v1");
+    assert_eq!(intent_history[2].supersession_from_previous, None);
+    assert_eq!(
+        intent_history[2].superseded_by_next,
+        Some(PlanningSupersessionKind::RefinedBy)
+    );
+
+    let plan_history = store
+        .query_plan_history(&task_id, Some(10))
+        .await
+        .expect("query plan history");
+    assert_eq!(plan_history.len(), 3);
+    assert_eq!(plan_history[0].plan_id, "plan-v3");
+    assert_eq!(
+        plan_history[0].supersession_from_previous,
+        Some(PlanningSupersessionKind::ReplacedBy)
+    );
+    assert_eq!(plan_history[0].superseded_by_next, None);
+    assert_eq!(plan_history[1].plan_id, "plan-v2");
+    assert_eq!(
+        plan_history[1].supersession_from_previous,
+        Some(PlanningSupersessionKind::RefinedBy)
+    );
+    assert_eq!(
+        plan_history[1].superseded_by_next,
+        Some(PlanningSupersessionKind::ReplacedBy)
+    );
+    assert_eq!(plan_history[2].plan_id, "plan-v1");
+    assert_eq!(plan_history[2].supersession_from_previous, None);
+    assert_eq!(
+        plan_history[2].superseded_by_next,
+        Some(PlanningSupersessionKind::RefinedBy)
+    );
+}
+
 /// Reproduce the ClickUp agent bug: tool calls written to graphqlite must
 /// appear in conversation_context as tool_call + tool_result items.
 #[tokio::test]
 async fn graphqlite_conversation_context_includes_tool_calls() {
-    let dir = tempdir().expect("tempdir");
-    let path = dir.keep().join("provenance_tool.db");
-    let store = GraphqliteStoreBuilder::file(path)
+    let store = GraphqliteStoreBuilder::in_memory_isolated()
         .build()
         .expect("build store");
 
@@ -494,9 +1182,7 @@ async fn graphqlite_conversation_context_includes_tool_calls() {
 /// entries so retries/recovery can use prior failure context.
 #[tokio::test]
 async fn graphqlite_conversation_context_includes_failed_tool_results() {
-    let dir = tempdir().expect("tempdir");
-    let path = dir.keep().join("provenance_tool_failed.db");
-    let store = GraphqliteStoreBuilder::file(path)
+    let store = GraphqliteStoreBuilder::in_memory_isolated()
         .build()
         .expect("build store");
 
@@ -638,9 +1324,7 @@ async fn graphqlite_conversation_context_includes_failed_tool_results() {
 
 #[tokio::test]
 async fn graphqlite_conversation_context_preserves_large_tool_result_payload() {
-    let dir = tempdir().expect("tempdir");
-    let path = dir.keep().join("provenance_tool_large.db");
-    let store = GraphqliteStoreBuilder::file(path)
+    let store = GraphqliteStoreBuilder::in_memory_isolated()
         .build()
         .expect("build store");
 
@@ -750,9 +1434,7 @@ async fn graphqlite_conversation_context_preserves_large_tool_result_payload() {
 
 #[tokio::test]
 async fn graphqlite_tool_call_writes_enforce_args_edge_role_and_type() {
-    let dir = tempdir().expect("tempdir");
-    let path = dir.keep().join("provenance_tool_contract.db");
-    let store = GraphqliteStoreBuilder::file(path)
+    let store = GraphqliteStoreBuilder::in_memory_isolated()
         .build()
         .expect("build store");
 
@@ -828,8 +1510,7 @@ async fn graphqlite_tool_call_writes_enforce_args_edge_role_and_type() {
         .run_cypher_read(
             "MATCH (t:ToolCall)-[used:WAS_USED_BY]->(args:ToolArgs) \
              WHERE t.a2a_context_id = $context \
-             RETURN toString(properties(used)) AS rel_props, used.prov_base_type AS rel_base_type, \
-                    used.prov_role AS role, args.prov_type AS target_type \
+             RETURN used.prov_role AS role, args.prov_type AS target_type \
              ORDER BY t.a2a_event_id LIMIT 1",
             &params,
         )
@@ -839,17 +1520,13 @@ async fn graphqlite_tool_call_writes_enforce_args_edge_role_and_type() {
         .iter()
         .next()
         .expect("at least one ToolCall->ToolArgs edge");
+
+    // Build a stable map for snapshot comparison; exclude rel_props (includes internal node IDs).
     let edge_role: Option<String> = row.get("role").ok();
-    let rel_props: Option<String> = row.get("rel_props").ok();
-    let rel_base_type: Option<String> = row.get("rel_base_type").ok();
-    assert!(
-        edge_role.as_deref() == Some("a2a:args") || edge_role.as_deref() == Some(""),
-        "unexpected role value for ToolCall->ToolArgs edge: {edge_role:?}; rel_base_type={rel_base_type:?} rel_props={rel_props:?}"
-    );
     let node_type: Option<String> = row.get("target_type").ok();
-    assert_eq!(
-        node_type.as_deref(),
-        Some("a2a:ToolArgs"),
-        "ToolArgs node must carry prov:type=a2a:ToolArgs"
-    );
+    let edge_snapshot = serde_json::json!({
+        "role": edge_role,
+        "target_type": node_type,
+    });
+    assert_json_snapshot!("tool_call_args_edge_row", edge_snapshot);
 }

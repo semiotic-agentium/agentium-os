@@ -8,6 +8,7 @@ pub mod context;
 pub mod correlation;
 pub mod deferred;
 pub mod error;
+pub mod event_subscription;
 pub mod ids;
 pub mod json;
 pub mod package;
@@ -33,7 +34,13 @@ pub use context::{
 };
 pub use deferred::DeferredHolder;
 pub use error::{BamlRtError, Result, SessionLifecycleError};
-pub use ids::{AgentId, ArtifactId, ContextId, CorrelationId, EventId, MessageId, TaskId};
+pub use event_subscription::{
+    EventSubscription, EventSubscriptionFilter, subscriptions_match_filter,
+};
+pub use ids::{
+    AgentId, ArtifactId, ContextId, CorrelationId, EventId, ExecutionSessionId, IntentId,
+    MessageId, PlanId, PlanStepId, TaskId,
+};
 pub use json::to_json_value;
 pub use package::AgentManifest;
 pub use semantics::{ActivityOutcome, InvocationKind, Outcome, Retryability};

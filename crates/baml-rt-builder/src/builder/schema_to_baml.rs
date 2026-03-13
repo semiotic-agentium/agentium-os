@@ -325,14 +325,14 @@ fn generate_baml_class(
     all_schemas: &HashMap<String, Value>,
     type_names: &HashMap<String, String>,
 ) -> Result<()> {
+    let properties = schema_obj.get("properties").and_then(|v| v.as_object());
+    // Skip generating classes with no properties — BAML doesn't allow empty classes
+    // and the initial_input field is also skipped for these in baml_gen.rs.
+    let properties = match properties {
+        Some(p) if !p.is_empty() => p,
+        _ => return Ok(()),
+    };
     write_line(output, &format!("class {} {{", class_name))?;
-
-    let properties = schema_obj
-        .get("properties")
-        .and_then(|v| v.as_object())
-        .ok_or_else(|| {
-            BamlBuilderError::InvalidArgument(format!("Class {} must have properties", class_name))
-        })?;
 
     let required = schema_obj
         .get("required")
@@ -385,6 +385,11 @@ fn json_schema_to_baml_type(
     _all_schemas: &HashMap<String, Value>,
     _type_names: &HashMap<String, String>,
 ) -> Result<String> {
+    // Schemars may emit boolean schemas (`true`/`false`) for fully open/closed forms,
+    // especially when serializing untyped JSON payloads.
+    if schema.is_boolean() {
+        return Ok("string".to_string());
+    }
     let schema_obj = schema
         .as_object()
         .ok_or_else(|| BamlBuilderError::InvalidArgument("Schema must be an object".to_string()))?;
@@ -411,7 +416,7 @@ fn json_schema_to_baml_type(
                         "integer" => "int".to_string(),
                         "number" => "float".to_string(),
                         "boolean" => "bool".to_string(),
-                        "object" => "object".to_string(),
+                        "object" => "string".to_string(),
                         "array" => {
                             if let Some(items) = schema_obj.get("items") {
                                 let item_type = json_schema_to_baml_type(
@@ -516,7 +521,7 @@ fn json_schema_to_baml_type(
             "number" => "float".to_string(),
             "boolean" => "bool".to_string(),
             "null" => "null".to_string(),
-            "object" => "object".to_string(),
+            "object" => "string".to_string(),
             _ => format!("any /* {} */", type_str),
         });
     }

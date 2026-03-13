@@ -258,6 +258,85 @@ impl ProvDerivedIdTemplate for TaskEntityId {
     }
 }
 
+/// Entity representing a resolved intent within a task scope.
+pub struct IntentEntityId;
+impl DerivedConstructible for IntentEntityId {}
+impl ProvIdSemantics for IntentEntityId {
+    const KIND: ProvKind = ProvKind::Entity;
+}
+impl ProvEntitySemantics for IntentEntityId {}
+impl ProvDerivedEntitySemantics for IntentEntityId {}
+impl ProvVocabularyType for IntentEntityId {
+    const VOCAB_TYPE: &'static str = a2a_types::INTENT;
+}
+
+pub struct IntentEntityInput<'a> {
+    pub task_id: &'a TaskId,
+    pub intent_id: &'a str,
+}
+
+impl ProvDerivedIdTemplate for IntentEntityId {
+    type Input<'a> = IntentEntityInput<'a>;
+
+    fn build<'a>(input: Self::Input<'a>) -> DerivedId {
+        DerivedId::from_parts("intent", [input.task_id.as_str(), input.intent_id])
+    }
+}
+
+/// Entity representing a generated plan within a task scope.
+pub struct PlanEntityId;
+impl DerivedConstructible for PlanEntityId {}
+impl ProvIdSemantics for PlanEntityId {
+    const KIND: ProvKind = ProvKind::Entity;
+}
+impl ProvEntitySemantics for PlanEntityId {}
+impl ProvDerivedEntitySemantics for PlanEntityId {}
+impl ProvVocabularyType for PlanEntityId {
+    const VOCAB_TYPE: &'static str = a2a_types::PLAN;
+}
+
+pub struct PlanEntityInput<'a> {
+    pub task_id: &'a TaskId,
+    pub plan_id: &'a str,
+}
+
+impl ProvDerivedIdTemplate for PlanEntityId {
+    type Input<'a> = PlanEntityInput<'a>;
+
+    fn build<'a>(input: Self::Input<'a>) -> DerivedId {
+        DerivedId::from_parts("plan", [input.task_id.as_str(), input.plan_id])
+    }
+}
+
+/// Entity representing a plan step within a plan.
+pub struct PlanStepEntityId;
+impl DerivedConstructible for PlanStepEntityId {}
+impl ProvIdSemantics for PlanStepEntityId {
+    const KIND: ProvKind = ProvKind::Entity;
+}
+impl ProvEntitySemantics for PlanStepEntityId {}
+impl ProvDerivedEntitySemantics for PlanStepEntityId {}
+impl ProvVocabularyType for PlanStepEntityId {
+    const VOCAB_TYPE: &'static str = a2a_types::PLAN_STEP;
+}
+
+pub struct PlanStepEntityInput<'a> {
+    pub task_id: &'a TaskId,
+    pub plan_id: &'a str,
+    pub step_id: &'a str,
+}
+
+impl ProvDerivedIdTemplate for PlanStepEntityId {
+    type Input<'a> = PlanStepEntityInput<'a>;
+
+    fn build<'a>(input: Self::Input<'a>) -> DerivedId {
+        DerivedId::from_parts(
+            "plan_step",
+            [input.task_id.as_str(), input.plan_id, input.step_id],
+        )
+    }
+}
+
 /// Entity representing a task state. One node per (task_id, status). Idempotent MERGE.
 pub struct TaskStateEntityId;
 impl DerivedConstructible for TaskStateEntityId {}

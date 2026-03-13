@@ -89,15 +89,19 @@ fn default_model_for_provider(provider: &ClientProvider) -> String {
     use internal_llm_client::OpenAIClientProviderVariant;
     match provider {
         ClientProvider::OpenAI(variant) => match variant {
-            OpenAIClientProviderVariant::OpenRouter => "openai/gpt-4o-mini".to_string(),
+            // OpenRouter and openai-generic both route via OpenRouter — use grok.
+            OpenAIClientProviderVariant::OpenRouter | OpenAIClientProviderVariant::Generic => {
+                "x-ai/grok-4.1-fast".to_string()
+            }
+            // Native OpenAI base, Azure, Responses, Ollama stay on the OpenAI model family.
             OpenAIClientProviderVariant::Base
-            | OpenAIClientProviderVariant::Generic
             | OpenAIClientProviderVariant::Responses
             | OpenAIClientProviderVariant::Azure
             | OpenAIClientProviderVariant::Ollama => "gpt-4o-mini".to_string(),
         },
         ClientProvider::Anthropic => "claude-3-5-sonnet-20241022".to_string(),
         ClientProvider::GoogleAi => "gemini-2.0-flash".to_string(),
+        // Vertex/AWS are not injected; value is unreachable in practice.
         ClientProvider::Vertex | ClientProvider::AwsBedrock | ClientProvider::Strategy(_) => {
             "gpt-4o-mini".to_string()
         }

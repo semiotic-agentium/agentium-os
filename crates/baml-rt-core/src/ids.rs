@@ -68,6 +68,29 @@ define_id_type!(
     /// Agent runtime instance identifier.
     AgentId
 );
+define_id_type!(
+    /// Execution session identifier (host-generated, opaque).
+    ExecutionSessionId
+);
+
+impl ExecutionSessionId {
+    /// Create a new execution session ID (host-generated, opaque).
+    pub fn new(s: String) -> Self {
+        Self(s)
+    }
+}
+define_id_type!(
+    /// Intent identifier for planning lineage.
+    IntentId
+);
+define_id_type!(
+    /// Plan identifier for planning lineage.
+    PlanId
+);
+define_id_type!(
+    /// Plan step identifier within a committed plan.
+    PlanStepId
+);
 
 impl MessageId {
     pub fn from_external(id: ExternalId) -> Self {
@@ -154,6 +177,42 @@ impl AgentId {
     }
 }
 
+impl From<String> for IntentId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for IntentId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<String> for PlanId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for PlanId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl From<String> for PlanStepId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for PlanStepId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
 impl ExternalConstructible for MessageId {}
 impl DerivedConstructible for MessageId {}
 impl ExternalConstructible for TaskId {}
@@ -168,3 +227,79 @@ impl TemporalConstructible for CorrelationId {}
 impl ExternalConstructible for ArtifactId {}
 impl MonotonicConstructible for EventId {}
 impl UuidConstructible for AgentId {}
+
+#[cfg(test)]
+mod tests {
+    //! Property tests for the planning/session typed ID newtypes.
+    //!
+    //! Invariants verified for `IntentId`, `PlanId`, `PlanStepId`, and `ExecutionSessionId`:
+    //! - `as_str()` returns the same string used for construction.
+    //! - `Display` matches `as_str()`.
+    //! - `From<String>` + serde round-trip is lossless.
+    //! - `PartialEq` is symmetric (two IDs from the same string are equal).
+
+    use proptest::prelude::*;
+
+    use super::*;
+
+    fn id_strategy() -> impl Strategy<Value = String> {
+        "[a-z][a-z0-9\\-]{0,20}".prop_map(|s| s)
+    }
+
+    proptest! {
+        #![proptest_config({
+            let mut cfg = ProptestConfig::with_cases(32);
+            cfg.failure_persistence = None;
+            cfg
+        })]
+
+        #[test]
+        fn prop_intent_id_round_trip(s in id_strategy()) {
+            let id = IntentId::from(s.clone());
+            assert_eq!(id.as_str(), s, "as_str must match construction value");
+            assert_eq!(id.to_string(), s, "Display must match construction value");
+            let json = serde_json::to_value(&id).expect("serialize IntentId");
+            let recovered: IntentId = serde_json::from_value(json).expect("deserialize IntentId");
+            assert_eq!(recovered, id, "serde round-trip must preserve identity");
+            assert_eq!(IntentId::from(s.clone()), id, "PartialEq must be symmetric");
+        }
+
+        #[test]
+        fn prop_plan_id_round_trip(s in id_strategy()) {
+            let id = PlanId::from(s.clone());
+            assert_eq!(id.as_str(), s);
+            assert_eq!(id.to_string(), s);
+            let json = serde_json::to_value(&id).expect("serialize PlanId");
+            let recovered: PlanId = serde_json::from_value(json).expect("deserialize PlanId");
+            assert_eq!(recovered, id);
+        }
+
+        #[test]
+        fn prop_plan_step_id_round_trip(s in id_strategy()) {
+            let id = PlanStepId::from(s.clone());
+            assert_eq!(id.as_str(), s);
+            assert_eq!(id.to_string(), s);
+            let json = serde_json::to_value(&id).expect("serialize PlanStepId");
+            let recovered: PlanStepId = serde_json::from_value(json).expect("deserialize PlanStepId");
+            assert_eq!(recovered, id);
+        }
+
+        #[test]
+        fn prop_execution_session_id_round_trip(s in id_strategy()) {
+            let id = ExecutionSessionId::new(s.clone());
+            assert_eq!(id.as_str(), s);
+            assert_eq!(id.to_string(), s);
+            let json = serde_json::to_value(&id).expect("serialize ExecutionSessionId");
+            let recovered: ExecutionSessionId = serde_json::from_value(json).expect("deserialize ExecutionSessionId");
+            assert_eq!(recovered, id);
+        }
+
+        #[test]
+        fn prop_distinct_ids_are_not_equal(a in id_strategy(), b in id_strategy()) {
+            if a == b { return Ok(()); }
+            assert_ne!(IntentId::from(a.clone()), IntentId::from(b.clone()));
+            assert_ne!(PlanId::from(a.clone()),   PlanId::from(b.clone()));
+            assert_ne!(PlanStepId::from(a.clone()), PlanStepId::from(b.clone()));
+        }
+    }
+}

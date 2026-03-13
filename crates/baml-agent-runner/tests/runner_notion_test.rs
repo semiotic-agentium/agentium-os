@@ -18,7 +18,6 @@ use common::{
     RunningHttpServer, TempDirCleanup, TempEnvVar, build_notion_agent_to_temp_async, contains_kv,
     e2e_serial_gate, post_a2a_sse_collect, start_http_server, start_runner_api_server,
 };
-use insta::assert_snapshot;
 use serde_json::{Value, json};
 use test_support::common::{chunks_from_responses, send_stream_request, workspace_fnox_path};
 use tokio::time::{Duration, sleep, timeout};
@@ -27,42 +26,6 @@ const RAW_BLOCK_ID: &str = "11111111111111111111111111111111";
 const NORMALIZED_BLOCK_ID: &str = "11111111-1111-1111-1111-111111111111";
 const NORMALIZED_PAGE_ID: &str = "22222222-2222-2222-2222-222222222222";
 const NOTION_API_PREFIX: &str = "/v1";
-
-fn normalize_mermaid_snapshot(input: &str) -> String {
-    input
-        .lines()
-        .map(normalize_mermaid_line)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn normalize_mermaid_line(line: &str) -> String {
-    let chars: Vec<char> = line.chars().collect();
-    let mut out = String::with_capacity(line.len());
-    let mut i = 0usize;
-
-    while i < chars.len() {
-        if chars[i].is_ascii_digit() {
-            let start = i;
-            while i < chars.len() && chars[i].is_ascii_digit() {
-                i += 1;
-            }
-            if i + 1 < chars.len() && chars[i] == 'm' && chars[i + 1] == 's' {
-                out.push_str("0ms");
-                i += 2;
-            } else {
-                for ch in &chars[start..i] {
-                    out.push(*ch);
-                }
-            }
-            continue;
-        }
-        out.push(chars[i]);
-        i += 1;
-    }
-
-    out
-}
 
 fn notion_api_path(suffix: &str) -> String {
     format!("{NOTION_API_PREFIX}{suffix}")
@@ -433,8 +396,35 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
         mermaid_response.status()
     );
     let mermaid = mermaid_response.text().await.expect("mermaid body");
-    let normalized_mermaid = normalize_mermaid_snapshot(&mermaid);
-    assert_snapshot!("notion_direct_id_mermaid_context", normalized_mermaid);
+
+    // Structural assertions instead of a full snapshot: participant names, key function
+    // calls, and task completion marker must be present, but exact token counts, drift
+    // scores, call counts, and agent-response text are all model-dependent and are not
+    // asserted here.
+    assert!(
+        mermaid.contains("sequenceDiagram"),
+        "Expected sequenceDiagram header in Mermaid output"
+    );
+    assert!(
+        mermaid.contains("InferNotionIntent"),
+        "Expected InferNotionIntent call in Mermaid output"
+    );
+    assert!(
+        mermaid.contains("PlanNotionWork"),
+        "Expected PlanNotionWork call in Mermaid output"
+    );
+    assert!(
+        mermaid.contains("ChooseNotionAction"),
+        "Expected at least one ChooseNotionAction call in Mermaid output"
+    );
+    assert!(
+        mermaid.contains("ReactToNotionResults"),
+        "Expected ReactToNotionResults call in Mermaid output"
+    );
+    assert!(
+        mermaid.contains("\"Completed\""),
+        "Expected Completed task section in Mermaid output"
+    );
 
     runner_api.stop().await;
     mock_server.stop().await;

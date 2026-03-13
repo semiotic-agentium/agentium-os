@@ -110,7 +110,7 @@ async fn next_until_suspended_or_done(
 ) -> ToolStep {
     for _ in 0..16 {
         match registry
-            .session_next(session_id)
+            .session_read(session_id, serde_json::Value::Null)
             .await
             .expect("session_next")
         {

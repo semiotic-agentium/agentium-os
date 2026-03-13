@@ -2,14 +2,25 @@
 
 #![recursion_limit = "256"]
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use async_trait::async_trait;
-use baml_rt::{baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
+use baml_rt::{
+    baml::{
+        BamlRuntimeManager, CanonicalIntentSubmission, CanonicalPlanStepStatusChange,
+        CanonicalPlanSubmission, PlanningCanonicalResolver, PlanningDynamicContext,
+    },
+    quickjs_bridge::QuickJSBridge,
+};
 use baml_rt_core::{
     bus::{BusWithEffects, EffectEmitter, EffectLiveness},
     context::{self, InvocationScope, RuntimeScope},
-    ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
+    ids::{
+        AgentId, ContextId, ExternalId, IntentId, MessageId, PlanId, PlanStepId, TaskId, UuidId,
+    },
+};
+use baml_rt_provenance::{
+    GraphqliteStoreBuilder, ProvEvent, ProvenanceEffectSubscriber, ProvenanceWriter,
 };
 use baml_rt_tools::{BamlTool, bundles::BundleType};
 use schemars::JsonSchema;
@@ -50,7 +61,7 @@ async fn test_quickjs_evaluate_expressions() {
 
     let expressions = ["2 + 2", "({answer: 42})", "null", "1"];
     for (i, code) in expressions.iter().enumerate() {
-        let result = bridge.evaluate(None, code).await;
+        let result = bridge.eval_sync(code).await;
         assert!(
             result.is_ok(),
             "expression[{}] {:?} should evaluate: {:?}",
@@ -61,7 +72,9 @@ async fn test_quickjs_evaluate_expressions() {
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
+// Must run on a multi-thread runtime: current_thread serialises spawn_local tasks so
+// the Mutex contention is never actually concurrent, masking lock-held-across-poll bugs.
+#[tokio::test(flavor = "multi_thread")]
 async fn test_quickjs_concurrent_scope_propagation() {
     let mut manager = BamlRuntimeManager::builder().build().unwrap();
     manager
@@ -126,19 +139,18 @@ async fn test_quickjs_concurrent_scope_propagation() {
                     let task_id_for_js = task_id.clone();
 
                     let result = context::with_scope(scope, async move {
-                        let mut bridge = bridge.lock().await;
-                        bridge
-                            .invoke_js_tool(
-                                &invocation_scope,
-                                "js/scope_tool",
-                                json!({
-                                    "text": "ping",
-                                    "context_id": context_id_for_js.as_str(),
-                                    "message_id": message_id_for_js.as_str(),
-                                    "task_id": task_id_for_js.as_str(),
-                                }),
-                            )
-                            .await
+                        QuickJSBridge::invoke_js_tool_nonblocking(
+                            bridge,
+                            &invocation_scope,
+                            "js/scope_tool",
+                            json!({
+                                "text": "ping",
+                                "context_id": context_id_for_js.as_str(),
+                                "message_id": message_id_for_js.as_str(),
+                                "task_id": task_id_for_js.as_str(),
+                            }),
+                        )
+                        .await
                     })
                     .await
                     .expect("invoke js tool");
@@ -174,7 +186,9 @@ async fn test_quickjs_concurrent_scope_propagation() {
     }
 }
 
-#[tokio::test(flavor = "current_thread")]
+// Must run on a multi-thread runtime: current_thread serialises spawn_local tasks so
+// the Mutex contention is never actually concurrent, masking lock-held-across-poll bugs.
+#[tokio::test(flavor = "multi_thread")]
 async fn test_quickjs_concurrent_stream_scope_propagation() {
     let mut manager = BamlRuntimeManager::builder().build().unwrap();
     manager
@@ -242,18 +256,17 @@ async fn test_quickjs_concurrent_stream_scope_propagation() {
                     let message_id_for_js = message_id.clone();
                     let task_id_for_js = task_id.clone();
                     let result = context::with_scope(scope, async move {
-                        let mut bridge = bridge.lock().await;
-                        bridge
-                            .invoke_js_tool(
-                                &invocation_scope,
-                                "js/scope_stream",
-                                json!({
-                                    "context_id": context_id_for_js.as_str(),
-                                    "message_id": message_id_for_js.as_str(),
-                                    "task_id": task_id_for_js.as_str(),
-                                }),
-                            )
-                            .await
+                        QuickJSBridge::invoke_js_tool_nonblocking(
+                            bridge,
+                            &invocation_scope,
+                            "js/scope_stream",
+                            json!({
+                                "context_id": context_id_for_js.as_str(),
+                                "message_id": message_id_for_js.as_str(),
+                                "task_id": task_id_for_js.as_str(),
+                            }),
+                        )
+                        .await
                     })
                     .await
                     .expect("invoke js stream");
@@ -291,6 +304,124 @@ async fn test_quickjs_concurrent_stream_scope_propagation() {
             Some(task_id.as_str())
         );
     }
+}
+
+/// Regression test: two concurrent contexts must both make progress while the bridge
+/// lock is not held across async work. Before the fix, evaluate() held &mut self
+/// across the entire promise-polling loop, so the second context could not enter JS
+/// until the first had fully completed — including any async tool/LLM latency.
+///
+/// Proof strategy: BarrierTool::execute() waits at a two-party Barrier.  If both
+/// invocations can enter execute() concurrently the barrier unblocks immediately.
+/// If the bridge lock is held across async work, the second invocation can never
+/// start, the barrier never unblocks, and the test times out (5s) — proving the bug.
+/// This avoids any wall-clock timing dependency.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_bridge_lock_not_held_across_async_work() {
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let mut manager = BamlRuntimeManager::builder().build().unwrap();
+    manager
+        .register_tool(BarrierTool(barrier))
+        .await
+        .expect("register barrier tool");
+    let manager = Arc::new(Mutex::new(manager));
+    let effect_bus = Arc::new(BusWithEffects::new());
+    {
+        let mut m = manager.lock().await;
+        m.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
+    }
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap());
+    let mut bridge = QuickJSBridge::new(manager, agent_id).await.unwrap();
+    bridge.set_effect_liveness(effect_bus as Arc<dyn EffectLiveness>);
+    bridge
+        .register_baml_functions()
+        .await
+        .expect("register helpers");
+
+    bridge
+        .register_js_tool(
+            "js/barrier_tool",
+            r#"async function(args) {
+                const session = await openToolSession("test/barrier");
+                await session.send(args || {});
+                const step = await session.continue();
+                return step && step.output ? step.output : {};
+            }"#,
+        )
+        .await
+        .expect("register barrier js tool");
+
+    let bridge = Arc::new(Mutex::new(bridge));
+
+    // Uses invoke_js_tool_nonblocking so the bridge Mutex is released before the poll loop,
+    // allowing both contexts to make progress concurrently. This is how the handover lane
+    // dispatches invocations in production.
+    let (r1, r2) = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        async { tokio::join!(
+            {
+                let bridge = bridge.clone();
+                async move {
+                    let context_id = ContextId::new(9, 1);
+                    let agent_id = AgentId::from_uuid(
+                        UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
+                    );
+                    let scope = RuntimeScope::task_scope(
+                        context_id.clone(),
+                        agent_id,
+                        MessageId::from_external(ExternalId::new("msg-barrier-1")),
+                        TaskId::from_external(ExternalId::new("task-barrier-1")),
+                    );
+                    let inv = InvocationScope::new(scope.clone());
+                    context::with_scope(scope, async move {
+                        QuickJSBridge::invoke_js_tool_nonblocking(
+                            bridge,
+                            &inv,
+                            "js/barrier_tool",
+                            json!({}),
+                        )
+                        .await
+                    })
+                    .await
+                }
+            },
+            {
+                let bridge = bridge.clone();
+                async move {
+                    let context_id = ContextId::new(9, 2);
+                    let agent_id = AgentId::from_uuid(
+                        UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
+                    );
+                    let scope = RuntimeScope::task_scope(
+                        context_id.clone(),
+                        agent_id,
+                        MessageId::from_external(ExternalId::new("msg-barrier-2")),
+                        TaskId::from_external(ExternalId::new("task-barrier-2")),
+                    );
+                    let inv = InvocationScope::new(scope.clone());
+                    context::with_scope(scope, async move {
+                        QuickJSBridge::invoke_js_tool_nonblocking(
+                            bridge,
+                            &inv,
+                            "js/barrier_tool",
+                            json!({}),
+                        )
+                        .await
+                    })
+                    .await
+                }
+            }
+        ) },
+    )
+    .await
+    .expect(
+        "timed out after 5s — barrier never unblocked, indicating the bridge lock was held \
+         across async work (second invocation could not enter JS while first was waiting)",
+    );
+
+    r1.expect("invocation 1 must succeed");
+    r2.expect("invocation 2 must succeed");
 }
 
 #[derive(Debug)]
@@ -334,6 +465,126 @@ impl BamlTool for ScopeEchoTool {
     }
 }
 
+/// A tool that sleeps 200ms to simulate LLM-scale latency.
+/// Used by `test_bridge_lock_not_held_across_async_work` to verify that the bridge
+/// lock is released during async work so concurrent contexts can make progress.
+#[derive(Debug)]
+/// BarrierTool waits at a two-party tokio Barrier.  Two concurrent invocations unblock
+/// each other immediately; a sequential execution order (bridge lock held across async
+/// work) would deadlock since the second invocation can never enter execute().
+struct BarrierTool(Arc<tokio::sync::Barrier>);
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, Default)]
+#[ts(export)]
+struct BarrierInput {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct BarrierOutput {
+    done: bool,
+}
+
+#[async_trait]
+impl BamlTool for BarrierTool {
+    type Bundle = Test;
+    const LOCAL_NAME: &'static str = "barrier";
+    type OpenInput = ();
+    type Input = BarrierInput;
+    type Output = BarrierOutput;
+
+    fn description(&self) -> &'static str {
+        "Waits at a two-party barrier to prove concurrent execution."
+    }
+
+    async fn execute(&self, _args: Self::Input) -> baml_rt::Result<Self::Output> {
+        self.0.wait().await;
+        Ok(BarrierOutput { done: true })
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+struct ResolverObservation {
+    intent_saw_scope_echo: bool,
+    plan_saw_scope_echo: bool,
+    step_saw_scope_echo: bool,
+    observed_task_ids: Vec<Option<String>>,
+}
+
+#[derive(Debug, Clone)]
+struct CanonicalizingResolver {
+    observation: Arc<StdMutex<ResolverObservation>>,
+}
+
+#[async_trait]
+impl PlanningCanonicalResolver for CanonicalizingResolver {
+    async fn resolve_intent(
+        &self,
+        context: &PlanningDynamicContext,
+        mut submission: CanonicalIntentSubmission,
+    ) -> baml_rt_core::Result<CanonicalIntentSubmission> {
+        let mut state = self.observation.lock().expect("resolver observation lock");
+        state.intent_saw_scope_echo = context
+            .available_tools
+            .iter()
+            .any(|name| name == "test/scope_echo");
+        state.observed_task_ids.push(
+            context
+                .scope
+                .task_id_opt()
+                .map(|id| id.as_str().to_string()),
+        );
+        drop(state);
+        submission.intent_id = IntentId::from("intent-canon");
+        Ok(submission)
+    }
+
+    async fn resolve_plan(
+        &self,
+        context: &PlanningDynamicContext,
+        mut submission: CanonicalPlanSubmission,
+    ) -> baml_rt_core::Result<CanonicalPlanSubmission> {
+        let mut state = self.observation.lock().expect("resolver observation lock");
+        state.plan_saw_scope_echo = context
+            .available_tools
+            .iter()
+            .any(|name| name == "test/scope_echo");
+        state.observed_task_ids.push(
+            context
+                .scope
+                .task_id_opt()
+                .map(|id| id.as_str().to_string()),
+        );
+        drop(state);
+        submission.intent_id = IntentId::from("intent-canon");
+        submission.plan_id = PlanId::from("plan-canon");
+        submission.steps = json!([{ "step_id": "step-canon", "description": "Canonical step", "order": 0, "depends_on": [] }]);
+        Ok(submission)
+    }
+
+    async fn resolve_step_status(
+        &self,
+        context: &PlanningDynamicContext,
+        mut submission: CanonicalPlanStepStatusChange,
+    ) -> baml_rt_core::Result<CanonicalPlanStepStatusChange> {
+        let mut state = self.observation.lock().expect("resolver observation lock");
+        state.step_saw_scope_echo = context
+            .available_tools
+            .iter()
+            .any(|name| name == "test/scope_echo");
+        state.observed_task_ids.push(
+            context
+                .scope
+                .task_id_opt()
+                .map(|id| id.as_str().to_string()),
+        );
+        drop(state);
+        submission.intent_id = IntentId::from("intent-canon");
+        submission.plan_id = PlanId::from("plan-canon");
+        submission.step_id = PlanStepId::from("step-canon");
+        Ok(submission)
+    }
+}
+
 /// Regression test for error-path cleanup in `invoke_js_function_stream`.
 ///
 /// If a stream invocation fails (e.g. missing JS function), the permit, session map
@@ -371,8 +622,7 @@ async fn test_failed_stream_does_not_leak_state() {
     {
         let mut guard = bridge.lock().await;
         guard
-            .evaluate(
-                None,
+            .eval_sync(
                 r#"
             globalThis.onChatMessage = async function(args) {
                 __chat_yield({
@@ -412,14 +662,17 @@ async fn test_failed_stream_does_not_leak_state() {
             .expect("invoke after failed stream should succeed")
     };
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let (_abort_tx, abort_rx) = tokio::sync::mpsc::channel(1);
     baml_rt_quickjs::collect_into_channel_owned(
         bridge.clone(),
         session_id,
         yield_rx,
         tx,
+        abort_rx,
         None,
         None,
         scope,
+        baml_rt_quickjs::HandoverSender::noop(),
     )
     .await
     .expect("collect after failed stream should succeed");
@@ -524,8 +777,7 @@ async fn test_stream_finalize_closes_tool_sessions_no_leak() {
 
         // onChatMessage opens a tool session then yields a terminal chunk so collector finalizes.
         guard
-            .evaluate(
-                None,
+            .eval_sync(
                 r#"
             globalThis.onChatMessage = async function(args) {
                 await __tool_session_open('test/scope_echo', '{}');
@@ -552,8 +804,17 @@ async fn test_stream_finalize_closes_tool_sessions_no_leak() {
     };
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
+    let (_abort_tx, abort_rx) = tokio::sync::mpsc::channel(1);
     baml_rt_quickjs::collect_into_channel_owned(
-        bridge, session_id, yield_rx, tx, None, None, scope,
+        bridge,
+        session_id,
+        yield_rx,
+        tx,
+        abort_rx,
+        None,
+        None,
+        scope,
+        baml_rt_quickjs::HandoverSender::noop(),
     )
     .await
     .expect("collect");
@@ -589,10 +850,7 @@ async fn test_tool_session_plan_requires_manifest_mapping() {
 
     // Minimal plan with only FSM operations.
     let plan = json!({
-        "steps": [
-            { "op": "open", "initial_input": {} },
-            { "op": "finish" }
-        ]
+        "step": { "op": "open", "initial_input": {} }
     });
 
     let agent_id =
@@ -601,7 +859,7 @@ async fn test_tool_session_plan_requires_manifest_mapping() {
 
     let result = context::with_scope(scope.as_scope().clone(), async {
         manager
-            .execute_tool_from_baml_result_or_value(scope.as_scope(), plan, None)
+            .execute_tool_from_baml_result_or_value(scope.as_scope(), plan, None, None)
             .await
     })
     .await;
@@ -621,7 +879,7 @@ async fn test_tool_session_plan_requires_manifest_mapping() {
     tracing::info!("✅ ToolSessionPlan enforces manifest mapping with no metadata fallback");
 }
 
-/// Full plan [Open, Send, Next, Finish] must run Finish so the session is closed (regression for session_id cleared on Done).
+/// Strict-mode sequence must execute one fragment per invocation: Open -> Send -> Read -> Finish.
 #[tokio::test]
 async fn test_tool_session_plan_open_send_next_finish_runs_finish() {
     use baml_rt::baml::BamlRuntimeManager;
@@ -637,31 +895,241 @@ async fn test_tool_session_plan_open_send_next_finish_runs_finish() {
     );
     manager.set_session_plan_functions(Some(map));
 
-    let plan = json!({
-        "steps": [
-            { "op": "Open", "initial_input": {} },
-            { "op": "Send", "input": { "text": "ping" } },
-            { "op": "Next" },
-            { "op": "Finish" }
-        ]
-    });
-
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000021").unwrap());
     let scope = InvocationScope::synthetic_message(agent_id);
 
-    let result = context::with_scope(scope.as_scope().clone(), async {
+    let open = context::with_scope(scope.as_scope().clone(), async {
         manager
-            .execute_tool_from_baml_result_or_value(scope.as_scope(), plan, Some("EchoPlanFn"))
+            .execute_tool_from_baml_result_or_value(
+                scope.as_scope(),
+                json!({ "step": { "op": "Open", "initial_input": {} } }),
+                Some("EchoPlanFn"),
+                None,
+            )
             .await
     })
-    .await;
+    .await
+    .expect("strict Open should succeed");
+    assert_eq!(open.get("status").and_then(Value::as_str), Some("open"));
 
-    let value = result.expect("full plan Open/Send/Next/Finish should succeed");
+    let sent = context::with_scope(scope.as_scope().clone(), async {
+        manager
+            .execute_tool_from_baml_result_or_value(
+                scope.as_scope(),
+                json!({ "step": { "op": "Send", "input": { "text": "ping" } } }),
+                Some("EchoPlanFn"),
+                None,
+            )
+            .await
+    })
+    .await
+    .expect("strict Send should succeed");
+    assert_eq!(sent.get("status").and_then(Value::as_str), Some("sent"));
+
+    let read = context::with_scope(scope.as_scope().clone(), async {
+        manager
+            .execute_tool_from_baml_result_or_value(
+                scope.as_scope(),
+                json!({ "step": { "op": "Read", "input": {} } }),
+                Some("EchoPlanFn"),
+                None,
+            )
+            .await
+    })
+    .await
+    .expect("strict Read should succeed");
+    assert_eq!(read.get("status").and_then(Value::as_str), Some("done"));
     assert!(
-        value.get("context_id").is_some() || value.get("message_id").is_some() || !value.is_null(),
-        "expected echo output, got {:?}",
-        value
+        read.get("output").is_some(),
+        "Read should include output payload"
+    );
+
+    let finish = context::with_scope(scope.as_scope().clone(), async {
+        manager
+            .execute_tool_from_baml_result_or_value(
+                scope.as_scope(),
+                json!({ "step": { "op": "Finish" } }),
+                Some("EchoPlanFn"),
+                None,
+            )
+            .await
+    })
+    .await
+    .expect("strict Finish should succeed");
+    assert_eq!(
+        finish.get("status").and_then(Value::as_str),
+        Some("finished"),
+        "Finish must close session"
+    );
+}
+
+#[tokio::test]
+async fn test_runtime_canonical_planning_uses_custom_resolver_and_dynamic_context() {
+    let mut manager = BamlRuntimeManager::new().expect("create runtime manager");
+    manager
+        .register_tool(ScopeEchoTool)
+        .await
+        .expect("register scope echo tool");
+    let effect_bus = Arc::new(BusWithEffects::new());
+    let store = GraphqliteStoreBuilder::in_memory()
+        .build()
+        .expect("build in-memory provenance store");
+    effect_bus
+        .subscribe_effect_subscriber(Arc::new(ProvenanceEffectSubscriber::new(store.clone())))
+        .await;
+    manager.set_effect_emitter(effect_bus as Arc<dyn EffectEmitter>);
+
+    let observation = Arc::new(StdMutex::new(ResolverObservation::default()));
+    manager.set_planning_resolver(Arc::new(CanonicalizingResolver {
+        observation: observation.clone(),
+    }));
+
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000aa13").unwrap());
+    let context_id = ContextId::new(9_004, 1);
+    let message_id = MessageId::from_external(ExternalId::new("msg-planning-canonical"));
+    let task_id = TaskId::from_external(ExternalId::new("task-planning-canonical"));
+    let scope = RuntimeScope::task_scope(
+        context_id.clone(),
+        agent_id.clone(),
+        message_id.clone(),
+        task_id.clone(),
+    );
+
+    store
+        .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+        .await
+        .expect("task exists");
+    store
+        .add_event(ProvEvent::task_execution_started(
+            context_id.clone(),
+            task_id.clone(),
+            agent_id.clone(),
+        ))
+        .await
+        .expect("task execution started");
+    store
+        .add_event(ProvEvent::message_received_task(
+            context_id.clone(),
+            task_id.clone(),
+            message_id.clone(),
+            "user".to_string(),
+            vec!["Resolve canonically".to_string()],
+            None,
+            agent_id.clone(),
+            1_700_000_010_101,
+        ))
+        .await
+        .expect("message received");
+
+    manager
+        .emit_planning_intent_resolved(
+            &scope,
+            "intent-raw".to_string(),
+            "raw description".to_string(),
+            vec![message_id.as_str().to_string()],
+            None,
+            None,
+        )
+        .await
+        .expect("intent resolved");
+    manager
+        .emit_planning_plan_generated(
+            &scope,
+            "intent-raw".to_string(),
+            "plan-raw".to_string(),
+            json!([{ "step_id": "step-raw", "description": "raw", "order": 0, "depends_on": [] }]),
+            None,
+            None,
+        )
+        .await
+        .expect("plan generated");
+    manager
+        .emit_planning_step_status_changed(
+            &scope,
+            "intent-raw".to_string(),
+            "plan-raw".to_string(),
+            "step-raw".to_string(),
+            Some("pending".to_string()),
+            "completed".to_string(),
+            "evidence".to_string(),
+            None,
+        )
+        .await
+        .expect("step status changed");
+
+    let mut params = serde_json::Map::new();
+    params.insert(
+        "context_id".to_string(),
+        Value::String(context_id.as_str().to_string()),
+    );
+    params.insert(
+        "task_id".to_string(),
+        Value::String(task_id.as_str().to_string()),
+    );
+    params.insert(
+        "intent_id".to_string(),
+        Value::String("intent-canon".to_string()),
+    );
+    params.insert(
+        "plan_id".to_string(),
+        Value::String("plan-canon".to_string()),
+    );
+    params.insert(
+        "step_id".to_string(),
+        Value::String("step-canon".to_string()),
+    );
+    let rows = store
+        .run_cypher_read(
+            "MATCH (i:Intent), (p:Plan), (s:PlanStep) \
+             WHERE i.a2a_context_id = $context_id \
+               AND i.a2a_task_id = $task_id \
+               AND i.a2a_intent_id = $intent_id \
+               AND p.a2a_context_id = $context_id \
+               AND p.a2a_task_id = $task_id \
+               AND p.a2a_plan_id = $plan_id \
+               AND p.a2a_intent_id = $intent_id \
+               AND s.a2a_context_id = $context_id \
+               AND s.a2a_task_id = $task_id \
+               AND s.a2a_plan_id = $plan_id \
+               AND s.a2a_step_id = $step_id \
+             RETURN count(i) AS intent_count, count(p) AS plan_count, count(s) AS step_count",
+            &params,
+        )
+        .await
+        .expect("query canonical planning nodes");
+    let row = rows.iter().next().expect("canonical row");
+    let intent_count: Option<i64> = row.get("intent_count").ok();
+    let plan_count: Option<i64> = row.get("plan_count").ok();
+    let step_count: Option<i64> = row.get("step_count").ok();
+    assert_eq!(intent_count, Some(1));
+    assert_eq!(plan_count, Some(1));
+    assert_eq!(step_count, Some(1));
+
+    let seen = observation
+        .lock()
+        .expect("resolver observation lock")
+        .clone();
+    assert!(
+        seen.intent_saw_scope_echo,
+        "intent resolver must see tool inventory"
+    );
+    assert!(
+        seen.plan_saw_scope_echo,
+        "plan resolver must see tool inventory"
+    );
+    assert!(
+        seen.step_saw_scope_echo,
+        "step resolver must see tool inventory"
+    );
+    assert_eq!(
+        seen.observed_task_ids,
+        vec![
+            Some(task_id.as_str().to_string()),
+            Some(task_id.as_str().to_string()),
+            Some(task_id.as_str().to_string())
+        ]
     );
 }
 
@@ -685,9 +1153,14 @@ async fn test_invoke_function_with_explicit_scope_fails_for_missing_function() {
     let invoke_scope = InvocationScope::synthetic_message(AgentId::from_uuid(
         UuidId::parse_str("00000000-0000-0000-0000-000000000031").unwrap(),
     ));
-    let result = bridge
-        .invoke_function(&invoke_scope, "SomeFunction", json!({}))
-        .await;
+    let bridge = Arc::new(Mutex::new(bridge));
+    let result = QuickJSBridge::invoke_js_function_nonblocking(
+        bridge,
+        &invoke_scope,
+        "SomeFunction",
+        json!({}),
+    )
+    .await;
     match result {
         Err(err) => {
             let msg = err.to_string();

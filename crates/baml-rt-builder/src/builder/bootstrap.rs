@@ -136,6 +136,7 @@ fn manifest_json(name: &str, description: &str, tools: &[String]) -> String {
         Some(ManifestDiscovery {
             description: Some(description.to_string()),
             capabilities: Vec::new(),
+            subscriptions: Vec::new(),
         })
     };
     let manifest = AgentManifest {

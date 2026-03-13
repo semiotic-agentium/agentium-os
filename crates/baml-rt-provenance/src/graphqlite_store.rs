@@ -6,24 +6,12 @@
 //! The store is `Send + Sync` via a channel to that
 //! worker. Read path uses strong-typed row extraction via GraphQLite's `Row::get`.
 //!
-//! ## Concurrency caveats (GraphQLite extension, not SQLite)
+//! ## Concurrency model
 //!
-//! **We serialize all Cypher execution in the process.** The GraphQLite extension's
-//! generated Cypher scanner (Flex) uses **process-global mutable state** (e.g.
-//! `current_scanner`, `current_token`, line/column globals). Concurrent Cypher
-//! parses in the same process can corrupt that state and produce parse errors or
-//! crashes. SQLite is fine with multiple connections; the extension's parser is not.
-//!
-//! **What we do:** On the **async host** we use a process-global `tokio::sync::Mutex`
-//! so only one Cypher request (read or write) is in flight at a time. The caller
-//! holds the lock (await) for the duration of send + reply; the actual Cypher run
-//! happens in a **dedicated worker thread** that owns the [Connection]. We do not
-//! block the async runtime with Cypher execution.
-//!
-//! **Upstream fix required:** This should be fixed in GraphQLite by making the
-//! scanner reentrant (Flex `%option reentrant` and per-call state) so that
-//! multiple threads or connections can parse Cypher concurrently. Until then we
-//! document the limitation and keep this single-lane design.
+//! Cypher execution is funneled through a dedicated worker thread that owns the
+//! GraphQLite connection. Requests are serialized by the worker queue itself
+//! (sync_channel ordering), so the async host does not take an additional global
+//! mutex before dispatch.
 //!
 //! **Backend.** [GraphqliteBackend] configures how stores are built:
 //! - **File:** one shared store per path; [build_store](GraphqliteBackend::build_store)
@@ -42,10 +30,13 @@ use std::{
 };
 
 use async_trait::async_trait;
-use baml_rt_core::ids::{AgentId, ContextId, EventId, MessageId, TaskId, UuidId};
+use baml_rt_core::{
+    bus::PlanningSupersessionKind,
+    ids::{AgentId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId},
+};
 use graphqlite::{Connection, CypherResult, Graph, Row, Value as GraphqliteValue};
 use serde_json::{Map, Value};
-use tokio::sync::{Mutex as TokioMutex, oneshot};
+use tokio::sync::oneshot;
 
 #[allow(unused_imports)] // AgentBootedEvent used in #[cfg(test)] mod tests
 use crate::{
@@ -62,11 +53,14 @@ use crate::{
     },
     spans,
     store::{
+        ActivityRef, ArchiveRef, PayloadRef, PlanningIntentRecord, PlanningPlanRecord,
+        PlanningPlanStepRecord, ProvenanceArchivePayload, ProvenanceArchiveRecord,
         ProvenanceContextMessage, ProvenanceContextReader, ProvenanceConversationContextItem,
         ProvenanceOpsQuery, ProvenanceOpsQueryRequest, ProvenanceOpsQueryResponse,
-        ProvenanceOpsResource, ProvenanceOutcomeSegment, ProvenanceQueryApi,
-        ProvenanceResponseProfile, ProvenanceWriter, ToolSessionPhase,
+        ProvenanceOpsResource, ProvenanceOutcomeSegment, ProvenancePlanningQuery,
+        ProvenanceQueryApi, ProvenanceResponseProfile, ProvenanceWriter, ToolSessionPhase,
     },
+    vocabulary::semantic_labels,
 };
 
 // Column names from ConversationReadModel RETURN clauses (storage-safe underscore form).
@@ -75,14 +69,12 @@ const MSG_COL_MESSAGE_ID: &str = "m.a2a_message_id";
 const MSG_COL_DIRECTION: &str = "m.a2a_direction";
 const MSG_COL_ROLE: &str = "m.a2a_role";
 const MSG_COL_CONTENT: &str = "m.a2a_content";
-const MSG_COL_AGENT_ID: &str = "m.a2a_agent_id";
 
 const TOOL_COL_EVENT_ID: &str = "t.a2a_event_id";
 const TOOL_COL_TOOL_NAME: &str = "t.a2a_tool_name";
 const TOOL_COL_METADATA: &str = "t.a2a_metadata";
 const TOOL_COL_ARGS: &str = "args.a2a_args";
 const TOOL_COL_ACTIVITY_OUTCOME: &str = "t.a2a_activity_outcome";
-const TOOL_COL_AGENT_ID: &str = "t.a2a_agent_id";
 const TOOL_COL_ROLE: &str = "used.prov_role";
 const TOOL_COL_TARGET_TYPE: &str = "args.prov_type";
 
@@ -118,6 +110,7 @@ const UPSERT_PAYLOAD_FTS_SQL: &str =
 const DELETE_PAYLOAD_FTS_SQL: &str = "DELETE FROM provenance_payload_fts WHERE payload_id = ?1";
 const SELECT_PAYLOAD_BY_ID_SQL: &str = "SELECT payload_id, event_id, activity_id, payload_kind, payload_json FROM provenance_payload WHERE payload_id = ?1";
 const SELECT_PAYLOAD_BY_EVENT_KIND_SQL: &str = "SELECT payload_id, event_id, activity_id, payload_kind, payload_json FROM provenance_payload WHERE event_id = ?1 AND payload_kind = ?2 LIMIT 1";
+const SELECT_PAYLOADS_BY_ACTIVITY_SQL: &str = "SELECT payload_id, event_id, activity_id, payload_kind, payload_json FROM provenance_payload WHERE activity_id = ?1 ORDER BY payload_kind";
 const SELECT_PAYLOAD_ACTIVITY_IDS_BY_TEXT_SQL: &str = "SELECT DISTINCT activity_id FROM provenance_payload_fts WHERE provenance_payload_fts MATCH ?1 AND activity_id IS NOT NULL";
 
 /// Public alias so downstream crates can avoid a direct graphqlite dependency.
@@ -152,6 +145,10 @@ enum WorkerRequest {
         String,
         oneshot::Sender<std::result::Result<Option<PayloadRecord>, graphqlite::Error>>,
     ),
+    ReadPayloadsByActivity(
+        String,
+        oneshot::Sender<std::result::Result<Vec<PayloadRecord>, graphqlite::Error>>,
+    ),
     SearchPayloadActivityIds(
         String,
         oneshot::Sender<std::result::Result<Vec<String>, graphqlite::Error>>,
@@ -170,11 +167,13 @@ pub struct GraphqliteProvenanceStore {
 struct MessageRow {
     event_id: String,
     message_id: String,
-    #[allow(dead_code)] // Part of query result; reserved for future filtering or display.
+    // `direction` is populated by the SQL query result but not yet consumed by any caller.
+    // #[allow(dead_code)] is a production smell; remove once this field is used for filtering
+    // or display (tracked with the rest of the conversation-direction query surface).
+    #[allow(dead_code)]
     direction: String,
     role: String,
     content: Value,
-    agent_id: Option<AgentId>,
 }
 
 #[derive(Debug, Clone)]
@@ -218,39 +217,6 @@ fn read_json_column(row: &Row, col: &str) -> std::result::Result<Value, graphqli
     Err(graphqlite::Error::ColumnNotFound(col.to_string()))
 }
 
-fn read_optional_string_column(row: &Row, col: &str) -> Option<String> {
-    if let Some(value) = row.get_value(col) {
-        return match graphqlite_value_to_json(value) {
-            Value::String(s) => {
-                let trimmed = s.trim();
-                if trimmed.is_empty() {
-                    None
-                } else {
-                    Some(trimmed.to_string())
-                }
-            }
-            Value::Null => None,
-            _ => None,
-        };
-    }
-    row.get::<String>(col).ok().and_then(|s| {
-        let trimmed = s.trim();
-        if trimmed.is_empty() {
-            None
-        } else {
-            Some(trimmed.to_string())
-        }
-    })
-}
-
-fn parse_agent_id_str(raw: &str) -> Option<AgentId> {
-    UuidId::parse_str(raw).ok().map(AgentId::from_uuid)
-}
-
-fn parse_agent_id_column(row: &Row, col: &str) -> Option<AgentId> {
-    read_optional_string_column(row, col).and_then(|raw| parse_agent_id_str(&raw))
-}
-
 fn parse_json_like_string(raw: &str) -> Value {
     let parsed =
         serde_json::from_str::<Value>(raw).unwrap_or_else(|_| Value::String(raw.to_string()));
@@ -274,6 +240,91 @@ fn init_payload_table(graph: &Graph) -> std::result::Result<(), graphqlite::Erro
 
 fn payload_id_for(event_id: &str, payload_kind: &str) -> String {
     format!("payload:{event_id}:{payload_kind}")
+}
+
+fn archive_ref_for_payload(payload_id: &str) -> String {
+    format!("prov:v1:payload:{payload_id}")
+}
+
+fn archive_ref_for_activity(activity_id: &str) -> String {
+    format!("prov:v1:activity:{activity_id}")
+}
+
+fn archive_payload_from_record(payload: PayloadRecord) -> Result<ProvenanceArchivePayload> {
+    let payload_ref = PayloadRef(archive_ref_for_payload(payload.payload_id.as_str()));
+    let activity_id = payload
+        .activity_id
+        .ok_or_else(|| ProvenanceError::InvalidEvent {
+            event_id: payload.event_id.clone(),
+            reason: format!(
+                "payload {} missing activity_id for kind {}",
+                payload.payload_id, payload.payload_kind
+            ),
+        })?;
+    let activity_ref = ActivityRef(archive_ref_for_activity(activity_id.as_str()));
+    let payload_json = payload.payload_json;
+    let parsed = parse_json_like_string(&payload_json);
+    match payload.payload_kind.as_str() {
+        "llm_call" => Ok(ProvenanceArchivePayload::LlmCall {
+            payload_ref,
+            activity_ref,
+            prompt_json: payload_json,
+        }),
+        "llm_result" => Ok(ProvenanceArchivePayload::LlmResult {
+            payload_ref,
+            activity_ref,
+            result_json: payload_json,
+        }),
+        "tool_call" => {
+            let tool_name = parsed
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let phase = parsed
+                .get("phase")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let args = parsed.get("args").cloned().unwrap_or(Value::Null);
+            let args_json = serde_json::to_string(&args).unwrap_or_else(|_| "null".to_string());
+            Ok(ProvenanceArchivePayload::ToolCall {
+                payload_ref,
+                activity_ref,
+                tool_name,
+                phase,
+                args_json,
+            })
+        }
+        "tool_result" => Ok(ProvenanceArchivePayload::ToolResult {
+            payload_ref,
+            activity_ref,
+            result_json: payload_json,
+        }),
+        other => Err(ProvenanceError::InvalidEvent {
+            event_id: payload.event_id.clone(),
+            reason: format!("unsupported payload_kind for archive retrieval: {other}"),
+        }),
+    }
+}
+
+enum ParsedArchiveRef<'a> {
+    PayloadId(&'a str),
+    ActivityId(&'a str),
+}
+
+fn parse_archive_ref(archive_ref: &str) -> Option<ParsedArchiveRef<'_>> {
+    if let Some(payload_id) = archive_ref.strip_prefix("prov:v1:payload:") {
+        if payload_id.is_empty() {
+            return None;
+        }
+        return Some(ParsedArchiveRef::PayloadId(payload_id));
+    }
+    if let Some(activity_id) = archive_ref.strip_prefix("prov:v1:activity:") {
+        if activity_id.is_empty() {
+            return None;
+        }
+        return Some(ParsedArchiveRef::ActivityId(activity_id));
+    }
+    None
 }
 
 fn payload_records_from_event(event: &crate::events::ProvEvent) -> Vec<PayloadRecord> {
@@ -375,14 +426,12 @@ impl MessageRow {
         let direction: String = row.get(MSG_COL_DIRECTION)?;
         let role: String = row.get(MSG_COL_ROLE)?;
         let content = read_json_column(row, MSG_COL_CONTENT)?;
-        let agent_id = parse_agent_id_column(row, MSG_COL_AGENT_ID);
         Ok(Self {
             event_id,
             message_id,
             direction,
             role,
             content,
-            agent_id,
         })
     }
 }
@@ -393,7 +442,6 @@ struct ToolCallRow {
     tool_name: String,
     metadata: Value,
     args: Value,
-    agent_id: Option<AgentId>,
     role: String,
     target_type: String,
     activity_outcome: Option<NodeActivityOutcome>,
@@ -422,12 +470,6 @@ impl ToolCallRow {
         let tool_name: String = row.get(TOOL_COL_TOOL_NAME)?;
         let metadata = read_json_column(row, TOOL_COL_METADATA)?;
         let args = read_json_column(row, TOOL_COL_ARGS)?;
-        let agent_id = parse_agent_id_column(row, TOOL_COL_AGENT_ID).or_else(|| {
-            metadata
-                .get("agent_id")
-                .and_then(Value::as_str)
-                .and_then(parse_agent_id_str)
-        });
         let role: String = row.get(TOOL_COL_ROLE).unwrap_or_default();
         let target_type: String = row.get(TOOL_COL_TARGET_TYPE).unwrap_or_default();
         let activity_outcome = decode_activity_outcome(row, TOOL_COL_ACTIVITY_OUTCOME);
@@ -436,7 +478,6 @@ impl ToolCallRow {
             tool_name,
             metadata,
             args,
-            agent_id,
             role,
             target_type,
             activity_outcome,
@@ -578,6 +619,9 @@ pub enum GraphqliteBackend {
     File(GraphqliteStoreConfig),
     /// In-memory shared: first [build_store] creates one connection and one worker; subsequent calls return a clone of the same store. Serialized access (single worker).
     InMemoryShared,
+    /// Fresh isolated in-memory store. Each [build_store] call creates a brand-new SQLite `:memory:`
+    /// connection with its own worker thread — never cached. Suitable for tests.
+    InMemoryIsolated,
 }
 
 impl GraphqliteBackend {
@@ -592,6 +636,7 @@ impl GraphqliteBackend {
     }
 
     /// Build a store. File: one shared store per path (one connection/worker). InMemoryShared: shared store, cloned.
+    /// InMemoryIsolated: fresh store per call, never cached.
     /// `mermaid_cache` is applied to file-backed config for add_event invalidation.
     pub fn build_store(
         &self,
@@ -614,18 +659,29 @@ impl GraphqliteBackend {
                 get_or_init_file_store(path, config)
             }
             GraphqliteBackend::InMemoryShared => get_or_init_shared_in_memory_store(),
+            GraphqliteBackend::InMemoryIsolated => {
+                build_store_from_config(&GraphqliteStoreConfig::in_memory())
+            }
         }
     }
 }
 
-/// Serializes connection open only. GraphQLite loads its extension per connection;
-/// concurrent opens can race in the extension's C init.
-static EXTENSION_LOAD_SERIAL: Mutex<()> = Mutex::new(());
-
-/// Serializes Cypher requests on the async host. Only one Cypher (read or write)
-/// runs at a time in the process; the caller holds this lock for send + await reply.
-/// The worker thread runs Cypher without a mutex. Initialized on first use.
-static CYPHER_REQUEST_SERIAL: OnceLock<TokioMutex<()>> = OnceLock::new();
+/// Process-wide serialization for all GraphQLite Cypher operations.
+///
+/// The graphqlite C extension contains global mutable state (query parser,
+/// string pool) that is not safe for concurrent use from multiple worker
+/// threads within the same process. Concurrent `run_cypher` calls produce
+/// "Failed to set property" and "no such column" errors.
+///
+/// This mutex is held:
+/// 1. During connection open / extension load (`build_store_from_config`).
+/// 2. During every Cypher read/write in the worker thread loop.
+///
+/// Throughput impact is negligible because in production there is typically
+/// one store per agent process and each store already has one worker thread.
+/// In tests, nextest `test-group = "provenance"` (max-threads = 1) limits
+/// cross-test concurrency, eliminating mutex contention.
+static GRAPHQLITE_SERIAL: Mutex<()> = Mutex::new(());
 
 /// One shared store per file path. Values are Result so we cache init failures and propagate (no unwrap).
 type FileStoreEntry = std::result::Result<Arc<GraphqliteProvenanceStore>, String>;
@@ -669,9 +725,9 @@ fn build_store_from_config(
     config: &GraphqliteStoreConfig,
 ) -> Result<Arc<GraphqliteProvenanceStore>> {
     let graph = {
-        let _guard = EXTENSION_LOAD_SERIAL.lock().map_err(|e| {
+        let _guard = GRAPHQLITE_SERIAL.lock().map_err(|e| {
             ProvenanceError::Storage(Box::new(std::io::Error::other(format!(
-                "extension load mutex poisoned: {e:?}",
+                "graphqlite serial mutex poisoned: {e:?}",
             ))))
         })?;
         GraphqliteProvenanceStore::open_graph(config).map_err(map_graphqlite_error)?
@@ -684,9 +740,17 @@ fn build_store_from_config(
             match req {
                 WorkerRequest::ReadWithParams(query, params, reply) => {
                     let span = spans::cypher_execute(&query, &Value::Object(params.clone()));
-                    let _guard = span.enter();
+                    let _span_guard = span.enter();
                     tracing::debug!(query_text = %query, params = ?params, "cypher execute");
-                    let result = run_query_builder_with_params(&graph, &query, &params);
+                    // Serialise all Cypher calls process-wide: the graphqlite C extension
+                    // maintains shared global state during query execution that is not safe
+                    // for concurrent access from multiple worker threads.
+                    let result = match GRAPHQLITE_SERIAL.lock() {
+                        Ok(_serial) => run_query_builder_with_params(&graph, &query, &params),
+                        Err(e) => Err(graphqlite::Error::Cypher(format!(
+                            "graphqlite serial mutex poisoned: {e}"
+                        ))),
+                    };
                     if reply.send(result).is_err() {
                         tracing::debug!(
                             "worker reply dropped (caller likely timed out or dropped)"
@@ -695,9 +759,16 @@ fn build_store_from_config(
                 }
                 WorkerRequest::Write(query, params, reply) => {
                     let span = spans::cypher_execute(&query, &Value::Object(params.clone()));
-                    let _guard = span.enter();
+                    let _span_guard = span.enter();
                     tracing::debug!(query_text = %query, params = ?params, "cypher execute");
-                    let result = run_query_builder_with_params(&graph, &query, &params).map(|_| ());
+                    let result = match GRAPHQLITE_SERIAL.lock() {
+                        Ok(_serial) => {
+                            run_query_builder_with_params(&graph, &query, &params).map(|_| ())
+                        }
+                        Err(e) => Err(graphqlite::Error::Cypher(format!(
+                            "graphqlite serial mutex poisoned: {e}"
+                        ))),
+                    };
                     if reply.send(result).is_err() {
                         tracing::debug!(
                             "worker reply dropped (caller likely timed out or dropped)"
@@ -802,6 +873,59 @@ fn build_store_from_config(
                         );
                     }
                 }
+                WorkerRequest::ReadPayloadsByActivity(activity_id, reply) => {
+                    let mut stmt = match graph
+                        .connection()
+                        .sqlite_connection()
+                        .prepare(SELECT_PAYLOADS_BY_ACTIVITY_SQL)
+                    {
+                        Ok(stmt) => stmt,
+                        Err(e) => {
+                            // Caller may have timed out or cancelled; send failure is non-fatal.
+                            if reply.send(Err(graphqlite::Error::from(e))).is_err() {
+                                tracing::debug!(
+                                    "query reply dropped before prepare error could be sent"
+                                );
+                            }
+                            continue;
+                        }
+                    };
+                    let mapped = stmt.query_map([activity_id.as_str()], |row| {
+                        Ok(PayloadRecord {
+                            payload_id: row.get::<_, String>(0)?,
+                            event_id: row.get::<_, String>(1)?,
+                            activity_id: row.get::<_, Option<String>>(2)?,
+                            payload_kind: row.get::<_, String>(3)?,
+                            payload_json: row.get::<_, String>(4)?,
+                        })
+                    });
+                    let result = match mapped {
+                        Ok(iter) => {
+                            let mut records = Vec::new();
+                            let mut row_error: Option<graphqlite::Error> = None;
+                            for item in iter {
+                                match item {
+                                    Ok(record) => records.push(record),
+                                    Err(e) => {
+                                        row_error = Some(graphqlite::Error::from(e));
+                                        break;
+                                    }
+                                }
+                            }
+                            if let Some(err) = row_error {
+                                Err(err)
+                            } else {
+                                Ok(records)
+                            }
+                        }
+                        Err(e) => Err(graphqlite::Error::from(e)),
+                    };
+                    if reply.send(result).is_err() {
+                        tracing::debug!(
+                            "worker reply dropped (caller likely timed out or dropped)"
+                        );
+                    }
+                }
                 WorkerRequest::SearchPayloadActivityIds(query_text, reply) => {
                     let mut stmt = match graph
                         .connection()
@@ -810,7 +934,12 @@ fn build_store_from_config(
                     {
                         Ok(stmt) => stmt,
                         Err(e) => {
-                            let _ = reply.send(Err(graphqlite::Error::from(e)));
+                            // Caller may have timed out or cancelled; send failure is non-fatal.
+                            if reply.send(Err(graphqlite::Error::from(e))).is_err() {
+                                tracing::debug!(
+                                    "query reply dropped before prepare error could be sent"
+                                );
+                            }
                             continue;
                         }
                     };
@@ -845,14 +974,11 @@ fn build_store_from_config(
 
 impl GraphqliteProvenanceStore {
     /// Run a parameterized read Cypher query (no manual escaping).
-    /// Serialized process-wide via CYPHER_REQUEST_SERIAL so only one Cypher runs at a time.
     async fn run_cypher_with_params(
         &self,
         query: &str,
         params: &QueryParams,
     ) -> Result<CypherResult> {
-        let serial = CYPHER_REQUEST_SERIAL.get_or_init(|| TokioMutex::new(()));
-        let _guard = serial.lock().await;
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
             .send(WorkerRequest::ReadWithParams(
@@ -883,10 +1009,7 @@ impl GraphqliteProvenanceStore {
     }
 
     /// Run a parameterized write Cypher query via the worker thread (no manual escaping).
-    /// Serialized process-wide via CYPHER_REQUEST_SERIAL so only one Cypher runs at a time.
     async fn run_cypher_write(&self, query: &str, params: &QueryParams) -> Result<()> {
-        let serial = CYPHER_REQUEST_SERIAL.get_or_init(|| TokioMutex::new(()));
-        let _guard = serial.lock().await;
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
             .send(WorkerRequest::Write(
@@ -907,8 +1030,6 @@ impl GraphqliteProvenanceStore {
     }
 
     async fn upsert_payload(&self, payload: PayloadRecord) -> Result<()> {
-        let serial = CYPHER_REQUEST_SERIAL.get_or_init(|| TokioMutex::new(()));
-        let _guard = serial.lock().await;
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
             .send(WorkerRequest::UpsertPayload(payload, reply_tx))
@@ -920,8 +1041,6 @@ impl GraphqliteProvenanceStore {
     }
 
     async fn read_payload_by_id(&self, payload_id: &str) -> Result<Option<PayloadRecord>> {
-        let serial = CYPHER_REQUEST_SERIAL.get_or_init(|| TokioMutex::new(()));
-        let _guard = serial.lock().await;
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
             .send(WorkerRequest::ReadPayloadById(
@@ -940,8 +1059,6 @@ impl GraphqliteProvenanceStore {
         event_id: &str,
         payload_kind: &str,
     ) -> Result<Option<PayloadRecord>> {
-        let serial = CYPHER_REQUEST_SERIAL.get_or_init(|| TokioMutex::new(()));
-        let _guard = serial.lock().await;
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
             .send(WorkerRequest::ReadPayloadByEventKind(
@@ -956,9 +1073,21 @@ impl GraphqliteProvenanceStore {
         result.map_err(map_graphqlite_error)
     }
 
+    async fn read_payloads_by_activity(&self, activity_id: &str) -> Result<Vec<PayloadRecord>> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.request_tx
+            .send(WorkerRequest::ReadPayloadsByActivity(
+                activity_id.to_string(),
+                reply_tx,
+            ))
+            .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
+        let result = reply_rx
+            .await
+            .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
+        result.map_err(map_graphqlite_error)
+    }
+
     async fn search_payload_activity_ids(&self, payload_text_query: &str) -> Result<Vec<String>> {
-        let serial = CYPHER_REQUEST_SERIAL.get_or_init(|| TokioMutex::new(()));
-        let _guard = serial.lock().await;
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
             .send(WorkerRequest::SearchPayloadActivityIds(
@@ -1013,6 +1142,145 @@ impl GraphqliteProvenanceStore {
                 reason: format!("task agent instance id invalid UUID: {agent_id_str:?}"),
             })
     }
+
+    async fn enforce_step_completion_gate(&self, event: &crate::events::ProvEvent) -> Result<()> {
+        let crate::events::ProvEventData::PlanStepStatusChanged {
+            task_id,
+            plan_id,
+            step_id,
+            new_status,
+            ..
+        } = event.data()
+        else {
+            return Ok(());
+        };
+
+        if !is_step_completed_status(new_status) {
+            return Ok(());
+        }
+
+        let context_id = event.context_id().as_str().to_string();
+        let deps = self
+            .fetch_step_dependencies(task_id.as_str(), plan_id.as_str(), step_id.as_str())
+            .await?;
+        for dep in deps {
+            let completed = self
+                .is_step_completed(task_id.as_str(), plan_id.as_str(), dep.as_str())
+                .await?;
+            if !completed {
+                return Err(ProvenanceError::InvalidEvent {
+                    event_id: event.id().as_str().to_string(),
+                    reason: format!(
+                        "step completion rejected: dependency step not completed (plan_id={plan_id}, step_id={step_id}, depends_on={dep})"
+                    ),
+                });
+            }
+        }
+
+        let has_evidence = self
+            .has_terminal_step_evidence(
+                &context_id,
+                task_id.as_str(),
+                plan_id.as_str(),
+                step_id.as_str(),
+            )
+            .await?;
+        if !has_evidence {
+            return Err(ProvenanceError::InvalidEvent {
+                event_id: event.id().as_str().to_string(),
+                reason: format!(
+                    "step completion rejected: no terminal LLM/tool evidence linked to step (plan_id={plan_id}, step_id={step_id})"
+                ),
+            });
+        }
+
+        Ok(())
+    }
+
+    async fn fetch_step_dependencies(
+        &self,
+        task_id: &str,
+        plan_id: &str,
+        step_id: &str,
+    ) -> Result<Vec<String>> {
+        let query = "MATCH (s:PlanStep) \
+            WHERE s.a2a_task_id = $task_id AND s.a2a_plan_id = $plan_id AND s.a2a_step_id = $step_id \
+            RETURN s.a2a_depends_on AS deps LIMIT 1";
+        let params = serde_json::json!({
+            "task_id": task_id,
+            "plan_id": plan_id,
+            "step_id": step_id,
+        });
+        let params = require_object_params(&params)?;
+        let rows = self.run_cypher_with_params(query, &params).await?;
+        let Some(row) = rows.iter().next() else {
+            return Ok(Vec::new());
+        };
+        let deps_raw: Option<String> = row.get("deps").ok();
+        let deps = deps_raw
+            .map(|raw| parse_json_like_string(&raw))
+            .and_then(|value| value.as_array().cloned())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Ok(deps)
+    }
+
+    async fn is_step_completed(&self, task_id: &str, plan_id: &str, step_id: &str) -> Result<bool> {
+        let query = "MATCH (s:PlanStep) \
+            WHERE s.a2a_task_id = $task_id AND s.a2a_plan_id = $plan_id AND s.a2a_step_id = $step_id \
+            RETURN s.a2a_status AS status LIMIT 1";
+        let params = serde_json::json!({
+            "task_id": task_id,
+            "plan_id": plan_id,
+            "step_id": step_id,
+        });
+        let params = require_object_params(&params)?;
+        let rows = self.run_cypher_with_params(query, &params).await?;
+        let Some(row) = rows.iter().next() else {
+            return Ok(false);
+        };
+        let status: String = row.get("status").unwrap_or_default();
+        Ok(is_step_completed_status(&status))
+    }
+
+    async fn has_terminal_step_evidence(
+        &self,
+        context_id: &str,
+        task_id: &str,
+        plan_id: &str,
+        step_id: &str,
+    ) -> Result<bool> {
+        let query = "MATCH (c) \
+            WHERE (c:LlmCall OR c:ToolCall) \
+              AND c.a2a_context_id = $context_id \
+              AND c.a2a_task_id = $task_id \
+              AND c.a2a_plan_id = $plan_id \
+              AND c.a2a_step_id = $step_id \
+              AND c.a2a_activity_outcome = 'Success' \
+            RETURN c.id AS id LIMIT 1";
+        let params = serde_json::json!({
+            "context_id": context_id,
+            "task_id": task_id,
+            "plan_id": plan_id,
+            "step_id": step_id,
+        });
+        let params = require_object_params(&params)?;
+        let rows = self.run_cypher_with_params(query, &params).await?;
+        Ok(!rows.is_empty())
+    }
+}
+
+fn is_step_completed_status(status: &str) -> bool {
+    let normalized = status.trim().to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "completed" | "done" | "step_completed" | "finished"
+    )
 }
 
 #[async_trait]
@@ -1020,6 +1288,7 @@ impl ProvenanceWriter for GraphqliteProvenanceStore {
     async fn add_event(&self, event: crate::events::ProvEvent) -> Result<()> {
         let _start = Instant::now();
         validate_event(&event)?;
+        self.enforce_step_completion_gate(&event).await?;
         let mut payload_records = payload_records_from_event(&event);
         let context = match event.task_id() {
             Some(tid) => {
@@ -1138,7 +1407,6 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
             items.push(ProvenanceConversationContextItem {
                 timestamp_ms: event_id_to_timestamp_ms(&msg.event_id),
                 event_id: EventId::from(msg.event_id.as_str()),
-                agent_id: msg.agent_id.clone(),
                 role,
                 content: Value::String(content),
                 source: "message".to_string(),
@@ -1210,7 +1478,6 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
                 items.push(ProvenanceConversationContextItem {
                     timestamp_ms: event_id_to_timestamp_ms(&tool.event_id),
                     event_id: EventId::from(tool.event_id.as_str()),
-                    agent_id: tool.agent_id.clone(),
                     role: "assistant".to_string(),
                     content: serde_json::json!({
                         "tool_call": {
@@ -1239,7 +1506,6 @@ impl ProvenanceContextReader for GraphqliteProvenanceStore {
                 items.push(ProvenanceConversationContextItem {
                     timestamp_ms: event_id_to_timestamp_ms(&tool.event_id),
                     event_id: EventId::from(tool.event_id.as_str()),
-                    agent_id: tool.agent_id.clone(),
                     role: "tool".to_string(),
                     content: Value::Object(content),
                     source: "tool_result".to_string(),
@@ -1284,6 +1550,287 @@ impl ProvenanceQueryApi for GraphqliteProvenanceStore {
         limit: Option<usize>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
         ProvenanceContextReader::conversation_context(self, context_id, limit).await
+    }
+}
+
+fn decode_depends_on(raw: Option<String>) -> Vec<String> {
+    raw.map(|value| parse_json_like_string(&value))
+        .and_then(|value| value.as_array().cloned())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn event_order_key(event_id: &EventId) -> u128 {
+    let digits: String = event_id
+        .as_str()
+        .chars()
+        .filter(|ch| ch.is_ascii_digit())
+        .collect();
+    digits.parse::<u128>().unwrap_or(0)
+}
+
+impl GraphqliteProvenanceStore {
+    async fn query_plan_steps_for_task(
+        &self,
+        task_id: &TaskId,
+        plan_id: &str,
+    ) -> Result<Vec<PlanningPlanStepRecord>> {
+        let query = "MATCH (s:PlanStep) \
+            WHERE s.a2a_task_id = $task_id AND s.a2a_plan_id = $plan_id \
+            RETURN s.a2a_step_id AS step_id, s.prov_label AS description, \
+                   s.a2a_step_order AS step_order, s.a2a_depends_on AS depends_on, \
+                   s.a2a_status AS step_status \
+            ORDER BY s.a2a_step_order ASC";
+        let params = serde_json::json!({
+            "task_id": task_id.as_str(),
+            "plan_id": plan_id,
+        });
+        let params = require_object_params(&params)?;
+        let rows = self.run_cypher_with_params(query, &params).await?;
+        let mut steps = Vec::new();
+        for row in rows.iter() {
+            let step_id: Option<String> = row.get("step_id").ok();
+            let description: Option<String> = row.get("description").ok();
+            let step_order_raw: Option<i64> = row.get("step_order").ok();
+            let depends_on_raw: Option<String> = row.get("depends_on").ok();
+            let step_status: Option<String> = row.get("step_status").ok();
+            let Some(step_id) = step_id else {
+                continue;
+            };
+            steps.push(PlanningPlanStepRecord {
+                step_id,
+                description: description.unwrap_or_default(),
+                order: step_order_raw.unwrap_or_default().max(0) as u32,
+                depends_on: decode_depends_on(depends_on_raw),
+                status: step_status.unwrap_or_else(|| "unknown".to_string()),
+            });
+        }
+        Ok(steps)
+    }
+
+    async fn query_supersession_maps_for_label(
+        &self,
+        task_id: &TaskId,
+        node_label: &str,
+    ) -> Result<(
+        HashMap<String, PlanningSupersessionKind>,
+        HashMap<String, PlanningSupersessionKind>,
+    )> {
+        let label = match node_label {
+            "Intent" => "Intent",
+            "Plan" => "Plan",
+            _ => {
+                debug_assert!(false, "unsupported node label for supersession query");
+                return Ok((HashMap::new(), HashMap::new()));
+            }
+        };
+        let query = format!(
+            "MATCH (a:{label})-[r:{replaced_rel}]->(b:{label}) \
+             WHERE a.a2a_task_id = $task_id AND b.a2a_task_id = $task_id \
+             RETURN a.a2a_event_id AS source_event_id, b.a2a_event_id AS target_event_id, 'replaced_by' AS kind \
+             UNION \
+             MATCH (a:{label})-[r:{refined_rel}]->(b:{label}) \
+             WHERE a.a2a_task_id = $task_id AND b.a2a_task_id = $task_id \
+             RETURN a.a2a_event_id AS source_event_id, b.a2a_event_id AS target_event_id, 'refined_by' AS kind",
+            replaced_rel = semantic_labels::WAS_REPLACED_BY,
+            refined_rel = semantic_labels::WAS_REFINED_BY
+        );
+        let params = serde_json::json!({ "task_id": task_id.as_str() });
+        let params = require_object_params(&params)?;
+        let rows = self.run_cypher_with_params(&query, &params).await?;
+
+        let mut incoming = HashMap::new();
+        let mut outgoing = HashMap::new();
+        for row in rows.iter() {
+            let source_event_id: Option<String> = row.get("source_event_id").ok();
+            let target_event_id: Option<String> = row.get("target_event_id").ok();
+            let kind: Option<String> = row.get("kind").ok();
+            let (Some(source_event_id), Some(target_event_id), Some(kind)) =
+                (source_event_id, target_event_id, kind)
+            else {
+                continue;
+            };
+            let Some(kind) = (match kind.as_str() {
+                "replaced_by" => Some(PlanningSupersessionKind::ReplacedBy),
+                "refined_by" => Some(PlanningSupersessionKind::RefinedBy),
+                _ => None,
+            }) else {
+                continue;
+            };
+            incoming.entry(target_event_id).or_insert(kind);
+            outgoing.entry(source_event_id).or_insert(kind);
+        }
+        Ok((incoming, outgoing))
+    }
+}
+
+#[async_trait]
+impl ProvenancePlanningQuery for GraphqliteProvenanceStore {
+    async fn query_current_intent(&self, task_id: &TaskId) -> Result<Option<PlanningIntentRecord>> {
+        let intents = self.query_intent_history(task_id, Some(500)).await?;
+        if intents.is_empty() {
+            return Ok(None);
+        }
+        let query = format!(
+            "MATCH (a:Intent)-[r:{replaced_rel}]->(b:Intent) \
+             WHERE a.a2a_task_id = $task_id AND b.a2a_task_id = $task_id \
+             RETURN a.a2a_event_id AS source_event_id \
+             UNION \
+             MATCH (a:Intent)-[r:{refined_rel}]->(b:Intent) \
+             WHERE a.a2a_task_id = $task_id AND b.a2a_task_id = $task_id \
+             RETURN a.a2a_event_id AS source_event_id",
+            replaced_rel = semantic_labels::WAS_REPLACED_BY,
+            refined_rel = semantic_labels::WAS_REFINED_BY
+        );
+        let params = serde_json::json!({ "task_id": task_id.as_str() });
+        let params = require_object_params(&params)?;
+        let rows = self.run_cypher_with_params(&query, &params).await?;
+        let replaced_sources = rows
+            .iter()
+            .filter_map(|row| row.get::<String>("source_event_id").ok())
+            .collect::<HashSet<_>>();
+
+        Ok(intents
+            .into_iter()
+            .find(|intent| !replaced_sources.contains(intent.event_id.as_str())))
+    }
+
+    async fn query_current_plan(&self, task_id: &TaskId) -> Result<Option<PlanningPlanRecord>> {
+        let plans = self.query_plan_history(task_id, Some(500)).await?;
+        if plans.is_empty() {
+            return Ok(None);
+        }
+        let query = format!(
+            "MATCH (a:Plan)-[r:{replaced_rel}]->(b:Plan) \
+             WHERE a.a2a_task_id = $task_id AND b.a2a_task_id = $task_id \
+             RETURN a.a2a_event_id AS source_event_id \
+             UNION \
+             MATCH (a:Plan)-[r:{refined_rel}]->(b:Plan) \
+             WHERE a.a2a_task_id = $task_id AND b.a2a_task_id = $task_id \
+             RETURN a.a2a_event_id AS source_event_id",
+            replaced_rel = semantic_labels::WAS_REPLACED_BY,
+            refined_rel = semantic_labels::WAS_REFINED_BY
+        );
+        let params = serde_json::json!({ "task_id": task_id.as_str() });
+        let params = require_object_params(&params)?;
+        let rows = self.run_cypher_with_params(&query, &params).await?;
+        let replaced_sources = rows
+            .iter()
+            .filter_map(|row| row.get::<String>("source_event_id").ok())
+            .collect::<HashSet<_>>();
+
+        Ok(plans
+            .into_iter()
+            .find(|plan| !replaced_sources.contains(plan.event_id.as_str())))
+    }
+
+    async fn query_intent_history(
+        &self,
+        task_id: &TaskId,
+        limit: Option<usize>,
+    ) -> Result<Vec<PlanningIntentRecord>> {
+        let limit_val = limit.unwrap_or(100).max(1) as i64;
+        let query = "MATCH (i:Intent) \
+            WHERE i.a2a_task_id = $task_id \
+            RETURN i.a2a_context_id AS context_id, i.a2a_task_id AS task_id, \
+                   i.a2a_event_id AS event_id, i.a2a_intent_id AS intent_id, \
+                   i.prov_label AS description";
+        let params = serde_json::json!({
+            "task_id": task_id.as_str(),
+        });
+        let params = require_object_params(&params)?;
+        let rows = self.run_cypher_with_params(query, &params).await?;
+        let (intent_incoming, intent_outgoing) = self
+            .query_supersession_maps_for_label(task_id, "Intent")
+            .await?;
+        let mut intents = Vec::new();
+        for row in rows.iter() {
+            let context_id: Option<String> = row.get("context_id").ok();
+            let task_id_value: Option<String> = row.get("task_id").ok();
+            let event_id: Option<String> = row.get("event_id").ok();
+            let intent_id: Option<String> = row.get("intent_id").ok();
+            let description: Option<String> = row.get("description").ok();
+            let (Some(context_id), Some(task_id_value), Some(event_id), Some(intent_id)) =
+                (context_id, task_id_value, event_id, intent_id)
+            else {
+                continue;
+            };
+            intents.push(PlanningIntentRecord {
+                context_id: ContextId::from(context_id.as_str()),
+                task_id: TaskId::from_external(ExternalId::new(task_id_value)),
+                event_id: EventId::from(event_id.as_str()),
+                intent_id,
+                description: description.unwrap_or_default(),
+                supersession_from_previous: intent_incoming.get(&event_id).copied(),
+                superseded_by_next: intent_outgoing.get(&event_id).copied(),
+            });
+        }
+        intents.sort_by_key(|r| std::cmp::Reverse(event_order_key(&r.event_id)));
+        if intents.len() > limit_val as usize {
+            intents.truncate(limit_val as usize);
+        }
+        Ok(intents)
+    }
+
+    async fn query_plan_history(
+        &self,
+        task_id: &TaskId,
+        limit: Option<usize>,
+    ) -> Result<Vec<PlanningPlanRecord>> {
+        let limit_val = limit.unwrap_or(100).max(1) as i64;
+        let query = "MATCH (p:Plan) \
+            WHERE p.a2a_task_id = $task_id \
+            RETURN p.a2a_context_id AS context_id, p.a2a_task_id AS task_id, \
+                   p.a2a_event_id AS event_id, p.a2a_intent_id AS intent_id, \
+                   p.a2a_plan_id AS plan_id";
+        let params = serde_json::json!({
+            "task_id": task_id.as_str(),
+        });
+        let params = require_object_params(&params)?;
+        let rows = self.run_cypher_with_params(query, &params).await?;
+        let (plan_incoming, plan_outgoing) = self
+            .query_supersession_maps_for_label(task_id, "Plan")
+            .await?;
+        let mut plans = Vec::new();
+        for row in rows.iter() {
+            let context_id: Option<String> = row.get("context_id").ok();
+            let task_id_value: Option<String> = row.get("task_id").ok();
+            let event_id: Option<String> = row.get("event_id").ok();
+            let intent_id: Option<String> = row.get("intent_id").ok();
+            let plan_id: Option<String> = row.get("plan_id").ok();
+            let (
+                Some(context_id),
+                Some(task_id_value),
+                Some(event_id),
+                Some(intent_id),
+                Some(plan_id),
+            ) = (context_id, task_id_value, event_id, intent_id, plan_id)
+            else {
+                continue;
+            };
+            let steps = self.query_plan_steps_for_task(task_id, &plan_id).await?;
+            plans.push(PlanningPlanRecord {
+                context_id: ContextId::from(context_id.as_str()),
+                task_id: TaskId::from_external(ExternalId::new(task_id_value)),
+                event_id: EventId::from(event_id.as_str()),
+                intent_id,
+                plan_id,
+                steps,
+                supersession_from_previous: plan_incoming.get(&event_id).copied(),
+                superseded_by_next: plan_outgoing.get(&event_id).copied(),
+            });
+        }
+        plans.sort_by_key(|r| std::cmp::Reverse(event_order_key(&r.event_id)));
+        if plans.len() > limit_val as usize {
+            plans.truncate(limit_val as usize);
+        }
+        Ok(plans)
     }
 }
 
@@ -1446,6 +1993,7 @@ enum OpsField {
     TotalTokens,
     PromptTokens,
     CompletionTokens,
+    CachedInputTokens,
     AgentId,
     AgentDisplay,
     AgentPackage,
@@ -1477,6 +2025,7 @@ impl OpsField {
             Self::TotalTokens => "total_tokens",
             Self::PromptTokens => "prompt_tokens",
             Self::CompletionTokens => "completion_tokens",
+            Self::CachedInputTokens => "cached_input_tokens",
             Self::AgentId => "agent_id",
             Self::AgentDisplay => "agent_display",
             Self::AgentPackage => "agent_package",
@@ -1508,6 +2057,7 @@ impl OpsField {
             "total_tokens" => Some(Self::TotalTokens),
             "prompt_tokens" => Some(Self::PromptTokens),
             "completion_tokens" => Some(Self::CompletionTokens),
+            "cached_input_tokens" => Some(Self::CachedInputTokens),
             "agent_id" => Some(Self::AgentId),
             "agent_display" => Some(Self::AgentDisplay),
             "agent_package" => Some(Self::AgentPackage),
@@ -1876,6 +2426,10 @@ impl GraphqliteProvenanceStore {
         &self,
         req: &ProvenanceOpsQueryRequest,
     ) -> Result<Vec<Map<String, Value>>> {
+        let compact_profile = matches!(
+            req.response_profile,
+            Some(ProvenanceResponseProfile::ToolCompact)
+        );
         let identity_by_agent_id = self.load_agent_identity_map().await?;
         let failure_by_activity_id = self.load_failure_classification_map().await?;
         let payload_text_activity_filter: Option<HashSet<String>> =
@@ -1920,6 +2474,7 @@ impl GraphqliteProvenanceStore {
                     c.a2a_client AS provider, c.a2a_model AS model, c.a2a_function_name AS baml_prompt, \
                     c.a2a_duration_ms AS duration_ms, c.a2a_usage_prompt_tokens AS prompt_tokens, \
                     c.a2a_usage_completion_tokens AS completion_tokens, c.a2a_usage_total_tokens AS total_tokens, \
+                    c.a2a_usage_cached_input_tokens AS cached_input_tokens, \
                     c.a2a_drift_score AS drift_score, c.a2a_drift_severity AS drift_severity, \
                     c.a2a_drift_mode AS drift_mode, c.a2a_drift_warn_min_score AS drift_warn_min_score, \
                     c.a2a_drift_block_min_score AS drift_block_min_score, \
@@ -1975,18 +2530,40 @@ impl GraphqliteProvenanceStore {
             av.cmp(bv)
         });
         for row in &mut out {
-            let llm_call =
-                if let Some(payload_id) = row.get("llm_call_payload_id").and_then(Value::as_str) {
-                    self.read_payload_by_id(payload_id)
-                        .await?
-                        .map(|payload| parse_json_like_string(&payload.payload_json))
-                        .or_else(|| parse_json_field(row, "llm_call"))
-                        .unwrap_or(Value::Null)
-                } else {
-                    parse_json_field(row, "llm_call").unwrap_or(Value::Null)
-                };
+            if let Some(activity_id) = row.get("activity_id").and_then(Value::as_str) {
+                row.insert(
+                    "activity_ref".to_string(),
+                    Value::String(archive_ref_for_activity(activity_id)),
+                );
+            }
+            if let Some(payload_id) = row.get("llm_call_payload_id").and_then(Value::as_str) {
+                row.insert(
+                    "llm_call_ref".to_string(),
+                    Value::String(archive_ref_for_payload(payload_id)),
+                );
+            }
+            if let Some(payload_id) = row.get("llm_result_payload_id").and_then(Value::as_str) {
+                row.insert(
+                    "llm_result_ref".to_string(),
+                    Value::String(archive_ref_for_payload(payload_id)),
+                );
+            }
+            let llm_call = if compact_profile {
+                Value::Null
+            } else if let Some(payload_id) = row.get("llm_call_payload_id").and_then(Value::as_str)
+            {
+                self.read_payload_by_id(payload_id)
+                    .await?
+                    .map(|payload| parse_json_like_string(&payload.payload_json))
+                    .or_else(|| parse_json_field(row, "llm_call"))
+                    .unwrap_or(Value::Null)
+            } else {
+                parse_json_field(row, "llm_call").unwrap_or(Value::Null)
+            };
             row.insert("llm_call".to_string(), llm_call);
-            let llm_result = if let Some(payload_id) =
+            let llm_result = if compact_profile {
+                Value::Null
+            } else if let Some(payload_id) =
                 row.get("llm_result_payload_id").and_then(Value::as_str)
             {
                 self.read_payload_by_id(payload_id)
@@ -2120,6 +2697,24 @@ impl GraphqliteProvenanceStore {
             av.cmp(bv)
         });
         for row in &mut out {
+            if let Some(activity_id) = row.get("activity_id").and_then(Value::as_str) {
+                row.insert(
+                    "activity_ref".to_string(),
+                    Value::String(archive_ref_for_activity(activity_id)),
+                );
+            }
+            if let Some(payload_id) = row.get("tool_call_payload_id").and_then(Value::as_str) {
+                row.insert(
+                    "tool_call_ref".to_string(),
+                    Value::String(archive_ref_for_payload(payload_id)),
+                );
+            }
+            if let Some(payload_id) = row.get("tool_result_payload_id").and_then(Value::as_str) {
+                row.insert(
+                    "tool_result_ref".to_string(),
+                    Value::String(archive_ref_for_payload(payload_id)),
+                );
+            }
             let tool_name = row
                 .get("tool_name")
                 .and_then(Value::as_str)
@@ -2204,6 +2799,14 @@ impl GraphqliteProvenanceStore {
                 "tool_call",
             )?;
         }
+        // Exclude non-terminal Open fragments from tool-call API rows.
+        out.retain(|row| {
+            row.get("tool_call")
+                .and_then(|v| v.get("phase"))
+                .and_then(Value::as_str)
+                != Some("open")
+        });
+
         let mut by_activity_id: std::collections::HashMap<String, Map<String, Value>> =
             std::collections::HashMap::new();
         for row in out {
@@ -2581,30 +3184,50 @@ impl ProvenanceOpsQuery for GraphqliteProvenanceStore {
                     .unwrap_or(0)
             })
             .sum();
+        let cached_input_tokens_sum: u64 = rows
+            .iter()
+            .map(|r| {
+                r.get("cached_input_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            })
+            .sum();
         let total_duration_sum: u64 = rows
             .iter()
             .map(|r| r.get("duration_ms").and_then(Value::as_u64).unwrap_or(0))
             .sum();
 
+        let mut summary = serde_json::json!({
+            "count": total_rows,
+            "failedCount": failed_count,
+            "durationMsTotal": total_duration_sum,
+            "totalTokens": total_tokens_sum,
+            "promptTokensTotal": prompt_tokens_sum,
+            "completionTokensTotal": completion_tokens_sum,
+            "latencyHotspots": {
+                "p95": duration_p95,
+                "p99": duration_p99
+            },
+            "tokenHotspots": {
+                "p95": token_p95,
+                "p99": token_p99
+            }
+        });
+        if matches!(
+            request.resource,
+            ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates
+        ) && let Some(obj) = summary.as_object_mut()
+        {
+            obj.insert(
+                "cachedInputTokensTotal".to_string(),
+                Value::from(cached_input_tokens_sum),
+            );
+        }
+
         Ok(ProvenanceOpsQueryResponse {
             resource: request.resource,
             rows: page_rows.into_iter().map(Value::Object).collect(),
-            summary: serde_json::json!({
-                "count": total_rows,
-                "failedCount": failed_count,
-                "durationMsTotal": total_duration_sum,
-                "totalTokens": total_tokens_sum,
-                "promptTokensTotal": prompt_tokens_sum,
-                "completionTokensTotal": completion_tokens_sum,
-                "latencyHotspots": {
-                    "p95": duration_p95,
-                    "p99": duration_p99
-                },
-                "tokenHotspots": {
-                    "p95": token_p95,
-                    "p99": token_p99
-                }
-            }),
+            summary,
             hotspot_groups,
             next_cursor,
             truncated: total_rows > page_size || requested_page > page_cap,
@@ -2623,6 +3246,39 @@ impl ProvenanceOpsQuery for GraphqliteProvenanceStore {
                 ),
             ]),
         })
+    }
+
+    async fn resolve_archive_ref(
+        &self,
+        archive_ref: &str,
+    ) -> Result<Option<ProvenanceArchiveRecord>> {
+        let Some(parsed) = parse_archive_ref(archive_ref) else {
+            return Ok(None);
+        };
+        match parsed {
+            ParsedArchiveRef::PayloadId(payload_id) => {
+                let Some(payload) = self.read_payload_by_id(payload_id).await? else {
+                    return Ok(None);
+                };
+                Ok(Some(ProvenanceArchiveRecord {
+                    archive_ref: ArchiveRef(archive_ref.to_string()),
+                    payloads: vec![archive_payload_from_record(payload)?],
+                }))
+            }
+            ParsedArchiveRef::ActivityId(activity_id) => {
+                let payloads = self.read_payloads_by_activity(activity_id).await?;
+                if payloads.is_empty() {
+                    return Ok(None);
+                }
+                Ok(Some(ProvenanceArchiveRecord {
+                    archive_ref: ArchiveRef(archive_ref.to_string()),
+                    payloads: payloads
+                        .into_iter()
+                        .map(archive_payload_from_record)
+                        .collect::<Result<Vec<_>>>()?,
+                }))
+            }
+        }
     }
 }
 
@@ -2652,6 +3308,18 @@ impl GraphqliteStoreBuilder {
     pub fn in_memory() -> Self {
         Self {
             backend: Some(GraphqliteBackend::in_memory_shared()),
+            mermaid_cache: None,
+        }
+    }
+
+    /// Fresh isolated in-memory store. Each [build] creates a brand-new SQLite `:memory:` connection
+    /// and its own worker thread. Never cached or shared with other callers.
+    ///
+    /// Use this in tests to ensure per-test isolation without file-system noise or inter-test
+    /// interference through the `FILE_STORES` cache. Each call is independent.
+    pub fn in_memory_isolated() -> Self {
+        Self {
+            backend: Some(GraphqliteBackend::InMemoryIsolated),
             mermaid_cache: None,
         }
     }
@@ -2690,26 +3358,228 @@ impl Default for GraphqliteStoreBuilder {
 mod tests {
     use baml_rt_core::{
         Outcome,
-        ids::{AgentId, ArtifactId, EventId, ExternalId, MessageId, TaskId, UuidId},
+        ids::{
+            AgentId, ArtifactId, EventId, ExternalId, IntentId, MessageId, PlanId, PlanStepId,
+            TaskId, UuidId,
+        },
     };
     use insta::{assert_json_snapshot, assert_snapshot};
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use super::*;
     use crate::{
-        AgentType, CallScope, LlmUsage, ProvEvent, ProvEventData, TaskScopedEvent,
+        AgentType, CallScope, LlmUsage, PlanStepSpec, ProvEvent, ProvEventData, TaskScopedEvent,
         graph_export::{
             GraphExporter, sequence::render_sequence_diagram, simplify::simplify_graph,
         },
     };
 
-    /// Build a store backed by a unique temp path so tests can run concurrently.
+    /// Build a fresh isolated in-memory store for this test.
+    ///
+    /// Uses `in_memory_isolated()` — never cached, never shared — so parallel
+    /// tests cannot interfere with each other through a shared file or the
+    /// `FILE_STORES` cache.
     fn build_test_store() -> Arc<GraphqliteProvenanceStore> {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let path = dir.keep().join("provenance.db");
-        GraphqliteStoreBuilder::file(path)
+        GraphqliteStoreBuilder::in_memory_isolated()
             .build()
-            .expect("build store")
+            .expect("build isolated in-memory test store")
+    }
+
+    #[tokio::test]
+    async fn plan_step_completion_gate_rejects_without_terminal_evidence() {
+        let store = build_test_store();
+        let context_id = ContextId::new(91, 1);
+        let task_id = TaskId::from_external(ExternalId::new("task-step-gate-no-evidence"));
+        let agent_id =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000091").unwrap());
+
+        store
+            .add_event(ProvEvent::agent_booted(
+                agent_id.clone(),
+                AgentType::new("test").expect("agent type"),
+                "1.0.0".to_string(),
+                "test@1.0.0".to_string(),
+            ))
+            .await
+            .expect("agent boot");
+        store
+            .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+            .await
+            .expect("task exists");
+        store
+            .add_event(ProvEvent::task_execution_started(
+                context_id.clone(),
+                task_id.clone(),
+                agent_id.clone(),
+            ))
+            .await
+            .expect("task execution started");
+        store
+            .add_event(ProvEvent::intent_resolved(
+                context_id.clone(),
+                task_id.clone(),
+                IntentId::from("intent-1".to_string()),
+                "Test intent".to_string(),
+                vec![],
+                None,
+            ))
+            .await
+            .expect("intent resolved");
+        store
+            .add_event(ProvEvent::plan_generated(
+                context_id.clone(),
+                task_id.clone(),
+                IntentId::from("intent-1".to_string()),
+                PlanId::from("plan-1".to_string()),
+                vec![PlanStepSpec {
+                    step_id: PlanStepId::from("step-1".to_string()),
+                    description: "Do one thing".to_string(),
+                    order: 1,
+                    depends_on: vec![],
+                }],
+                None,
+            ))
+            .await
+            .expect("plan generated");
+
+        let err = store
+            .add_event(ProvEvent::plan_step_status_changed(
+                context_id,
+                task_id,
+                IntentId::from("intent-1".to_string()),
+                PlanId::from("plan-1".to_string()),
+                PlanStepId::from("step-1".to_string()),
+                Some("in_progress".to_string()),
+                "completed".to_string(),
+                "completion evidence".to_string(),
+            ))
+            .await
+            .expect_err("step completion must fail without evidence");
+        assert!(
+            err.to_string().contains("no terminal LLM/tool evidence"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_step_completion_gate_accepts_with_terminal_evidence() {
+        let store = build_test_store();
+        let context_id = ContextId::new(92, 1);
+        let task_id = TaskId::from_external(ExternalId::new("task-step-gate-with-evidence"));
+        let agent_id =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000092").unwrap());
+
+        store
+            .add_event(ProvEvent::agent_booted(
+                agent_id.clone(),
+                AgentType::new("test").expect("agent type"),
+                "1.0.0".to_string(),
+                "test@1.0.0".to_string(),
+            ))
+            .await
+            .expect("agent boot");
+        store
+            .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+            .await
+            .expect("task exists");
+        store
+            .add_event(ProvEvent::task_execution_started(
+                context_id.clone(),
+                task_id.clone(),
+                agent_id.clone(),
+            ))
+            .await
+            .expect("task execution started");
+        store
+            .add_event(ProvEvent::intent_resolved(
+                context_id.clone(),
+                task_id.clone(),
+                IntentId::from("intent-1".to_string()),
+                "Test intent".to_string(),
+                vec![],
+                None,
+            ))
+            .await
+            .expect("intent resolved");
+        store
+            .add_event(ProvEvent::plan_generated(
+                context_id.clone(),
+                task_id.clone(),
+                IntentId::from("intent-1".to_string()),
+                PlanId::from("plan-1".to_string()),
+                vec![PlanStepSpec {
+                    step_id: PlanStepId::from("step-1".to_string()),
+                    description: "Do one thing".to_string(),
+                    order: 1,
+                    depends_on: vec![],
+                }],
+                None,
+            ))
+            .await
+            .expect("plan generated");
+
+        store
+            .add_event(ProvEvent::llm_call_completed_task(
+                context_id.clone(),
+                task_id.clone(),
+                "openai".to_string(),
+                "gpt-test".to_string(),
+                "ResolveStep".to_string(),
+                json!({"input":"x"}),
+                json!({
+                    "agent_id": agent_id.as_str(),
+                    "plan_id": "plan-1",
+                    "step_id": "step-1",
+                    "result": {"ok": true}
+                }),
+                LlmUsage::Unknown,
+                10,
+                Outcome::Success,
+            ))
+            .await
+            .expect("llm call completed");
+
+        // Assert strict-shape evidence exists before attempting completion.
+        let evidence_query = "MATCH (c) \
+            WHERE (c:LlmCall OR c:ToolCall) \
+              AND c.a2a_context_id = $context_id \
+              AND c.a2a_task_id = $task_id \
+              AND c.a2a_plan_id = $plan_id \
+              AND c.a2a_step_id = $step_id \
+              AND c.a2a_activity_outcome = 'Success' \
+            RETURN c.id AS id LIMIT 1";
+        let evidence_params = serde_json::json!({
+            "context_id": context_id.as_str(),
+            "task_id": task_id.as_str(),
+            "plan_id": "plan-1",
+            "step_id": "step-1",
+        });
+        let evidence_params = match evidence_params {
+            Value::Object(map) => map,
+            _ => panic!("expected object params"),
+        };
+        let evidence_rows = store
+            .run_cypher_for_test_with_params(evidence_query, &evidence_params)
+            .await
+            .expect("query strict evidence");
+        assert!(
+            !evidence_rows.is_empty(),
+            "strict evidence row must exist before completion gate"
+        );
+
+        store
+            .add_event(ProvEvent::plan_step_status_changed(
+                context_id,
+                task_id,
+                IntentId::from("intent-1".to_string()),
+                PlanId::from("plan-1".to_string()),
+                PlanStepId::from("step-1".to_string()),
+                Some("in_progress".to_string()),
+                "completed".to_string(),
+                "completion evidence".to_string(),
+            ))
+            .await
+            .expect("step completion should pass with evidence");
     }
 
     /// Regression: GraphQLite does not apply plain SET after MERGE; ON CREATE SET / ON MATCH SET work.
