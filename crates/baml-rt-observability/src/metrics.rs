@@ -27,6 +27,8 @@ static TASK_STORE_OP_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static TASK_STORE_OP_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 static QUICKJS_INVOKE_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
 static QUICKJS_INVOKE_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
+static QUICKJS_PROMISE_POLL_COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
+static QUICKJS_PROMISE_POLL_HISTOGRAM: OnceLock<Histogram<f64>> = OnceLock::new();
 
 fn a2a_request_counter() -> &'static Counter<u64> {
     A2A_REQUEST_COUNTER.get_or_init(|| {
@@ -263,4 +265,30 @@ pub fn record_quickjs_invoke(mode: &str, result: &str, duration: Duration) {
     ];
     quickjs_invoke_counter().add(1, attributes);
     quickjs_invoke_histogram().record(duration.as_millis() as f64, attributes);
+}
+
+fn quickjs_promise_poll_counter() -> &'static Counter<u64> {
+    QUICKJS_PROMISE_POLL_COUNTER.get_or_init(|| {
+        global::meter(METER_NAME)
+            .u64_counter("baml_rt.quickjs.promise_poll_total")
+            .init()
+    })
+}
+
+fn quickjs_promise_poll_histogram() -> &'static Histogram<f64> {
+    QUICKJS_PROMISE_POLL_HISTOGRAM.get_or_init(|| {
+        global::meter(METER_NAME)
+            .f64_histogram("baml_rt.quickjs.promise_poll_duration_ms")
+            .init()
+    })
+}
+
+/// Record QuickJS promise polling result.
+pub fn record_quickjs_promise_poll(mode: &str, result: &str, duration: Duration) {
+    let attributes = &[
+        KeyValue::new("mode", mode.to_string()),
+        KeyValue::new("result", result.to_string()),
+    ];
+    quickjs_promise_poll_counter().add(1, attributes);
+    quickjs_promise_poll_histogram().record(duration.as_millis() as f64, attributes);
 }

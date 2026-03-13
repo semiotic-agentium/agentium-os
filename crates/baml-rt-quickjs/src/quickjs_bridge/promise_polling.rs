@@ -19,6 +19,7 @@ use std::{
     collections::HashMap,
     pin::Pin,
     sync::{Arc, Mutex as StdMutex},
+    time::Instant,
 };
 
 use baml_rt_core::{
@@ -26,6 +27,7 @@ use baml_rt_core::{
     bus::EffectLiveness,
     context::{InvocationScope, RuntimeScope},
 };
+use baml_rt_observability::metrics;
 use quickjs_runtime::facades::QuickJsRuntimeFacade;
 
 use super::scope::InvocationToken;
@@ -109,6 +111,8 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
     let mut timeout_attempts: Option<u32> = None;
     let mut attempts = 0u32;
     let is_resume_poll = result_notify.is_some();
+    let poll_mode = if is_resume_poll { "notify" } else { "plain" };
+    let poll_started_at = Instant::now();
 
     let _poll_guard = tracing::trace_span!("baml_rt.poll_promise_resolution").entered();
     tracing::debug!(
@@ -145,7 +149,14 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
         // Drive the worker first so the continuation (__set_eval_result) can run before we wait.
         // With a single QuickJS runtime, the resolve is posted to this worker; we must run
         // run_pending_jobs_if_any() for it (and the .then callback) to run.
-        run_pending_jobs_once(&runtime, &run_pending_jobs_brief).await?;
+        if let Err(e) = run_pending_jobs_once(&runtime, &run_pending_jobs_brief).await {
+            metrics::record_quickjs_promise_poll(
+                poll_mode,
+                "run_pending_error",
+                poll_started_at.elapsed(),
+            );
+            return Err(e);
+        }
         tokio::task::yield_now().await;
 
         if let Some(notify) = result_notify.as_ref() {
@@ -183,6 +194,11 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
                     result
                 }
                 None => {
+                    metrics::record_quickjs_promise_poll(
+                        poll_mode,
+                        "missing_slot",
+                        poll_started_at.elapsed(),
+                    );
                     return Err(BamlRtError::QuickJs(
                         "Missing eval result slot for token".to_string(),
                     ));
@@ -196,6 +212,7 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
             {
                 map.remove(t);
             }
+            metrics::record_quickjs_promise_poll(poll_mode, "success", poll_started_at.elapsed());
             tracing::trace!(attempts = attempts, "Promise resolved");
             return Ok(result_str);
         }
@@ -248,10 +265,104 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
                     .map_err(|_| BamlRtError::QuickJs("eval_results lock poisoned".to_string()))?;
                 guard.remove(eval_token);
             }
+            metrics::record_quickjs_promise_poll(poll_mode, "timeout", poll_started_at.elapsed());
             return Err(BamlRtError::QuickJs(format!(
                 "Promise did not resolve after {} attempts ({}ms)",
                 limit, limit
             )));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use baml_rt_core::ids::{AgentId, UuidId};
+
+    use super::*;
+
+    fn test_scope() -> InvocationScope {
+        InvocationScope::synthetic_message(AgentId::from_uuid(
+            UuidId::parse_str("00000000-0000-0000-0000-00000000c0de").expect("valid uuid"),
+        ))
+    }
+
+    fn run_brief() -> RunPendingJobsBrief {
+        Arc::new(|| Box::pin(async {}))
+    }
+
+    #[tokio::test]
+    async fn poll_returns_missing_slot_error_when_eval_token_absent() {
+        let scope = test_scope();
+        let eval_token = InvocationToken("missing-slot-token".to_string());
+        let eval_results_by_token: EvalResultMap = Arc::new(StdMutex::new(HashMap::new()));
+        let invocation_scope_by_token: InvocationScopeMap = Arc::new(StdMutex::new(HashMap::new()));
+
+        let err = poll_promise_until_result(PollPromiseParams {
+            runtime: None,
+            eval_results_by_token: &eval_results_by_token,
+            eval_token: &eval_token,
+            token_to_remove: None,
+            invocation_scope_by_token: &invocation_scope_by_token,
+            scope: &scope,
+            effect_liveness: None,
+            idle_timeout_ms: 1,
+            max_attempts_ms: 1,
+            run_pending_jobs_brief: Some(run_brief()),
+            result_notify: None,
+        })
+        .await
+        .expect_err("missing slot must return an error");
+
+        assert!(
+            err.to_string()
+                .contains("Missing eval result slot for token")
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_success_cleans_eval_and_invocation_tokens() {
+        let scope = test_scope();
+        let eval_token = InvocationToken("success-token".to_string());
+        let eval_results_by_token: EvalResultMap = Arc::new(StdMutex::new(HashMap::new()));
+        let invocation_scope_by_token: InvocationScopeMap = Arc::new(StdMutex::new(HashMap::new()));
+
+        {
+            let mut guard = eval_results_by_token.lock().expect("lock");
+            guard.insert(eval_token.clone(), Some("{\"ok\":true}".to_string()));
+        }
+        {
+            let mut guard = invocation_scope_by_token.lock().expect("lock");
+            guard.insert(eval_token.clone(), scope.as_scope().clone());
+        }
+
+        let result = poll_promise_until_result(PollPromiseParams {
+            runtime: None,
+            eval_results_by_token: &eval_results_by_token,
+            eval_token: &eval_token,
+            token_to_remove: Some(&eval_token),
+            invocation_scope_by_token: &invocation_scope_by_token,
+            scope: &scope,
+            effect_liveness: None,
+            idle_timeout_ms: 1,
+            max_attempts_ms: 1,
+            run_pending_jobs_brief: Some(run_brief()),
+            result_notify: None,
+        })
+        .await
+        .expect("poll should succeed");
+
+        assert_eq!(result, "{\"ok\":true}");
+        assert!(
+            !eval_results_by_token
+                .lock()
+                .expect("lock")
+                .contains_key(&eval_token)
+        );
+        assert!(
+            !invocation_scope_by_token
+                .lock()
+                .expect("lock")
+                .contains_key(&eval_token)
+        );
     }
 }
