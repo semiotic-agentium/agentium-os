@@ -23,8 +23,8 @@ use crate::{
 };
 
 /// Default buffer capacity. Large enough to absorb bursts without backpressure
-/// under normal operation; if the writer falls behind, events are dropped with
-/// a warning (provenance is best-effort from the agent's perspective).
+/// under normal operation; if the writer falls behind, `add_event` awaits until
+/// a slot is available rather than dropping events.
 const DEFAULT_BUFFER_SIZE: usize = 1024;
 
 /// Internal message type for the write channel.
@@ -36,9 +36,10 @@ enum WriteRequest {
     Flush(oneshot::Sender<()>),
 }
 
-/// Fire-and-forget provenance writer.
+/// Backpressure-aware buffered provenance writer.
 ///
-/// `add_event` pushes into a bounded channel and returns immediately.
+/// `add_event` pushes into a bounded channel; if the channel is full the caller
+/// awaits until a slot opens, guaranteeing no events are silently dropped.
 /// A background task processes events through the inner [`ProvenanceWriter`].
 /// Context reads flush the buffer first to preserve the no-stale-read invariant.
 pub struct BufferedProvenanceWriter {
@@ -110,17 +111,14 @@ async fn writer_loop(
 #[async_trait]
 impl ProvenanceWriter for BufferedProvenanceWriter {
     async fn add_event(&self, event: ProvEvent) -> Result<()> {
-        match self.tx.try_send(WriteRequest::Event(event)) {
-            Ok(()) => Ok(()),
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                tracing::warn!("provenance write buffer full, event dropped");
-                Ok(())
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                tracing::warn!("provenance write buffer closed, event dropped");
-                Ok(())
-            }
-        }
+        self.tx
+            .send(WriteRequest::Event(event))
+            .await
+            .map_err(|_| {
+                ProvenanceError::Storage(Box::new(std::io::Error::other(
+                    "buffered writer background task closed",
+                )))
+            })
     }
 }
 

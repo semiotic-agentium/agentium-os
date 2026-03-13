@@ -21,12 +21,20 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use serde_json::json;
 
 /// Build a file-backed store at a unique temp path.
-fn build_file_store() -> Arc<baml_rt_provenance::GraphqliteProvenanceStore> {
+///
+/// Returns the `TempDir` alongside the store so the directory (and its file
+/// descriptors) are cleaned up when both are dropped — preventing the "too
+/// many open files" crash across benchmark iterations.
+///
+/// Uses `build_uncached` to bypass the global file-store cache so that each
+/// store is independently owned and its worker thread exits on Arc drop.
+fn build_file_store() -> (Arc<baml_rt_provenance::GraphqliteProvenanceStore>, tempfile::TempDir) {
     let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.into_path().join("bench-provenance.db");
-    GraphqliteStoreBuilder::file(path)
-        .build()
-        .expect("build file-backed store")
+    let path = dir.path().join("bench-provenance.db");
+    let store = GraphqliteStoreBuilder::file(path)
+        .build_uncached()
+        .expect("build file-backed store");
+    (store, dir)
 }
 
 /// Generate a realistic sequence of provenance events for one ReAct loop iteration:
@@ -133,13 +141,15 @@ fn bench_provenance_writes(c: &mut Criterion) {
             |b, events| {
                 b.iter(|| {
                     // Fresh store per iteration to avoid accumulation effects.
-                    let store = build_file_store();
+                    // _dir kept alive so TempDir cleanup happens on drop.
+                    let (store, _dir) = build_file_store();
                     let writer: Arc<dyn ProvenanceWriter> = store;
                     rt.block_on(async {
                         for event in events {
                             let _ = writer.add_event(event.clone()).await;
                         }
                     });
+                    // writer drops here (closes SQLite), then _dir (removes files).
                 });
             },
         );
@@ -149,10 +159,13 @@ fn bench_provenance_writes(c: &mut Criterion) {
             &events,
             |b, events| {
                 b.iter(|| {
-                    let store = build_file_store();
-                    let buffered: Arc<dyn ProvenanceWriter> =
-                        Arc::new(BufferedProvenanceWriter::new(store));
+                    // _dir kept alive so TempDir cleanup happens on drop.
+                    let (store, _dir) = build_file_store();
                     rt.block_on(async {
+                        // BufferedProvenanceWriter::new() calls tokio::spawn,
+                        // so it must be created inside the runtime context.
+                        let buffered: Arc<dyn ProvenanceWriter> =
+                            Arc::new(BufferedProvenanceWriter::new(store));
                         for event in events {
                             let _ = buffered.add_event(event.clone()).await;
                         }
@@ -165,6 +178,8 @@ fn bench_provenance_writes(c: &mut Criterion) {
                                 Some(0),
                             )
                             .await;
+                        // Drop inside the runtime so the background task can shut down cleanly.
+                        drop(buffered);
                     });
                 });
             },
@@ -174,5 +189,63 @@ fn bench_provenance_writes(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_provenance_writes);
+/// Measures caller-perceived latency: only the `add_event` call (try_send into
+/// the channel), NOT the background drain. This is what the agent's critical
+/// path actually experiences — tool/LLM interceptors return after try_send.
+fn bench_caller_perceived_latency(c: &mut Criterion) {
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let mut group = c.benchmark_group("caller_perceived_latency");
+    group.sample_size(10);
+    group.measurement_time(std::time::Duration::from_secs(10));
+
+    for event_count in [10, 50, 100] {
+        let events = generate_events(event_count);
+
+        group.bench_with_input(
+            BenchmarkId::new("direct_blocking", event_count),
+            &events,
+            |b, events| {
+                b.iter(|| {
+                    let (store, _dir) = build_file_store();
+                    let writer: Arc<dyn ProvenanceWriter> = store;
+                    rt.block_on(async {
+                        for event in events {
+                            let _ = writer.add_event(event.clone()).await;
+                        }
+                    });
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("buffered_fire_and_forget", event_count),
+            &events,
+            |b, events| {
+                // Create store + buffered writer OUTSIDE the measured loop so we
+                // measure only the try_send cost, not store construction.
+                let (store, _dir) = build_file_store();
+                let buffered: Arc<dyn ProvenanceWriter> =
+                    rt.block_on(async { Arc::new(BufferedProvenanceWriter::new(store)) });
+                b.iter(|| {
+                    rt.block_on(async {
+                        for event in events {
+                            let _ = buffered.add_event(event.clone()).await;
+                        }
+                    });
+                });
+                // Cleanup: flush + drop inside runtime.
+                rt.block_on(async {
+                    let reader: &dyn baml_rt_provenance::ProvenanceContextReader =
+                        &*buffered;
+                    let _ = reader.context_messages(&ContextId::new(0, 0), Some(0)).await;
+                    drop(buffered);
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_provenance_writes, bench_caller_perceived_latency);
 criterion_main!(benches);

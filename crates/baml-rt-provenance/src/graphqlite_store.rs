@@ -152,13 +152,10 @@ enum WorkerRequest {
         String,
         oneshot::Sender<std::result::Result<Vec<String>, graphqlite::Error>>,
     ),
-    /// Batch of Cypher writes and/or payload upserts executed in a single transaction.
-    /// Reduces N+M individual auto-commits to 1 commit per batch.
-    WriteBatch {
-        cypher_statements: Vec<(String, QueryParams)>,
-        payload_records: Vec<PayloadRecord>,
-        reply: oneshot::Sender<std::result::Result<(), graphqlite::Error>>,
-    },
+    UpsertPayload(
+        PayloadRecord,
+        oneshot::Sender<std::result::Result<(), graphqlite::Error>>,
+    ),
 }
 
 /// Provenance-only store backed by GraphQLite (SQLite + Cypher).
@@ -187,42 +184,6 @@ struct PayloadRecord {
     activity_id: Option<String>,
     payload_kind: String,
     payload_json: String,
-}
-
-/// Execute the three SQL statements for a single payload upsert (main table + FTS sync).
-fn upsert_payload_sql(
-    conn: &Connection,
-    payload: &PayloadRecord,
-) -> std::result::Result<(), graphqlite::Error> {
-    let sqlite = conn.sqlite_connection();
-    sqlite
-        .execute(
-            UPSERT_PAYLOAD_SQL,
-            (
-                &payload.payload_id,
-                &payload.event_id,
-                &payload.activity_id,
-                &payload.payload_kind,
-                &payload.payload_json,
-            ),
-        )
-        .map_err(graphqlite::Error::from)?;
-    sqlite
-        .execute(DELETE_PAYLOAD_FTS_SQL, (&payload.payload_id,))
-        .map_err(graphqlite::Error::from)?;
-    sqlite
-        .execute(
-            UPSERT_PAYLOAD_FTS_SQL,
-            (
-                &payload.payload_id,
-                &payload.event_id,
-                &payload.activity_id,
-                &payload.payload_kind,
-                &payload.payload_json,
-            ),
-        )
-        .map_err(graphqlite::Error::from)?;
-    Ok(())
 }
 
 fn graphqlite_value_to_json(value: &GraphqliteValue) -> Value {
@@ -816,42 +777,31 @@ fn build_store_from_config(
                         );
                     }
                 }
-                WorkerRequest::WriteBatch { cypher_statements, payload_records, reply } => {
-                    let conn = graph.connection();
-                    let sqlite = conn.sqlite_connection();
-                    let result = (|| -> std::result::Result<(), graphqlite::Error> {
-                        sqlite.execute_batch("BEGIN")
-                            .map_err(|e| graphqlite::Error::Cypher(e.to_string()))?;
-                        let inner = (|| -> std::result::Result<(), graphqlite::Error> {
-                            for (query, params) in &cypher_statements {
-                                let span = spans::cypher_execute(query, &Value::Object(params.clone()));
-                                let _guard = span.enter();
-                                tracing::debug!(query_text = %query, params = ?params, "cypher batch execute");
-                                run_query_builder_with_params(&graph, query, params)?;
-                            }
-                            for payload in &payload_records {
-                                upsert_payload_sql(conn, payload)?;
-                            }
-                            Ok(())
-                        })();
-                        match inner {
-                            Ok(()) => {
-                                sqlite.execute_batch("COMMIT")
-                                    .map_err(|e| graphqlite::Error::Cypher(e.to_string()))?;
-                                Ok(())
-                            }
-                            Err(e) => {
-                                // Best-effort rollback; SQLite auto-rolls-back on connection
-                                // close or next statement if this fails.
-                                if let Err(rb_err) = sqlite.execute_batch("ROLLBACK") {
-                                    tracing::warn!(
-                                        error = %rb_err,
-                                        "write batch rollback failed after error"
-                                    );
-                                }
-                                Err(e)
-                            }
-                        }
+                WorkerRequest::UpsertPayload(payload, reply) => {
+                    let sqlite = graph.connection().sqlite_connection();
+                    let result = (|| {
+                        sqlite.execute(
+                            UPSERT_PAYLOAD_SQL,
+                            (
+                                &payload.payload_id,
+                                &payload.event_id,
+                                &payload.activity_id,
+                                &payload.payload_kind,
+                                &payload.payload_json,
+                            ),
+                        )?;
+                        sqlite.execute(DELETE_PAYLOAD_FTS_SQL, (&payload.payload_id,))?;
+                        sqlite.execute(
+                            UPSERT_PAYLOAD_FTS_SQL,
+                            (
+                                &payload.payload_id,
+                                &payload.event_id,
+                                &payload.activity_id,
+                                &payload.payload_kind,
+                                &payload.payload_json,
+                            ),
+                        )?;
+                        Ok::<(), graphqlite::Error>(())
                     })();
                     if reply.send(result).is_err() {
                         tracing::debug!(
@@ -963,23 +913,12 @@ impl GraphqliteProvenanceStore {
         self.run_cypher_write(query, params).await
     }
 
-    /// Execute a batch
-    /// Reduces N+M individual auto-commits to 1 commit. On failure the transaction is
-    /// rolled back and the error is returned.
-    async fn run_write_batch(
-        &self,
-        cypher_statements: Vec<(String, QueryParams)>,
-        payload_records: Vec<PayloadRecord>,
-    ) -> Result<()> {
+    async fn upsert_payload(&self, payload: PayloadRecord) -> Result<()> {
         let serial = CYPHER_REQUEST_SERIAL.get_or_init(|| TokioMutex::new(()));
         let _guard = serial.lock().await;
         let (reply_tx, reply_rx) = oneshot::channel();
         self.request_tx
-            .send(WorkerRequest::WriteBatch {
-                cypher_statements,
-                payload_records,
-                reply: reply_tx,
-            })
+            .send(WorkerRequest::UpsertPayload(payload, reply_tx))
             .map_err(|e| ProvenanceError::Storage(Box::new(e)))?;
         let result = reply_rx
             .await
@@ -1106,27 +1045,20 @@ impl ProvenanceWriter for GraphqliteProvenanceStore {
             context_id_opt,
         );
 
-        // Batch all Cypher writes into a single transaction (1 commit instead of N).
-        let cypher_batch: Vec<(String, QueryParams)> = statements
-            .iter()
-            .map(|stmt| require_object_params(&stmt.params).map(|p| (stmt.query.clone(), p)))
-            .collect::<Result<Vec<_>>>()?;
-        if !cypher_batch.is_empty() {
-            self.run_write_batch(cypher_batch, Vec::new()).await?;
+        for stmt in &statements {
+            let params = require_object_params(&stmt.params)?;
+            self.run_cypher_write(&stmt.query, &params).await?;
         }
-
-        // Resolve activity_id (read — needs to see committed Cypher writes above),
-        // then batch all payload upserts into a second transaction.
         if !payload_records.is_empty() {
             let activity_id = self
                 .resolve_call_activity_id_for_event(event.id().as_str())
                 .await?;
-            if let Some(ref activity_id) = activity_id {
-                for payload in &mut payload_records {
+            for payload in &mut payload_records {
+                if let Some(ref activity_id) = activity_id {
                     payload.activity_id = Some(activity_id.clone());
                 }
+                self.upsert_payload(payload.clone()).await?;
             }
-            self.run_write_batch(Vec::new(), payload_records).await?;
         }
 
         if let (Some(cache), Some(ctx)) = (&self.mermaid_cache, context_id_opt) {
@@ -2754,6 +2686,25 @@ impl GraphqliteStoreBuilder {
             reason: "GraphqliteStoreBuilder: no backend set".to_string(),
         })?;
         backend.build_store(self.mermaid_cache)
+    }
+
+    /// Build a store that is **not** registered in the global file-store cache.
+    ///
+    /// The returned store owns its worker thread and SQLite connection exclusively;
+    /// when all `Arc` references are dropped the worker exits and file descriptors
+    /// are released. Use this in benchmarks and tests that create many short-lived
+    /// stores to avoid leaking entries in the process-wide cache.
+    pub fn build_uncached(self) -> Result<Arc<GraphqliteProvenanceStore>> {
+        let backend = self.backend.ok_or_else(|| ProvenanceError::InvalidEvent {
+            event_id: String::new(),
+            reason: "GraphqliteStoreBuilder: no backend set".to_string(),
+        })?;
+        match backend {
+            GraphqliteBackend::File(config) => build_store_from_config(&config),
+            GraphqliteBackend::InMemoryShared => {
+                build_store_from_config(&GraphqliteStoreConfig::in_memory())
+            }
+        }
     }
 }
 
