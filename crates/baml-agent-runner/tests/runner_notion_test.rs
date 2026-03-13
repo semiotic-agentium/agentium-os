@@ -418,6 +418,10 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
         "Expected mock Notion page endpoint hit. hits={mock_hits:?}"
     );
 
+    // Buffered provenance writes are drained asynchronously. Give a short grace
+    // window so mermaid export observes terminal task/message events.
+    sleep(Duration::from_millis(100)).await;
+
     let mermaid_url = format!(
         "{}/contexts/{}/mermaid",
         runner_api.base_url,
