@@ -35,7 +35,9 @@ pub use context::{
 pub use deferred::DeferredHolder;
 pub use error::{BamlRtError, Result, SessionLifecycleError};
 pub use event_subscription::{
-    EventSubscription, EventSubscriptionFilter, subscriptions_match_filter,
+    EventSchemaVersion, EventSourceKey, EventSourceKeyPrefix, EventSourceKind, EventSubscription,
+    EventSubscriptionFilter, PublishedEvent, subscriptions_match_filter,
+    subscriptions_match_published_event,
 };
 pub use ids::{
     AgentId, ArtifactId, ContextId, CorrelationId, EventId, ExecutionSessionId, IntentId,

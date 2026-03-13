@@ -57,10 +57,26 @@ impl From<baml_rt_core::AgentCard> for AgentCardDto {
                 .subscriptions
                 .into_iter()
                 .map(|subscription| AgentEventSubscriptionDto {
-                    schema_versions: subscription.schema_versions,
-                    source_kinds: subscription.source_kinds,
-                    source_keys: subscription.source_keys,
-                    source_key_prefixes: subscription.source_key_prefixes,
+                    schema_versions: subscription
+                        .schema_versions
+                        .into_iter()
+                        .map(|value| value.to_string())
+                        .collect(),
+                    source_kinds: subscription
+                        .source_kinds
+                        .into_iter()
+                        .map(|value| value.to_string())
+                        .collect(),
+                    source_keys: subscription
+                        .source_keys
+                        .into_iter()
+                        .map(|value| value.to_string())
+                        .collect(),
+                    source_key_prefixes: subscription
+                        .source_key_prefixes
+                        .into_iter()
+                        .map(|value| value.to_string())
+                        .collect(),
                 })
                 .collect(),
         }

@@ -19,6 +19,16 @@ pub enum TaskSourceKind {
     GithubIssues,
 }
 
+impl TaskSourceKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TaskSourceKind::Slack => "slack",
+            TaskSourceKind::Clickup => "clickup",
+            TaskSourceKind::GithubIssues => "github_issues",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 /// Confidence/priority tier used across interpretation and tasks.
@@ -168,7 +178,7 @@ pub struct InvestigationPrompt {
     pub key: String,
     pub title: String,
     pub goal: String,
-    /// Prompt that can be handed to coordinator/specialist agents directly.
+    /// Prompt text that can be handed directly to another agent.
     pub prompt: String,
     pub when_to_run: InvestigationRunCondition,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

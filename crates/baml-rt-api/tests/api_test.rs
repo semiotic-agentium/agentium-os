@@ -20,7 +20,8 @@ use baml_rt_api::{
 };
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister, AgentRouteKey,
-    BamlRtError, BusStream, EventSubscription, Outcome, Result,
+    BamlRtError, BusStream, EventSchemaVersion, EventSourceKey, EventSourceKeyPrefix,
+    EventSourceKind, EventSubscription, Outcome, Result,
     ids::{AgentId, ContextId, EventId, ExternalId, MessageId, UuidId},
 };
 use baml_rt_provenance::{
@@ -42,6 +43,22 @@ fn response_snapshot(status: StatusCode, body: &[u8]) -> Value {
         "status": status.as_u16(),
         "body": redact_variant_parts(body_value),
     })
+}
+
+fn schema_version(value: &str) -> EventSchemaVersion {
+    EventSchemaVersion::parse(value).expect("valid schema version")
+}
+
+fn source_kind(value: &str) -> EventSourceKind {
+    EventSourceKind::parse(value).expect("valid source kind")
+}
+
+fn source_key(value: &str) -> EventSourceKey {
+    EventSourceKey::parse(value).expect("valid source key")
+}
+
+fn source_key_prefix(value: &str) -> EventSourceKeyPrefix {
+    EventSourceKeyPrefix::parse(value).expect("valid source key prefix")
 }
 
 /// Redact variant parts of JSON (UUIDs, instance/type in problem bodies) for stable snapshots.
@@ -812,10 +829,10 @@ async fn get_agents_returns_declared_subscriptions_when_present() {
         "Workflow Subscriber",
         "0.1.0",
         vec![EventSubscription {
-            schema_versions: vec!["task-daemon.interpretation.v1".to_string()],
-            source_kinds: vec!["slack".to_string(), "clickup".to_string()],
-            source_keys: vec!["slack:C123".to_string()],
-            source_key_prefixes: vec!["clickup:list:".to_string()],
+            schema_versions: vec![schema_version("task-daemon.interpretation.v1")],
+            source_kinds: vec![source_kind("slack"), source_kind("clickup")],
+            source_keys: vec![source_key("slack:C123")],
+            source_key_prefixes: vec![source_key_prefix("clickup:list:")],
         }],
     )];
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(entries));

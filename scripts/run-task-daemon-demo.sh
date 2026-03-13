@@ -106,7 +106,9 @@ else
       --once \
       --extractor "$EXTRACTOR" \
       --max-candidates "$MAX_CANDIDATES" \
-      --coordinator-url "$COORDINATOR_URL" \
+      --a2a-base-url "$COORDINATOR_URL" \
+      --a2a-agent-package coordinator-agent \
+      --a2a-agent-instance-id default \
       --a2a-live \
       --emit-empty \
       --state-file "$STATE_FILE" \

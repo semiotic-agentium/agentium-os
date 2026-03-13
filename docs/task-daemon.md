@@ -32,6 +32,17 @@ Those are different concerns. Using capabilities as a proxy for event interest
 creates ambiguity about whether the host is discovering execution skills or
 deciding who should receive events.
 
+When a manifest declares `subscriptions[].source_kinds`, use the canonical
+source-kind identifiers emitted by task-daemon:
+
+- `slack`
+- `clickup`
+- `github_issues`
+
+Matching lowercases input, but it does not rewrite punctuation or separators.
+For example, `github_issues` matches `GitHub_Issues`, but not `githubissues` or
+`github-issues`.
+
 `workflow_seed` is the handoff surface for orchestration:
 
 - `goal`: what successful follow-through should accomplish now
@@ -106,14 +117,67 @@ cargo run -p baml-task-daemon -- run --channel agentium-eng --clickup-list-id <L
 cargo run -p baml-task-daemon -- run --channel agentium-eng --clickup-list-id <LIST_ID> --clickup-live
 ```
 
-Delegate to coordinator agent over A2A:
+Poll ClickUp as a source:
 
 ```bash
-# dry-run (logs request payload intent, no network side-effects)
-cargo run -p baml-task-daemon -- run --channel agentium-eng --coordinator-url http://127.0.0.1:8082
+# ClickUp source only
+cargo run -p baml-task-daemon -- run \
+  --source clickup \
+  --clickup-list-id <LIST_ID> \
+  --once
 
-# live delegation
-cargo run -p baml-task-daemon -- run --channel agentium-eng --coordinator-url http://127.0.0.1:8082 --a2a-live
+# Poll Slack and ClickUp in the same daemon loop
+cargo run -p baml-task-daemon -- run \
+  --source slack \
+  --source clickup \
+  --channel agentium-eng \
+  --clickup-list-id <LIST_ID>
+```
+
+Route specific sources to specific sinks:
+
+```bash
+# Slack discussions create ClickUp tasks; ClickUp lifecycle events publish to subscribed A2A agents.
+cargo run -p baml-task-daemon -- run \
+  --source slack \
+  --source clickup \
+  --channel agentium-eng \
+  --clickup-list-id <LIST_ID> \
+  --a2a-base-url http://127.0.0.1:8082 \
+  --route slack:clickup \
+  --route clickup:a2a \
+  --clickup-live \
+  --a2a-live
+```
+
+Deliver daemon events to subscribed A2A agents:
+
+```bash
+# dry-run (shows what would be sent, without network side-effects)
+cargo run -p baml-task-daemon -- run --channel agentium-eng --a2a-base-url http://127.0.0.1:8082
+
+# live delivery to subscribed agents discovered from the host /agents API
+cargo run -p baml-task-daemon -- run --channel agentium-eng --a2a-base-url http://127.0.0.1:8082 --a2a-live
+```
+
+Migration note:
+
+- `--a2a-base-url` no longer implies delivery to `coordinator-agent/default`.
+- The default is now subscriber discovery via the host `/agents` API.
+- Existing invocations that relied on the old implicit single-target behavior
+  should add both:
+  - `--a2a-agent-package <package>`
+  - `--a2a-agent-instance-id <instance>`
+
+Override subscriber delivery and send to one explicit target:
+
+```bash
+cargo run -p baml-task-daemon -- run \
+  --channel agentium-eng \
+  --a2a-base-url http://127.0.0.1:8082 \
+  --a2a-agent-package workflow-intake-agent \
+  --a2a-agent-instance-id default \
+  --a2a-live
 ```
 
 ## Output You Should Expect
@@ -126,7 +190,7 @@ A typical batch includes:
 - `interpretation.workflow_seed.clarification_nodes`: questions that should be resolved before execution
 - `derived_tasks`: practical tasks emitted to sinks
 
-When using coordinator delegation (`--coordinator-url --a2a-live`), task-daemon
+When using A2A delivery (`--a2a-base-url --a2a-live`), task-daemon
 sends a valid `message.sendStream` request with:
 - a concise text instruction
 - a typed workflow handoff payload in `message.parts[].data`
@@ -140,7 +204,12 @@ versioned interpretation event contract:
 ## Important Behavior
 
 - LLM mode is the default. Heuristic mode is available only when explicitly requested (`--extractor heuristic`).
-- Slack access is read-only.
+- Slack and ClickUp source access are read-only.
+- With multiple `--source` flags, each interval (and `--once`) covers each selected source once.
+- `--route <source>:<sink>` overrides default fan-out. When routes are present, only explicitly routed source/sink pairs are active.
+- Startup validation rejects configurations where a selected source has no compatible sink.
+- With `--a2a-base-url` and no explicit `--a2a-agent-package` / `--a2a-agent-instance-id`, task-daemon discovers subscribed agents from the host `/agents` API and delivers matching events to them.
+- This replaces the older implicit single-target coordinator delivery. Use both explicit target flags if you need that behavior.
 - Delivery is currently best-effort at-least-once: source cursor/task state is persisted only after sink delivery succeeds.
 
 ## Minimal Project Config Example
