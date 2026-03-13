@@ -30,7 +30,7 @@ const DEFAULT_BUFFER_SIZE: usize = 1024;
 /// Internal message type for the write channel.
 enum WriteRequest {
     /// A provenance event to persist.
-    Event(ProvEvent),
+    Event(Box<ProvEvent>),
     /// Flush signal: the background task must finish all prior events before
     /// replying on the oneshot, so the caller knows it is safe to read.
     Flush(oneshot::Sender<()>),
@@ -88,15 +88,12 @@ impl BufferedProvenanceWriter {
 }
 
 /// Background task: drains the channel and writes events sequentially.
-async fn writer_loop(
-    mut rx: mpsc::Receiver<WriteRequest>,
-    writer: Arc<dyn ProvenanceWriter>,
-) {
+async fn writer_loop(mut rx: mpsc::Receiver<WriteRequest>, writer: Arc<dyn ProvenanceWriter>) {
     while let Some(request) = rx.recv().await {
         match request {
             WriteRequest::Event(event) => {
                 writer
-                    .add_event_with_logging(event, "buffered writer")
+                    .add_event_with_logging(*event, "buffered writer")
                     .await;
             }
             WriteRequest::Flush(reply) => {
@@ -112,7 +109,7 @@ async fn writer_loop(
 impl ProvenanceWriter for BufferedProvenanceWriter {
     async fn add_event(&self, event: ProvEvent) -> Result<()> {
         self.tx
-            .send(WriteRequest::Event(event))
+            .send(WriteRequest::Event(Box::new(event)))
             .await
             .map_err(|_| {
                 ProvenanceError::Storage(Box::new(std::io::Error::other(

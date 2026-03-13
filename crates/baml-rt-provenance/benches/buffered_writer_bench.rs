@@ -28,7 +28,10 @@ use serde_json::json;
 ///
 /// Uses `build_uncached` to bypass the global file-store cache so that each
 /// store is independently owned and its worker thread exits on Arc drop.
-fn build_file_store() -> (Arc<baml_rt_provenance::GraphqliteProvenanceStore>, tempfile::TempDir) {
+fn build_file_store() -> (
+    Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+    tempfile::TempDir,
+) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("bench-provenance.db");
     let store = GraphqliteStoreBuilder::file(path)
@@ -53,10 +56,7 @@ fn generate_events(n: usize) -> Vec<ProvEvent> {
         "1.0.0".to_string(),
         "bench@1.0.0".to_string(),
     ));
-    events.push(ProvEvent::task_exists(
-        context_id.clone(),
-        task_id.clone(),
-    ));
+    events.push(ProvEvent::task_exists(context_id.clone(), task_id.clone()));
     events.push(ProvEvent::task_execution_started(
         context_id.clone(),
         task_id.clone(),
@@ -173,10 +173,7 @@ fn bench_provenance_writes(c: &mut Criterion) {
                         // This measures total throughput including drain time.
                         let reader: &dyn baml_rt_provenance::ProvenanceContextReader = &*buffered;
                         let _ = reader
-                            .context_messages(
-                                &ContextId::new(0, 0),
-                                Some(0),
-                            )
+                            .context_messages(&ContextId::new(0, 0), Some(0))
                             .await;
                         // Drop inside the runtime so the background task can shut down cleanly.
                         drop(buffered);
@@ -235,9 +232,10 @@ fn bench_caller_perceived_latency(c: &mut Criterion) {
                 });
                 // Cleanup: flush + drop inside runtime.
                 rt.block_on(async {
-                    let reader: &dyn baml_rt_provenance::ProvenanceContextReader =
-                        &*buffered;
-                    let _ = reader.context_messages(&ContextId::new(0, 0), Some(0)).await;
+                    let reader: &dyn baml_rt_provenance::ProvenanceContextReader = &*buffered;
+                    let _ = reader
+                        .context_messages(&ContextId::new(0, 0), Some(0))
+                        .await;
                     drop(buffered);
                 });
             },
@@ -247,5 +245,9 @@ fn bench_caller_perceived_latency(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_provenance_writes, bench_caller_perceived_latency);
+criterion_group!(
+    benches,
+    bench_provenance_writes,
+    bench_caller_perceived_latency
+);
 criterion_main!(benches);
