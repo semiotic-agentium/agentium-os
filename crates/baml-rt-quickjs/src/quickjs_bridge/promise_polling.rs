@@ -175,7 +175,13 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
                 .lock()
                 .map_err(|_| BamlRtError::QuickJs("eval_results lock poisoned".to_string()))?;
             match guard.get_mut(eval_token) {
-                Some(slot) => slot.take(),
+                Some(slot) => {
+                    let result = slot.take();
+                    if result.is_some() {
+                        guard.remove(eval_token);
+                    }
+                    result
+                }
                 None => {
                     return Err(BamlRtError::QuickJs(
                         "Missing eval result slot for token".to_string(),
@@ -189,12 +195,6 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
                 && let Ok(mut map) = invocation_scope_by_token.lock()
             {
                 map.remove(t);
-            }
-            {
-                let mut guard = eval_results_by_token
-                    .lock()
-                    .map_err(|_| BamlRtError::QuickJs("eval_results lock poisoned".to_string()))?;
-                guard.remove(eval_token);
             }
             tracing::trace!(attempts = attempts, "Promise resolved");
             return Ok(result_str);
@@ -220,7 +220,9 @@ pub(crate) async fn poll_promise_until_result(params: PollPromiseParams<'_>) -> 
             timeout_attempts = Some(timeout_attempts.map_or(new_timeout, |t| t.max(new_timeout)));
         }
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+        if result_notify.is_none() {
+            tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+        }
         attempts += 1;
         let mut limit = timeout_attempts.unwrap_or(u32::MAX);
         if attempts < EFFECT_WARMUP_ATTEMPTS {
