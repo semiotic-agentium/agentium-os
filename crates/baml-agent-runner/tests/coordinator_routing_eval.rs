@@ -80,6 +80,7 @@ async fn setup_coordinator_agent() -> (baml_rt::A2aAgent, Arc<GraphqliteProvenan
         "system/internal_a2a",
         "system/discover_agents",
         "system/discover_tools",
+        "system/workflow_routing",
     ]
     .into_iter()
     .map(String::from)

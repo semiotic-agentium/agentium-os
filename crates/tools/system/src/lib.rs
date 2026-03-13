@@ -3,8 +3,8 @@
 //! Tools live in **crates/tools** and are **not** built into the agent. The host (runner)
 //! composes the tool catalogue at startup; agents are started then. The relationship between
 //! an agent and its tools is **indirect — mediated by the host**. This crate provides the
-//! unified system bundle (internal_a2a, discover_agents, discover_tools); the host registers
-//! [`SystemBundle`] when booting each agent.
+//! unified system bundle (internal_a2a, discover_agents, discover_tools, workflow_routing);
+//! the host registers [`SystemBundle`] when booting each agent.
 
 mod a2a_session;
 pub mod bundle;
@@ -14,6 +14,7 @@ pub mod metadata;
 mod provenance_bundle;
 mod provenance_session_tools;
 pub mod tools;
+mod workflow_routing_session_tools;
 
 pub use a2a_session::A2aSessionBundle;
 pub use bundle::{System, SystemBundle};
@@ -23,5 +24,7 @@ pub use tools::{
     DiscoverAgentsNextOutput, DiscoverAgentsOpenInput, DiscoverToolsNextOutput,
     DiscoverToolsOpenInput, InternalA2aCompletion, InternalA2aNextOutput, InternalA2aOpenInput,
     InternalA2aSendInput, InternalA2aTarget, ProvenanceQueryNextOutput, ProvenanceQueryOpenInput,
-    ProvenanceQuerySendInput, ToolDiscoveryRecordDto,
+    ProvenanceQuerySendInput, ToolDiscoveryRecordDto, WorkflowRoutingConfig,
+    WorkflowRoutingDecisionKind, WorkflowRoutingNextOutput, WorkflowRoutingOpenInput,
+    WorkflowRoutingRule, WorkflowRoutingSendInput, WorkflowRoutingSourceKind,
 };

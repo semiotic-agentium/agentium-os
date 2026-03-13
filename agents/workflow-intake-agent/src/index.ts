@@ -96,7 +96,19 @@ type IntakeDecisionKind =
 type IntakeDecision = {
   kind: IntakeDecisionKind;
   reason: string;
+};
+
+type WorkflowRoutingOutput = {
+  required_capabilities: string[];
+  preferred_agent_package?: string;
+  matched_rule?: string;
+  done?: boolean;
+};
+
+type WorkflowRoutingResolution = {
   requiredCapabilities: string[];
+  preferredAgentPackage?: string;
+  matchedRule?: string;
 };
 
 declare function openToolSession(
@@ -105,9 +117,10 @@ declare function openToolSession(
 ): Promise<ToolSessionHandle>;
 
 // The manifest also declares `system/discover_tools` because the host registers
-// the current SystemBundle as a unified allowlist. This agent only calls the
-// agent-discovery and internal A2A tools directly.
+// the current SystemBundle as a unified allowlist. This agent directly uses
+// agent discovery, workflow routing, and internal A2A.
 const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
+const WORKFLOW_ROUTING_TOOL_NAME = "system/workflow_routing";
 const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
 const TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION = "task-daemon.interpretation.v1";
 const MAX_SINGLE_SEND_CONTINUE_STEPS = 16;
@@ -213,6 +226,31 @@ function parseDiscoverAgentsOutput(value: unknown): DiscoverAgentsOutput | null 
 
   return {
     agents,
+    done: typeof normalized.done === "boolean" ? normalized.done : undefined,
+  };
+}
+
+function parseWorkflowRoutingOutput(value: unknown): WorkflowRoutingOutput | null {
+  const normalized = unwrapToolSessionNextOutput(value);
+  if (!isObject(normalized)) return null;
+
+  const rawRequiredCapabilities =
+    normalized.requiredCapabilities ?? normalized.required_capabilities;
+  if (!Array.isArray(rawRequiredCapabilities)) return null;
+
+  const requiredCapabilities = parseStringArray(rawRequiredCapabilities)
+    .map((capability) => capability.trim())
+    .filter((capability) => capability.length > 0);
+  if (requiredCapabilities.length === 0) return null;
+
+  return {
+    required_capabilities: requiredCapabilities,
+    preferred_agent_package:
+      normalizeOptionalString(
+        normalized.preferredAgentPackage ?? normalized.preferred_agent_package,
+      ) ?? undefined,
+    matched_rule:
+      normalizeOptionalString(normalized.matchedRule ?? normalized.matched_rule) ?? undefined,
     done: typeof normalized.done === "boolean" ? normalized.done : undefined,
   };
 }
@@ -482,6 +520,51 @@ async function discoverAgentsByCapabilities(
   );
 }
 
+async function resolveWorkflowRouting(
+  event: TaskDaemonInterpretationEvent,
+  decision: IntakeDecision,
+): Promise<WorkflowRoutingResolution> {
+  const sourceKind = event.source.source;
+  const decisionKind = decision.kind;
+  if (decisionKind === "noop") {
+    throw new Error("workflow routing should not be resolved for noop decisions.");
+  }
+
+  const drained = await runSingleSendSession(
+    WORKFLOW_ROUTING_TOOL_NAME,
+    { reason: "Resolve downstream routing policy for this workflow-intake event." },
+    {
+      decisionKind,
+      sourceKind,
+      sourceKey: event.source.source_key,
+      projectKey: event.project.project_key,
+    },
+    MAX_SINGLE_SEND_CONTINUE_STEPS,
+  );
+
+  if (drained.hitStepLimit) {
+    throw new Error(
+      `workflow_routing did not finish within ${MAX_SINGLE_SEND_CONTINUE_STEPS} continue steps.`,
+    );
+  }
+
+  const terminal = drained.steps[drained.steps.length - 1] || null;
+  if (terminal?.status === "error") {
+    throw new Error(terminal.errorMessage || "workflow_routing returned error status.");
+  }
+
+  const parsed = parseWorkflowRoutingOutput(lastMeaningfulStepOutput(drained.steps));
+  if (!parsed) {
+    throw new Error("workflow_routing returned an invalid response.");
+  }
+
+  return {
+    requiredCapabilities: normalizeCapabilities(parsed.required_capabilities),
+    preferredAgentPackage: parsed.preferred_agent_package,
+    matchedRule: parsed.matched_rule,
+  };
+}
+
 async function delegateToAgent(target: RouteTarget, prompt: string): Promise<string[]> {
   const drained = await runSingleSendSession(
     INTERNAL_A2A_TOOL_NAME,
@@ -598,7 +681,6 @@ function deriveDecision(event: TaskDaemonInterpretationEvent): IntakeDecision {
     return {
       kind: "noop",
       reason: "The event produced no derived work items.",
-      requiredCapabilities: [],
     };
   }
 
@@ -606,7 +688,6 @@ function deriveDecision(event: TaskDaemonInterpretationEvent): IntakeDecision {
     return {
       kind: "create_pm_work",
       reason: "Slack-origin interpretations should become project-management work items.",
-      requiredCapabilities: ["clickup:create-task"],
     };
   }
 
@@ -616,13 +697,11 @@ function deriveDecision(event: TaskDaemonInterpretationEvent): IntakeDecision {
       return {
         kind: "cancel_or_close_work",
         reason: "This ClickUp event indicates work that needs reconciliation or closure handling.",
-        requiredCapabilities: ["coordination:routing"],
       };
     }
     return {
       kind: "execute_existing_work",
       reason: "This ClickUp event represents existing work that should be routed for execution.",
-      requiredCapabilities: ["coordination:routing"],
     };
   }
 
@@ -631,26 +710,13 @@ function deriveDecision(event: TaskDaemonInterpretationEvent): IntakeDecision {
       kind: "execute_existing_work",
       reason:
         "GitHub issue events currently route through the generic execution path until a dedicated intake policy exists.",
-      requiredCapabilities: ["coordination:routing"],
     };
   }
 
   return {
     kind: "execute_existing_work",
     reason: "Unknown sources fall back to the generic execution path.",
-    requiredCapabilities: ["coordination:routing"],
   };
-}
-
-function preferredPackageTiebreakerForDecision(decision: IntakeDecision): string | null {
-  if (decision.kind === "create_pm_work") return "clickup-agent";
-  if (
-    decision.kind === "execute_existing_work" ||
-    decision.kind === "cancel_or_close_work"
-  ) {
-    return "coordinator-agent";
-  }
-  return null;
 }
 
 function compareDiscoveredAgents(left: DiscoveredAgent, right: DiscoveredAgent): number {
@@ -667,7 +733,7 @@ function formatAgentRoute(agent: DiscoveredAgent): string {
 
 function selectDownstreamAgent(
   agents: DiscoveredAgent[],
-  decision: IntakeDecision,
+  preferredAgentPackage?: string,
 ): DownstreamSelection {
   const eligible = agents
     // Prevent routing the event back into this intake agent. This guard is
@@ -683,7 +749,7 @@ function selectDownstreamAgent(
 
   // Capability matching decides eligibility; package names are only a stable
   // tiebreaker when multiple equivalent agents advertise the same capability.
-  const preferredPackage = preferredPackageTiebreakerForDecision(decision);
+  const preferredPackage = normalizeOptionalString(preferredAgentPackage);
   if (preferredPackage) {
     const preferred = eligible.find((agent) => agent.agent_package === preferredPackage);
     if (preferred) return { kind: "matched", agent: preferred };
@@ -875,11 +941,15 @@ function renderDownstreamPrompt(
 function renderRouteSummary(
   decision: IntakeDecision,
   target: DiscoveredAgent,
+  routing: WorkflowRoutingResolution,
   downstreamTexts: string[],
 ): string {
   const lines = [
     `Routed ${decision.kind} to ${target.agent_package}/${target.agent_instance_id}.`,
   ];
+  if (routing.matchedRule) {
+    lines.push(`Routing rule: ${routing.matchedRule}`);
+  }
   if (downstreamTexts.length > 0) {
     lines.push("");
     lines.push("Downstream response:");
@@ -905,18 +975,21 @@ async function run(ctx: RunContext): Promise<SessionResult> {
       return { message: decision.reason };
     }
 
-    const agents = await discoverAgentsByCapabilities(decision.requiredCapabilities);
-    const selection = selectDownstreamAgent(agents, decision);
+    const routing = await resolveWorkflowRouting(event, decision);
+    const agents = await discoverAgentsByCapabilities(routing.requiredCapabilities);
+    const selection = selectDownstreamAgent(agents, routing.preferredAgentPackage);
     if (selection.kind === "none") {
       return {
-        error: `No downstream agent matched required capabilities: ${decision.requiredCapabilities.join(", ")}`,
+        error:
+          `No downstream agent matched required capabilities: ` +
+          `${routing.requiredCapabilities.join(", ")}`,
       };
     }
     if (selection.kind === "ambiguous") {
       return {
         error:
           `Multiple downstream agents matched required capabilities ` +
-          `${decision.requiredCapabilities.join(", ")}: ${selection.candidates.join(", ")}`,
+          `${routing.requiredCapabilities.join(", ")}: ${selection.candidates.join(", ")}`,
       };
     }
 
@@ -924,7 +997,7 @@ async function run(ctx: RunContext): Promise<SessionResult> {
     const prompt = renderDownstreamPrompt(event, decision);
     const downstreamTexts = await delegateToAgent(target, prompt);
     return {
-      message: renderRouteSummary(decision, target, downstreamTexts),
+      message: renderRouteSummary(decision, target, routing, downstreamTexts),
     };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);

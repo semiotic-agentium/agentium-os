@@ -2,10 +2,12 @@ use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use baml_rt::{A2aRequestHandler, BamlRtError, baml::BamlRuntimeManager};
+use baml_rt_config::{ConfigWriter, SqliteConfigStore};
 use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister,
     bus::{BusStream, BusWithEffects},
 };
+use baml_rt_tools::BundleName;
 use baml_tools_system::SystemBundle;
 use serde_json::{Value, json};
 use test_support::common::{
@@ -158,7 +160,7 @@ async fn build_workspace_workflow_intake_agent() -> PathBuf {
 async fn setup_workflow_intake_agent(
     agent_list: Arc<dyn AgentLister>,
     a2a_handler: Arc<dyn A2aRequestHandler>,
-) -> (baml_rt::A2aAgent, PathBuf) {
+) -> (baml_rt::A2aAgent, PathBuf, Arc<SqliteConfigStore>) {
     let built = build_workspace_workflow_intake_agent().await;
     let mut manager = BamlRuntimeManager::builder()
         .with_fnox_llm_resolver(workspace_fnox_path())
@@ -172,6 +174,7 @@ async fn setup_workflow_intake_agent(
         "system/internal_a2a",
         "system/discover_agents",
         "system/discover_tools",
+        "system/workflow_routing",
     ]
     .into_iter()
     .map(String::from)
@@ -182,6 +185,8 @@ async fn setup_workflow_intake_agent(
         .expect("set allowlist");
 
     let registry = manager.tool_registry();
+    let config_service = Arc::new(SqliteConfigStore::in_memory().expect("in-memory config store"));
+    registry.set_config_resolver(Some(config_service.clone()));
     registry
         .register_bundle(SystemBundle::new(agent_list, registry.clone(), a2a_handler))
         .expect("register SystemBundle");
@@ -197,7 +202,7 @@ async fn setup_workflow_intake_agent(
         .await
         .expect("build workflow-intake agent");
 
-    (agent, built)
+    (agent, built, config_service)
 }
 
 async fn collect_responses(
@@ -286,7 +291,8 @@ async fn workflow_intake_routes_slack_events_to_clickup_creation_capability() {
         ],
     });
     let handler = Arc::new(CapturingA2aHandler::default());
-    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler.clone()).await;
+    let (agent, built_dir, _config_service) =
+        setup_workflow_intake_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
     let request = task_daemon_request(
@@ -340,12 +346,75 @@ async fn workflow_intake_routes_slack_events_to_clickup_creation_capability() {
 }
 
 #[tokio::test]
+async fn workflow_intake_respects_configured_pm_routing_override() {
+    let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
+        entries: vec![
+            discovery_entry("clickup-agent", &["clickup:create-task"]),
+            discovery_entry("linear-agent", &["linear:create-task"]),
+        ],
+    });
+    let handler = Arc::new(CapturingA2aHandler::default());
+    let (agent, built_dir, config_service) =
+        setup_workflow_intake_agent(agent_list, handler.clone()).await;
+    let _built_dir_guard = TempDirCleanup::new(built_dir);
+
+    let routing_bundle = BundleName::new("workflow_routing").expect("routing bundle");
+    config_service
+        .set(
+            &routing_bundle,
+            json!({
+                "routes": [
+                    {
+                        "name": "slack-to-linear",
+                        "decisionKinds": ["create_pm_work"],
+                        "sourceKinds": ["slack"],
+                        "requiredCapabilities": ["linear:create-task"],
+                        "preferredAgentPackage": "linear-agent"
+                    }
+                ]
+            }),
+        )
+        .expect("store workflow routing override");
+
+    let request = task_daemon_request(
+        base_event(
+            "slack",
+            "#agentium-eng",
+            vec![json!({
+                "key": "task-1",
+                "title": "Route PM work through configured provider",
+                "description": "The operator configured a non-ClickUp PM sink.",
+                "priority": "high"
+            })],
+        ),
+        "workflow-intake-slack-config-1",
+        "corr-1735720000000-2",
+    );
+
+    let responses = collect_responses(&agent, request)
+        .await
+        .expect("workflow-intake response");
+    let texts = message_texts_from_chunks(&chunks_from_responses(&responses));
+    let calls = handler.snapshot_calls().await;
+
+    assert_eq!(calls.len(), 1, "expected one downstream delegation");
+    assert_eq!(calls[0].agent_package, "linear-agent");
+    assert!(
+        texts
+            .iter()
+            .any(|text| text.contains("Routing rule: slack-to-linear")),
+        "expected configured routing rule in response, got: {texts:?}"
+    );
+}
+
+#[tokio::test]
 async fn workflow_intake_forwards_all_derived_tasks_without_silent_truncation() {
     let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList {
         entries: vec![discovery_entry("clickup-agent", &["clickup:create-task"])],
     });
     let handler = Arc::new(CapturingA2aHandler::default());
-    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler.clone()).await;
+    let (agent, built_dir, _config_service) =
+        setup_workflow_intake_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
     let derived_tasks: Vec<Value> = (1..=15)
@@ -400,7 +469,8 @@ async fn workflow_intake_routes_clickup_created_events_to_coordinator() {
         ],
     });
     let handler = Arc::new(CapturingA2aHandler::default());
-    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler.clone()).await;
+    let (agent, built_dir, _config_service) =
+        setup_workflow_intake_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
     let request = task_daemon_request(
@@ -516,7 +586,8 @@ async fn workflow_intake_routes_clickup_terminal_events_to_coordinator_reconcili
         )],
     });
     let handler = Arc::new(CapturingA2aHandler::default());
-    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler.clone()).await;
+    let (agent, built_dir, _config_service) =
+        setup_workflow_intake_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
     let request = task_daemon_request(
@@ -570,7 +641,8 @@ async fn workflow_intake_routes_clickup_removed_events_to_coordinator_reconcilia
         )],
     });
     let handler = Arc::new(CapturingA2aHandler::default());
-    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler.clone()).await;
+    let (agent, built_dir, _config_service) =
+        setup_workflow_intake_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
     let request = task_daemon_request(
@@ -624,7 +696,8 @@ async fn workflow_intake_completes_noop_events_without_delegation() {
         )],
     });
     let handler = Arc::new(CapturingA2aHandler::default());
-    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler.clone()).await;
+    let (agent, built_dir, _config_service) =
+        setup_workflow_intake_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
     let request = task_daemon_request(
@@ -655,7 +728,8 @@ async fn workflow_intake_completes_noop_events_without_delegation() {
 async fn workflow_intake_fails_invalid_task_daemon_payloads() {
     let agent_list: Arc<dyn AgentLister> = Arc::new(StaticAgentList { entries: vec![] });
     let handler = Arc::new(CapturingA2aHandler::default());
-    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler.clone()).await;
+    let (agent, built_dir, _config_service) =
+        setup_workflow_intake_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
     let request = task_daemon_request(
@@ -698,7 +772,8 @@ async fn workflow_intake_fails_when_no_agent_matches_required_capability() {
         )],
     });
     let handler = Arc::new(CapturingA2aHandler::default());
-    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler.clone()).await;
+    let (agent, built_dir, _config_service) =
+        setup_workflow_intake_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
     let request = task_daemon_request(
@@ -748,7 +823,8 @@ async fn workflow_intake_reports_ambiguous_downstream_matches() {
         ],
     });
     let handler = Arc::new(CapturingA2aHandler::default());
-    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler.clone()).await;
+    let (agent, built_dir, _config_service) =
+        setup_workflow_intake_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
     let request = task_daemon_request(
@@ -798,7 +874,8 @@ async fn workflow_intake_routes_github_issue_events_to_coordinator() {
         )],
     });
     let handler = Arc::new(CapturingA2aHandler::default());
-    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler.clone()).await;
+    let (agent, built_dir, _config_service) =
+        setup_workflow_intake_agent(agent_list, handler.clone()).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
     let request = task_daemon_request(
@@ -851,7 +928,8 @@ async fn workflow_intake_fails_when_downstream_delegation_errors() {
         )],
     });
     let handler = Arc::new(FailingA2aHandler);
-    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler).await;
+    let (agent, built_dir, _config_service) =
+        setup_workflow_intake_agent(agent_list, handler).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
     let request = task_daemon_request(
@@ -915,7 +993,8 @@ async fn workflow_intake_fails_when_delegated_child_task_reports_failed_state() 
             }),
         ],
     });
-    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler).await;
+    let (agent, built_dir, _config_service) =
+        setup_workflow_intake_agent(agent_list, handler).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
     let request = task_daemon_request(
@@ -971,7 +1050,8 @@ async fn workflow_intake_fails_when_delegated_child_task_requires_follow_up_inpu
             }
         })],
     });
-    let (agent, built_dir) = setup_workflow_intake_agent(agent_list, handler).await;
+    let (agent, built_dir, _config_service) =
+        setup_workflow_intake_agent(agent_list, handler).await;
     let _built_dir_guard = TempDirCleanup::new(built_dir);
 
     let request = task_daemon_request(

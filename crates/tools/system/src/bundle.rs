@@ -8,7 +8,7 @@ use baml_rt_tools::{ToolBundle, ToolBundleMetadata, ToolRegistry, bundles::Bundl
 
 use crate::{
     a2a_session::A2aSessionBundle, discover_bundle::DiscoverBundle,
-    provenance_bundle::ProvenanceBundle,
+    provenance_bundle::ProvenanceBundle, workflow_routing_session_tools::workflow_routing_handler,
 };
 
 /// System bundle — host tools for system operations (name/description only).
@@ -18,12 +18,12 @@ impl BundleType for System {
     const NAME: &'static str = "system";
 
     fn description() -> &'static str {
-        "System tools (A2A conversation, agent discovery, tool discovery)."
+        "System tools (A2A conversation, discovery, workflow routing)."
     }
 }
 
-/// Unified system bundle: internal_a2a, discover_agents, discover_tools.
-/// Register this with the host tool registry so agents get all three tools.
+/// Unified system bundle: internal_a2a, discover_agents, discover_tools, workflow_routing.
+/// Register this with the host tool registry so agents get the standard system tools.
 pub struct SystemBundle {
     a2a: A2aSessionBundle,
     discover: DiscoverBundle,
@@ -63,7 +63,9 @@ impl ToolBundle for SystemBundle {
             .expect("system bundle name is valid");
         ToolBundleMetadata {
             name,
-            description: "System tools (A2A session, agent discovery, tool discovery).".to_string(),
+            description:
+                "System tools (A2A session, agent discovery, tool discovery, workflow routing)."
+                    .to_string(),
             config_schema: None,
             secret_requests: Vec::new(),
         }
@@ -72,6 +74,7 @@ impl ToolBundle for SystemBundle {
     fn functions(&self) -> Vec<Arc<dyn baml_rt_tools::ToolHandler>> {
         let mut fns = self.a2a.functions();
         fns.extend(self.discover.functions());
+        fns.push(workflow_routing_handler());
         if let Some(bundle) = &self.provenance {
             fns.extend(bundle.functions());
         }

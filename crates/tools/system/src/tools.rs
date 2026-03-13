@@ -138,6 +138,145 @@ pub struct AgentCardDto {
     pub capabilities: Vec<String>,
 }
 
+// --- system/workflow_routing ---
+
+/// Starts a workflow-routing session.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRoutingOpenInput {
+    /// Optional short reason for looking up routing policy.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq, Hash)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowRoutingDecisionKind {
+    CreatePmWork,
+    ExecuteExistingWork,
+    CancelOrCloseWork,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq, Hash)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowRoutingSourceKind {
+    Slack,
+    Clickup,
+    GithubIssues,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRoutingSendInput {
+    pub decision_kind: WorkflowRoutingDecisionKind,
+    pub source_kind: WorkflowRoutingSourceKind,
+    pub source_key: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRoutingNextOutput {
+    pub required_capabilities: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_agent_package: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_rule: Option<String>,
+    pub done: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRoutingRule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decision_kinds: Vec<WorkflowRoutingDecisionKind>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_kinds: Vec<WorkflowRoutingSourceKind>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub project_keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_key_prefixes: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_capabilities: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_agent_package: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRoutingConfig {
+    #[serde(default = "default_workflow_routing_rules")]
+    pub routes: Vec<WorkflowRoutingRule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_route: Option<WorkflowRoutingRule>,
+}
+
+fn default_workflow_routing_rules() -> Vec<WorkflowRoutingRule> {
+    vec![
+        WorkflowRoutingRule {
+            name: Some("slack-create-pm-work".to_string()),
+            decision_kinds: vec![WorkflowRoutingDecisionKind::CreatePmWork],
+            source_kinds: vec![WorkflowRoutingSourceKind::Slack],
+            required_capabilities: vec!["clickup:create-task".to_string()],
+            preferred_agent_package: Some("clickup-agent".to_string()),
+            ..WorkflowRoutingRule::default()
+        },
+        WorkflowRoutingRule {
+            name: Some("clickup-execute-existing-work".to_string()),
+            decision_kinds: vec![WorkflowRoutingDecisionKind::ExecuteExistingWork],
+            source_kinds: vec![WorkflowRoutingSourceKind::Clickup],
+            required_capabilities: vec!["coordination:routing".to_string()],
+            preferred_agent_package: Some("coordinator-agent".to_string()),
+            ..WorkflowRoutingRule::default()
+        },
+        WorkflowRoutingRule {
+            name: Some("clickup-cancel-or-close-work".to_string()),
+            decision_kinds: vec![WorkflowRoutingDecisionKind::CancelOrCloseWork],
+            source_kinds: vec![WorkflowRoutingSourceKind::Clickup],
+            required_capabilities: vec!["coordination:routing".to_string()],
+            preferred_agent_package: Some("coordinator-agent".to_string()),
+            ..WorkflowRoutingRule::default()
+        },
+        WorkflowRoutingRule {
+            name: Some("github-execute-existing-work".to_string()),
+            decision_kinds: vec![WorkflowRoutingDecisionKind::ExecuteExistingWork],
+            source_kinds: vec![WorkflowRoutingSourceKind::GithubIssues],
+            required_capabilities: vec!["coordination:routing".to_string()],
+            preferred_agent_package: Some("coordinator-agent".to_string()),
+            ..WorkflowRoutingRule::default()
+        },
+        WorkflowRoutingRule {
+            name: Some("github-cancel-or-close-work".to_string()),
+            decision_kinds: vec![WorkflowRoutingDecisionKind::CancelOrCloseWork],
+            source_kinds: vec![WorkflowRoutingSourceKind::GithubIssues],
+            required_capabilities: vec!["coordination:routing".to_string()],
+            preferred_agent_package: Some("coordinator-agent".to_string()),
+            ..WorkflowRoutingRule::default()
+        },
+    ]
+}
+
+impl Default for WorkflowRoutingConfig {
+    fn default() -> Self {
+        Self {
+            routes: default_workflow_routing_rules(),
+            default_route: None,
+        }
+    }
+}
+
 // --- system/discover_tools ---
 
 /// Starts a tool-discovery session.

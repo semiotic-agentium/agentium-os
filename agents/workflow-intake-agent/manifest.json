@@ -6,7 +6,8 @@
   "tools": [
     "system/discover_agents",
     "system/discover_tools",
-    "system/internal_a2a"
+    "system/internal_a2a",
+    "system/workflow_routing"
   ],
   "discovery": {
     "description": "Routes task-daemon interpretation events to the right downstream agent based on manifest capabilities.",

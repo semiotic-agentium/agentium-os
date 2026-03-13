@@ -85,6 +85,7 @@ async fn setup_coordinator_agent_with_provenance()
         "system/internal_a2a",
         "system/discover_agents",
         "system/discover_tools",
+        "system/workflow_routing",
     ]
     .into_iter()
     .map(String::from)
@@ -144,6 +145,7 @@ async fn setup_workspace_coordinator_with_provenance()
         "system/internal_a2a",
         "system/discover_agents",
         "system/discover_tools",
+        "system/workflow_routing",
     ]
     .into_iter()
     .map(String::from)

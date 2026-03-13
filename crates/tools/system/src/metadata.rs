@@ -4,15 +4,17 @@ use std::sync::Arc;
 
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_tools::{
-    ToolHandler, parse_tool_name_and_class, register_tool,
+    BundleName, ToolConfigMetadata, ToolHandler, parse_tool_name_and_class, register_tool,
     tools::{ToolFunctionMetadata, ToolMetadataBuilder, TypeBasedMetadataBuilder},
 };
+use serde_json::to_value;
 
 use crate::tools::{
     DiscoverAgentsNextOutput, DiscoverAgentsOpenInput, DiscoverAgentsSendInput,
     DiscoverToolsNextOutput, DiscoverToolsOpenInput, DiscoverToolsSendInput, InternalA2aNextOutput,
     InternalA2aOpenInput, InternalA2aSendInput, ProvenanceQueryNextOutput,
-    ProvenanceQueryOpenInput, ProvenanceQuerySendInput,
+    ProvenanceQueryOpenInput, ProvenanceQuerySendInput, WorkflowRoutingConfig,
+    WorkflowRoutingNextOutput, WorkflowRoutingOpenInput, WorkflowRoutingSendInput,
 };
 
 fn system_tool_build_unused() -> Result<Arc<dyn ToolHandler>> {
@@ -77,6 +79,35 @@ pub fn system_discover_tools_metadata() -> ToolFunctionMetadata {
     )
 }
 
+pub fn system_workflow_routing_metadata() -> ToolFunctionMetadata {
+    let (name, class_name) = parse_tool_name_and_class("system/workflow_routing")
+        .expect("workflow routing tool name is a compile-time constant");
+    let config_schema = schemars::schema_for!(WorkflowRoutingConfig);
+    let config_default = to_value(WorkflowRoutingConfig::default())
+        .expect("workflow routing config default must serialize");
+    TypeBasedMetadataBuilder::<
+        WorkflowRoutingOpenInput,
+        WorkflowRoutingSendInput,
+        WorkflowRoutingNextOutput,
+    >::new(
+        name,
+        class_name,
+        "Looks up downstream routing policy for a workflow event based on typed config. Send the event decision and source details, then read back the required capabilities and optional preferred agent package.".to_string(),
+    )
+    .with_tags(vec![
+        "system".to_string(),
+        "workflow".to_string(),
+        "routing".to_string(),
+    ])
+    .with_config(ToolConfigMetadata::new(
+        to_value(config_schema).expect("workflow routing config schema must serialize"),
+        config_default,
+        Some("WorkflowRoutingConfig".to_string()),
+    ))
+    .with_config_bundle(BundleName::new("workflow_routing").expect("workflow routing bundle name"))
+    .build_metadata()
+}
+
 pub fn system_introspection_metadata() -> ToolFunctionMetadata {
     build_discover_metadata::<
         ProvenanceQueryOpenInput,
@@ -101,5 +132,6 @@ pub fn system_extrospection_metadata() -> ToolFunctionMetadata {
 
 register_tool!(system_discover_agents_metadata, system_tool_build_unused);
 register_tool!(system_discover_tools_metadata, system_tool_build_unused);
+register_tool!(system_workflow_routing_metadata, system_tool_build_unused);
 register_tool!(system_introspection_metadata, system_tool_build_unused);
 register_tool!(system_extrospection_metadata, system_tool_build_unused);
