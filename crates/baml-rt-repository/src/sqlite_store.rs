@@ -588,17 +588,17 @@ impl LineageStore for SqliteStore {
         self.with_conn(move |conn| {
             // Recursive CTE to walk ancestors
             let sql = format!(
-                "WITH RECURSIVE and(hash, depth) AS (
+                "WITH RECURSIVE ancestors(hash, depth) AS (
                     SELECT source_hash, 1 FROM lineage_edges WHERE target_hash = ?1
                     UNION
-                    SELECT le.source_hash, and.depth + 1
+                    SELECT le.source_hash, ancestors.depth + 1
                     FROM lineage_edges le
-                    JOIN and ON and.hash = le.target_hash
-                    WHERE and.depth < {max_depth}
+                    JOIN ancestors ON ancestors.hash = le.target_hash
+                    WHERE ancestors.depth < {max_depth}
                 )
                 SELECT DISTINCT e.hash, e.generation, e.parentage_json
-                FROM and
-                JOIN entries e ON e.hash = and.hash
+                FROM ancestors
+                JOIN entries e ON e.hash = ancestors.hash
                 ORDER BY e.generation ASC"
             );
             let mut stmt = conn
