@@ -3,7 +3,10 @@
 //! This module implements pre-execution interception by using BAML's build_request
 //! to intercept LLM calls before the HTTP request is sent.
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex as StdMutex, OnceLock},
+};
 
 use baml_rt_core::{
     BamlRtError, InvocationKind, Result,
@@ -11,7 +14,7 @@ use baml_rt_core::{
     context,
 };
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry, LLMCallContext};
-use baml_runtime::RuntimeContextManager;
+use baml_runtime::{RuntimeContextManager, client_registry::ClientRegistry};
 use baml_types::{BamlMap, BamlValue};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -82,6 +85,60 @@ fn normalized_prompt_payload(prompt: &Value) -> Value {
     }
 }
 
+fn prompt_payload_bytes(prompt_payload: &Value) -> usize {
+    serde_json::to_vec(prompt_payload).map_or(0, |v| v.len())
+}
+
+static PREVIOUS_PROMPT_PAYLOADS: OnceLock<StdMutex<HashMap<String, Vec<u8>>>> = OnceLock::new();
+
+fn shared_prefix_len_bytes(a: &[u8], b: &[u8]) -> usize {
+    let max = a.len().min(b.len());
+    let mut i = 0usize;
+    while i < max && a[i] == b[i] {
+        i += 1;
+    }
+    i
+}
+
+fn compute_and_store_prefix_cacheability(
+    key: String,
+    current_payload: Vec<u8>,
+) -> (usize, usize, f64) {
+    let store = PREVIOUS_PROMPT_PAYLOADS.get_or_init(|| StdMutex::new(HashMap::new()));
+    let mut guard = store.lock().expect("previous prompt payload lock poisoned");
+    let previous = guard.get(&key).cloned();
+    let current_bytes = current_payload.len();
+    let shared_prefix_bytes = previous.as_ref().map_or(0usize, |prev| {
+        shared_prefix_len_bytes(prev, &current_payload)
+    });
+    guard.insert(key, current_payload);
+    let cacheable_pct = if current_bytes == 0 {
+        0.0
+    } else {
+        (shared_prefix_bytes as f64 / current_bytes as f64) * 100.0
+    };
+    (
+        shared_prefix_bytes,
+        previous.map_or(0usize, |prev| prev.len()),
+        cacheable_pct,
+    )
+}
+
+fn prompt_message_count(prompt_payload: &Value) -> usize {
+    match prompt_payload {
+        Value::Object(map) => {
+            if let Some(Value::Array(messages)) = map.get("messages") {
+                return messages.len();
+            }
+            if let Some(Value::Array(contents)) = map.get("contents") {
+                return contents.len();
+            }
+            0
+        }
+        _ => 0,
+    }
+}
+
 /// Build a minimal LLM call context from scope and function name only.
 /// Used when request building fails (e.g. missing secrets) so interceptors can still
 /// return Substitute or Block without needing the full HTTP request.
@@ -119,6 +176,7 @@ pub fn extract_context_from_http_request(
     scope: &context::RuntimeScope,
     http_request: &baml_types::tracing::events::HTTPRequest,
     function_name: &str,
+    planning_step: Option<(&str, &str)>,
 ) -> Result<LLMCallContext> {
     // Extract client and model from client_details
     // HTTPRequest has fields: id, url, method, body, client_details (Arc<ClientDetails>)
@@ -179,6 +237,8 @@ pub fn extract_context_from_http_request(
         })
         .ok_or_else(|| BamlRtError::InvalidArgument("LLM call missing model".to_string()))?;
 
+    let payload_bytes = prompt_payload_bytes(&prompt_payload);
+    let message_count = prompt_message_count(&prompt_payload);
     let mut metadata_map = serde_json::Map::new();
     metadata_map.insert("url".to_string(), Value::String(http_request.url.clone()));
     metadata_map.insert(
@@ -196,11 +256,23 @@ pub fn extract_context_from_http_request(
     );
     metadata_map.insert("client".to_string(), Value::String(client.clone()));
     metadata_map.insert("model".to_string(), Value::String(model.clone()));
+    metadata_map.insert(
+        "prompt_payload_bytes".to_string(),
+        Value::from(payload_bytes as u64),
+    );
+    metadata_map.insert(
+        "prompt_message_count".to_string(),
+        Value::from(message_count as u64),
+    );
     if let Some(task_id) = scope.task_id_opt() {
         metadata_map.insert(
             "task_id".to_string(),
             Value::String(task_id.as_str().to_string()),
         );
+    }
+    if let Some((plan_id, step_id)) = planning_step {
+        metadata_map.insert("plan_id".to_string(), Value::String(plan_id.to_string()));
+        metadata_map.insert("step_id".to_string(), Value::String(step_id.to_string()));
     }
 
     Ok(LLMCallContext {
@@ -228,11 +300,12 @@ pub async fn intercept_llm_call_pre_execution(
     ctx_manager: &RuntimeContextManager,
     interceptor_registry: &Arc<Mutex<InterceptorRegistry>>,
     env_vars: HashMap<String, String>,
-    client_registry: Option<&baml_runtime::client_registry::ClientRegistry>,
+    client_registry: Option<&ClientRegistry>,
     secret_keys_accessed: &[String],
     invocation: InvocationKind,
     effect_emitter: Option<&Arc<dyn EffectEmitter>>,
     collector: Option<&crate::baml_collector::BamlLLMCollector>,
+    planning_step: Option<(&str, &str)>,
 ) -> Result<InterceptorDecision> {
     // Build the HTTP request to get LLM call details
     // This doesn't actually send the request, just builds it
@@ -277,7 +350,8 @@ pub async fn intercept_llm_call_pre_execution(
     };
 
     // Extract LLM call context from the HTTP request
-    let context = extract_context_from_http_request(scope, &http_request, function_name)?;
+    let context =
+        extract_context_from_http_request(scope, &http_request, function_name, planning_step)?;
 
     // Start effect and get token (type-safe start/complete pairing)
     let mut effect_metadata = llm_effect_metadata_from_context(&context);
@@ -312,12 +386,39 @@ pub async fn intercept_llm_call_pre_execution(
     } else {
         tracing::trace!(context_id = %context_id, "effect_emitter is None, skipping LlmStarted");
     }
+    let prompt_payload = normalized_prompt_payload(&context.prompt);
+    let prompt_payload_bytes_vec = serde_json::to_vec(&prompt_payload).unwrap_or_default();
+    let prompt_payload_bytes = if prompt_payload_bytes_vec.is_empty() {
+        prompt_payload_bytes(&prompt_payload)
+    } else {
+        prompt_payload_bytes_vec.len()
+    };
+    let prompt_message_count = prompt_message_count(&prompt_payload);
+    let (shared_prefix_bytes, previous_payload_bytes, cacheable_prefix_pct) =
+        compute_and_store_prefix_cacheability(
+            format!(
+                "{}::{function_name}",
+                context.runtime_scope.context_id().as_str()
+            ),
+            prompt_payload_bytes_vec,
+        );
 
-    tracing::debug!(
+    tracing::info!(
         client = context.client,
         model = context.model,
         function = function_name,
-        "Pre-execution interception: extracted LLM call context"
+        prompt_payload_bytes,
+        prompt_message_count,
+        "LLM pre-execution telemetry"
+    );
+    tracing::info!(
+        function = function_name,
+        context_id = %context.runtime_scope.context_id(),
+        previous_payload_bytes,
+        prompt_payload_bytes,
+        shared_prefix_bytes,
+        cacheable_prefix_pct = cacheable_prefix_pct,
+        "LLM pre-execution prompt shared-prefix cacheability"
     );
 
     // Run interceptors

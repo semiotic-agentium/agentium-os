@@ -22,9 +22,13 @@ expression: snapshot
           "prompt_tokens": 20,
           "completion_tokens": 5,
           "total_tokens": 25,
+          "cached_input_tokens": null,
+          "activity_ref": "prov:v1:activity:llm_call:ctx-100-1:msg-b:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:0",
+          "llm_call_ref": "[prov_event_id]",
           "llm_call": {
             "input": "world"
           },
+          "llm_result_ref": "[prov_event_id]",
           "llm_result": null,
           "activity_outcome": "Failed",
           "agent_package": "unknown",
@@ -32,7 +36,7 @@ expression: snapshot
           "agent_display": "unknown/unknown",
           "activity_status": "Completed",
           "failure_class": "baml_validation_error",
-          "failure_evidence": "linked_prompt_rejected",
+          "failure_evidence": "BAML validation failed: invalid response schema",
           "activity_kind": "llm_call"
         }
       ],
@@ -50,7 +54,8 @@ expression: snapshot
         "tokenHotspots": {
           "p95": 25.0,
           "p99": 25.0
-        }
+        },
+        "cachedInputTokensTotal": 0
       },
       "hotspotGroups": [
         {
@@ -101,9 +106,13 @@ expression: snapshot
           "prompt_tokens": 20,
           "completion_tokens": 5,
           "total_tokens": 25,
+          "cached_input_tokens": null,
+          "activity_ref": "prov:v1:activity:llm_call:ctx-100-1:msg-b:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:0",
+          "llm_call_ref": "[prov_event_id]",
           "llm_call": {
             "input": "world"
           },
+          "llm_result_ref": "[prov_event_id]",
           "llm_result": null,
           "activity_outcome": "Failed",
           "agent_package": "unknown",
@@ -111,7 +120,7 @@ expression: snapshot
           "agent_display": "unknown/unknown",
           "activity_status": "Completed",
           "failure_class": "baml_validation_error",
-          "failure_evidence": "linked_prompt_rejected",
+          "failure_evidence": "BAML validation failed: invalid response schema",
           "activity_kind": "llm_call"
         }
       ],
@@ -129,7 +138,8 @@ expression: snapshot
         "tokenHotspots": {
           "p95": 25.0,
           "p99": 25.0
-        }
+        },
+        "cachedInputTokensTotal": 0
       },
       "hotspotGroups": [
         {

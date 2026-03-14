@@ -130,8 +130,21 @@ function extractText(message: ChatMessage): string {
   return textParts.join("\n");
 }
 
+function executionMessageId(message: ChatMessage): string {
+  if (isObject(message)) {
+    const record = message as Record<string, unknown>;
+    if (typeof record.messageId === "string" && record.messageId.trim().length > 0) return record.messageId;
+    if (typeof record.id === "string" && record.id.trim().length > 0) return record.id;
+  }
+  return "msg-slack-fallback";
+}
+
 function collapseWhitespace(value: string): string {
   return value.replace(/\s+/g, " ").trim();
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === "object";
 }
 
 function parseChannelId(text: string): string | null {
@@ -512,30 +525,95 @@ function clarifyingPrompt(): string {
   );
 }
 
-async function onChatMessage(message: ChatMessage): Promise<void> {
-  const s = session(message);
-  await s.run(async () => {
-    const userText = collapseWhitespace(extractText(message));
-    const scope = parseSlackScope(userText);
+__chat_register({
+  run: async (ctx) => {
+    let userText = collapseWhitespace(ctx.text || extractText(ctx.message));
+
+    // Clarification: if no Slack channel/thread scope can be parsed from the user's text,
+    // ask once before opening any sessions. The scope regex is deterministic — no LLM needed.
+    let scope = parseSlackScope(userText);
     if (!scope) {
-      return { message: clarifyingPrompt() };
+      const reply = await ctx.emit.awaitInput(clarifyingPrompt());
+      const clarifiedText = collapseWhitespace(messageText(reply));
+      if (clarifiedText) userText = clarifiedText;
+      scope = parseSlackScope(userText);
+      if (!scope) {
+        return {
+          message:
+            "Still no Slack channel or thread ID found. Provide a channel ID (e.g. C123ABC456) or a thread permalink.",
+        };
+      }
     }
 
+    const executionSession = typeof openA2aExecutionSession === "function"
+      ? await openA2aExecutionSession("slack-" + Date.now().toString())
+      : null;
+    const intentId = "intent-slack-todo-extraction";
+    const intentPhase = executionSession
+      ? await executionSession.submitIntent({
+          intentId,
+          description: "Inspect scoped Slack conversation and extract actionable todos with evidence.",
+          derivedFromMessageIds: [executionMessageId(ctx.message)],
+        })
+      : null;
+    const executable = intentPhase
+      ? await intentPhase.submitPlan({
+          intentId,
+          planId: "plan-slack-todo-extraction",
+          steps: [
+            {
+              stepId: "step-parse-scope",
+              description: "Parse Slack scope and retrieval bounds.",
+              order: 0,
+              dependsOn: [],
+            },
+            {
+              stepId: "step-fetch-slack",
+              description: "Fetch Slack messages from requested scope.",
+              order: 1,
+              dependsOn: ["step-parse-scope"],
+            },
+            {
+              stepId: "step-extract-todos",
+              description: "Extract action items and render response.",
+              order: 2,
+              dependsOn: ["step-fetch-slack"],
+            },
+          ],
+        })
+      : null;
+
     try {
+      if (executable) {
+        await executable.startStep?.("step-parse-scope", `Parsed scope: ${scopeLabel(scope)}`);
+        await executable.completeStep?.("step-parse-scope", "Scope resolved from user input.");
+        await executable.startStep?.("step-fetch-slack", `Fetching messages from ${scopeLabel(scope)}`);
+      }
+
       const action = buildSlackAction(scope);
       const output = await runSlackAction(action);
       if (!output) {
+        if (executable) await executable.finish?.();
         return { message: "Slack tool returned no data for the requested scope." };
       }
+
+      if (executable) {
+        await executable.completeStep?.("step-fetch-slack", `Retrieved ${output.messages?.length ?? 0} messages.`);
+        await executable.startStep?.("step-extract-todos", "Extracting actionable todos from messages.");
+      }
+
       const todos = extractTodosFromOutput(output);
-      return {
-        message: renderTodoResponse(scope, output, todos),
-      };
+
+      if (executable) {
+        await executable.completeStep?.("step-extract-todos", `Extracted ${todos.length} action item(s).`);
+        await executable.finish?.();
+      }
+
+      return { message: renderTodoResponse(scope, output, todos) };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
+      try { if (executable) await executable.abort?.(errorMessage); } catch (_) { /* best-effort */ }
       return { error: `Slack todo extraction failed: ${errorMessage}` };
     }
-  });
-}
-
-__chat_register({ onChatMessage });
+  },
+});

@@ -177,7 +177,7 @@ impl QuickJSBridge {
                         context::with_scope(scope, async move {
                             let execution_handle = {
                                 let manager = manager_for_promise.lock().await;
-                                manager.tool_execution_handle()
+                                manager.tool_execution_context()
                             };
                             let result = execution_handle
                                 .execute_tool(&tool_scope, &tool_name_clone, args_json)
@@ -240,7 +240,7 @@ impl QuickJSBridge {
                         context::with_scope(scope, async move {
                             let execution_handle = {
                                 let manager = manager_for_promise.lock().await;
-                                manager.tool_execution_handle()
+                                manager.tool_execution_context()
                             };
                             let result = execution_handle
                                 .execute_tool_from_baml_result(&tool_scope, baml_result)
@@ -400,17 +400,23 @@ impl QuickJSBridge {
         let registry = self.invocation_context_registry.clone();
         self.runtime.set_function(
             &[],
-            "__tool_session_next",
+            "__tool_session_read",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
                 let scope = super::resolve_scope_from_active_context(&registry)?;
-                if args.is_empty() {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id)"));
+                if args.len() < 2 {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id, read_input_json)"));
                 }
                 let session_id = if args[0].is_string() {
                     ToolSessionId::parse(args[0].get_str())
                         .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?
                 } else {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Session id must be a string"));
+                };
+                let input_json: Value = if args[1].is_string() {
+                    serde_json::from_str(args[1].get_str())
+                        .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&format!("Failed to parse read input JSON: {}", e)))?
+                } else {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("read_input_json must be a JSON string"));
                 };
                 let manager_for_promise = manager_clone.clone();
                 Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(async move {
@@ -419,20 +425,20 @@ impl QuickJSBridge {
                             let manager = manager_for_promise.lock().await;
                             manager.tool_session_handle()
                         };
-                        let result = session_handle.tool_session_next(&session_id).await;
+                        let result = session_handle.tool_session_read(&session_id, input_json).await;
                         match result {
                             Ok(step) => {
                                 let value = tool_step_to_value(step);
                                 Ok(value_to_js_value_facade(value))
                             }
-                            Err(e) => Err(quickjs_runtime::jsutils::JsError::new_str(&format!("Tool session next error: {}", e))),
+                            Err(e) => Err(quickjs_runtime::jsutils::JsError::new_str(&format!("Tool session read error: {}", e))),
                         }
                     })
                     .await
                 }))
             },
         ).map_err(|e| BamlRtError::QuickJsWithSource {
-            context: "Failed to register __tool_session_next".to_string(),
+            context: "Failed to register __tool_session_read".to_string(),
             source: Box::new(e),
         })?;
 
@@ -574,7 +580,7 @@ impl QuickJSBridge {
                         context::with_scope(scope, async move {
                             let execution_handle = {
                                 let manager = manager_for_promise.lock().await;
-                                manager.tool_execution_handle()
+                                manager.tool_execution_context()
                             };
                             // Cancellation checkpoint: after acquiring handle, before tool execution
                             if cancel_inner.is_cancelled() {
@@ -640,7 +646,7 @@ impl QuickJSBridge {
                         context::with_scope(scope, async move {
                             let execution_handle = {
                                 let manager = manager_for_promise.lock().await;
-                                manager.tool_execution_handle()
+                                manager.tool_execution_context()
                             };
                             // Cancellation checkpoint: after acquiring handle, before tool execution
                             if cancel_inner.is_cancelled() {
@@ -783,12 +789,12 @@ impl QuickJSBridge {
             source: Box::new(e),
         })?;
 
-        // __tool_session_next_session(session_id, tool_session_id)
+        // __tool_session_read_session(session_id, tool_session_id, read_input_json)
         let manager_clone = self.baml_manager.clone();
         let sessions = self.stream_sessions.clone();
         self.runtime.set_function(
             &[],
-            "__tool_session_next_session",
+            "__tool_session_read_session",
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
                 let sid = parse_session_id_arg(&args)?;
                 let (scope, session) = match resolve_scope_from_session(&sessions, sid) {
@@ -800,14 +806,20 @@ impl QuickJSBridge {
                         }));
                     }
                 };
-                if args.len() < 2 {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id, tool_session_id)"));
+                if args.len() < 3 {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (session_id, tool_session_id, read_input_json)"));
                 }
                 let tool_session_id = if args[1].is_string() {
                     ToolSessionId::parse(args[1].get_str())
                         .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&e.to_string()))?
                 } else {
                     return Err(quickjs_runtime::jsutils::JsError::new_str("Tool session id must be a string"));
+                };
+                let input_json: Value = if args[2].is_string() {
+                    serde_json::from_str(args[2].get_str())
+                        .map_err(|e| quickjs_runtime::jsutils::JsError::new_str(&format!("Failed to parse read input JSON: {}", e)))?
+                } else {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str("read_input_json must be a JSON string"));
                 };
                 let cancel = session.cancel.clone();
                 let manager_for_promise = manager_clone.clone();
@@ -821,20 +833,20 @@ impl QuickJSBridge {
                             let manager = manager_for_promise.lock().await;
                             manager.tool_session_handle()
                         };
-                        // Cancellation checkpoint: after acquiring handle, before tool session next
+                        // Cancellation checkpoint: after acquiring handle, before tool session read
                         if cancel_inner.is_cancelled() {
                             return Err(quickjs_runtime::jsutils::JsError::new_str("Invocation cancelled"));
                         }
-                        let result = session_handle.tool_session_next(&tool_session_id).await;
+                        let result = session_handle.tool_session_read(&tool_session_id, input_json).await;
                         match result {
                             Ok(step) => Ok(value_to_js_value_facade(tool_step_to_value(step))),
-                            Err(e) => Err(quickjs_runtime::jsutils::JsError::new_str(&format!("Tool session next error: {}", e))),
+                            Err(e) => Err(quickjs_runtime::jsutils::JsError::new_str(&format!("Tool session read error: {}", e))),
                         }
                     }).await
                 }))
             },
         ).map_err(|e| BamlRtError::QuickJsWithSource {
-            context: "Failed to register __tool_session_next_session".to_string(),
+            context: "Failed to register __tool_session_read_session".to_string(),
             source: Box::new(e),
         })?;
 
@@ -979,10 +991,10 @@ impl QuickJSBridge {
                     phase = "Send";
                     return out;
                 },
-                continue: async function() {
+                continue: async function(readInput) {
                     assertNotTerminal("continue");
-                    const out = await __tool_session_next(sessionId);
-                    phase = "Next";
+                    const out = await __tool_session_read(sessionId, JSON.stringify(readInput ?? {}));
+                    phase = "Read";
                     return out;
                 },
                 finish: async function() {

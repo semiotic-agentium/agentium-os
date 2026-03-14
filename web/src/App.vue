@@ -5,7 +5,6 @@ import ChatWindow from "./components/ChatWindow.vue";
 import Dashboard from "./components/Dashboard.vue";
 import Navbar from "./components/Navbar.vue";
 import ProvenancePane from "./components/ProvenancePane.vue";
-import ReasoningPane from "./components/ReasoningPane.vue";
 import SettingsView from "./components/SettingsView.vue";
 import { useProvenanceOps } from "./composables/useProvenanceOps";
 import { useA2aClient } from "./composables/useA2aClient";

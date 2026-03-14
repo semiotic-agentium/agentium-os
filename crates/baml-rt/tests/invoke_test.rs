@@ -1,6 +1,8 @@
 //! Tests for invoking BAML functions.
 //!
 //! `test_invoke_simple_greeting` uses an interceptor stub so it does not call the real LLM.
+//! Function discovery coverage is subsumed by `test_invoke_simple_greeting` (which requires
+//! the schema to load before invocation succeeds).
 
 use baml_rt::{
     BamlRtError,
@@ -38,23 +40,6 @@ impl LLMInterceptor for StubSimpleGreetingInterceptor {
         _duration_ms: u64,
     ) {
     }
-}
-
-#[tokio::test]
-async fn test_load_schema_discovers_functions() {
-    // Load schema from baml_src (compiled directory)
-    // TODO: Migrate to use compiled fixtures once we have a better strategy
-    if !ensure_baml_src_exists() {
-        return;
-    }
-    let manager = setup_baml_runtime_manager_default();
-
-    // Should discover SimpleGreeting function
-    let functions = manager.list_functions();
-    assert!(
-        functions.contains(&"SimpleGreeting".to_string()),
-        "Should discover SimpleGreeting function"
-    );
 }
 
 #[tokio::test]

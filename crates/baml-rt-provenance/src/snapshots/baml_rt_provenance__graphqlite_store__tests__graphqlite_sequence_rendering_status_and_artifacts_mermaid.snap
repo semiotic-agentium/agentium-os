@@ -8,7 +8,9 @@ sequenceDiagram
     participant report_1_0_0
 
     User->>+report_1_0_0: Generate report
+    rect rgb(220, 230, 241)
     Note over report_1_0_0,report_1_0_0: "Completed"
     Note over report_1_0_0: "Artifact report (art-report-1)"
     Note over report_1_0_0: "Artifact chart (art-chart-1)"
     report_1_0_0->>-User: Report and chart ready.
+    end

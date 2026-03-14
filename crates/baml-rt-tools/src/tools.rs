@@ -4,7 +4,7 @@
 //! that can be called by LLMs during BAML function execution or directly from JavaScript.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     future::Future,
     marker::PhantomData,
     pin::Pin,
@@ -12,11 +12,16 @@ use std::{
 };
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, ContextId, Result, SessionLifecycleError, ids::AgentId};
+use baml_rt_core::{
+    BamlRtError, ContextId, Result, SessionLifecycleError,
+    ids::{AgentId, TaskId},
+};
 use dashmap::DashMap;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex as TokioMutex;
+use ts_rs::TS;
 
 use crate::{
     bundles::BundleType,
@@ -364,6 +369,13 @@ impl ToolConfigMetadata {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolProjectionSemantics {
+    pub identity: String,
+    pub summary: String,
+    pub detail: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BundleName(String);
 
@@ -555,6 +567,36 @@ impl From<ToolName> for String {
     }
 }
 
+/// How the step executor schedules Send/Read ops for a tool session.
+///
+/// `Strict` (the default) enforces a single Send per hop: after a Send the
+/// executor may only Read, preventing "Tool session already has input" errors
+/// that occur when the LLM picks Send again on a session with pending output.
+///
+/// `MultiSend` is an opt-in for tools that genuinely support sending multiple
+/// payloads within one open session before reading results.
+///
+/// ## SessionPolicy Invariants
+///
+/// 1. **Policy resolution from metadata**:
+///    ∀ step executor calls: policy is resolved from `ToolFunctionMetadata.session_policy`
+///    via the `session_plan_functions` manifest, never from function name matching.
+///
+/// 2. **Strict mode safety**:
+///    After Send, Strict policy offers only `["Read"]`.
+///    This prevents "Tool session already has input" errors.
+///
+/// 3. **Default safety**:
+///    Unknown tools default to `Strict` (prevents double-send bugs).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SessionPolicy {
+    /// Open → Send → Read → Finish, one Send per hop (default).
+    #[default]
+    Strict,
+    /// Open → Send* → Read → Finish, multiple Sends allowed per session.
+    MultiSend,
+}
+
 /// Metadata describing a tool function
 #[derive(Debug, Clone)]
 pub struct ToolFunctionMetadata {
@@ -597,6 +639,11 @@ pub struct ToolFunctionMetadata {
     pub config_bundle: Option<BundleName>,
     /// Origin of this tool (host vs guest)
     pub origin: ToolOrigin,
+    /// Optional tool-specific semantics for projection modes used during Read steps.
+    pub projection_semantics: Option<ToolProjectionSemantics>,
+    /// FSM scheduling policy for the step executor. Controls which ops are
+    /// offered after a Send. Defaults to `Strict` (one Send per hop).
+    pub session_policy: SessionPolicy,
 }
 
 /// Trait for building ToolFunctionMetadata consistently
@@ -670,6 +717,8 @@ impl ToolFunctionMetadata {
             config: None,
             config_bundle: None,
             origin,
+            projection_semantics: None,
+            session_policy: SessionPolicy::default(),
         }
     }
 }
@@ -685,8 +734,10 @@ pub struct TypeBasedMetadataBuilder<OpenInput, Input, Output> {
     config: Option<ToolConfigMetadata>,
     config_bundle: Option<BundleName>,
     origin: ToolOrigin,
+    projection_semantics: Option<ToolProjectionSemantics>,
     extra_ts_decls: Vec<String>,
     access: Option<ToolAccess>,
+    session_policy: SessionPolicy,
     _phantom: std::marker::PhantomData<(OpenInput, Input, Output)>,
 }
 
@@ -710,6 +761,8 @@ where
             config: None,
             config_bundle: None,
             origin: ToolOrigin::Host,
+            projection_semantics: None,
+            session_policy: SessionPolicy::default(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -753,6 +806,21 @@ where
         self
     }
 
+    /// Set explicit semantics for identity/summary/detail read projections.
+    pub fn with_projection_semantics(
+        mut self,
+        identity: impl Into<String>,
+        summary: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        self.projection_semantics = Some(ToolProjectionSemantics {
+            identity: identity.into(),
+            summary: summary.into(),
+            detail: detail.into(),
+        });
+        self
+    }
+
     /// Add extra TypeScript declarations required by tool types.
     pub fn with_extra_ts_decls(mut self, extra_ts_decls: Vec<String>) -> Self {
         self.extra_ts_decls = extra_ts_decls;
@@ -762,6 +830,12 @@ where
     /// Set access level for this tool.
     pub fn with_access(mut self, access: ToolAccess) -> Self {
         self.access = Some(access);
+        self
+    }
+
+    /// Override the FSM scheduling policy for this tool.
+    pub fn with_session_policy(mut self, policy: SessionPolicy) -> Self {
+        self.session_policy = policy;
         self
     }
 }
@@ -787,6 +861,8 @@ where
         metadata.baml_decl = self.baml_decl;
         metadata.config = self.config;
         metadata.config_bundle = self.config_bundle;
+        metadata.projection_semantics = self.projection_semantics;
+        metadata.session_policy = self.session_policy;
         metadata
     }
 }
@@ -809,6 +885,7 @@ pub struct ToolFunctionMetadataExport {
     pub secret_requests: Vec<SecretRequest>,
     pub config: Option<ToolConfigMetadata>,
     pub origin: ToolOrigin,
+    pub projection_semantics: Option<ToolProjectionSemantics>,
 }
 
 impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
@@ -830,6 +907,7 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
             secret_requests: metadata.secret_requests.clone(),
             config: metadata.config.clone(),
             origin: metadata.origin,
+            projection_semantics: metadata.projection_semantics.clone(),
         }
     }
 }
@@ -867,18 +945,19 @@ pub struct ToolBundleMetadata {
     pub secret_requests: Vec<SecretRequest>,
 }
 
-/// Declares whether this tool ever emits `ToolStep::Streaming` from `next()`.
+/// Declares whether this tool ever emits `ToolStep::Streaming` from `read()`.
 ///
-/// The session protocol: after `send(input)`, the caller calls `next()` until the step indicates
-/// completion. Each `next()` returns a `ToolStep`: `Streaming { output }` (more to come),
+/// The session protocol: after `send(input)`, the caller calls `read(input)` until the step
+/// indicates completion. Each `read(input)` returns a `ToolStep`:
+/// `Streaming { output }` (more to come),
 /// `Done { output }` (completion), or `Error { error }`.
 ///
-/// - **OneShot:** This tool only ever returns `Done` or `Error` from `next()`. One `next()` after
+/// - **OneShot:** This tool only ever returns `Done` or `Error` from `read(input)`. One read after
 ///   a `send()` returns the full result and signals completion. `ToolRegistry::execute()` (one
-///   open → send → next → finish) is allowed.
-/// - **Streaming:** This tool may return `ToolStep::Streaming` one or more times. Each `next()` may
+///   open → send → read → finish) is allowed.
+/// - **Streaming:** This tool may return `ToolStep::Streaming` one or more times. Each read may
 ///   block or buffer and does *not* indicate completion until the step is `Done`. Callers must
-///   use `open_session` and call `next()` in a loop until `Done`. `execute()` is disabled.
+///   use `open_session` and call `read(input)` in a loop until `Done`. `execute()` is disabled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolCapability {
     OneShot,
@@ -908,6 +987,50 @@ pub struct ToolSessionContext {
     pub config: Option<Value>,
     /// Config version when config was resolved; used for provenance linkage.
     pub config_version: Option<u64>,
+    /// Invocation scope task_id when available.
+    pub task_id: Option<TaskId>,
+}
+
+/// Generic explicit read request envelope for Send steps.
+///
+/// This is runtime-general and tool-agnostic. Tools may opt into supporting one or more
+/// read modes and must validate mode-specific constraints.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionReadMode {
+    #[serde(alias = "RETRIEVE_REF", alias = "RetrieveRef")]
+    RetrieveRef,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionReadEnvelope {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<SessionReadMode>,
+    pub ref_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projection: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_hint: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryContextV1 {
+    pub hop: u32,
+    pub op: String,
+    pub status: String,
+    #[serde(default)]
+    pub truncated: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[ts(type = "Record<string, unknown> | null")]
+    #[schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<BTreeMap<String, Value>>,
 }
 
 #[async_trait]
@@ -1044,12 +1167,12 @@ impl ToolSessionHandle<Ready> {
         &self.id
     }
 
-    pub async fn next(self) -> Result<ToolSessionAdvance> {
+    pub async fn read(self, input: Value) -> Result<ToolSessionAdvance> {
         let registry = self.registry.clone();
         let registry_handle = self.registry.clone();
         let id = self.id.clone();
         let step = {
-            let step = registry.session_next(&id).await?;
+            let step = registry.session_read(&id, input).await?;
             match &step {
                 ToolStep::Done { .. } => {
                     registry.session_finish(&id).await?;
@@ -1262,7 +1385,7 @@ struct MultiSendSession {
     // ctx reserved for executor/session-scoped ops; not read by this type yet
     ctx: ToolSessionContext,
     executor: Box<dyn ToolExecutor>,
-    pending: Option<Value>,
+    last_send: Option<Value>,
 }
 
 impl MultiSendSession {
@@ -1270,30 +1393,37 @@ impl MultiSendSession {
         Self {
             ctx,
             executor,
-            pending: None,
+            last_send: None,
         }
     }
 }
 
-/// Session that allows multiple Send/Next pairs. Each Send runs the executor and stores the
-/// result; Next returns that result (and clears it so the next Next returns None until next Send).
+/// Session that allows Send followed by one or more Read calls. Send sets session scope and each
+/// Read executes the scoped query with read-time refinement input.
 #[async_trait]
 impl ToolSession for MultiSendSession {
     async fn send(&mut self, input: Value) -> std::result::Result<(), ToolSessionError> {
-        let output = match self.executor.execute(input).await {
-            Ok(value) => value,
-            Err(err) => {
-                return Err(ToolSessionError::Tool(ToolFailure::from_error(&err)));
-            }
-        };
-        self.pending = Some(output);
+        self.last_send = Some(input);
         Ok(())
     }
 
-    async fn next(&mut self) -> std::result::Result<ToolStep, ToolSessionError> {
-        let output = self.pending.take();
+    async fn read(&mut self, input: Value) -> std::result::Result<ToolStep, ToolSessionError> {
+        let mut merged = match self.last_send.clone() {
+            Some(Value::Object(map)) => Value::Object(map),
+            Some(v) => v,
+            None => Value::Object(serde_json::Map::new()),
+        };
+        if let (Value::Object(base), Value::Object(refine)) = (&mut merged, input) {
+            for (k, v) in refine {
+                base.insert(k, v);
+            }
+        }
+        let output = match self.executor.execute(merged).await {
+            Ok(value) => value,
+            Err(err) => return Err(ToolSessionError::Tool(ToolFailure::from_error(&err))),
+        };
         Ok(ToolStep::Done {
-            output: output.map(Some).unwrap_or(None),
+            output: Some(output),
         })
     }
 
@@ -1637,6 +1767,19 @@ impl ToolRegistry {
         context_id: &ContextId,
         agent_id: &AgentId,
     ) -> Result<ToolSessionId> {
+        self.open_session_scoped(name, open_input, context_id, agent_id, None)
+            .await
+    }
+
+    /// Open a tool session and return its session id with explicit optional task scope.
+    pub async fn open_session_scoped(
+        &self,
+        name: &str,
+        open_input: Value,
+        context_id: &ContextId,
+        agent_id: &AgentId,
+        task_id: Option<&TaskId>,
+    ) -> Result<ToolSessionId> {
         let start = std::time::Instant::now();
         let parsed = ToolName::parse(name)?;
         let session_id = ToolSessionId::random();
@@ -1685,6 +1828,7 @@ impl ToolRegistry {
             agent_id: agent_id.clone(),
             config,
             config_version,
+            task_id: task_id.cloned(),
         };
         let session = handler.open_session(ctx, open_input).await?;
         self.sessions
@@ -1730,9 +1874,9 @@ impl ToolRegistry {
         result
     }
 
-    pub async fn session_next(&self, session_id: &ToolSessionId) -> Result<ToolStep> {
+    pub async fn session_read(&self, session_id: &ToolSessionId, input: Value) -> Result<ToolStep> {
         let start = std::time::Instant::now();
-        let span = crate::spans::session_next(session_id);
+        let span = crate::spans::session_read(session_id);
         let _guard = span.enter();
 
         let session = self
@@ -1742,7 +1886,7 @@ impl ToolRegistry {
         let session = session.ok_or_else(|| {
             if tool_registry_trace_enabled() {
                 tool_registry_trace(&format!(
-                    "session_next missing: session_id={}, known_sessions={}",
+                    "session_read missing: session_id={}, known_sessions={}",
                     session_id,
                     self.sessions.len()
                 ));
@@ -1752,10 +1896,10 @@ impl ToolRegistry {
             })
         })?;
         let mut guard = session.lock().await;
-        let result = guard.next().await.map_err(map_session_error);
+        let result = guard.read(input).await.map_err(map_session_error);
 
         let duration = start.elapsed();
-        crate::metrics::record_session_operation("next", duration);
+        crate::metrics::record_session_operation("read", duration);
 
         result
     }
@@ -1848,7 +1992,7 @@ impl ToolRegistry {
             )
             .await?;
         self.session_send(&session_id, args).await?;
-        let result = match self.session_next(&session_id).await? {
+        let result = match self.session_read(&session_id, Value::Null).await? {
             ToolStep::Streaming { output } | ToolStep::Suspended { output } => {
                 self.session_finish(&session_id).await?;
                 Ok(output)
@@ -1956,13 +2100,12 @@ where
     }
 }
 
-/// Session tool with multiple Send/Next pairs, built from an async function and pre-built metadata.
+/// Session tool with Send/Read pairs, built from an async function and pre-built metadata.
 ///
-/// Send and next are **paired** FSM steps: one send runs the executor, one next returns that
-/// result (as `ToolStep::Done`). Whether and how the tool supports continuation (e.g. paging)
-/// is up to the tool's input/output types; the session protocol is purely FSM advancement.
+/// Send establishes scope/state for a retrieval window. Read performs explicit traversal within
+/// that window and returns `ToolStep` output. Tools may implement streaming/suspension semantics in Read.
 ///
-/// Open validates OI; each Send runs the executor and Next returns that result. Use when you have
+/// Open validates OI; Send sets scope and Read executes scoped retrieval. Use when you have
 /// runtime deps and want multi-request sessions without implementing [ToolHandler].
 pub fn create_multi_send_session_tool_from_async<OI, I, O, F>(
     metadata: ToolFunctionMetadata,
@@ -2025,7 +2168,7 @@ where
 struct OneShotSession {
     ctx: ToolSessionContext,
     executor: Box<dyn ToolExecutor>,
-    input: Option<Value>,
+    send_input: Option<Value>,
     state: SessionPhase,
 }
 
@@ -2034,7 +2177,7 @@ impl OneShotSession {
         Self {
             ctx,
             executor,
-            input: None,
+            send_input: None,
             state: SessionPhase::Open,
         }
     }
@@ -2043,26 +2186,32 @@ impl OneShotSession {
 #[async_trait]
 impl ToolSession for OneShotSession {
     async fn send(&mut self, input: Value) -> std::result::Result<(), ToolSessionError> {
-        if self.input.is_some() {
+        if self.send_input.is_some() {
             return Err(ToolSessionError::Tool(ToolFailure::invalid_input(
                 "Tool session already has input",
             )));
         }
-        self.input = Some(input);
+        self.send_input = Some(input);
         Ok(())
     }
 
-    async fn next(&mut self) -> std::result::Result<ToolStep, ToolSessionError> {
+    async fn read(&mut self, input: Value) -> std::result::Result<ToolStep, ToolSessionError> {
         if self.state.is_closed() {
             return Ok(ToolStep::Done { output: None });
         }
-        let input = self.input.take().ok_or_else(|| {
+        let send_input = self.send_input.take().ok_or_else(|| {
             ToolSessionError::Tool(ToolFailure::invalid_input(format!(
                 "Tool session {} has no input",
                 self.ctx.session_id
             )))
         })?;
-        let output = match self.executor.execute(input).await {
+        let mut merged = send_input;
+        if let (Value::Object(base), Value::Object(refine)) = (&mut merged, input) {
+            for (k, v) in refine {
+                base.insert(k, v);
+            }
+        }
+        let output = match self.executor.execute(merged).await {
             Ok(value) => value,
             Err(err) => {
                 return Ok(ToolStep::Error {

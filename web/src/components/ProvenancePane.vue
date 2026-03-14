@@ -4,6 +4,8 @@ import { useTheme } from "../composables/useTheme";
 import { useMermaidRenderer } from "../composables/useMermaidRenderer";
 import { useProvenanceOps } from "../composables/useProvenanceOps";
 import type {
+  ContextPlanningResponse,
+  ContextPlanningTaskSnapshot,
   ProvenanceOutcome,
   ProvenanceQueryParams,
   ProvenanceRowBase,
@@ -90,6 +92,15 @@ const inspectorCollapsed = ref(false);
 const isExploreTab = computed(() => activeTab.value === "explore");
 const pollTimer = ref<number | null>(null);
 const pollInFlight = ref(false);
+const planningState = ref<{
+  loading: boolean;
+  error: string | null;
+  response: ContextPlanningResponse | null;
+}>({
+  loading: false,
+  error: null,
+  response: null,
+});
 
 function baseScope(): Pick<ProvenanceQueryParams, "contextId" | "agentId"> {
   return {
@@ -104,7 +115,7 @@ async function refreshForActiveTab() {
   try {
     const scope = baseScope();
     if (activeTab.value === "live") {
-      await Promise.all([liveLlm.run(scope), liveTool.run(scope)]);
+      await Promise.all([liveLlm.run(scope), liveTool.run(scope), refreshPlanning()]);
       return;
     }
     if (activeTab.value === "failures") {
@@ -122,6 +133,27 @@ async function refreshForActiveTab() {
     }
   } finally {
     pollInFlight.value = false;
+  }
+}
+
+async function refreshPlanning() {
+  if (!props.contextId) return;
+  planningState.value.loading = true;
+  planningState.value.error = null;
+  try {
+    const response = await fetch(`/contexts/${props.contextId}/planning`);
+    if (!response.ok) {
+      if (response.status === 404) {
+        planningState.value.response = null;
+        return;
+      }
+      throw new Error(`Planning request failed: ${response.status}`);
+    }
+    planningState.value.response = (await response.json()) as ContextPlanningResponse;
+  } catch (error) {
+    planningState.value.error = (error as Error).message;
+  } finally {
+    planningState.value.loading = false;
   }
 }
 
@@ -149,6 +181,7 @@ type AggregateCard = {
   durationMs: number;
   tokenValue?: number;
   tokenIn?: number;
+  tokenCached?: number;
   tokenOut?: number;
   tokenLabel?: string;
 };
@@ -161,8 +194,9 @@ const aggregateCards = computed<AggregateCard[]>(() => [
     durationMs: liveLlm.state.value.response?.summary.durationMsTotal ?? 0,
     tokenValue: liveLlm.state.value.response?.summary.totalTokens ?? 0,
     tokenIn: liveLlm.state.value.response?.summary.promptTokensTotal ?? 0,
+    tokenCached: liveLlm.state.value.response?.summary.cachedInputTokensTotal ?? 0,
     tokenOut: liveLlm.state.value.response?.summary.completionTokensTotal ?? 0,
-    tokenLabel: "in/out/total",
+    tokenLabel: "in/cached/out/total",
   },
   {
     label: "Tool Calls",
@@ -249,6 +283,101 @@ const liveHotspotItems = computed<LiveHotspotItem[]>(() => {
     .slice(0, 8);
 });
 
+const planningTasks = computed<ContextPlanningTaskSnapshot[]>(() => {
+  return planningState.value.response?.tasks ?? [];
+});
+
+function nonEmptyText(value: string | null | undefined): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function humanizeId(raw: string | null | undefined): string {
+  const value = nonEmptyText(raw);
+  if (!value) return "unknown";
+  const withoutPrefix = value.replace(/^(intent|plan|step)-/i, "");
+  const normalized = withoutPrefix
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return value;
+  return normalized.charAt(0).toUpperCase() + normalized.slice(1);
+}
+
+function toHumanText(raw: string): string {
+  return raw.replace(/\bllm\b/gi, "LLM");
+}
+
+function taskKindLabel(taskId: string): string {
+  if (taskId.startsWith("live-task:")) return "User task";
+  if (taskId.startsWith("a2a-child-")) return "Delegated task";
+  return "Task";
+}
+
+function planningTaskTitle(task: ContextPlanningTaskSnapshot): string {
+  return `${taskKindLabel(task.taskId)} ${shortId(task.taskId)}`;
+}
+
+function planningIntentLabel(task: ContextPlanningTaskSnapshot): string {
+  const description = nonEmptyText(task.currentIntent?.description);
+  if (description) return toHumanText(description);
+  return toHumanText(humanizeId(task.currentIntent?.intent_id));
+}
+
+function planningPlanLabel(task: ContextPlanningTaskSnapshot): string {
+  const plan = task.currentPlan;
+  if (!plan) return "none";
+  const stepSummary = plan.steps
+    .slice()
+    .sort((a, b) => a.order - b.order)
+    .map((step) => planningStepLabel(step));
+  if (stepSummary.length > 0) {
+    return stepSummary.join(" -> ");
+  }
+  const intentDescription = nonEmptyText(task.currentIntent?.description);
+  if (intentDescription) return toHumanText(intentDescription);
+  return toHumanText(humanizeId(plan.plan_id));
+}
+
+function planningStepLabel(step: { description?: string; step_id: string; order: number }): string {
+  const description = nonEmptyText(step.description);
+  if (description) return toHumanText(description);
+  const delegateMatch = step.step_id.match(/^step-delegate-(\d+)$/i);
+  if (delegateMatch) {
+    const idx = Number.parseInt(delegateMatch[1] ?? "0", 10);
+    const order = Number.isFinite(idx) ? idx + 1 : step.order + 1;
+    return `Delegation step ${order}`;
+  }
+  const genericMatch = step.step_id.match(/^(?:step-)?(.+?)-(\d+)$/i);
+  if (genericMatch) {
+    const base = toHumanText(humanizeId(genericMatch[1]));
+    const idx = Number.parseInt(genericMatch[2] ?? "0", 10);
+    if (Number.isFinite(idx)) return `${base} ${idx + 1}`;
+  }
+  return `Step ${step.order + 1} · ${toHumanText(humanizeId(step.step_id))}`;
+}
+
+function planningStatusLabel(status: string): string {
+  const normalized = status.toLowerCase();
+  if (normalized === "in_progress") return "in progress";
+  return normalized;
+}
+
+function planProgressPercent(task: ContextPlanningTaskSnapshot): number {
+  const total = task.stepSummary.total;
+  if (!total || total <= 0) return 0;
+  return Math.round((task.stepSummary.completed / total) * 100);
+}
+
+function stepStatusClass(status: string): string {
+  const normalized = status.toLowerCase();
+  if (normalized === "completed") return "step-status-completed";
+  if (normalized === "failed") return "step-status-failed";
+  if (normalized === "running" || normalized === "in_progress") return "step-status-running";
+  return "step-status-pending";
+}
+
 const exploreRows = computed(() => exploreQuery.state.value.response?.rows ?? []);
 const exploreColumns = computed(() => {
   if (exploreRows.value.length === 0) return [];
@@ -276,6 +405,7 @@ const exploreColumns = computed(() => {
     "failure_evidence",
     "duration_ms",
     "total_tokens",
+    "cached_input_tokens",
   ];
   const ordered = preferred.filter((k) => keys.includes(k));
   const extra = keys.filter((k) => !ordered.includes(k));
@@ -292,14 +422,14 @@ const structuredPayloadKeys = new Set(["llm_call", "llm_result", "tool_call", "t
 
 function parseMaybeJson(value: string): unknown {
   let current: unknown = value;
-  // Some fields are JSON encoded once (or occasionally twice).
-  for (let i = 0; i < 2; i += 1) {
+  // Some fields are JSON encoded once, twice, or more (e.g. escaped strings).
+  for (let i = 0; i < 4; i += 1) {
     if (typeof current !== "string") break;
     const trimmed = current.trim();
     const looksJsonContainer =
       (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
       (trimmed.startsWith("[") && trimmed.endsWith("]"));
-    const looksJsonString = trimmed.startsWith("\"") && trimmed.endsWith("\"");
+    const looksJsonString = trimmed.startsWith('"') && trimmed.endsWith('"');
     if (!looksJsonContainer && !looksJsonString) break;
     try {
       current = JSON.parse(trimmed);
@@ -311,7 +441,7 @@ function parseMaybeJson(value: string): unknown {
 }
 
 function decodeJsonLikeDeep(value: unknown, depth = 0): unknown {
-  if (depth > 6) return value;
+  if (depth > 8) return value;
   if (typeof value === "string") {
     const parsed = parseMaybeJson(value);
     if (parsed === value) return value;
@@ -336,6 +466,47 @@ function normalizeDisplayValue(value: unknown, key: string): unknown {
   return parseMaybeJson(value);
 }
 
+/** Format structured payloads as readable data (YAML-like) instead of raw JSON. */
+function formatAsReadableData(value: unknown, indent = 0): string {
+  const pad = "  ".repeat(indent);
+  const padChild = "  ".repeat(indent + 1);
+  if (value === null || value === undefined) return String(value);
+  if (typeof value === "boolean" || typeof value === "number") return String(value);
+  if (typeof value === "string") {
+    const lines = value.split("\n");
+    if (lines.length <= 1) return value;
+    return lines.map((line, i) => (i === 0 ? line : padChild + line)).join("\n");
+  }
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "[]";
+    return value
+      .map((item, i) => {
+        const formatted = formatAsReadableData(item, indent + 1);
+        if (formatted.includes("\n")) {
+          const indented = formatted.replace(/^/gm, padChild);
+          return `${pad}[${i}]\n${indented}`;
+        }
+        return `${pad}[${i}] ${formatted}`;
+      })
+      .join("\n");
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) return "{}";
+    return entries
+      .map(([k, v]) => {
+        const formatted = formatAsReadableData(v, indent + 1);
+        if (formatted.includes("\n")) {
+          const indented = formatted.replace(/^/gm, padChild);
+          return `${pad}${k}:\n${indented}`;
+        }
+        return `${pad}${k}: ${formatted}`;
+      })
+      .join("\n");
+  }
+  return String(value);
+}
+
 function formatSelectedValue(value: unknown, key: string): Omit<SelectedRowEntry, "key"> {
   const normalized = normalizeDisplayValue(value, key);
   if (normalized === null || normalized === undefined) {
@@ -347,7 +518,7 @@ function formatSelectedValue(value: unknown, key: string): Omit<SelectedRowEntry
   if (typeof normalized === "object") {
     return {
       kind: "json",
-      display: JSON.stringify(normalized, null, 2),
+      display: formatAsReadableData(normalized),
     };
   }
   return {
@@ -378,6 +549,7 @@ const selectedRowEntries = computed<SelectedRowEntry[]>(() => {
     "failure_evidence",
     "duration_ms",
     "total_tokens",
+    "cached_input_tokens",
     "message_text",
     "message_content",
     "llm_call",
@@ -757,7 +929,12 @@ onUnmounted(() => {
                   v-if="card.tokenValue !== undefined"
                 >
                   · {{ card.tokenLabel }}
-                  <template v-if="card.tokenIn !== undefined && card.tokenOut !== undefined">
+                  <template
+                    v-if="card.tokenIn !== undefined && card.tokenOut !== undefined && card.tokenCached !== undefined"
+                  >
+                    {{ formatCompact(card.tokenIn) }}/{{ formatCompact(card.tokenCached) }}/{{ formatCompact(card.tokenOut) }}/{{ formatCompact(card.tokenValue) }}
+                  </template>
+                  <template v-else-if="card.tokenIn !== undefined && card.tokenOut !== undefined">
                     {{ formatCompact(card.tokenIn) }}/{{ formatCompact(card.tokenOut) }}/{{ formatCompact(card.tokenValue) }}
                   </template>
                   <template v-else>
@@ -767,6 +944,61 @@ onUnmounted(() => {
               </div>
             </article>
           </div>
+
+          <section class="provenance-section" role="region" aria-label="Intent and plan progress">
+            <div class="provenance-section-title">Intent / Plan Progress</div>
+            <div v-if="planningState.loading && planningTasks.length === 0" class="provenance-empty">
+              Loading planning state...
+            </div>
+            <div v-else-if="planningState.error" class="provenance-error">
+              {{ planningState.error }}
+            </div>
+            <div v-else-if="planningTasks.length === 0" class="provenance-empty">
+              No planning records captured for this context yet.
+            </div>
+            <ul v-else class="provenance-list">
+              <li v-for="task in planningTasks" :key="task.taskId" class="provenance-list-item">
+                <div class="group-key">{{ planningTaskTitle(task) }}</div>
+                <div class="planning-labeled-row">
+                  <span class="planning-row-label">Intent</span>
+                  <span class="planning-row-value">{{ planningIntentLabel(task) }}</span>
+                </div>
+                <div class="planning-labeled-row">
+                  <span class="planning-row-label">Plan</span>
+                  <span class="planning-row-value">{{ planningPlanLabel(task) }}</span>
+                </div>
+                <div class="planning-labeled-row" v-if="task.currentPlan?.plan_id">
+                  <span class="planning-row-label">Plan ID</span>
+                  <span class="planning-row-value">{{ task.currentPlan?.plan_id }}</span>
+                </div>
+                <div class="planning-metrics-row">
+                  <span>{{ task.stepSummary.completed }}/{{ task.stepSummary.total }} complete</span>
+                  <span>{{ planProgressPercent(task) }}%</span>
+                </div>
+                <div class="planning-progress-track">
+                  <div
+                    class="planning-progress-fill"
+                    :style="{ width: `${planProgressPercent(task)}%` }"
+                  />
+                </div>
+                <ul
+                  v-if="task.currentPlan && task.currentPlan.steps && task.currentPlan.steps.length > 0"
+                  class="planning-step-list"
+                >
+                  <li
+                    v-for="step in task.currentPlan.steps"
+                    :key="`${task.taskId}:${step.step_id}`"
+                    class="planning-step-row"
+                  >
+                    <span :class="['planning-step-pill', stepStatusClass(step.status)]">
+                      {{ planningStatusLabel(step.status) }}
+                    </span>
+                    <span class="planning-step-desc">{{ planningStepLabel(step) }}</span>
+                  </li>
+                </ul>
+              </li>
+            </ul>
+          </section>
 
           <section class="provenance-section" role="region" aria-label="Live trace mermaid diagram">
             <div class="provenance-section-title">Live Trace Diagram</div>

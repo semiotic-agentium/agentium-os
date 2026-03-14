@@ -14,6 +14,7 @@ use claude_agent_sdk_rs::{
     AssistantMessage, AssistantMessageInner, ContentBlock, Message, ResultMessage, TextBlock,
 };
 use futures_util::stream;
+use serde_json::json;
 use tokio::sync::Mutex;
 
 type ScriptedTurns = Arc<Mutex<VecDeque<Vec<std::result::Result<Message, String>>>>>;
@@ -118,7 +119,7 @@ async fn next_until_suspended_or_done(
 ) -> ToolStep {
     for _ in 0..16 {
         match registry
-            .session_next(session_id)
+            .session_read(session_id, json!({}))
             .await
             .expect("session_next")
         {
@@ -265,7 +266,7 @@ async fn claude_session_unknown_id_returns_error() {
     let registry = ToolRegistry::new();
     let unknown = ToolSessionId::random();
     let err = registry
-        .session_next(&unknown)
+        .session_read(&unknown, json!({}))
         .await
         .expect_err("must error");
     let err_msg = err.to_string();

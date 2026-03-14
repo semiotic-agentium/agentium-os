@@ -1,17 +1,22 @@
 //! Tests for tool registration (Rust and JavaScript)
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use async_trait::async_trait;
 use baml_rt::tools::BamlTool;
 use baml_rt_core::{
     context::InvocationScope,
-    ids::{AgentId, ContextId, UuidId},
+    ids::{AgentId, ContextId, ExternalId, TaskId, UuidId},
 };
-use baml_rt_tools::bundles::BundleType;
+use baml_rt_tools::{
+    ToolCapability, ToolHandler, ToolMetadataBuilder, ToolName, ToolOrigin, ToolSession,
+    ToolSessionError, ToolStep, TypeBasedMetadataBuilder,
+    bundles::BundleType,
+    tools::{ToolFunctionMetadata, ToolSessionContext},
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{Value, json};
 use test_support::common::{
     assert_tool_registered_in_js, setup_baml_runtime_default, setup_baml_runtime_manager_default,
     setup_bridge,
@@ -105,6 +110,52 @@ struct StreamLettersInput {
     word: String,
 }
 
+struct SyntheticSessionEvalTool;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct SyntheticSessionEvalInput {
+    retrieve_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct SyntheticSessionEvalOutput {
+    refs: Vec<String>,
+    items: Vec<String>,
+}
+
+#[async_trait]
+impl BamlTool for SyntheticSessionEvalTool {
+    type Bundle = Test;
+    const LOCAL_NAME: &'static str = "synthetic_session_eval";
+    type OpenInput = ();
+    type Input = SyntheticSessionEvalInput;
+    type Output = SyntheticSessionEvalOutput;
+
+    fn description(&self) -> &'static str {
+        "Deterministic test-only corpus slices"
+    }
+
+    async fn execute(&self, args: Self::Input) -> baml_rt::Result<Self::Output> {
+        let corpus = ["slice-0", "slice-1", "slice-2"];
+        if let Some(retrieve_ref) = args.retrieve_ref {
+            let idx = retrieve_ref
+                .strip_prefix("ref:")
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(0);
+            return Ok(SyntheticSessionEvalOutput {
+                refs: vec![format!("ref:{idx}")],
+                items: vec![corpus.get(idx).unwrap_or(&corpus[0]).to_string()],
+            });
+        }
+        Ok(SyntheticSessionEvalOutput {
+            refs: (0..corpus.len()).map(|idx| format!("ref:{idx}")).collect(),
+            items: vec![],
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 struct StreamLettersOutput {
@@ -137,6 +188,77 @@ impl BamlTool for StreamLettersTool {
             count: letters.len(),
             letters,
         })
+    }
+}
+
+struct ScopeCaptureHandler {
+    metadata: ToolFunctionMetadata,
+    captures: Arc<StdMutex<Vec<Option<TaskId>>>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct ScopeCaptureInput {}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+struct ScopeCaptureOutput {
+    task_id: Option<String>,
+}
+
+struct ScopeCaptureSession {
+    task_id: Option<TaskId>,
+}
+
+#[async_trait]
+impl ToolSession for ScopeCaptureSession {
+    async fn send(
+        &mut self,
+        _input: serde_json::Value,
+    ) -> std::result::Result<(), ToolSessionError> {
+        Ok(())
+    }
+
+    async fn read(&mut self, _input: Value) -> std::result::Result<ToolStep, ToolSessionError> {
+        let output = ScopeCaptureOutput {
+            task_id: self.task_id.as_ref().map(|id| id.as_str().to_string()),
+        };
+        Ok(ToolStep::Done {
+            output: Some(serde_json::to_value(output).expect("scope capture output JSON")),
+        })
+    }
+
+    async fn finish(&mut self) -> std::result::Result<(), ToolSessionError> {
+        Ok(())
+    }
+
+    async fn abort(
+        &mut self,
+        _reason: Option<String>,
+    ) -> std::result::Result<(), ToolSessionError> {
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ToolHandler for ScopeCaptureHandler {
+    fn metadata(&self) -> &ToolFunctionMetadata {
+        &self.metadata
+    }
+
+    fn capability(&self) -> ToolCapability {
+        ToolCapability::Streaming
+    }
+
+    async fn open_session(
+        &self,
+        ctx: ToolSessionContext,
+        _open_input: serde_json::Value,
+    ) -> baml_rt::Result<Box<dyn ToolSession>> {
+        self.captures.lock().unwrap().push(ctx.task_id.clone());
+        Ok(Box::new(ScopeCaptureSession {
+            task_id: ctx.task_id,
+        }))
     }
 }
 
@@ -320,7 +442,7 @@ async fn test_register_js_tool() {
         }))()
     "#;
 
-    let result = bridge.evaluate(None, check_code).await.unwrap();
+    let result = bridge.eval_sync(check_code).await.unwrap();
     let obj = result.as_object().unwrap();
     assert!(
         obj.get("isAsync")
@@ -594,7 +716,10 @@ async fn test_open_session_with_initial_input() {
         .await
         .unwrap();
 
-    let step = registry.session_next(&session_id).await.unwrap();
+    let step = registry
+        .session_read(&session_id, serde_json::Value::Null)
+        .await
+        .unwrap();
     match step {
         baml_rt_tools::ToolStep::Done { output } => {
             let result = output.unwrap();
@@ -608,4 +733,128 @@ async fn test_open_session_with_initial_input() {
     registry.session_finish(&session_id).await.unwrap();
 
     tracing::info!("✅ open_session with initial_input works correctly");
+}
+
+#[tokio::test]
+async fn test_open_session_scoped_propagates_task_id_and_legacy_open_does_not() {
+    let registry = baml_rt_tools::ToolRegistry::new();
+    let captures = Arc::new(StdMutex::new(Vec::<Option<TaskId>>::new()));
+
+    let tool_name = ToolName::parse("test/scope_capture").unwrap();
+    let metadata = TypeBasedMetadataBuilder::<(), ScopeCaptureInput, ScopeCaptureOutput>::new(
+        tool_name.clone(),
+        ToolFunctionMetadata::derive_class_name(tool_name.bundle(), tool_name.local()),
+        "Captures ToolSessionContext task_id".to_string(),
+    )
+    .with_origin(ToolOrigin::Host)
+    .build_metadata();
+    registry
+        .register_dynamic(
+            metadata.clone(),
+            Arc::new(ScopeCaptureHandler {
+                metadata,
+                captures: captures.clone(),
+            }),
+        )
+        .unwrap();
+
+    let context_id = ContextId::new(10, 1);
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-0000000000aa").unwrap());
+    let task_id = TaskId::from_external(ExternalId::new("task-scope-propagation"));
+
+    let scoped_session = registry
+        .open_session_scoped(
+            "test/scope_capture",
+            json!({}),
+            &context_id,
+            &agent_id,
+            Some(&task_id),
+        )
+        .await
+        .unwrap();
+    registry
+        .session_send(&scoped_session, json!({}))
+        .await
+        .unwrap();
+    let _ = registry
+        .session_read(&scoped_session, serde_json::Value::Null)
+        .await
+        .unwrap();
+    registry.session_finish(&scoped_session).await.unwrap();
+
+    let legacy_session = registry
+        .open_session("test/scope_capture", json!({}), &context_id, &agent_id)
+        .await
+        .unwrap();
+    registry
+        .session_send(&legacy_session, json!({}))
+        .await
+        .unwrap();
+    let _ = registry
+        .session_read(&legacy_session, serde_json::Value::Null)
+        .await
+        .unwrap();
+    registry.session_finish(&legacy_session).await.unwrap();
+
+    let seen = captures.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2, "expected two session opens to be captured");
+    assert_eq!(seen[0].as_ref().map(TaskId::as_str), Some(task_id.as_str()));
+    assert!(
+        seen[1].is_none(),
+        "legacy open_session should not set task_id"
+    );
+}
+
+#[tokio::test]
+async fn test_synthetic_session_eval_tool_supports_explicit_ref_progression() {
+    let baml_manager = setup_baml_runtime_default();
+    {
+        let mut manager = baml_manager.lock().await;
+        manager
+            .register_tool(SyntheticSessionEvalTool)
+            .await
+            .unwrap();
+    }
+    let scope = InvocationScope::synthetic_message(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-0000000000ab").unwrap(),
+    ));
+    let first = {
+        let manager = baml_manager.lock().await;
+        manager
+            .execute_tool_with_scope(scope.as_scope(), "test/synthetic_session_eval", json!({}))
+            .await
+            .unwrap()
+    };
+    let refs = first
+        .get("refs")
+        .and_then(|v| v.as_array())
+        .expect("refs array");
+    assert_eq!(refs.len(), 3, "expected deterministic refs");
+    let first_ref = refs
+        .first()
+        .and_then(|v| v.as_str())
+        .expect("first ref")
+        .to_string();
+
+    let second = {
+        let manager = baml_manager.lock().await;
+        manager
+            .execute_tool_with_scope(
+                scope.as_scope(),
+                "test/synthetic_session_eval",
+                json!({ "retrieve_ref": first_ref }),
+            )
+            .await
+            .unwrap()
+    };
+    let items = second
+        .get("items")
+        .and_then(|v| v.as_array())
+        .expect("items array");
+    assert_eq!(
+        items.len(),
+        1,
+        "explicit retrieval should return one bounded item"
+    );
 }

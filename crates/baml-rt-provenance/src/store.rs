@@ -27,7 +27,10 @@
 //!   methods if they need to see those events.
 
 use async_trait::async_trait;
-use baml_rt_core::ids::{AgentId, ContextId, EventId, MessageId, TaskId};
+use baml_rt_core::{
+    bus::PlanningSupersessionKind,
+    ids::{AgentId, ContextId, EventId, MessageId, TaskId},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
@@ -63,8 +66,6 @@ pub struct ProvenanceContextMessage {
 pub struct ProvenanceConversationContextItem {
     pub timestamp_ms: u64,
     pub event_id: EventId,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<AgentId>,
     pub role: String,
     pub content: Value,
     pub source: String,
@@ -170,6 +171,61 @@ pub trait ProvenanceQueryApi: Send + Sync {
         context_id: &ContextId,
         limit: Option<usize>,
     ) -> Result<Vec<ProvenanceConversationContextItem>>;
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlanningIntentRecord {
+    pub context_id: ContextId,
+    pub task_id: TaskId,
+    pub event_id: EventId,
+    pub intent_id: String,
+    pub description: String,
+    /// Relation kind from the previous revision to this record, if any.
+    pub supersession_from_previous: Option<PlanningSupersessionKind>,
+    /// Relation kind from this record to a newer revision, if any.
+    pub superseded_by_next: Option<PlanningSupersessionKind>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlanningPlanStepRecord {
+    pub step_id: String,
+    pub description: String,
+    pub order: u32,
+    pub depends_on: Vec<String>,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlanningPlanRecord {
+    pub context_id: ContextId,
+    pub task_id: TaskId,
+    pub event_id: EventId,
+    pub intent_id: String,
+    pub plan_id: String,
+    pub steps: Vec<PlanningPlanStepRecord>,
+    /// Relation kind from the previous revision to this record, if any.
+    pub supersession_from_previous: Option<PlanningSupersessionKind>,
+    /// Relation kind from this record to a newer revision, if any.
+    pub superseded_by_next: Option<PlanningSupersessionKind>,
+}
+
+/// Query API for planning state (intent/plan) and revision history views.
+///
+/// These are read-only explainability surfaces for UI/debug tools.
+#[async_trait]
+pub trait ProvenancePlanningQuery: Send + Sync {
+    async fn query_current_intent(&self, task_id: &TaskId) -> Result<Option<PlanningIntentRecord>>;
+    async fn query_current_plan(&self, task_id: &TaskId) -> Result<Option<PlanningPlanRecord>>;
+    async fn query_intent_history(
+        &self,
+        task_id: &TaskId,
+        limit: Option<usize>,
+    ) -> Result<Vec<PlanningIntentRecord>>;
+    async fn query_plan_history(
+        &self,
+        task_id: &TaskId,
+        limit: Option<usize>,
+    ) -> Result<Vec<PlanningPlanRecord>>;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -282,10 +338,69 @@ pub struct ProvenanceOpsQueryResponse {
     pub applied_caps: Map<String, Value>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveRef(pub String);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PayloadRef(pub String);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityRef(pub String);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum ProvenanceArchivePayload {
+    LlmCall {
+        payload_ref: PayloadRef,
+        activity_ref: ActivityRef,
+        prompt_json: String,
+    },
+    LlmResult {
+        payload_ref: PayloadRef,
+        activity_ref: ActivityRef,
+        result_json: String,
+    },
+    ToolCall {
+        payload_ref: PayloadRef,
+        activity_ref: ActivityRef,
+        tool_name: Option<String>,
+        phase: Option<String>,
+        args_json: String,
+    },
+    ToolResult {
+        payload_ref: PayloadRef,
+        activity_ref: ActivityRef,
+        result_json: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvenanceArchiveRecord {
+    pub archive_ref: ArchiveRef,
+    pub payloads: Vec<ProvenanceArchivePayload>,
+}
+
 #[async_trait]
 pub trait ProvenanceOpsQuery: Send + Sync {
     async fn query_ops(
         &self,
         request: ProvenanceOpsQueryRequest,
     ) -> Result<ProvenanceOpsQueryResponse>;
+
+    /// Resolve an opaque archive reference into its persisted payload.
+    ///
+    /// Supported refs are implementation-defined, but the canonical Graphqlite
+    /// contract is:
+    /// - `prov:v1:payload:<payload_id>`
+    /// - `prov:v1:activity:<activity_id>`
+    async fn resolve_archive_ref(
+        &self,
+        _archive_ref: &str,
+    ) -> Result<Option<ProvenanceArchiveRecord>> {
+        Ok(None)
+    }
 }

@@ -1,6 +1,6 @@
 # Task Daemon User Guide
 
-`baml-task-daemon` polls project work sources and emits actionable outputs for humans and agents. Use repeatable `--source` flags to select sources (for example `--source slack --source clickup`).
+`baml-task-daemon` watches a Slack channel for a project and turns conversation into actionable outputs for humans and agents.
 
 Architecturally, task-daemon should be understood as an event publisher.
 
@@ -41,18 +41,14 @@ deciding who should receive events.
 
 ## Who this is for
 
-Use this when project coordination lives in Slack and/or ClickUp and you want faster follow-through without manual triage.
+Use this when a project channel has meaningful technical coordination and you want faster follow-through without manually triaging every message.
 
 ## Quick Start
 
-1. Set credentials for the sources you plan to run.
+1. Set Slack credentials.
 
 ```bash
-# Slack source mode
 export SLACK_BOT_TOKEN=xoxb-...
-
-# ClickUp source mode
-export CLICKUP_API_KEY=pk_...
 ```
 
 2. Choose an LLM provider.
@@ -70,7 +66,7 @@ export TASK_DAEMON_LLM_BASE_URL=http://localhost:1234/v1
 export TASK_DAEMON_LLM_MODEL=<your-local-model>
 ```
 
-3. Run one poll (Slack mode shown).
+3. Run one poll.
 
 ```bash
 cargo run -p baml-task-daemon -- run --channel agentium-eng --once
@@ -110,62 +106,19 @@ cargo run -p baml-task-daemon -- run --channel agentium-eng --clickup-list-id <L
 cargo run -p baml-task-daemon -- run --channel agentium-eng --clickup-list-id <LIST_ID> --clickup-live
 ```
 
-Use ClickUp as the source input (task-created/task-terminal/task-removed lifecycle events):
+Delegate to coordinator agent over A2A:
 
 ```bash
-# ClickUp source only
-cargo run -p baml-task-daemon -- run \
-  --source clickup \
-  --clickup-list-id <LIST_ID> \
-  --once
-
-# Poll Slack and ClickUp in the same daemon loop
-cargo run -p baml-task-daemon -- run \
-  --source slack \
-  --source clickup \
-  --channel agentium-eng \
-  --clickup-list-id <LIST_ID>
-```
-
-Route specific sources to specific sinks:
-
-```bash
-# Slack discussions create ClickUp tasks; ClickUp lifecycle events dispatch to a workflow intake agent over A2A.
-cargo run -p baml-task-daemon -- run \
-  --source slack \
-  --source clickup \
-  --channel agentium-eng \
-  --clickup-list-id <LIST_ID> \
-  --a2a-base-url http://127.0.0.1:8082 \
-  --a2a-agent-package workflow-intake-agent \
-  --a2a-agent-instance-id dispatch \
-  --route slack:clickup \
-  --route clickup:a2a \
-  --clickup-live \
-  --a2a-live
-```
-
-Delegate daemon events to an A2A target agent:
-
-```bash
-# dry-run (shows what would be sent, without network side-effects)
-cargo run -p baml-task-daemon -- run --channel agentium-eng --a2a-base-url http://127.0.0.1:8082
+# dry-run (logs request payload intent, no network side-effects)
+cargo run -p baml-task-daemon -- run --channel agentium-eng --coordinator-url http://127.0.0.1:8082
 
 # live delegation
-cargo run -p baml-task-daemon -- run --channel agentium-eng --a2a-base-url http://127.0.0.1:8082 --a2a-live
-
-# target a non-default agent route
-cargo run -p baml-task-daemon -- run \
-  --channel agentium-eng \
-  --a2a-base-url http://127.0.0.1:8082 \
-  --a2a-agent-package workflow-intake-agent \
-  --a2a-agent-instance-id dispatch \
-  --a2a-live
+cargo run -p baml-task-daemon -- run --channel agentium-eng --coordinator-url http://127.0.0.1:8082 --a2a-live
 ```
 
 ## Output You Should Expect
 
-A typical interpretation result event includes:
+A typical batch includes:
 - `interpretation.executive_summary`: concise state of the project discussion
 - `interpretation.decisions_made`, `open_questions`, `risks`: structured understanding of the conversation
 - `interpretation.workflow_seed.goal`: the intended next objective
@@ -173,26 +126,21 @@ A typical interpretation result event includes:
 - `interpretation.workflow_seed.clarification_nodes`: questions that should be resolved before execution
 - `derived_tasks`: practical tasks emitted to sinks
 
-When using A2A delegation (`--a2a-base-url --a2a-live`), task-daemon
+When using coordinator delegation (`--coordinator-url --a2a-live`), task-daemon
 sends a valid `message.sendStream` request with:
-- a readable text summary for the receiving agent
-- a structured `InterpretationResultEvent` object in `message.parts[].data`
+- a concise text instruction
+- a typed workflow handoff payload in `message.parts[].data`
 
-## Event Format Reference
+## Event Contract
 
-For integrations that consume task-daemon events, use the interpretation event
-format described here:
+For integration between poller, interpreter, and orchestration layers, use the
+versioned interpretation event contract:
 - [task-daemon-event-contract.md](./task-daemon-event-contract.md)
-- [task-daemon-clickup-source-contract.md](./task-daemon-clickup-source-contract.md) (ClickUp lifecycle source semantics)
 
 ## Important Behavior
 
 - LLM mode is the default. Heuristic mode is available only when explicitly requested (`--extractor heuristic`).
-- Slack and ClickUp source access are read-only.
-- With multiple `--source` flags, each interval (and `--once`) covers each selected source once.
-- `--route <source>:<sink>` overrides default fan-out. When routes are present, only explicitly routed source/sink pairs are active.
-- Startup validation rejects configurations where a selected source has no compatible sink.
-- ClickUp source behavior, including how task creation and status changes become daemon events, is defined in [task-daemon-clickup-source-contract.md](./task-daemon-clickup-source-contract.md).
+- Slack access is read-only.
 - Delivery is currently best-effort at-least-once: source cursor/task state is persisted only after sink delivery succeeds.
 
 ## Minimal Project Config Example

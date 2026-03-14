@@ -15,6 +15,12 @@ pub mod prov {
 }
 
 pub mod a2a {
+    pub const INTENT_ID: &str = "a2a:intent_id";
+    pub const PLAN_ID: &str = "a2a:plan_id";
+    pub const STEP_ID: &str = "a2a:step_id";
+    pub const STEP_ORDER: &str = "a2a:step_order";
+    pub const DEPENDS_ON: &str = "a2a:depends_on";
+    pub const STATUS: &str = "a2a:status";
     pub const AGENT_ID: &str = "a2a:agent_id";
     pub const AGENT_TYPE: &str = "a2a:agent_type";
     pub const AGENT_VERSION: &str = "a2a:agent_version";
@@ -41,6 +47,7 @@ pub mod a2a {
     pub const USAGE_PROMPT_TOKENS: &str = "a2a:usage_prompt_tokens";
     pub const USAGE_COMPLETION_TOKENS: &str = "a2a:usage_completion_tokens";
     pub const USAGE_TOTAL_TOKENS: &str = "a2a:usage_total_tokens";
+    pub const USAGE_CACHED_INPUT_TOKENS: &str = "a2a:usage_cached_input_tokens";
     pub const DURATION_MS: &str = "a2a:duration_ms";
     pub const DRIFT_SCORE: &str = "a2a:drift_score";
     pub const DRIFT_SEVERITY: &str = "a2a:drift_severity";
@@ -91,6 +98,9 @@ pub mod prov_relations {
 }
 
 pub mod a2a_types {
+    pub const INTENT: &str = "a2a:Intent";
+    pub const PLAN: &str = "a2a:Plan";
+    pub const PLAN_STEP: &str = "a2a:PlanStep";
     pub const LLM_CALL: &str = "a2a:LlmCall";
     pub const TOOL_CALL: &str = "a2a:ToolCall";
     pub const AGENT_BOOT: &str = "a2a:AgentBoot";
@@ -141,6 +151,8 @@ pub mod semantic_labels {
     pub const WAS_CALLED_BY: &str = "WAS_CALLED_BY";
     pub const WAS_TRANSITIONED_FROM: &str = "WAS_TRANSITIONED_FROM";
     pub const WAS_TRANSITIONED_TO: &str = "WAS_TRANSITIONED_TO";
+    pub const WAS_REPLACED_BY: &str = "WAS_REPLACED_BY";
+    pub const WAS_REFINED_BY: &str = "WAS_REFINED_BY";
     pub const WAS_RELATED_TO: &str = "WAS_RELATED_TO";
     pub const WAS_DELEGATED_TO: &str = "WAS_DELEGATED_TO";
     pub const TASK_TRIGGERED_BY_MESSAGE: &str = "TASK_TRIGGERED_BY_MESSAGE";
@@ -176,6 +188,13 @@ pub mod message_directions {
 }
 
 pub mod a2a_relations {
+    pub const INTENT_MESSAGE: &str = "A2A_INTENT_MESSAGE";
+    pub const INTENT_PLAN: &str = "A2A_INTENT_PLAN";
+    pub const PLAN_STEP: &str = "A2A_PLAN_STEP";
+    pub const INTENT_REPLACED_BY: &str = "A2A_INTENT_REPLACED_BY";
+    pub const INTENT_REFINED_BY: &str = "A2A_INTENT_REFINED_BY";
+    pub const PLAN_REPLACED_BY: &str = "A2A_PLAN_REPLACED_BY";
+    pub const PLAN_REFINED_BY: &str = "A2A_PLAN_REFINED_BY";
     pub const TASK_MESSAGE: &str = "A2A_TASK_MESSAGE";
     pub const TASK_ARTIFACT: &str = "A2A_TASK_ARTIFACT";
     pub const TASK_CALL: &str = "A2A_TASK_CALL";
@@ -188,6 +207,13 @@ pub mod graph {
 }
 
 pub mod storage_safe {
+    pub const A2A_INTENT_ID: &str = "a2a_intent_id";
+    pub const A2A_PLAN_ID: &str = "a2a_plan_id";
+    pub const A2A_STEP_ID: &str = "a2a_step_id";
+    pub const A2A_STEP_ORDER: &str = "a2a_step_order";
+    pub const A2A_DEPENDS_ON: &str = "a2a_depends_on";
+    pub const A2A_STATUS: &str = "a2a_status";
+    pub const PROV_LABEL: &str = "prov_label";
     pub const PROV_TYPE: &str = "prov_type";
     pub const PROV_ROLE: &str = "prov_role";
     pub const PROV_BASE_TYPE: &str = "prov_base_type";
@@ -221,6 +247,7 @@ pub mod storage_safe {
     pub const A2A_USAGE_PROMPT_TOKENS: &str = "a2a_usage_prompt_tokens";
     pub const A2A_USAGE_COMPLETION_TOKENS: &str = "a2a_usage_completion_tokens";
     pub const A2A_USAGE_TOTAL_TOKENS: &str = "a2a_usage_total_tokens";
+    pub const A2A_USAGE_CACHED_INPUT_TOKENS: &str = "a2a_usage_cached_input_tokens";
     pub const A2A_DURATION_MS: &str = "a2a_duration_ms";
     pub const A2A_DRIFT_SCORE: &str = "a2a_drift_score";
     pub const A2A_DRIFT_SEVERITY: &str = "a2a_drift_severity";
@@ -247,6 +274,9 @@ pub mod storage_safe {
 }
 
 pub mod node_labels {
+    pub const INTENT: &str = "Intent";
+    pub const PLAN: &str = "Plan";
+    pub const PLAN_STEP: &str = "PlanStep";
     pub const LLM_CALL: &str = "LlmCall";
     pub const TOOL_CALL: &str = "ToolCall";
     pub const AGENT_BOOT: &str = "AgentBoot";

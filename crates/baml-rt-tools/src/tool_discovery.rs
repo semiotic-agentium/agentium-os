@@ -131,6 +131,8 @@ mod tests {
             config: None,
             config_bundle: None,
             origin: ToolOrigin::Host,
+            projection_semantics: None,
+            session_policy: crate::tools::SessionPolicy::default(),
         }
     }
 

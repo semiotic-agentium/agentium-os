@@ -35,7 +35,7 @@ async fn test_sandbox_environment() {
             }
         })()
     "#;
-    let result = bridge.evaluate(None, require_code).await;
+    let result = bridge.eval_sync(require_code).await;
     assert!(result.is_ok(), "require check should execute");
     let value = result.unwrap();
     assert!(
@@ -55,7 +55,7 @@ async fn test_sandbox_environment() {
             }
         })()
     "#;
-    let result = bridge.evaluate(None, console_code).await;
+    let result = bridge.eval_sync(console_code).await;
     assert!(result.is_ok(), "console.log check should execute");
     let value = result.unwrap();
     assert!(
@@ -79,7 +79,7 @@ async fn test_sandbox_environment() {
             }
         })()
     "#;
-    let result = bridge.evaluate(None, fetch_code).await;
+    let result = bridge.eval_sync(fetch_code).await;
     assert!(result.is_ok(), "fetch check should execute");
     let value = result.unwrap();
     assert!(

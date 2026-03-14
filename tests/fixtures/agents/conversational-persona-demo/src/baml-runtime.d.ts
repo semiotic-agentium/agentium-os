@@ -15,52 +15,105 @@ description: string | null;
 capabilities: string[];
  }
 
+export interface ConversationChunk { message: ConversationMessage | null;
+task: string | null;
+statusUpdate: string | null;
+artifactUpdate: string | null;
+ }
+
+export interface ConversationMessage { role: string | null;
+parts: ConversationPart[];
+ }
+
+export interface ConversationPart { text: string | null;
+raw: string | null;
+url: string | null;
+filename: string | null;
+mediaType: string | null;
+ }
+
+export interface DiscoverAgentsSendInput { query: string | null;
+requiredCapabilities: string[] | null;
+limit: number | null;
+offset: number | null;
+ }
+
+export interface HistoryContextV1 { hop: number;
+op: string;
+status: string;
+truncated: boolean | null;
+cursor: string | null;
+payload: string | null;
+ }
+
+export type InternalA2aCompletion = "DONE" | "INPUTREQUIRED" | "FAILED";
+
 export interface InternalA2aNextOutput { chunks: ConversationChunk[];
 completion: InternalA2aCompletion | null;
+historyContext: HistoryContextV1 | null;
  }
-
-export interface PlanStep { agent_package: string;
-agent_instance_id: string;
-sub_message: string;
- }
-
-export type RoutePath = "List_capabilities" | "Delegate";
 
 export interface SelectedAgent { agent_package: string;
 agent_instance_id: string;
  }
 
-export interface StructuredPlan { objective: string;
-plan_steps: PlanStep[];
+export interface SessionContext { contract_version: string;
+session_open: boolean;
+allowed_ops: string[];
+scope_ref: string | null;
+output_ref: string | null;
+evidence_ref: string | null;
  }
 
-export interface SystemDiscover_agentsSessionPlan { steps: SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsNextStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep[];
-reason: string | null;
+export interface StandardAgentPlanStep { agent_package: string;
+agent_instance_id: string;
+sub_message: string;
  }
 
-export interface SystemInternal_a2aSessionPlan { steps: SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aNextStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep[];
-reason: string | null;
+export interface StandardStructuredPlan { intent_description: string;
+objective: string;
+plan_steps: StandardAgentPlanStep[];
+ }
+
+export interface SystemDiscover_agentsAbortStep { op: "Abort";
+ }
+
+export interface SystemDiscover_agentsFinishStep { op: "Finish";
+ }
+
+export interface SystemDiscover_agentsOpenStep { op: "Open";
+ }
+
+export interface SystemDiscover_agentsReadStep { op: "Read";
+input: DiscoverAgentsSendInput;
+ }
+
+export interface SystemDiscover_agentsSendStep { op: "Send";
+input: DiscoverAgentsSendInput;
+ }
+
+export interface SystemDiscover_agentsSessionPlan { step: SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep;
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
 declare global {
 
-declare function BuildDelegatePlan(args: { plan: StructuredPlan; step: PlanStep } & { __baml_invocation_token?: string }): Promise<SystemInternal_a2aSessionPlan>;
+declare function DecideDelegationAction(args: { goal: string; agent: string; prior_response: string | null } & { __baml_invocation_token?: string }): Promise<string | null>;
 
 declare function FormatCapabilities(args: { user_message: string; agents: AgentCardDto[] } & { __baml_invocation_token?: string }): Promise<string>;
 
-declare function GetDiscoverAgentsPlan(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSessionPlan>;
+declare function GetDiscoverAgentsPlan(args: { inferred_intent: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSessionPlan>;
 
-declare function MakeStructuredPlan(args: { user_message: string; agents: AgentCardDto[] } & { __baml_invocation_token?: string }): Promise<StructuredPlan>;
+declare function InferDiscoveryIntent(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<string>;
+
+declare function MakeStructuredPlan(args: { user_message: string; agents: AgentCardDto[] } & { __baml_invocation_token?: string }): Promise<StandardStructuredPlan>;
 
 declare function PersonaChat(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<string>;
 
-declare function RouteIntent(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<RoutePath>;
+declare function PersonaReact(args: { user_message: string; plan_objective: string; a2a_output: InternalA2aNextOutput } & { __baml_invocation_token?: string }): Promise<string>;
 
 declare function SelectAgentForMessage(args: { user_message: string; agents: AgentCardDto[] } & { __baml_invocation_token?: string }): Promise<SelectedAgent | null>;
-
-declare function SummarizeDelegatedResult(args: { a2a_output: InternalA2aNextOutput } & { __baml_invocation_token?: string }): Promise<string>;
 
 }
 
@@ -116,10 +169,22 @@ export interface A2aTerminalTask<S extends A2aTerminalTaskState> extends A2aTask
 export interface A2aStateDispatcher<S extends A2aNonTerminalTaskState> {
     on<N extends A2aNextStates<S>>(state: N, handler: (ctx: A2aTaskContext<N>) => Promise<void> | void): A2aStateDispatcher<S>;
 }
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonObject = { [key: string]: JsonValue };
+export type JsonArray = JsonValue[];
+export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
+/** A chunk emitted via __chat_yield. Must be a JSON-serializable object following A2A wire format. */
+export type YieldChunk =
+  | { message: { parts: Part[]; role?: string; [key: string]: JsonValue | undefined }; [key: string]: JsonValue | undefined }
+  | { task: { id?: string; contextId?: string; status?: { state?: A2aTaskState; [key: string]: JsonValue | undefined }; [key: string]: JsonValue | undefined }; [key: string]: JsonValue | undefined }
+  | { statusUpdate: JsonObject; [key: string]: JsonValue | undefined }
+  | { artifactUpdate: JsonObject; [key: string]: JsonValue | undefined }
+  | { final: boolean; [key: string]: JsonValue | undefined }
+  | JsonObject;
 export type A2aMessageEvent<S extends A2aTaskState = A2aTaskState> =
     | { kind: "assistantMessage"; text: string; task: A2aTaskView<S> }
     | { kind: "statusChanged"; from?: A2aTaskState; to: S; task: A2aTaskView<S> }
-    | { kind: "artifactPublished"; task: A2aTaskView<S>; artifact: unknown; append?: boolean; lastChunk?: boolean }
+    | { kind: "artifactPublished"; task: A2aTaskView<S>; artifact: JsonValue; append?: boolean; lastChunk?: boolean }
     | { kind: "completed"; task: A2aTerminalTask<Extract<S, A2aTerminalTaskState>> }
     | { kind: "failed"; task: A2aTerminalTask<Extract<S, A2aTerminalTaskState>>; error: ToolFailure };
 /**
@@ -144,12 +209,52 @@ export interface A2aSessionClosed {
     sessionId: string;
     closed: true;
 }
-declare function openA2aTaskSession<I = unknown>(token: string): Promise<A2aSessionAwaitingInput<I>>;
+/**
+ * Intent/Plan protocol rails (breaking contract):
+ * 1) submitIntent(...)
+ * 2) submitPlan(...)
+ * 3) execute and complete steps with strict evidence references
+ */
+export interface IntentSubmission {
+    intentId: string;
+    description: string;
+    derivedFromMessageIds: string[];
+    supersession?: "replaced" | "refined";
+}
+export interface PlanStepSubmission {
+    stepId: string;
+    description: string;
+    order: number;
+    dependsOn?: string[];
+}
+export interface PlanSubmission {
+    intentId: string;
+    planId: string;
+    steps: PlanStepSubmission[];
+    supersession?: "replaced" | "refined";
+}
+export interface A2aExecutionSessionAwaitIntent {
+    sessionId: string;
+    submitIntent(intent: IntentSubmission): Promise<A2aExecutionSessionAwaitPlan>;
+    abort(reason?: string): Promise<A2aSessionClosed>;
+}
+export interface A2aExecutionSessionAwaitPlan {
+    sessionId: string;
+    submitPlan(plan: PlanSubmission): Promise<A2aExecutionSessionExecutable>;
+    abort(reason?: string): Promise<A2aSessionClosed>;
+}
+export interface A2aExecutionSessionExecutable {
+    sessionId: string;
+    startStep(stepId: string, evidenceText: string): Promise<void>;
+    completeStep(stepId: string, evidenceText: string): Promise<void>;
+    finish(): Promise<A2aSessionClosed>;
+    abort(reason?: string): Promise<A2aSessionClosed>;
+}
 /**
  * Bootstrap-generated: handler types. Incoming message (parts only; IDs/context are host-managed).
  * Session lifecycle: host invokes onChatMessage(message); agent uses session(message).run(...) to run work and emit outcomes.
  */
-export interface Part { text?: string; data?: unknown; [key: string]: unknown; }
+export interface Part { text?: string; data?: JsonValue; [key: string]: JsonValue | undefined; }
 export interface Message {
   parts: Part[];
   /** First text part. Present on messages from awaitInput(); for the initial message use session(message).text(). */
@@ -169,7 +274,7 @@ export interface SessionEmitter {
   /** Emit a working message (task state remains WORKING). */
   message(text: string): void;
   /** Emit an artifact chunk (append/lastChunk optional). */
-  artifact(artifact: unknown, append?: boolean, lastChunk?: boolean): void;
+  artifact(artifact: JsonValue, append?: boolean, lastChunk?: boolean): void;
   /** Emit a status transition (e.g. TASK_STATE_WORKING). */
   statusChanged(to: A2aTaskState): void;
   /**
@@ -218,7 +323,7 @@ export interface BamlAgent {
   run?(ctx: RunContext): Promise<SessionResult>;
   /** Optional: raw handler when run is not used. */
   onChatMessage?(message: ChatMessage): Promise<void>;
-  tools?: Record<string, (args: unknown) => Promise<unknown>>;
+  tools?: Record<string, (args: JsonObject) => Promise<JsonValue>>;
 }
 declare global {
   /** Minimal console interface matching the QuickJS sandbox polyfill (log, info, warn, error, debug). */
@@ -245,7 +350,10 @@ declare global {
    */
   function session(message: ChatMessage | null | undefined): SessionBuilder;
   function __chat_register(agent: BamlAgent): void;
-  function __chat_yield(chunk: unknown): void;
+  /** Emit a stream chunk following A2A wire format. */
+  function __chat_yield(chunk: YieldChunk): void;
+  function openA2aTaskSession<I = Record<string, unknown>>(token: string): Promise<A2aSessionAwaitingInput<I>>;
+  function openA2aExecutionSession(token: string): Promise<A2aExecutionSessionAwaitIntent>;
 }
 export type ToolFailureKind =
     | "InvalidInput"
@@ -258,4 +366,54 @@ export interface ToolFailure {
     kind: ToolFailureKind;
     message: string;
     retryable: boolean;
+}
+
+/** Generated Step Executor bindings (function -> typed step-executor args/result). */
+
+export type StepExecutorFunctionName = "GetDiscoverAgentsPlan";
+
+export interface SessionContext {
+    contract_version: "session_context";
+    session_open: boolean;
+    allowed_ops: ("Open" | "Send" | "Read" | "Finish" | "Abort")[];
+    scope_ref: string | null;
+    output_ref: string | null;
+    evidence_ref: string | null;
+}
+
+export interface HistoryContext {
+    hop: number;
+    op: string;
+    status: string;
+    truncated: boolean;
+    cursor: string | null;
+    payload: Record<string, unknown> | null;
+}
+
+export interface StepExecutorStateInput {
+    session_context?: SessionContext | null;
+    history_context?: HistoryContext | null;
+}
+
+export interface StepExecutorRunOptions {
+    max_steps?: number;
+}
+
+export interface StepExecutorRunResult<R = unknown> {
+    last: R;
+    steps: R[];
+    session_context: SessionContext;
+    history_context: HistoryContext | null;
+}
+
+export interface StepExecutorFunctionMap {
+  GetDiscoverAgentsPlan: { args: Parameters<typeof GetDiscoverAgentsPlan>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan>>; };
+}
+
+declare global {
+  function runGeneratedStepExecutor<F extends StepExecutorFunctionName>(
+    stepExecutor: F,
+    args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
+    options?: StepExecutorRunOptions
+  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F]["result"]>>;
 }

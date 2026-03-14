@@ -8,5 +8,7 @@ sequenceDiagram
     participant test_1_0_0
 
     User->>+test_1_0_0: Hello
+    rect rgb(220, 230, 241)
     Note over test_1_0_0,test_1_0_0: "task-1"
     test_1_0_0->>-User: Hi there.
+    end

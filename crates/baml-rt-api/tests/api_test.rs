@@ -99,9 +99,15 @@ fn looks_like_uuid(s: &str) -> bool {
 }
 
 fn looks_like_prov_event_id(s: &str) -> bool {
-    s.strip_prefix("prov-")
+    // "prov-12345" (bare event id)
+    if s.strip_prefix("prov-")
         .map(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()))
         .unwrap_or(false)
+    {
+        return true;
+    }
+    // "prov:v1:payload:payload:prov-<ns>:<kind>" compound payload ref
+    s.starts_with("prov:v1:payload:")
 }
 
 fn prov_test_router(
@@ -122,6 +128,7 @@ fn prov_test_router(
         None,
         None,
         provenance_ops,
+        None, // planning
         tool_catalog,
         config_service,
         secret_resolver,
@@ -376,6 +383,7 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::GraphqliteProvenan
                 prompt_tokens: 12,
                 completion_tokens: 8,
                 total_tokens: 20,
+                cached_input_tokens: None,
             },
             180,
             Outcome::Success,
@@ -395,6 +403,7 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::GraphqliteProvenan
                 prompt_tokens: 10,
                 completion_tokens: 7,
                 total_tokens: 17,
+                cached_input_tokens: None,
             },
             181,
             Outcome::Success,
@@ -457,6 +466,7 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::GraphqliteProvenan
                     prompt_tokens: 20,
                     completion_tokens: 5,
                     total_tokens: 25,
+                    cached_input_tokens: None,
                 },
                 duration_ms: 650,
                 outcome: Outcome::Failure,

@@ -10,6 +10,7 @@ use std::{
 
 use baml_rt_core::context::RuntimeScope;
 use baml_rt_tools::ToolStep;
+use dashmap::DashMap;
 use quickjs_runtime::facades::QuickJsRuntimeFacade;
 use serde_json::Value;
 use tokio::sync::{Mutex, Semaphore};
@@ -19,13 +20,12 @@ use crate::baml::BamlRuntimeManager;
 
 // ---------- Type aliases ----------
 
-pub(crate) type InvocationScopeMap = Arc<StdMutex<HashMap<InvocationToken, RuntimeScope>>>;
-pub(crate) type CorrelationMap =
-    Arc<StdMutex<HashMap<InvocationToken, baml_rt_core::ids::CorrelationId>>>;
+pub(crate) type InvocationScopeMap = Arc<DashMap<InvocationToken, RuntimeScope>>;
+pub(crate) type CorrelationMap = Arc<DashMap<InvocationToken, baml_rt_core::ids::CorrelationId>>;
 pub(crate) type InvocationContextRegistrySlot = Arc<StdMutex<InvocationContextRegistry>>;
-pub(crate) type EvalResultMap = Arc<StdMutex<HashMap<InvocationToken, Option<String>>>>;
+pub(crate) type EvalResultMap = Arc<DashMap<InvocationToken, Option<String>>>;
 /// When set for a token, __set_eval_result notifies so the poll loop can wait instead of relying on event-loop ordering.
-pub(crate) type EvalNotifyMap = Arc<StdMutex<HashMap<InvocationToken, Arc<tokio::sync::Notify>>>>;
+pub(crate) type EvalNotifyMap = Arc<DashMap<InvocationToken, Arc<tokio::sync::Notify>>>;
 pub(crate) type StreamSemaphore = Arc<Semaphore>;
 pub(crate) type StreamPermit = tokio::sync::OwnedSemaphorePermit;
 pub(crate) type InFlightCounter = Arc<AtomicU32>;
@@ -70,8 +70,7 @@ impl StreamInvocationSession {
     }
 }
 
-pub(crate) type StreamSessionMap =
-    Arc<StdMutex<HashMap<StreamSessionId, Arc<StreamInvocationSession>>>>;
+pub(crate) type StreamSessionMap = Arc<DashMap<StreamSessionId, Arc<StreamInvocationSession>>>;
 
 // ---------- In-flight guard ----------
 
@@ -125,10 +124,8 @@ impl EvalLifecycleGuard {
 
 impl Drop for EvalLifecycleGuard {
     fn drop(&mut self) {
-        if self.eval_slot_registered
-            && let Ok(mut guard) = self.eval_results_by_token.lock()
-        {
-            guard.remove(&self.eval_token);
+        if self.eval_slot_registered {
+            self.eval_results_by_token.remove(&self.eval_token);
         }
 
         // Task-scoped teardown: extract the full scope (context_id + task_id) so the
@@ -181,9 +178,7 @@ pub(crate) struct BriefPollParams {
 
 impl Drop for BriefPollParams {
     fn drop(&mut self) {
-        if let Ok(mut guard) = self.eval_notify_by_token.lock() {
-            guard.remove(&self.eval_token);
-        }
+        self.eval_notify_by_token.remove(&self.eval_token);
     }
 }
 

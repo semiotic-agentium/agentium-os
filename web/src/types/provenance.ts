@@ -31,6 +31,7 @@ export interface ProvenanceSummary {
   totalTokens: number;
   promptTokensTotal?: number;
   completionTokensTotal?: number;
+  cachedInputTokensTotal?: number;
   latencyHotspots?: {
     p95: number;
     p99: number;
@@ -67,4 +68,45 @@ export interface ProvenanceQueryResponse {
   nextCursor?: string;
   truncated: boolean;
   appliedCaps: Record<string, unknown>;
+}
+
+export interface PlanningStepView {
+  step_id: string;
+  description: string;
+  order: number;
+  depends_on: string[];
+  status: string;
+}
+
+export interface PlanningIntentView {
+  task_id: string;
+  intent_id: string;
+  description: string;
+}
+
+export interface PlanningPlanView {
+  task_id: string;
+  intent_id: string;
+  plan_id: string;
+  steps: PlanningStepView[];
+}
+
+export interface PlanningStepSummary {
+  total: number;
+  completed: number;
+  failed: number;
+  inProgress: number;
+  pending: number;
+}
+
+export interface ContextPlanningTaskSnapshot {
+  taskId: string;
+  currentIntent: PlanningIntentView | null;
+  currentPlan: PlanningPlanView | null;
+  stepSummary: PlanningStepSummary;
+}
+
+export interface ContextPlanningResponse {
+  contextId: string;
+  tasks: ContextPlanningTaskSnapshot[];
 }

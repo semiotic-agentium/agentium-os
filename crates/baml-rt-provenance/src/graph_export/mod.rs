@@ -29,7 +29,7 @@ use crate::{
     graph_export::activity_outcome::NodeActivityOutcome,
     graph_model::GraphNodeLabel,
     graphqlite_store::GraphqliteProvenanceStore,
-    vocabulary::{a2a, context_scope, message_directions},
+    vocabulary::{a2a, context_scope, message_directions, prov, storage_safe},
 };
 
 fn single_param(key: &str, value: &str) -> serde_json::Map<String, serde_json::Value> {
@@ -565,6 +565,26 @@ fn derive_display_name(label: &str, props: &HashMap<String, serde_json::Value>) 
     };
 
     match GraphNodeLabel::parse(label) {
+        Some(GraphNodeLabel::Intent) => {
+            let intent_id = prop_str(a2a::INTENT_ID).unwrap_or_default();
+            let label = prop_str(storage_safe::PROV_LABEL)
+                .or_else(|| prop_str(prov::LABEL))
+                .unwrap_or_default();
+            format!("🎯 Intent {intent_id} {label}")
+        }
+        Some(GraphNodeLabel::Plan) => {
+            let plan_id = prop_str(a2a::PLAN_ID).unwrap_or_default();
+            let intent_id = prop_str(a2a::INTENT_ID).unwrap_or_default();
+            format!("🗺️ Plan {plan_id} (intent {intent_id})")
+        }
+        Some(GraphNodeLabel::PlanStep) => {
+            let step_id = prop_str(a2a::STEP_ID).unwrap_or_default();
+            let status = prop_str(a2a::STATUS).unwrap_or_default();
+            let label = prop_str(storage_safe::PROV_LABEL)
+                .or_else(|| prop_str(prov::LABEL))
+                .unwrap_or_default();
+            format!("🧩 Step {step_id} [{status}] {label}")
+        }
         Some(GraphNodeLabel::Message) => {
             let role = normalize_role(&prop_str(a2a::ROLE).unwrap_or_default());
             let direction = prop_str(a2a::DIRECTION).unwrap_or_default();

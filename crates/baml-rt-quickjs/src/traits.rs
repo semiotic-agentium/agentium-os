@@ -63,7 +63,8 @@ pub trait ToolRegistryTrait: Send + Sync {
         open_input: serde_json::Value,
     ) -> Result<ToolSessionId>;
     async fn tool_session_send(&self, session_id: &ToolSessionId, input: Value) -> Result<()>;
-    async fn tool_session_next(&self, session_id: &ToolSessionId) -> Result<ToolStep>;
+    async fn tool_session_read(&self, session_id: &ToolSessionId, input: Value)
+    -> Result<ToolStep>;
     async fn tool_session_finish(&self, session_id: &ToolSessionId) -> Result<()>;
     async fn tool_session_abort(
         &self,
@@ -97,7 +98,7 @@ pub trait BamlGateway: Send + Sync {
 #[async_trait(?Send)]
 impl JsRuntimeHost for QuickJSBridge {
     async fn eval_json(&mut self, code: &str) -> Result<Value> {
-        self.evaluate(None, code).await
+        self.eval_sync(code).await
     }
 }
 

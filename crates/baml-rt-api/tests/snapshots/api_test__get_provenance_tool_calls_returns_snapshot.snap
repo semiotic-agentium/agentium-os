@@ -25,7 +25,10 @@ expression: snapshot
           },
           "phase": null
         },
+        "tool_result_ref": "[prov_event_id]",
+        "tool_call_ref": "[prov_event_id]",
         "tool_result": null,
+        "activity_ref": "prov:v1:activity:tool_call:ctx-100-1:msg-c:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
         "agent_package": "unknown",
         "agent_version": "unknown",
         "agent_display": "unknown/unknown",
@@ -52,9 +55,12 @@ expression: snapshot
           },
           "phase": null
         },
+        "tool_result_ref": "[prov_event_id]",
+        "tool_call_ref": "[prov_event_id]",
         "tool_result": {
           "error": "timeout while calling tool"
         },
+        "activity_ref": "prov:v1:activity:tool_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
         "agent_package": "unknown",
         "agent_version": "unknown",
         "agent_display": "unknown/unknown",

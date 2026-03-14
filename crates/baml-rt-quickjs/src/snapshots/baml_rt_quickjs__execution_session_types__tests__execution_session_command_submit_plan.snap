@@ -1,0 +1,29 @@
+---
+source: crates/baml-rt-quickjs/src/execution_session_types.rs
+expression: "serde_json::to_value(&cmd).unwrap()"
+---
+{
+  "action": "submit_plan",
+  "session_id": "session-test-123",
+  "plan": {
+    "intentId": "intent-test-1",
+    "planId": "plan-test-1",
+    "steps": [
+      {
+        "stepId": "step-test-1",
+        "description": "Run diagnostics",
+        "order": 0,
+        "dependsOn": []
+      },
+      {
+        "stepId": "step-test-2",
+        "description": "Apply fix",
+        "order": 1,
+        "dependsOn": [
+          "step-test-1"
+        ]
+      }
+    ],
+    "supersession": null
+  }
+}

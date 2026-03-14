@@ -4,5 +4,4 @@ expression: open_step_section
 ---
 class SupportCalculateOpenStep {
   op "Open"
-  reason string? @description("Optional explanation for this step.")
 }

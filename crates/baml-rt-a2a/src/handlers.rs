@@ -141,6 +141,7 @@ impl TaskHandler for DefaultTaskHandler {
             Ok(a2a::A2aOutcome::Stream(a2a::StreamHandle {
                 receiver: rx,
                 resume_tx: None,
+                abort_tx: None,
             }))
         } else {
             Ok(a2a::A2aOutcome::Response(value))

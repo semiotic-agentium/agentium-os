@@ -2,6 +2,21 @@
 //!
 //! This is the canonical transport-agnostic boundary for runtime observation and
 //! liveness. All command, domain-event, and effect signals flow as envelopes.
+//!
+//! ## Provenance Effect Invariants
+//!
+//! 1. **Single source of truth**:
+//!    All provenance writes flow through `EffectEvent` variants.
+//!    `ProvenanceEffectSubscriber` is the sole writer; interceptors observe but do not emit.
+//!
+//! 2. **Token lifecycle** (type-level enforcement):
+//!    ∀ `EffectStartToken<K>`: exactly one `complete()` call consumes the token by value.
+//!    `Drop` impl warns on leaked tokens (started but never completed).
+//!
+//! 3. **Result payload completeness**:
+//!    `ToolCompleted.result` carries the `ToolStep::Done { output }` value.
+//!    `LlmCompleted.result_payload` carries the LLM completion payload.
+//!    Both are `Option<Value>` — `None` only for error/abort paths.
 
 use std::{
     collections::HashMap,
@@ -14,13 +29,14 @@ use std::{
 use async_channel::{Receiver, Sender};
 use async_trait::async_trait;
 use futures_util::stream::Stream;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::{
     context::RuntimeScope,
     correlation,
-    ids::{AgentId, ContextId, CorrelationId},
+    ids::{AgentId, ContextId, CorrelationId, IntentId, PlanId, PlanStepId, TaskId},
     semantics::Outcome,
 };
 
@@ -103,6 +119,13 @@ pub enum A2aLivenessRole {
     Effect,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningSupersessionKind {
+    ReplacedBy,
+    RefinedBy,
+}
+
 #[derive(Debug, Clone)]
 pub struct A2aEffectMetadata {
     pub agent_id: AgentId,
@@ -123,6 +146,8 @@ pub enum EffectEvent {
         metadata: ToolEffectMetadata,
         duration_ms: u64,
         outcome: Outcome,
+        /// Tool result payload when available (e.g. the Read output for a session).
+        result: Option<serde_json::Value>,
     },
     LlmStarted {
         context_id: ContextId,
@@ -149,6 +174,38 @@ pub enum EffectEvent {
         duration_ms: u64,
         outcome: Outcome,
     },
+    IntentResolved {
+        context_id: ContextId,
+        task_id: TaskId,
+        intent_id: IntentId,
+        description: String,
+        derived_from_message_ids: Vec<String>,
+        supersession: Option<PlanningSupersessionKind>,
+        /// Lineage epoch when intent was resolved; for provenance and consistency checks.
+        epoch: Option<u64>,
+    },
+    PlanGenerated {
+        context_id: ContextId,
+        task_id: TaskId,
+        intent_id: IntentId,
+        plan_id: PlanId,
+        steps: Value,
+        supersession: Option<PlanningSupersessionKind>,
+        /// Lineage epoch when plan was generated; for provenance and consistency checks.
+        epoch: Option<u64>,
+    },
+    PlanStepStatusChanged {
+        context_id: ContextId,
+        task_id: TaskId,
+        intent_id: IntentId,
+        plan_id: PlanId,
+        step_id: PlanStepId,
+        old_status: Option<String>,
+        new_status: String,
+        evidence_text: String,
+        /// Lineage epoch when step status changed; for provenance and consistency checks.
+        epoch: Option<u64>,
+    },
     /// Tool stream chunk (Streaming/Suspended step). Relay to HTTP A2A session immediately so the UI sees it; PROV is already recorded via the tool interceptor.
     ToolStreamChunk { context_id: ContextId, chunk: Value },
 }
@@ -159,6 +216,7 @@ pub enum LlmUsage {
         prompt_tokens: u64,
         completion_tokens: u64,
         total_tokens: u64,
+        cached_input_tokens: Option<u64>,
     },
     Unknown,
 }
@@ -170,7 +228,11 @@ impl EffectEvent {
             | EffectEvent::ToolCompleted { .. }
             | EffectEvent::ToolStreamChunk { .. } => EffectKind::Tool,
             EffectEvent::LlmStarted { .. } | EffectEvent::LlmCompleted { .. } => EffectKind::Llm,
-            EffectEvent::A2aStarted { .. } | EffectEvent::A2aCompleted { .. } => EffectKind::A2a,
+            EffectEvent::A2aStarted { .. }
+            | EffectEvent::A2aCompleted { .. }
+            | EffectEvent::IntentResolved { .. }
+            | EffectEvent::PlanGenerated { .. }
+            | EffectEvent::PlanStepStatusChanged { .. } => EffectKind::A2a,
         }
     }
 
@@ -182,7 +244,10 @@ impl EffectEvent {
             EffectEvent::LlmStarted { context_id, .. }
             | EffectEvent::LlmCompleted { context_id, .. } => context_id,
             EffectEvent::A2aStarted { context_id, .. }
-            | EffectEvent::A2aCompleted { context_id, .. } => context_id,
+            | EffectEvent::A2aCompleted { context_id, .. }
+            | EffectEvent::IntentResolved { context_id, .. }
+            | EffectEvent::PlanGenerated { context_id, .. }
+            | EffectEvent::PlanStepStatusChanged { context_id, .. } => context_id,
         }
     }
 }
@@ -212,19 +277,16 @@ fn take_token_parts(
 impl<K> Drop for EffectStartToken<K> {
     fn drop(&mut self) {
         if self.context_id.is_some() || self.metadata.is_some() {
-            #[cfg(debug_assertions)]
-            {
-                tracing::error!(
-                    context_id = ?self.context_id,
-                    kind = std::any::type_name::<K>(),
-                    "EffectStartToken dropped without completion - effect leak"
-                );
-                panic!(
-                    "EffectStartToken dropped without completion: context_id={:?}, kind={}",
-                    self.context_id,
-                    std::any::type_name::<K>()
-                );
-            }
+            // Log a warning but do NOT panic. Async cancellation (e.g. tokio::time::timeout
+            // dropping a future mid-await) is a valid operation — the token may be dropped
+            // before completion. Panicking in Drop causes double-panics and process aborts
+            // which are worse than a missing provenance record.
+            tracing::warn!(
+                context_id = ?self.context_id,
+                kind = std::any::type_name::<K>(),
+                "EffectStartToken dropped without completion (possible async cancellation)"
+            );
+            // Keep the release-mode error log for visibility without the panic.
             #[cfg(not(debug_assertions))]
             {
                 tracing::error!(
@@ -238,11 +300,13 @@ impl<K> Drop for EffectStartToken<K> {
 }
 
 impl EffectStartToken<ToolKind> {
+    /// INVARIANT 2 (token lifecycle): Consumes the token by value — exactly one completion per start.
     pub async fn complete(
         mut self,
         emitter: &dyn EffectEmitter,
         duration_ms: u64,
         outcome: Outcome,
+        result: Option<serde_json::Value>,
     ) -> crate::Result<()> {
         let (context_id, metadata) = take_token_parts(&mut self.context_id, &mut self.metadata);
         let metadata = match metadata {
@@ -255,6 +319,7 @@ impl EffectStartToken<ToolKind> {
                 metadata,
                 duration_ms,
                 outcome,
+                result,
             })
             .await
     }
@@ -615,6 +680,9 @@ impl BusWithEffects {
                         entry.a2a = entry.a2a.saturating_sub(1);
                     }
                 },
+                EffectEvent::IntentResolved { .. }
+                | EffectEvent::PlanGenerated { .. }
+                | EffectEvent::PlanStepStatusChanged { .. } => {}
                 EffectEvent::ToolStreamChunk { .. } => {}
             }
             if !entry.any() {

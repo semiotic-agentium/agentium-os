@@ -83,7 +83,7 @@ pub trait JsInvoker: Send + Sync {
         scope: &InvocationScope,
         resume_rx: Option<mpsc::Receiver<Value>>,
         relay_rx: Option<mpsc::Receiver<Value>>,
-    ) -> Result<mpsc::Receiver<StreamOutput>>;
+    ) -> Result<(mpsc::Receiver<StreamOutput>, Option<mpsc::Sender<()>>)>;
 }
 
 pub struct QuickJsInvoker {
@@ -113,12 +113,12 @@ impl JsInvoker for QuickJsInvoker {
         scope: &InvocationScope,
         resume_rx: Option<mpsc::Receiver<Value>>,
         relay_rx: Option<mpsc::Receiver<Value>>,
-    ) -> Result<mpsc::Receiver<StreamOutput>> {
+    ) -> Result<(mpsc::Receiver<StreamOutput>, Option<mpsc::Sender<()>>)> {
         let js_request = a2a::request_to_js_value(request)?;
-        let rx =
+        let (rx, abort_tx) =
             spawn_stream_handover(&self.handle, scope.clone(), js_request, resume_rx, relay_rx)
                 .await;
-        Ok(rx)
+        Ok((rx, Some(abort_tx)))
     }
 }
 
@@ -247,7 +247,7 @@ impl RequestRouter for MethodBasedRouter {
                             .as_ref()
                             .map(|(tx, _): &(mpsc::Sender<Value>, mpsc::Receiver<Value>)| tx.clone());
                         let resume_rx = resume_channel.map(|(_, rx)| rx);
-                        let mut chunk_rx = self
+                        let (mut chunk_rx, abort_tx) = self
                             .js_invoker
                             .invoke_stream_incremental(request, scope, resume_rx, relay_rx)
                             .await?;
@@ -352,6 +352,7 @@ impl RequestRouter for MethodBasedRouter {
                         Ok(a2a::A2aOutcome::Stream(a2a::StreamHandle {
                             receiver: rx,
                             resume_tx,
+                            abort_tx,
                         }))
                     } else {
                         let mut normalizer = a2a::JsChunkNormalizer::new(scope);
@@ -435,7 +436,7 @@ mod tests {
             _scope: &InvocationScope,
             _resume_rx: Option<mpsc::Receiver<Value>>,
             _relay_rx: Option<mpsc::Receiver<Value>>,
-        ) -> Result<mpsc::Receiver<StreamOutput>> {
+        ) -> Result<(mpsc::Receiver<StreamOutput>, Option<mpsc::Sender<()>>)> {
             let (tx, rx) = mpsc::channel(64);
             let chunks = self.stream_chunks.clone();
             tokio::spawn(async move {
@@ -449,7 +450,7 @@ mod tests {
                     ))
                     .await;
             });
-            Ok(rx)
+            Ok((rx, None))
         }
     }
 

@@ -46,7 +46,7 @@ use serde_json::{Map, Value};
 
 use crate::{
     graph_model::GraphNodeLabel,
-    normalizer::{A2aDerivedRelation, NormalizedProv},
+    normalizer::{A2aDerivedRelation, A2aRelationType, NormalizedProv},
     types::{
         Activity, Agent, Entity, ProvActivityId, ProvAgentId, ProvEntityId, QualifiedGeneration,
         Used, WasAssociatedWith, WasDerivedFrom, WasGeneratedBy,
@@ -331,18 +331,36 @@ pub fn build_queries_with_key_style_params(
 
     for relation in &normalized.derived_relations {
         let props = relation_props(relation);
-        let from_label = label_for_ref(
-            relation.from.clone(),
-            &entity_labels,
-            &activity_labels,
-            &agent_labels,
-        );
-        let to_label = label_for_ref(
-            relation.to.clone(),
-            &entity_labels,
-            &activity_labels,
-            &agent_labels,
-        );
+        let (from_label, to_label) = match relation.relation {
+            A2aRelationType::IntentReplacedBy => (
+                GraphNodeLabel::Intent.as_str(),
+                GraphNodeLabel::Intent.as_str(),
+            ),
+            A2aRelationType::IntentRefinedBy => (
+                GraphNodeLabel::Intent.as_str(),
+                GraphNodeLabel::Intent.as_str(),
+            ),
+            A2aRelationType::PlanReplacedBy => {
+                (GraphNodeLabel::Plan.as_str(), GraphNodeLabel::Plan.as_str())
+            }
+            A2aRelationType::PlanRefinedBy => {
+                (GraphNodeLabel::Plan.as_str(), GraphNodeLabel::Plan.as_str())
+            }
+            _ => (
+                label_for_ref(
+                    relation.from.clone(),
+                    &entity_labels,
+                    &activity_labels,
+                    &agent_labels,
+                ),
+                label_for_ref(
+                    relation.to.clone(),
+                    &entity_labels,
+                    &activity_labels,
+                    &agent_labels,
+                ),
+            ),
+        };
         let rel_type = derived_relation_label(relation, from_label, to_label, &props);
         queries.extend(merge_edge_statements(
             from_label,
@@ -985,6 +1003,12 @@ fn derived_relation_label(
         },
         a2a_relations::TASK_ARTIFACT => Some(semantic_labels::WAS_GENERATED_BY),
         a2a_relations::TASK_STATUS_TRANSITION => Some(semantic_labels::WAS_TRANSITIONED_TO),
+        a2a_relations::INTENT_REPLACED_BY | a2a_relations::PLAN_REPLACED_BY => {
+            Some(semantic_labels::WAS_REPLACED_BY)
+        }
+        a2a_relations::INTENT_REFINED_BY | a2a_relations::PLAN_REFINED_BY => {
+            Some(semantic_labels::WAS_REFINED_BY)
+        }
         _ => None,
     };
     let label = semantic.unwrap_or(relation.relation.as_str());
@@ -1034,6 +1058,7 @@ fn storage_safe_key(key: &str) -> String {
     let s: &'static str = match key {
         graph::NODE_ID => graph::NODE_ID,
         prov::TYPE => storage_safe::PROV_TYPE,
+        prov::LABEL => storage_safe::PROV_LABEL,
         prov::ROLE => storage_safe::PROV_ROLE,
         prov::BASE_TYPE => storage_safe::PROV_BASE_TYPE,
         prov::TIME => storage_safe::PROV_TIME,
@@ -1041,6 +1066,12 @@ fn storage_safe_key(key: &str) -> String {
         prov::START_TIME => storage_safe::PROV_START_TIME,
         prov::END_TIME => storage_safe::PROV_END_TIME,
         a2a::AGENT_ID => storage_safe::A2A_AGENT_ID,
+        a2a::INTENT_ID => storage_safe::A2A_INTENT_ID,
+        a2a::PLAN_ID => storage_safe::A2A_PLAN_ID,
+        a2a::STEP_ID => storage_safe::A2A_STEP_ID,
+        a2a::STEP_ORDER => storage_safe::A2A_STEP_ORDER,
+        a2a::DEPENDS_ON => storage_safe::A2A_DEPENDS_ON,
+        a2a::STATUS => storage_safe::A2A_STATUS,
         a2a::AGENT_TYPE => storage_safe::A2A_AGENT_TYPE,
         a2a::AGENT_VERSION => storage_safe::A2A_AGENT_VERSION,
         a2a::TASK_ID => storage_safe::A2A_TASK_ID,
@@ -1066,6 +1097,7 @@ fn storage_safe_key(key: &str) -> String {
         a2a::USAGE_PROMPT_TOKENS => storage_safe::A2A_USAGE_PROMPT_TOKENS,
         a2a::USAGE_COMPLETION_TOKENS => storage_safe::A2A_USAGE_COMPLETION_TOKENS,
         a2a::USAGE_TOTAL_TOKENS => storage_safe::A2A_USAGE_TOTAL_TOKENS,
+        a2a::USAGE_CACHED_INPUT_TOKENS => storage_safe::A2A_USAGE_CACHED_INPUT_TOKENS,
         a2a::DURATION_MS => storage_safe::A2A_DURATION_MS,
         a2a::DRIFT_SCORE => storage_safe::A2A_DRIFT_SCORE,
         a2a::DRIFT_SEVERITY => storage_safe::A2A_DRIFT_SEVERITY,

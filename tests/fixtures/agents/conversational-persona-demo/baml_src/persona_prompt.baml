@@ -1,38 +1,53 @@
-// --- Routing: classify user intent for agent-discovery flow ---
-enum RoutePath {
-  List_capabilities @alias("list_capabilities")
-  Delegate @alias("delegate")
-}
-
-function RouteIntent(user_message: string) -> RoutePath {
+// Discovery session driver.
+// CRITICAL: This function controls a host-managed FSM session for system/discover_agents.
+// The ONLY valid output is a single FSM step object — NEVER the agents list itself.
+// The host runtime executes the step; this function only declares the next op.
+//
+// Op lifecycle (follow in order):
+//   1. Open  — first call only, no session yet
+//   2. Send  — pass the discovery query; the host calls discover_agents
+//   3. Finish — immediately after Send when session status is "done" or "streaming"
+//              (the host already has the agents; you do NOT need a Read step)
+//   4. If status is NOT done/streaming after Send, emit Read once, then Finish.
+//
+// STOP RULE: If `allowed_ops` includes "Finish", emit Finish. Do not loop.
+function GetDiscoverAgentsPlan(
+  inferred_intent: string,
+  session_context: SessionContext?,
+) -> SystemDiscover_agentsSessionPlan {
   client DefaultClient
   prompt #"
-    You are Orkemedies, a grimdark ork warboss. You are a ROUTER ONLY: you never perform tasks, write code, or answer requests yourself. Any message that asks you to build, create, calculate, search, or do something MUST be classified as delegate so a specialist agent does it.
-    Classify the user's message into exactly one intent:
-    - list_capabilities: user asks what you can do, what agents exist, "help", greeting with no clear task, or no actionable request. Only use this for meta-questions (what can you do, help, greetings with no task).
-    - delegate: user gives a clear task or request that might be handled by another agent (e.g. "start the argument", "calculate something", "build me a script", "search Notion for X", any specific instruction).
-    Use prior turns in ctx.tags.conversation_history when present (e.g. a follow-up like "actually do it" after "what can you do" may be delegate).
-    Output only the intent: list_capabilities or delegate.
+    You are driving a discovery session FSM. Your ONLY output is one FSM step.
+    DO NOT output the agents list. DO NOT output JSON with "agents" or "done" keys.
+    Output EXACTLY ONE step object matching the schema below.
+
+    Step selection rules (apply in order):
+    1. If session is not open yet (no allowed_ops, or allowed_ops = ["Open"]): emit Open.
+    2. If allowed_ops = ["Send"]: emit Send with the discovery query derived from the inferred intent.
+    3. If allowed_ops includes "Finish": emit Finish immediately. You are DONE.
+    4. If allowed_ops = ["Read"]: emit Read once (use empty input). Then on next call, Finish.
+    5. Default: emit Finish if in doubt.
+
+    Current session state:
+    - session_open: {{ session_context.session_open }}
+    - allowed_ops: {{ session_context.allowed_ops }}
+
+    Inferred intent: {{ inferred_intent }}
+
     {{ ctx.output_format }}
-    {% for message in ctx.tags.conversation_history %}
-    {{ _.role(message.role) }}
-    {{ message.content }}
-    {% endfor %}
-    {{ _.role('user') }}
-    {{ user_message }}
   "#
 }
 
-// Returns a session plan to list agents; runtime executes it and returns { agents, done }.
-// Single-shot: no conversation_history. Including history makes the model continue the chat (persona + code) instead of emitting the plan JSON.
-function GetDiscoverAgentsPlan(user_message: string) -> SystemDiscover_agentsSessionPlan {
+// LLM-authored intent text used before discovery starts.
+function InferDiscoveryIntent(user_message: string) -> string {
   client DefaultClient
   prompt #"
-    You output ONLY a tool session plan (JSON) for system/discover_agents. The runtime parses your reply as JSON and runs the FSM. Any prose, markdown, or code makes parsing fail and steps become empty.
-    RULES: (1) Reply with ONLY the JSON object. No greeting, no explanation, no persona, no code. (2) Your response must start with { and end with }. (3) Plan has exactly 4 steps in order: Open, Send, Next, Finish. (4) Send input: {} or {"query": null} to list all agents.
-    Copy this exactly (or add optional reason/initial_input): {"steps":[{"op":"Open"},{"op":"Send","input":{}},{"op":"Next"},{"op":"Finish"}],"reason":null}
-    Current user message (for context only; do not answer it here): {{ user_message }}
+    Write exactly one concise sentence describing the user's likely intent at a goal level.
+    This is pre-discovery: do not mention specific agents, tools, or execution mechanics.
+    Focus on what outcome the user appears to want.
     {{ ctx.output_format }}
+    {{ _.role('user') }}
+    {{ user_message }}
   "#
 }
 
@@ -77,28 +92,30 @@ function SelectAgentForMessage(user_message: string, agents: AgentCardDto[]) -> 
   "#
 }
 
-// One agent chat: target agent and the message to send. Used in StructuredPlan.
-class PlanStep {
-  agent_package string
-  agent_instance_id string
-  sub_message string
-}
-
-// Structured plan: what we want to achieve (objective) and ordered steps (each step = one agent chat). May have one or multiple steps.
-// Uses plan_steps (not "steps") so the runtime does not treat this as a ToolSessionPlan (which expects steps[].op).
-class StructuredPlan {
-  objective string
-  plan_steps PlanStep[]
-}
-
-// Planning step: output a structured plan. You do NOT perform the task; you only produce the plan. Never plan a step for conversational-persona-demo.
-function MakeStructuredPlan(user_message: string, agents: AgentCardDto[]) -> StructuredPlan {
+// Planning step: output a structured plan. You do NOT perform the task; you only produce the plan.
+// Never plan a step for conversational-persona-demo. For capability/meta requests, return plan_steps as [].
+function MakeStructuredPlan(user_message: string, agents: AgentCardDto[]) -> StandardStructuredPlan {
   client DefaultClient
   prompt #"
     You are PLANNING what to do; you do not perform the task yourself. Given the user message and the list of available agents (name, description, capabilities), output a structured plan:
-    (1) objective — one sentence describing what we are achieving for the user.
-    (2) plan_steps — an ordered list of agent chats. Each step is one conversation with one agent: which agent (agent_package, agent_instance_id from the list) and what to send (sub_message). Use only agents from the list. Output the key as "plan_steps" (not "steps").
-    A task may need one agent chat (one step) or multiple agent chats (multiple steps; e.g. first ask Notion to search, then ask ClickUp to create a task using that context). Order matters; later steps can refer to results of earlier ones in sub_message. Never plan a step for conversational-persona-demo. Output only the structured plan (objective and plan_steps).
+    (1) intent_description — one sentence describing the user's high-level intent in concrete terms (not generic "delegate request").
+    (2) objective — one sentence describing what we are achieving for the user.
+    (3) plan_steps — an ordered list of agent chats. Each step is one conversation with one agent: which agent (agent_package, agent_instance_id from the list) and what to send (sub_message). Use only agents from the list. Output the key as "plan_steps" (never "step").
+    Intent/plan separation contract:
+    - intent_description and objective MUST stay goal-level (user outcome), not execution mechanics.
+    - plan_steps/sub_message MUST contain the execution mechanics.
+    - Do not repeat the same sentence across intent_description, objective, and step descriptions.
+    CRITICAL sub_message quality rules:
+    - sub_message is a GOAL DESCRIPTION for the conversation with the specialist agent — it guides what the conversation should achieve, NOT a verbatim message to forward.
+    - Write it as a plain-English goal: what information to get, what action to perform, what answer to produce.
+    - Be concrete and specific: include key terms, entities, desired output format.
+    - The driver (ExecutePlanStepWithDelegate) will craft the actual messages from this goal.
+    - Never include persona-voice diction, roleplay language, or "Delegate to X:" prefixes.
+    - If the user asked for a script, state that requirement explicitly.
+    Capability/meta rule:
+    - If the user is asking what is available, what you can do, greetings/help, casual social chat, or any request without a concrete actionable work item for a specialist agent, set plan_steps to [].
+    - In that case, intent_description/objective should describe answering with capabilities or engaging in conversation.
+    A task may need one agent chat (one step) or multiple agent chats (multiple steps; e.g. first call one specialist to gather context, then call another specialist to act on that context). Order matters; later steps can refer to results of earlier ones in sub_message. Never plan a step for conversational-persona-demo. Output only the structured plan (intent_description, objective, and plan_steps).
     Single-shot: no conversation_history. Planning uses only the current user message and agents list; including history would inject prior tool_call/tool_result and confuse the planner.
     {{ ctx.output_format }}
     {{ _.role('user') }}
@@ -107,39 +124,74 @@ function MakeStructuredPlan(user_message: string, agents: AgentCardDto[]) -> Str
   "#
 }
 
-// Returns a session plan that delegates to one agent: Open (target = step), Send THE PLAN (so the agent receives it), Next, Finish. We talk to that agent until it's done.
-// Takes the full structured plan and the step (which agent); the delegate agent receives the plan as the first message.
-function BuildDelegatePlan(plan: StructuredPlan, step: PlanStep) -> SystemInternal_a2aSessionPlan {
+/// Decide what to do next in a delegation conversation.
+/// Returns the message to send to the specialist agent, or null if the goal is achieved.
+function DecideDelegationAction(
+  goal: string,
+  agent: string,
+  prior_response: string?,
+) -> string? {
   client DefaultClient
   prompt #"
-    You output the session plan that DELEGATES to one agent by sending them the plan. The coordinator sends the full structured plan to the agent as the first message; the agent has the plan and does the work; we then Next to get their reply and Finish.
-    RULES: (1) Reply with ONLY the JSON object. No prose. (2) Start with {, end with }. (3) Exactly 4 steps: Open, Send, Next, Finish. (4) Each step must have "op".
-    Open target = this step's agent: agent_package={{ step.agent_package }}, agent_instance_id={{ step.agent_instance_id }}.
-    Send input.text = the full plan as JSON (escape for JSON). The delegate agent receives this message — they get the whole plan (objective and plan_steps) so they know context and their step. Serialize the plan so the agent receives it.
-    Shape: {"steps":[{"op":"Open","initial_input":{"target":{"agent_package":"...","agent_instance_id":"..."}}},{"op":"Send","input":{"text":"<escaped JSON of the full plan>"}},{"op":"Next"},{"op":"Finish"}]}
-    Full plan: objective={{ plan.objective }}, plan_steps={{ plan.plan_steps }}
+    You are coordinating a conversation with a specialist agent to achieve a goal.
+
+    Goal: {{ goal }}
+    Agent: {{ agent }}
+
+    {% if prior_response %}
+    The agent's last response:
+    {{ prior_response }}
+
+    Has the response satisfied the goal?
+    - If YES: return null (empty string signals completion).
+    - If NO or partially: return the follow-up message to send to the agent.
+    {% else %}
+    No response yet. Return the opening message to send to the agent.
+    {% endif %}
+
+    Return ONLY the message text to send, or null if done. No wrappers, no class names — just the message string or null.
+
+    {{ ctx.output_format }}
 
     {% for message in ctx.tags.conversation_history %}
     {{ _.role(message.role) }}
     {{ message.content }}
     {% endfor %}
-
-    [Reply with only the session plan JSON. Send sends the plan to the agent.]
-    {{ ctx.output_format }}
   "#
 }
 
-// Turn the delegated agent's raw output (chunks) into a short persona reply.
-function SummarizeDelegatedResult(a2a_output: InternalA2aNextOutput) -> string {
+// React to the results of one or more delegation steps.
+// The persona decides how to respond based on what was asked and what came back —
+// sometimes a direct relay, sometimes a synthesis, sometimes a short reaction.
+function PersonaReact(
+  user_message: string,
+  plan_objective: string,
+  a2a_output: InternalA2aNextOutput,
+) -> string {
   client DefaultClient
   prompt #"
-    You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Another agent was asked something and returned this full reply (chunks with message parts; the runtime waited for the agent to finish). Use prior turns in ctx.tags.conversation_history when present for continuity.
-    Extract the meaningful reply and respond to the user in your voice: short, ork-flavoured (krump, waaagh), 2-5 sentences. Do not say "the other agent said" unless it fits the bit; just deliver the answer in your style.
+    You are Orkemedies, a grimdark ork Mekboy, the kunningest Mekboy in the galaxy. Use prior turns in ctx.tags.conversation_history when present for continuity.
+
+    The user asked: {{ user_message }}
+    Plan objective: {{ plan_objective }}
+
+    Your specialist agent(s) completed the work and returned the output below.
+
+    React appropriately:
+    - If the output already directly answers the user's question, relay the key facts in your voice.
+    - If the output is a list or structured data, present the highlights concisely.
+    - If multiple steps ran, synthesize across them rather than repeating each.
+    - Match verbosity to the task: brief for simple lookups, fuller for complex results.
+    - Never dump raw JSON or tool payloads. Deliver the useful content.
+    - Use ork-flavoured diction (krump, waaagh) sparingly — it should enhance, not obscure.
+
     {% for message in ctx.tags.conversation_history %}
     {{ _.role(message.role) }}
     {{ message.content }}
     {% endfor %}
+
     {{ ctx.output_format }}
+
     Delegated output: {{ a2a_output }}
   "#
 }

@@ -7,6 +7,7 @@ type DelegatedChunk = {
   };
   task?: string;
   statusUpdate?: string;
+  status_update?: string;
 };
 
 type DelegatedResult = {
@@ -116,7 +117,6 @@ const MAX_NORMALIZATION_INPUT_CHARS = 16_000;
 const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
 const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
 const TASK_DAEMON_COORDINATOR_HANDOFF_SCHEMA_VERSION = "task-daemon.coordinator-handoff.v1";
-const TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION = "task-daemon.interpretation.v1";
 
 type WorkflowNodeKind =
   | "call_agent"
@@ -163,10 +163,6 @@ type NodeArtifact = {
   ended_at?: string;
 };
 
-type ConsoleLike = {
-  warn: (message?: unknown, ...optionalParams: unknown[]) => void;
-};
-
 // ---------------------------------------------------------------------------
 // Utility helpers
 // ---------------------------------------------------------------------------
@@ -179,11 +175,21 @@ function normalizeText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function warnToConsole(message: string): void {
-  const consoleLike = (globalThis as { console?: ConsoleLike }).console;
-  if (typeof consoleLike?.warn === "function") {
-    consoleLike.warn(message);
+function slugToken(value: string, fallback: string): string {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+  return normalized.length > 0 ? normalized : fallback;
+}
+
+function executionMessageId(message: unknown): string {
+  if (isObject(message)) {
+    if (typeof message.messageId === "string" && message.messageId.trim().length > 0) return message.messageId;
+    if (typeof message.id === "string" && message.id.trim().length > 0) return message.id;
   }
+  return "msg-coordinator-fallback";
 }
 
 function normalizeOptionalString(value: unknown): string | null {
@@ -318,13 +324,6 @@ function isLikelyTaskDaemonPrompt(text: string): boolean {
   );
 }
 
-function parseTaskDaemonSourceKind(value: unknown): string | null {
-  if (value !== "slack" && value !== "clickup" && value !== "github_issues") {
-    return null;
-  }
-  return value;
-}
-
 function parseTaskDaemonCoordinatorHandoff(
   message: ChatMessage | null | undefined,
 ): TaskDaemonCoordinatorHandoff | null {
@@ -336,38 +335,13 @@ function parseTaskDaemonCoordinatorHandoff(
     if (!isObject(data)) continue;
 
     const schemaVersion = normalizeOptionalString(data.schema_version);
-    if (schemaVersion === TASK_DAEMON_COORDINATOR_HANDOFF_SCHEMA_VERSION) {
-      const batch = data.batch;
-      if (!isObject(batch)) continue;
-      return {
-        schema_version: schemaVersion,
-        batch,
-      };
-    }
+    if (schemaVersion !== TASK_DAEMON_COORDINATOR_HANDOFF_SCHEMA_VERSION) continue;
 
-    if (schemaVersion !== TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION) continue;
-
-    const source = parseObjectField(data, "source");
-    const project = parseObjectField(data, "project");
-    const interpretation = parseObjectField(data, "interpretation");
-    const sourceKind = source != null ? parseTaskDaemonSourceKind(source.source) : null;
-    const sourceKey = source != null ? normalizeOptionalString(source.source_key) : null;
-    const sourceLabel = source != null ? normalizeOptionalString(source.source_label) : null;
-    if (!sourceKind || !sourceKey || !sourceLabel || project == null || interpretation == null) {
-      continue;
-    }
-
+    const batch = data.batch;
+    if (!isObject(batch)) continue;
     return {
       schema_version: schemaVersion,
-      batch: {
-        source: sourceKind,
-        source_key: sourceKey,
-        source_label: sourceLabel,
-        messages_scanned: data.messages_scanned,
-        project,
-        interpretation,
-        derived_tasks: parseObjectArray(data.derived_tasks),
-      },
+      batch,
     };
   }
 
@@ -755,8 +729,8 @@ function parseWorkflowPlan(value: unknown): WorkflowPlan | null {
   const nodes = parsedNodes.filter((node): node is WorkflowNode => node != null);
   if (nodes.length === 0) return null;
   const droppedCount = parsedNodes.length - nodes.length;
-  if (droppedCount > 0) {
-    warnToConsole(
+  if (droppedCount > 0 && typeof console !== "undefined" && typeof console.warn === "function") {
+    console.warn(
       `[coordinator] parseWorkflowPlan dropped ${droppedCount} malformed node(s) and kept ${nodes.length} valid node(s).`,
     );
   }
@@ -1015,6 +989,9 @@ function collectDelegatedTexts(value: unknown): string[] {
           for (const text of extractTextsFromSerializedChunkField(chunk.statusUpdate)) {
             out.add(text);
           }
+          for (const text of extractTextsFromSerializedChunkField(chunk.status_update)) {
+            out.add(text);
+          }
         }
       }
     }
@@ -1139,7 +1116,7 @@ function detectDelegatedTaskFailure(value: unknown): string | null {
       );
     }
 
-    const statusCandidates = [current.status, current.statusUpdate];
+    const statusCandidates = [current.status, current.status_update, current.statusUpdate];
     for (const status of statusCandidates) {
       if (!isObject(status)) continue;
       const statusState = normalizeOptionalString(status.state);
@@ -1918,9 +1895,11 @@ async function normalizeForeachItemsWithModel(
     };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    warnToConsole(
-      `[coordinator] NormalizeIterableOutput failed for node=${node.id} source=${node.foreach_from}: ${reason}`,
-    );
+    if (typeof console !== "undefined" && typeof console.warn === "function") {
+      console.warn(
+        `[coordinator] NormalizeIterableOutput failed for node=${node.id} source=${node.foreach_from}: ${reason}`,
+      );
+    }
     return null;
   }
 }
@@ -2721,6 +2700,12 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
   if (!baseUserText) {
     return { message: "Please share what you want me to coordinate." };
   }
+  const executionSession = typeof openA2aExecutionSession === "function"
+    ? await openA2aExecutionSession("coordinator-" + Date.now().toString())
+    : null;
+  const rootIntentId = "intent-" + slugToken(baseUserText, "coordinate-request");
+  const rootMessageId = executionMessageId(ctx.message);
+  let executionExecutable: { finish(): Promise<unknown> } | null = null;
 
   ctx.emit.statusChanged("TASK_STATE_WORKING");
   if (plannerUserText.structuredHandoff) {
@@ -2780,6 +2765,23 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
       };
     }
 
+    if (executionSession != null && executionExecutable == null) {
+      const intentPhase = await executionSession.submitIntent({
+        intentId: rootIntentId,
+        description: plan.goal || "Coordinate specialists to satisfy user request.",
+        derivedFromMessageIds: [rootMessageId],
+      });
+      executionExecutable = await intentPhase.submitPlan({
+        intentId: rootIntentId,
+        planId: "plan-" + slugToken(plan.goal || effectiveUserText, "workflow"),
+        steps: plan.nodes.map((node, idx) => ({
+          stepId: "step-" + node.id,
+          description: `Execute workflow node ${node.id} (${node.kind})`,
+          order: idx,
+          dependsOn: (node.depends_on || []).map((depId) => "step-" + depId),
+        })),
+      });
+    }
     const outcome = await executeWorkflowPlanPhase3(
       plan,
       effectiveUserText,
@@ -2787,6 +2789,9 @@ async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
       ctx.emit,
     );
     if (outcome.kind === "final") {
+      if (executionExecutable != null) {
+        await executionExecutable.finish();
+      }
       return outcome.result;
     }
 

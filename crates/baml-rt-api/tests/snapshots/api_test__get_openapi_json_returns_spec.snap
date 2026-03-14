@@ -152,6 +152,9 @@ expression: snapshot
             "404": {
               "description": "Agent not found"
             },
+            "409": {
+              "description": "Conflicting concurrent stream request"
+            },
             "500": {
               "description": "Internal error"
             }
@@ -631,6 +634,45 @@ expression: snapshot
             },
             "501": {
               "description": "Metrics service not available (provenance not configured)"
+            }
+          }
+        }
+      },
+      "/contexts/{context_id}/planning": {
+        "get": {
+          "tags": [
+            "provenance"
+          ],
+          "summary": "Get context-scoped planning state (intent/plan/step progress) from provenance.",
+          "operationId": "get_context_planning",
+          "parameters": [
+            {
+              "name": "context_id",
+              "in": "path",
+              "description": "A2A context id",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "responses": {
+            "200": {
+              "description": "Context planning snapshot",
+              "content": {
+                "application/json": {
+                  "schema": {}
+                }
+              }
+            },
+            "404": {
+              "description": "No planning data found for context"
+            },
+            "500": {
+              "description": "Internal error"
+            },
+            "501": {
+              "description": "Planning service unavailable"
             }
           }
         }

@@ -1,21 +1,193 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_provenance::{
-    ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
-    ProvenanceOutcomeSegment, ProvenanceResponseProfile,
+    ProvenanceArchivePayload, ProvenanceArchiveRecord, ProvenanceOpsFilters, ProvenanceOpsQuery,
+    ProvenanceOpsQueryRequest, ProvenanceOpsResource, ProvenanceOutcomeSegment,
+    ProvenanceResponseProfile,
 };
 use baml_rt_tools::{
     ToolCapability, ToolFailure, ToolHandler, ToolSession, ToolSessionError, ToolStep,
-    tools::{ToolFunctionMetadata, ToolSessionContext},
+    tools::{HistoryContextV1, SessionReadMode, ToolFunctionMetadata, ToolSessionContext},
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::{
     metadata::{system_extrospection_metadata, system_introspection_metadata},
-    tools::{ProvenanceQueryNextOutput, ProvenanceQueryOpenInput, ProvenanceQuerySendInput},
+    tools::{
+        ProvenanceArchivePayloadDto, ProvenanceArchiveRecordDto, ProvenanceArchiveSummaryDto,
+        ProvenanceQueryNextOutput, ProvenanceQueryOpenInput, ProvenanceQuerySendInput,
+        ProvenanceReadProjectionDto, ProvenanceRetrievalBudgetDto, SessionReadResultDto,
+    },
 };
+
+const RETRIEVAL_CALLS_CAP: u32 = 8;
+const RETRIEVAL_BYTES_CAP: u32 = 64 * 1024;
+const RETRIEVAL_ITEMS_CAP: u32 = 64;
+const COMPACT_ROW_SAMPLE_LIMIT: usize = 3;
+const COMPACT_JSON_TEXT_LIMIT: usize = 2048;
+
+#[derive(Debug, Clone, Copy)]
+enum ProvenanceReadProjection {
+    Identity,
+    Summary,
+    Detail,
+}
+
+impl ProvenanceReadProjection {
+    fn parse(raw: Option<&str>) -> std::result::Result<Self, ToolSessionError> {
+        match raw
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("summary") => Ok(Self::Summary),
+            Some("identity") => Ok(Self::Identity),
+            Some("detail") => Ok(Self::Detail),
+            Some(other) => Err(ToolSessionError::Tool(ToolFailure::invalid_input(format!(
+                "unsupported read.projection '{other}' for provenance session tool"
+            )))),
+        }
+    }
+
+    fn to_dto(self) -> ProvenanceReadProjectionDto {
+        match self {
+            Self::Identity => ProvenanceReadProjectionDto::Identity,
+            Self::Summary => ProvenanceReadProjectionDto::Summary,
+            Self::Detail => ProvenanceReadProjectionDto::Detail,
+        }
+    }
+}
+
+fn archive_payload_to_dto(payload: ProvenanceArchivePayload) -> ProvenanceArchivePayloadDto {
+    match payload {
+        ProvenanceArchivePayload::LlmCall {
+            payload_ref,
+            activity_ref,
+            prompt_json,
+        } => ProvenanceArchivePayloadDto::LlmCall {
+            payload_ref: payload_ref.0,
+            activity_ref: activity_ref.0,
+            prompt_json,
+        },
+        ProvenanceArchivePayload::LlmResult {
+            payload_ref,
+            activity_ref,
+            result_json,
+        } => ProvenanceArchivePayloadDto::LlmResult {
+            payload_ref: payload_ref.0,
+            activity_ref: activity_ref.0,
+            result_json,
+        },
+        ProvenanceArchivePayload::ToolCall {
+            payload_ref,
+            activity_ref,
+            tool_name,
+            phase,
+            args_json,
+        } => ProvenanceArchivePayloadDto::ToolCall {
+            payload_ref: payload_ref.0,
+            activity_ref: activity_ref.0,
+            tool_name,
+            phase,
+            args_json,
+        },
+        ProvenanceArchivePayload::ToolResult {
+            payload_ref,
+            activity_ref,
+            result_json,
+        } => ProvenanceArchivePayloadDto::ToolResult {
+            payload_ref: payload_ref.0,
+            activity_ref: activity_ref.0,
+            result_json,
+        },
+    }
+}
+
+fn archive_record_to_dto(record: ProvenanceArchiveRecord) -> ProvenanceArchiveRecordDto {
+    ProvenanceArchiveRecordDto {
+        archive_ref: record.archive_ref.0,
+        payloads: record
+            .payloads
+            .into_iter()
+            .map(archive_payload_to_dto)
+            .collect(),
+    }
+}
+
+fn payload_source_name(payload: &ProvenanceArchivePayloadDto) -> &'static str {
+    match payload {
+        ProvenanceArchivePayloadDto::LlmCall { .. } => "llm_call",
+        ProvenanceArchivePayloadDto::LlmResult { .. } => "llm_result",
+        ProvenanceArchivePayloadDto::ToolCall { .. } => "tool_call",
+        ProvenanceArchivePayloadDto::ToolResult { .. } => "tool_result",
+    }
+}
+
+fn collect_refs_with_prefix(
+    prefix_ref: &str,
+    record: Option<&ProvenanceArchiveRecordDto>,
+) -> Vec<String> {
+    let mut refs = vec![prefix_ref.to_string()];
+    let Some(record) = record else {
+        return refs;
+    };
+
+    refs.push(record.archive_ref.clone());
+    for payload in &record.payloads {
+        match payload {
+            ProvenanceArchivePayloadDto::LlmCall {
+                payload_ref,
+                activity_ref,
+                ..
+            }
+            | ProvenanceArchivePayloadDto::LlmResult {
+                payload_ref,
+                activity_ref,
+                ..
+            }
+            | ProvenanceArchivePayloadDto::ToolResult {
+                payload_ref,
+                activity_ref,
+                ..
+            } => {
+                refs.push(payload_ref.clone());
+                refs.push(activity_ref.clone());
+            }
+            ProvenanceArchivePayloadDto::ToolCall {
+                payload_ref,
+                activity_ref,
+                ..
+            } => {
+                refs.push(payload_ref.clone());
+                refs.push(activity_ref.clone());
+            }
+        }
+    }
+    refs.sort();
+    refs.dedup();
+    if refs.first().map(|s| s.as_str()) != Some(prefix_ref) {
+        refs.retain(|r| r != prefix_ref);
+        refs.insert(0, prefix_ref.to_string());
+    }
+    refs
+}
+
+fn summarize_record(record: &ProvenanceArchiveRecordDto) -> ProvenanceArchiveSummaryDto {
+    let payload_sources = record
+        .payloads
+        .iter()
+        .map(payload_source_name)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    ProvenanceArchiveSummaryDto {
+        archive_ref: record.archive_ref.clone(),
+        payload_count: u32::try_from(record.payloads.len()).unwrap_or(u32::MAX),
+        payload_sources,
+    }
+}
 
 fn parse_resource(raw: &str) -> ProvenanceOpsResource {
     match raw.to_ascii_lowercase().as_str() {
@@ -39,6 +211,247 @@ struct ProvenanceQuerySession {
     scoped_to_context: bool,
     query: Arc<dyn ProvenanceOpsQuery>,
     pending: Option<Value>,
+    retrieval_calls_used: u32,
+    retrieval_bytes_used: u32,
+    retrieval_items_used: u32,
+    read_hop: u32,
+}
+
+impl ProvenanceQuerySession {
+    fn retrieval_budget(&self) -> ProvenanceRetrievalBudgetDto {
+        ProvenanceRetrievalBudgetDto {
+            calls_used: self.retrieval_calls_used,
+            calls_cap: RETRIEVAL_CALLS_CAP,
+            bytes_used: self.retrieval_bytes_used,
+            bytes_cap: RETRIEVAL_BYTES_CAP,
+            items_used: self.retrieval_items_used,
+            items_cap: RETRIEVAL_ITEMS_CAP,
+        }
+    }
+
+    fn budget_exhausted_output(&self) -> ProvenanceQueryNextOutput {
+        ProvenanceQueryNextOutput {
+            payload_json: None,
+            read_result: None,
+            retrieval_budget: Some(self.retrieval_budget()),
+            budget_exhausted: Some(true),
+            done: true,
+            history_context: None,
+        }
+    }
+}
+
+fn history_payload_from_provenance_output(
+    output: &serde_json::Map<String, Value>,
+) -> Option<BTreeMap<String, Value>> {
+    if let Some(read_result) = output.get("readResult").and_then(Value::as_object) {
+        let mut payload = BTreeMap::new();
+        for (k, v) in read_result {
+            if k == "refs" || k == "refId" || k == "ref_id" || k == "mode" {
+                continue;
+            }
+            payload.insert(k.clone(), v.clone());
+        }
+        return Some(payload);
+    }
+    output
+        .get("payloadJson")
+        .and_then(Value::as_str)
+        .and_then(|s| serde_json::from_str::<Value>(s).ok())
+        .and_then(|v| {
+            v.as_object().map(|obj| {
+                obj.iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect::<BTreeMap<_, _>>()
+            })
+        })
+}
+
+fn attach_history_context(value: &mut Value, hop: u32) {
+    let Some(output) = value.as_object_mut() else {
+        return;
+    };
+    if output.get("historyContext").is_some() {
+        return;
+    }
+    let payload = history_payload_from_provenance_output(output);
+    let cursor = payload
+        .as_ref()
+        .and_then(|obj| obj.get("cursor"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let payload_json_len = payload
+        .as_ref()
+        .and_then(|p| serde_json::to_string(p).ok())
+        .map(|s| s.len())
+        .unwrap_or(0usize);
+    let history = HistoryContextV1 {
+        hop,
+        op: "Read".to_string(),
+        status: "done".to_string(),
+        truncated: payload_json_len > 2048,
+        cursor,
+        payload,
+    };
+    if let Ok(history_value) = serde_json::to_value(history) {
+        output.insert("historyContext".to_string(), history_value);
+    }
+}
+
+fn compact_json_text(value: &str) -> String {
+    if value.len() <= COMPACT_JSON_TEXT_LIMIT {
+        return value.to_string();
+    }
+    let mut out = value
+        .chars()
+        .take(COMPACT_JSON_TEXT_LIMIT)
+        .collect::<String>();
+    out.push('…');
+    out
+}
+
+fn compact_row_for_prompt(row: &Map<String, Value>) -> Map<String, Value> {
+    let mut compact = Map::new();
+    let keep = [
+        "activity_id",
+        "activity_ref",
+        "timestamp_ms",
+        "context_id",
+        "task_id",
+        "message_id",
+        "agent_id",
+        "agent_display",
+        "provider",
+        "model",
+        "baml_prompt",
+        "tool_name",
+        "duration_ms",
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "cached_input_tokens",
+        "activity_outcome",
+        "error_class",
+        "error_summary",
+        "failure_evidence_ref",
+        "llm_call_ref",
+        "llm_result_ref",
+        "tool_call_ref",
+        "tool_result_ref",
+        "cursor",
+    ];
+    for key in keep {
+        if let Some(value) = row.get(key) {
+            compact.insert(key.to_string(), value.clone());
+        }
+    }
+    compact
+}
+
+fn summarize_payload_json_for_prompt(payload_json: &str) -> Value {
+    let Ok(parsed) = serde_json::from_str::<Value>(payload_json) else {
+        return serde_json::json!({
+            "parseError": "invalid_json",
+            "payloadBytes": payload_json.len(),
+            "payloadPreview": compact_json_text(payload_json),
+        });
+    };
+    let Some(obj) = parsed.as_object() else {
+        return serde_json::json!({
+            "payloadType": "non_object",
+            "payloadBytes": payload_json.len(),
+        });
+    };
+    let mut summary = Map::new();
+    if let Some(resource) = obj.get("resource") {
+        summary.insert("resource".to_string(), resource.clone());
+    }
+    if let Some(cursor) = obj.get("cursor") {
+        summary.insert("cursor".to_string(), cursor.clone());
+    }
+    if let Some(total) = obj.get("total") {
+        summary.insert("total".to_string(), total.clone());
+    }
+    if let Some(aggregates) = obj.get("aggregates") {
+        summary.insert("aggregates".to_string(), aggregates.clone());
+    }
+    if let Some(rows) = obj.get("rows").and_then(Value::as_array) {
+        summary.insert(
+            "rowCount".to_string(),
+            Value::Number(serde_json::Number::from(rows.len() as u64)),
+        );
+        let sample = rows
+            .iter()
+            .take(COMPACT_ROW_SAMPLE_LIMIT)
+            .filter_map(Value::as_object)
+            .map(compact_row_for_prompt)
+            .map(Value::Object)
+            .collect::<Vec<_>>();
+        summary.insert("rowsSample".to_string(), Value::Array(sample));
+    }
+    Value::Object(summary)
+}
+
+fn compact_read_result_for_prompt(read_result: &mut Map<String, Value>) {
+    read_result.remove("archiveRecord");
+    if let Some(refs) = read_result.get("refs").and_then(Value::as_array) {
+        read_result.insert(
+            "refCount".to_string(),
+            Value::Number(serde_json::Number::from(refs.len() as u64)),
+        );
+    }
+}
+
+fn compact_provenance_content_for_prompt(content: &mut Value) {
+    let Some(content_obj) = content.as_object_mut() else {
+        return;
+    };
+    let Some(result_obj) = content_obj.get_mut("result").and_then(Value::as_object_mut) else {
+        return;
+    };
+    if let Some(payload_json) = result_obj
+        .get("payloadJson")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    {
+        let summary = summarize_payload_json_for_prompt(payload_json.as_str());
+        result_obj.insert("payloadSummary".to_string(), summary);
+        result_obj.insert(
+            "payloadBytes".to_string(),
+            Value::Number(serde_json::Number::from(payload_json.len() as u64)),
+        );
+        result_obj.remove("payloadJson");
+    }
+    if let Some(payload_json) = result_obj
+        .get("payload_json")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    {
+        let summary = summarize_payload_json_for_prompt(payload_json.as_str());
+        result_obj.insert("payloadSummary".to_string(), summary);
+        result_obj.insert(
+            "payloadBytes".to_string(),
+            Value::Number(serde_json::Number::from(payload_json.len() as u64)),
+        );
+        result_obj.remove("payload_json");
+    }
+    if let Some(read_result) = result_obj
+        .get_mut("readResult")
+        .and_then(Value::as_object_mut)
+    {
+        compact_read_result_for_prompt(read_result);
+    }
+    if let Some(history_context) = result_obj
+        .get_mut("historyContext")
+        .and_then(Value::as_object_mut)
+        && let Some(payload) = history_context.get("payload")
+    {
+        let payload_bytes = serde_json::to_vec(payload).map_or(0usize, |bytes| bytes.len());
+        history_context.insert(
+            "payloadBytes".to_string(),
+            Value::Number(serde_json::Number::from(payload_bytes as u64)),
+        );
+    }
 }
 
 #[async_trait]
@@ -46,21 +459,115 @@ impl ToolSession for ProvenanceQuerySession {
     async fn send(&mut self, input: Value) -> std::result::Result<(), ToolSessionError> {
         let send: ProvenanceQuerySendInput = serde_json::from_value(input)
             .map_err(|e| ToolSessionError::Tool(ToolFailure::from_error(&BamlRtError::Json(e))))?;
+        if let Some(read) = send.read.as_ref() {
+            if let Some(mode) = read.mode.as_ref()
+                && *mode != SessionReadMode::RetrieveRef
+            {
+                return Err(ToolSessionError::Tool(ToolFailure::invalid_input(
+                    "unsupported read.mode for provenance session tool",
+                )));
+            }
+            let projection = ProvenanceReadProjection::parse(read.projection.as_deref())?;
+            let archive_ref = read.ref_id.as_str();
+            let already_exhausted = self.retrieval_calls_used >= RETRIEVAL_CALLS_CAP
+                || self.retrieval_bytes_used >= RETRIEVAL_BYTES_CAP
+                || self.retrieval_items_used >= RETRIEVAL_ITEMS_CAP;
+            if already_exhausted {
+                self.pending = Some(
+                    serde_json::to_value(self.budget_exhausted_output()).map_err(|e| {
+                        ToolSessionError::Tool(ToolFailure::from_error(&BamlRtError::Json(e)))
+                    })?,
+                );
+                return Ok(());
+            }
+            let record = self
+                .query
+                .resolve_archive_ref(archive_ref)
+                .await
+                .map_err(|e| {
+                    ToolSessionError::Tool(ToolFailure::from_error(&BamlRtError::InvalidArgument(
+                        e.to_string(),
+                    )))
+                })?;
+            let items_in_record = record.as_ref().map_or(0u32, |rec| {
+                u32::try_from(rec.payloads.len()).unwrap_or(u32::MAX)
+            });
+            let record_bytes = record.as_ref().map_or(0u32, |rec| {
+                serde_json::to_vec(rec)
+                    .map_or(0u32, |buf| u32::try_from(buf.len()).unwrap_or(u32::MAX))
+            });
+            let projected_calls = self.retrieval_calls_used.saturating_add(1);
+            let projected_items = self.retrieval_items_used.saturating_add(items_in_record);
+            let projected_bytes = self.retrieval_bytes_used.saturating_add(record_bytes);
+            if projected_calls > RETRIEVAL_CALLS_CAP
+                || projected_items > RETRIEVAL_ITEMS_CAP
+                || projected_bytes > RETRIEVAL_BYTES_CAP
+            {
+                self.pending = Some(
+                    serde_json::to_value(self.budget_exhausted_output()).map_err(|e| {
+                        ToolSessionError::Tool(ToolFailure::from_error(&BamlRtError::Json(e)))
+                    })?,
+                );
+                return Ok(());
+            }
+            self.retrieval_calls_used = projected_calls;
+            self.retrieval_items_used = projected_items;
+            self.retrieval_bytes_used = projected_bytes;
+            let archive_record = record.map(archive_record_to_dto);
+            let refs = collect_refs_with_prefix(archive_ref, archive_record.as_ref());
+            let wrapped = ProvenanceQueryNextOutput {
+                payload_json: None,
+                read_result: Some(SessionReadResultDto {
+                    mode: SessionReadMode::RetrieveRef,
+                    ref_id: archive_ref.to_string(),
+                    projection: projection.to_dto(),
+                    refs,
+                    archive_summary: match projection {
+                        ProvenanceReadProjection::Identity => None,
+                        ProvenanceReadProjection::Summary | ProvenanceReadProjection::Detail => {
+                            archive_record.as_ref().map(summarize_record)
+                        }
+                    },
+                    archive_record: match projection {
+                        ProvenanceReadProjection::Detail => archive_record,
+                        ProvenanceReadProjection::Identity | ProvenanceReadProjection::Summary => {
+                            None
+                        }
+                    },
+                }),
+                retrieval_budget: Some(self.retrieval_budget()),
+                budget_exhausted: Some(false),
+                done: true,
+                history_context: None,
+            };
+            self.pending = Some(serde_json::to_value(wrapped).map_err(|e| {
+                ToolSessionError::Tool(ToolFailure::from_error(&BamlRtError::Json(e)))
+            })?);
+            return Ok(());
+        }
         let context_id = if self.scoped_to_context {
             Some(self.ctx.context_id.clone())
         } else {
-            send.context_id
+            Some(
+                send.context_id
+                    .unwrap_or_else(|| self.ctx.context_id.clone()),
+            )
+        };
+        let task_id = if self.scoped_to_context {
+            self.ctx.task_id.clone()
+        } else {
+            send.task_id.or_else(|| self.ctx.task_id.clone())
         };
         let agent_id = if self.scoped_to_context {
             Some(self.ctx.agent_id.clone())
         } else {
-            send.agent_id
+            Some(send.agent_id.unwrap_or_else(|| self.ctx.agent_id.clone()))
         };
         let request = ProvenanceOpsQueryRequest {
             resource: parse_resource(&send.resource),
             filters: ProvenanceOpsFilters {
                 context_id,
-                task_id: send.task_id,
+                task_id,
                 agent_id,
                 provider: send.provider,
                 model: send.model,
@@ -86,10 +593,14 @@ impl ToolSession for ProvenanceQuerySession {
             )))
         })?;
         let output = ProvenanceQueryNextOutput {
-            payload_json: serde_json::to_string(&response).map_err(|e| {
+            payload_json: Some(serde_json::to_string(&response).map_err(|e| {
                 ToolSessionError::Tool(ToolFailure::from_error(&BamlRtError::Json(e)))
-            })?,
+            })?),
+            read_result: None,
+            retrieval_budget: Some(self.retrieval_budget()),
+            budget_exhausted: Some(false),
             done: true,
+            history_context: None,
         };
         self.pending =
             Some(serde_json::to_value(output).map_err(|e| {
@@ -98,8 +609,10 @@ impl ToolSession for ProvenanceQuerySession {
         Ok(())
     }
 
-    async fn next(&mut self) -> std::result::Result<ToolStep, ToolSessionError> {
-        let payload = self.pending.take().unwrap_or(Value::Null);
+    async fn read(&mut self, _input: Value) -> std::result::Result<ToolStep, ToolSessionError> {
+        self.read_hop = self.read_hop.saturating_add(1);
+        let mut payload = self.pending.take().unwrap_or(Value::Null);
+        attach_history_context(&mut payload, self.read_hop);
         Ok(ToolStep::Done {
             output: Some(payload),
         })
@@ -134,6 +647,10 @@ impl ToolHandler for ProvenanceQueryTool {
         ToolCapability::Streaming
     }
 
+    fn compact_result(&self, content: &mut Value) {
+        compact_provenance_content_for_prompt(content);
+    }
+
     async fn open_session(
         &self,
         ctx: ToolSessionContext,
@@ -146,6 +663,10 @@ impl ToolHandler for ProvenanceQueryTool {
             scoped_to_context: self.scoped_to_context,
             query: self.query.clone(),
             pending: None,
+            retrieval_calls_used: 0,
+            retrieval_bytes_used: 0,
+            retrieval_items_used: 0,
+            read_hop: 0,
         }))
     }
 }

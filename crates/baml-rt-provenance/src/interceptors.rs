@@ -324,17 +324,36 @@ fn extract_usage_from_metadata(metadata: &Value) -> LlmUsage {
         .and_then(parse_u64_value)
         .or_else(|| usage.get("output_tokens").and_then(parse_u64_value));
     let total_tokens = usage.get("total_tokens").and_then(parse_u64_value);
+    let cached_input_tokens = usage
+        .get("cached_input_tokens")
+        .and_then(parse_u64_value)
+        .or_else(|| {
+            usage
+                .get("input_tokens_details")
+                .and_then(Value::as_object)
+                .and_then(|details| details.get("cached_tokens"))
+                .and_then(parse_u64_value)
+        })
+        .or_else(|| {
+            usage
+                .get("prompt_tokens_details")
+                .and_then(Value::as_object)
+                .and_then(|details| details.get("cached_tokens"))
+                .and_then(parse_u64_value)
+        });
 
     match (prompt_tokens, completion_tokens, total_tokens) {
         (Some(prompt), Some(completion), Some(total)) => LlmUsage::Known {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: total,
+            cached_input_tokens,
         },
         (Some(prompt), Some(completion), None) => LlmUsage::Known {
             prompt_tokens: prompt,
             completion_tokens: completion,
             total_tokens: prompt.saturating_add(completion),
+            cached_input_tokens,
         },
         _ => {
             tracing::debug!(
@@ -382,6 +401,7 @@ mod tests {
                 prompt_tokens: 1500,
                 completion_tokens: 200,
                 total_tokens: 1700,
+                cached_input_tokens: None,
             }
         );
     }
@@ -402,6 +422,7 @@ mod tests {
                 prompt_tokens: 100,
                 completion_tokens: 50,
                 total_tokens: 150,
+                cached_input_tokens: None,
             }
         );
     }
@@ -423,6 +444,7 @@ mod tests {
                 prompt_tokens: 1200,
                 completion_tokens: 240,
                 total_tokens: 1440,
+                cached_input_tokens: None,
             }
         );
     }
@@ -443,6 +465,32 @@ mod tests {
                 prompt_tokens: 80,
                 completion_tokens: 20,
                 total_tokens: 100,
+                cached_input_tokens: None,
+            }
+        );
+    }
+
+    #[test]
+    fn extracts_cached_input_tokens_from_nested_usage_details() {
+        let metadata = json!({
+            "usage": {
+                "input_tokens": 1200,
+                "output_tokens": 240,
+                "total_tokens": 1440,
+                "input_tokens_details": {
+                    "cached_tokens": 1190
+                }
+            }
+        });
+
+        let usage = extract_usage_from_metadata(&metadata);
+        assert_eq!(
+            usage,
+            LlmUsage::Known {
+                prompt_tokens: 1200,
+                completion_tokens: 240,
+                total_tokens: 1440,
+                cached_input_tokens: Some(1190),
             }
         );
     }

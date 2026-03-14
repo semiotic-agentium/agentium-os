@@ -11,13 +11,62 @@ mod test_tools;
 // Fixture helpers
 use std::{fs, path::PathBuf, sync::Arc};
 
+use async_trait::async_trait;
 use baml_rt::{A2aAgent, QuickJSConfig, baml::BamlRuntimeManager, quickjs_bridge::QuickJSBridge};
+use baml_rt_core::bus::{
+    BusWithEffects, EffectEmitter, EffectEvent, EffectLiveness, EffectSubscriber,
+};
 use baml_rt_provenance::GraphqliteStoreBuilder;
 pub use test_tools::{
     AddNumbersInput, AddNumbersOutput, AddNumbersTool, DelayedResponseTool, UppercaseTool,
     WeatherTool,
 };
 use tokio::sync::Mutex;
+
+/// Effect subscriber that captures all emitted `EffectEvent`s into a `Vec`.
+///
+/// Useful in tests that need to assert planning/tool effect sequences without
+/// requiring a full provenance store. Constructed via `Default::default()`.
+#[derive(Default)]
+pub struct CapturingEffectSubscriber {
+    pub events: tokio::sync::Mutex<Vec<EffectEvent>>,
+}
+
+#[async_trait]
+impl EffectSubscriber for CapturingEffectSubscriber {
+    async fn on_effect(&self, event: &EffectEvent) -> baml_rt_core::Result<()> {
+        self.events.lock().await.push(event.clone());
+        Ok(())
+    }
+}
+
+/// Creates a `QuickJSBridge` wired with a `BusWithEffects` and a `CapturingEffectSubscriber`.
+///
+/// Returns `(bridge, capture)` — the bridge has BAML functions registered and effect
+/// liveness set. The capture accumulates all emitted `EffectEvent`s for later assertion.
+pub async fn make_capturing_bridge(
+    agent_id: baml_rt_core::ids::AgentId,
+) -> (QuickJSBridge, Arc<CapturingEffectSubscriber>) {
+    let manager = Arc::new(Mutex::new(
+        BamlRuntimeManager::new().expect("create BamlRuntimeManager"),
+    ));
+    let effect_bus = Arc::new(BusWithEffects::new());
+    let capture = Arc::new(CapturingEffectSubscriber::default());
+    effect_bus.subscribe_effect(capture.clone()).await;
+    {
+        let mut guard = manager.lock().await;
+        guard.set_effect_emitter(effect_bus.clone() as Arc<dyn EffectEmitter>);
+    }
+    let mut bridge = QuickJSBridge::new(manager, agent_id)
+        .await
+        .expect("create QuickJSBridge");
+    bridge.set_effect_liveness(effect_bus as Arc<dyn EffectLiveness>);
+    bridge
+        .register_baml_functions()
+        .await
+        .expect("register BAML host helpers");
+    (bridge, capture)
+}
 
 pub fn fixture_path(relative_path: &str) -> PathBuf {
     workspace_root()
@@ -377,7 +426,7 @@ impl Drop for TempEnvVar {
 }
 
 /// Asserts that a tool is visible in QuickJS (either as a JS tool in `__js_tools` or as a Rust tool via `openToolSession`).
-/// Requires `scope` because the check runs an async IIFE that returns a promise; evaluate() must receive a scope to poll it.
+/// Takes `&mut QuickJSBridge` for test ergonomics — only use from single-context test harnesses.
 pub async fn assert_tool_registered_in_js(
     bridge: &mut QuickJSBridge,
     tool_name: &str,
@@ -410,12 +459,15 @@ pub async fn assert_tool_registered_in_js(
         "#,
         tool_name, tool_name
     );
-    let result = bridge.evaluate(Some(scope), &js_code).await.unwrap_or_else(|e| {
-        panic!(
-            "Tool '{}' registration check failed: evaluate returned error (includes raw response if parse failed): {}",
-            tool_name, e
-        );
-    });
+    let result = bridge
+        .eval_scoped(scope, &js_code)
+        .await
+        .unwrap_or_else(|e| {
+            panic!(
+                "Tool '{}' registration check failed: evaluate returned error (includes raw response if parse failed): {}",
+                tool_name, e
+            );
+        });
     let obj = result.as_object().expect("Expected object");
     let tool_exists = obj
         .get("toolExists")
@@ -519,4 +571,85 @@ pub fn assert_result_contract_actual_result(val: &serde_json::Value) {
         "CONTRACT VIOLATION: Expected object with 'steps' or 'result'/'formatted', got: {:?}",
         val
     );
+}
+
+/// BAML function name used in `stream-baml-tool` E2E session plan tests.
+pub const STREAM_BAML_TOOL_FUNCTION: &str = "ChooseCalcTool";
+
+/// Drives a strict Open→Send→Next→Finish calculator session plan end-to-end.
+///
+/// Accepts either a raw BAML result (containing `"step": { "op": "Send", ... }`) or
+/// an already-sent status (`"status": "sent"`). After confirming `sent`, calls `Next`
+/// then `Finish` and returns the numeric result extracted from `output.result`.
+pub async fn execute_calc_session_strict(
+    manager: &BamlRuntimeManager,
+    scope: &baml_rt_core::context::InvocationScope,
+    tool_choice: serde_json::Value,
+) -> baml_rt_core::Result<f64> {
+    use baml_rt_core::BamlRtError;
+    let initial_status = tool_choice.get("status").and_then(|v| v.as_str());
+    if initial_status != Some("sent") {
+        let has_step = tool_choice
+            .get("step")
+            .and_then(|v| v.as_object())
+            .is_some();
+        if !has_step {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "expected strict single-step plan or sent status, got: {tool_choice}"
+            )));
+        }
+        let sent = manager
+            .execute_tool_from_baml_result_or_value(
+                scope.as_scope(),
+                tool_choice,
+                Some(STREAM_BAML_TOOL_FUNCTION),
+                None,
+            )
+            .await?;
+        if sent.get("status").and_then(|v| v.as_str()) != Some("sent") {
+            return Err(BamlRtError::InvalidArgument(format!(
+                "expected sent status, got {sent}"
+            )));
+        }
+    }
+
+    // Pass an empty input object so the tool_fsm merges nothing into the previously-sent
+    // expression; a non-empty expression here would override the Send payload (e.g. 0+0=0).
+    let next = manager
+        .execute_tool_from_baml_result_or_value(
+            scope.as_scope(),
+            serde_json::json!({ "step": { "op": "Read", "input": {} } }),
+            Some(STREAM_BAML_TOOL_FUNCTION),
+            None,
+        )
+        .await?;
+    if next.get("status").and_then(|v| v.as_str()) != Some("done") {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "expected done status, got {next}"
+        )));
+    }
+    let value = next
+        .get("output")
+        .and_then(|v| v.get("result"))
+        .and_then(|v| v.as_f64())
+        .ok_or_else(|| {
+            BamlRtError::InvalidArgument(format!(
+                "missing output.result in strict Next response: {next}"
+            ))
+        })?;
+
+    let finished = manager
+        .execute_tool_from_baml_result_or_value(
+            scope.as_scope(),
+            serde_json::json!({ "step": { "op": "Finish" } }),
+            Some(STREAM_BAML_TOOL_FUNCTION),
+            None,
+        )
+        .await?;
+    if finished.get("status").and_then(|v| v.as_str()) != Some("finished") {
+        return Err(BamlRtError::InvalidArgument(format!(
+            "expected finished status, got {finished}"
+        )));
+    }
+    Ok(value)
 }

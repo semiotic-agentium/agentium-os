@@ -19,7 +19,8 @@ use utoipa::openapi::OpenApi as OpenApiSpec;
 use utoipa_axum::router::OpenApiRouter;
 
 use crate::{
-    ContextMetricsService, MermaidService, ProvenanceOpsService, config_handlers, handlers,
+    ContextMetricsService, MermaidService, PlanningService, ProvenanceOpsService, config_handlers,
+    handlers,
 };
 
 /// Shared state for API handlers: registry, OpenAPI spec, and **injected** config/catalog/resolver.
@@ -30,6 +31,7 @@ pub struct ApiState {
     pub mermaid: Option<Arc<dyn MermaidService>>,
     pub context_metrics: Option<Arc<dyn ContextMetricsService>>,
     pub provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
+    pub planning: Option<Arc<dyn PlanningService>>,
     pub tool_catalog: Arc<dyn ToolCatalog>,
     pub config_service: Arc<dyn ConfigService>,
     pub secret_resolver: Arc<dyn SecretResolver>,
@@ -58,6 +60,7 @@ pub fn api_router(
         mermaid,
         None,
         None,
+        None,
         tool_catalog,
         config_service,
         secret_resolver,
@@ -74,13 +77,13 @@ pub fn api_router_with_services(
     mermaid: Option<Arc<dyn MermaidService>>,
     context_metrics: Option<Arc<dyn ContextMetricsService>>,
     provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
+    planning: Option<Arc<dyn PlanningService>>,
     tool_catalog: Arc<dyn ToolCatalog>,
     config_service: Arc<dyn ConfigService>,
     secret_resolver: Arc<dyn SecretResolver>,
     runtime_secret_store: Option<Arc<dyn RuntimeSecretStore>>,
     web_dir: Option<&Path>,
 ) -> Router {
-    // Route-level tracing layer to capture HTTP semantic fields (including matched route template).
     let http_trace_layer = TraceLayer::new_for_http().make_span_with(|req: &Request<_>| {
         let route = req
             .extensions()
@@ -103,6 +106,7 @@ pub fn api_router_with_services(
         .routes(utoipa_axum::routes!(handlers::get_mermaid_context))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_task))
         .routes(utoipa_axum::routes!(handlers::get_context_metrics))
+        .routes(utoipa_axum::routes!(handlers::get_context_planning))
         .routes(utoipa_axum::routes!(handlers::get_provenance_llm_calls))
         .routes(utoipa_axum::routes!(handlers::get_provenance_tool_calls))
         .routes(utoipa_axum::routes!(handlers::get_provenance_messages))
@@ -142,6 +146,7 @@ pub fn api_router_with_services(
         mermaid,
         context_metrics,
         provenance_ops,
+        planning,
         tool_catalog,
         config_service,
         secret_resolver,
@@ -180,6 +185,7 @@ pub async fn serve(
         mermaid,
         None,
         None,
+        None,
         tool_catalog,
         config_service,
         secret_resolver,
@@ -197,6 +203,7 @@ pub async fn serve_with_services(
     mermaid: Option<Arc<dyn MermaidService>>,
     context_metrics: Option<Arc<dyn ContextMetricsService>>,
     provenance_ops: Option<Arc<dyn ProvenanceOpsService>>,
+    planning: Option<Arc<dyn PlanningService>>,
     tool_catalog: Arc<dyn ToolCatalog>,
     config_service: Arc<dyn ConfigService>,
     secret_resolver: Arc<dyn SecretResolver>,
@@ -208,6 +215,7 @@ pub async fn serve_with_services(
         mermaid,
         context_metrics,
         provenance_ops,
+        planning,
         tool_catalog,
         config_service,
         secret_resolver,

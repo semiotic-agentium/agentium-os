@@ -37,7 +37,10 @@ pub use error::{BamlRtError, Result, SessionLifecycleError};
 pub use event_subscription::{
     EventSubscription, EventSubscriptionFilter, subscriptions_match_filter,
 };
-pub use ids::{AgentId, ArtifactId, ContextId, CorrelationId, EventId, MessageId, TaskId};
+pub use ids::{
+    AgentId, ArtifactId, ContextId, CorrelationId, EventId, ExecutionSessionId, IntentId,
+    MessageId, PlanId, PlanStepId, TaskId,
+};
 pub use json::to_json_value;
 pub use package::AgentManifest;
 pub use semantics::{ActivityOutcome, InvocationKind, Outcome, Retryability};

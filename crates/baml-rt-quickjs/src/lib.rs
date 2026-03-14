@@ -8,6 +8,7 @@ pub mod baml_collector;
 pub mod baml_execution;
 pub mod baml_pre_execution;
 pub mod context;
+pub mod execution_session_types;
 pub mod js_value_converter;
 pub mod llm_client_registry;
 pub mod llm_resolver_adapter;
@@ -16,7 +17,7 @@ pub mod runtime;
 pub mod traits;
 
 pub use a2a_stream::{
-    A2aYieldSessionComplete, A2aYieldSessionReady, BridgeHandle, StreamOutput,
+    A2aYieldSessionComplete, A2aYieldSessionReady, BridgeHandle, HandoverSender, StreamOutput,
     begin_a2a_yield_session, collect_into_channel_owned, invoke_handler_handover,
     invoke_tool_handover, spawn_stream_handover,
 };

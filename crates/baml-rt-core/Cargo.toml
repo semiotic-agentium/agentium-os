@@ -5,6 +5,9 @@ edition = { workspace = true }
 authors = { workspace = true }
 publish = false
 
+[dev-dependencies]
+proptest = { workspace = true }
+
 [dependencies]
 baml-rt-id = { path = "../baml-rt-id" }
 # baml-runtime = { workspace = true }

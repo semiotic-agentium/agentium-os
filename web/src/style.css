@@ -552,7 +552,7 @@ body {
 }
 
 .provenance-pane-inner {
-  width: clamp(240px, 24vw, 320px);
+  width: clamp(480px, 48vw, 640px);
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -733,6 +733,108 @@ body {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.planning-intent-line {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.planning-labeled-row {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 6px;
+  align-items: start;
+}
+
+.planning-row-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.planning-row-value {
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.planning-metrics-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.planning-progress-track {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--border-subtle);
+  overflow: hidden;
+}
+
+.planning-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6, #22c55e);
+  transition: width 0.2s ease;
+}
+
+.planning-step-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.planning-step-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.planning-step-pill {
+  border-radius: 999px;
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  font-size: 10px;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+
+.planning-step-desc {
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.step-status-completed {
+  color: #166534;
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.step-status-failed {
+  color: #b91c1c;
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.step-status-running {
+  color: #1d4ed8;
+  border-color: rgba(37, 99, 235, 0.45);
+  background: rgba(37, 99, 235, 0.12);
+}
+
+.step-status-pending {
+  color: var(--text-muted);
+  border-color: var(--border);
+  background: var(--bg-subtle);
 }
 
 .group-key {

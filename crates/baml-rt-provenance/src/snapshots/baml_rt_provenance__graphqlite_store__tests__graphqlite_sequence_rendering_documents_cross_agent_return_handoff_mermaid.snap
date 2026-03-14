@@ -11,13 +11,19 @@ sequenceDiagram
     participant clickup
 
     User->>+planner_1_0_0: Coordinate with worker and return summary
+    rect rgb(220, 230, 241)
     Note over planner_1_0_0,a2aRelay: "task-planner-handoff-1"
     planner_1_0_0->>+a2aRelay: target=worker_agent action=prepare_repo…
     a2aRelay-->>-planner_1_0_0: 120ms ✓
     User->>+worker_1_0_0: prepare_report
+    end
+    rect rgb(220, 230, 241)
     Note over worker_1_0_0,clickup: "task-worker-handoff-1"
     worker_1_0_0->>+clickup: action=ListTasks list_id=abc
     clickup-->>-worker_1_0_0: 250ms ✓
     worker_1_0_0->>-User: Worker summary ready (3 items).
+    end
+    rect rgb(220, 230, 241)
     Note over planner_1_0_0,a2aRelay: "task-planner-handoff-1"
     planner_1_0_0->>User: Final summary from worker: 3 items.
+    end

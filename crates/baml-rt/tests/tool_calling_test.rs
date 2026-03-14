@@ -12,16 +12,11 @@
 //! **same** function name to `execute_tool_from_baml_result_or_value` (mirrors
 //! production: the QuickJS bridge passes the invoking function name automatically).
 
-/// BAML function name in the `stream-baml-tool` fixture that returns a session plan.
-/// Used for both invoke and execute_tool so the source of the tool result is explicit.
-/// BAML function under test in stream-baml-tool E2E. Single source of truth for both
-/// invoke_function and execute_tool_from_baml_result_or_value (runtime uses it with
-/// session_plan_functions.json to resolve the tool). In the composed flow the QuickJS
-/// bridge passes the invoking function name automatically.
-const STREAM_BAML_TOOL_FUNCTION: &str = "ChooseCalcTool";
-
 use async_trait::async_trait;
-use baml_rt::tools::BamlTool;
+use baml_rt::{
+    interceptor::{InterceptorDecision, LLMCallContext, LLMInterceptor},
+    tools::BamlTool,
+};
 use baml_rt_tools::bundles::BundleType;
 
 // Test bundle for test tools
@@ -43,15 +38,52 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use test_support::common::{
-    CalculatorTool, WeatherTool, agent_fixture, assert_tool_registered_in_js,
-    ensure_fixture_runtime_types, require_api_key, setup_baml_runtime_default,
-    setup_baml_runtime_from_fixture, setup_bridge, workspace_fnox_path,
+    CalculatorTool, STREAM_BAML_TOOL_FUNCTION, WeatherTool, agent_fixture,
+    assert_tool_registered_in_js, ensure_fixture_runtime_types, execute_calc_session_strict,
+    setup_baml_runtime_default, setup_baml_runtime_from_fixture, setup_bridge, workspace_fnox_path,
 };
 use tokio::{
     sync::Barrier,
     time::{Duration, timeout},
 };
 use ts_rs::TS;
+
+/// Stub interceptor: strict-mode single fragment for calculator session tests.
+struct StubChooseCalcToolStrictInterceptor;
+
+#[async_trait::async_trait]
+impl LLMInterceptor for StubChooseCalcToolStrictInterceptor {
+    async fn intercept_llm_call(
+        &self,
+        context: &LLMCallContext,
+    ) -> baml_rt_core::Result<InterceptorDecision> {
+        if context.function_name == STREAM_BAML_TOOL_FUNCTION {
+            Ok(InterceptorDecision::Substitute(json!({
+                "step": {
+                    "op": "Send",
+                    "input": {
+                        "expression": {
+                            "left": 2,
+                            "operation": "Add",
+                            "right": 3
+                        }
+                    },
+                    "reason": "strict stub send"
+                }
+            })))
+        } else {
+            Ok(InterceptorDecision::Allow)
+        }
+    }
+
+    async fn on_llm_call_complete(
+        &self,
+        _context: &LLMCallContext,
+        _result: &baml_rt_core::Result<serde_json::Value>,
+        _duration_ms: u64,
+    ) {
+    }
+}
 
 /// **Purpose:** Verify tool registration and direct execution from Rust (execute_tool_with_scope,
 /// list_tools) under an invocation scope; no LLM call required.
@@ -198,13 +230,14 @@ async fn test_llm_tool_calling_js() {
 /// `ChooseCalcTool`, execute the chosen tool, assert result (2+3=5). Requires API key for LLM.
 #[tokio::test]
 async fn test_e2e_voidship_baml_tool_calling() {
-    let _ = require_api_key();
-
     ensure_fixture_runtime_types();
     let baml_manager = setup_baml_runtime_from_fixture("stream-baml-tool");
     {
         let mut manager = baml_manager.lock().await;
         manager.register_tool(CalculatorTool).await.unwrap();
+        manager
+            .register_llm_interceptor(StubChooseCalcToolStrictInterceptor)
+            .await;
     }
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-0000000000b1").unwrap());
@@ -225,18 +258,9 @@ async fn test_e2e_voidship_baml_tool_calling() {
     match result {
         Ok(tool_choice) => {
             let manager = baml_manager.lock().await;
-            let tool_result = manager
-                .execute_tool_from_baml_result_or_value(
-                    scope.as_scope(),
-                    tool_choice,
-                    Some(STREAM_BAML_TOOL_FUNCTION),
-                )
+            let value = execute_calc_session_strict(&manager, &scope, tool_choice)
                 .await
-                .expect("Should execute tool from BAML result");
-            let value = tool_result
-                .get("result")
-                .and_then(|v| v.as_f64())
-                .unwrap_or_default();
+                .expect("strict session execution should succeed");
             assert_eq!(value, 5.0, "Expected 2 + 3 = 5");
         }
         Err(e) => {
@@ -253,7 +277,6 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
     unsafe {
         std::env::set_var("BAML_TRACE_TOOL_SESSION", "1");
     }
-    let _ = require_api_key();
 
     ensure_fixture_runtime_types();
     let agent_dir = agent_fixture("stream-baml-tool");
@@ -263,6 +286,9 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
         .unwrap();
     manager.load_schema(agent_dir.to_str().unwrap()).unwrap();
     manager.register_tool(CalculatorTool).await.unwrap();
+    manager
+        .register_llm_interceptor(StubChooseCalcToolStrictInterceptor)
+        .await;
     let manager = Arc::new(manager);
 
     let barrier = Arc::new(Barrier::new(4));
@@ -283,36 +309,27 @@ async fn test_e2e_voidship_baml_tool_calling_concurrent() {
             let scope = InvocationScope::synthetic_message(agent_id);
             barrier.wait().await;
 
-            let left = (idx as f64) + 2.0;
-            let right = (idx as f64) + 3.0;
-            let expected = left + right;
+            let expected = 5.0;
             let result = context::with_scope(scope.as_scope().clone(), async {
                 let tool_choice = manager
                     .invoke_function(
                         scope.as_scope(),
                         STREAM_BAML_TOOL_FUNCTION,
-                        json!({"user_message": format!("Compute {} + {} (req {})", left, right, idx)}),
+                        json!({"user_message": format!("Compute strict req {}", idx)}),
                     )
                     .await?;
-                println!("{} result (req {}): {:?}", STREAM_BAML_TOOL_FUNCTION, idx, tool_choice);
-                manager
-                    .execute_tool_from_baml_result_or_value(
-                        scope.as_scope(),
-                        tool_choice,
-                        Some(STREAM_BAML_TOOL_FUNCTION),
-                    )
-                    .await
+                println!(
+                    "{} result (req {}): {:?}",
+                    STREAM_BAML_TOOL_FUNCTION, idx, tool_choice
+                );
+                execute_calc_session_strict(&manager, &scope, tool_choice).await
             })
             .await?;
-
-            let value = result
-                .get("result")
-                .and_then(|v| v.as_f64())
-                .unwrap_or_default();
+            let value = result;
             if (value - expected).abs() > f64::EPSILON {
                 return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
-                    "Expected {} + {} = {}, got {}",
-                    left, right, expected, value
+                    "Expected strict result {} got {}",
+                    expected, value
                 )));
             }
             Ok::<(), baml_rt_core::BamlRtError>(())

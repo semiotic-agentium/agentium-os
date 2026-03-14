@@ -42,7 +42,10 @@ async fn claude_e2e_smoke_query() {
             )
             .await
             .expect("send");
-        let step = registry.session_next(&session_id).await.expect("next");
+        let step = registry
+            .session_read(&session_id, serde_json::Value::Null)
+            .await
+            .expect("next");
         match step {
             ToolStep::Streaming { .. } | ToolStep::Done { .. } | ToolStep::Suspended { .. } => {}
             ToolStep::Error { error } => panic!("unexpected error: {}", error.message),

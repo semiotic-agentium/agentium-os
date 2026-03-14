@@ -74,21 +74,34 @@ function DetermineExtrospectionIntent(user_message: string) -> NeedClarification
   "#
 }
 
-function GetDiscoverAgentsPlan(user_message: string) -> SystemDiscover_agentsSessionPlan {
+function GetDiscoverAgentsPlan(
+  user_message: string,
+  session_context: SessionContext?,
+) -> SystemDiscover_agentsSessionPlan {
   client DefaultClient
   prompt #"
-    Return ONLY a valid JSON object for a system/discover_agents session plan.
+    Output ONLY one JSON object with exactly one session `step`.
     No prose. No markdown. No explanation.
-    Must contain exactly these ordered steps:
-    1) Open
-    2) Send with input {}
-    3) Next
-    4) Finish
+    Runtime enforces FSM transitions and rejects invalid step progression.
+    Runtime state contract (authoritative):
+    - Read required operation from session_context.allowed_ops.
+    - Emit exactly one step whose op is one of allowed_ops.
+    - If allowed_ops has a single entry, emit that op exactly.
+    - Use status_token/last_status only as diagnostics, never to override allowed_ops.
+    If any schema hint in ctx.output_format conflicts with allowed_ops, follow allowed_ops.
+    Your only domain constraint in this planner:
+    - when emitting Send, input MUST be {} exactly for this function.
 
-    Required shape:
-    {"steps":[{"op":"Open"},{"op":"Send","input":{}},{"op":"Next"},{"op":"Finish"}]}
+    Allowed literal outputs (choose exactly one object; no extra keys):
+    - {"step":{"op":"Open"}}
+    - {"step":{"op":"Send","input":{}}}
+    - {"step":{"op":"Next"}}
+    - {"step":{"op":"Finish"}}
+    - {"step":{"op":"Abort"}}
 
     Context only (do not answer here): {{ user_message }}
+    Runtime state:
+    - session_context: {{ session_context }}
     {{ ctx.output_format }}
   "#
 }
@@ -126,27 +139,28 @@ function SelectAgentFocus(
 function BuildExtrospectionPlan(
   intent: QueryIntent,
   selected_agent: SelectedAgent | null,
+  session_context: SessionContext?,
 ) -> SystemExtrospectionSessionPlan {
   client DefaultClient
   prompt #"
-    Return ONLY a valid JSON object for a system/extrospection session plan.
+    Output ONLY one JSON object with exactly one session `step`.
     No prose. No markdown.
+    Runtime enforces FSM transitions and rejects invalid step progression.
 
-    Build exactly 3 ordered steps:
-    1) Open
-    2) Send
-    3) Next
+    Runtime state contract (authoritative):
+    - Read required operation from session_context.allowed_ops.
+    - Emit exactly one step whose op is one of allowed_ops.
+    - If allowed_ops has a single entry, emit that op exactly.
+    - Use status_token/last_status only as diagnostics, never to override allowed_ops.
+    If any schema hint in ctx.output_format conflicts with allowed_ops, follow allowed_ops.
 
-    For Send.input:
-    - resource must be one of: llm_calls | tool_calls | messages
-      - Map Auto to:
-        - llm_calls when sort is total_tokens
-        - messages when intent reason strongly requests message processing
-        - otherwise llm_calls
-    - outcome must be one of: both | failed_only | successful_only
+    Send.input must include:
+    - resource: llm_calls | tool_calls | messages
+      - If intent.resource is Auto: use llm_calls when sort is total_tokens, messages when intent reason is message-focused, otherwise llm_calls.
+    - outcome: both | failed_only | successful_only
     - groupBy:
-      - llm_calls -> ["agent_id","provider","model","baml_prompt"]
-      - tool_calls -> ["agent_id","tool_name","baml_prompt"]
+      - llm_calls -> ["agent_id","provider","model"]
+      - tool_calls -> ["agent_id","tool_name"]
       - messages -> ["agent_id"]
     - sortBy from intent.priority_sort
     - sortDir "desc"
@@ -154,79 +168,15 @@ function BuildExtrospectionPlan(
     - topK from intent.top_k
 
     Agent targeting:
-    - Do NOT set agentId from selected_agent fields.
-    - selected_agent is package/instance identity for narrative focus only, not provenance row identity.
-    - In pass-1, omit agentId unless the user explicitly provides a canonical provenance agent_id value.
-    - Canonical provenance agent_id must be a value already present in provenance rows/hotspot groupValues.
-
-    IMPORTANT:
-    - Do NOT include Finish in this first-pass plan.
-    - The session stays open for a second pass.
-    - Return only JSON object with "steps".
+    - Do NOT set agentId from selected_agent package/name/instance.
+    - Set agentId only if user explicitly provided canonical provenance agent_id.
 
     {{ ctx.output_format }}
+
     intent: {{ intent }}
     selected_agent: {{ selected_agent }}
-  "#
-}
-
-function BuildExtrospectionDrilldownPlan(
-  intent: QueryIntent,
-  selected_agent: SelectedAgent | null,
-  pass1_payload_json: string,
-) -> SystemExtrospectionSessionPlan {
-  client DefaultClient
-  prompt #"
-    Return ONLY a valid JSON object for a system/extrospection continuation plan.
-    No prose. No markdown.
-
-    This is pass-2 drilldown. The prior pass already opened the session.
-    Build exactly 3 ordered steps:
-    1) Send
-    2) Next
-    3) Finish
-
-    You are given pass1 payload JSON from system/extrospection.
-    Use it to choose one focused drill target.
-
-    Required drilldown behavior:
-    - Preserve resource from pass-1 unless pass-1 was messages and pass-1 shows a clear failed llm/tool hotspot.
-    - Set outcome:
-      - failed_only for incident/failure intents
-      - both otherwise
-    - Narrow with concrete fields from pass-1 data:
-      - include agentId only when it comes from pass-1 hotspot groupValues[0] or row.agent_id
-      - for tool_calls include toolName when available
-      - for llm_calls include provider/model and bamlPrompt when available
-      - for messages keep agentId-only unless a strong prompt signal exists
-    - Never derive agentId from selected_agent.agent_package, selected_agent.name, or selected_agent.agent_instance_id.
-    - sortBy:
-      - duration_ms for incident/perf
-      - total_tokens for token/cost
-      - timestamp_ms otherwise
-    - sortDir "desc"
-    - pageSize 5..8 (prefer 6)
-    - topK 5..8 (prefer 6)
-    - groupBy:
-      - llm_calls -> ["agent_id","provider","model","baml_prompt"]
-      - tool_calls -> ["agent_id","tool_name","baml_prompt"]
-      - messages -> ["agent_id"]
-
-    If pass1 payload is empty/unparseable:
-    - still return valid continuation with conservative filters:
-      - resource from intent
-      - omit agentId
-      - pageSize 6
-      - topK 6
-      - then Finish
-
-    Never invent unsupported fields.
-    Return only JSON object with "steps".
-
-    {{ ctx.output_format }}
-    intent: {{ intent }}
-    selected_agent: {{ selected_agent }}
-    pass1_payload_json: {{ pass1_payload_json }}
+    Runtime state:
+    - session_context: {{ session_context }}
   "#
 }
 
@@ -235,36 +185,45 @@ function SummarizeExtrospectionReport(
   intent: QueryIntent,
   selected_agent: SelectedAgent | null,
   agents: AgentCardDto[],
-  pass1_payload_json: string,
-  pass2_payload_json: string,
+  primary_payload_json: string,
+  secondary_payload_json: string,
 ) -> string {
   client DefaultClient
   prompt #"
-    You are an austere frontier magistrate-analyst.
-    Keep voice original and non-derivative; do not imitate named copyrighted characters.
-    Produce a concise operational report in severe, biblical cadence while remaining factual.
+    You are an operations analyst. Be precise, restrained, and useful.
 
-    You are given:
+    Produce a concise operator report that explicitly separates:
+    1) INTENT (what the user asked)
+    2) EXECUTION (what query actually ran)
+    3) OBSERVATIONS (what the data actually shows)
+    4) GAPS/MISMATCHES (intent vs execution vs evidence)
+    5) NEXT QUERIES (max 3)
+
+    Data inputs:
     - intent
     - optional selected_agent
-    - discovered agents
-    - pass1 payload JSON string from system/extrospection (aggregate sweep)
-    - pass2 payload JSON string from system/extrospection (drilldown evidence)
+    - discovered agents (from discover_agents)
+    - primary payload JSON summary from extrospection session (compact digest; may include rowCount and rowsSample)
+    - secondary payload JSON summary from later turn(s) in same session (or same as primary)
 
-    Requirements:
-    - Ground every claim in payload fields.
-    - Include:
-      1) one-line scope statement
-      2) discovered-agent commentary (who is present, likely roles/capabilities, notable absences)
-      3) aggregate counts/failures/duration/tokens from pass-1 (if present)
-      4) focused drilldown evidence from pass-2 (specific rows, classes, models, tools, prompts)
-      5) 2-4 concrete operator follow-up queries
-    - Prioritize discovered-agent commentary when the user asks generally about other agents.
-    - If selected_agent is present, include focused commentary on that agent first.
-    - If pass-2 is empty/unparseable, state drilldown failure plainly and fall back to pass-1.
-    - Do not invent IDs, classes, or metrics.
+    Output rules:
+    - Ground every claim in provided payload fields.
+    - Use concise markdown with 5 short sections:
+      - Intent
+      - Execution
+      - Findings
+      - Mismatches / Uncertainty
+      - Next queries
+    - In Findings, include at most 5 bullets and prefer numeric facts (count, failedCount, failureRate, duration/token hotspots).
+    - Reference agents using agent_display when present, else agent_id.
+    - If discover_agents returned empty, report that as "discovery query returned no matches"; do NOT claim global absence of agents.
+    - If selected_agent is null but payload rows clearly implicate an agent, state that as evidence-based inference (low confidence).
+    - If primary/secondary payload is empty or unparsable, say so plainly and avoid speculation.
+    - Never echo raw JSON, full row dumps, or payload blobs. Treat payload inputs as evidence, not output text.
+    - Keep total response under ~220 words.
+    - No roleplay language, no theatrics, no invented entities or metrics.
 
-    {{ ctx.output_format }}
+        {{ ctx.output_format }}
 
     {% if ctx.tags.conversation_history %}
     {% for message in ctx.tags.conversation_history %}
@@ -279,8 +238,8 @@ function SummarizeExtrospectionReport(
     intent: {{ intent }}
     selected_agent: {{ selected_agent }}
     discovered_agents: {{ agents }}
-    pass1_payload_json: {{ pass1_payload_json }}
-    pass2_payload_json: {{ pass2_payload_json }}
+    primary_payload_json: {{ primary_payload_json }}
+    secondary_payload_json: {{ secondary_payload_json }}
   "#
 }
 

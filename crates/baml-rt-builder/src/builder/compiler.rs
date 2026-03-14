@@ -300,7 +300,8 @@ impl TypeGenerator for RuntimeTypeGenerator {
             .map_err(|e| BamlBuilderError::RuntimeLoadFailed { source: e })?;
 
         let ir_signature = extract_baml_signatures(&runtime)?;
-        let declarations = render_ts_declarations(&ir_signature, &tool_names)?;
+        let session_plan_map = session_plan_functions_map(&ir_signature);
+        let declarations = render_ts_declarations(&ir_signature, &tool_names, &session_plan_map)?;
 
         // Write baml-runtime.d.ts into agent's src/ so tsc resolves it directly.
         let src_dts = agent_dir.src().join("baml-runtime.d.ts");
@@ -318,7 +319,6 @@ impl TypeGenerator for RuntimeTypeGenerator {
 
         // Emit session-plan function map so the runtime can resolve tool from the invoking
         // function name (no reliance on __type in prompt output).
-        let session_plan_map = session_plan_functions_map(&ir_signature);
         if !session_plan_map.is_empty() {
             let manifest_path = build_dir.join("session_plan_functions.json");
             let json =

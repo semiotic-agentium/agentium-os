@@ -3,6 +3,15 @@
 //! Each [`BridgeHandle`] owns a dedicated OS thread with a `LocalSet` that runs stream,
 //! invoke, and tool-invoke jobs for that bridge. Independent bridges dispatch concurrently.
 //! The bridge is `!Send` so the lane uses `spawn_local`; no thread-pool blocking.
+//!
+//! ## Runtime invariants
+//!
+//! The collect loop uses `spawn_local` (tied to the LocalSet) to avoid cross-runtime
+//! cancellation. The `HandoverSender` is Send so it can be sent through the mpsc channel.
+const _: fn() = || {
+    fn assert_send<T: Send>() {}
+    assert_send::<HandoverSender>();
+};
 
 use std::{
     sync::Arc,
@@ -10,7 +19,9 @@ use std::{
 };
 
 use async_channel as achan;
-use baml_rt_core::{Result, context::InvocationScope, stream_completion::StreamCompletion};
+use baml_rt_core::{
+    BamlRtError, Result, context::InvocationScope, stream_completion::StreamCompletion,
+};
 use serde_json::{Value, json};
 use tokio::{
     sync::{Mutex, mpsc, mpsc::UnboundedReceiver},
@@ -95,6 +106,14 @@ pub(crate) enum HandoverJob {
         tx_result:
             tokio::sync::oneshot::Sender<std::result::Result<Value, baml_rt_core::BamlRtError>>,
     },
+    /// Deliver a resume input to a suspended stream session. Used by the collect loop (running
+    /// on a regular tokio::spawn) to dispatch the !Send runtime.eval() onto the LocalSet thread.
+    DeliverResume {
+        bridge: Arc<Mutex<QuickJSBridge>>,
+        session_id: crate::quickjs_bridge::StreamSessionId,
+        message: Value,
+        tx_result: tokio::sync::oneshot::Sender<std::result::Result<(), baml_rt_core::BamlRtError>>,
+    },
 }
 
 pub(crate) struct StreamHandoverRequest {
@@ -103,6 +122,7 @@ pub(crate) struct StreamHandoverRequest {
     request: Value,
     tx_err: mpsc::Sender<StreamOutput>,
     tx_stream: mpsc::Sender<StreamOutput>,
+    abort_rx: mpsc::Receiver<()>,
     resume_rx: Option<ResumeRx>,
     relay_rx: Option<mpsc::Receiver<Value>>,
 }
@@ -134,18 +154,25 @@ impl BridgeHandle {
     /// `label` is used in the thread name for debuggability (e.g. agent ID).
     pub fn new(bridge: Arc<Mutex<QuickJSBridge>>, label: &str) -> Self {
         let (tx, rx) = achan::unbounded::<HandoverJob>();
+        let tx_for_lane = tx.clone(); // passed into the lane so collect loops can dispatch resume evals
         let thread_name = format!("baml-handover-{label}");
         let handle = std::thread::Builder::new()
             .name(thread_name.clone())
             .spawn(move || {
+                let lane_tx = tx_for_lane;
                 tracing::info!(thread = %thread_name, "handover lane: thread started");
-                let runtime = tokio::runtime::Builder::new_current_thread()
+                // Multi-threaded runtime so spawn_blocking can use the thread pool and
+                // concurrent LLM/IO futures (spawned by __baml_invoke promise bodies) can
+                // run on worker threads while the LocalSet drives !Send JS tasks on this thread.
+                let runtime = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
                     .enable_all()
                     .build()
                     .expect("failed to build handover runtime");
                 let local = tokio::task::LocalSet::new();
                 runtime.block_on(local.run_until(async move {
                     while let Ok(job) = rx.recv().await {
+                        let lane_tx_job = lane_tx.clone();
                         tokio::task::spawn_local(async move {
                             match job {
                                 HandoverJob::Stream(s) => {
@@ -155,8 +182,10 @@ impl BridgeHandle {
                                         s.request,
                                         s.tx_err,
                                         s.tx_stream,
+                                        s.abort_rx,
                                         s.resume_rx,
                                         s.relay_rx,
+                                        lane_tx_job,
                                     )
                                     .await;
                                 }
@@ -167,7 +196,9 @@ impl BridgeHandle {
                                     tx_result,
                                 } => {
                                     let out = run_invoke_same_thread(bridge, scope, request).await;
-                                    let _ = tx_result.send(out);
+                                    if tx_result.send(out).is_err() {
+                                        tracing::debug!("handover Invoke: result receiver dropped (task cancelled)");
+                                    }
                                 }
                                 HandoverJob::ToolInvoke {
                                     bridge,
@@ -180,7 +211,23 @@ impl BridgeHandle {
                                         bridge, scope, &tool_name, input,
                                     )
                                     .await;
-                                    let _ = tx_result.send(out);
+                                    if tx_result.send(out).is_err() {
+                                        tracing::debug!("handover ToolInvoke: result receiver dropped (task cancelled)");
+                                    }
+                                }
+                                HandoverJob::DeliverResume {
+                                    bridge,
+                                    session_id,
+                                    message,
+                                    tx_result,
+                                } => {
+                                    let out = QuickJSBridge::deliver_resume_input(
+                                        bridge, session_id, message,
+                                    )
+                                    .await;
+                                    if tx_result.send(out).is_err() {
+                                        tracing::warn!(session_id = %session_id, "handover DeliverResume: result receiver dropped (task cancelled); resume result lost");
+                                    }
                                 }
                             }
                         });
@@ -211,95 +258,140 @@ impl Drop for BridgeHandle {
     fn drop(&mut self) {
         // Close sender first so the lane thread's recv loop exits.
         self.handover_tx.close();
-        if let Some(handle) = self.lane_thread.take() {
-            let _ = handle.join();
+        if let Some(handle) = self.lane_thread.take()
+            && let Err(e) = handle.join()
+        {
+            // A panic in the lane thread means any in-flight stream sessions
+            // on this bridge lost their terminal chunk. Log for diagnostics.
+            tracing::error!(error = ?e, "handover lane thread panicked; in-flight stream sessions may have silently incomplete streams");
         }
     }
 }
 
-/// Runs a single onChatMessage invoke on the bridge (same thread as stream lane). No blocking.
+/// Runs a single onChatMessage invoke using the brief-lock pattern.
+///
+/// Acquires the bridge lock only for synchronous setup (`prepare_brief_poll_eval`),
+/// then releases it before polling. This allows concurrent contexts to make progress
+/// while this invocation awaits LLM or BAML results.
 async fn run_invoke_same_thread(
     bridge: Arc<Mutex<QuickJSBridge>>,
     scope: InvocationScope,
     request: Value,
 ) -> std::result::Result<Value, baml_rt_core::BamlRtError> {
-    let mut guard = bridge.lock().await;
-    guard
-        .invoke_js_function(&scope, "onChatMessage", request)
-        .await
+    QuickJSBridge::invoke_js_function_nonblocking(bridge, &scope, "onChatMessage", request).await
 }
 
-/// Runs a single JS tool invoke on the bridge (same thread as stream lane). No blocking.
+/// Runs a single JS tool invoke using the brief-lock pattern.
+///
+/// Acquires the bridge lock only for synchronous setup (`prepare_brief_poll_eval`),
+/// then releases it before polling. This allows concurrent contexts to make progress
+/// while this invocation awaits async tool execution.
 async fn run_tool_invoke_same_thread(
     bridge: Arc<Mutex<QuickJSBridge>>,
     scope: InvocationScope,
     tool_name: &str,
     input: Value,
 ) -> std::result::Result<Value, baml_rt_core::BamlRtError> {
-    let mut guard = bridge.lock().await;
-    guard
-        .invoke_js_tool_with_scope(&scope, tool_name, input)
-        .await
+    QuickJSBridge::invoke_js_tool_nonblocking(bridge, &scope, tool_name, input).await
 }
 
-/// Runs begin → invoke → collect on the handover lane.
+/// Runs begin → invoke → collect entirely on the LocalSet.
 ///
-/// Both resume and non-resume paths use the same incremental lock pattern:
-/// hold the bridge lock only for setup/invoke, then release it and collect
-/// via [`collect_into_channel_owned`] which acquires the lock briefly per
-/// drain iteration. This keeps the bridge available for concurrent streams,
-/// invokes, and tool calls between iterations.
+/// **Architecture:** The setup phase (begin + invoke) requires `&mut QuickJSBridge` and
+/// stays on the LocalSet. The collect loop uses the two-phase drain (brief lock →
+/// `spawn_blocking(run_pending_jobs)` → channel drain) which yields the LocalSet thread
+/// during the blocking phase — allowing other sessions' setups to interleave.
+///
+/// Using `spawn_local` (not `tokio::spawn`) keeps the collect loop tied to the handover
+/// lane's LocalSet lifetime, avoiding cross-runtime cancellation that silently drops the
+/// stream before content is delivered.
+#[allow(clippy::too_many_arguments)]
 async fn run_stream_same_thread(
     bridge: Arc<Mutex<QuickJSBridge>>,
     scope: InvocationScope,
     request: Value,
     tx_err: mpsc::Sender<StreamOutput>,
     tx: mpsc::Sender<StreamOutput>,
+    abort_rx: mpsc::Receiver<()>,
     resume_rx: Option<ResumeRx>,
     relay_rx: Option<mpsc::Receiver<Value>>,
+    handover_tx: achan::Sender<HandoverJob>,
 ) {
-    // Hold lock only for setup (begin + invoke), then release.
+    // SETUP PHASE: brief lock, runs on the LocalSet (requires &mut QuickJSBridge).
+    let context_id_log = scope.context_id().to_string();
     let (session_id, yield_rx) = {
         let mut guard = bridge.lock().await;
         let ready = match begin_a2a_yield_session(&mut guard).await {
             Ok(r) => r,
             Err(e) => {
-                let _ = tx_err
+                tracing::warn!(context_id = %context_id_log, error = %e, "stream setup: begin_a2a_yield_session failed");
+                if tx_err
                     .send(StreamOutput::Terminal(
                         json!({ "error": e.to_string() }),
                         StreamCompletion::SemanticFinal,
                     ))
-                    .await;
+                    .await
+                    .is_err()
+                {
+                    tracing::debug!(context_id = %context_id_log, "stream setup: error channel closed before setup error could be sent");
+                }
                 return;
             }
         };
         match ready.invoke(&scope, request).await {
             Ok(complete) => (complete.session_id, complete.yield_rx),
             Err(e) => {
-                let _ = tx_err
+                tracing::warn!(context_id = %context_id_log, error = %e, "stream setup: invoke onChatMessage failed");
+                if tx_err
                     .send(StreamOutput::Terminal(
                         json!({ "error": e.to_string() }),
                         StreamCompletion::SemanticFinal,
                     ))
-                    .await;
+                    .await
+                    .is_err()
+                {
+                    tracing::debug!(context_id = %context_id_log, "stream setup: error channel closed before invoke error could be sent");
+                }
                 return;
             }
         }
-        // guard dropped here — bridge available for other tasks
+        // guard dropped — LocalSet thread free for the next session's setup
     };
 
-    // Collect using incremental lock pattern (both resume and non-resume).
-    if let Err(e) =
-        collect_into_channel_owned(bridge, session_id, yield_rx, tx, resume_rx, relay_rx, scope)
-            .await
-    {
-        let _ = tx_err
-            .send(StreamOutput::Terminal(
-                json!({ "error": e.to_string() }),
-                StreamCompletion::SemanticFinal,
-            ))
-            .await;
-    }
+    // COLLECT PHASE: runs on the LocalSet via spawn_local.
+    // The two-phase drain (brief lock → spawn_blocking → channel drain) yields the LocalSet
+    // thread during spawn_blocking, allowing other sessions' setup phases to interleave.
+    // Using spawn_local (not tokio::spawn) ties the collect lifetime to the handover lane's
+    // LocalSet, preventing cross-runtime cancellation that drops the stream silently.
+    let tx_err_collect = tx_err.clone();
+    let collect_handle = tokio::task::spawn_local(async move {
+        let collect_result = collect_into_channel_owned_inner(
+            bridge,
+            session_id,
+            yield_rx,
+            tx,
+            abort_rx,
+            resume_rx,
+            relay_rx,
+            scope,
+            handover_tx,
+        )
+        .await;
+        if let Err(ref e) = collect_result
+            && tx_err_collect
+                .send(StreamOutput::Terminal(
+                    json!({ "error": e.to_string() }),
+                    StreamCompletion::SemanticFinal,
+                ))
+                .await
+                .is_err()
+        {
+            tracing::warn!(error = %e, "collect: stream error channel closed; terminal error chunk lost");
+        }
+    });
+    // Detach the collect handle — the idle-timeout and terminal-chunk mechanism ensures
+    // the consumer is not left hanging even if a panic occurs (collect loop handles it).
+    drop(collect_handle);
 }
 
 /// Enqueues stream to the bridge's handover lane (begin → invoke → collect). Returns immediately; no blocking.
@@ -309,8 +401,9 @@ pub async fn spawn_stream_handover(
     request: Value,
     resume_rx: Option<ResumeRx>,
     relay_rx: Option<mpsc::Receiver<Value>>,
-) -> mpsc::Receiver<StreamOutput> {
+) -> (mpsc::Receiver<StreamOutput>, mpsc::Sender<()>) {
     let (tx, rx) = mpsc::channel(64);
+    let (abort_tx, abort_rx) = mpsc::channel(1);
     let tx_err = tx.clone();
     let tx_stream = tx.clone();
     let enqueue = handle
@@ -321,6 +414,7 @@ pub async fn spawn_stream_handover(
             request,
             tx_err,
             tx_stream,
+            abort_rx,
             resume_rx,
             relay_rx,
         }))
@@ -332,7 +426,7 @@ pub async fn spawn_stream_handover(
             StreamCompletion::SemanticFinal,
         ));
     }
-    rx
+    (rx, abort_tx)
 }
 
 /// Enqueues a single onChatMessage invoke to the bridge's handover lane and waits for the result.
@@ -382,6 +476,66 @@ pub async fn invoke_tool_handover(
         })?;
     rx_result.await.map_err(|_| {
         baml_rt_core::BamlRtError::InvalidArgument("handover tool invoke dropped".to_string())
+    })?
+}
+
+/// Opaque capability token for dispatching work to the handover lane from
+/// [`collect_into_channel_owned`]. Produced by [`BridgeHandle`] for live paths
+/// and by [`HandoverSender::noop()`] for tests that don't exercise multi-turn resume.
+pub struct HandoverSender(achan::Sender<HandoverJob>);
+
+impl HandoverSender {
+    /// A permanently-closed, no-op sender.
+    ///
+    /// Pass this to [`collect_into_channel_owned`] when testing single-turn streams
+    /// that never exercise the multi-turn resume path (`awaitInput`).
+    ///
+    /// **Do not use in production paths** — any multi-turn resume attempt will fail
+    /// with "handover lane closed".
+    pub fn noop() -> Self {
+        let (tx, _rx) = achan::unbounded::<HandoverJob>();
+        tx.close();
+        Self(tx)
+    }
+
+    /// Extract the raw sender. Used internally to pass through the crate boundary.
+    pub(crate) fn into_raw(self) -> achan::Sender<HandoverJob> {
+        self.0
+    }
+}
+
+/// Returns a permanently-closed, no-op handover sender.
+///
+/// Deprecated alias for [`HandoverSender::noop()`]; prefer the associated constructor.
+#[deprecated(since = "0.1.0", note = "use HandoverSender::noop() instead")]
+pub fn closed_handover_sender() -> HandoverSender {
+    HandoverSender::noop()
+}
+
+/// Dispatches `deliver_resume_input` to the handover lane so the !Send `runtime.eval()` call
+/// runs on the LocalSet thread rather than in the `tokio::spawn` collect loop.
+///
+/// The caller only awaits a `oneshot::Receiver` (Send), making the collect loop fully Send.
+pub(crate) async fn deliver_resume_via_handover(
+    handover_tx: &achan::Sender<HandoverJob>,
+    bridge: Arc<Mutex<QuickJSBridge>>,
+    session_id: crate::quickjs_bridge::StreamSessionId,
+    message: Value,
+) -> std::result::Result<(), baml_rt_core::BamlRtError> {
+    let (tx_result, rx_result) = tokio::sync::oneshot::channel();
+    handover_tx
+        .send(HandoverJob::DeliverResume {
+            bridge,
+            session_id,
+            message,
+            tx_result,
+        })
+        .await
+        .map_err(|_| {
+            baml_rt_core::BamlRtError::InvalidArgument("handover lane closed".to_string())
+        })?;
+    rx_result.await.map_err(|_| {
+        baml_rt_core::BamlRtError::InvalidArgument("resume deliver dropped".to_string())
     })?
 }
 
@@ -514,6 +668,7 @@ struct StreamCollectorContext {
     session_id: StreamSessionId,
     yield_rx: UnboundedReceiver<Value>,
     tx: mpsc::Sender<StreamOutput>,
+    abort_rx: mpsc::Receiver<()>,
     /// When present, InputRequired suspends instead of finalizing; collector blocks on resume and delivers into same JS run.
     resume_rx: Option<ResumeRx>,
     /// When present, drain each iteration after yield_rx and emit as RelayChunk (single ordered stream).
@@ -527,6 +682,9 @@ struct StreamCollectorContext {
     all: Vec<Value>,
     interval: Duration,
     finalized: bool,
+    /// Handover sender used to dispatch resume evals onto the LocalSet thread (making the collect
+    /// loop fully Send so it can run via tokio::spawn rather than spawn_local).
+    handover_tx: achan::Sender<HandoverJob>,
 }
 
 impl StreamCollectorContext {
@@ -589,17 +747,28 @@ impl StreamCollectorContext {
                 self.finalize_once(None).await;
                 return Ok(CollectIteration::Done);
             }
-            let message = match resume_rx.recv().await {
-                Some(m) => m,
-                None => {
-                    self.finalize_once(Some(StreamCompletion::ChannelClosed))
-                        .await;
+            let message = tokio::select! {
+                msg = resume_rx.recv() => match msg {
+                    Some(m) => m,
+                    None => {
+                        self.finalize_once(Some(StreamCompletion::ChannelClosed)).await;
+                        return Ok(CollectIteration::Done);
+                    }
+                },
+                _ = self.abort_rx.recv() => {
+                    self.finalize_once(Some(StreamCompletion::ChannelClosed)).await;
                     return Ok(CollectIteration::Done);
                 }
             };
-            let deliver_result =
-                QuickJSBridge::deliver_resume_input(self.bridge.clone(), self.session_id, message)
-                    .await;
+            // Dispatch the !Send runtime.eval() call to the LocalSet thread via the handover lane
+            // so this collect loop (running on tokio::spawn) remains fully Send.
+            let deliver_result = deliver_resume_via_handover(
+                &self.handover_tx,
+                self.bridge.clone(),
+                self.session_id,
+                message,
+            )
+            .await;
             if let Err(e) = deliver_result {
                 tracing::warn!(session_id = %self.session_id, error = %e, "collect: deliver_resume_input failed");
                 let _ = self
@@ -621,10 +790,49 @@ impl StreamCollectorContext {
     }
 
     async fn next_iteration(&mut self) -> Result<CollectIteration> {
-        // Align with main: drain_yield_buffer runs pending JS jobs then drains (single lock hold).
+        if self.abort_rx.try_recv().is_ok() {
+            self.finalize_once(Some(StreamCompletion::ChannelClosed))
+                .await;
+            return Ok(CollectIteration::Done);
+        }
+        // Two-phase drain: run pending JS jobs WITHOUT holding the bridge lock (so concurrent
+        // contexts can acquire it for their own setup/invoke), then briefly lock to drain the channel.
+        //
+        // Phase 1: get the runtime Arc (brief lock), then run pending jobs via spawn_blocking
+        // while the lock is RELEASED. This allows other spawn_local tasks to make progress.
+        let rt_arc = {
+            let guard = self.bridge.lock().await;
+            Arc::clone(guard.runtime())
+        }; // bridge lock released here
+        tokio::task::spawn_blocking(move || {
+            rt_arc.exe_rt_task_in_event_loop(|r| r.run_pending_jobs_if_any());
+        })
+        .await
+        .map_err(|e| BamlRtError::QuickJs(format!("collect drain spawn_blocking: {e}")))?;
+
+        // Phase 2: drain the yield channel — no bridge lock needed since yield_rx is owned here.
+        struct DrainResult {
+            chunks: Vec<Value>,
+            channel_closed: bool,
+        }
         let drain = {
-            let mut guard = self.bridge.lock().await;
-            guard.drain_yield_buffer(&mut self.yield_rx).await
+            use tokio::sync::mpsc::error::TryRecvError;
+            let mut chunks = Vec::new();
+            let mut channel_closed = false;
+            loop {
+                match self.yield_rx.try_recv() {
+                    Ok(value) => chunks.push(value),
+                    Err(TryRecvError::Empty) => break,
+                    Err(TryRecvError::Disconnected) => {
+                        channel_closed = true;
+                        break;
+                    }
+                }
+            }
+            Ok::<DrainResult, baml_rt_core::BamlRtError>(DrainResult {
+                chunks,
+                channel_closed,
+            })
         };
         let drain = match drain {
             Ok(d) => d,
@@ -711,14 +919,43 @@ impl StreamCollectorContext {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // stream collection requires all 8 independent channel/scope parameters
 pub async fn collect_into_channel_owned(
     bridge: Arc<Mutex<QuickJSBridge>>,
     session_id: StreamSessionId,
     yield_rx: UnboundedReceiver<Value>,
     tx: mpsc::Sender<StreamOutput>,
+    abort_rx: mpsc::Receiver<()>,
     resume_rx: Option<ResumeRx>,
     relay_rx: Option<mpsc::Receiver<Value>>,
     scope: InvocationScope,
+    handover_tx: HandoverSender,
+) -> Result<()> {
+    collect_into_channel_owned_inner(
+        bridge,
+        session_id,
+        yield_rx,
+        tx,
+        abort_rx,
+        resume_rx,
+        relay_rx,
+        scope,
+        handover_tx.into_raw(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)] // each parameter is an independent owned resource; no meaningful grouping
+async fn collect_into_channel_owned_inner(
+    bridge: Arc<Mutex<QuickJSBridge>>,
+    session_id: StreamSessionId,
+    yield_rx: UnboundedReceiver<Value>,
+    tx: mpsc::Sender<StreamOutput>,
+    abort_rx: mpsc::Receiver<()>,
+    resume_rx: Option<ResumeRx>,
+    relay_rx: Option<mpsc::Receiver<Value>>,
+    scope: InvocationScope,
+    handover_tx: achan::Sender<HandoverJob>,
 ) -> Result<()> {
     let now = std::time::Instant::now();
     let idle_timeout_secs = {
@@ -730,15 +967,16 @@ pub async fn collect_into_channel_owned(
         session_id,
         yield_rx,
         tx,
+        abort_rx,
         resume_rx,
         relay_rx,
         scope,
         idle_timeout_secs,
         last_yield_at: now,
         all: Vec::new(),
-        // Lower collector cadence improves perceived stream latency under light load.
         interval: Duration::from_millis(20),
         finalized: false,
+        handover_tx,
     };
 
     loop {

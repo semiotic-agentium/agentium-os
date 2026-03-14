@@ -43,11 +43,12 @@ use baml_rt_llm_config::{
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_provenance::{
     AgentType, GraphExporter, GraphQueryParams, GraphStore, GraphqliteStoreBuilder, ProvEvent,
-    ProvenanceOpsQuery, ProvenanceWriter, ToolIndexConfig, context_metrics_queries,
+    ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
+    ProvenancePlanningQuery, ProvenanceWriter, ToolIndexConfig, context_metrics_queries,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
     index_tools,
 };
-use baml_rt_quickjs::{BamlRuntimeManager, SecretResolverToLlmAdapter};
+use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdapter};
 use baml_rt_tools::{
     InventoryCatalog, ManifestToolNames, ToolAccessPolicy, parse_access_allowlist,
     register_manifest_tools,
@@ -252,7 +253,7 @@ impl AgentPackage {
 
             let bridge = built.agent.bridge();
             let mut bridge_guard = bridge.lock().await;
-            match bridge_guard.evaluate(None, &agent_code).await {
+            match bridge_guard.eval_sync(&agent_code).await {
                 Ok(_) => info!("Agent code executed successfully"),
                 Err(e) => {
                     tracing::warn!(
@@ -372,11 +373,13 @@ impl BootedAgent {
 
     async fn invoke_function(&self, function_name: &str, args: Value) -> Result<Value> {
         let scope = InvocationScope::synthetic_message(self.agent.agent_id().clone());
-        let bridge = self.agent.bridge();
-        let mut js_bridge = bridge.lock().await;
-        js_bridge
-            .invoke_js_function(&scope, function_name, args)
-            .await
+        QuickJSBridge::invoke_js_function_nonblocking(
+            self.agent.bridge(),
+            &scope,
+            function_name,
+            args,
+        )
+        .await
     }
 
     async fn handle_a2a_stream(
@@ -1309,11 +1312,11 @@ impl baml_rt_api::MermaidService for MermaidServiceImpl {
         &self,
         context_id: &str,
     ) -> std::result::Result<String, baml_rt_api::MermaidError> {
-        if let Some(ref cache) = self.cache
-            && let Some(cached) = cache.get(context_id)
-        {
-            tracing::debug!(context_id = %context_id, "mermaid: cache HIT");
-            return Ok(cached);
+        if let Some(ref cache) = self.cache {
+            if let Some(cached) = cache.get(context_id) {
+                tracing::debug!(context_id = %context_id, "mermaid: cache HIT");
+                return Ok(cached);
+            }
         }
         tracing::info!(context_id = %context_id, "mermaid: START export_by_context");
         let t0 = std::time::Instant::now();
@@ -1566,6 +1569,139 @@ impl baml_rt_api::ProvenanceOpsService for ProvenanceOpsServiceImpl {
     }
 }
 
+struct PlanningServiceImpl {
+    store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+}
+
+impl PlanningServiceImpl {
+    fn new(store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>) -> Self {
+        Self { store }
+    }
+
+    fn summarize_steps(
+        plan: Option<&baml_rt_provenance::PlanningPlanRecord>,
+    ) -> baml_rt_api::PlanningStepSummary {
+        let mut summary = baml_rt_api::PlanningStepSummary {
+            total: 0,
+            completed: 0,
+            failed: 0,
+            in_progress: 0,
+            pending: 0,
+        };
+        let Some(plan) = plan else {
+            return summary;
+        };
+        for step in &plan.steps {
+            summary.total += 1;
+            match step.status.to_ascii_lowercase().as_str() {
+                "completed" => summary.completed += 1,
+                "failed" => summary.failed += 1,
+                "running" | "in_progress" => summary.in_progress += 1,
+                _ => summary.pending += 1,
+            }
+        }
+        summary
+    }
+}
+
+#[async_trait::async_trait]
+impl baml_rt_api::PlanningService for PlanningServiceImpl {
+    async fn planning_for_context(
+        &self,
+        context_id: &str,
+    ) -> std::result::Result<baml_rt_api::ContextPlanningResponse, baml_rt_api::PlanningError> {
+        let report = self
+            .store
+            .query_ops(ProvenanceOpsQueryRequest {
+                resource: ProvenanceOpsResource::Messages,
+                filters: ProvenanceOpsFilters {
+                    context_id: Some(ContextId::from(context_id)),
+                    ..Default::default()
+                },
+                page_size: Some(500),
+                sort_by: Some("timestamp_ms".to_string()),
+                sort_dir: Some("asc".to_string()),
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| baml_rt_api::PlanningError::Other(Box::new(std::io::Error::other(e))))?;
+
+        let mut seen = HashSet::new();
+        let mut task_ids = Vec::new();
+        for row in report.rows {
+            let Some(row_obj) = row.as_object() else {
+                continue;
+            };
+            let Some(task_id) = row_obj.get("task_id").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            if seen.insert(task_id.to_string()) {
+                task_ids.push(task_id.to_string());
+            }
+        }
+
+        if task_ids.is_empty() {
+            return Err(baml_rt_api::PlanningError::NotFound);
+        }
+
+        let mut tasks = Vec::new();
+        for task_id_raw in task_ids {
+            let task_id = TaskId::from_external(ExternalId::new(task_id_raw.clone()));
+            let current_intent = self
+                .store
+                .query_current_intent(&task_id)
+                .await
+                .map_err(|e| {
+                    baml_rt_api::PlanningError::Other(Box::new(std::io::Error::other(e)))
+                })?;
+            let current_plan = self.store.query_current_plan(&task_id).await.map_err(|e| {
+                baml_rt_api::PlanningError::Other(Box::new(std::io::Error::other(e)))
+            })?;
+            let intent_history = self
+                .store
+                .query_intent_history(&task_id, Some(20))
+                .await
+                .map_err(|e| {
+                    baml_rt_api::PlanningError::Other(Box::new(std::io::Error::other(e)))
+                })?;
+            let plan_history = self
+                .store
+                .query_plan_history(&task_id, Some(20))
+                .await
+                .map_err(|e| {
+                    baml_rt_api::PlanningError::Other(Box::new(std::io::Error::other(e)))
+                })?;
+
+            if current_intent.is_none()
+                && current_plan.is_none()
+                && intent_history.is_empty()
+                && plan_history.is_empty()
+            {
+                continue;
+            }
+
+            let step_summary = Self::summarize_steps(current_plan.as_ref());
+            tasks.push(baml_rt_api::TaskPlanningSnapshot {
+                task_id: task_id_raw,
+                current_intent,
+                current_plan,
+                intent_history,
+                plan_history,
+                step_summary,
+            });
+        }
+
+        if tasks.is_empty() {
+            return Err(baml_rt_api::PlanningError::NotFound);
+        }
+
+        Ok(baml_rt_api::ContextPlanningResponse {
+            context_id: context_id.to_string(),
+            tasks,
+        })
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     // Initialize tracing
@@ -1741,8 +1877,11 @@ async fn main() -> anyhow::Result<()> {
         )) as Arc<dyn baml_rt_api::MermaidService>);
         let context_metrics = Some(Arc::new(ContextMetricsServiceImpl::new(store.clone()))
             as Arc<dyn baml_rt_api::ContextMetricsService>);
-        let provenance_ops = Some(Arc::new(ProvenanceOpsServiceImpl::new(store))
+        let provenance_ops = Some(Arc::new(ProvenanceOpsServiceImpl::new(store.clone()))
             as Arc<dyn baml_rt_api::ProvenanceOpsService>);
+        let planning = Some(
+            Arc::new(PlanningServiceImpl::new(store)) as Arc<dyn baml_rt_api::PlanningService>
+        );
         let registry_impl = ready.registry();
         let web_dir = config.web_dir.clone();
         info!(
@@ -1758,6 +1897,7 @@ async fn main() -> anyhow::Result<()> {
                 mermaid,
                 context_metrics,
                 provenance_ops,
+                planning,
                 tool_catalog,
                 config_service,
                 secret_resolver,
@@ -1816,7 +1956,12 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use baml_rt::baml::BamlRuntimeManager;
-    use baml_rt_core::{bus::BusWithEffects, route_key_from_request};
+    use baml_rt_api::PlanningService;
+    use baml_rt_core::{
+        bus::{BusWithEffects, PlanningSupersessionKind},
+        ids::{IntentId, MessageId, PlanId, PlanStepId, UuidId},
+        route_key_from_request,
+    };
     use baml_rt_llm_config::EmptySecretResolver;
     use serde_json::json;
 
@@ -1915,6 +2060,198 @@ globalThis.onChatMessage = async function(_message) {
                 .expect("message metadata agent"),
             "coordinator-agent"
         );
+    }
+
+    #[tokio::test]
+    async fn planning_service_for_context_returns_current_and_mixed_history_consistently() {
+        let store = GraphqliteStoreBuilder::in_memory()
+            .build()
+            .expect("in-memory store");
+        let service = PlanningServiceImpl::new(store.clone());
+
+        let context_id = ContextId::new(120, 1);
+        let task_id = TaskId::from_external(ExternalId::new("task-planning-api-mixed-1"));
+        let agent_id =
+            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000120").unwrap());
+        let msg = MessageId::from_external(ExternalId::new("msg-planning-api-mixed-1"));
+
+        store
+            .add_event(ProvEvent::agent_booted(
+                agent_id.clone(),
+                AgentType::new("test").expect("agent type"),
+                "1.0.0".to_string(),
+                "test@1.0.0".to_string(),
+            ))
+            .await
+            .expect("agent boot");
+        store
+            .add_event(ProvEvent::task_exists(context_id.clone(), task_id.clone()))
+            .await
+            .expect("task exists");
+        store
+            .add_event(ProvEvent::task_execution_started(
+                context_id.clone(),
+                task_id.clone(),
+                agent_id.clone(),
+            ))
+            .await
+            .expect("task execution started");
+        store
+            .add_event(ProvEvent::message_received_task(
+                context_id.clone(),
+                task_id.clone(),
+                msg.clone(),
+                "user".to_string(),
+                vec!["planning service mixed history".to_string()],
+                None,
+                agent_id,
+                1_700_000_020_001,
+            ))
+            .await
+            .expect("message received");
+
+        store
+            .add_event(ProvEvent::intent_resolved(
+                context_id.clone(),
+                task_id.clone(),
+                IntentId::from("intent-v1".to_string()),
+                "seed intent".to_string(),
+                vec![msg.clone()],
+                None,
+            ))
+            .await
+            .expect("intent v1");
+        store
+            .add_event(ProvEvent::plan_generated(
+                context_id.clone(),
+                task_id.clone(),
+                IntentId::from("intent-v1".to_string()),
+                PlanId::from("plan-v1".to_string()),
+                vec![baml_rt_provenance::PlanStepSpec {
+                    step_id: PlanStepId::from("step-v1".to_string()),
+                    description: "step v1".to_string(),
+                    order: 0,
+                    depends_on: vec![],
+                }],
+                None,
+            ))
+            .await
+            .expect("plan v1");
+
+        store
+            .add_event(ProvEvent::intent_resolved(
+                context_id.clone(),
+                task_id.clone(),
+                IntentId::from("intent-v2".to_string()),
+                "refined intent".to_string(),
+                vec![msg.clone()],
+                Some(PlanningSupersessionKind::RefinedBy),
+            ))
+            .await
+            .expect("intent v2");
+        store
+            .add_event(ProvEvent::plan_generated(
+                context_id.clone(),
+                task_id.clone(),
+                IntentId::from("intent-v2".to_string()),
+                PlanId::from("plan-v2".to_string()),
+                vec![baml_rt_provenance::PlanStepSpec {
+                    step_id: PlanStepId::from("step-v2".to_string()),
+                    description: "step v2".to_string(),
+                    order: 0,
+                    depends_on: vec![],
+                }],
+                Some(PlanningSupersessionKind::RefinedBy),
+            ))
+            .await
+            .expect("plan v2");
+
+        store
+            .add_event(ProvEvent::intent_resolved(
+                context_id.clone(),
+                task_id.clone(),
+                IntentId::from("intent-v3".to_string()),
+                "replacement intent".to_string(),
+                vec![msg],
+                Some(PlanningSupersessionKind::ReplacedBy),
+            ))
+            .await
+            .expect("intent v3");
+        store
+            .add_event(ProvEvent::plan_generated(
+                context_id.clone(),
+                task_id.clone(),
+                IntentId::from("intent-v3".to_string()),
+                PlanId::from("plan-v3".to_string()),
+                vec![baml_rt_provenance::PlanStepSpec {
+                    step_id: PlanStepId::from("step-v3".to_string()),
+                    description: "step v3".to_string(),
+                    order: 0,
+                    depends_on: vec![],
+                }],
+                Some(PlanningSupersessionKind::ReplacedBy),
+            ))
+            .await
+            .expect("plan v3");
+        store
+            .add_event(ProvEvent::plan_step_status_changed(
+                context_id.clone(),
+                task_id.clone(),
+                IntentId::from("intent-v3".to_string()),
+                PlanId::from("plan-v3".to_string()),
+                PlanStepId::from("step-v3".to_string()),
+                Some("ready".to_string()),
+                "in_progress".to_string(),
+                "evidence".to_string(),
+            ))
+            .await
+            .expect("step status");
+
+        let response = service
+            .planning_for_context(context_id.as_str())
+            .await
+            .expect("planning response");
+        assert_eq!(response.context_id, context_id.as_str());
+        assert_eq!(response.tasks.len(), 1);
+
+        let task = &response.tasks[0];
+        assert_eq!(task.task_id, task_id.as_str());
+        assert_eq!(
+            task.current_intent
+                .as_ref()
+                .map(|intent| intent.intent_id.as_str()),
+            Some("intent-v3")
+        );
+        assert_eq!(
+            task.current_plan.as_ref().map(|plan| plan.plan_id.as_str()),
+            Some("plan-v3")
+        );
+        assert_eq!(task.intent_history.len(), 3);
+        assert_eq!(
+            task.intent_history[0].supersession_from_previous,
+            Some(PlanningSupersessionKind::ReplacedBy)
+        );
+        assert_eq!(
+            task.intent_history[1].supersession_from_previous,
+            Some(PlanningSupersessionKind::RefinedBy)
+        );
+        assert_eq!(
+            task.intent_history[2].superseded_by_next,
+            Some(PlanningSupersessionKind::RefinedBy)
+        );
+        assert_eq!(task.plan_history.len(), 3);
+        assert_eq!(
+            task.plan_history[0].supersession_from_previous,
+            Some(PlanningSupersessionKind::ReplacedBy)
+        );
+        assert_eq!(
+            task.plan_history[1].superseded_by_next,
+            Some(PlanningSupersessionKind::ReplacedBy)
+        );
+        assert_eq!(task.step_summary.total, 1);
+        assert_eq!(task.step_summary.in_progress, 1);
+        assert_eq!(task.step_summary.completed, 0);
+        assert_eq!(task.step_summary.pending, 0);
     }
 
     #[tokio::test]

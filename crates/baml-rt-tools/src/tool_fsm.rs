@@ -151,7 +151,7 @@ pub enum ToolStep {
 #[async_trait]
 pub trait ToolSession: Send + Sync {
     async fn send(&mut self, input: Value) -> std::result::Result<(), ToolSessionError>;
-    async fn next(&mut self) -> std::result::Result<ToolStep, ToolSessionError>;
+    async fn read(&mut self, input: Value) -> std::result::Result<ToolStep, ToolSessionError>;
     async fn finish(&mut self) -> std::result::Result<(), ToolSessionError>;
     async fn abort(&mut self, reason: Option<String>) -> std::result::Result<(), ToolSessionError>;
 }

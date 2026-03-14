@@ -42,6 +42,7 @@ async fn tool_index_creates_tool_nodes() {
         config: None,
         access: None,
         origin: baml_rt_tools::ToolOrigin::Host,
+        projection_semantics: None,
     }];
 
     let conn = index_tools_into_connection(&config, &tools)

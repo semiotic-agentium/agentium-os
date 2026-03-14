@@ -1,0 +1,9 @@
+---
+source: crates/baml-rt-quickjs/src/execution_session_types.rs
+expression: "serde_json::to_value(&cmd).unwrap()"
+---
+{
+  "action": "abort",
+  "session_id": "session-test-123",
+  "reason": "Run function threw an error"
+}

@@ -6,7 +6,7 @@ authors = { workspace = true }
 publish = false
 
 [dependencies]
-baml-rt = { path = "../baml-rt" }
+baml-rt = { path = "../baml-rt", features = ["testing"] }
 baml-rt-llm-config = { path = "../baml-rt-llm-config" }
 baml-rt-builder = { path = "../baml-rt-builder" }
 baml-rt-provenance = { path = "../baml-rt-provenance" }

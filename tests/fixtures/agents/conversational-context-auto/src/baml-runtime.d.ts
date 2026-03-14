@@ -6,8 +6,34 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface SupportCalculateSessionPlan { steps: SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateNextStep | SupportCalculateFinishStep | SupportCalculateAbortStep[];
-reason: string | null;
+export interface CalculatorInput { expression: Expression;
+ }
+
+export interface Expression { left: number;
+operation: MathOperation;
+right: number;
+ }
+
+export type MathOperation = "Add" | "Subtract" | "Multiply" | "Divide";
+
+export interface SupportCalculateAbortStep { op: "Abort";
+ }
+
+export interface SupportCalculateFinishStep { op: "Finish";
+ }
+
+export interface SupportCalculateOpenStep { op: "Open";
+ }
+
+export interface SupportCalculateReadStep { op: "Read";
+input: CalculatorInput;
+ }
+
+export interface SupportCalculateSendStep { op: "Send";
+input: CalculatorInput;
+ }
+
+export interface SupportCalculateSessionPlan { step: SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep;
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
@@ -72,10 +98,22 @@ export interface A2aTerminalTask<S extends A2aTerminalTaskState> extends A2aTask
 export interface A2aStateDispatcher<S extends A2aNonTerminalTaskState> {
     on<N extends A2aNextStates<S>>(state: N, handler: (ctx: A2aTaskContext<N>) => Promise<void> | void): A2aStateDispatcher<S>;
 }
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonObject = { [key: string]: JsonValue };
+export type JsonArray = JsonValue[];
+export type JsonValue = JsonPrimitive | JsonObject | JsonArray;
+/** A chunk emitted via __chat_yield. Must be a JSON-serializable object following A2A wire format. */
+export type YieldChunk =
+  | { message: { parts: Part[]; role?: string; [key: string]: JsonValue | undefined }; [key: string]: JsonValue | undefined }
+  | { task: { id?: string; contextId?: string; status?: { state?: A2aTaskState; [key: string]: JsonValue | undefined }; [key: string]: JsonValue | undefined }; [key: string]: JsonValue | undefined }
+  | { statusUpdate: JsonObject; [key: string]: JsonValue | undefined }
+  | { artifactUpdate: JsonObject; [key: string]: JsonValue | undefined }
+  | { final: boolean; [key: string]: JsonValue | undefined }
+  | JsonObject;
 export type A2aMessageEvent<S extends A2aTaskState = A2aTaskState> =
     | { kind: "assistantMessage"; text: string; task: A2aTaskView<S> }
     | { kind: "statusChanged"; from?: A2aTaskState; to: S; task: A2aTaskView<S> }
-    | { kind: "artifactPublished"; task: A2aTaskView<S>; artifact: unknown; append?: boolean; lastChunk?: boolean }
+    | { kind: "artifactPublished"; task: A2aTaskView<S>; artifact: JsonValue; append?: boolean; lastChunk?: boolean }
     | { kind: "completed"; task: A2aTerminalTask<Extract<S, A2aTerminalTaskState>> }
     | { kind: "failed"; task: A2aTerminalTask<Extract<S, A2aTerminalTaskState>>; error: ToolFailure };
 /**
@@ -100,12 +138,52 @@ export interface A2aSessionClosed {
     sessionId: string;
     closed: true;
 }
-declare function openA2aTaskSession<I = unknown>(token: string): Promise<A2aSessionAwaitingInput<I>>;
+/**
+ * Intent/Plan protocol rails (breaking contract):
+ * 1) submitIntent(...)
+ * 2) submitPlan(...)
+ * 3) execute and complete steps with strict evidence references
+ */
+export interface IntentSubmission {
+    intentId: string;
+    description: string;
+    derivedFromMessageIds: string[];
+    supersession?: "replaced" | "refined";
+}
+export interface PlanStepSubmission {
+    stepId: string;
+    description: string;
+    order: number;
+    dependsOn?: string[];
+}
+export interface PlanSubmission {
+    intentId: string;
+    planId: string;
+    steps: PlanStepSubmission[];
+    supersession?: "replaced" | "refined";
+}
+export interface A2aExecutionSessionAwaitIntent {
+    sessionId: string;
+    submitIntent(intent: IntentSubmission): Promise<A2aExecutionSessionAwaitPlan>;
+    abort(reason?: string): Promise<A2aSessionClosed>;
+}
+export interface A2aExecutionSessionAwaitPlan {
+    sessionId: string;
+    submitPlan(plan: PlanSubmission): Promise<A2aExecutionSessionExecutable>;
+    abort(reason?: string): Promise<A2aSessionClosed>;
+}
+export interface A2aExecutionSessionExecutable {
+    sessionId: string;
+    startStep(stepId: string, evidenceText: string): Promise<void>;
+    completeStep(stepId: string, evidenceText: string): Promise<void>;
+    finish(): Promise<A2aSessionClosed>;
+    abort(reason?: string): Promise<A2aSessionClosed>;
+}
 /**
  * Bootstrap-generated: handler types. Incoming message (parts only; IDs/context are host-managed).
  * Session lifecycle: host invokes onChatMessage(message); agent uses session(message).run(...) to run work and emit outcomes.
  */
-export interface Part { text?: string; data?: unknown; [key: string]: unknown; }
+export interface Part { text?: string; data?: JsonValue; [key: string]: JsonValue | undefined; }
 export interface Message {
   parts: Part[];
   /** First text part. Present on messages from awaitInput(); for the initial message use session(message).text(). */
@@ -125,7 +203,7 @@ export interface SessionEmitter {
   /** Emit a working message (task state remains WORKING). */
   message(text: string): void;
   /** Emit an artifact chunk (append/lastChunk optional). */
-  artifact(artifact: unknown, append?: boolean, lastChunk?: boolean): void;
+  artifact(artifact: JsonValue, append?: boolean, lastChunk?: boolean): void;
   /** Emit a status transition (e.g. TASK_STATE_WORKING). */
   statusChanged(to: A2aTaskState): void;
   /**
@@ -174,7 +252,7 @@ export interface BamlAgent {
   run?(ctx: RunContext): Promise<SessionResult>;
   /** Optional: raw handler when run is not used. */
   onChatMessage?(message: ChatMessage): Promise<void>;
-  tools?: Record<string, (args: unknown) => Promise<unknown>>;
+  tools?: Record<string, (args: JsonObject) => Promise<JsonValue>>;
 }
 declare global {
   /** Minimal console interface matching the QuickJS sandbox polyfill (log, info, warn, error, debug). */
@@ -201,7 +279,10 @@ declare global {
    */
   function session(message: ChatMessage | null | undefined): SessionBuilder;
   function __chat_register(agent: BamlAgent): void;
-  function __chat_yield(chunk: unknown): void;
+  /** Emit a stream chunk following A2A wire format. */
+  function __chat_yield(chunk: YieldChunk): void;
+  function openA2aTaskSession<I = Record<string, unknown>>(token: string): Promise<A2aSessionAwaitingInput<I>>;
+  function openA2aExecutionSession(token: string): Promise<A2aExecutionSessionAwaitIntent>;
 }
 export type ToolFailureKind =
     | "InvalidInput"
@@ -214,4 +295,54 @@ export interface ToolFailure {
     kind: ToolFailureKind;
     message: string;
     retryable: boolean;
+}
+
+/** Generated Step Executor bindings (function -> typed step-executor args/result). */
+
+export type StepExecutorFunctionName = "ChooseCalcTool";
+
+export interface SessionContext {
+    contract_version: "session_context";
+    session_open: boolean;
+    allowed_ops: ("Open" | "Send" | "Read" | "Finish" | "Abort")[];
+    scope_ref: string | null;
+    output_ref: string | null;
+    evidence_ref: string | null;
+}
+
+export interface HistoryContext {
+    hop: number;
+    op: string;
+    status: string;
+    truncated: boolean;
+    cursor: string | null;
+    payload: Record<string, unknown> | null;
+}
+
+export interface StepExecutorStateInput {
+    session_context?: SessionContext | null;
+    history_context?: HistoryContext | null;
+}
+
+export interface StepExecutorRunOptions {
+    max_steps?: number;
+}
+
+export interface StepExecutorRunResult<R = unknown> {
+    last: R;
+    steps: R[];
+    session_context: SessionContext;
+    history_context: HistoryContext | null;
+}
+
+export interface StepExecutorFunctionMap {
+  ChooseCalcTool: { args: Parameters<typeof ChooseCalcTool>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalcTool>>; };
+}
+
+declare global {
+  function runGeneratedStepExecutor<F extends StepExecutorFunctionName>(
+    stepExecutor: F,
+    args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
+    options?: StepExecutorRunOptions
+  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F]["result"]>>;
 }

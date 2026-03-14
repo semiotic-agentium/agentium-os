@@ -1,6 +1,7 @@
 //! Structured request and response types for system tools.
 
 use baml_rt_core::ids::{AgentId, ContextId, TaskId};
+use baml_rt_tools::tools::{HistoryContextV1, SessionReadEnvelope, SessionReadMode};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -37,11 +38,11 @@ pub struct ConversationPart {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
+/// Message sent to a remote agent.
+/// Provide at least one part with text content.
 pub struct InternalA2aSendInput {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parts: Option<Vec<ConversationPart>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
+    /// Message parts. Provide at least one with a non-empty text field.
+    pub parts: Vec<ConversationPart>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -67,7 +68,8 @@ pub struct ConversationChunk {
     pub artifact_update: Option<String>,
 }
 
-/// Why another agent stopped producing output.
+/// Completion reason for internal_a2a stream. When INPUT_REQUIRED, the delegated agent
+/// suspended for input; caller can resume with a new Send + Read using the same context_id.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -86,6 +88,8 @@ pub struct InternalA2aNextOutput {
     /// Present when the delegated agent paused and needs more input.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub completion: Option<InternalA2aCompletion>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_context: Option<HistoryContextV1>,
 }
 
 // --- system/discover_agents ---
@@ -100,6 +104,7 @@ pub struct DiscoverAgentsOpenInput {
 }
 
 /// Requests one page of agents, optionally filtered by text, capability, or event subscription.
+/// Send = one list request. Multiple Send/Read = multiple pages.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
@@ -128,6 +133,8 @@ pub struct DiscoverAgentsSendInput {
 pub struct DiscoverAgentsNextOutput {
     pub agents: Vec<AgentCardDto>,
     pub done: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_context: Option<HistoryContextV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -169,18 +176,21 @@ pub struct AgentEventSubscriptionDto {
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoverToolsOpenInput {
-    /// Optional short justification for choosing to use discover_tools (e.g. "user asked what tools are available").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-/// Requests one page of tools, optionally filtered by query.
+/// Send = one search request. Multiple Send/Read cycles = multiple queries per session.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoverToolsSendInput {
+    /// Optional case-insensitive filter over tool name, bundle, or description.
+    /// Omit or null to list all discoverable tools.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
+    /// Optional maximum number of tools to return for this Send query.
+    /// Use a small value when you want compact, token-efficient results.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
 }
@@ -191,6 +201,8 @@ pub struct DiscoverToolsSendInput {
 pub struct DiscoverToolsNextOutput {
     pub tools: Vec<ToolDiscoveryRecordDto>,
     pub done: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_context: Option<HistoryContextV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -217,6 +229,10 @@ pub struct ProvenanceQueryOpenInput {
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvenanceQuerySendInput {
+    /// Optional runtime-general explicit read request envelope.
+    /// When set, the tool resolves it and ignores resource/filter fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read: Option<SessionReadEnvelope>,
     pub resource: String,
     #[ts(type = "string | null")]
     #[schemars(with = "Option<String>")]
@@ -260,6 +276,95 @@ pub struct ProvenanceQuerySendInput {
 #[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvenanceQueryNextOutput {
-    pub payload_json: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload_json: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_result: Option<SessionReadResultDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retrieval_budget: Option<ProvenanceRetrievalBudgetDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub budget_exhausted: Option<bool>,
     pub done: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history_context: Option<HistoryContextV1>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvenanceRetrievalBudgetDto {
+    pub calls_used: u32,
+    pub calls_cap: u32,
+    pub bytes_used: u32,
+    pub bytes_cap: u32,
+    pub items_used: u32,
+    pub items_cap: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvenanceArchiveRecordDto {
+    pub archive_ref: String,
+    pub payloads: Vec<ProvenanceArchivePayloadDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum ProvenanceReadProjectionDto {
+    Identity,
+    Summary,
+    Detail,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvenanceArchiveSummaryDto {
+    pub archive_ref: String,
+    pub payload_count: u32,
+    pub payload_sources: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum ProvenanceArchivePayloadDto {
+    LlmCall {
+        payload_ref: String,
+        activity_ref: String,
+        prompt_json: String,
+    },
+    LlmResult {
+        payload_ref: String,
+        activity_ref: String,
+        result_json: String,
+    },
+    ToolCall {
+        payload_ref: String,
+        activity_ref: String,
+        tool_name: Option<String>,
+        phase: Option<String>,
+        args_json: String,
+    },
+    ToolResult {
+        payload_ref: String,
+        activity_ref: String,
+        result_json: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
+#[ts(export)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionReadResultDto {
+    pub mode: SessionReadMode,
+    pub ref_id: String,
+    pub projection: ProvenanceReadProjectionDto,
+    pub refs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_summary: Option<ProvenanceArchiveSummaryDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_record: Option<ProvenanceArchiveRecordDto>,
 }

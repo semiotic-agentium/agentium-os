@@ -1,6 +1,9 @@
 //! system/internal_a2a tool: session-based A2A conversation call.
 
-use std::{collections::VecDeque, sync::Arc};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::Arc,
+};
 
 use async_trait::async_trait;
 use baml_rt_core::{
@@ -10,7 +13,7 @@ use baml_rt_core::{
 use baml_rt_tools::{
     BundleName, ToolBundle, ToolBundleMetadata, ToolCapability, ToolFailure, ToolHandler,
     ToolSession, ToolSessionError, ToolStep,
-    tools::{ToolFunctionMetadata, ToolSessionContext, validate_open_input},
+    tools::{HistoryContextV1, ToolFunctionMetadata, ToolSessionContext, validate_open_input},
 };
 use futures_util::StreamExt;
 use serde_json::Value;
@@ -91,6 +94,8 @@ impl ToolHandler for A2aSessionToolHandler {
             seen_output: false,
             empty_stream_notice_emitted: false,
             closed: false,
+            read_hop: 0,
+            accumulated_outputs: Vec::new(),
         }))
     }
 }
@@ -109,32 +114,32 @@ struct A2aSession {
     seen_output: bool,
     empty_stream_notice_emitted: bool,
     closed: bool,
+    read_hop: u32,
+    /// Accumulates all Streaming outputs across Read hops so the final Done hop can carry
+    /// the full conversation payload into provenance.
+    accumulated_outputs: Vec<InternalA2aNextOutput>,
 }
 
-fn parse_send_input(input: Value) -> std::result::Result<Vec<ConversationPart>, String> {
-    match serde_json::from_value::<InternalA2aSendInput>(input) {
-        Ok(InternalA2aSendInput {
-            parts: Some(parts),
-            text: None,
-        }) if !parts.is_empty() => Ok(parts),
-        Ok(InternalA2aSendInput {
-            parts: None,
-            text: Some(text),
-        }) => Ok(vec![ConversationPart {
-            text: Some(text),
+fn parse_send_input(raw: Value) -> std::result::Result<Vec<ConversationPart>, String> {
+    if raw.is_null() {
+        return Err(
+            "Invalid system/internal_a2a Send input: expected { parts: [{ text: '...' }] } — got null".to_string()
+        );
+    }
+    // Accept legacy { text: "..." } shorthand and convert to parts.
+    if let Some(text) = raw.get("text").and_then(|v| v.as_str())
+        && !text.trim().is_empty()
+    {
+        return Ok(vec![ConversationPart {
+            text: Some(text.to_string()),
             ..Default::default()
-        }]),
-        Ok(InternalA2aSendInput {
-            parts: Some(_),
-            text: Some(_),
-        }) => Err("system/internal_a2a input must set exactly one of parts or text".to_string()),
-        Ok(InternalA2aSendInput {
-            parts: Some(_),
-            text: None,
-        }) => Err("system/internal_a2a input.parts must not be empty".to_string()),
-        Ok(_) => Err("system/internal_a2a input must set exactly one of parts or text".to_string()),
+        }]);
+    }
+    match serde_json::from_value::<InternalA2aSendInput>(raw) {
+        Ok(send) if !send.parts.is_empty() => Ok(send.parts),
+        Ok(_) => Err("system/internal_a2a Send input.parts must not be empty".to_string()),
         Err(err) => Err(format!(
-            "Invalid system/internal_a2a input: expected {{ parts: [...] }} or {{ text: string }} ({err})"
+            "Invalid system/internal_a2a Send input: expected {{ parts: [{{ text: '...' }}] }} ({err})"
         )),
     }
 }
@@ -269,6 +274,25 @@ fn chunk_value_has_input_required(value: &Value) -> bool {
     matches!(state, Some("TASK_STATE_INPUT_REQUIRED"))
 }
 
+/// Returns true when a chunk carries actual conversational content from the agent.
+///
+/// Filters out infrastructure noise: task-state transitions, status updates, and
+/// model/tool invocation notices ("Calling model: ...", "Invoking tool: ...").
+/// Only chunks with a non-empty message part that isn't a system notice are kept.
+fn is_conversational_chunk(chunk: &ConversationChunk) -> bool {
+    let Some(ref message) = chunk.message else {
+        return false;
+    };
+    message.parts.iter().any(|part| {
+        part.text
+            .as_deref()
+            .filter(|t| !t.trim().is_empty())
+            .filter(|t| !t.starts_with("Calling model:"))
+            .filter(|t| !t.starts_with("Invoking tool:"))
+            .is_some()
+    })
+}
+
 fn merge_outputs(outputs: Vec<InternalA2aNextOutput>) -> InternalA2aNextOutput {
     let mut chunks = Vec::new();
     let mut completion = None;
@@ -289,7 +313,11 @@ fn merge_outputs(outputs: Vec<InternalA2aNextOutput>) -> InternalA2aNextOutput {
             _ => {}
         }
     }
-    InternalA2aNextOutput { chunks, completion }
+    InternalA2aNextOutput {
+        chunks,
+        completion,
+        history_context: None,
+    }
 }
 
 fn completion_failure_message(output: &InternalA2aNextOutput) -> String {
@@ -366,6 +394,7 @@ impl ToolSession for A2aSession {
                             } else {
                                 None
                             },
+                            history_context: None,
                         };
                         if tx.send(out).await.is_err() {
                             break;
@@ -392,6 +421,7 @@ impl ToolSession for A2aSession {
                             artifact_update: None,
                         }],
                         completion: Some(InternalA2aCompletion::Failed),
+                        history_context: None,
                     };
                     if tx.send(fallback).await.is_err() {
                         tracing::warn!(
@@ -406,13 +436,39 @@ impl ToolSession for A2aSession {
         Ok(())
     }
 
-    async fn next(&mut self) -> std::result::Result<ToolStep, ToolSessionError> {
+    async fn read(&mut self, _input: Value) -> std::result::Result<ToolStep, ToolSessionError> {
         if let Some(output) = self.queue.pop_front() {
             let mut batch = vec![output];
             while let Some(next) = self.queue.pop_front() {
                 batch.push(next);
             }
             let merged = merge_outputs(batch);
+            self.read_hop = self.read_hop.saturating_add(1);
+            let mut merged = merged;
+            merged.history_context = Some(HistoryContextV1 {
+                hop: self.read_hop,
+                op: "Read".to_string(),
+                status: match merged.completion {
+                    Some(InternalA2aCompletion::InputRequired) => "suspended".to_string(),
+                    Some(InternalA2aCompletion::Failed) => "error".to_string(),
+                    _ => "streaming".to_string(),
+                },
+                truncated: false,
+                cursor: None,
+                payload: Some(
+                    serde_json::json!({
+                        "chunkCount": merged.chunks.len(),
+                        "completion": merged.completion.as_ref().map(|c| format!("{:?}", c)),
+                    })
+                    .as_object()
+                    .map(|obj| {
+                        obj.iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect::<BTreeMap<_, _>>()
+                    })
+                    .unwrap_or_default(),
+                ),
+            });
             let value = serde_json::to_value(&merged).map_err(|e| {
                 ToolSessionError::Tool(ToolFailure::execution_failed(format!(
                     "Invalid A2A output: {error}",
@@ -431,6 +487,7 @@ impl ToolSession for A2aSession {
                     error: ToolFailure::execution_failed(completion_failure_message(&merged)),
                 }
             } else {
+                self.accumulated_outputs.push(merged.clone());
                 ToolStep::Streaming { output: value }
             };
             self.seen_output = true;
@@ -444,6 +501,30 @@ impl ToolSession for A2aSession {
                         batch.push(next);
                     }
                     let merged = merge_outputs(batch);
+                    self.read_hop = self.read_hop.saturating_add(1);
+                    let mut merged = merged;
+                    merged.history_context = Some(HistoryContextV1 {
+                        hop: self.read_hop,
+                        op: "Read".to_string(),
+                        status: match merged.completion {
+                            Some(InternalA2aCompletion::InputRequired) => "suspended".to_string(),
+                            Some(InternalA2aCompletion::Failed) => "error".to_string(),
+                            _ => "streaming".to_string(),
+                        },
+                        truncated: false,
+                        cursor: None,
+                        payload: Some(serde_json::json!({
+                            "chunkCount": merged.chunks.len(),
+                            "completion": merged.completion.as_ref().map(|c| format!("{:?}", c)),
+                        })
+                        .as_object()
+                        .map(|obj| {
+                            obj.iter()
+                                .map(|(k, v)| (k.clone(), v.clone()))
+                                .collect::<BTreeMap<_, _>>()
+                        })
+                        .unwrap_or_default()),
+                    });
                     let value = serde_json::to_value(&merged).map_err(|e| {
                         ToolSessionError::Tool(ToolFailure::execution_failed(format!(
                             "Invalid A2A output: {error}",
@@ -464,6 +545,7 @@ impl ToolSession for A2aSession {
                             )),
                         }
                     } else {
+                        self.accumulated_outputs.push(merged.clone());
                         ToolStep::Streaming { output: value }
                     };
                     self.seen_output = true;
@@ -473,6 +555,7 @@ impl ToolSession for A2aSession {
                     self.output_rx = None;
                     if !self.seen_output && !self.empty_stream_notice_emitted {
                         self.empty_stream_notice_emitted = true;
+                        self.read_hop = self.read_hop.saturating_add(1);
                         let out = InternalA2aNextOutput {
                             chunks: vec![ConversationChunk {
                                 message: Some(ConversationMessage {
@@ -490,6 +573,26 @@ impl ToolSession for A2aSession {
                                 artifact_update: None,
                             }],
                             completion: None,
+                            history_context: Some(HistoryContextV1 {
+                                hop: self.read_hop,
+                                op: "Read".to_string(),
+                                status: "streaming".to_string(),
+                                truncated: false,
+                                cursor: None,
+                                payload: Some(
+                                    serde_json::json!({
+                                        "chunkCount": 1,
+                                        "completion": null
+                                    })
+                                    .as_object()
+                                    .map(|obj| {
+                                        obj.iter()
+                                            .map(|(k, v)| (k.clone(), v.clone()))
+                                            .collect::<BTreeMap<_, _>>()
+                                    })
+                                    .unwrap_or_default(),
+                                ),
+                            }),
                         };
                         let value = serde_json::to_value(&out).map_err(|e| {
                             ToolSessionError::Tool(ToolFailure::execution_failed(format!(
@@ -502,7 +605,23 @@ impl ToolSession for A2aSession {
                 }
             }
         }
-        Ok(ToolStep::Done { output: None })
+        // Carry the conversation payload into the Done hop for provenance.
+        // Strip infrastructure noise (task state, model/tool invocation notices) so
+        // only actual agent messages reach the tool_result archive.
+        let final_output = if self.accumulated_outputs.is_empty() {
+            None
+        } else {
+            let mut merged = merge_outputs(std::mem::take(&mut self.accumulated_outputs));
+            merged.chunks.retain(is_conversational_chunk);
+            if merged.chunks.is_empty() {
+                None
+            } else {
+                serde_json::to_value(&merged).ok()
+            }
+        };
+        Ok(ToolStep::Done {
+            output: final_output,
+        })
     }
 
     async fn finish(&mut self) -> std::result::Result<(), ToolSessionError> {

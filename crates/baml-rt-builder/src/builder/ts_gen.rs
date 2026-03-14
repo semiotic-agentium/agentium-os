@@ -46,7 +46,11 @@ pub fn load_manifest_tools(baml_src: &Path) -> Result<Vec<String>> {
 }
 
 /// Generate TypeScript declarations for BAML runtime: typed function signatures and supporting types.
-pub fn render_ts_declarations(ir_signature: &IRSignature, tool_names: &[String]) -> Result<String> {
+pub fn render_ts_declarations(
+    ir_signature: &IRSignature,
+    tool_names: &[String],
+    session_plan_functions: &std::collections::HashMap<String, String>,
+) -> Result<String> {
     let header = "/**
  * BAML runtime TypeScript declarations.
  * Auto-generated from BAML runtime IR — do not edit manually.
@@ -97,6 +101,112 @@ pub fn render_ts_declarations(ir_signature: &IRSignature, tool_names: &[String])
     for line in tool_ts.lines() {
         quote_in!(tokens => $(line));
         tokens.push();
+    }
+    tokens.line();
+
+    if !session_plan_functions.is_empty() {
+        let session_runner_comment = "/** Generated Step Executor bindings (function -> typed step-executor args/result). */";
+        quote_in!(tokens => $(session_runner_comment));
+        tokens.line();
+
+        // Stable output for snapshots.
+        let mut step_executor_names: Vec<String> = session_plan_functions.keys().cloned().collect();
+        step_executor_names.sort();
+        let step_executor_union = step_executor_names
+            .iter()
+            .map(|name| format!("\"{}\"", name))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        quote_in!(tokens => export type StepExecutorFunctionName = $(step_executor_union););
+        tokens.line();
+        quote_in!(
+            tokens =>
+            export interface SessionContext {
+                contract_version: "session_context";
+                session_open: boolean;
+                allowed_ops: ("Open" | "Send" | "Read" | "Finish" | "Abort")[];
+                scope_ref: string | null;
+                output_ref: string | null;
+                evidence_ref: string | null;
+            }
+        );
+        tokens.line();
+        quote_in!(
+            tokens =>
+            export interface HistoryContext {
+                hop: number;
+                op: string;
+                status: string;
+                truncated: boolean;
+                cursor: string | null;
+                payload: Record<string, unknown> | null;
+            }
+        );
+        tokens.line();
+        quote_in!(
+            tokens =>
+            export interface StepExecutorStateInput {
+                session_context?: SessionContext | null;
+                history_context?: HistoryContext | null;
+            }
+        );
+        tokens.line();
+        quote_in!(
+            tokens =>
+            export interface StepExecutorRunOptions {
+                max_steps?: number;
+            }
+        );
+        tokens.line();
+        quote_in!(
+            tokens =>
+            export interface StepExecutorRunResult<R = unknown> {
+                last: R;
+                steps: R[];
+                session_context: SessionContext;
+                history_context: HistoryContext | null;
+            }
+        );
+        tokens.line();
+        let map_open = "export interface StepExecutorFunctionMap {";
+        quote_in!(tokens => $(map_open));
+        tokens.push();
+        for name in &step_executor_names {
+            let line = format!(
+                "  {}: {{ args: Parameters<typeof {}>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof {}>>; }};",
+                name, name, name
+            );
+            quote_in!(tokens => $(line));
+            tokens.push();
+        }
+        let map_close = "}";
+        quote_in!(tokens => $(map_close));
+        tokens.push();
+        tokens.line();
+        let global_open = "declare global {";
+        quote_in!(tokens => $(global_open));
+        tokens.push();
+        let step_fn_l1 = "  function runGeneratedStepExecutor<F extends StepExecutorFunctionName>(";
+        quote_in!(tokens => $(step_fn_l1));
+        tokens.push();
+        let step_fn_l2 = "    stepExecutor: F,";
+        quote_in!(tokens => $(step_fn_l2));
+        tokens.push();
+        let step_fn_l3 =
+            "    args: Omit<StepExecutorFunctionMap[F][\"args\"], keyof StepExecutorStateInput>,";
+        quote_in!(tokens => $(step_fn_l3));
+        tokens.push();
+        let step_fn_l4 = "    options?: StepExecutorRunOptions";
+        quote_in!(tokens => $(step_fn_l4));
+        tokens.push();
+        let step_fn_l5 =
+            "  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F][\"result\"]>>;";
+        quote_in!(tokens => $(step_fn_l5));
+        tokens.push();
+        let global_close = "}";
+        quote_in!(tokens => $(global_close));
+        tokens.push();
+        tokens.line();
     }
 
     tokens

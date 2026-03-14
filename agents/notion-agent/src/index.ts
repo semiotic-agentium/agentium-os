@@ -1,28 +1,14 @@
 /// <reference path="./baml-runtime.d.ts" />
+import type { RunContext, SessionResult } from "./baml-runtime";
 
-type ChatMessageWithToken = ChatMessage & {
-  __baml_invocation_token?: string;
-};
-
-type ToolSessionHandle = {
-  send(args: Record<string, unknown>): Promise<unknown>;
-  continue(): Promise<unknown>;
-  finish(): Promise<unknown>;
-  abort(reason?: string): Promise<unknown>;
-};
-
-declare function openToolSession(
-  toolName: string,
-  openInput?: Record<string, unknown>,
-): Promise<ToolSessionHandle>;
-
-const NOTION_TOOL_NAME = "support/notion";
 const MAX_REACT_STEPS = 8;
-const MAX_FINGERPRINT_CHARS = 6000;
-const MAX_CONSECUTIVE_REPEATS = 2;
-const NOTION_ID_PATTERN =
-  /([0-9a-fA-F]{32}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/;
+const MAX_CLARIFY = 2;
 
+type NeedClarification = { question: string };
+type NotRelevant = { reason: string };
+type NotionIntent = { intent: string };
+type NotionPlanStep = { id: string; description: string; kind: "discover" | "read" | "synthesize" };
+type NotionPlan = { goal: string; steps: NotionPlanStep[] };
 type NotionPageSummary = { id: string; title: string; url: string };
 type NotionBlockSummary = { block_type?: string; text?: string | null };
 type NotionSource = { page_id: string; url: string };
@@ -45,92 +31,41 @@ type ReadOnlyResponse = {
   next_step?: string;
 };
 
-type SupportNotionSessionStep = {
-  op?: string;
-  input?: Record<string, unknown>;
-  initial_input?: Record<string, unknown>;
-  reason?: string;
-};
-
-type SupportNotionSessionPlan = {
-  steps: SupportNotionSessionStep[];
-};
-
-type NotionSearchPagesInput = {
-  query?: string;
-  start_cursor?: string;
-  page_size?: number;
-};
-
-type NotionGetPageInput = {
-  page_id: string;
-};
-
-type NotionGetPageBlocksInput = {
-  block_id: string;
-  start_cursor?: string;
-  page_size?: number;
-  raw_blocks?: "raw" | "enriched";
-  max_depth?: number;
-};
-
-type NotionToolInput =
-  | NotionSearchPagesInput
-  | NotionGetPageInput
-  | NotionGetPageBlocksInput;
-
-function wantsSummary(text: string): boolean {
-  const lowered = text.toLowerCase();
-  const keywords = [
-    "summarize",
-    "summary",
-    "what are we working on",
-    "status",
-    "impact",
-    "roadmap",
-    "brief",
-    "commitments",
-  ];
-  return keywords.some((k) => lowered.includes(k));
-}
-
-function normalizeUserMessage(text: string): string {
-  const trimmed = text.trim();
-  const notionDirective = trimmed.match(/^use\s+notion\s*[:,-]?\s*/i);
-  if (!notionDirective) return trimmed;
-  const withoutDirective = trimmed.slice(notionDirective[0].length).trim();
-  return withoutDirective.length > 0 ? withoutDirective : trimmed;
-}
-
-function looksLikePlaceholderSummary(message: string): boolean {
-  const lowered = message.toLowerCase();
-  const hasStructuredSummary =
-    lowered.includes("commitments:") ||
-    lowered.includes("conflicts:") ||
-    lowered.includes("missing:") ||
-    lowered.includes("sources:");
-  if (hasStructuredSummary) return false;
-  return (
-    lowered.includes("let me provide") ||
-    lowered.includes("i can summarize") ||
-    lowered.includes("i can provide") ||
-    lowered.includes("i already have")
-  );
-}
-
 function isObject(value: unknown): value is Record<string, unknown> {
   return value != null && typeof value === "object";
 }
 
-// Agent pattern: tools return structured data, agent renders UX.
-// See docs/agent-patterns.md for the rationale and checklist.
+function executionMessageId(message: unknown): string {
+  if (isObject(message)) {
+    if (typeof message.messageId === "string" && message.messageId.trim().length > 0) return message.messageId;
+    if (typeof message.id === "string" && message.id.trim().length > 0) return message.id;
+  }
+  return "msg-notion-fallback";
+}
+
+function isNeedClarification(v: unknown): v is NeedClarification {
+  return isObject(v) && typeof v.question === "string" && v.question.trim().length > 0
+    && !("goal" in v) && !("steps" in v) && !("message" in v) && !("intent" in v) && !("reason" in v);
+}
+
+function isNotRelevant(v: unknown): v is NotRelevant {
+  return isObject(v) && typeof v.reason === "string" && !("question" in v) && !("goal" in v) && !("intent" in v);
+}
+
+function isNotionIntent(v: unknown): v is NotionIntent {
+  return isObject(v) && typeof v.intent === "string" && v.intent.trim().length > 0
+    && !("question" in v) && !("reason" in v) && !("steps" in v);
+}
+
+function isNotionPlan(v: unknown): v is NotionPlan {
+  return isObject(v) && typeof v.goal === "string" && Array.isArray(v.steps);
+}
+
 function isReadOnlyResponse(action: unknown): action is ReadOnlyResponse {
   if (!action || typeof action !== "object") return false;
-  const candidate = action as Record<string, unknown>;
-  if (typeof candidate.message !== "string") return false;
-  const hasPages =
-    "pages" in candidate || "blocks" in candidate || "sources" in candidate;
-  return !hasPages;
+  const c = action as Record<string, unknown>;
+  if (typeof c.message !== "string") return false;
+  return !("pages" in c || "blocks" in c || "sources" in c || "steps" in c || "goal" in c);
 }
 
 function isNotionOutput(value: unknown): value is NotionOutput {
@@ -142,397 +77,258 @@ function isNotionOutput(value: unknown): value is NotionOutput {
   );
 }
 
-function isSessionPlan(value: unknown): value is SupportNotionSessionPlan {
-  if (!isObject(value) || !Array.isArray(value.steps) || value.steps.length === 0) return false;
-  return value.steps.every((step) => {
-    if (!isObject(step) || typeof step.op !== "string") return false;
-    if (step.op === "Send") return isObject(step.input);
-    return true;
-  });
-}
-
-function isExplicitlyEmptySessionPlan(value: unknown): boolean {
-  return isObject(value) && Array.isArray(value.steps) && value.steps.length === 0;
-}
-
 function extractNotionOutput(value: unknown): NotionOutput | null {
   if (isNotionOutput(value)) return value;
-  if (isObject(value) && isNotionOutput(value.output)) {
-    return value.output;
-  }
+  if (isObject(value) && isNotionOutput(value.output)) return value.output;
   return null;
 }
 
-function extractNotionId(text: string): string | null {
-  const match = text.match(NOTION_ID_PATTERN);
-  if (!match) return null;
-
-  const candidate = match[1] ?? match[0];
+function normalizeUserMessage(text: string): string {
   const trimmed = text.trim();
-  if (trimmed === candidate) return candidate;
-
-  const lowered = text.toLowerCase();
-  if (
-    lowered.includes("notion") ||
-    lowered.includes("block") ||
-    lowered.includes("notion.so") ||
-    lowered.includes("notion.site")
-  ) {
-    return candidate;
-  }
-
-  return null;
+  const notionDirective = trimmed.match(/^use\s+notion\s*[:,-]?\s*/i);
+  if (!notionDirective) return trimmed;
+  const withoutDirective = trimmed.slice(notionDirective[0].length).trim();
+  return withoutDirective.length > 0 ? withoutDirective : trimmed;
 }
 
-async function executeNotionAction(
-  input: NotionToolInput,
-): Promise<NotionOutput | null> {
-  let session: ToolSessionHandle | null = null;
+function slugGoal(goal: string): string {
+  return goal.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48) || "goal";
+}
+
+/** Collect tool output snapshots from all executor steps for synthesis. */
+function collectToolResultsJson(steps: unknown[]): string {
+  const outputs: unknown[] = [];
+  for (const step of steps) {
+    const out = extractNotionOutput(step);
+    if (out) outputs.push(out);
+    if (isReadOnlyResponse(step)) outputs.push({ message: step.message });
+  }
   try {
-    session = await openToolSession(NOTION_TOOL_NAME);
-    await session.send(input as unknown as Record<string, unknown>);
-    const next = await session.continue();
-    await session.finish();
-    session = null;
-    return extractNotionOutput(next);
-  } catch (err) {
-    if (session) {
-      const reason = err instanceof Error ? err.message : String(err);
-      try {
-        await session.abort(reason);
-      } catch {
-        // Ignore abort errors because we're already on the error path.
-      }
-    }
-    throw err;
+    return JSON.stringify(outputs.length > 0 ? outputs : steps.slice(-3), null, 2).slice(0, 6000);
+  } catch (_) {
+    return "{}";
   }
 }
 
-async function executeNotionPlan(
-  plan: SupportNotionSessionPlan,
-): Promise<NotionOutput | null> {
-  let session: ToolSessionHandle | null = null;
-  let lastStepOutput: unknown = null;
-
-  for (const step of plan.steps) {
-    switch (step.op) {
-      case "Open":
-        if (!session) {
-          session = await openToolSession(NOTION_TOOL_NAME, step.initial_input);
-        }
-        break;
-      case "Send":
-        if (!session) session = await openToolSession(NOTION_TOOL_NAME);
-        await session.send(step.input || {});
-        break;
-      case "Next":
-        if (!session) session = await openToolSession(NOTION_TOOL_NAME);
-        lastStepOutput = await session.continue();
-        break;
-      case "Finish":
-        if (session) {
-          await session.finish();
-          session = null;
-        }
-        break;
-      case "Abort":
-        if (session) {
-          await session.abort(step.reason);
-          session = null;
-        }
-        return null;
-      default:
-        return null;
-    }
-  }
-
-  if (session) {
-    lastStepOutput = await session.continue();
-    await session.finish();
-  }
-
-  return extractNotionOutput(lastStepOutput);
-}
-
-function truncate(text: string, max: number): string {
-  return text.length <= max ? text : text.slice(0, max);
-}
-
-function fingerprint(output: NotionOutput): string {
-  return truncate(
-    JSON.stringify({
-      message: output.message || "",
-      pages: (output.pages || []).slice(0, 10),
-      blocks: (output.blocks || []).slice(0, 25),
-      sources: (output.sources || []).slice(0, 25),
-    }),
-    MAX_FINGERPRINT_CHARS,
-  );
+function formatPages(pages?: NotionPageSummary[]): string {
+  if (!pages || pages.length === 0) return "";
+  return "\n\nPages:\n" + pages.map((p) => `• ${p.title} — ${p.url}`).join("\n");
 }
 
 function formatSources(sources?: NotionSource[], pages?: NotionPageSummary[]): string {
   if (!sources || sources.length === 0) return "";
   const pageTitleById = new Map<string, string>();
   (pages || []).forEach((p) => pageTitleById.set(p.id, p.title));
-  const lines = sources.map((s) => {
+  return "\n\nSources:\n" + sources.map((s) => {
     const title = pageTitleById.get(s.page_id);
     return title ? `• ${title} — ${s.url}` : `• ${s.url}`;
-  });
-  return "\n\nSources:\n" + lines.join("\n");
-}
-
-function formatPages(pages?: NotionPageSummary[]): string {
-  if (!pages || pages.length === 0) return "";
-  const lines = pages.map((p) => `• ${p.title} — ${p.url}`);
-  return "\n\nPages:\n" + lines.join("\n");
+  }).join("\n");
 }
 
 function formatSummaryLines(label: string, items?: string[]): string {
   if (!items || items.length === 0) return `${label}:\n- None found`;
-  const lines = items.map((item) => `- ${item}`);
-  return `${label}:\n${lines.join("\n")}`;
+  return `${label}:\n${items.map((i) => `- ${i}`).join("\n")}`;
 }
 
 function renderSummary(summary: NotionSummary): string {
-  const commitments = formatSummaryLines("Commitments", summary.commitments);
-  const conflicts = formatSummaryLines("Conflicts", summary.conflicts);
-  const missing = formatSummaryLines("Missing", summary.missing);
-  const sources = formatSummaryLines("Sources", summary.sources);
-  return [commitments, conflicts, missing, sources].join("\n");
+  return [
+    formatSummaryLines("Commitments", summary.commitments),
+    formatSummaryLines("Conflicts", summary.conflicts),
+    formatSummaryLines("Missing", summary.missing),
+    formatSummaryLines("Sources", summary.sources),
+  ].join("\n");
 }
 
-async function summarizeBlocks(args: {
-  user_message: string;
-  page_title: string | null;
-  page_url: string | null;
-  blocks_text: string;
-}): Promise<NotionSummary | null> {
+/** Render tool output from the executor as a user-visible response (fallback when synthesis fails). */
+async function renderToolOutput(steps: unknown[], goal: string): Promise<string> {
+  // Collect the most informative output from the executor run.
+  for (const step of [...steps].reverse()) {
+    const out = extractNotionOutput(step);
+    if (!out) continue;
+    let response = out.message || "";
+    response += formatPages(out.pages);
+
+    // If we have block content, try the structured summarizer.
+    const blocksText = (out.blocks || [])
+      .map((b) => b.text).filter((t): t is string => Boolean(t && t.trim())).join("\n");
+    if (blocksText.length > 0) {
+      try {
+        const result = await SummarizeNotionContent({
+          user_message: goal,
+          page_title: out.pages?.[0]?.title ?? null,
+          page_url: out.pages?.[0]?.url ?? null,
+          blocks_text: blocksText.slice(0, 8000),
+        });
+        if (result && typeof result === "object") {
+          const s = result as NotionSummary;
+          if (s.commitments || s.conflicts || s.missing || s.sources) {
+            if (out.sources && !s.sources) s.sources = out.sources.map((src) => src.url);
+            return renderSummary(s);
+          }
+        }
+      } catch (_) {
+        // fall through
+      }
+    }
+    response += formatSources(out.sources, out.pages);
+    if (response.trim()) return response.trim();
+  }
+  // Last resort: use any ReadOnlyResponse from the loop.
+  for (const step of [...steps].reverse()) {
+    if (isReadOnlyResponse(step)) return step.message;
+  }
+  return "Notion returned no usable content for this request.";
+}
+
+/** Phase 3+4: Execute the plan — open execution session, run per-step executors, synthesize. */
+async function runNotionPlan(
+  ctx: RunContext,
+  userText: string,
+  plan: NotionPlan,
+): Promise<SessionResult> {
+  const { goal, steps } = plan;
+
+  // ── Open execution session with the goal-derived plan ──────────────────
+  const executionSession = typeof openA2aExecutionSession === "function"
+    ? await openA2aExecutionSession("notion-" + Date.now().toString())
+    : null;
+  const messageId = executionMessageId(ctx.message);
+  const intentId = "intent-notion-" + slugGoal(goal);
+  const intentPhase = executionSession
+    ? await executionSession.submitIntent({
+        intentId,
+        description: goal,
+        derivedFromMessageIds: [messageId],
+      })
+    : null;
+  const executable = intentPhase
+    ? await intentPhase.submitPlan({
+        intentId,
+        planId: "plan-notion-" + slugGoal(goal),
+        steps: steps.map((s, i) => ({
+          stepId: s.id,
+          description: s.description,
+          order: i,
+          dependsOn: i > 0 ? [steps[i - 1]!.id] : [],
+        })),
+      })
+    : null;
+
+  // ── Execute each tool step independently (persona pattern) ──────────────
+  // Each step gets its own executor run; prior results thread forward so
+  // "read" steps can use page IDs discovered by preceding "discover" steps.
+  const toolSteps = steps.filter((s) => s.kind !== "synthesize");
+  const synthesizeStep = steps.find((s) => s.kind === "synthesize");
+  const allStepOutputs: unknown[][] = [];
+  let priorResultsJson: string | null = null;
+
   try {
-    const result = await SummarizeNotionContent(args);
-    if (result && typeof result === "object") {
-      const output = result as NotionSummary;
-      if (
-        output.commitments ||
-        output.conflicts ||
-        output.missing ||
-        output.sources
-      ) {
-        return output;
+    for (const toolStep of toolSteps) {
+      if (executable) {
+        await executable.startStep?.(
+          toolStep.id,
+          `Starting ${toolStep.kind}: ${toolStep.description}`,
+        );
       }
-      console.warn("SummarizeNotionContent returned unexpected shape", result);
-      return null;
-    }
-  } catch (err) {
-    console.warn("SummarizeNotionContent failed", err);
-    return null;
-  }
-  return null;
-}
 
-async function renderReadOnlyResponse(
-  response: ReadOnlyResponse,
-  userText: string,
-): Promise<string> {
-  if (wantsSummary(userText) && looksLikePlaceholderSummary(response.message)) {
-    const fallback = await executeNotionAction({
-      query: userText,
-      page_size: 5,
-    });
-    if (fallback && fallback.pages && fallback.pages.length > 0) {
-      let message =
-        "I found several potentially relevant Notion pages. Pick one and I will summarize it:";
-      message += formatPages(fallback.pages);
-      message +=
-        "\n\nNext step:\n- Reply with one page URL or page ID from the list above.";
-      return message;
-    }
-    return "I need a specific Notion page to produce a reliable summary. Share a page URL/ID, or refine the query.";
-  }
-  const nextStep = response.next_step
-    ? `\n\nNext step:\n- ${response.next_step}`
-    : "";
-  return `${response.message}${nextStep}`;
-}
+      const run = await runGeneratedStepExecutor("ChooseNotionAction", {
+        goal,
+        step_description: toolStep.description,
+        prior_results: priorResultsJson,
+      }, { max_steps: MAX_REACT_STEPS });
 
-async function renderNotionOutput(
-  output: NotionOutput,
-  userText: string,
-): Promise<string> {
-  let response = output.message || "Done.";
-  if (response === "Retrieved page blocks") {
-    response = "Notion summary:";
-  }
-  response += formatPages(output.pages);
+      allStepOutputs.push(run.steps);
+      priorResultsJson = collectToolResultsJson(run.steps);
 
-  const blocksText = (output.blocks || [])
-    .map((b) => b.text)
-    .filter((t): t is string => Boolean(t && t.trim()))
-    .join("\n");
-  const notableLines = (output.blocks || [])
-    .filter((b) => b.block_type === "bulleted_list_item" && b.text)
-    .map((b) => b.text as string)
-    .filter((t) => t.trim().length > 0);
-  const notableSection =
-    notableLines.length > 0
-      ? `Notable lines:\n- ${Array.from(new Set(notableLines)).join("\n- ")}\n\n`
-      : "";
-
-  let renderedSummary = false;
-  if (blocksText.length > 0) {
-    const pageTitle = output.pages && output.pages[0] ? output.pages[0].title : null;
-    const pageUrl = output.pages && output.pages[0] ? output.pages[0].url : null;
-    const combinedText = `${notableSection}Full content:\n${blocksText}`;
-    const truncated = combinedText.length > 8000 ? combinedText.slice(0, 8000) : combinedText;
-    const summary = await summarizeBlocks({
-      user_message: userText,
-      page_title: pageTitle,
-      page_url: pageUrl,
-      blocks_text: truncated,
-    });
-    if (summary) {
-      if (output.sources && output.sources.length > 0 && !summary.sources) {
-        summary.sources = output.sources.map((source) => source.url);
+      if (executable) {
+        await executable.completeStep?.(
+          toolStep.id,
+          `Completed ${toolStep.kind}: ${run.steps.length} result(s).`,
+        );
       }
-      response += `\n\nSummary:\n${renderSummary(summary)}`;
-      renderedSummary = true;
     }
-  } else if (wantsSummary(userText)) {
-    response +=
-      "\n\nMissing:\n- Page content not retrieved. Provide a Notion page link or ID, or ensure the integration has access.";
-  }
 
-  if (
-    (!output.pages || output.pages.length === 0) &&
-    (!output.blocks || output.blocks.length === 0)
-  ) {
-    response +=
-      "\n\nMissing:\n- No Notion pages found for this request. Provide a page link or adjust the query, or ensure the integration has access.";
-  }
+    // ── Synthesize across all step outputs ──────────────────────────────
+    if (synthesizeStep && executable) {
+      await executable.startStep?.(synthesizeStep.id, `Synthesizing answer: ${goal}`);
+    }
 
-  if (!renderedSummary) {
-    response += formatSources(output.sources, output.pages);
-  }
+    const allOutputsFlat = allStepOutputs.flat();
+    const toolResultsJson = collectToolResultsJson(allOutputsFlat);
 
-  return response;
-}
-
-async function onChatMessage(message: ChatMessageWithToken): Promise<void> {
-  const s = session(message);
-  await s.run(async () => {
-    const originalText = s.text() || "unknown";
-    const text = normalizeUserMessage(originalText);
-    const token = message.__baml_invocation_token;
-    const directId = extractNotionId(text);
-    let prevFingerprint: string | null = null;
-    let consecutiveRepeats = 0;
-    let lastToolOutput: NotionOutput | null = null;
-
+    let finalMessage: string;
     try {
-      // Fast path: resolve a direct Notion ID without entering the
-      // LLM-driven ReAct loop.  Only fall through when the lookup
-      // fails or returns no data.
-      if (directId) {
-        try {
-          const directResult = await executeNotionAction({
-            block_id: directId,
-            max_depth: 2,
-          });
-          if (directResult) {
-            return { message: await renderNotionOutput(directResult, text) };
-          }
-        } catch (err) {
-          console.warn("Direct Notion ID lookup failed, falling back to planner", err);
-          // Fall through to the ReAct loop below.
-        }
-      }
-
-      for (let step = 1; step <= MAX_REACT_STEPS; step++) {
-        let result: unknown;
-        try {
-          result = await ChooseNotionAction({
-            user_message: text,
-            __baml_invocation_token: token,
-          });
-        } catch (planErr) {
-          // If the planner call fails (e.g. LLM returns empty/invalid
-          // response) but we already accumulated output from a prior
-          // step, return that output rather than losing the data.
-          if (lastToolOutput) {
-            return { message: await renderNotionOutput(lastToolOutput, text) };
-          }
-          throw planErr;
-        }
-
-        if (isExplicitlyEmptySessionPlan(result)) {
-          if (lastToolOutput) {
-            return { message: await renderNotionOutput(lastToolOutput, text) };
-          }
-          return { message: "Notion planner returned an empty session plan." };
-        }
-
-        if (isSessionPlan(result)) {
-          const executedOutput = await executeNotionPlan(result);
-          if (executedOutput) {
-            result = executedOutput;
-          } else {
-            return {
-              message:
-                "Notion planner returned a raw session plan but no tool output was produced.",
-            };
-          }
-        }
-
-        if (isReadOnlyResponse(result)) {
-          return { message: await renderReadOnlyResponse(result, text) };
-        }
-
-        const output = extractNotionOutput(result);
-        if (output) {
-          lastToolOutput = output;
-          const fp = fingerprint(output);
-          if (fp === prevFingerprint) {
-            consecutiveRepeats += 1;
-          } else {
-            consecutiveRepeats = 0;
-            prevFingerprint = fp;
-          }
-
-          if (consecutiveRepeats >= MAX_CONSECUTIVE_REPEATS) {
-            return { message: await renderNotionOutput(output, text) };
-          }
-          continue;
-        }
-
-        if (isObject(result) && typeof result.message === "string") {
-          return { message: result.message };
-        }
-
-        return { message: "Notion planner returned an unexpected response shape." };
-      }
-
-      if (lastToolOutput) {
-        const rendered = await renderNotionOutput(lastToolOutput, text);
-        return {
-          message: `${rendered}\n\nStopped after ${MAX_REACT_STEPS} planning steps.`,
-        };
-      }
-
-      return {
-        message: `Unable to complete the request within ${MAX_REACT_STEPS} planning steps.`,
-      };
-    } catch (e) {
-      // Preserve accumulated output even when a later step fails.
-      if (lastToolOutput) {
-        try {
-          return { message: await renderNotionOutput(lastToolOutput, text) };
-        } catch {
-          // Fall through to the original error path.
-        }
-      }
-      const errMsg = e instanceof Error ? e.message : String(e);
-      return { error: `Error: ${errMsg}` };
+      const reaction = await ReactToNotionResults({
+        goal,
+        user_message: userText,
+        tool_results_json: toolResultsJson,
+      });
+      finalMessage = typeof reaction === "string" ? reaction.trim()
+        : (isObject(reaction) && typeof (reaction as { content?: unknown }).content === "string"
+            ? String((reaction as { content?: unknown }).content).trim() : "");
+      if (!finalMessage) throw new Error("empty reaction");
+    } catch (_) {
+      finalMessage = await renderToolOutput(allOutputsFlat, goal);
     }
-  });
+
+    if (synthesizeStep && executable) {
+      await executable.completeStep?.(synthesizeStep.id, "Answer synthesized and returned to user.");
+    }
+    if (executable) await executable.finish?.();
+
+    return { message: finalMessage };
+  } catch (e) {
+    const errMsg = e instanceof Error ? e.message : String(e);
+    try { if (executable) await executable.abort?.(errMsg); } catch (_) { /* best-effort */ }
+    return { error: `Notion agent error: ${errMsg}` };
+  }
 }
 
-__chat_register({ onChatMessage });
+__chat_register({
+  run: async (ctx) => {
+    const originalText = ctx.text || "unknown";
+    let text = normalizeUserMessage(originalText);
+
+    // ── Phase 1: Intent inference ────────────────────────────────────────────
+    // InferNotionIntent classifies whether the message is a valid Notion query,
+    // distills it into a clean intent, or asks for clarification / says not relevant.
+    // Conversation history is passed via ctx.tags in the BAML prompt so the model
+    // always has full context — no need to thread originalText manually.
+    let validatedIntent: string | null = null;
+    for (let i = 0; i <= MAX_CLARIFY; i++) {
+      const intentResult = await InferNotionIntent({ user_message: text });
+
+      if (isNotionIntent(intentResult)) {
+        validatedIntent = intentResult.intent;
+        break;
+      }
+      if (isNotRelevant(intentResult)) {
+        return { message: `This doesn't look like a Notion question — ${intentResult.reason}` };
+      }
+      if (isNeedClarification(intentResult) && i < MAX_CLARIFY) {
+        const reply = await ctx.emit.awaitInput(intentResult.question);
+        const clarifiedText = messageText(reply).trim();
+        if (clarifiedText) text = normalizeUserMessage(clarifiedText);
+      } else {
+        // Clarification exhausted — fall back to the original message as the search topic.
+        validatedIntent = originalText;
+        break;
+      }
+    }
+    if (!validatedIntent) return { error: "Could not determine a valid Notion intent." };
+
+    // ── Phase 2: Planning ────────────────────────────────────────────────────
+    // PlanNotionWork takes the validated intent and produces an explicit step plan.
+    // No clarification needed here — intent is already resolved above.
+    const plan = await PlanNotionWork({ intent: validatedIntent });
+    const resolvedPlan: NotionPlan = isNotionPlan(plan) ? plan : {
+      goal: validatedIntent,
+      steps: [
+        { id: "step-search", description: "Search Notion for relevant content.", kind: "discover" },
+        { id: "step-synthesize", description: "Synthesize results into a response.", kind: "synthesize" },
+      ],
+    };
+
+    return runNotionPlan(ctx, text, resolvedPlan);
+  },
+});

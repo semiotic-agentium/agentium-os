@@ -1,12 +1,20 @@
 // Fixture: BAML tool streaming. Prompt returns a calculation session plan (2+3 default).
-function ChooseCalcTool(user_message: string) -> SupportCalculateSessionPlan {
+function ChooseCalcTool(user_message: string, session_context: SessionContext?) -> SupportCalculateSessionPlan {
   client DefaultClient
   prompt #"
     The user says: {{ user_message }}
     Extract the mathematical calculation. If they mention numbers, use those; otherwise use 2 + 3.
-    IMPORTANT: Return a top-level JSON object with a `steps` field (and optional `reason`), never a bare JSON array.
+
+    DECISION LADDER — choose the FIRST matching rule:
+    1. session_context is null or allowed_ops contains only "Open"  → emit Open (empty initial_input).
+    2. allowed_ops contains "Send"   → emit Send with input.expression set to the calculation.
+    3. allowed_ops contains "Read"   → emit Read with empty input {}.
+    4. allowed_ops contains "Finish" → emit Finish.
+
+    IMPORTANT: Return a top-level JSON object with a `step` field (and optional `reason`), never a bare JSON array.
     Respond with a single JSON object matching the schema below. Output only the JSON object, no markdown or explanation.
     {{ ctx.output_format }}
+    {% if session_context %}Allowed ops: {{ session_context.allowed_ops }}{% endif %}
     {{ _.role('user') }}
     {{ user_message }}
   "#

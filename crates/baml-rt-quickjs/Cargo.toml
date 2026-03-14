@@ -29,6 +29,12 @@ async-trait = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }
 async-channel = { workspace = true }
+dashmap = "6.1.0"
+
+[features]
+# Exposes single-context-only APIs (eval_scoped) for use in test-support and integration tests.
+# Never enable this in production binaries.
+testing = []
 
 [dev-dependencies]
 test-support = { path = "../test-support" }
@@ -36,3 +42,4 @@ baml-rt = { path = "../baml-rt" }
 schemars = { workspace = true }
 ts-rs = { workspace = true }
 proptest = "1.5"
+insta = { workspace = true }

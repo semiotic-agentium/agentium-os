@@ -25,22 +25,17 @@ impl LLMInterceptor for StubChooseCalcToolInterceptor {
     ) -> baml_rt_core::Result<InterceptorDecision> {
         if context.function_name == "ChooseCalcTool" {
             Ok(InterceptorDecision::Substitute(json!({
-                "steps": [
-                    { "op": "Open", "reason": "stub open" },
-                    {
-                        "op": "Send",
-                        "input": {
-                            "expression": {
-                                "left": 2,
-                                "operation": "Add",
-                                "right": 3
-                            }
-                        },
-                        "reason": "stub send"
+                "step": {
+                    "op": "Send",
+                    "input": {
+                        "expression": {
+                            "left": 2,
+                            "operation": "Add",
+                            "right": 3
+                        }
                     },
-                    { "op": "Next", "reason": "stub next" },
-                    { "op": "Finish", "reason": "stub finish" }
-                ]
+                    "reason": "stub send"
+                }
             })))
         } else {
             Ok(InterceptorDecision::Allow)
@@ -93,27 +88,20 @@ async fn test_js_invoke_baml_function() {
     let scope = context::InvocationScope::synthetic_message(agent_id);
 
     let result = context::with_scope(scope.as_scope().clone(), async {
-        bridge.evaluate(Some(&scope), js_code).await
+        bridge.eval_scoped(&scope, js_code).await
     })
     .await;
 
     let json_result = result.expect("JS evaluate should succeed");
     println!("JavaScript execution result: {:?}", json_result);
 
-    // Stub returns a session plan; runtime executes it and returns tool result. Expect object with "result" (or plan "steps" if returned raw).
+    // Strict mode: stub returns one Send fragment; runtime executes it and returns sent status.
     let obj = json_result
         .as_object()
         .expect("Result should be a JSON object");
     assert!(
-        obj.contains_key("steps") || obj.contains_key("result"),
-        "Result should contain stubbed plan 'steps' or tool 'result'; got keys: {:?}",
+        obj.get("status").and_then(|v| v.as_str()) == Some("sent"),
+        "Result should contain strict sent status; got keys: {:?}",
         obj.keys().collect::<Vec<_>>()
     );
-    if obj.contains_key("result") {
-        let res = obj
-            .get("result")
-            .and_then(|v| v.as_f64())
-            .unwrap_or_default();
-        assert_eq!(res, 5.0, "Stub plan is 2+3=5");
-    }
 }

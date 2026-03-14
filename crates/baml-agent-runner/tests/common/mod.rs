@@ -257,7 +257,6 @@ impl RunningHttpServer {
         }
     }
 
-    #[allow(dead_code)] // Used by clickup/notion/slack test binaries, not all.
     pub fn with_base_path(mut self, base_path: &str) -> Self {
         let trimmed = base_path.trim();
         if trimmed.is_empty() || trimmed == "/" {
@@ -354,7 +353,6 @@ pub async fn start_runner_api_server(
     feature = "slack",
     feature = "llm-tests"
 ))]
-#[allow(dead_code)] // Used by clickup/notion/slack test binaries, not all.
 pub fn contains_kv(value: &Value, key: &str, expected: &str) -> bool {
     match value {
         Value::Object(map) => map.iter().any(|(k, v)| {

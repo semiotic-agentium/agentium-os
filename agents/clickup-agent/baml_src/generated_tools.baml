@@ -4,8 +4,8 @@
 // FSM (Finite State Machine) Tool Session Protocol:
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
-// 2. Send: Can only occur AFTER Open - sends input to the session
-// 3. Next: Retrieves output from the session (after Send)
+// 2. Send: Can occur AFTER Open, including multiple times across a session
+// 3. Read: Retrieves output/progress using explicit read input
 // 4. Finish: Closes the session gracefully
 // 5. Abort: Closes the session with an error
 //
@@ -13,15 +13,38 @@
 // - Open MUST come before any Send step
 // - Open may include 'initial_input' only when the step schema defines that field
 // - Send uses 'input' field (for subsequent inputs)
-// - After Send, call Next to retrieve results
+// - Use Read to fetch pending output/chunks; Read may repeat between Send steps
 // - Always Finish or Abort to close the session
 
-enum ToolSessionOp {
-  Open @description("Open a new tool session. MUST be the first step in any plan. Include 'initial_input' only when the step schema defines that field.")
-  Send @description("Send input to an already-open session. Can ONLY be used after an Open step. Use 'input' field (NOT 'initial_input').")
-  Next @description("Retrieve the next output from the session. Call this after Send to get results. For streaming tools, call Next multiple times until Done.")
-  Finish @description("Close the session gracefully after completing all operations. Always call Finish when done with a tool session.")
-  Abort @description("Close the session with an error. Use this if something went wrong and you need to terminate the session.")
+// Shared standard planning types
+class StandardAgentPlanStep {
+  agent_package string
+  agent_instance_id string
+  sub_message string
+}
+
+class StandardStructuredPlan {
+  intent_description string
+  objective string
+  plan_steps StandardAgentPlanStep[]
+}
+
+class SessionContext {
+  contract_version string
+  session_open bool
+  allowed_ops string[]
+  scope_ref string?
+  output_ref string?
+  evidence_ref string?
+}
+
+class HistoryContext {
+  hop int
+  op string
+  status string
+  truncated bool
+  cursor string?
+  payload string?
 }
 
 // Domain types generated from #[derive(BamlType)]
@@ -147,10 +170,7 @@ class ConversationPart {
 class DiscoverAgentsNextOutput {
   agents AgentCardDto[]
   done bool
-}
-
-class DiscoverAgentsOpenInput {
-  reason string?
+  historyContext HistoryContextV1 | null?
 }
 
 class DiscoverAgentsSendInput {
@@ -162,26 +182,34 @@ class DiscoverAgentsSendInput {
 class DiscoverToolsNextOutput {
   tools ToolDiscoveryRecordDto[]
   done bool
-}
-
-class DiscoverToolsOpenInput {
-  reason string? @description("Optional short justification for choosing to use discover_tools (e.g. \"user asked what tools are available\").")
+  historyContext HistoryContextV1 | null?
 }
 
 class DiscoverToolsSendInput {
-  query string?
-  limit int?
+  query string? @description("Optional case-insensitive filter over tool name, bundle, or description.\nOmit or null to list all discoverable tools.")
+  limit int? @description("Optional maximum number of tools to return for this Send query.\nUse a small value when you want compact, token-efficient results.")
+}
+
+class HistoryContextV1 {
+  hop int
+  op string
+  status string
+  truncated bool?
+  cursor string?
+  payload string?
 }
 
 enum InternalA2aCompletion {
   DONE
   INPUTREQUIRED
     @alias("INPUT_REQUIRED")
+  FAILED
 }
 
 class InternalA2aNextOutput {
   chunks ConversationChunk[]
   completion InternalA2aCompletion | null? @description("Set to INPUT_REQUIRED when the delegated agent yielded TASK_STATE_INPUT_REQUIRED.")
+  historyContext HistoryContextV1 | null?
 }
 
 class InternalA2aOpenInput {
@@ -189,8 +217,7 @@ class InternalA2aOpenInput {
 }
 
 class InternalA2aSendInput {
-  parts ConversationPart[]?
-  text string?
+  parts ConversationPart[] @description("Message parts. Provide at least one with a non-empty text field.")
 }
 
 class InternalA2aTarget {
@@ -208,131 +235,113 @@ class ToolDiscoveryRecordDto {
 
 class SupportClickupOpenStep {
   op "Open"
-  reason string? @description("Optional explanation for this step.")
 }
 
 class SupportClickupSendStep {
   op "Send"
-  input ClickUpInput @description("Input to send to the already-open session.")
-  reason string? @description("Optional explanation for this step.")
+  input ClickUpInput @description("Payload for this step.")
 }
 
-class SupportClickupNextStep {
-  op "Next"
-  reason string? @description("Optional explanation for this step.")
+class SupportClickupReadStep {
+  op "Read"
+  input ClickUpInput @description("Read payload for this step.")
 }
 
 class SupportClickupFinishStep {
   op "Finish"
-  reason string? @description("Optional explanation for this step.")
 }
 
 class SupportClickupAbortStep {
   op "Abort"
-  reason string? @description("Optional explanation for aborting the session.")
 }
 
-type SupportClickupSessionStep = SupportClickupOpenStep | SupportClickupSendStep | SupportClickupNextStep | SupportClickupFinishStep | SupportClickupAbortStep
+type SupportClickupSessionStep = SupportClickupOpenStep | SupportClickupSendStep | SupportClickupReadStep | SupportClickupFinishStep | SupportClickupAbortStep
 
 class SupportClickupSessionPlan {
-  steps SupportClickupSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Runtime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Example: [{op: \"Open\"}, {op: \"Send\", input: {...}}, {op: \"Next\"}, {op: \"Finish\"}].")
+  step SupportClickupSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. After Send, prefer Read before further Send/Finish so you consume tool output and status.")
 }
 
 class SystemDiscover_agentsOpenStep {
   op "Open"
-  initial_input DiscoverAgentsOpenInput? @description("Optional open-time configuration payload for the session. This is used only by Open and is not auto-sent as a Send input.")
-  reason string? @description("Optional explanation for this step.")
 }
 
 class SystemDiscover_agentsSendStep {
   op "Send"
-  input DiscoverAgentsSendInput @description("Input to send to the already-open session.")
-  reason string? @description("Optional explanation for this step.")
+  input DiscoverAgentsSendInput @description("Payload for this step.")
 }
 
-class SystemDiscover_agentsNextStep {
-  op "Next"
-  reason string? @description("Optional explanation for this step.")
+class SystemDiscover_agentsReadStep {
+  op "Read"
+  input DiscoverAgentsSendInput @description("Read payload for this step.")
 }
 
 class SystemDiscover_agentsFinishStep {
   op "Finish"
-  reason string? @description("Optional explanation for this step.")
 }
 
 class SystemDiscover_agentsAbortStep {
   op "Abort"
-  reason string? @description("Optional explanation for aborting the session.")
 }
 
-type SystemDiscover_agentsSessionStep = SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsNextStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep
+type SystemDiscover_agentsSessionStep = SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep
 
 class SystemDiscover_agentsSessionPlan {
-  steps SystemDiscover_agentsSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Runtime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Example: [{op: \"Open\"}, {op: \"Send\", input: {...}}, {op: \"Next\"}, {op: \"Finish\"}].")
+  step SystemDiscover_agentsSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. After Send, prefer Read before further Send/Finish so you consume tool output and status.")
 }
 
 class SystemDiscover_toolsOpenStep {
   op "Open"
-  initial_input DiscoverToolsOpenInput? @description("Optional open-time configuration payload for the session. This is used only by Open and is not auto-sent as a Send input.")
-  reason string? @description("Optional explanation for this step.")
 }
 
 class SystemDiscover_toolsSendStep {
   op "Send"
-  input DiscoverToolsSendInput @description("Input to send to the already-open session.")
-  reason string? @description("Optional explanation for this step.")
+  input DiscoverToolsSendInput @description("Payload for this step.")
 }
 
-class SystemDiscover_toolsNextStep {
-  op "Next"
-  reason string? @description("Optional explanation for this step.")
+class SystemDiscover_toolsReadStep {
+  op "Read"
+  input DiscoverToolsSendInput @description("Read payload for this step.")
 }
 
 class SystemDiscover_toolsFinishStep {
   op "Finish"
-  reason string? @description("Optional explanation for this step.")
 }
 
 class SystemDiscover_toolsAbortStep {
   op "Abort"
-  reason string? @description("Optional explanation for aborting the session.")
 }
 
-type SystemDiscover_toolsSessionStep = SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsNextStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep
+type SystemDiscover_toolsSessionStep = SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep
 
 class SystemDiscover_toolsSessionPlan {
-  steps SystemDiscover_toolsSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Runtime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Example: [{op: \"Open\"}, {op: \"Send\", input: {...}}, {op: \"Next\"}, {op: \"Finish\"}].")
+  step SystemDiscover_toolsSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. After Send, prefer Read before further Send/Finish so you consume tool output and status.")
 }
 
 class SystemInternal_a2aOpenStep {
   op "Open"
-  initial_input InternalA2aOpenInput? @description("Optional open-time configuration payload for the session. This is used only by Open and is not auto-sent as a Send input.")
-  reason string? @description("Optional explanation for this step.")
+  initial_input InternalA2aOpenInput @description("Required open payload.")
 }
 
 class SystemInternal_a2aSendStep {
   op "Send"
-  input InternalA2aSendInput @description("Input to send to the already-open session.")
-  reason string? @description("Optional explanation for this step.")
+  input InternalA2aSendInput @description("Conversational message payload. Set text to a non-empty string. Never null, never omit text.")
 }
 
-class SystemInternal_a2aNextStep {
-  op "Next"
-  reason string? @description("Optional explanation for this step.")
+class SystemInternal_a2aReadStep {
+  op "Read"
+  input InternalA2aSendInput @description("Read payload for this step.")
 }
 
 class SystemInternal_a2aFinishStep {
   op "Finish"
-  reason string? @description("Optional explanation for this step.")
 }
 
 class SystemInternal_a2aAbortStep {
   op "Abort"
-  reason string? @description("Optional explanation for aborting the session.")
 }
 
-type SystemInternal_a2aSessionStep = SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aNextStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep
+type SystemInternal_a2aSessionStep = SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aReadStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep
 
 class SystemInternal_a2aSessionPlan {
-  steps SystemInternal_a2aSessionStep[] @description("Array of FSM steps. MUST follow this strict order: 1) Open (include initial_input only when the schema defines it), 2) Send (with input), 3) Next (to retrieve results), 4) Finish or Abort (to close). Runtime resolves this plan to a tool via builder-generated function->plan mapping (session_plan_functions.json). Example: [{op: \"Open\"}, {op: \"Send\", input: {...}}, {op: \"Next\"}, {op: \"Finish\"}].")
+  step SystemInternal_a2aSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. For Send, input.text MUST be a non-empty string message — never null. After Send, use Read to receive the response before sending again or finishing.")
 }

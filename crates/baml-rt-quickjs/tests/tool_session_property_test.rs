@@ -90,7 +90,7 @@ proptest! {
                         .await
                         .expect("tool_session_send");
                     let step = manager
-                        .tool_session_next(&session_id)
+                        .tool_session_read(&session_id, serde_json::Value::Null)
                         .await
                         .expect("tool_session_next");
                     match step {
@@ -149,7 +149,7 @@ proptest! {
                     .await
                     .expect("tool_session_send");
                 let step = manager
-                    .tool_session_next(&session_id)
+                    .tool_session_read(&session_id, serde_json::Value::Null)
                     .await
                     .expect("tool_session_next");
                 match step {
