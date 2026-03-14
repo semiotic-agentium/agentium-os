@@ -357,9 +357,8 @@ async fn test_bridge_lock_not_held_across_async_work() {
     // Uses invoke_js_tool_nonblocking so the bridge Mutex is released before the poll loop,
     // allowing both contexts to make progress concurrently. This is how the handover lane
     // dispatches invocations in production.
-    let (r1, r2) = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        async { tokio::join!(
+    let (r1, r2) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(
             {
                 let bridge = bridge.clone();
                 async move {
@@ -412,8 +411,8 @@ async fn test_bridge_lock_not_held_across_async_work() {
                     .await
                 }
             }
-        ) },
-    )
+        )
+    })
     .await
     .expect(
         "timed out after 5s — barrier never unblocked, indicating the bridge lock was held \
