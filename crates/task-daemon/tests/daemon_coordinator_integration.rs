@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
 };
 use baml_task_daemon::{
-    A2aSink, ContractSource, InterpretationRequestEvent, InvestigationTask, ProjectContext,
+    ContractSource, DispatchSink, InterpretationRequestEvent, InvestigationTask, ProjectContext,
     ProjectInterpretation, SinkDeliveryMode, SourceReference, TaskBatch, TaskConfidence,
     TaskDispatch, TaskSink, TaskSourceKind,
 };
@@ -27,12 +27,12 @@ impl RunningServer {
 }
 
 #[derive(Clone, Default)]
-struct A2aMockState {
+struct DispatchMockState {
     hits: Arc<tokio::sync::Mutex<Vec<String>>>,
     requests: Arc<tokio::sync::Mutex<Vec<Value>>>,
 }
 
-impl A2aMockState {
+impl DispatchMockState {
     async fn push_hit(&self, hit: String) {
         self.hits.lock().await.push(hit);
     }
@@ -120,9 +120,9 @@ fn sample_dispatch() -> TaskDispatch {
 }
 
 #[tokio::test]
-async fn a2a_sink_sends_typed_handoff_to_explicit_target_agent_endpoint() {
-    async fn a2a_handler(
-        State(state): State<A2aMockState>,
+async fn dispatch_sink_sends_typed_handoff_to_explicit_target_agent_endpoint() {
+    async fn dispatch_handler(
+        State(state): State<DispatchMockState>,
         uri: OriginalUri,
         Json(payload): Json<Value>,
     ) -> Json<Value> {
@@ -131,24 +131,24 @@ async fn a2a_sink_sends_typed_handoff_to_explicit_target_agent_endpoint() {
         Json(json!({"accepted": true, "detail": "Created tasks successfully"}))
     }
 
-    let state = A2aMockState::default();
+    let state = DispatchMockState::default();
     let app = Router::new()
         .route(
             "/agents/workflow-intake-agent/default/dispatch",
-            post(a2a_handler),
+            post(dispatch_handler),
         )
         .with_state(state.clone());
     let server = start_http_server(app)
         .await
         .expect("start mock dispatch host");
 
-    let mut sink = A2aSink::for_agent(
+    let mut sink = DispatchSink::for_agent(
         server.base_url.clone(),
         "workflow-intake-agent".to_string(),
         "default".to_string(),
         SinkDeliveryMode::Live,
     )
-    .expect("a2a sink");
+    .expect("dispatch sink");
     sink.deliver(&sample_dispatch())
         .await
         .expect("deliver to mock dispatch host");
@@ -196,8 +196,8 @@ async fn a2a_sink_sends_typed_handoff_to_explicit_target_agent_endpoint() {
 }
 
 #[tokio::test]
-async fn a2a_sink_discovers_matching_subscribers_and_delivers_to_them() {
-    async fn list_agents_handler(State(state): State<A2aMockState>) -> Json<Value> {
+async fn dispatch_sink_discovers_matching_subscribers_and_delivers_to_them() {
+    async fn list_agents_handler(State(state): State<DispatchMockState>) -> Json<Value> {
         state.push_hit("GET /agents".to_string()).await;
         Json(json!([
             {
@@ -247,8 +247,8 @@ async fn a2a_sink_discovers_matching_subscribers_and_delivers_to_them() {
         ]))
     }
 
-    async fn a2a_handler(
-        State(state): State<A2aMockState>,
+    async fn dispatch_handler(
+        State(state): State<DispatchMockState>,
         uri: OriginalUri,
         Json(payload): Json<Value>,
     ) -> Json<Value> {
@@ -257,17 +257,18 @@ async fn a2a_sink_discovers_matching_subscribers_and_delivers_to_them() {
         Json(json!({"accepted": true, "detail": "Subscriber handled event"}))
     }
 
-    let state = A2aMockState::default();
+    let state = DispatchMockState::default();
     let app = Router::new()
         .route("/agents", get(list_agents_handler))
         .route(
             "/agents/workflow-intake-agent/default/dispatch",
-            post(a2a_handler),
+            post(dispatch_handler),
         )
         .with_state(state.clone());
     let server = start_http_server(app).await.expect("start mock host");
 
-    let mut sink = A2aSink::new(server.base_url.clone(), SinkDeliveryMode::Live).expect("a2a sink");
+    let mut sink =
+        DispatchSink::new(server.base_url.clone(), SinkDeliveryMode::Live).expect("dispatch sink");
     sink.deliver(&sample_dispatch())
         .await
         .expect("deliver to subscribed agent");
@@ -301,8 +302,8 @@ async fn a2a_sink_discovers_matching_subscribers_and_delivers_to_them() {
 }
 
 #[tokio::test]
-async fn a2a_sink_errors_when_no_subscriber_matches_published_event() {
-    async fn list_agents_handler(State(state): State<A2aMockState>) -> Json<Value> {
+async fn dispatch_sink_errors_when_no_subscriber_matches_published_event() {
+    async fn list_agents_handler(State(state): State<DispatchMockState>) -> Json<Value> {
         state.push_hit("GET /agents".to_string()).await;
         Json(json!([
             {
@@ -330,13 +331,14 @@ async fn a2a_sink_errors_when_no_subscriber_matches_published_event() {
         ]))
     }
 
-    let state = A2aMockState::default();
+    let state = DispatchMockState::default();
     let app = Router::new()
         .route("/agents", get(list_agents_handler))
         .with_state(state.clone());
     let server = start_http_server(app).await.expect("start mock host");
 
-    let mut sink = A2aSink::new(server.base_url.clone(), SinkDeliveryMode::Live).expect("a2a sink");
+    let mut sink =
+        DispatchSink::new(server.base_url.clone(), SinkDeliveryMode::Live).expect("dispatch sink");
     let err = sink
         .deliver(&sample_dispatch())
         .await
@@ -351,8 +353,8 @@ async fn a2a_sink_errors_when_no_subscriber_matches_published_event() {
 }
 
 #[tokio::test]
-async fn a2a_sink_reports_partial_subscriber_delivery_failures_with_success_context() {
-    async fn list_agents_handler(State(state): State<A2aMockState>) -> Json<Value> {
+async fn dispatch_sink_reports_partial_subscriber_delivery_failures_with_success_context() {
+    async fn list_agents_handler(State(state): State<DispatchMockState>) -> Json<Value> {
         state.push_hit("GET /agents".to_string()).await;
         Json(json!([
             {
@@ -403,7 +405,7 @@ async fn a2a_sink_reports_partial_subscriber_delivery_failures_with_success_cont
     }
 
     async fn ok_handler(
-        State(state): State<A2aMockState>,
+        State(state): State<DispatchMockState>,
         uri: OriginalUri,
         Json(payload): Json<Value>,
     ) -> Json<Value> {
@@ -413,7 +415,7 @@ async fn a2a_sink_reports_partial_subscriber_delivery_failures_with_success_cont
     }
 
     async fn bad_handler(
-        State(state): State<A2aMockState>,
+        State(state): State<DispatchMockState>,
         uri: OriginalUri,
         Json(payload): Json<Value>,
     ) -> (StatusCode, String) {
@@ -422,7 +424,7 @@ async fn a2a_sink_reports_partial_subscriber_delivery_failures_with_success_cont
         (StatusCode::BAD_GATEWAY, "downstream failure".to_string())
     }
 
-    let state = A2aMockState::default();
+    let state = DispatchMockState::default();
     let app = Router::new()
         .route("/agents", get(list_agents_handler))
         .route(
@@ -433,7 +435,8 @@ async fn a2a_sink_reports_partial_subscriber_delivery_failures_with_success_cont
         .with_state(state.clone());
     let server = start_http_server(app).await.expect("start mock host");
 
-    let mut sink = A2aSink::new(server.base_url.clone(), SinkDeliveryMode::Live).expect("a2a sink");
+    let mut sink =
+        DispatchSink::new(server.base_url.clone(), SinkDeliveryMode::Live).expect("dispatch sink");
     let err = sink
         .deliver(&sample_dispatch())
         .await
@@ -449,9 +452,9 @@ async fn a2a_sink_reports_partial_subscriber_delivery_failures_with_success_cont
 }
 
 #[tokio::test]
-async fn a2a_sink_surfaces_non_success_status_with_body() {
+async fn dispatch_sink_surfaces_non_success_status_with_body() {
     async fn failing_handler(
-        State(state): State<A2aMockState>,
+        State(state): State<DispatchMockState>,
         uri: OriginalUri,
         Json(payload): Json<Value>,
     ) -> (StatusCode, String) {
@@ -463,7 +466,7 @@ async fn a2a_sink_surfaces_non_success_status_with_body() {
         )
     }
 
-    let state = A2aMockState::default();
+    let state = DispatchMockState::default();
     let app = Router::new()
         .route(
             "/agents/coordinator-agent/default/dispatch",
@@ -474,13 +477,13 @@ async fn a2a_sink_surfaces_non_success_status_with_body() {
         .await
         .expect("start mock dispatch host");
 
-    let mut sink = A2aSink::for_agent(
+    let mut sink = DispatchSink::for_agent(
         server.base_url.clone(),
         "coordinator-agent".to_string(),
         "default".to_string(),
         SinkDeliveryMode::Live,
     )
-    .expect("a2a sink");
+    .expect("dispatch sink");
     let err = sink
         .deliver(&sample_dispatch())
         .await
@@ -495,9 +498,9 @@ async fn a2a_sink_surfaces_non_success_status_with_body() {
 }
 
 #[tokio::test]
-async fn a2a_sink_rejects_negative_dispatch_ack_on_http_200() {
+async fn dispatch_sink_rejects_negative_dispatch_ack_on_http_200() {
     async fn rejected_ack_handler(
-        State(state): State<A2aMockState>,
+        State(state): State<DispatchMockState>,
         uri: OriginalUri,
         Json(payload): Json<Value>,
     ) -> Json<Value> {
@@ -506,7 +509,7 @@ async fn a2a_sink_rejects_negative_dispatch_ack_on_http_200() {
         Json(json!({"accepted": false, "detail": "invalid params"}))
     }
 
-    let state = A2aMockState::default();
+    let state = DispatchMockState::default();
     let app = Router::new()
         .route(
             "/agents/coordinator-agent/default/dispatch",
@@ -517,13 +520,13 @@ async fn a2a_sink_rejects_negative_dispatch_ack_on_http_200() {
         .await
         .expect("start mock dispatch host");
 
-    let mut sink = A2aSink::for_agent(
+    let mut sink = DispatchSink::for_agent(
         server.base_url.clone(),
         "coordinator-agent".to_string(),
         "default".to_string(),
         SinkDeliveryMode::Live,
     )
-    .expect("a2a sink");
+    .expect("dispatch sink");
     let err = sink
         .deliver(&sample_dispatch())
         .await

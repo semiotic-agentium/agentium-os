@@ -143,41 +143,41 @@ cargo run -p baml-task-daemon -- run \
   --source clickup \
   --channel agentium-eng \
   --clickup-list-id <LIST_ID> \
-  --a2a-base-url http://127.0.0.1:8082 \
+  --dispatch-base-url http://127.0.0.1:8082 \
   --route slack:clickup \
-  --route clickup:a2a \
+  --route clickup:dispatch \
   --clickup-live \
-  --a2a-live
+  --dispatch-live
 ```
 
 Deliver daemon events to subscribed agents:
 
 ```bash
 # dry-run (shows what would be sent, without network side-effects)
-cargo run -p baml-task-daemon -- run --channel agentium-eng --a2a-base-url http://127.0.0.1:8082
+cargo run -p baml-task-daemon -- run --channel agentium-eng --dispatch-base-url http://127.0.0.1:8082
 
 # live delivery to subscribed agents discovered from the host /agents API
-cargo run -p baml-task-daemon -- run --channel agentium-eng --a2a-base-url http://127.0.0.1:8082 --a2a-live
+cargo run -p baml-task-daemon -- run --channel agentium-eng --dispatch-base-url http://127.0.0.1:8082 --dispatch-live
 ```
 
 Migration note:
 
-- `--a2a-base-url` no longer implies delivery to `coordinator-agent/default`.
+- `--dispatch-base-url` no longer implies delivery to `coordinator-agent/default`.
 - The default is now subscriber discovery via the host `/agents` API.
 - Existing invocations that relied on the old implicit single-target behavior
   should add both:
-  - `--a2a-agent-package <package>`
-  - `--a2a-agent-instance-id <instance>`
+  - `--dispatch-agent-package <package>`
+  - `--dispatch-agent-instance-id <instance>`
 
 Override subscriber delivery and send to one explicit target:
 
 ```bash
 cargo run -p baml-task-daemon -- run \
   --channel agentium-eng \
-  --a2a-base-url http://127.0.0.1:8082 \
-  --a2a-agent-package workflow-intake-agent \
-  --a2a-agent-instance-id default \
-  --a2a-live
+  --dispatch-base-url http://127.0.0.1:8082 \
+  --dispatch-agent-package workflow-intake-agent \
+  --dispatch-agent-instance-id default \
+  --dispatch-live
 ```
 
 ## Output You Should Expect
@@ -190,7 +190,7 @@ A typical batch includes:
 - `interpretation.workflow_seed.clarification_nodes`: questions that should be resolved before execution
 - `derived_tasks`: practical tasks emitted to sinks
 
-When using agent delivery (`--a2a-base-url --a2a-live`), task-daemon
+When using agent delivery (`--dispatch-base-url --dispatch-live`), task-daemon
 sends a buffered dispatch request with:
 - `routing_key` set to a source-specific intake key such as `slack:intake`
 - `message_type` set to `task-daemon.interpretation.v1`
@@ -209,7 +209,7 @@ versioned interpretation event contract:
 - With multiple `--source` flags, each interval (and `--once`) covers each selected source once.
 - `--route <source>:<sink>` overrides default fan-out. When routes are present, only explicitly routed source/sink pairs are active.
 - Startup validation rejects configurations where a selected source has no compatible sink.
-- With `--a2a-base-url` and no explicit `--a2a-agent-package` / `--a2a-agent-instance-id`, task-daemon discovers subscribed agents from the host `/agents` API and delivers matching events to their `/dispatch` entrypoint.
+- With `--dispatch-base-url` and no explicit `--dispatch-agent-package` / `--dispatch-agent-instance-id`, task-daemon discovers subscribed agents from the host `/agents` API and delivers matching events to their `/dispatch` entrypoint.
 - This replaces the older implicit single-target coordinator delivery. Use both explicit target flags if you need that behavior.
 - Delivery is currently best-effort at-least-once: source cursor/task state is persisted only after sink delivery succeeds.
 

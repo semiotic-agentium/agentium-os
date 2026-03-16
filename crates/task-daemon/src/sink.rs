@@ -94,13 +94,13 @@ pub enum SinkConstructorError {
     #[error("github repo must not be empty")]
     EmptyGithubRepo,
     #[error("agent host base URL must not be empty")]
-    EmptyA2aBaseUrl,
+    EmptyDispatchBaseUrl,
     #[error("agent host base URL is invalid: {raw}")]
-    InvalidA2aBaseUrl { raw: String },
+    InvalidDispatchBaseUrl { raw: String },
     #[error("agent package is invalid: {raw}")]
-    InvalidA2aAgentPackage { raw: String },
+    InvalidDispatchAgentPackage { raw: String },
     #[error("agent instance id is invalid: {raw}")]
-    InvalidA2aAgentInstanceId { raw: String },
+    InvalidDispatchAgentInstanceId { raw: String },
 }
 
 #[derive(Debug, Error)]
@@ -144,44 +144,44 @@ pub enum SinkDeliveryError {
         source: anyhow::Error,
     },
     #[error("sending dispatch request to target agent failed: {source}")]
-    A2aTransport {
+    DispatchTransport {
         #[source]
         source: anyhow::Error,
     },
     #[error("loading subscribed agents from agent host failed: {source}")]
-    A2aDiscoveryTransport {
+    DispatchDiscoveryTransport {
         #[source]
         source: anyhow::Error,
     },
     #[error("agent discovery failed with {status}: {body}")]
-    A2aDiscoveryHttp { status: u16, body: String },
+    DispatchDiscoveryHttp { status: u16, body: String },
     #[error("reading agent discovery JSON failed: {source}")]
-    A2aDiscoveryJson {
+    DispatchDiscoveryJson {
         #[source]
         source: anyhow::Error,
     },
     #[error("dispatch request failed with {status}: {body}")]
-    A2aHttp { status: u16, body: String },
+    DispatchHttp { status: u16, body: String },
     #[error("reading dispatch acknowledgement JSON failed: {source}")]
-    A2aResponseJson {
+    DispatchResponseJson {
         #[source]
         source: anyhow::Error,
     },
     #[error("dispatch protocol validation failed: {source}")]
-    A2aProtocol {
+    DispatchProtocol {
         #[source]
         source: anyhow::Error,
     },
     #[error(
         "no subscribed agents matched schema {schema_version}, source {source_kind}, source key {source_key}"
     )]
-    A2aNoMatchingSubscribers {
+    DispatchNoMatchingSubscribers {
         schema_version: String,
         source_kind: String,
         source_key: String,
     },
     #[error("delivering task-daemon event to subscribed agents failed: {details}")]
-    A2aSubscriberDelivery { details: String },
+    DispatchSubscriberDelivery { details: String },
 }
 
 /// Prints one structured result to stdout for each daemon cycle.
@@ -635,15 +635,15 @@ pub fn format_event_delivery_prompt(batch: &TaskBatch) -> String {
 }
 
 #[derive(Debug, Clone)]
-enum A2aDestination {
+enum DispatchDestination {
     ExplicitTarget(AgentRouteKey),
     Subscribers,
 }
 
 /// Delivers task-daemon results to another agent through the deterministic dispatch endpoint.
-pub struct A2aSink {
-    a2a_base_url: reqwest::Url,
-    destination: A2aDestination,
+pub struct DispatchSink {
+    dispatch_base_url: reqwest::Url,
+    destination: DispatchDestination,
     client: reqwest::Client,
     mode: SinkDeliveryMode,
 }
@@ -652,20 +652,20 @@ const INTERPRETATION_RESULT_CONTENT_TYPE: &str =
     "application/vnd.baml.task-daemon.interpretation-result+json;version=1";
 const DISPATCH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
-impl A2aSink {
+impl DispatchSink {
     /// Creates a host delivery destination that delivers to subscribed agents discovered
     /// from the host `/agents` API.
     ///
     /// `SinkDeliveryMode::DryRun` logs the message instead of sending it.
     pub fn new(
-        a2a_base_url: String,
+        dispatch_base_url: String,
         mode: SinkDeliveryMode,
     ) -> std::result::Result<Self, SinkConstructorError> {
-        let a2a_base_url = normalize_a2a_base_url(a2a_base_url)?;
+        let dispatch_base_url = normalize_dispatch_base_url(dispatch_base_url)?;
 
         Ok(Self {
-            a2a_base_url,
-            destination: A2aDestination::Subscribers,
+            dispatch_base_url,
+            destination: DispatchDestination::Subscribers,
             client: reqwest::Client::new(),
             mode,
         })
@@ -673,26 +673,26 @@ impl A2aSink {
 
     /// Creates a host delivery destination for one explicit target agent.
     pub fn for_agent(
-        a2a_base_url: String,
+        dispatch_base_url: String,
         agent_package: String,
         agent_instance_id: String,
         mode: SinkDeliveryMode,
     ) -> std::result::Result<Self, SinkConstructorError> {
-        let a2a_base_url = normalize_a2a_base_url(a2a_base_url)?;
+        let dispatch_base_url = normalize_dispatch_base_url(dispatch_base_url)?;
         let agent_package = AgentPackageName::parse(&agent_package).ok_or_else(|| {
-            SinkConstructorError::InvalidA2aAgentPackage {
+            SinkConstructorError::InvalidDispatchAgentPackage {
                 raw: agent_package.clone(),
             }
         })?;
         let agent_instance_id = AgentInstanceId::parse(&agent_instance_id).ok_or_else(|| {
-            SinkConstructorError::InvalidA2aAgentInstanceId {
+            SinkConstructorError::InvalidDispatchAgentInstanceId {
                 raw: agent_instance_id.clone(),
             }
         })?;
 
         Ok(Self {
-            a2a_base_url,
-            destination: A2aDestination::ExplicitTarget(AgentRouteKey::new(
+            dispatch_base_url,
+            destination: DispatchDestination::ExplicitTarget(AgentRouteKey::new(
                 agent_package,
                 agent_instance_id,
             )),
@@ -746,7 +746,7 @@ impl A2aSink {
             dispatch.result_event.source.source.as_str(),
             &dispatch.result_event.source.source_key,
         )
-        .map_err(|source| SinkDeliveryError::A2aProtocol {
+        .map_err(|source| SinkDeliveryError::DispatchProtocol {
             source: anyhow::Error::new(source),
         })
         .map_err(Into::into)
@@ -760,9 +760,9 @@ impl A2aSink {
         // Always use fresh discovery data so subscription changes take effect
         // on the next delivery cycle without cache invalidation logic.
         let url = self
-            .a2a_base_url
+            .dispatch_base_url
             .join(Self::subscriber_index_path())
-            .map_err(|source| SinkDeliveryError::A2aDiscoveryTransport {
+            .map_err(|source| SinkDeliveryError::DispatchDiscoveryTransport {
                 source: anyhow::Error::new(source),
             })?;
         let resp = self
@@ -771,7 +771,7 @@ impl A2aSink {
             .timeout(DISPATCH_HTTP_TIMEOUT)
             .send()
             .await
-            .map_err(|source| SinkDeliveryError::A2aDiscoveryTransport {
+            .map_err(|source| SinkDeliveryError::DispatchDiscoveryTransport {
                 source: source.into(),
             })?;
 
@@ -781,7 +781,7 @@ impl A2aSink {
                 Ok(body) => body,
                 Err(error) => format!("<failed to read response body: {error}>"),
             };
-            return Err(SinkDeliveryError::A2aDiscoveryHttp {
+            return Err(SinkDeliveryError::DispatchDiscoveryHttp {
                 status,
                 body: body_text,
             }
@@ -790,7 +790,7 @@ impl A2aSink {
 
         resp.json()
             .await
-            .map_err(|source| SinkDeliveryError::A2aDiscoveryJson {
+            .map_err(|source| SinkDeliveryError::DispatchDiscoveryJson {
                 source: source.into(),
             })
             .map_err(Into::into)
@@ -816,7 +816,7 @@ impl A2aSink {
             }
 
             let agent_package = AgentPackageName::parse(&entry.agent_package).ok_or_else(|| {
-                SinkDeliveryError::A2aProtocol {
+                SinkDeliveryError::DispatchProtocol {
                     source: anyhow!(
                         "discovered subscriber has invalid agent_package {:?}",
                         entry.agent_package
@@ -825,7 +825,7 @@ impl A2aSink {
             })?;
             let agent_instance_id =
                 AgentInstanceId::parse(&entry.agent_instance_id).ok_or_else(|| {
-                    SinkDeliveryError::A2aProtocol {
+                    SinkDeliveryError::DispatchProtocol {
                         source: anyhow!(
                             "discovered subscriber has invalid agent_instance_id {:?}",
                             entry.agent_instance_id
@@ -838,7 +838,7 @@ impl A2aSink {
         if targets.is_empty() {
             // Keep this as a delivery error so task-daemon does not advance
             // source state and drop an event before any subscriber is available.
-            return Err(SinkDeliveryError::A2aNoMatchingSubscribers {
+            return Err(SinkDeliveryError::DispatchNoMatchingSubscribers {
                 schema_version: event.schema_version.to_string(),
                 source_kind: event.source_kind.to_string(),
                 source_key: event.source_key.to_string(),
@@ -856,9 +856,9 @@ impl A2aSink {
         prompt: &str,
     ) -> Result<()> {
         let url = self
-            .a2a_base_url
+            .dispatch_base_url
             .join(&Self::target_path(target))
-            .map_err(|source| SinkDeliveryError::A2aTransport {
+            .map_err(|source| SinkDeliveryError::DispatchTransport {
                 source: anyhow::Error::new(source),
             })?;
         let body = Self::build_dispatch_body(dispatch, prompt);
@@ -872,7 +872,7 @@ impl A2aSink {
             .json(&body)
             .send()
             .await
-            .map_err(|source| SinkDeliveryError::A2aTransport {
+            .map_err(|source| SinkDeliveryError::DispatchTransport {
                 source: source.into(),
             })?;
 
@@ -882,7 +882,7 @@ impl A2aSink {
                 Ok(body) => body,
                 Err(error) => format!("<failed to read response body: {error}>"),
             };
-            return Err(SinkDeliveryError::A2aHttp {
+            return Err(SinkDeliveryError::DispatchHttp {
                 status,
                 body: body_text,
             }
@@ -892,14 +892,14 @@ impl A2aSink {
         let ack: AgentDispatchAck =
             resp.json()
                 .await
-                .map_err(|source| SinkDeliveryError::A2aResponseJson {
+                .map_err(|source| SinkDeliveryError::DispatchResponseJson {
                     source: source.into(),
                 })?;
 
         let detail = validate_dispatch_ack(&ack)
-            .map_err(|source| SinkDeliveryError::A2aProtocol { source })?;
+            .map_err(|source| SinkDeliveryError::DispatchProtocol { source })?;
         tracing::info!(
-            a2a_base_url = %self.a2a_base_url,
+            dispatch_base_url = %self.dispatch_base_url,
             target = target_label.as_str(),
             accepted = ack.accepted,
             detail_len = detail.as_ref().map_or(0, |t| t.len()),
@@ -911,7 +911,7 @@ impl A2aSink {
 }
 
 #[async_trait]
-impl TaskSink for A2aSink {
+impl TaskSink for DispatchSink {
     fn name(&self) -> &'static str {
         match self.mode {
             SinkDeliveryMode::DryRun => "dispatch-dry-run",
@@ -924,15 +924,15 @@ impl TaskSink for A2aSink {
 
         if matches!(self.mode, SinkDeliveryMode::DryRun) {
             match &self.destination {
-                A2aDestination::ExplicitTarget(target) => tracing::info!(
-                    a2a_base_url = %self.a2a_base_url,
+                DispatchDestination::ExplicitTarget(target) => tracing::info!(
+                    dispatch_base_url = %self.dispatch_base_url,
                     target = Self::explicit_target_label(target),
                     derived_tasks = dispatch.batch.derived_tasks.len(),
                     prompt_len = prompt.len(),
                     "Dispatch sink dry-run; prompt:\n{prompt}"
                 ),
-                A2aDestination::Subscribers => tracing::info!(
-                    a2a_base_url = %self.a2a_base_url,
+                DispatchDestination::Subscribers => tracing::info!(
+                    dispatch_base_url = %self.dispatch_base_url,
                     schema_version = %dispatch.result_event.schema_version,
                     source = %dispatch.result_event.source.source.as_str(),
                     source_key = %dispatch.result_event.source.source_key,
@@ -945,16 +945,16 @@ impl TaskSink for A2aSink {
         }
 
         match &self.destination {
-            A2aDestination::ExplicitTarget(target) => {
+            DispatchDestination::ExplicitTarget(target) => {
                 tracing::info!(
-                    a2a_base_url = %self.a2a_base_url,
+                    dispatch_base_url = %self.dispatch_base_url,
                     target = Self::explicit_target_label(target),
                     derived_tasks = dispatch.batch.derived_tasks.len(),
                     "Sending task-daemon dispatch to explicit target agent"
                 );
                 self.deliver_to_target(target, dispatch, &prompt).await
             }
-            A2aDestination::Subscribers => {
+            DispatchDestination::Subscribers => {
                 let entries = self.fetch_discovery_entries().await?;
                 let published_event = Self::published_event(dispatch)?;
                 let targets = Self::matching_subscribers(&entries, &published_event)?;
@@ -963,7 +963,7 @@ impl TaskSink for A2aSink {
                     .map(Self::explicit_target_label)
                     .collect::<Vec<_>>();
                 tracing::info!(
-                    a2a_base_url = %self.a2a_base_url,
+                    dispatch_base_url = %self.dispatch_base_url,
                     subscriber_count = targets.len(),
                     subscribers = target_labels.join(", "),
                     schema_version = %dispatch.result_event.schema_version,
@@ -990,7 +990,7 @@ impl TaskSink for A2aSink {
                     Ok(())
                 } else {
                     tracing::warn!(
-                        a2a_base_url = %self.a2a_base_url,
+                        dispatch_base_url = %self.dispatch_base_url,
                         attempted_subscriber_count = targets.len(),
                         successful_subscriber_count = successes.len(),
                         failed_subscriber_count = failures.len(),
@@ -1001,7 +1001,7 @@ impl TaskSink for A2aSink {
                         source_key = %dispatch.result_event.source.source_key,
                         "Task-daemon event delivery to subscribed agents was only partially successful"
                     );
-                    Err(SinkDeliveryError::A2aSubscriberDelivery {
+                    Err(SinkDeliveryError::DispatchSubscriberDelivery {
                         details: format!(
                             "delivered to {} of {} subscribed agents; successes: {}; failures: {}",
                             successes.len(),
@@ -1021,35 +1021,35 @@ impl TaskSink for A2aSink {
     }
 }
 
-fn normalize_a2a_base_url(
-    a2a_base_url: String,
+fn normalize_dispatch_base_url(
+    dispatch_base_url: String,
 ) -> std::result::Result<reqwest::Url, SinkConstructorError> {
-    let a2a_base_url = a2a_base_url.trim().to_string();
-    if a2a_base_url.is_empty() {
-        return Err(SinkConstructorError::EmptyA2aBaseUrl);
+    let dispatch_base_url = dispatch_base_url.trim().to_string();
+    if dispatch_base_url.is_empty() {
+        return Err(SinkConstructorError::EmptyDispatchBaseUrl);
     }
-    let mut a2a_base_url = reqwest::Url::parse(&a2a_base_url).map_err(|_| {
-        SinkConstructorError::InvalidA2aBaseUrl {
-            raw: a2a_base_url.clone(),
+    let mut dispatch_base_url = reqwest::Url::parse(&dispatch_base_url).map_err(|_| {
+        SinkConstructorError::InvalidDispatchBaseUrl {
+            raw: dispatch_base_url.clone(),
         }
     })?;
-    if !matches!(a2a_base_url.scheme(), "http" | "https") {
-        return Err(SinkConstructorError::InvalidA2aBaseUrl {
-            raw: a2a_base_url.to_string(),
+    if !matches!(dispatch_base_url.scheme(), "http" | "https") {
+        return Err(SinkConstructorError::InvalidDispatchBaseUrl {
+            raw: dispatch_base_url.to_string(),
         });
     }
-    if !a2a_base_url.path().ends_with('/') {
+    if !dispatch_base_url.path().ends_with('/') {
         let normalized_path = {
-            let trimmed = a2a_base_url.path().trim_end_matches('/');
+            let trimmed = dispatch_base_url.path().trim_end_matches('/');
             if trimmed.is_empty() {
                 "/".to_string()
             } else {
                 format!("{trimmed}/")
             }
         };
-        a2a_base_url.set_path(&normalized_path);
+        dispatch_base_url.set_path(&normalized_path);
     }
-    Ok(a2a_base_url)
+    Ok(dispatch_base_url)
 }
 
 fn routing_key_for_published_event(
@@ -1057,7 +1057,7 @@ fn routing_key_for_published_event(
 ) -> Result<baml_rt_core::AgentDispatchRoutingKey> {
     TaskSourceKind::try_from(&event.source_kind)
         .map(TaskSourceKind::intake_routing_key)
-        .map_err(|source| SinkDeliveryError::A2aProtocol {
+        .map_err(|source| SinkDeliveryError::DispatchProtocol {
             source: anyhow::Error::new(source),
         })
         .map_err(Into::into)
@@ -1189,7 +1189,7 @@ mod tests {
                 InvestigationTask {
                     key: "task-2".to_string(),
                     title: "Write integration tests".to_string(),
-                    description: "Cover the A2A sink bridge".to_string(),
+                    description: "Cover the dispatch sink bridge".to_string(),
                     priority: TaskConfidence::Medium,
                     sources: vec![],
                 },
@@ -1435,7 +1435,7 @@ mod tests {
     fn build_dispatch_body_contains_required_fields_and_typed_handoff() {
         let dispatch = sample_dispatch(sample_batch());
         let prompt = format_event_delivery_prompt(&dispatch.batch);
-        let body = A2aSink::build_dispatch_body(&dispatch, &prompt);
+        let body = DispatchSink::build_dispatch_body(&dispatch, &prompt);
 
         assert_eq!(body.routing_key, dispatch.batch.source.intake_routing_key());
         assert!(

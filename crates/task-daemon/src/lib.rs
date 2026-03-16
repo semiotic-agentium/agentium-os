@@ -35,8 +35,9 @@ pub use model::{
     TaskSourceKind, WorkflowSeed,
 };
 pub use sink::{
-    A2aSink, ClickUpSink, GithubIssueSink, JsonlFileSink, SinkConstructorError, SinkDeliveryError,
-    SinkDeliveryMode, SourceFilteredSink, StdoutSink, TaskSink, format_event_delivery_prompt,
+    ClickUpSink, DispatchSink, GithubIssueSink, JsonlFileSink, SinkConstructorError,
+    SinkDeliveryError, SinkDeliveryMode, SourceFilteredSink, StdoutSink, TaskSink,
+    format_event_delivery_prompt,
 };
 pub use slack_source::{SlackChannelSelector, SlackSourceConfig, SlackTaskSource};
 pub use state::{SourceState, StateStore, TaskDaemonState};

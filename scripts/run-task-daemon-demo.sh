@@ -106,10 +106,10 @@ else
       --once \
       --extractor "$EXTRACTOR" \
       --max-candidates "$MAX_CANDIDATES" \
-      --a2a-base-url "$COORDINATOR_URL" \
-      --a2a-agent-package workflow-intake-agent \
-      --a2a-agent-instance-id default \
-      --a2a-live \
+      --dispatch-base-url "$COORDINATOR_URL" \
+      --dispatch-agent-package workflow-intake-agent \
+      --dispatch-agent-instance-id default \
+      --dispatch-live \
       --emit-empty \
       --state-file "$STATE_FILE" \
       --project-config "$PROJECT_CONFIG" \
