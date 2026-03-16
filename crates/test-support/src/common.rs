@@ -167,6 +167,31 @@ pub async fn build_agent_package_to_temp(agent_dir: PathBuf, package_label: &str
     extract_dir
 }
 
+/// Builds an agent archive at the given path using the builder crate (no subprocess) and returns
+/// the `.tar.gz` path. Caller is responsible for removing the archive when done.
+pub async fn build_agent_package_archive_to_temp(
+    agent_dir: PathBuf,
+    package_label: &str,
+) -> PathBuf {
+    if !agent_dir.exists() || !agent_dir.join("baml_src").exists() {
+        panic!(
+            "Agent dir {} missing or invalid (no baml_src)",
+            agent_dir.display()
+        );
+    }
+
+    let unique = uuid::Uuid::new_v4();
+    let pid = std::process::id();
+    let tar_path =
+        std::env::temp_dir().join(format!("runner-test-{package_label}-{pid}-{unique}.tar.gz"));
+
+    baml_rt_builder::build_agent_package(&agent_dir, &tar_path)
+        .await
+        .unwrap_or_else(|e| panic!("build agent archive {package_label} failed: {e}"));
+
+    tar_path
+}
+
 /// Assert that fixture TypeScript runtime declarations exist.
 ///
 /// Scans `tests/fixtures/agents/` for directories containing `baml_src/`

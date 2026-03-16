@@ -1,4 +1,14 @@
-use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
+mod common;
+
+use std::{
+    collections::HashSet,
+    fs,
+    net::TcpListener,
+    path::PathBuf,
+    process::{Child, Command, Stdio},
+    sync::Arc,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use baml_rt::{A2aRequestHandler, BamlRtError, baml::BamlRuntimeManager};
@@ -7,12 +17,14 @@ use baml_rt_core::{
     bus::{BusStream, BusWithEffects},
 };
 use baml_tools_system::SystemBundle;
+use common::e2e_serial_gate;
 use serde_json::{Value, json};
 use test_support::common::{
-    TempDirCleanup, build_agent_package_to_temp, chunks_from_responses, message_texts_from_chunks,
-    test_graphqlite_store, workspace_fnox_path, workspace_root,
+    TempDirCleanup, build_agent_package_archive_to_temp, build_agent_package_to_temp,
+    chunks_from_responses, message_texts_from_chunks, test_graphqlite_store, workspace_fnox_path,
+    workspace_root,
 };
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, time::sleep};
 
 #[derive(Clone)]
 struct StaticAgentList {
@@ -150,10 +162,96 @@ fn discovery_entry(package: &str, capabilities: &[&str]) -> AgentDiscoveryEntry 
 }
 
 async fn build_workspace_workflow_intake_agent() -> PathBuf {
-    let agent_dir = workspace_root()
+    build_agent_package_to_temp(workflow_intake_agent_dir(), "workflow-intake-agent").await
+}
+
+fn workflow_intake_agent_dir() -> PathBuf {
+    workspace_root()
         .join("agents")
-        .join("workflow-intake-agent");
-    build_agent_package_to_temp(agent_dir, "workflow-intake-agent").await
+        .join("workflow-intake-agent")
+}
+
+#[derive(Debug)]
+struct TempFileCleanup {
+    path: PathBuf,
+}
+
+impl TempFileCleanup {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for TempFileCleanup {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+struct RunningRunnerProcess {
+    base_url: String,
+    child: Child,
+    log_path: PathBuf,
+}
+
+impl RunningRunnerProcess {
+    async fn start(package_paths: &[PathBuf]) -> Self {
+        let reserved = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = reserved.local_addr().expect("local address");
+        drop(reserved);
+
+        let base_url = format!("http://{addr}");
+        let log_path = std::env::temp_dir().join(format!(
+            "workflow-intake-dispatch-runner-{}-{}.log",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let stdout = fs::File::create(&log_path).expect("create runner log");
+        let stderr = stdout.try_clone().expect("clone runner log handle");
+
+        let mut command = Command::new(env!("CARGO_BIN_EXE_baml-agent-runner"));
+        command
+            .args(package_paths)
+            .arg("--serve-http")
+            .arg(addr.to_string())
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr));
+
+        let mut child = command.spawn().expect("spawn baml-agent-runner");
+        let client = reqwest::Client::new();
+        let agents_url = format!("{base_url}/agents");
+        for _ in 0..100 {
+            if let Some(status) = child.try_wait().expect("poll runner process") {
+                let log = fs::read_to_string(&log_path).unwrap_or_else(|_| "<unreadable>".into());
+                panic!("runner exited before serving HTTP (status: {status}). Log:\n{log}");
+            }
+
+            if let Ok(response) = client.get(&agents_url).send().await
+                && response.status().is_success()
+            {
+                return Self {
+                    base_url,
+                    child,
+                    log_path,
+                };
+            }
+
+            sleep(Duration::from_millis(100)).await;
+        }
+
+        let log = fs::read_to_string(&log_path).unwrap_or_else(|_| "<unreadable>".into());
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("runner did not become ready. Log:\n{log}");
+    }
+}
+
+impl Drop for RunningRunnerProcess {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = fs::remove_file(&self.log_path);
+    }
 }
 
 async fn setup_workflow_intake_agent(
@@ -337,6 +435,68 @@ async fn workflow_intake_routes_slack_events_to_clickup_creation_capability() {
             .iter()
             .any(|text| text.contains("Routed create_pm_work to clickup-agent/default.")),
         "expected route summary in response, got: {texts:?}"
+    );
+}
+
+#[tokio::test]
+async fn workflow_intake_dispatch_http_routes_to_real_on_dispatch_noop_ack() {
+    let _permit = e2e_serial_gate().acquire().await.expect("acquire e2e gate");
+
+    let package_path = build_agent_package_archive_to_temp(
+        workflow_intake_agent_dir(),
+        "workflow-intake-agent-dispatch",
+    )
+    .await;
+    let _package_cleanup = TempFileCleanup::new(package_path.clone());
+
+    let runner = RunningRunnerProcess::start(&[package_path]).await;
+    let client = reqwest::Client::new();
+    let context_id = "ctx-1735720000000-42";
+    let dispatch_url = format!(
+        "{}/agents/workflow-intake-agent/default/dispatch",
+        runner.base_url
+    );
+    let dispatch_body = json!({
+        "routing_key": "slack:intake",
+        "message_type": "task-daemon.interpretation.v1",
+        "context_id": context_id,
+        "task_id": "dispatch-task-1735720000000",
+        "message_id": "dispatch-msg-1735720000000",
+        "messages": [
+            base_event("slack", "#agentium-eng", vec![])
+        ]
+    });
+
+    let response = client
+        .post(&dispatch_url)
+        .json(&dispatch_body)
+        .send()
+        .await
+        .expect("dispatch request");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let ack: Value = response.json().await.expect("dispatch ack json");
+    assert_eq!(ack.get("accepted").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        ack.get("detail").and_then(Value::as_str),
+        Some("The event produced no derived work items.")
+    );
+
+    let discovery = client
+        .get(format!("{}/agents", runner.base_url))
+        .send()
+        .await
+        .expect("discovery request");
+    assert_eq!(discovery.status(), reqwest::StatusCode::OK);
+    let agents: Value = discovery.json().await.expect("discovery json");
+    assert!(
+        agents
+            .as_array()
+            .is_some_and(|items| items.iter().any(|item| {
+                item.pointer("/agent_package").and_then(Value::as_str)
+                    == Some("workflow-intake-agent")
+            })),
+        "workflow-intake-agent must be discoverable: {agents:?}"
     );
 }
 
