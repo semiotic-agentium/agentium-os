@@ -13,15 +13,30 @@ agentInstanceId: string;
 tools: string[];
 description: string | null;
 capabilities: string[];
+subscriptions: AgentEventSubscriptionDto[] | null;
+ }
+
+export interface AgentEventSubscriptionDto { schemaVersions: string[] | null;
+sourceKinds: string[] | null;
+sourceKeys: string[] | null;
+sourceKeyPrefixes: string[] | null;
+ }
+
+export interface DiscoverAgentsOpenInput { reason: string | null;
  }
 
 export interface DiscoverAgentsSendInput { query: string | null;
 requiredCapabilities: string[] | null;
+requiredSchemaVersions: string[] | null;
+requiredSourceKinds: string[] | null;
 limit: number | null;
 offset: number | null;
  }
 
 export interface NeedClarification { question: string;
+ }
+
+export interface ProvenanceQueryOpenInput { reason: string | null;
  }
 
 export interface ProvenanceQuerySendInput { read: SessionReadEnvelope | null;
@@ -85,6 +100,7 @@ export interface SystemDiscover_agentsFinishStep { op: "Finish";
  }
 
 export interface SystemDiscover_agentsOpenStep { op: "Open";
+initial_input: DiscoverAgentsOpenInput | null;
  }
 
 export interface SystemDiscover_agentsReadStep { op: "Read";
@@ -105,6 +121,7 @@ export interface SystemExtrospectionFinishStep { op: "Finish";
  }
 
 export interface SystemExtrospectionOpenStep { op: "Open";
+initial_input: ProvenanceQueryOpenInput | null;
  }
 
 export interface SystemExtrospectionReadStep { op: "Read";

@@ -200,29 +200,24 @@ class SlackOutput {
 
 class SupportSlackOpenStep {
   op "Open"
-  reason string? @description("Optional reason.")
 }
 
 class SupportSlackSendStep {
   op "Send"
   input SlackInput @description("Payload for this step.")
-  reason string? @description("Optional reason.")
 }
 
 class SupportSlackReadStep {
   op "Read"
   input SlackInput @description("Read payload for this step.")
-  reason string? @description("Optional reason.")
 }
 
 class SupportSlackFinishStep {
   op "Finish"
-  reason string? @description("Optional reason.")
 }
 
 class SupportSlackAbortStep {
   op "Abort"
-  reason string? @description("Optional reason.")
 }
 
 type SupportSlackSessionStep = SupportSlackOpenStep | SupportSlackSendStep | SupportSlackReadStep | SupportSlackFinishStep | SupportSlackAbortStep
@@ -230,3 +225,4 @@ type SupportSlackSessionStep = SupportSlackOpenStep | SupportSlackSendStep | Sup
 class SupportSlackSessionPlan {
   step SupportSlackSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. After Send, prefer Read before further Send/Finish so you consume tool output and status. Access: read.")
 }
+

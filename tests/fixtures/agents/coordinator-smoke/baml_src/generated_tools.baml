@@ -56,6 +56,14 @@ class AgentCardDto {
   tools string[]
   description string?
   capabilities string[]
+  subscriptions AgentEventSubscriptionDto[]?
+}
+
+class AgentEventSubscriptionDto {
+  schemaVersions string[]?
+  sourceKinds string[]?
+  sourceKeys string[]?
+  sourceKeyPrefixes string[]?
 }
 
 class ConversationChunk {
@@ -84,9 +92,15 @@ class DiscoverAgentsNextOutput {
   historyContext HistoryContextV1 | null?
 }
 
+class DiscoverAgentsOpenInput {
+  reason string?
+}
+
 class DiscoverAgentsSendInput {
   query string? @description("Optional text filter over agent name, package, or description.")
   requiredCapabilities string[]? @description("Only return agents that declare every listed capability.")
+  requiredSchemaVersions string[]? @description("Only return agents with a matching event subscription for any listed schema version.")
+  requiredSourceKinds string[]? @description("Only return agents with a matching event subscription for any listed source kind.")
   limit int?
   offset int?
 }
@@ -95,6 +109,10 @@ class DiscoverToolsNextOutput {
   tools ToolDiscoveryRecordDto[]
   done bool
   historyContext HistoryContextV1 | null?
+}
+
+class DiscoverToolsOpenInput {
+  reason string?
 }
 
 class DiscoverToolsSendInput {
@@ -147,6 +165,7 @@ class ToolDiscoveryRecordDto {
 
 class SystemDiscover_agentsOpenStep {
   op "Open"
+  initial_input DiscoverAgentsOpenInput? @description("Optional open payload.")
 }
 
 class SystemDiscover_agentsSendStep {
@@ -175,6 +194,7 @@ class SystemDiscover_agentsSessionPlan {
 
 class SystemDiscover_toolsOpenStep {
   op "Open"
+  initial_input DiscoverToolsOpenInput? @description("Optional open payload.")
 }
 
 class SystemDiscover_toolsSendStep {
@@ -229,3 +249,4 @@ type SystemInternal_a2aSessionStep = SystemInternal_a2aOpenStep | SystemInternal
 class SystemInternal_a2aSessionPlan {
   step SystemInternal_a2aSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. For Send, input.text MUST be a non-empty string message — never null. After Send, use Read to receive the response before sending again or finishing.")
 }
+

@@ -19,8 +19,6 @@ use baml_rt_core::{
     context::{self, InvocationScope},
     ids::{AgentId, ContextId, ExternalId, TaskId, UuidId},
 };
-#[cfg(feature = "llm-tests")]
-use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter};
 use baml_rt_provenance::{
     GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvenanceContextReader,
 };
@@ -32,8 +30,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tar::Builder;
-#[cfg(feature = "llm-tests")]
-use tokio::time::{Duration, sleep, timeout};
 use ts_rs::TS;
 
 // Bundle type for test tools (used as AddNumbersTool::Bundle; referenced in test_runner_tool_types_for_package_build).
@@ -103,6 +99,11 @@ fn stream_collector_idle_secs() -> u64 {
     } else {
         90
     }
+}
+
+fn test_quickjs_config() -> baml_rt::QuickJSConfig {
+    baml_rt::QuickJSConfig::new()
+        .with_stream_collector_idle_secs(Some(stream_collector_idle_secs()))
 }
 
 async fn build_fixture_to_temp_async(fixture_name: &str) -> std::path::PathBuf {
@@ -329,6 +330,7 @@ async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_quickjs_config(test_quickjs_config())
         .with_graphqlite_store(build_graphqlite_test_store())
         .build()
         .await
@@ -375,6 +377,7 @@ async fn setup_tool_discovery_demo_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_quickjs_config(test_quickjs_config())
         .with_graphqlite_store(build_graphqlite_test_store())
         .build()
         .await
@@ -401,6 +404,7 @@ async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_quickjs_config(test_quickjs_config())
         .with_graphqlite_store(build_graphqlite_test_store())
         .build()
         .await
@@ -461,10 +465,7 @@ globalThis.onChatMessage = async function(message) {
         .with_runtime_manager(responder_manager)
         .with_init_js(responder_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_quickjs_config(
-            baml_rt::QuickJSConfig::new()
-                .with_stream_collector_idle_secs(Some(stream_collector_idle_secs())),
-        )
+        .with_quickjs_config(test_quickjs_config())
         .with_graphqlite_store(responder_store.clone())
         .build()
         .await
@@ -542,10 +543,7 @@ globalThis.onChatMessage = async function(message) {
         .with_a2a_session_tool(RegistrationMode::Register)
         .with_a2a_session_router(router)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_quickjs_config(
-            baml_rt::QuickJSConfig::new()
-                .with_stream_collector_idle_secs(Some(stream_collector_idle_secs())),
-        )
+        .with_quickjs_config(test_quickjs_config())
         .with_graphqlite_store(initiator_store.clone())
         .build()
         .await
@@ -581,6 +579,7 @@ globalThis.onChatMessage = async function(message) {
         .with_runtime_manager(responder_manager)
         .with_init_js(responder_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_quickjs_config(test_quickjs_config())
         .with_graphqlite_store(responder_store.clone())
         .build()
         .await
@@ -677,6 +676,7 @@ globalThis.onChatMessage = async function(message) {
         .with_a2a_session_tool(RegistrationMode::Register)
         .with_a2a_session_router(router)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_quickjs_config(test_quickjs_config())
         .with_graphqlite_store(initiator_store.clone())
         .build()
         .await
@@ -710,6 +710,7 @@ async fn setup_task_lifecycle_demo_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_quickjs_config(test_quickjs_config())
         .with_graphqlite_store(build_graphqlite_test_store())
         .build()
         .await
@@ -731,6 +732,7 @@ async fn setup_argument_fixture_agent(fixture: &str) -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_quickjs_config(test_quickjs_config())
         .with_graphqlite_store(build_graphqlite_test_store())
         .build()
         .await
@@ -799,6 +801,7 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
         .with_runtime_manager(manager)
         .with_init_js(entry_js)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_quickjs_config(test_quickjs_config())
         .with_graphqlite_store(build_graphqlite_test_store())
         .build()
         .await
@@ -859,6 +862,7 @@ async fn setup_coordinator_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(entry_js)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
+        .with_quickjs_config(test_quickjs_config())
         .with_graphqlite_store(store)
         .build()
         .await

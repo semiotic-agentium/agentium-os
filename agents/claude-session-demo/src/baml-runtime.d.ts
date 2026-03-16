@@ -6,15 +6,53 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
+export interface ClaudeDevAbortStep { op: "Abort";
+ }
+
 export interface ClaudeDevAskUser { action: string;
 prompt: string;
+ }
+
+export interface ClaudeDevFinishStep { op: "Finish";
+ }
+
+export interface ClaudeDevOpenStep { op: "Open";
+initial_input: ClaudeToolOpenInput | null;
+ }
+
+export interface ClaudeDevReadStep { op: "Read";
+input: ClaudeToolSendInput;
  }
 
 export interface ClaudeDevReport { action: string;
 message: string;
  }
 
+export interface ClaudeDevSendStep { op: "Send";
+input: ClaudeToolSendInput;
+ }
+
 export interface ClaudeDevSessionPlan { step: ClaudeDevOpenStep | ClaudeDevSendStep | ClaudeDevReadStep | ClaudeDevFinishStep | ClaudeDevAbortStep;
+ }
+
+export interface ClaudeToolOpenInput { workspace: string | null;
+ }
+
+export interface ClaudeToolSendInput { prompt: string | null;
+content: ClaudeUserContentBlockDtoVariant1 | ClaudeUserContentBlockDtoVariant2 | ClaudeUserContentBlockDtoVariant3[] | null;
+ }
+
+export interface ClaudeUserContentBlockDtoVariant1 { text: string;
+kind: string;
+ }
+
+export interface ClaudeUserContentBlockDtoVariant2 { url: string;
+kind: string;
+ }
+
+export interface ClaudeUserContentBlockDtoVariant3 { media_type: string;
+data: string;
+kind: string;
  }
 
 export interface NeedMoreInput { question: string;
