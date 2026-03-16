@@ -16,7 +16,7 @@ const props = defineProps<{
   workflowProgress?: WorkflowProgressState;
 }>();
 
-const emit = defineEmits<{ send: [text: string] }>();
+const emit = defineEmits<{ send: [text: string]; cancel: [] }>();
 
 const input = ref("");
 const messagesContainer = ref<HTMLElement>();
@@ -118,7 +118,12 @@ watch(
         />
         <span class="input-hint">Enter to send, Shift+Enter for newline</span>
       </div>
-      <button type="submit" class="send-btn" data-testid="send-button" :disabled="disabled || isLoading || !input.trim()">
+      <button v-if="isLoading" type="button" class="stop-btn" data-testid="stop-button" @click="emit('cancel')">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+          <rect x="5" y="5" width="14" height="14" rx="2" />
+        </svg>
+      </button>
+      <button v-else type="submit" class="send-btn" data-testid="send-button" :disabled="disabled || !input.trim()">
         <!-- Send arrow icon -->
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <line x1="22" y1="2" x2="11" y2="13" />

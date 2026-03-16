@@ -159,6 +159,10 @@ export function useA2aClient() {
   // Workflow progress tracker (parsed from coordinator SSE progress messages)
   const workflowProgress = ref<WorkflowProgressState>({ phase: "idle", nodes: [], completedNodes: [] });
 
+  // Stream cancellation
+  let _abortController: AbortController | null = null;
+  let _streamReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+
   // Provenance diagram source (raw mermaid text fetched after each response)
   const provenanceDiagram = ref<string>("");
   /** Throttle diagram refetch during stream (ms); updated on each fetch */
@@ -276,11 +280,15 @@ export function useA2aClient() {
       contentBlocks: [],
     });
 
+    const controller = new AbortController();
+    _abortController = controller;
+
     try {
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
+        signal: controller.signal,
       });
 
       if (!response.ok || !response.body) {
@@ -290,11 +298,15 @@ export function useA2aClient() {
       await readSSEStream(response.body, agentMsgId);
       await Promise.all([fetchProvenanceDiagram(), fetchContextMetrics()]);
     } catch (err) {
+      // AbortError is expected when the user cancels — cancelStream() already handled state
+      if (err instanceof DOMException && err.name === "AbortError") return;
       updateMessage(messages, agentMsgId, (msg) => {
         msg.text = `Error: ${err}`;
         msg.isStreaming = false;
       });
     } finally {
+      _abortController = null;
+      _streamReader = null;
       isLoading.value = false;
     }
   }
@@ -304,6 +316,7 @@ export function useA2aClient() {
     agentMsgId: string,
   ): Promise<void> {
     const reader = body.getReader();
+    _streamReader = reader;
     const decoder = new TextDecoder();
     let buffer = "";
 
@@ -543,6 +556,32 @@ export function useA2aClient() {
     return last?.inputRequiredPrompt ?? "";
   });
 
+  function cancelStream(): void {
+    if (_streamReader) {
+      _streamReader.cancel().catch(() => {});
+      _streamReader = null;
+    }
+    if (_abortController) {
+      _abortController.abort();
+      _abortController = null;
+    }
+    isLoading.value = false;
+    const streamingMsg = messages.value.find((m) => m.isStreaming);
+    if (streamingMsg) {
+      streamingMsg.isStreaming = false;
+      if (streamingMsg.contentBlocks?.length) {
+        const lastText = [...streamingMsg.contentBlocks].reverse().find((b) => b.type === "text") as { type: "text"; text: string } | undefined;
+        if (lastText) {
+          lastText.text = `${lastText.text ?? ""} _(cancelled)_`;
+        } else {
+          streamingMsg.contentBlocks.push({ type: "text", text: "_(cancelled)_" });
+        }
+      } else {
+        streamingMsg.text = `${streamingMsg.text ?? ""} _(cancelled)_`;
+      }
+    }
+  }
+
   return {
     agents,
     selectedAgent,
@@ -557,5 +596,6 @@ export function useA2aClient() {
     fetchAgents,
     selectAgent,
     sendMessage,
+    cancelStream,
   };
 }

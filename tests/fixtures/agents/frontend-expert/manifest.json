@@ -1,0 +1,11 @@
+{
+  "version": "1.0.0",
+  "name": "frontend-expert",
+  "entry_point": "src/index.ts",
+  "signature": "frontend-expert@1.0.0",
+  "tools": ["claude/dev"],
+  "discovery": {
+    "description": "Frontend development expert: proposes UI features, reviews Vue/CSS code, suggests design improvements, and provides structured code proposals for the Agentium dashboard.",
+    "capabilities": ["frontend", "design", "code-review", "accessibility"]
+  }
+}
