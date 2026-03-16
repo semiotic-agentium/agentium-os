@@ -6,6 +6,11 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
+export interface ActionableGoal { goal: string;
+owner: string | null;
+due_date: string | null;
+ }
+
 export interface AgentCandidate { agent_package: string;
 agent_instance_id: string;
 name: string;
@@ -22,14 +27,37 @@ gaps: string[];
 clarification_question: string | null;
  }
 
+export interface ForeachTemplate { id_prefix: string;
+target: WorkflowTarget;
+prompt_template: string;
+max_items: number | null;
+ }
+
+export type NodeKind = "CallAgent" | "Foreach" | "Synthesize" | "Clarify" | "DirectAnswer";
+
 export interface NormalizedIterableOutput { items_json: string;
 confidence: number;
 notes: string[];
  }
 
+export interface WorkflowNode { id: string;
+kind: NodeKind;
+depends_on: string[];
+target: WorkflowTarget | null;
+prompt_template: string | null;
+foreach_from: string | null;
+foreach_template: ForeachTemplate | null;
+synthesis_template: string | null;
+rationale: string | null;
+ }
+
 export interface WorkflowPlan { goal: string;
 nodes: WorkflowNode[];
 final_node_id: string | null;
+ }
+
+export interface WorkflowTarget { agent_package: string;
+agent_instance_id: string;
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */

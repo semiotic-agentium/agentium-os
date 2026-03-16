@@ -9,11 +9,23 @@
     "system/internal_a2a"
   ],
   "discovery": {
-    "description": "Routes task-daemon interpretation events to the right downstream agent based on manifest capabilities.",
+    "description": "Consumes task-daemon interpretation events and delegates follow-up work.",
     "capabilities": [
-      "workflow:intake",
-      "workflow:event-routing",
-      "workflow:capability-routing"
+      "slack:intake",
+      "clickup:intake",
+      "github_issues:intake"
+    ],
+    "subscriptions": [
+      {
+        "schema_versions": [
+          "task-daemon.interpretation.v1"
+        ],
+        "source_kinds": [
+          "slack",
+          "clickup",
+          "github_issues"
+        ]
+      }
     ]
   }
 }

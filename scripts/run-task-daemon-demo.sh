@@ -97,7 +97,7 @@ fi
 if [ "$SKIP_POLL" = "1" ]; then
   echo "Skipping Slack poll/task-daemon run (TASK_DAEMON_DEMO_SKIP_POLL=1)." >&2
 else
-  echo "Running task-daemon once against ${CHANNEL} (auth=${AUTH_MODE}) with coordinator handoff enabled..." >&2
+  echo "Running task-daemon once against ${CHANNEL} (auth=${AUTH_MODE}) with workflow-intake dispatch enabled..." >&2
 
   RUST_LOG="${RUST_LOG:-info}" \
     cargo run -p baml-task-daemon -- run \
@@ -106,8 +106,10 @@ else
       --once \
       --extractor "$EXTRACTOR" \
       --max-candidates "$MAX_CANDIDATES" \
-      --coordinator-url "$COORDINATOR_URL" \
-      --a2a-live \
+      --dispatch-base-url "$COORDINATOR_URL" \
+      --dispatch-agent-package workflow-intake-agent \
+      --dispatch-agent-instance-id default \
+      --dispatch-live \
       --emit-empty \
       --state-file "$STATE_FILE" \
       --project-config "$PROJECT_CONFIG" \

@@ -22,10 +22,26 @@ use crate::tools::{
 
 fn subscription_to_dto(subscription: &EventSubscription) -> AgentEventSubscriptionDto {
     AgentEventSubscriptionDto {
-        schema_versions: subscription.schema_versions.clone(),
-        source_kinds: subscription.source_kinds.clone(),
-        source_keys: subscription.source_keys.clone(),
-        source_key_prefixes: subscription.source_key_prefixes.clone(),
+        schema_versions: subscription
+            .schema_versions
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        source_kinds: subscription
+            .source_kinds
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        source_keys: subscription
+            .source_keys
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        source_key_prefixes: subscription
+            .source_key_prefixes
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
     }
 }
 

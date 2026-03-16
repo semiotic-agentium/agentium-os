@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use baml_rt_core::{
     A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister,
-    BusStream, ContextId, EventSubscription, Outcome, Result,
+    BusStream, ContextId, EventSchemaVersion, EventSourceKind, EventSubscription, Outcome, Result,
     ids::{AgentId, EventId, ExternalId, MessageId, UuidId},
 };
 use baml_rt_provenance::{
@@ -37,6 +37,14 @@ struct MockAgentList {
 fn suite_lock() -> &'static tokio::sync::Mutex<()> {
     static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+fn schema_version(value: &str) -> EventSchemaVersion {
+    EventSchemaVersion::parse(value).expect("valid schema version")
+}
+
+fn source_kind(value: &str) -> EventSourceKind {
+    EventSourceKind::parse(value).expect("valid source kind")
 }
 
 fn call_metadata(
@@ -777,8 +785,8 @@ async fn discover_agents_session_returns_declared_subscriptions() {
         "1.0.0",
         Some("Consumes task-daemon events"),
         vec![EventSubscription {
-            schema_versions: vec!["task-daemon.interpretation.v1".to_string()],
-            source_kinds: vec!["slack".to_string(), "clickup".to_string()],
+            schema_versions: vec![schema_version("task-daemon.interpretation.v1")],
+            source_kinds: vec![source_kind("slack"), source_kind("clickup")],
             ..EventSubscription::default()
         }],
     )];
@@ -841,8 +849,8 @@ async fn discover_agents_session_filters_by_event_subscription() {
             "1.0.0",
             Some("Consumes task-daemon Slack events"),
             vec![EventSubscription {
-                schema_versions: vec!["task-daemon.interpretation.v1".to_string()],
-                source_kinds: vec!["slack".to_string()],
+                schema_versions: vec![schema_version("task-daemon.interpretation.v1")],
+                source_kinds: vec![source_kind("slack")],
                 ..EventSubscription::default()
             }],
         ),
@@ -852,8 +860,8 @@ async fn discover_agents_session_filters_by_event_subscription() {
             "1.0.0",
             Some("Consumes task-daemon ClickUp events"),
             vec![EventSubscription {
-                schema_versions: vec!["task-daemon.interpretation.v1".to_string()],
-                source_kinds: vec!["clickup".to_string()],
+                schema_versions: vec![schema_version("task-daemon.interpretation.v1")],
+                source_kinds: vec![source_kind("clickup")],
                 ..EventSubscription::default()
             }],
         ),

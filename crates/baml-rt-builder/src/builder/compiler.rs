@@ -125,9 +125,12 @@ impl TypeScriptCompiler for TscCompiler {
 
 /// Ensure the agent has a `tsconfig.json` with the canonical settings.
 fn ensure_tsconfig(agent_dir: &AgentDir) -> Result<()> {
-    let tsconfig_path = agent_dir.as_path().join("tsconfig.json");
-    fs::write(&tsconfig_path, TSCONFIG_JSON)?;
-    Ok(())
+    write_canonical_tsconfig(agent_dir.as_path())
+}
+
+pub fn write_canonical_tsconfig(root: &Path) -> Result<()> {
+    let tsconfig_path = root.join("tsconfig.json");
+    atomic_write(&tsconfig_path, TSCONFIG_JSON.as_bytes())
 }
 
 /// Locate and run `tsc` with the agent's tsconfig.
@@ -348,7 +351,7 @@ fn copy_dir_all_impl(src: &Path, dst: &Path) -> Result<()> {
 /// Write `data` to a temporary file in the same directory, then atomically rename
 /// over `dest`.  On Unix `rename(2)` is atomic, so concurrent readers never see
 /// a half-written file — they get either the old content or the new content.
-fn atomic_write(dest: &Path, data: &[u8]) -> Result<()> {
+pub(crate) fn atomic_write(dest: &Path, data: &[u8]) -> Result<()> {
     use std::io::Write;
 
     let parent = dest.parent().unwrap_or(Path::new("."));

@@ -87,6 +87,21 @@ type TaskDaemonInterpretationEvent = {
   derived_tasks: TaskDaemonDerivedTask[];
 };
 
+type TaskDaemonDispatchRequest = {
+  routing_key: string;
+  message_type: string;
+  messages: unknown[];
+  context_id?: string;
+  task_id?: string;
+  message_id?: string;
+  metadata?: Record<string, unknown>;
+};
+
+type TaskDaemonDispatchAck = {
+  accepted: boolean;
+  detail?: string;
+};
+
 type IntakeDecisionKind =
   | "create_pm_work"
   | "execute_existing_work"
@@ -524,58 +539,80 @@ async function delegateToAgent(target: RouteTarget, prompt: string): Promise<str
   return collectDelegatedTexts(allOutputs);
 }
 
+function parseInterpretationEventValue(value: unknown): TaskDaemonInterpretationEvent | null {
+  if (!isObject(value)) return null;
+
+  const schemaVersion = normalizeOptionalString(value.schema_version);
+  if (schemaVersion !== TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION) return null;
+
+  const source = parseObjectField(value, "source");
+  const project = parseObjectField(value, "project");
+  const interpretation = parseObjectField(value, "interpretation");
+  if (!source || !project || !interpretation) return null;
+
+  const sourceKind = parseTaskDaemonSourceKind(source.source);
+  const sourceKey = normalizeOptionalString(source.source_key);
+  const sourceLabel = normalizeOptionalString(source.source_label);
+  if (!sourceKind || !sourceKey || !sourceLabel) return null;
+
+  return {
+    schema_version: schemaVersion,
+    source: {
+      source_key: sourceKey,
+      source: sourceKind,
+      source_label: sourceLabel,
+    },
+    project: {
+      project_key: normalizeOptionalString(project.project_key) ?? undefined,
+      repo_available:
+        typeof project.repo_available === "boolean" ? project.repo_available : undefined,
+      repo_path: normalizeOptionalString(project.repo_path),
+    },
+    messages_scanned:
+      typeof value.messages_scanned === "number" ? value.messages_scanned : undefined,
+    interpretation: {
+      executive_summary:
+        normalizeOptionalString(interpretation.executive_summary) ?? undefined,
+      current_objectives: parseStringArray(interpretation.current_objectives),
+      workflow_seed: interpretation.workflow_seed,
+    },
+    derived_tasks: parseObjectArray(value.derived_tasks).map((task) => ({
+      key: normalizeOptionalString(task.key) ?? undefined,
+      title: normalizeOptionalString(task.title) ?? undefined,
+      description: normalizeOptionalString(task.description) ?? undefined,
+      priority: normalizeOptionalString(task.priority) ?? undefined,
+    })),
+  };
+}
+
 function extractInterpretationEvent(
   message: ChatMessage | null | undefined,
 ): TaskDaemonInterpretationEvent | null {
   if (!message || !Array.isArray(message.parts)) return null;
 
   for (const part of message.parts) {
-    if (!isObject(part) || !isObject(part.data)) continue;
-    const data = part.data;
-    const schemaVersion = normalizeOptionalString(data.schema_version);
-    if (schemaVersion !== TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION) continue;
-
-    const source = parseObjectField(data, "source");
-    const project = parseObjectField(data, "project");
-    const interpretation = parseObjectField(data, "interpretation");
-    if (!source || !project || !interpretation) continue;
-
-    const sourceKind = parseTaskDaemonSourceKind(source.source);
-    const sourceKey = normalizeOptionalString(source.source_key);
-    const sourceLabel = normalizeOptionalString(source.source_label);
-    if (!sourceKind || !sourceKey || !sourceLabel) continue;
-
-    return {
-      schema_version: schemaVersion,
-      source: {
-        source_key: sourceKey,
-        source: sourceKind,
-        source_label: sourceLabel,
-      },
-      project: {
-        project_key: normalizeOptionalString(project.project_key) ?? undefined,
-        repo_available:
-          typeof project.repo_available === "boolean" ? project.repo_available : undefined,
-        repo_path: normalizeOptionalString(project.repo_path),
-      },
-      messages_scanned:
-        typeof data.messages_scanned === "number" ? data.messages_scanned : undefined,
-      interpretation: {
-        executive_summary:
-          normalizeOptionalString(interpretation.executive_summary) ?? undefined,
-        current_objectives: parseStringArray(interpretation.current_objectives),
-        workflow_seed: interpretation.workflow_seed,
-      },
-      derived_tasks: parseObjectArray(data.derived_tasks).map((task) => ({
-        key: normalizeOptionalString(task.key) ?? undefined,
-        title: normalizeOptionalString(task.title) ?? undefined,
-        description: normalizeOptionalString(task.description) ?? undefined,
-        priority: normalizeOptionalString(task.priority) ?? undefined,
-      })),
-    };
+    if (!isObject(part)) continue;
+    const event = parseInterpretationEventValue(part.data);
+    if (event) return event;
   }
 
   return null;
+}
+
+function extractInterpretationEventFromDispatch(
+  request: TaskDaemonDispatchRequest | null | undefined,
+): TaskDaemonInterpretationEvent | null {
+  if (!request || !Array.isArray(request.messages)) return null;
+  for (const message of request.messages) {
+    const event = parseInterpretationEventValue(message);
+    if (event) return event;
+  }
+  return null;
+}
+
+function intakeRoutingKeyForSource(source: TaskDaemonSourceKind): string {
+  if (source === "github_issues") return "github_issues:intake";
+  return `${source}:intake`;
 }
 
 function classifyClickupTaskKind(task: TaskDaemonDerivedTask): IntakeDecisionKind {
@@ -890,15 +927,9 @@ function renderRouteSummary(
   return lines.join("\n");
 }
 
-async function run(ctx: RunContext): Promise<SessionResult> {
-  const event = extractInterpretationEvent(ctx.message);
-  if (!event) {
-    return {
-      error:
-        "workflow-intake-agent expects a task-daemon.interpretation.v1 payload in message.parts[].data.",
-    };
-  }
-
+async function handleInterpretationEvent(
+  event: TaskDaemonInterpretationEvent,
+): Promise<SessionResult> {
   try {
     const decision = deriveDecision(event);
     if (decision.kind === "noop") {
@@ -931,5 +962,71 @@ async function run(ctx: RunContext): Promise<SessionResult> {
     return { error: `workflow-intake-agent failed: ${reason}` };
   }
 }
+
+async function run(ctx: RunContext): Promise<SessionResult> {
+  const event = extractInterpretationEvent(ctx.message);
+  if (!event) {
+    return {
+      error:
+        "workflow-intake-agent expects a task-daemon.interpretation.v1 payload in message.parts[].data.",
+    };
+  }
+
+  return handleInterpretationEvent(event);
+}
+
+async function onDispatch(
+  request: TaskDaemonDispatchRequest,
+): Promise<TaskDaemonDispatchAck> {
+  const routingKey = normalizeOptionalString(request.routing_key);
+  const messageType = normalizeOptionalString(request.message_type);
+  if (messageType !== TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION) {
+    return {
+      accepted: false,
+      detail:
+        `workflow-intake-agent expected message_type ` +
+        `${TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION}, got ${messageType ?? "missing"}.`,
+    };
+  }
+
+  const event = extractInterpretationEventFromDispatch(request);
+  if (!event) {
+    return {
+      accepted: false,
+      detail:
+        "workflow-intake-agent expects task-daemon.interpretation.v1 payloads in dispatch.messages[].",
+    };
+  }
+
+  const expectedRoutingKey = intakeRoutingKeyForSource(event.source.source);
+  if (routingKey !== expectedRoutingKey) {
+    return {
+      accepted: false,
+      detail:
+        `workflow-intake-agent expected routing_key ${expectedRoutingKey}, ` +
+        `got ${routingKey ?? "missing"}.`,
+    };
+  }
+
+  const result = await handleInterpretationEvent(event);
+  if ("error" in result) {
+    return {
+      accepted: false,
+      detail: result.error,
+    };
+  }
+
+  return {
+    accepted: true,
+    detail:
+      normalizeOptionalString(result.message) ??
+      `workflow-intake-agent accepted ${expectedRoutingKey}.`,
+  };
+}
+
+const dispatchGlobal = globalThis as typeof globalThis & {
+  onDispatch?: (request: TaskDaemonDispatchRequest) => Promise<TaskDaemonDispatchAck>;
+};
+dispatchGlobal.onDispatch = onDispatch;
 
 __chat_register({ run });

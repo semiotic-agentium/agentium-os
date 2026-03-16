@@ -2,10 +2,10 @@ use std::{collections::BTreeMap, fmt, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result, anyhow};
 use baml_task_daemon::{
-    A2aSink, ClickUpSink, ClickupSourceConfig, ClickupTaskSource, ExtractionMode, GithubIssueSink,
-    JsonlFileSink, ProjectContext, RoundRobinTaskSource, SinkDeliveryMode, SlackChannelSelector,
-    SlackSourceConfig, SlackTaskSource, SourceFilteredSink, StateStore, StdoutSink, TaskDaemon,
-    TaskExtractor, TaskSink, TaskSource, TaskSourceKind,
+    ClickUpSink, ClickupSourceConfig, ClickupTaskSource, DispatchSink, ExtractionMode,
+    GithubIssueSink, JsonlFileSink, ProjectContext, RoundRobinTaskSource, SinkDeliveryMode,
+    SlackChannelSelector, SlackSourceConfig, SlackTaskSource, SourceFilteredSink, StateStore,
+    StdoutSink, TaskDaemon, TaskExtractor, TaskSink, TaskSource, TaskSourceKind,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use integrations_slack_read::SlackAuthPreference;
@@ -73,7 +73,7 @@ enum SinkKindArg {
     Jsonl,
     Clickup,
     Github,
-    A2a,
+    Dispatch,
 }
 
 impl SinkKindArg {
@@ -83,7 +83,7 @@ impl SinkKindArg {
             Self::Jsonl => "jsonl",
             Self::Clickup => "clickup",
             Self::Github => "github",
-            Self::A2a => "a2a",
+            Self::Dispatch => "dispatch",
         }
     }
 }
@@ -244,21 +244,29 @@ struct RunArgs {
     #[arg(long, default_value_t = false)]
     github_live: bool,
 
-    /// Runner base URL for A2A delegation sink (for example `http://127.0.0.1:8082`).
-    #[arg(long = "a2a-base-url")]
-    a2a_base_url: Option<String>,
+    /// Runner base URL for agent event delivery (for example `http://127.0.0.1:8082`).
+    ///
+    /// Without an explicit agent package/instance, task-daemon discovers subscribed agents from
+    /// the host `/agents` API and delivers to their deterministic `/dispatch` entrypoint.
+    /// To preserve the old single-target behavior, pass both explicit
+    /// target flags.
+    #[arg(long = "dispatch-base-url")]
+    dispatch_base_url: Option<String>,
 
-    /// A2A target agent package for daemon event delivery.
-    #[arg(long, default_value = "coordinator-agent")]
-    a2a_agent_package: String,
+    /// Optional explicit target agent package.
+    ///
+    /// When omitted together with `--dispatch-agent-instance-id`, task-daemon delivers to subscribed
+    /// agents discovered from the host instead of one implicit default target.
+    #[arg(long)]
+    dispatch_agent_package: Option<String>,
 
-    /// A2A target agent instance id for daemon event delivery.
-    #[arg(long, default_value = "default")]
-    a2a_agent_instance_id: String,
+    /// Optional explicit target agent instance id. Must be provided together with --dispatch-agent-package.
+    #[arg(long)]
+    dispatch_agent_instance_id: Option<String>,
 
-    /// When set with A2A base URL, sends live A2A requests instead of dry-run logging.
+    /// When set with the agent host base URL, sends live dispatch requests instead of dry-run logging.
     #[arg(long, default_value_t = false)]
-    a2a_live: bool,
+    dispatch_live: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -410,21 +418,40 @@ async fn run(args: RunArgs) -> Result<()> {
         ));
     }
 
-    if let Some(url) = args.a2a_base_url.clone() {
-        configured_sinks.push(ConfiguredSink::new(
-            SinkKindArg::A2a,
-            Box::new(A2aSink::for_agent(
+    if let Some(url) = args.dispatch_base_url.clone() {
+        let dispatch_sink: Box<dyn TaskSink> = match (
+            &args.dispatch_agent_package,
+            &args.dispatch_agent_instance_id,
+        ) {
+            (Some(agent_package), Some(agent_instance_id)) => Box::new(DispatchSink::for_agent(
                 url,
-                args.a2a_agent_package.clone(),
-                args.a2a_agent_instance_id.clone(),
-                SinkDeliveryMode::from_live_flag(args.a2a_live),
+                agent_package.clone(),
+                agent_instance_id.clone(),
+                SinkDeliveryMode::from_live_flag(args.dispatch_live),
             )?),
-        ));
+            (None, None) => {
+                tracing::warn!(
+                    "Agent delivery is using subscriber discovery mode. \
+                         If you need the pre-pubsub single-target behavior, pass \
+                         --dispatch-agent-package and --dispatch-agent-instance-id explicitly."
+                );
+                Box::new(DispatchSink::new(
+                    url,
+                    SinkDeliveryMode::from_live_flag(args.dispatch_live),
+                )?)
+            }
+            _ => {
+                return Err(anyhow!(
+                    "--dispatch-agent-package and --dispatch-agent-instance-id must be provided together"
+                ));
+            }
+        };
+        configured_sinks.push(ConfiguredSink::new(SinkKindArg::Dispatch, dispatch_sink));
     }
 
     if configured_sinks.is_empty() {
         return Err(anyhow!(
-            "no sinks configured; enable stdout, --jsonl-out, --clickup-list-id, --github-owner/--github-repo, or --a2a-base-url"
+            "no sinks configured; enable stdout, --jsonl-out, --clickup-list-id, --github-owner/--github-repo, or --dispatch-base-url"
         ));
     }
 
@@ -433,7 +460,7 @@ async fn run(args: RunArgs) -> Result<()> {
     for source_kind in selected_source_kinds(&selected_sources) {
         if !sinks.iter().any(|sink| sink.accepts_source(source_kind)) {
             return Err(anyhow!(
-                "no compatible sinks configured for source {:?}; add stdout/jsonl/github/a2a sink, update --route, or change --source",
+                "no compatible sinks configured for source {:?}; add stdout/jsonl/github/dispatch sink, update --route, or change --source",
                 source_kind
             ));
         }
@@ -738,7 +765,7 @@ mod tests {
                 },
                 SourceSinkRouteArg {
                     source: SourceKindArg::Clickup,
-                    sink: SinkKindArg::A2a,
+                    sink: SinkKindArg::Dispatch,
                 },
                 SourceSinkRouteArg {
                     source: SourceKindArg::Slack,
@@ -752,7 +779,7 @@ mod tests {
                 },
                 SourceSinkRouteArg {
                     source: SourceKindArg::Clickup,
-                    sink: SinkKindArg::A2a,
+                    sink: SinkKindArg::Dispatch,
                 },
             ]
         );
@@ -763,7 +790,7 @@ mod tests {
         let sinks = route_configured_sinks(
             vec![
                 ConfiguredSink::new(SinkKindArg::Stdout, Box::new(AcceptsAllSink)),
-                ConfiguredSink::new(SinkKindArg::A2a, Box::new(AcceptsAllSink)),
+                ConfiguredSink::new(SinkKindArg::Dispatch, Box::new(AcceptsAllSink)),
             ],
             &[SourceKindArg::Slack, SourceKindArg::Clickup],
             &[
@@ -773,7 +800,7 @@ mod tests {
                 },
                 SourceSinkRouteArg {
                     source: SourceKindArg::Clickup,
-                    sink: SinkKindArg::A2a,
+                    sink: SinkKindArg::Dispatch,
                 },
             ],
         )
@@ -796,7 +823,7 @@ mod tests {
             &[SourceKindArg::Slack],
             &[SourceSinkRouteArg {
                 source: SourceKindArg::Slack,
-                sink: SinkKindArg::A2a,
+                sink: SinkKindArg::Dispatch,
             }],
         )
         .err()
@@ -804,7 +831,7 @@ mod tests {
 
         assert!(
             err.to_string()
-                .contains("references sink a2a but that sink is not configured")
+                .contains("references sink dispatch but that sink is not configured")
         );
     }
 

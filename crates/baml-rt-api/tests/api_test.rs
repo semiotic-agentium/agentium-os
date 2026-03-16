@@ -19,8 +19,9 @@ use baml_rt_api::{
     api_router_with_services,
 };
 use baml_rt_core::{
-    A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister, AgentRouteKey,
-    BamlRtError, BusStream, EventSubscription, Outcome, Result,
+    A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
+    AgentDispatchRequest, AgentLister, AgentRouteKey, BamlRtError, BusStream, EventSchemaVersion,
+    EventSourceKey, EventSourceKeyPrefix, EventSourceKind, EventSubscription, Outcome, Result,
     ids::{AgentId, ContextId, EventId, ExternalId, MessageId, UuidId},
 };
 use baml_rt_provenance::{
@@ -42,6 +43,22 @@ fn response_snapshot(status: StatusCode, body: &[u8]) -> Value {
         "status": status.as_u16(),
         "body": redact_variant_parts(body_value),
     })
+}
+
+fn schema_version(value: &str) -> EventSchemaVersion {
+    EventSchemaVersion::parse(value).expect("valid schema version")
+}
+
+fn source_kind(value: &str) -> EventSourceKind {
+    EventSourceKind::parse(value).expect("valid source kind")
+}
+
+fn source_key(value: &str) -> EventSourceKey {
+    EventSourceKey::parse(value).expect("valid source key")
+}
+
+fn source_key_prefix(value: &str) -> EventSourceKeyPrefix {
+    EventSourceKeyPrefix::parse(value).expect("valid source key prefix")
 }
 
 /// Redact variant parts of JSON (UUIDs, instance/type in problem bodies) for stable snapshots.
@@ -204,6 +221,8 @@ struct MockRegistry {
     /// When set, yield each value with a delay between yields (for no-buffering tests).
     handle_delayed: Option<Vec<A2aStreamChunk>>,
     handle_err_message: Option<String>,
+    dispatch_ok: Option<AgentDispatchAck>,
+    dispatch_err_message: Option<String>,
     /// When set, capture the route key passed to handle_a2a_stream (for routing tests).
     key_captured: Option<std::sync::Arc<std::sync::Mutex<Option<AgentRouteKey>>>>,
 }
@@ -568,6 +587,8 @@ impl MockRegistry {
             handle_ok: None,
             handle_delayed: None,
             handle_err_message: None,
+            dispatch_ok: None,
+            dispatch_err_message: None,
             key_captured: None,
         }
     }
@@ -583,10 +604,21 @@ impl MockRegistry {
         self
     }
 
+    fn with_dispatch_ok(mut self, ack: AgentDispatchAck) -> Self {
+        self.dispatch_ok = Some(ack);
+        self
+    }
+
     /// Builder helper for tests that assert 404/not-found; reserved for alternative test paths.
     #[allow(dead_code)] // test-only builder path
     fn with_handle_err_not_found(mut self, message: String) -> Self {
         self.handle_err_message = Some(message);
+        self
+    }
+
+    #[allow(dead_code)] // test-only builder path
+    fn with_dispatch_err_not_found(mut self, message: String) -> Self {
+        self.dispatch_err_message = Some(message);
         self
     }
 
@@ -633,6 +665,25 @@ impl AgentRegistry for MockRegistry {
             return Ok(Box::pin(delayed_stream));
         }
         if let Some(ref msg) = self.handle_err_message {
+            return Err(BamlRtError::AgentNotFound(msg.clone()));
+        }
+        Err(BamlRtError::AgentNotFound(
+            "Agent pkg/inst not found".to_string(),
+        ))
+    }
+
+    async fn handle_dispatch(
+        &self,
+        key: &AgentRouteKey,
+        _request: AgentDispatchRequest,
+    ) -> Result<AgentDispatchAck> {
+        if let Some(ref cell) = self.key_captured {
+            *cell.lock().unwrap() = Some(key.clone());
+        }
+        if let Some(ref ack) = self.dispatch_ok {
+            return Ok(ack.clone());
+        }
+        if let Some(ref msg) = self.dispatch_err_message {
             return Err(BamlRtError::AgentNotFound(msg.clone()));
         }
         Err(BamlRtError::AgentNotFound(
@@ -812,10 +863,10 @@ async fn get_agents_returns_declared_subscriptions_when_present() {
         "Workflow Subscriber",
         "0.1.0",
         vec![EventSubscription {
-            schema_versions: vec!["task-daemon.interpretation.v1".to_string()],
-            source_kinds: vec!["slack".to_string(), "clickup".to_string()],
-            source_keys: vec!["slack:C123".to_string()],
-            source_key_prefixes: vec!["clickup:list:".to_string()],
+            schema_versions: vec![schema_version("task-daemon.interpretation.v1")],
+            source_kinds: vec![source_kind("slack"), source_kind("clickup")],
+            source_keys: vec![source_key("slack:C123")],
+            source_key_prefixes: vec![source_key_prefix("clickup:list:")],
         }],
     )];
     let registry: Arc<dyn AgentRegistry> = Arc::new(MockRegistry::with_entries(entries));
@@ -937,6 +988,80 @@ async fn post_a2a_sse_returns_event_stream() {
         "body": body_str,
     });
     insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn post_dispatch_returns_buffered_ack() {
+    let registry: Arc<dyn AgentRegistry> = Arc::new(
+        MockRegistry::with_entries(vec![discovery_entry("pkg", "default", "pkg", "1.0.0")])
+            .with_dispatch_ok(AgentDispatchAck {
+                accepted: true,
+                detail: Some("workflow intake accepted delivery".to_string()),
+            }),
+    );
+    let app = api_router(registry, None, None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/agents/pkg/default/dispatch")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "routing_key":"slack:intake",
+                        "message_type":"task-daemon.interpretation.v1",
+                        "messages":[{"schema_version":"task-daemon.interpretation.v1"}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let snapshot = response_snapshot(status, &body);
+    insta::assert_json_snapshot!(snapshot);
+}
+
+#[tokio::test]
+async fn post_dispatch_rejects_empty_message_type() {
+    let registry: Arc<dyn AgentRegistry> =
+        Arc::new(MockRegistry::with_entries(vec![discovery_entry(
+            "pkg", "default", "pkg", "1.0.0",
+        )]));
+    let app = api_router(registry, None, None);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/agents/pkg/default/dispatch")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    r#"{
+                        "routing_key":"slack:intake",
+                        "message_type":"   ",
+                        "messages":[{"schema_version":"task-daemon.interpretation.v1"}]
+                    }"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body_text = String::from_utf8(body.to_vec()).unwrap();
+    assert!(
+        body_text.contains("message_type must be non-empty"),
+        "unexpected response body: {body_text}"
+    );
 }
 
 /// Server must not buffer the A2A stream: events arrive incrementally.

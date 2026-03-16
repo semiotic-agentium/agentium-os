@@ -2,7 +2,10 @@
 //! Consumed by the HTTP API surface (baml-rt-api); implemented by the runner.
 
 use async_trait::async_trait;
-use baml_rt_core::{A2aStreamChunk, A2aWireRequest, AgentLister, AgentRouteKey, BusStream, Result};
+use baml_rt_core::{
+    A2aStreamChunk, A2aWireRequest, AgentDispatchAck, AgentDispatchRequest, AgentLister,
+    AgentRouteKey, BusStream, Result,
+};
 
 /// Registry of running agents: list and dispatch A2A by strict route key.
 /// Implemented by the runner; consumed by the HTTP API surface.
@@ -15,4 +18,11 @@ pub trait AgentRegistry: AgentLister + Send + Sync {
         key: &AgentRouteKey,
         request: A2aWireRequest,
     ) -> Result<BusStream<A2aStreamChunk>>;
+
+    /// Resolve an agent by route key and deliver a deterministic non-conversational dispatch.
+    async fn handle_dispatch(
+        &self,
+        key: &AgentRouteKey,
+        request: AgentDispatchRequest,
+    ) -> Result<AgentDispatchAck>;
 }

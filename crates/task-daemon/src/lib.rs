@@ -4,10 +4,10 @@
 //! The main pieces are:
 //! - polling work sources
 //! - interpreting what changed
-//! - sending the result to the chosen destination
+//! - sending the result to the selected output
 //!
 //! The primary structured output is [`InterpretationResultEvent`]. [`TaskDispatch`]
-//! carries that result together with the additional context some sinks still use.
+//! carries that result together with the additional context some outputs still use.
 
 pub mod clickup_source;
 pub mod contract;
@@ -35,8 +35,9 @@ pub use model::{
     TaskSourceKind, WorkflowSeed,
 };
 pub use sink::{
-    A2aSink, ClickUpSink, GithubIssueSink, JsonlFileSink, SinkConstructorError, SinkDeliveryError,
-    SinkDeliveryMode, SourceFilteredSink, StdoutSink, TaskSink, format_coordinator_prompt,
+    ClickUpSink, DispatchSink, GithubIssueSink, JsonlFileSink, SinkConstructorError,
+    SinkDeliveryError, SinkDeliveryMode, SourceFilteredSink, StdoutSink, TaskSink,
+    format_event_delivery_prompt,
 };
 pub use slack_source::{SlackChannelSelector, SlackSourceConfig, SlackTaskSource};
 pub use state::{SourceState, StateStore, TaskDaemonState};

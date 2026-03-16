@@ -98,3 +98,4 @@ type SupportCalculateSessionStep = SupportCalculateOpenStep | SupportCalculateSe
 class SupportCalculateSessionPlan {
   step SupportCalculateSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. After Send, prefer Read before further Send/Finish so you consume tool output and status.")
 }
+

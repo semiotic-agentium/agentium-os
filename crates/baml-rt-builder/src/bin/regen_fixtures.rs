@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{Context as _, Result, bail};
 use baml_rt_builder::builder::{
-    AgentDir, BuildDir, RuntimeTypeGenerator, TypeGenerator, compiler::TSCONFIG_JSON,
+    AgentDir, BuildDir, RuntimeTypeGenerator, TypeGenerator, compiler::write_canonical_tsconfig,
 };
 use baml_rt_tools_claude as _; // Force link so claude tool metadata is in inventory
 #[cfg(feature = "slack")]
@@ -98,7 +98,7 @@ fn sync_generated_baml_files(build_dir: &BuildDir, dest_baml_src: &Path) -> Resu
 
 async fn regen_fixture(root: &Path) -> Result<()> {
     // Ensure canonical tsconfig.json
-    std::fs::write(root.join("tsconfig.json"), TSCONFIG_JSON)?;
+    write_canonical_tsconfig(root)?;
 
     let agent_dir = AgentDir::new(root.to_path_buf())?;
     let build_dir = BuildDir::new()?;

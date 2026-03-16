@@ -1,5 +1,6 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
+assertion_line: 1567
 expression: snapshot
 ---
 {
@@ -10,7 +11,7 @@ expression: snapshot
       "attributes": {
         "code.filepath": "crates/baml-rt-api/src/spans.rs",
         "code.namespace": "baml_rt_api::spans",
-        "code.lineno": 43,
+        "code.lineno": 55,
         "thread.id": "[redacted]",
         "thread.name": "[redacted]",
         "context_id": "ctx-1-1",

@@ -25,7 +25,8 @@ use baml_rt_core::A2aRequestHandler;
     feature = "llm-tests"
 ))]
 use baml_rt_core::{
-    A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister, AgentRouteKey,
+    A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
+    AgentDispatchRequest, AgentLister, AgentRouteKey,
 };
 use baml_rt_provenance::GraphqliteProvenanceStore;
 #[cfg(any(
@@ -160,6 +161,25 @@ impl AgentRegistry for SingleAgentRegistry {
             )));
         }
         self.agent.handle_a2a_stream(request).await
+    }
+
+    async fn handle_dispatch(
+        &self,
+        key: &AgentRouteKey,
+        _request: AgentDispatchRequest,
+    ) -> baml_rt_core::Result<AgentDispatchAck> {
+        if key.agent_package.as_str() != self.package
+            || key.agent_instance_id.as_str() != self.instance_id
+        {
+            return Err(baml_rt_core::BamlRtError::InvalidArgument(format!(
+                "Agent {}/{} not found",
+                key.agent_package.as_str(),
+                key.agent_instance_id.as_str()
+            )));
+        }
+        Err(baml_rt_core::BamlRtError::FunctionNotFound(
+            "onDispatch".to_string(),
+        ))
     }
 }
 

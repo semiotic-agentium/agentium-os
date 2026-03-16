@@ -132,3 +132,4 @@ type SystemInternal_a2aSessionStep = SystemInternal_a2aOpenStep | SystemInternal
 class SystemInternal_a2aSessionPlan {
   step SystemInternal_a2aSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. For Send, input.text MUST be a non-empty string message — never null. After Send, use Read to receive the response before sending again or finishing.")
 }
+

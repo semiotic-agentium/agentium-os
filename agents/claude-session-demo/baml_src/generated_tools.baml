@@ -149,33 +149,29 @@ class HistoryContextV1 {
 class ClaudeDevOpenStep {
   op "Open"
   initial_input ClaudeToolOpenInput? @description("Optional open payload.")
-  reason string? @description("Optional reason.")
 }
 
 class ClaudeDevSendStep {
   op "Send"
-  input ClaudeToolSendInput @description("Payload for this step.")
-  reason string? @description("Optional reason.")
+  input ClaudeToolSendInput @description("Conversational message payload. Set text to a non-empty string. Never null, never omit text.")
 }
 
 class ClaudeDevReadStep {
   op "Read"
   input ClaudeToolSendInput @description("Read payload for this step.")
-  reason string? @description("Optional reason.")
 }
 
 class ClaudeDevFinishStep {
   op "Finish"
-  reason string? @description("Optional reason.")
 }
 
 class ClaudeDevAbortStep {
   op "Abort"
-  reason string? @description("Optional reason.")
 }
 
 type ClaudeDevSessionStep = ClaudeDevOpenStep | ClaudeDevSendStep | ClaudeDevReadStep | ClaudeDevFinishStep | ClaudeDevAbortStep
 
 class ClaudeDevSessionPlan {
-  step ClaudeDevSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. After Send, prefer Read before further Send/Finish so you consume tool output and status. Access: write.")
+  step ClaudeDevSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. For Send, input.text MUST be a non-empty string message — never null. After Send, use Read to receive the response before sending again or finishing. Access: write.")
 }
+

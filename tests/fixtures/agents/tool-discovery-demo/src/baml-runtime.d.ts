@@ -6,6 +6,39 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
+export interface DiscoverToolsOpenInput { reason: string | null;
+ }
+
+export interface DiscoverToolsSendInput { query: string | null;
+limit: number | null;
+ }
+
+export interface SessionContext { contract_version: string;
+session_open: boolean;
+allowed_ops: string[];
+scope_ref: string | null;
+output_ref: string | null;
+evidence_ref: string | null;
+ }
+
+export interface SystemDiscover_toolsAbortStep { op: "Abort";
+ }
+
+export interface SystemDiscover_toolsFinishStep { op: "Finish";
+ }
+
+export interface SystemDiscover_toolsOpenStep { op: "Open";
+initial_input: DiscoverToolsOpenInput | null;
+ }
+
+export interface SystemDiscover_toolsReadStep { op: "Read";
+input: DiscoverToolsSendInput;
+ }
+
+export interface SystemDiscover_toolsSendStep { op: "Send";
+input: DiscoverToolsSendInput;
+ }
+
 export interface SystemDiscover_toolsSessionPlan { step: SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep;
  }
 

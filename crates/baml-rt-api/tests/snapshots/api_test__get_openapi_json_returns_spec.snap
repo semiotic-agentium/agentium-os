@@ -1,6 +1,6 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
-assertion_line: 884
+assertion_line: 945
 expression: snapshot
 ---
 {
@@ -154,6 +154,66 @@ expression: snapshot
             },
             "409": {
               "description": "Conflicting concurrent stream request"
+            },
+            "500": {
+              "description": "Internal error"
+            }
+          }
+        }
+      },
+      "/agents/{agent_package}/{agent_instance_id}/dispatch": {
+        "post": {
+          "tags": [
+            "agents"
+          ],
+          "summary": "Deterministic non-conversational delivery: POST /agents/{agent_package}/{agent_instance_id}/dispatch",
+          "operationId": "post_dispatch",
+          "parameters": [
+            {
+              "name": "agent_package",
+              "in": "path",
+              "description": "Agent package identifier",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "agent_instance_id",
+              "in": "path",
+              "description": "Agent instance identifier",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDispatchRequestDto"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Buffered delivery acknowledgement",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/AgentDispatchAckDto"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Malformed request"
+            },
+            "404": {
+              "description": "Agent or dispatch handler not found"
             },
             "500": {
               "description": "Internal error"
@@ -877,6 +937,65 @@ expression: snapshot
             }
           }
         },
+        "AgentDispatchAckDto": {
+          "type": "object",
+          "required": [
+            "accepted"
+          ],
+          "properties": {
+            "accepted": {
+              "type": "boolean"
+            },
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "AgentDispatchRequestDto": {
+          "type": "object",
+          "required": [
+            "routing_key",
+            "message_type"
+          ],
+          "properties": {
+            "context_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "message_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "message_type": {
+              "type": "string"
+            },
+            "messages": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "metadata": {
+              "type": "object"
+            },
+            "routing_key": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
         "AgentEventSubscriptionDto": {
           "type": "object",
           "required": [
@@ -1210,7 +1329,7 @@ expression: snapshot
     "tags": [
       {
         "name": "agents",
-        "description": "Agent discovery and A2A JSON-RPC"
+        "description": "Agent discovery, deterministic dispatch, and A2A JSON-RPC"
       },
       {
         "name": "mermaid",
