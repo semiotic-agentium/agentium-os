@@ -9,6 +9,7 @@ import {
   isUrl,
   type ParsedCoordinatorAnswer,
 } from "../utils/parseCoordinatorAnswer";
+import { renderMarkdown } from "../utils/renderMarkdown";
 
 const props = withDefaults(
   defineProps<{ message: ChatMessage; showInlineStreamingDots?: boolean }>(),
@@ -62,9 +63,11 @@ const showGaps = ref(false);
       <template v-if="message.role === 'agent' && message.contentBlocks?.length">
         <template v-for="(block, idx) in message.contentBlocks" :key="idx">
           <div v-if="block.type === 'text'" :class="['bubble', message.role]">
-            <div class="bubble-text">
+            <div :class="['bubble-text', message.role === 'agent' ? 'bubble-markdown' : '']">
               <template v-if="block.text">
-                {{ block.text }}
+                <!-- eslint-disable-next-line vue/no-v-html -->
+                <div v-if="message.role === 'agent'" v-html="renderMarkdown(block.text)" />
+                <template v-else>{{ block.text }}</template>
                 <span v-if="showInlineStreamingDots && message.isStreaming && idx === message.contentBlocks!.length - 1" class="thinking-dots inline">
                   <span /><span /><span />
                 </span>
@@ -87,14 +90,16 @@ const showGaps = ref(false);
       <!-- Legacy single-text content -->
       <template v-else>
         <div :class="['bubble', message.role]">
-          <div class="bubble-text">
+          <div :class="['bubble-text', message.role === 'agent' ? 'bubble-markdown' : '']">
             <template v-if="showInlineStreamingDots && message.isStreaming && !message.text">
               <span class="thinking-dots">
                 <span /><span /><span />
               </span>
             </template>
             <template v-else-if="message.text">
-              {{ message.text }}
+              <!-- eslint-disable-next-line vue/no-v-html -->
+              <div v-if="message.role === 'agent'" v-html="renderMarkdown(message.text)" />
+              <template v-else>{{ message.text }}</template>
               <span v-if="showInlineStreamingDots && message.isStreaming" class="thinking-dots inline">
                 <span /><span /><span />
               </span>

@@ -1202,6 +1202,90 @@ body {
   white-space: pre-wrap;
 }
 
+/* ── Markdown rendering in agent bubbles ── */
+.bubble-text.bubble-markdown {
+  white-space: normal;
+}
+.bubble.agent .bubble-markdown p {
+  margin: 0 0 0.6em;
+}
+.bubble.agent .bubble-markdown p:last-child {
+  margin-bottom: 0;
+}
+.bubble.agent .bubble-markdown h1,
+.bubble.agent .bubble-markdown h2,
+.bubble.agent .bubble-markdown h3 {
+  font-size: 1em;
+  font-weight: 700;
+  margin: 0.8em 0 0.3em;
+  color: var(--text);
+}
+.bubble.agent .bubble-markdown ul,
+.bubble.agent .bubble-markdown ol {
+  margin: 0.4em 0;
+  padding-left: 1.4em;
+}
+.bubble.agent .bubble-markdown li {
+  margin: 0.2em 0;
+}
+.bubble.agent .bubble-markdown blockquote {
+  border-left: 3px solid var(--border);
+  margin: 0.5em 0;
+  padding: 0.3em 0.8em;
+  color: var(--text-secondary);
+  font-style: italic;
+}
+.bubble.agent .bubble-markdown code {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.88em;
+  background: var(--bg-subtle);
+  color: var(--text);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+.bubble.agent .bubble-markdown pre {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+.bubble.agent .bubble-markdown pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.85em;
+  color: var(--text);
+}
+.bubble.agent .bubble-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin: 0.5em 0;
+}
+.bubble.agent .bubble-markdown th,
+.bubble.agent .bubble-markdown td {
+  border: 1px solid var(--border);
+  padding: 5px 10px;
+  text-align: left;
+}
+.bubble.agent .bubble-markdown th {
+  background: var(--bg-subtle);
+  font-weight: 600;
+}
+.bubble.agent .bubble-markdown a {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.bubble.agent .bubble-markdown hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0.8em 0;
+}
+
 .message-time {
   font-size: 11px;
   color: var(--text-muted);
@@ -1413,6 +1497,24 @@ body {
   height: 18px;
 }
 
+.stop-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: #ef4444;
+  color: #ffffff;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+.stop-btn:hover { background: #dc2626; }
+.stop-btn:active { transform: scale(0.95); }
+.stop-btn svg { width: 16px; height: 16px; }
+
 /* ── Navbar ── */
 
 .navbar {
@@ -1571,7 +1673,7 @@ body {
 
 .dashboard-grid-top {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 16px;
   flex-shrink: 0;
 }
@@ -2901,7 +3003,7 @@ a.source-chip:hover {
 
 @media (max-width: 1200px) {
   .dashboard-grid-top {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(3, 1fr);
   }
 }
 

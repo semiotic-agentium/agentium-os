@@ -10,6 +10,7 @@ import { useProvenanceOps } from "./composables/useProvenanceOps";
 import { useA2aClient } from "./composables/useA2aClient";
 import { useTheme } from "./composables/useTheme";
 import { parseMermaidBlocks } from "./utils/parseMermaid";
+import type { AgentDiscoveryEntry } from "./types/a2a";
 
 const {
   agents,
@@ -25,7 +26,18 @@ const {
   fetchAgents,
   selectAgent,
   sendMessage,
+  cancelStream,
 } = useA2aClient();
+
+function handleSelectAgent(agent: AgentDiscoveryEntry): void {
+  if (
+    messages.value.length > 0 &&
+    agent.agent_package !== selectedAgent.value?.agent_package
+  ) {
+    if (!window.confirm("Switching agents will clear the current conversation. Continue?")) return;
+  }
+  selectAgent(agent);
+}
 const { theme, toggle: toggleTheme } = useTheme();
 const { createQuery } = useProvenanceOps();
 
@@ -114,7 +126,7 @@ onMounted(() => fetchAgents());
 
       <div v-else-if="view === 'chat'" class="chat-layout">
         <div class="chat-toolbar">
-          <AgentSelector :agents="agents" :selected="selectedAgent" @select="selectAgent" />
+          <AgentSelector :agents="agents" :selected="selectedAgent" @select="handleSelectAgent" />
         </div>
 
         <div class="app-body">
@@ -126,6 +138,7 @@ onMounted(() => fetchAgents());
             :input-required-prompt="inputRequiredPrompt"
             :workflow-progress="workflowProgress"
             @send="sendMessage"
+            @cancel="cancelStream"
           />
           <ProvenancePane
             :context-id="contextId"
