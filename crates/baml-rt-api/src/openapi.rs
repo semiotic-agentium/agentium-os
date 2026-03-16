@@ -124,14 +124,22 @@ impl TryFrom<AgentDispatchRequestDto> for baml_rt_core::AgentDispatchRequest {
     type Error = String;
 
     fn try_from(value: AgentDispatchRequestDto) -> Result<Self, Self::Error> {
-        let context_id = value
-            .context_id
+        let AgentDispatchRequestDto {
+            routing_key,
+            message_type,
+            messages,
+            context_id,
+            task_id,
+            message_id,
+            metadata,
+        } = value;
+
+        let context_id = context_id
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(baml_rt_core::ContextId::from);
-        let task_id = value
-            .task_id
+        let task_id = task_id
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -140,17 +148,22 @@ impl TryFrom<AgentDispatchRequestDto> for baml_rt_core::AgentDispatchRequest {
                     value.to_string(),
                 ))
             });
+        let message_id = message_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
 
         Ok(Self {
-            routing_key: baml_rt_core::AgentDispatchRoutingKey::parse(&value.routing_key)
+            routing_key: baml_rt_core::AgentDispatchRoutingKey::parse(&routing_key)
                 .ok_or_else(|| "routing_key must be non-empty".to_string())?,
-            message_type: baml_rt_core::EventSchemaVersion::parse(&value.message_type)
+            message_type: baml_rt_core::EventSchemaVersion::parse(&message_type)
                 .ok_or_else(|| "message_type must be non-empty".to_string())?,
-            messages: value.messages,
+            messages,
             context_id,
             task_id,
-            message_id: value.message_id.filter(|value| !value.trim().is_empty()),
-            metadata: value.metadata,
+            message_id,
+            metadata,
         })
     }
 }
@@ -161,6 +174,29 @@ impl From<baml_rt_core::AgentDispatchAck> for AgentDispatchAckDto {
             accepted: value.accepted,
             detail: value.detail,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AgentDispatchRequestDto;
+
+    #[test]
+    fn dispatch_request_dto_trims_message_id() {
+        let request = AgentDispatchRequestDto {
+            routing_key: "slack:intake".to_string(),
+            message_type: "task-daemon.interpretation.v1".to_string(),
+            messages: Vec::new(),
+            context_id: None,
+            task_id: None,
+            message_id: Some("  dispatch-msg-1  ".to_string()),
+            metadata: None,
+        };
+
+        let parsed =
+            baml_rt_core::AgentDispatchRequest::try_from(request).expect("dispatch request");
+
+        assert_eq!(parsed.message_id.as_deref(), Some("dispatch-msg-1"));
     }
 }
 
