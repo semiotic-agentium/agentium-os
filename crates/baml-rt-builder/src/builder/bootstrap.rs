@@ -13,7 +13,7 @@ use std::{fs, path::Path};
 use baml_rt_core::{AgentManifest, package::ManifestDiscovery};
 
 use crate::builder::{
-    compiler::{RuntimeTypeGenerator, TSCONFIG_JSON},
+    compiler::{RuntimeTypeGenerator, write_canonical_tsconfig},
     error::{BamlBuilderError, Result},
     traits::TypeGenerator,
     types::{AgentDir, BuildDir},
@@ -103,8 +103,9 @@ pub async fn run_bootstrap(
     let index_ts = index_ts_template(&prompt_name, tool_ids.is_empty());
     fs::write(src_dir.join("index.ts"), index_ts)?;
 
-    // Write the canonical tsconfig.json
-    fs::write(root.join("tsconfig.json"), TSCONFIG_JSON)?;
+    // Write the canonical tsconfig.json atomically so concurrent bootstrap/build reads
+    // never observe a truncated config.
+    write_canonical_tsconfig(root)?;
 
     // Run type generation — writes src/baml-runtime.d.ts and generated BAML files
     let agent_dir = AgentDir::new(root.to_path_buf())?;
