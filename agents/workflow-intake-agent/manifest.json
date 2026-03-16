@@ -11,7 +11,9 @@
   "discovery": {
     "description": "Consumes task-daemon interpretation events and delegates follow-up work.",
     "capabilities": [
-      "workflow:intake"
+      "slack:intake",
+      "clickup:intake",
+      "github_issues:intake"
     ],
     "subscriptions": [
       {

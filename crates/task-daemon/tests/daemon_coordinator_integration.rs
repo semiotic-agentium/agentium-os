@@ -128,76 +128,66 @@ async fn a2a_sink_sends_typed_handoff_to_explicit_target_agent_endpoint() {
     ) -> Json<Value> {
         state.push_hit(format!("POST {}", uri.0)).await;
         state.push_request(payload).await;
-        Json(json!([
-            {"jsonrpc":"2.0","id":"1","result":{"final":false}},
-            {
-                "jsonrpc":"2.0",
-                "id":"1",
-                "result":{
-                    "final":true,
-                    "message":{"parts":[{"text":"Created tasks successfully"}]}
-                }
-            }
-        ]))
+        Json(json!({"accepted": true, "detail": "Created tasks successfully"}))
     }
 
     let state = A2aMockState::default();
     let app = Router::new()
         .route(
-            "/agents/workflow-intake-agent/dispatch/a2a",
+            "/agents/workflow-intake-agent/default/dispatch",
             post(a2a_handler),
         )
         .with_state(state.clone());
-    let server = start_http_server(app).await.expect("start mock A2A host");
+    let server = start_http_server(app)
+        .await
+        .expect("start mock dispatch host");
 
     let mut sink = A2aSink::for_agent(
         server.base_url.clone(),
         "workflow-intake-agent".to_string(),
-        "dispatch".to_string(),
+        "default".to_string(),
         SinkDeliveryMode::Live,
     )
     .expect("a2a sink");
     sink.deliver(&sample_dispatch())
         .await
-        .expect("deliver to mock A2A host");
+        .expect("deliver to mock dispatch host");
 
     let hits = state.snapshot_hits().await;
     assert!(
         hits.iter()
-            .any(|hit| hit.contains("/agents/workflow-intake-agent/dispatch/a2a")),
-        "expected /a2a endpoint to be called, got {hits:?}"
+            .any(|hit| hit.contains("/agents/workflow-intake-agent/default/dispatch")),
+        "expected /dispatch endpoint to be called, got {hits:?}"
     );
 
     let requests = state.snapshot_requests().await;
-    assert_eq!(requests.len(), 1, "expected one A2A request");
+    assert_eq!(requests.len(), 1, "expected one dispatch request");
     let request = &requests[0];
 
     assert_eq!(
-        request.pointer("/method").and_then(Value::as_str),
-        Some("message.sendStream")
+        request.pointer("/routing_key").and_then(Value::as_str),
+        Some("slack:intake")
     );
     assert!(
         request
-            .pointer("/params/message/messageId")
+            .pointer("/message_id")
             .and_then(Value::as_str)
             .is_some(),
         "request must include messageId"
     );
     assert_eq!(
-        request
-            .pointer("/params/message/role")
-            .and_then(Value::as_str),
-        Some("user")
+        request.pointer("/message_type").and_then(Value::as_str),
+        Some("task-daemon.interpretation.v1")
     );
     assert_eq!(
         request
-            .pointer("/params/message/parts/1/data/schema_version")
+            .pointer("/messages/0/schema_version")
             .and_then(Value::as_str),
         Some("task-daemon.interpretation.v1")
     );
     assert_eq!(
         request
-            .pointer("/params/message/parts/1/data/project/project_key")
+            .pointer("/messages/0/project/project_key")
             .and_then(Value::as_str),
         Some("agent-platform")
     );
@@ -223,7 +213,7 @@ async fn a2a_sink_discovers_matching_subscribers_and_delivers_to_them() {
                     "tools": ["system/internal_a2a"],
                     "baml_functions": [],
                     "description": "Consumes task-daemon events",
-                    "capabilities": ["workflow:intake"],
+                    "capabilities": ["slack:intake"],
                     "subscriptions": [{
                         "schema_versions": ["task-daemon.interpretation.v1"],
                         "source_kinds": ["slack"],
@@ -245,7 +235,7 @@ async fn a2a_sink_discovers_matching_subscribers_and_delivers_to_them() {
                     "tools": ["system/internal_a2a"],
                     "baml_functions": [],
                     "description": "Different subscription",
-                    "capabilities": [],
+                    "capabilities": ["slack:intake"],
                     "subscriptions": [{
                         "schema_versions": ["task-daemon.interpretation.v1"],
                         "source_kinds": ["clickup"],
@@ -264,24 +254,14 @@ async fn a2a_sink_discovers_matching_subscribers_and_delivers_to_them() {
     ) -> Json<Value> {
         state.push_hit(format!("POST {}", uri.0)).await;
         state.push_request(payload).await;
-        Json(json!([
-            {"jsonrpc":"2.0","id":"1","result":{"final":false}},
-            {
-                "jsonrpc":"2.0",
-                "id":"1",
-                "result":{
-                    "final":true,
-                    "message":{"parts":[{"text":"Subscriber handled event"}]}
-                }
-            }
-        ]))
+        Json(json!({"accepted": true, "detail": "Subscriber handled event"}))
     }
 
     let state = A2aMockState::default();
     let app = Router::new()
         .route("/agents", get(list_agents_handler))
         .route(
-            "/agents/workflow-intake-agent/default/a2a",
+            "/agents/workflow-intake-agent/default/dispatch",
             post(a2a_handler),
         )
         .with_state(state.clone());
@@ -296,12 +276,12 @@ async fn a2a_sink_discovers_matching_subscribers_and_delivers_to_them() {
     assert!(hits.iter().any(|hit| hit == "GET /agents"));
     assert!(
         hits.iter()
-            .any(|hit| hit.contains("/agents/workflow-intake-agent/default/a2a"))
+            .any(|hit| hit.contains("/agents/workflow-intake-agent/default/dispatch"))
     );
     assert!(
         !hits
             .iter()
-            .any(|hit| hit.contains("/agents/non-matching-agent/default/a2a"))
+            .any(|hit| hit.contains("/agents/non-matching-agent/default/dispatch"))
     );
 
     let requests = state.snapshot_requests().await;
@@ -312,7 +292,7 @@ async fn a2a_sink_discovers_matching_subscribers_and_delivers_to_them() {
     );
     assert_eq!(
         requests[0]
-            .pointer("/params/message/parts/1/data/schema_version")
+            .pointer("/messages/0/schema_version")
             .and_then(Value::as_str),
         Some("task-daemon.interpretation.v1")
     );
@@ -388,7 +368,7 @@ async fn a2a_sink_reports_partial_subscriber_delivery_failures_with_success_cont
                     "tools": ["system/internal_a2a"],
                     "baml_functions": [],
                     "description": "Consumes task-daemon events",
-                    "capabilities": ["workflow:intake"],
+                    "capabilities": ["slack:intake"],
                     "subscriptions": [{
                         "schema_versions": ["task-daemon.interpretation.v1"],
                         "source_kinds": ["slack"],
@@ -410,7 +390,7 @@ async fn a2a_sink_reports_partial_subscriber_delivery_failures_with_success_cont
                     "tools": ["system/internal_a2a"],
                     "baml_functions": [],
                     "description": "Also consumes task-daemon events",
-                    "capabilities": [],
+                    "capabilities": ["slack:intake"],
                     "subscriptions": [{
                         "schema_versions": ["task-daemon.interpretation.v1"],
                         "source_kinds": ["slack"],
@@ -429,17 +409,7 @@ async fn a2a_sink_reports_partial_subscriber_delivery_failures_with_success_cont
     ) -> Json<Value> {
         state.push_hit(format!("POST {}", uri.0)).await;
         state.push_request(payload).await;
-        Json(json!([
-            {"jsonrpc":"2.0","id":"1","result":{"final":false}},
-            {
-                "jsonrpc":"2.0",
-                "id":"1",
-                "result":{
-                    "final":true,
-                    "message":{"parts":[{"text":"Handled event"}]}
-                }
-            }
-        ]))
+        Json(json!({"accepted": true, "detail": "Handled event"}))
     }
 
     async fn bad_handler(
@@ -456,10 +426,10 @@ async fn a2a_sink_reports_partial_subscriber_delivery_failures_with_success_cont
     let app = Router::new()
         .route("/agents", get(list_agents_handler))
         .route(
-            "/agents/workflow-intake-agent/default/a2a",
+            "/agents/workflow-intake-agent/default/dispatch",
             post(ok_handler),
         )
-        .route("/agents/audit-agent/default/a2a", post(bad_handler))
+        .route("/agents/audit-agent/default/dispatch", post(bad_handler))
         .with_state(state.clone());
     let server = start_http_server(app).await.expect("start mock host");
 
@@ -496,11 +466,13 @@ async fn a2a_sink_surfaces_non_success_status_with_body() {
     let state = A2aMockState::default();
     let app = Router::new()
         .route(
-            "/agents/coordinator-agent/default/a2a",
+            "/agents/coordinator-agent/default/dispatch",
             post(failing_handler),
         )
         .with_state(state.clone());
-    let server = start_http_server(app).await.expect("start mock A2A host");
+    let server = start_http_server(app)
+        .await
+        .expect("start mock dispatch host");
 
     let mut sink = A2aSink::for_agent(
         server.base_url.clone(),
@@ -515,7 +487,7 @@ async fn a2a_sink_surfaces_non_success_status_with_body() {
         .expect_err("deliver should fail on non-2xx");
 
     let msg = format!("{err:#}");
-    assert!(msg.contains("A2A request failed"));
+    assert!(msg.contains("dispatch request failed"));
     assert!(msg.contains("400"));
     assert!(msg.contains("target agent could not parse payload"));
 
@@ -523,28 +495,27 @@ async fn a2a_sink_surfaces_non_success_status_with_body() {
 }
 
 #[tokio::test]
-async fn a2a_sink_rejects_jsonrpc_error_envelope_on_http_200() {
-    async fn error_envelope_handler(
+async fn a2a_sink_rejects_negative_dispatch_ack_on_http_200() {
+    async fn rejected_ack_handler(
         State(state): State<A2aMockState>,
         uri: OriginalUri,
         Json(payload): Json<Value>,
     ) -> Json<Value> {
         state.push_hit(format!("POST {}", uri.0)).await;
         state.push_request(payload).await;
-        Json(json!([
-            {"jsonrpc":"2.0","id":"1","result":{"final":false}},
-            {"jsonrpc":"2.0","id":"1","error":{"code":-32602,"message":"invalid params"}}
-        ]))
+        Json(json!({"accepted": false, "detail": "invalid params"}))
     }
 
     let state = A2aMockState::default();
     let app = Router::new()
         .route(
-            "/agents/coordinator-agent/default/a2a",
-            post(error_envelope_handler),
+            "/agents/coordinator-agent/default/dispatch",
+            post(rejected_ack_handler),
         )
         .with_state(state.clone());
-    let server = start_http_server(app).await.expect("start mock A2A host");
+    let server = start_http_server(app)
+        .await
+        .expect("start mock dispatch host");
 
     let mut sink = A2aSink::for_agent(
         server.base_url.clone(),
@@ -556,10 +527,10 @@ async fn a2a_sink_rejects_jsonrpc_error_envelope_on_http_200() {
     let err = sink
         .deliver(&sample_dispatch())
         .await
-        .expect_err("deliver should fail when target agent returns JSON-RPC error envelope");
+        .expect_err("deliver should fail when target agent rejects the dispatch");
 
     let msg = format!("{err:#}");
-    assert!(msg.contains("JSON-RPC error envelope"));
+    assert!(msg.contains("rejected delivery"));
     assert!(msg.contains("invalid params"));
 
     server.stop().await;

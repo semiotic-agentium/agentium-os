@@ -7,6 +7,7 @@ pub mod bus;
 pub mod context;
 pub mod correlation;
 pub mod deferred;
+pub mod dispatch;
 pub mod error;
 pub mod event_subscription;
 pub mod ids;
@@ -33,6 +34,7 @@ pub use context::{
     Scoped,
 };
 pub use deferred::DeferredHolder;
+pub use dispatch::{AgentDispatchAck, AgentDispatchRequest, AgentDispatchRoutingKey};
 pub use error::{BamlRtError, Result, SessionLifecycleError};
 pub use event_subscription::{
     EventSchemaVersion, EventSourceKey, EventSourceKeyPrefix, EventSourceKind, EventSubscription,

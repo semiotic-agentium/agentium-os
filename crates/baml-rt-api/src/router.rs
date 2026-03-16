@@ -103,6 +103,7 @@ pub fn api_router_with_services(
         .routes(utoipa_axum::routes!(handlers::list_agents))
         .routes(utoipa_axum::routes!(handlers::post_a2a))
         .routes(utoipa_axum::routes!(handlers::post_a2a_sse))
+        .routes(utoipa_axum::routes!(handlers::post_dispatch))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_context))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_task))
         .routes(utoipa_axum::routes!(handlers::get_context_metrics))
@@ -126,7 +127,8 @@ pub fn api_router_with_services(
 
     let mut openapi = openapi;
     let mut tag_agents = utoipa::openapi::Tag::new("agents");
-    tag_agents.description = Some("Agent discovery and A2A JSON-RPC".to_string());
+    tag_agents.description =
+        Some("Agent discovery, deterministic dispatch, and A2A JSON-RPC".to_string());
     let mut tag_mermaid = utoipa::openapi::Tag::new("mermaid");
     tag_mermaid.description = Some(
         "Provenance graph as Mermaid sequence diagrams (when GraphQLite is enabled)".to_string(),

@@ -42,6 +42,31 @@ pub struct AgentDiscoveryEntryDto {
     pub agent_card: AgentCardDto,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
+pub struct AgentDispatchRequestDto {
+    pub routing_key: String,
+    pub message_type: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schema(value_type = Vec<Object>)]
+    pub messages: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Object)]
+    pub metadata: Option<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AgentDispatchAckDto {
+    pub accepted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
 impl From<baml_rt_core::AgentCard> for AgentCardDto {
     fn from(c: baml_rt_core::AgentCard) -> Self {
         Self {
@@ -91,6 +116,50 @@ impl From<baml_rt_core::AgentDiscoveryEntry> for AgentDiscoveryEntryDto {
             name: e.name,
             version: e.version,
             agent_card: AgentCardDto::from(e.agent_card),
+        }
+    }
+}
+
+impl TryFrom<AgentDispatchRequestDto> for baml_rt_core::AgentDispatchRequest {
+    type Error = String;
+
+    fn try_from(value: AgentDispatchRequestDto) -> Result<Self, Self::Error> {
+        let context_id = value
+            .context_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(baml_rt_core::ContextId::from);
+        let task_id = value
+            .task_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                baml_rt_core::TaskId::from_external(baml_rt_core::ids::ExternalId::new(
+                    value.to_string(),
+                ))
+            });
+
+        Ok(Self {
+            routing_key: baml_rt_core::AgentDispatchRoutingKey::parse(&value.routing_key)
+                .ok_or_else(|| "routing_key must be non-empty".to_string())?,
+            message_type: baml_rt_core::EventSchemaVersion::parse(&value.message_type)
+                .ok_or_else(|| "message_type must be non-empty".to_string())?,
+            messages: value.messages,
+            context_id,
+            task_id,
+            message_id: value.message_id.filter(|value| !value.trim().is_empty()),
+            metadata: value.metadata,
+        })
+    }
+}
+
+impl From<baml_rt_core::AgentDispatchAck> for AgentDispatchAckDto {
+    fn from(value: baml_rt_core::AgentDispatchAck) -> Self {
+        Self {
+            accepted: value.accepted,
+            detail: value.detail,
         }
     }
 }

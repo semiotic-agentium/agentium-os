@@ -8,6 +8,7 @@ PORT="${COORDINATOR_DEMO_PORT:-8082}"
 LOG_FILE="${COORDINATOR_DEMO_LOG:-/tmp/coordinator-runner.log}"
 PID_FILE="${COORDINATOR_DEMO_PID:-/tmp/coordinator-runner.pid}"
 COORDINATOR_PACKAGE_FILE="${COORDINATOR_DEMO_PACKAGE:-/tmp/coordinator-agent.tar.gz}"
+WORKFLOW_INTAKE_PACKAGE_FILE="${COORDINATOR_DEMO_WORKFLOW_INTAKE_PACKAGE:-/tmp/workflow-intake-agent.tar.gz}"
 NOTION_PACKAGE_FILE="${COORDINATOR_DEMO_NOTION_PACKAGE:-/tmp/notion-agent.tar.gz}"
 CLICKUP_PACKAGE_FILE="${COORDINATOR_DEMO_CLICKUP_PACKAGE:-/tmp/clickup-agent.tar.gz}"
 INCLUDE_CLICKUP="${COORDINATOR_DEMO_INCLUDE_CLICKUP:-0}"
@@ -30,9 +31,11 @@ fi
 
 cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- \
   package --agent-dir agents/coordinator-agent --output "$COORDINATOR_PACKAGE_FILE"
+cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- \
+  package --agent-dir agents/workflow-intake-agent --output "$WORKFLOW_INTAKE_PACKAGE_FILE"
 
-RUNNER_PACKAGES=("$COORDINATOR_PACKAGE_FILE")
-LOADED_AGENTS=("coordinator-agent")
+RUNNER_PACKAGES=("$COORDINATOR_PACKAGE_FILE" "$WORKFLOW_INTAKE_PACKAGE_FILE")
+LOADED_AGENTS=("coordinator-agent" "workflow-intake-agent")
 if [ "$INCLUDE_NOTION" = "1" ]; then
   cargo run -p baml-rt-builder --features http-tools --bin baml-agent-builder -- \
     package --agent-dir agents/notion-agent --output "$NOTION_PACKAGE_FILE"

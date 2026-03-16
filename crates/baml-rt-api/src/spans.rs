@@ -37,6 +37,18 @@ pub(crate) fn post_a2a_sse(agent_package: &str, agent_instance_id: &str) -> Span
     )
 }
 
+/// Create span for POST /agents/.../dispatch (deterministic buffered delivery).
+///
+/// Parent: HTTP request span.
+#[inline]
+pub(crate) fn post_dispatch(agent_package: &str, agent_instance_id: &str) -> Span {
+    tracing::debug_span!(
+        "baml_rt_api.post_dispatch",
+        agent_package = %agent_package,
+        agent_instance_id = %agent_instance_id,
+    )
+}
+
 /// Create span for GET /contexts/{context_id}/mermaid.
 #[inline]
 pub(crate) fn get_mermaid_context(context_id: &str) -> Span {

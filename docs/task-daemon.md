@@ -137,7 +137,7 @@ cargo run -p baml-task-daemon -- run \
 Route specific sources to specific sinks:
 
 ```bash
-# Slack discussions create ClickUp tasks; ClickUp lifecycle events publish to subscribed A2A agents.
+# Slack discussions create ClickUp tasks; ClickUp lifecycle events dispatch to subscribed agents.
 cargo run -p baml-task-daemon -- run \
   --source slack \
   --source clickup \
@@ -150,7 +150,7 @@ cargo run -p baml-task-daemon -- run \
   --a2a-live
 ```
 
-Deliver daemon events to subscribed A2A agents:
+Deliver daemon events to subscribed agents:
 
 ```bash
 # dry-run (shows what would be sent, without network side-effects)
@@ -190,10 +190,11 @@ A typical batch includes:
 - `interpretation.workflow_seed.clarification_nodes`: questions that should be resolved before execution
 - `derived_tasks`: practical tasks emitted to sinks
 
-When using A2A delivery (`--a2a-base-url --a2a-live`), task-daemon
-sends a valid `message.sendStream` request with:
-- a concise text instruction
-- a typed workflow handoff payload in `message.parts[].data`
+When using agent delivery (`--a2a-base-url --a2a-live`), task-daemon
+sends a buffered dispatch request with:
+- `routing_key` set to a source-specific intake key such as `slack:intake`
+- `message_type` set to `task-daemon.interpretation.v1`
+- the typed workflow handoff payload in `messages[]`
 
 ## Event Contract
 
@@ -208,7 +209,7 @@ versioned interpretation event contract:
 - With multiple `--source` flags, each interval (and `--once`) covers each selected source once.
 - `--route <source>:<sink>` overrides default fan-out. When routes are present, only explicitly routed source/sink pairs are active.
 - Startup validation rejects configurations where a selected source has no compatible sink.
-- With `--a2a-base-url` and no explicit `--a2a-agent-package` / `--a2a-agent-instance-id`, task-daemon discovers subscribed agents from the host `/agents` API and delivers matching events to them.
+- With `--a2a-base-url` and no explicit `--a2a-agent-package` / `--a2a-agent-instance-id`, task-daemon discovers subscribed agents from the host `/agents` API and delivers matching events to their `/dispatch` entrypoint.
 - This replaces the older implicit single-target coordinator delivery. Use both explicit target flags if you need that behavior.
 - Delivery is currently best-effort at-least-once: source cursor/task state is persisted only after sink delivery succeeds.
 

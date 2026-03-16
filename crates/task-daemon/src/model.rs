@@ -5,7 +5,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use baml_rt_core::{AgentDispatchRoutingKey, EventSourceKind};
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -25,6 +27,37 @@ impl TaskSourceKind {
             TaskSourceKind::Slack => "slack",
             TaskSourceKind::Clickup => "clickup",
             TaskSourceKind::GithubIssues => "github_issues",
+        }
+    }
+
+    pub fn intake_routing_key(self) -> AgentDispatchRoutingKey {
+        let routing_key = match self {
+            TaskSourceKind::Slack => "slack:intake",
+            TaskSourceKind::Clickup => "clickup:intake",
+            TaskSourceKind::GithubIssues => "github_issues:intake",
+        };
+        AgentDispatchRoutingKey::parse(routing_key)
+            .expect("hard-coded task-daemon intake routing keys must be valid")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum TaskSourceKindParseError {
+    #[error("unsupported task source kind for task-daemon dispatch: {raw}")]
+    Unsupported { raw: String },
+}
+
+impl TryFrom<&EventSourceKind> for TaskSourceKind {
+    type Error = TaskSourceKindParseError;
+
+    fn try_from(value: &EventSourceKind) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "slack" => Ok(TaskSourceKind::Slack),
+            "clickup" => Ok(TaskSourceKind::Clickup),
+            "github_issues" => Ok(TaskSourceKind::GithubIssues),
+            raw => Err(TaskSourceKindParseError::Unsupported {
+                raw: raw.to_string(),
+            }),
         }
     }
 }
@@ -269,4 +302,47 @@ pub fn unix_now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use baml_rt_core::EventSourceKind;
+
+    use super::{TaskSourceKind, TaskSourceKindParseError};
+
+    #[test]
+    fn task_source_kind_maps_to_dispatch_routing_keys() {
+        assert_eq!(
+            TaskSourceKind::Slack.intake_routing_key().as_str(),
+            "slack:intake"
+        );
+        assert_eq!(
+            TaskSourceKind::Clickup.intake_routing_key().as_str(),
+            "clickup:intake"
+        );
+        assert_eq!(
+            TaskSourceKind::GithubIssues.intake_routing_key().as_str(),
+            "github_issues:intake"
+        );
+    }
+
+    #[test]
+    fn task_source_kind_parses_from_event_source_kind() {
+        let source_kind = EventSourceKind::parse("Slack").expect("source kind");
+        assert_eq!(
+            TaskSourceKind::try_from(&source_kind).expect("task source kind"),
+            TaskSourceKind::Slack
+        );
+    }
+
+    #[test]
+    fn task_source_kind_rejects_unknown_event_source_kind() {
+        let source_kind = EventSourceKind::parse("notion").expect("source kind");
+        assert_eq!(
+            TaskSourceKind::try_from(&source_kind).expect_err("unknown source must fail"),
+            TaskSourceKindParseError::Unsupported {
+                raw: "notion".to_string()
+            }
+        );
+    }
 }

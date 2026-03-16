@@ -11,13 +11,12 @@ use std::{
 use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use baml_rt_core::{
-    AgentDiscoveryEntry, AgentInstanceId, AgentPackageName, AgentRouteKey, PublishedEvent,
-    ids::{ContextId, ExternalId, TaskId},
-    subscriptions_match_published_event,
+    AgentDiscoveryEntry, AgentDispatchAck, AgentDispatchRequest, AgentInstanceId, AgentPackageName,
+    AgentRouteKey, PublishedEvent, subscriptions_match_published_event,
 };
 use integrations_clickup_client::ClickUpClient;
 use integrations_github_client::GitHubClient;
-use serde_json::{Value, json};
+use serde_json::json;
 use thiserror::Error;
 
 use crate::{
@@ -94,13 +93,13 @@ pub enum SinkConstructorError {
     EmptyGithubOwner,
     #[error("github repo must not be empty")]
     EmptyGithubRepo,
-    #[error("A2A base URL must not be empty")]
+    #[error("agent host base URL must not be empty")]
     EmptyA2aBaseUrl,
-    #[error("A2A base URL is invalid: {raw}")]
+    #[error("agent host base URL is invalid: {raw}")]
     InvalidA2aBaseUrl { raw: String },
-    #[error("A2A agent package is invalid: {raw}")]
+    #[error("agent package is invalid: {raw}")]
     InvalidA2aAgentPackage { raw: String },
-    #[error("A2A agent instance id is invalid: {raw}")]
+    #[error("agent instance id is invalid: {raw}")]
     InvalidA2aAgentInstanceId { raw: String },
 }
 
@@ -144,31 +143,31 @@ pub enum SinkDeliveryError {
         #[source]
         source: anyhow::Error,
     },
-    #[error("sending A2A request to target agent failed: {source}")]
+    #[error("sending dispatch request to target agent failed: {source}")]
     A2aTransport {
         #[source]
         source: anyhow::Error,
     },
-    #[error("loading subscribed agents from A2A host failed: {source}")]
+    #[error("loading subscribed agents from agent host failed: {source}")]
     A2aDiscoveryTransport {
         #[source]
         source: anyhow::Error,
     },
-    #[error("A2A agent discovery failed with {status}: {body}")]
+    #[error("agent discovery failed with {status}: {body}")]
     A2aDiscoveryHttp { status: u16, body: String },
-    #[error("reading A2A agent discovery JSON failed: {source}")]
+    #[error("reading agent discovery JSON failed: {source}")]
     A2aDiscoveryJson {
         #[source]
         source: anyhow::Error,
     },
-    #[error("A2A request failed with {status}: {body}")]
+    #[error("dispatch request failed with {status}: {body}")]
     A2aHttp { status: u16, body: String },
-    #[error("reading A2A response JSON failed: {source}")]
+    #[error("reading dispatch acknowledgement JSON failed: {source}")]
     A2aResponseJson {
         #[source]
         source: anyhow::Error,
     },
-    #[error("A2A protocol validation failed: {source}")]
+    #[error("dispatch protocol validation failed: {source}")]
     A2aProtocol {
         #[source]
         source: anyhow::Error,
@@ -641,7 +640,7 @@ enum A2aDestination {
     Subscribers,
 }
 
-/// Delivers task-daemon results to another agent over A2A.
+/// Delivers task-daemon results to another agent through the deterministic dispatch endpoint.
 pub struct A2aSink {
     a2a_base_url: reqwest::Url,
     destination: A2aDestination,
@@ -651,11 +650,10 @@ pub struct A2aSink {
 
 const INTERPRETATION_RESULT_CONTENT_TYPE: &str =
     "application/vnd.baml.task-daemon.interpretation-result+json;version=1";
-const A2A_ROLE_USER: &str = "user";
-const A2A_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const DISPATCH_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl A2aSink {
-    /// Creates an A2A destination that delivers to subscribed agents discovered
+    /// Creates a host delivery destination that delivers to subscribed agents discovered
     /// from the host `/agents` API.
     ///
     /// `SinkDeliveryMode::DryRun` logs the message instead of sending it.
@@ -673,7 +671,7 @@ impl A2aSink {
         })
     }
 
-    /// Creates an A2A destination for one explicit target agent.
+    /// Creates a host delivery destination for one explicit target agent.
     pub fn for_agent(
         a2a_base_url: String,
         agent_package: String,
@@ -705,7 +703,7 @@ impl A2aSink {
 
     fn target_path(target: &AgentRouteKey) -> String {
         format!(
-            "agents/{}/{}/a2a",
+            "agents/{}/{}/dispatch",
             target.agent_package, target.agent_instance_id
         )
     }
@@ -714,39 +712,32 @@ impl A2aSink {
         "agents"
     }
 
-    /// Builds the A2A request body sent to the receiving agent.
-    ///
-    /// The request includes both a readable summary and the structured result data.
-    fn build_jsonrpc_body(dispatch: &TaskDispatch, prompt: &str) -> serde_json::Value {
-        json!({
-            "jsonrpc": "2.0",
-            "method": "message.sendStream",
-            "id": correlation_id(),
-            "params": {
-                "message": {
-                    "messageId": format!("task-daemon-{}", uuid_v4()),
-                    "role": A2A_ROLE_USER,
-                    "parts": [
-                        {
-                            "text": prompt,
-                            "metadata": {
-                                "content_type": "text/plain",
-                            }
-                        },
-                        {
-                            "data": dispatch.result_event,
-                            "metadata": {
-                                "content_type": INTERPRETATION_RESULT_CONTENT_TYPE
-                            }
-                        }
-                    ],
-                    "metadata": {
-                        "source": "baml-task-daemon",
-                        "event_schema_version": dispatch.result_event.schema_version,
-                    }
-                }
-            }
-        })
+    fn build_dispatch_body(dispatch: &TaskDispatch, prompt: &str) -> AgentDispatchRequest {
+        AgentDispatchRequest {
+            routing_key: dispatch.result_event.source.source.intake_routing_key(),
+            message_type: baml_rt_core::EventSchemaVersion::parse(
+                &dispatch.result_event.schema_version,
+            )
+            .expect("task-daemon schema version must be valid"),
+            messages: vec![json!(dispatch.result_event)],
+            context_id: dispatch
+                .result_event
+                .provenance
+                .as_ref()
+                .and_then(|value| value.context_id.clone()),
+            task_id: dispatch
+                .result_event
+                .provenance
+                .as_ref()
+                .and_then(|value| value.task_id.clone()),
+            message_id: Some(format!("task-daemon-{}", uuid_v4())),
+            metadata: Some(json!({
+                "source": "baml-task-daemon",
+                "event_schema_version": dispatch.result_event.schema_version,
+                "content_type": INTERPRETATION_RESULT_CONTENT_TYPE,
+                "prompt": prompt,
+            })),
+        }
     }
 
     fn published_event(dispatch: &TaskDispatch) -> Result<PublishedEvent> {
@@ -777,7 +768,7 @@ impl A2aSink {
         let resp = self
             .client
             .get(url)
-            .timeout(A2A_HTTP_TIMEOUT)
+            .timeout(DISPATCH_HTTP_TIMEOUT)
             .send()
             .await
             .map_err(|source| SinkDeliveryError::A2aDiscoveryTransport {
@@ -810,9 +801,17 @@ impl A2aSink {
         event: &PublishedEvent,
     ) -> Result<Vec<AgentRouteKey>> {
         let mut targets = Vec::new();
+        let required_routing_key = routing_key_for_published_event(event)?;
 
         for entry in entries {
             if !subscriptions_match_published_event(&entry.agent_card.subscriptions, event) {
+                continue;
+            }
+            if !entry.agent_card.capabilities.iter().any(|capability| {
+                capability
+                    .trim()
+                    .eq_ignore_ascii_case(required_routing_key.as_str())
+            }) {
                 continue;
             }
 
@@ -862,14 +861,14 @@ impl A2aSink {
             .map_err(|source| SinkDeliveryError::A2aTransport {
                 source: anyhow::Error::new(source),
             })?;
-        let body = Self::build_jsonrpc_body(dispatch, prompt);
+        let body = Self::build_dispatch_body(dispatch, prompt);
         let target_label = Self::explicit_target_label(target);
 
         let resp = self
             .client
             .post(url)
             .header("Content-Type", "application/json")
-            .timeout(A2A_HTTP_TIMEOUT)
+            .timeout(DISPATCH_HTTP_TIMEOUT)
             .json(&body)
             .send()
             .await
@@ -890,52 +889,22 @@ impl A2aSink {
             .into());
         }
 
-        let responses: Vec<Value> =
+        let ack: AgentDispatchAck =
             resp.json()
                 .await
                 .map_err(|source| SinkDeliveryError::A2aResponseJson {
                     source: source.into(),
                 })?;
 
-        let final_text = validate_jsonrpc_responses(&responses)
+        let detail = validate_dispatch_ack(&ack)
             .map_err(|source| SinkDeliveryError::A2aProtocol { source })?;
-        let context_id = extract_context_id(&responses);
-        let task_id = extract_task_id(&responses);
         tracing::info!(
             a2a_base_url = %self.a2a_base_url,
             target = target_label.as_str(),
-            response_count = responses.len(),
-            final_text_len = final_text.as_ref().map_or(0, |t| t.len()),
-            "A2A response received"
+            accepted = ack.accepted,
+            detail_len = detail.as_ref().map_or(0, |t| t.len()),
+            "Dispatch acknowledgement received"
         );
-        if let Some(context_id) = context_id {
-            let mermaid_endpoint = self
-                .a2a_base_url
-                .join(&format!("contexts/{context_id}/mermaid"))
-                .map(|url| url.to_string())
-                .unwrap_or_else(|_| format!("{}/contexts/{context_id}/mermaid", self.a2a_base_url));
-            let metrics_endpoint = self
-                .a2a_base_url
-                .join(&format!("contexts/{context_id}/metrics"))
-                .map(|url| url.to_string())
-                .unwrap_or_else(|_| format!("{}/contexts/{context_id}/metrics", self.a2a_base_url));
-            tracing::info!(
-                a2a_base_url = %self.a2a_base_url,
-                target = target_label.as_str(),
-                context_id = %context_id,
-                mermaid_endpoint = %mermaid_endpoint,
-                metrics_endpoint = %metrics_endpoint,
-                "Captured A2A context id for provenance replay"
-            );
-        }
-        if let Some(task_id) = task_id {
-            tracing::info!(
-                a2a_base_url = %self.a2a_base_url,
-                target = target_label.as_str(),
-                task_id = %task_id,
-                "Captured A2A task id"
-            );
-        }
 
         Ok(())
     }
@@ -945,8 +914,8 @@ impl A2aSink {
 impl TaskSink for A2aSink {
     fn name(&self) -> &'static str {
         match self.mode {
-            SinkDeliveryMode::DryRun => "a2a-dry-run",
-            SinkDeliveryMode::Live => "a2a",
+            SinkDeliveryMode::DryRun => "dispatch-dry-run",
+            SinkDeliveryMode::Live => "dispatch",
         }
     }
 
@@ -960,7 +929,7 @@ impl TaskSink for A2aSink {
                     target = Self::explicit_target_label(target),
                     derived_tasks = dispatch.batch.derived_tasks.len(),
                     prompt_len = prompt.len(),
-                    "A2A sink dry-run; prompt:\n{prompt}"
+                    "Dispatch sink dry-run; prompt:\n{prompt}"
                 ),
                 A2aDestination::Subscribers => tracing::info!(
                     a2a_base_url = %self.a2a_base_url,
@@ -969,7 +938,7 @@ impl TaskSink for A2aSink {
                     source_key = %dispatch.result_event.source.source_key,
                     derived_tasks = dispatch.batch.derived_tasks.len(),
                     prompt_len = prompt.len(),
-                    "A2A subscriber delivery dry-run; would discover matching subscribers and send prompt:\n{prompt}"
+                    "Subscriber dispatch dry-run; would discover matching subscribers and send prompt:\n{prompt}"
                 ),
             }
             return Ok(());
@@ -981,7 +950,7 @@ impl TaskSink for A2aSink {
                     a2a_base_url = %self.a2a_base_url,
                     target = Self::explicit_target_label(target),
                     derived_tasks = dispatch.batch.derived_tasks.len(),
-                    "Sending task-daemon dispatch to explicit target agent via A2A"
+                    "Sending task-daemon dispatch to explicit target agent"
                 );
                 self.deliver_to_target(target, dispatch, &prompt).await
             }
@@ -1000,7 +969,7 @@ impl TaskSink for A2aSink {
                     schema_version = %dispatch.result_event.schema_version,
                     source = %dispatch.result_event.source.source.as_str(),
                     source_key = %dispatch.result_event.source.source_key,
-                    "Sending task-daemon dispatch to subscribed agents via A2A"
+                    "Sending task-daemon dispatch to subscribed agents"
                 );
 
                 let mut successes = Vec::new();
@@ -1083,167 +1052,34 @@ fn normalize_a2a_base_url(
     Ok(a2a_base_url)
 }
 
-fn pointer_str<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
-    value
-        .pointer(pointer)
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|v| !v.is_empty())
-}
-
-fn extract_context_id(responses: &[Value]) -> Option<ContextId> {
-    const POINTERS: [&str; 6] = [
-        "/result/contextId",
-        "/result/message/contextId",
-        "/result/task/contextId",
-        "/result/chunk/contextId",
-        "/result/chunk/message/contextId",
-        "/result/chunk/task/contextId",
-    ];
-
-    responses.iter().rev().find_map(|response| {
-        POINTERS
-            .iter()
-            .find_map(|pointer| pointer_str(response, pointer))
-            .map(ContextId::from)
-    })
-}
-
-fn extract_task_id(responses: &[Value]) -> Option<TaskId> {
-    const POINTERS: [&str; 2] = ["/result/task/id", "/result/chunk/task/id"];
-
-    responses.iter().rev().find_map(|response| {
-        POINTERS
-            .iter()
-            .find_map(|pointer| pointer_str(response, pointer))
-            .map(|raw| TaskId::from_external(ExternalId::new(raw.to_string())))
-    })
-}
-
-/// Extracts the last text content from final JSON-RPC results.
-fn extract_final_jsonrpc_text(responses: &[Value]) -> Option<String> {
-    fn extract_text(parts: &[Value]) -> Option<String> {
-        parts.iter().find_map(|part| {
-            part.get("text")
-                .and_then(Value::as_str)
-                .map(ToString::to_string)
+fn routing_key_for_published_event(
+    event: &PublishedEvent,
+) -> Result<baml_rt_core::AgentDispatchRoutingKey> {
+    TaskSourceKind::try_from(&event.source_kind)
+        .map(TaskSourceKind::intake_routing_key)
+        .map_err(|source| SinkDeliveryError::A2aProtocol {
+            source: anyhow::Error::new(source),
         })
-    }
-
-    for response in responses.iter().rev() {
-        let Some(result) = response.get("result") else {
-            continue;
-        };
-        let is_final = result
-            .get("final")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        if !is_final {
-            continue;
-        }
-
-        let parts = result
-            .pointer("/message/parts")
-            .and_then(Value::as_array)
-            .or_else(|| {
-                result
-                    .pointer("/chunk/message/parts")
-                    .and_then(Value::as_array)
-            });
-        if let Some(parts) = parts
-            && let Some(text) = extract_text(parts)
-        {
-            return Some(text);
-        }
-    }
-
-    None
+        .map_err(Into::into)
 }
 
-fn summarize_jsonrpc_error(response: &Value) -> Option<String> {
-    let error = response.get("error")?;
-    let code = error
-        .get("code")
-        .and_then(Value::as_i64)
-        .map_or_else(|| "?".to_string(), |value| value.to_string());
-    let message = error
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown error");
-    let id = response.get("id").and_then(Value::as_str).unwrap_or("?");
-    Some(format!("id={id}, code={code}, message={message}"))
-}
-
-fn has_final_success_result(response: &Value) -> bool {
-    response.get("error").is_none()
-        && response
-            .get("result")
-            .and_then(|result| result.get("final"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-}
-
-fn has_input_required_status(response: &Value) -> bool {
-    const POINTERS: [&str; 3] = [
-        "/result/task/status/state",
-        "/result/chunk/task/status/state",
-        "/result/status/state",
-    ];
-
-    POINTERS.iter().any(|pointer| {
-        pointer_str(response, pointer)
-            .is_some_and(|state| state.eq_ignore_ascii_case("TASK_STATE_INPUT_REQUIRED"))
-    })
-}
-
-/// Checks that the receiving agent returned a completed success response.
-fn validate_jsonrpc_responses(responses: &[Value]) -> Result<Option<String>> {
-    if responses.is_empty() {
-        return Err(anyhow!(
-            "A2A response did not contain any JSON-RPC envelopes"
-        ));
+fn validate_dispatch_ack(ack: &AgentDispatchAck) -> Result<Option<String>> {
+    if ack.accepted {
+        return Ok(ack.detail.clone());
     }
 
-    let errors: Vec<String> = responses
-        .iter()
-        .filter_map(summarize_jsonrpc_error)
-        .collect();
-    if !errors.is_empty() {
-        return Err(anyhow!(
-            "A2A response included JSON-RPC error envelope(s): {}",
-            errors.join(" | ")
-        ));
-    }
-
-    let has_final = responses.iter().any(has_final_success_result);
-    if !has_final {
-        if responses.iter().any(has_input_required_status) {
-            tracing::info!("A2A response ended in TASK_STATE_INPUT_REQUIRED without final result");
-            return Ok(extract_final_jsonrpc_text(responses));
-        }
-
-        return Err(anyhow!(
-            "A2A response did not include a final successful JSON-RPC result"
-        ));
-    }
-
-    Ok(extract_final_jsonrpc_text(responses))
+    Err(anyhow!(
+        "dispatch acknowledgement rejected delivery{}",
+        ack.detail
+            .as_deref()
+            .map(|detail| format!(": {detail}"))
+            .unwrap_or_default()
+    ))
 }
 
 /// Generates a random UUID v4 string.
 fn uuid_v4() -> String {
     uuid::Uuid::new_v4().to_string()
-}
-
-/// Generates a correlation id in the format expected by the runtime.
-fn correlation_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let millis = duration.as_millis();
-    let counter = (duration.as_nanos() % 1_000_000) as u64;
-    format!("corr-{millis}-{counter}")
 }
 
 #[cfg(test)]
@@ -1252,6 +1088,8 @@ mod tests {
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+
+    use serde_json::Value;
 
     use super::*;
     use crate::{
@@ -1570,148 +1408,77 @@ mod tests {
     }
 
     #[test]
-    fn extract_final_jsonrpc_text_finds_text_in_final_event() {
-        let responses = vec![
-            json!({"jsonrpc":"2.0","id":"1","result":{"final":false,"message":{"parts":[{"text":"partial"}]}}}),
-            json!({"jsonrpc":"2.0","id":"1","result":{"final":true,"message":{"parts":[{"text":"final answer"}]}}}),
-        ];
-        let text = extract_final_jsonrpc_text(&responses);
-        assert_eq!(text.as_deref(), Some("final answer"));
-    }
+    fn validate_dispatch_ack_rejects_negative_ack() {
+        let ack = AgentDispatchAck {
+            accepted: false,
+            detail: Some("not my route".to_string()),
+        };
 
-    #[test]
-    fn extract_final_jsonrpc_text_returns_none_for_no_final() {
-        let responses = vec![
-            json!({"jsonrpc":"2.0","id":"1","result":{"final":false,"message":{"parts":[{"text":"partial"}]}}}),
-        ];
-        assert!(extract_final_jsonrpc_text(&responses).is_none());
-    }
-
-    #[test]
-    fn validate_jsonrpc_responses_rejects_error_envelopes() {
-        let responses = vec![
-            json!({"jsonrpc":"2.0","id":"1","result":{"final":false}}),
-            json!({"jsonrpc":"2.0","id":"1","error":{"code":-32602,"message":"invalid params"}}),
-        ];
-
-        let err = validate_jsonrpc_responses(&responses).expect_err("expected protocol failure");
+        let err = validate_dispatch_ack(&ack).expect_err("expected protocol failure");
         let msg = format!("{err:#}");
-        assert!(msg.contains("JSON-RPC error envelope"));
-        assert!(msg.contains("invalid params"));
+        assert!(msg.contains("rejected delivery"));
+        assert!(msg.contains("not my route"));
     }
 
     #[test]
-    fn validate_jsonrpc_responses_requires_final_success() {
-        let responses = vec![json!({"jsonrpc":"2.0","id":"1","result":{"final":false}})];
-        let err = validate_jsonrpc_responses(&responses).expect_err("expected final result check");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("final successful JSON-RPC result"));
+    fn validate_dispatch_ack_accepts_positive_ack_and_returns_detail() {
+        let ack = AgentDispatchAck {
+            accepted: true,
+            detail: Some("accepted for processing".to_string()),
+        };
+
+        let detail = validate_dispatch_ack(&ack).expect("expected successful protocol response");
+        assert_eq!(detail.as_deref(), Some("accepted for processing"));
     }
 
     #[test]
-    fn validate_jsonrpc_responses_accepts_final_success() {
-        let responses = vec![
-            json!({"jsonrpc":"2.0","id":"1","result":{"final":false}}),
-            json!({"jsonrpc":"2.0","id":"1","result":{"final":true,"message":{"parts":[{"text":"done"}]}}}),
-        ];
-
-        let text =
-            validate_jsonrpc_responses(&responses).expect("expected successful protocol response");
-        assert_eq!(text.as_deref(), Some("done"));
-    }
-
-    #[test]
-    fn validate_jsonrpc_responses_accepts_input_required_without_final() {
-        let responses = vec![json!({
-            "jsonrpc":"2.0",
-            "id":"1",
-            "result":{
-                "final":false,
-                "chunk":{
-                    "task":{
-                        "id":"task-1",
-                        "status":{"state":"TASK_STATE_INPUT_REQUIRED"}
-                    }
-                }
-            }
-        })];
-
-        let text = validate_jsonrpc_responses(&responses)
-            .expect("input-required terminal state should be accepted");
-        assert!(text.is_none());
-    }
-
-    #[test]
-    fn extract_context_and_task_ids_prefers_latest_response_chunk() {
-        let responses = vec![
-            json!({
-                "jsonrpc":"2.0",
-                "id":"1",
-                "result":{"final":false,"chunk":{"contextId":"ctx-1","task":{"id":"task-1"}}}
-            }),
-            json!({
-                "jsonrpc":"2.0",
-                "id":"1",
-                "result":{"final":true,"chunk":{"contextId":"ctx-2","task":{"id":"task-2"}}}
-            }),
-        ];
-
-        assert_eq!(
-            extract_context_id(&responses)
-                .as_ref()
-                .map(|id| id.as_str()),
-            Some("ctx-2")
-        );
-        assert_eq!(
-            extract_task_id(&responses).as_ref().map(|id| id.as_str()),
-            Some("task-2")
-        );
-    }
-
-    #[test]
-    fn build_jsonrpc_body_contains_required_message_fields_and_typed_handoff() {
+    fn build_dispatch_body_contains_required_fields_and_typed_handoff() {
         let dispatch = sample_dispatch(sample_batch());
         let prompt = format_event_delivery_prompt(&dispatch.batch);
-        let body = A2aSink::build_jsonrpc_body(&dispatch, &prompt);
+        let body = A2aSink::build_dispatch_body(&dispatch, &prompt);
 
-        assert_eq!(
-            body.pointer("/method").and_then(Value::as_str),
-            Some("message.sendStream")
-        );
+        assert_eq!(body.routing_key, dispatch.batch.source.intake_routing_key());
         assert!(
-            body.pointer("/id")
-                .and_then(Value::as_str)
-                .is_some_and(|id| id.starts_with("corr-")),
-            "jsonrpc id must be correlation-id formatted for the A2A runtime"
-        );
-        assert!(
-            body.pointer("/params/message/messageId")
-                .and_then(Value::as_str)
-                .is_some()
+            body.message_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("task-daemon-"))
         );
         assert_eq!(
-            body.pointer("/params/message/role").and_then(Value::as_str),
-            Some(A2A_ROLE_USER)
+            body.message_type.as_str(),
+            crate::contract::INTERPRETATION_EVENT_SCHEMA_VERSION
         );
         assert_eq!(
-            body.pointer("/params/message/parts/1/data/schema_version")
+            body.messages[0]
+                .pointer("/schema_version")
                 .and_then(Value::as_str),
             Some(crate::contract::INTERPRETATION_EVENT_SCHEMA_VERSION)
         );
         assert_eq!(
-            body.pointer("/params/message/parts/1/data/project/project_key")
+            body.messages[0]
+                .pointer("/project/project_key")
                 .and_then(Value::as_str),
             Some("agent-platform")
         );
         assert_eq!(
-            body.pointer("/params/message/parts/1/metadata/content_type")
+            body.metadata
+                .as_ref()
+                .and_then(|value| value.pointer("/content_type"))
                 .and_then(Value::as_str),
             Some(INTERPRETATION_RESULT_CONTENT_TYPE)
         );
         assert_eq!(
-            body.pointer("/params/message/metadata/event_schema_version")
+            body.metadata
+                .as_ref()
+                .and_then(|value| value.pointer("/event_schema_version"))
                 .and_then(Value::as_str),
             Some(crate::contract::INTERPRETATION_EVENT_SCHEMA_VERSION)
+        );
+        assert!(
+            body.metadata
+                .as_ref()
+                .and_then(|value| value.pointer("/prompt"))
+                .and_then(Value::as_str)
+                .is_some_and(|value| !value.is_empty())
         );
     }
 }

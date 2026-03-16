@@ -244,26 +244,27 @@ struct RunArgs {
     #[arg(long, default_value_t = false)]
     github_live: bool,
 
-    /// Runner base URL for A2A event delivery (for example `http://127.0.0.1:8082`).
+    /// Runner base URL for agent event delivery (for example `http://127.0.0.1:8082`).
     ///
     /// Without an explicit agent package/instance, task-daemon discovers subscribed agents from
-    /// the host `/agents` API. To preserve the old single-target behavior, pass both explicit
+    /// the host `/agents` API and delivers to their deterministic `/dispatch` entrypoint.
+    /// To preserve the old single-target behavior, pass both explicit
     /// target flags.
     #[arg(long = "a2a-base-url")]
     a2a_base_url: Option<String>,
 
-    /// Optional explicit A2A target agent package.
+    /// Optional explicit target agent package.
     ///
     /// When omitted together with `--a2a-agent-instance-id`, task-daemon delivers to subscribed
     /// agents discovered from the host instead of one implicit default target.
     #[arg(long)]
     a2a_agent_package: Option<String>,
 
-    /// Optional explicit A2A target agent instance id. Must be provided together with --a2a-agent-package.
+    /// Optional explicit target agent instance id. Must be provided together with --a2a-agent-package.
     #[arg(long)]
     a2a_agent_instance_id: Option<String>,
 
-    /// When set with A2A base URL, sends live A2A requests instead of dry-run logging.
+    /// When set with the agent host base URL, sends live dispatch requests instead of dry-run logging.
     #[arg(long, default_value_t = false)]
     a2a_live: bool,
 }
@@ -428,7 +429,7 @@ async fn run(args: RunArgs) -> Result<()> {
                 )?),
                 (None, None) => {
                     tracing::warn!(
-                        "A2A delivery is using subscriber discovery mode. \
+                        "Agent delivery is using subscriber discovery mode. \
                          If you need the pre-pubsub single-target behavior, pass \
                          --a2a-agent-package and --a2a-agent-instance-id explicitly."
                     );

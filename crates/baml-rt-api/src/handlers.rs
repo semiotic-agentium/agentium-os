@@ -33,7 +33,7 @@ use crate::{
     context_metrics::{ContextMetricsError, ContextMetricsResponseDto},
     mermaid::MermaidError,
     metrics,
-    openapi::AgentDiscoveryEntryDto,
+    openapi::{AgentDiscoveryEntryDto, AgentDispatchAckDto, AgentDispatchRequestDto},
     planning::{ContextPlanningResponse, PlanningError},
     provenance_ops::ProvenanceOpsError,
     spans,
@@ -244,6 +244,60 @@ pub async fn post_a2a_sse(
 
     metrics::record_request("post_a2a_sse", "success", start.elapsed());
     Ok(sse)
+}
+
+/// Deterministic non-conversational delivery: POST /agents/{agent_package}/{agent_instance_id}/dispatch
+#[utoipa::path(
+    post,
+    path = "/agents/{agent_package}/{agent_instance_id}/dispatch",
+    tag = "agents",
+    params(
+        ("agent_package" = String, Path, description = "Agent package identifier"),
+        ("agent_instance_id" = String, Path, description = "Agent instance identifier")
+    ),
+    request_body = AgentDispatchRequestDto,
+    responses(
+        (status = 200, description = "Buffered delivery acknowledgement", body = AgentDispatchAckDto),
+        (status = 400, description = "Malformed request"),
+        (status = 404, description = "Agent or dispatch handler not found"),
+        (status = 500, description = "Internal error")
+    )
+)]
+pub async fn post_dispatch(
+    State(state): State<Arc<ApiState>>,
+    axum::extract::Path((agent_package, agent_instance_id)): axum::extract::Path<(String, String)>,
+    Json(body): Json<AgentDispatchRequestDto>,
+) -> HttpResult<Json<AgentDispatchAckDto>> {
+    let span = spans::post_dispatch(&agent_package, &agent_instance_id);
+    let _guard = span.enter();
+    let start = Instant::now();
+    let package_name = AgentPackageName::parse(&agent_package)
+        .ok_or_else(|| problem(400, "Bad Request", "agent_package must match [A-Za-z0-9_-]"))?;
+    let instance_id = AgentInstanceId::parse(&agent_instance_id).ok_or_else(|| {
+        problem(
+            400,
+            "Bad Request",
+            "agent_instance_id must match [A-Za-z0-9_-]",
+        )
+    })?;
+    let key = AgentRouteKey::new(package_name, instance_id);
+    let request = baml_rt_core::AgentDispatchRequest::try_from(body)
+        .map_err(|message| problem(400, "Bad Request", message))?;
+
+    match state.registry.handle_dispatch(&key, request).await {
+        Ok(ack) => {
+            metrics::record_request("post_dispatch", "success", start.elapsed());
+            Ok(Json(AgentDispatchAckDto::from(ack)))
+        }
+        Err(e) => {
+            metrics::record_request(
+                "post_dispatch",
+                result_label_for_domain_error(&e),
+                start.elapsed(),
+            );
+            Err(domain_to_problem(&e, &agent_package, &agent_instance_id))
+        }
+    }
 }
 
 /// Get provenance graph as a Mermaid sequence diagram for an A2A context.
