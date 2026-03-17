@@ -31,6 +31,10 @@ pub mod mermaid_cache;
 pub mod normalizer;
 pub mod spans;
 pub mod store;
+#[cfg(feature = "surreal-backend")]
+pub mod surreal_config;
+#[cfg(feature = "surreal-backend")]
+pub mod surreal_store;
 pub mod tool_index;
 pub mod types;
 pub mod vocabulary;
@@ -78,3 +82,8 @@ pub use store::{
 };
 pub use tool_index::{ToolIndexConfig, index_tools, index_tools_into_connection};
 pub use types::{ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef};
+
+#[cfg(feature = "surreal-backend")]
+pub use surreal_config::SurrealStoreConfig;
+#[cfg(feature = "surreal-backend")]
+pub use surreal_store::{SurrealBackend, SurrealProvenanceStore, SurrealStoreBuilder};

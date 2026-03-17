@@ -108,11 +108,17 @@ tar = "0.4"
 quickjs_runtime = { version = "0.15", default-features = false, features = ["bellard"] }
 # Agent memory
 agentic-memory = "0.2.6"
+# SurrealDB embedded (no client-server) — Phase 1 provenance backend.
+# Pinned to v2: surrealdb v3 pulls wasm-bindgen-futures 0.4.58 which requires js-sys =0.3.85,
+# conflicting with baml-runtime (ryan-s-roberts/baml canary) which pins js-sys =0.3.82.
+# Upgrade to v3 once the upstream fork relaxes the js-sys pin.
+surrealdb = { version = "2", default-features = false, features = ["kv-mem", "kv-surrealkv"] }
 # Embedding / drift detection
 fastembed = "4"
 dashmap = "6"
 axum = "0.8"
 # Testing / dev
+paste = "1"
 tokio-test = "0.4"
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing-test = "0.2"
