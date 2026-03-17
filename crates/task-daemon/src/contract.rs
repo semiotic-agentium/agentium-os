@@ -5,7 +5,7 @@
 //! material that was polled, through interpretation, to the tasks produced
 //! from it.
 
-use baml_rt_core::ids::{ContextId, CorrelationId, EventId, TaskId};
+use baml_rt_core::ids::{ContextId, CorrelationId, DigestIdParts, EventId, TaskId};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
@@ -99,6 +99,9 @@ impl InterpretationRequestEvent {
         project: ProjectContext,
         provenance: Option<ContractProvenance>,
     ) -> Self {
+        // Mint cursor/root fields before `Self::new`; `normalize_provenance`
+        // later fills message timestamps, so the two steps stay independent.
+        let provenance = provenance_for_source_poll(poll, provenance);
         Self::new(
             ContractSource::new(
                 poll.source_key.clone(),
@@ -238,6 +241,45 @@ fn normalize_provenance(
     if value.is_empty() { None } else { Some(value) }
 }
 
+fn provenance_for_source_poll(
+    poll: &crate::daemon::SourcePoll,
+    provenance: Option<ContractProvenance>,
+) -> Option<ContractProvenance> {
+    let mut value = provenance.unwrap_or_default();
+
+    if value.source_cursor.is_none() {
+        value.source_cursor = poll.source_cursor().map(ToOwned::to_owned);
+    }
+
+    let Some(source_cursor) = value.source_cursor.as_deref() else {
+        // Without either a caller-supplied cursor or a poll-derived cursor,
+        // there is nothing stable to root new provenance ids against. Preserve
+        // any preseeded provenance fields and skip minting.
+        return if value.is_empty() { None } else { Some(value) };
+    };
+
+    // External events should get a stable root the first time task-daemon sees
+    // them so retries preserve the same provenance chain. Labels are
+    // descriptive and may change independently of source identity, so they are
+    // intentionally excluded from the root seed.
+    let seed_parts = [
+        poll.source_kind().as_str(),
+        poll.source_key.as_str(),
+        source_cursor,
+    ];
+
+    if value.context_id.is_none() {
+        let parts = stable_id_parts("td-external-context", &seed_parts);
+        value.context_id = Some(ContextId::from_digest_parts(parts));
+    }
+    if value.correlation_id.is_none() {
+        let parts = stable_id_parts("td-external-correlation", &seed_parts);
+        value.correlation_id = Some(CorrelationId::from_digest_parts(parts));
+    }
+
+    if value.is_empty() { None } else { Some(value) }
+}
+
 fn request_event_id(
     source: &ContractSource,
     project: &ProjectContext,
@@ -257,11 +299,12 @@ fn request_event_id(
         .and_then(|value| value.source_cursor.as_deref())
         .unwrap_or("");
 
+    // Request ids should stay stable for the same logical poll window even if
+    // the human-readable source label changes between retries.
     hash_event_id(
         "td-interpret-request",
         &[
             source.source_key.as_str(),
-            source.source_label.as_str(),
             project.project_key.as_str(),
             first_ts,
             last_ts,
@@ -291,31 +334,85 @@ fn result_event_id(
 }
 
 fn hash_event_id(prefix: &str, parts: &[&str]) -> String {
-    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x00000100000001B3;
+    let digest = hash_digest(parts);
+    format!("{prefix}-{digest:016x}")
+}
 
-    fn fnv1a_extend(mut hash: u64, bytes: &[u8]) -> u64 {
-        for &byte in bytes {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(FNV_PRIME);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StableIdLane {
+    Upper,
+    Lower,
+}
+
+impl StableIdLane {
+    const fn as_str(self) -> &'static str {
+        match self {
+            // These lane names are part of the hash input. Renaming them is an
+            // id-compatibility migration, not a harmless refactor.
+            Self::Upper => "upper",
+            Self::Lower => "lower",
         }
-        hash
     }
+}
+
+fn stable_id_parts(namespace: &str, parts: &[&str]) -> DigestIdParts {
+    // These ids need deterministic separation, not cryptographic randomness.
+    // A namespaced/lane-split 64-bit FNV-1a digest keeps collision risk
+    // negligible for task-daemon poll volumes, and `.max(1)` avoids zero
+    // components in the typed ids we mint from it.
+    let upper_raw = hash_digest_with_namespace(namespace, StableIdLane::Upper, parts);
+    let lower_raw = hash_digest_with_namespace(namespace, StableIdLane::Lower, parts);
+    debug_assert_ne!(
+        upper_raw, 0,
+        "FNV digest unexpectedly produced zero for upper lane"
+    );
+    debug_assert_ne!(
+        lower_raw, 0,
+        "FNV digest unexpectedly produced zero for lower lane"
+    );
+    let upper = upper_raw.max(1);
+    let lower = lower_raw.max(1);
+    DigestIdParts::new(upper, lower)
+}
+
+fn hash_digest_with_namespace(namespace: &str, lane: StableIdLane, parts: &[&str]) -> u64 {
+    let mut digest = hash_digest(&[namespace, lane.as_str()]);
+    for part in parts {
+        digest = hash_digest_extend(digest, part);
+    }
+    digest
+}
+
+fn hash_digest(parts: &[&str]) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 
     let mut digest = FNV_OFFSET_BASIS;
     for part in parts {
-        digest = fnv1a_extend(digest, part.as_bytes());
-        digest = fnv1a_extend(digest, &[0x1f]);
+        digest = hash_digest_extend(digest, part);
     }
+    digest
+}
 
-    format!("{prefix}-{digest:016x}")
+fn hash_digest_extend(mut digest: u64, part: &str) -> u64 {
+    const FNV_PRIME: u64 = 0x00000100000001B3;
+    const HASH_PART_SEPARATOR: u8 = 0x1f;
+
+    for &byte in part.as_bytes() {
+        digest ^= u64::from(byte);
+        digest = digest.wrapping_mul(FNV_PRIME);
+    }
+    digest ^= u64::from(HASH_PART_SEPARATOR);
+    digest.wrapping_mul(FNV_PRIME)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{
-        ProjectInterpretation, SourceReference, TaskConfidence, TaskSourceKind, WorkflowSeed,
+    use crate::{
+        daemon::SourcePoll,
+        model::{
+            ProjectInterpretation, SourceReference, TaskConfidence, TaskSourceKind, WorkflowSeed,
+        },
     };
 
     fn sample_source() -> ContractSource {
@@ -396,6 +493,218 @@ mod tests {
         assert_eq!(provenance.source_message_ts.len(), 2);
         assert_eq!(provenance.source_message_ts[0], "1735689600.000000");
         assert_eq!(provenance.source_message_ts[1], "1735689700.000000");
+    }
+
+    #[test]
+    fn from_source_poll_mints_stable_provenance_root_for_slack_messages() {
+        let poll = SourcePoll::slack(
+            "slack:C123".to_string(),
+            "#agentium-eng".to_string(),
+            vec![
+                sample_message("1735689600.000000", "first"),
+                sample_message("1735689700.000000", "second"),
+            ],
+            2,
+        );
+
+        let request_one =
+            InterpretationRequestEvent::from_source_poll(&poll, sample_project(), None);
+        let request_two =
+            InterpretationRequestEvent::from_source_poll(&poll, sample_project(), None);
+
+        let provenance_one = request_one.provenance.expect("provenance exists");
+        let provenance_two = request_two.provenance.expect("provenance exists");
+        assert_eq!(request_one.event_id, request_two.event_id);
+        assert_eq!(provenance_one.context_id, provenance_two.context_id);
+        assert_eq!(provenance_one.correlation_id, provenance_two.correlation_id);
+        assert_eq!(
+            provenance_one.source_cursor.as_deref(),
+            Some("slack:1735689600.000000:1735689700.000000:2")
+        );
+    }
+
+    #[test]
+    fn from_source_poll_ignores_source_label_when_minting_provenance_root() {
+        let messages = vec![
+            sample_message("1735689600.000000", "first"),
+            sample_message("1735689700.000000", "second"),
+        ];
+        let first_poll = SourcePoll::slack(
+            "slack:C123".to_string(),
+            "#agentium-eng".to_string(),
+            messages.clone(),
+            2,
+        );
+        let renamed_poll = SourcePoll::slack(
+            "slack:C123".to_string(),
+            "#eng-workflows".to_string(),
+            messages,
+            2,
+        );
+
+        let first_request =
+            InterpretationRequestEvent::from_source_poll(&first_poll, sample_project(), None);
+        let renamed_request =
+            InterpretationRequestEvent::from_source_poll(&renamed_poll, sample_project(), None);
+
+        let first_provenance = first_request.provenance.expect("first provenance");
+        let renamed_provenance = renamed_request.provenance.expect("renamed provenance");
+        assert_eq!(first_request.event_id, renamed_request.event_id);
+        assert_eq!(first_provenance.context_id, renamed_provenance.context_id);
+        assert_eq!(
+            first_provenance.correlation_id,
+            renamed_provenance.correlation_id
+        );
+        assert_eq!(
+            first_provenance.source_cursor,
+            renamed_provenance.source_cursor
+        );
+    }
+
+    #[test]
+    fn from_source_poll_uses_clickup_task_keys_to_distinguish_external_events() {
+        let project = sample_project();
+        let first_poll = SourcePoll::clickup(
+            "clickup:list:901325431486".to_string(),
+            "ClickUp list".to_string(),
+            vec![InvestigationTask {
+                key: "clickup-created:task-1:1".to_string(),
+                title: "Investigate first task".to_string(),
+                description: "First".to_string(),
+                priority: TaskConfidence::High,
+                sources: Vec::new(),
+            }],
+            1,
+        );
+        let second_poll = SourcePoll::clickup(
+            "clickup:list:901325431486".to_string(),
+            "ClickUp list".to_string(),
+            vec![InvestigationTask {
+                key: "clickup-created:task-2:1".to_string(),
+                title: "Investigate second task".to_string(),
+                description: "Second".to_string(),
+                priority: TaskConfidence::High,
+                sources: Vec::new(),
+            }],
+            1,
+        );
+
+        let first_request =
+            InterpretationRequestEvent::from_source_poll(&first_poll, project.clone(), None);
+        let second_request =
+            InterpretationRequestEvent::from_source_poll(&second_poll, project, None);
+
+        let first_provenance = first_request.provenance.expect("first provenance");
+        let second_provenance = second_request.provenance.expect("second provenance");
+        assert_ne!(first_request.event_id, second_request.event_id);
+        assert_ne!(first_provenance.context_id, second_provenance.context_id);
+        assert_ne!(
+            first_provenance.source_cursor.as_deref(),
+            second_provenance.source_cursor.as_deref()
+        );
+    }
+
+    #[test]
+    fn from_source_poll_preserves_preseeded_provenance_fields() {
+        let poll = SourcePoll::slack(
+            "slack:C123".to_string(),
+            "#agentium-eng".to_string(),
+            vec![
+                sample_message("1735689600.000000", "first"),
+                sample_message("1735689700.000000", "second"),
+            ],
+            2,
+        );
+        let provided_context = ContextId::new(42, 7);
+        let provided_correlation = CorrelationId::new(24, 9);
+        let provided_parent = EventId::from("prior-event".to_string());
+        let provided_cursor = "custom-cursor".to_string();
+
+        let request = InterpretationRequestEvent::from_source_poll(
+            &poll,
+            sample_project(),
+            Some(ContractProvenance {
+                context_id: Some(provided_context.clone()),
+                correlation_id: Some(provided_correlation.clone()),
+                parent_event_id: Some(provided_parent.clone()),
+                source_cursor: Some(provided_cursor.clone()),
+                ..ContractProvenance::default()
+            }),
+        );
+
+        let provenance = request.provenance.expect("provenance exists");
+        assert_eq!(provenance.context_id, Some(provided_context));
+        assert_eq!(provenance.correlation_id, Some(provided_correlation));
+        assert_eq!(provenance.parent_event_id, Some(provided_parent));
+        assert_eq!(provenance.source_cursor, Some(provided_cursor));
+        assert_eq!(
+            provenance.source_message_ts,
+            vec![
+                "1735689600.000000".to_string(),
+                "1735689700.000000".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn from_source_poll_without_any_cursor_preserves_preseeded_ids_only() {
+        let poll = SourcePoll::slack(
+            "slack:C123".to_string(),
+            "#agentium-eng".to_string(),
+            Vec::new(),
+            0,
+        );
+        let provided_context = ContextId::new(42, 7);
+
+        let request = InterpretationRequestEvent::from_source_poll(
+            &poll,
+            sample_project(),
+            Some(ContractProvenance {
+                context_id: Some(provided_context.clone()),
+                ..ContractProvenance::default()
+            }),
+        );
+
+        let provenance = request.provenance.expect("provenance exists");
+        assert_eq!(provenance.context_id, Some(provided_context));
+        assert_eq!(provenance.correlation_id, None);
+        assert_eq!(provenance.source_cursor, None);
+        assert!(provenance.source_message_ts.is_empty());
+    }
+
+    #[test]
+    fn from_source_poll_pins_known_minted_ids_for_compatibility() {
+        let poll = SourcePoll::slack(
+            "slack:C123".to_string(),
+            "#agentium-eng".to_string(),
+            vec![
+                sample_message("1735689600.000000", "first"),
+                sample_message("1735689700.000000", "second"),
+            ],
+            2,
+        );
+
+        let request = InterpretationRequestEvent::from_source_poll(&poll, sample_project(), None);
+        let provenance = request.provenance.expect("provenance exists");
+
+        // These exact ids are part of the external compatibility surface for
+        // task-daemon provenance. If they change, treat that as an id
+        // migration and update the contract docs intentionally.
+        assert_eq!(
+            (
+                request.event_id.as_str(),
+                provenance.context_id.as_ref().map(ContextId::as_str),
+                provenance
+                    .correlation_id
+                    .as_ref()
+                    .map(CorrelationId::as_str),
+            ),
+            (
+                "td-interpret-request-1b1eead226c93589",
+                Some("ctx-7548386120284784534-8799862099676914443"),
+                Some("corr-6129901457429418597-2178675600574945132"),
+            )
+        );
     }
 
     #[test]

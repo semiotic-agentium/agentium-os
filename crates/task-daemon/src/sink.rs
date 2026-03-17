@@ -1094,6 +1094,7 @@ mod tests {
     use super::*;
     use crate::{
         contract::{ContractSource, InterpretationRequestEvent},
+        daemon::SourcePoll,
         model::{
             InvestigationTask, ProjectContext, ProjectInterpretation, SourceReference, TaskBatch,
             TaskConfidence, TaskSourceKind,
@@ -1479,6 +1480,51 @@ mod tests {
                 .and_then(|value| value.pointer("/prompt"))
                 .and_then(Value::as_str)
                 .is_some_and(|value| !value.is_empty())
+        );
+    }
+
+    #[test]
+    fn build_dispatch_body_carries_minted_external_provenance_context() {
+        let poll = SourcePoll::slack(
+            "slack:C123".to_string(),
+            "#agentium-eng".to_string(),
+            vec![crate::model::SlackMessage {
+                channel_name: "agentium-eng".to_string(),
+                channel_id: "C123".to_string(),
+                ts: "1735689600.000000".to_string(),
+                thread_ts: None,
+                user_id: Some("U123".to_string()),
+                user_name: Some("alice".to_string()),
+                text: "Need follow-up".to_string(),
+                subtype: None,
+                source: SourceReference {
+                    reference: "slack://channel/C123/p1735689600000000".to_string(),
+                    permalink: None,
+                    channel_id: Some("C123".to_string()),
+                    message_ts: Some("1735689600.000000".to_string()),
+                    thread_ts: None,
+                },
+            }],
+            1,
+        );
+        let batch = sample_batch();
+        let request =
+            InterpretationRequestEvent::from_source_poll(&poll, batch.project.clone(), None);
+        let expected_context_id = request
+            .provenance
+            .as_ref()
+            .and_then(|value| value.context_id.clone())
+            .expect("minted context id");
+        let dispatch = TaskDispatch::from_batch(request, batch);
+        let prompt = format_event_delivery_prompt(&dispatch.batch);
+        let body = DispatchSink::build_dispatch_body(&dispatch, &prompt);
+
+        assert_eq!(body.context_id, Some(expected_context_id));
+        assert!(
+            body.messages[0]
+                .pointer("/provenance/correlation_id")
+                .and_then(Value::as_str)
+                .is_some()
         );
     }
 }
