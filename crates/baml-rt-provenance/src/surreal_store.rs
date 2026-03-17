@@ -931,6 +931,11 @@ impl SurrealProvenanceStore {
     }
 
     /// Upsert a single node into prov_node table.
+    ///
+    /// Uses an atomic `UPSERT ... WHERE` that creates when no match exists and updates
+    /// when one does. Individual `props.field` SET clauses merge properties into the
+    /// existing record (Cypher MERGE semantics) rather than replacing the entire `props`
+    /// object — this preserves attributes written by prior events for the same node.
     async fn upsert_node(
         &self,
         node_id: &str,
@@ -938,57 +943,32 @@ impl SurrealProvenanceStore {
         props: &HashMap<String, Value>,
     ) -> Result<()> {
         let safe_props = storage_safe_props(props);
-        let props_value: Value =
-            Value::Object(safe_props.into_iter().collect::<Map<String, Value>>());
-        // Check existence, then update or create.
-        let exists_query =
-            format!("SELECT count() AS cnt FROM {TBL_NODE} WHERE node_id = $node_id GROUP ALL");
-        let mut exists_resp = self
-            .db
-            .query(&exists_query)
-            .bind(("node_id", node_id.to_string()))
-            .await
-            .map_err(map_surreal_error)?;
-        let exists_rows: Vec<Value> = exists_resp.take(0).map_err(map_surreal_error)?;
-        let count = exists_rows
-            .first()
-            .and_then(|r| r.get("cnt").and_then(Value::as_i64))
-            .unwrap_or(0);
-        if count > 0 {
-            // Merge props into existing record (Cypher MERGE semantics: update individual fields,
-            // don't replace the entire props object).
-            let mut set_clauses = vec!["label = $label".to_string()];
-            let safe_props = storage_safe_props(props);
-            for (i, (k, _)) in safe_props.iter().enumerate() {
-                set_clauses.push(format!("props.{k} = $prop_{i}"));
-            }
-            let set_clause = set_clauses.join(", ");
-            let update_query =
-                format!("UPDATE {TBL_NODE} SET {set_clause} WHERE node_id = $node_id");
-            let mut q = self
-                .db
-                .query(&update_query)
-                .bind(("node_id", node_id.to_string()))
-                .bind(("label", label.to_string()));
-            for (i, (_, v)) in safe_props.iter().enumerate() {
-                q = q.bind((format!("prop_{i}"), v.clone()));
-            }
-            q.await.map_err(map_surreal_error)?;
-        } else {
-            let create_query =
-                format!("CREATE {TBL_NODE} SET node_id = $node_id, label = $label, props = $props");
-            self.db
-                .query(&create_query)
-                .bind(("node_id", node_id.to_string()))
-                .bind(("label", label.to_string()))
-                .bind(("props", props_value))
-                .await
-                .map_err(map_surreal_error)?;
+        // Build SET clauses that merge individual props fields.
+        let mut set_clauses = vec![
+            "node_id = $node_id".to_string(),
+            "label = $label".to_string(),
+        ];
+        for (i, (k, _)) in safe_props.iter().enumerate() {
+            set_clauses.push(format!("props.{k} = $prop_{i}"));
         }
+        let set_clause = set_clauses.join(", ");
+        let query = format!("UPSERT {TBL_NODE} SET {set_clause} WHERE node_id = $node_id");
+        let mut q = self
+            .db
+            .query(&query)
+            .bind(("node_id", node_id.to_string()))
+            .bind(("label", label.to_string()));
+        for (i, (_, v)) in safe_props.iter().enumerate() {
+            q = q.bind((format!("prop_{i}"), v.clone()));
+        }
+        q.await.map_err(map_surreal_error)?;
         Ok(())
     }
 
     /// Upsert an edge into prov_edge table.
+    ///
+    /// Atomic `UPSERT ... WHERE` keyed on (from_id, rel_type, to_id). Edge props are
+    /// replaced entirely on update (edges carry small metadata, not accumulated state).
     async fn upsert_edge(
         &self,
         from_id: &str,
@@ -1001,51 +981,21 @@ impl SurrealProvenanceStore {
         let safe_props = storage_safe_props(props);
         let props_value: Value =
             Value::Object(safe_props.into_iter().collect::<Map<String, Value>>());
-        let exists_query = format!(
-            "SELECT count() AS cnt FROM {TBL_EDGE} WHERE from_id = $from_id AND rel_type = $rel_type AND to_id = $to_id GROUP ALL"
+        let query = format!(
+            "UPSERT {TBL_EDGE} SET from_id = $from_id, from_label = $from_label, \
+             to_id = $to_id, to_label = $to_label, rel_type = $rel_type, props = $props \
+             WHERE from_id = $from_id AND rel_type = $rel_type AND to_id = $to_id"
         );
-        let mut exists_resp = self
-            .db
-            .query(&exists_query)
+        self.db
+            .query(&query)
             .bind(("from_id", from_id.to_string()))
-            .bind(("rel_type", rel_type.to_string()))
+            .bind(("from_label", from_label.to_string()))
             .bind(("to_id", to_id.to_string()))
+            .bind(("to_label", to_label.to_string()))
+            .bind(("rel_type", rel_type.to_string()))
+            .bind(("props", props_value))
             .await
             .map_err(map_surreal_error)?;
-        let exists_rows: Vec<Value> = exists_resp.take(0).map_err(map_surreal_error)?;
-        let count = exists_rows
-            .first()
-            .and_then(|r| r.get("cnt").and_then(Value::as_i64))
-            .unwrap_or(0);
-        if count > 0 {
-            let update_query = format!(
-                "UPDATE {TBL_EDGE} SET from_label = $from_label, to_label = $to_label, props = $props WHERE from_id = $from_id AND rel_type = $rel_type AND to_id = $to_id"
-            );
-            self.db
-                .query(&update_query)
-                .bind(("from_id", from_id.to_string()))
-                .bind(("from_label", from_label.to_string()))
-                .bind(("to_id", to_id.to_string()))
-                .bind(("to_label", to_label.to_string()))
-                .bind(("rel_type", rel_type.to_string()))
-                .bind(("props", props_value))
-                .await
-                .map_err(map_surreal_error)?;
-        } else {
-            let create_query = format!(
-                "CREATE {TBL_EDGE} SET from_id = $from_id, from_label = $from_label, to_id = $to_id, to_label = $to_label, rel_type = $rel_type, props = $props"
-            );
-            self.db
-                .query(&create_query)
-                .bind(("from_id", from_id.to_string()))
-                .bind(("from_label", from_label.to_string()))
-                .bind(("to_id", to_id.to_string()))
-                .bind(("to_label", to_label.to_string()))
-                .bind(("rel_type", rel_type.to_string()))
-                .bind(("props", props_value))
-                .await
-                .map_err(map_surreal_error)?;
-        }
         Ok(())
     }
 
@@ -1125,48 +1075,23 @@ impl SurrealProvenanceStore {
     // Payload operations
     // -----------------------------------------------------------------------
 
+    /// Atomic payload upsert keyed on payload_id.
     async fn upsert_payload(&self, payload: PayloadRecord) -> Result<()> {
-        let exists_query = format!(
-            "SELECT count() AS cnt FROM {TBL_PAYLOAD} WHERE payload_id = $payload_id GROUP ALL"
+        let query = format!(
+            "UPSERT {TBL_PAYLOAD} SET payload_id = $payload_id, event_id = $event_id, \
+             activity_id = $activity_id, payload_kind = $payload_kind, \
+             payload_json = $payload_json \
+             WHERE payload_id = $payload_id"
         );
-        let mut exists_resp = self
-            .db
-            .query(&exists_query)
-            .bind(("payload_id", payload.payload_id.clone()))
+        self.db
+            .query(&query)
+            .bind(("payload_id", payload.payload_id))
+            .bind(("event_id", payload.event_id))
+            .bind(("activity_id", payload.activity_id))
+            .bind(("payload_kind", payload.payload_kind))
+            .bind(("payload_json", payload.payload_json))
             .await
             .map_err(map_surreal_error)?;
-        let exists_rows: Vec<Value> = exists_resp.take(0).map_err(map_surreal_error)?;
-        let count = exists_rows
-            .first()
-            .and_then(|r| r.get("cnt").and_then(Value::as_i64))
-            .unwrap_or(0);
-        if count > 0 {
-            let update_query = format!(
-                "UPDATE {TBL_PAYLOAD} SET event_id = $event_id, activity_id = $activity_id, payload_kind = $payload_kind, payload_json = $payload_json WHERE payload_id = $payload_id"
-            );
-            self.db
-                .query(&update_query)
-                .bind(("payload_id", payload.payload_id))
-                .bind(("event_id", payload.event_id))
-                .bind(("activity_id", payload.activity_id))
-                .bind(("payload_kind", payload.payload_kind))
-                .bind(("payload_json", payload.payload_json))
-                .await
-                .map_err(map_surreal_error)?;
-        } else {
-            let create_query = format!(
-                "CREATE {TBL_PAYLOAD} SET payload_id = $payload_id, event_id = $event_id, activity_id = $activity_id, payload_kind = $payload_kind, payload_json = $payload_json"
-            );
-            self.db
-                .query(&create_query)
-                .bind(("payload_id", payload.payload_id))
-                .bind(("event_id", payload.event_id))
-                .bind(("activity_id", payload.activity_id))
-                .bind(("payload_kind", payload.payload_kind))
-                .bind(("payload_json", payload.payload_json))
-                .await
-                .map_err(map_surreal_error)?;
-        }
         Ok(())
     }
 
@@ -1217,16 +1142,22 @@ impl SurrealProvenanceStore {
         Ok(rows)
     }
 
-    /// Reserved for payload text search parity (ops query filter).
-    #[allow(dead_code)]
+    /// Payload text search via SurrealDB BM25 full-text index.
+    /// Used by `query_ops` to filter rows by payload content (parity with GraphQLite FTS5).
     async fn search_payload_activity_ids(&self, query_text: &str) -> Result<Vec<String>> {
+        // Normalize query text for SurrealDB full-text search (parity with GraphQLite).
+        let normalized = normalize_payload_text_query(query_text);
+        if normalized.is_empty() {
+            return Ok(Vec::new());
+        }
+
         let query = format!(
             "SELECT DISTINCT activity_id FROM {TBL_PAYLOAD} WHERE payload_json @@ $query_text AND activity_id IS NOT NONE"
         );
         let mut response = self
             .db
             .query(&query)
-            .bind(("query_text", query_text.to_string()))
+            .bind(("query_text", normalized))
             .await
             .map_err(map_surreal_error)?;
         let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
@@ -1390,9 +1321,13 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
             .map_err(map_surreal_error)?;
         let msg_rows: Vec<Value> = msg_response.take(0).map_err(map_surreal_error)?;
 
-        // Fetch tool call items (completed only)
+        // Fetch tool call items with proper edge topology (parity with GraphQLite).
+        // GraphQLite uses: MATCH (t:ToolCall)-[used:WAS_USED_BY]->(args:ToolArgs)
+        // Then validates contract_holds() on prov_role and prov_type.
+        //
+        // Step 1: Find ToolCall nodes with completed outcomes
         let tool_query = format!(
-            "SELECT props FROM {TBL_NODE} WHERE label = 'ToolCall' AND props.a2a_context_id = $ctx AND props.a2a_activity_outcome = 'Success'"
+            "SELECT node_id, props FROM {TBL_NODE} WHERE label = 'ToolCall' AND props.a2a_context_id = $ctx AND props.a2a_activity_outcome IN ['Success', 'Failed']"
         );
         let mut tool_response = self
             .db
@@ -1402,6 +1337,66 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
             .map_err(map_surreal_error)?;
         let tool_rows: Vec<Value> = tool_response.take(0).map_err(map_surreal_error)?;
 
+        // Step 2: Find USED edges from ToolCall to ToolArgs nodes
+        // and collect their prov_role/prov_type for contract validation
+        // Note: Surreal stores edges as "USED", while GraphQLite maps to "WAS_USED_BY" semantic label
+        let edge_query =
+            format!("SELECT from_id, to_id, props FROM {TBL_EDGE} WHERE rel_type = 'USED'");
+        let mut edge_response = self
+            .db
+            .query(&edge_query)
+            .await
+            .map_err(map_surreal_error)?;
+        let edge_rows: Vec<Value> = edge_response.take(0).map_err(map_surreal_error)?;
+
+        // Step 3: Find ToolArgs nodes to verify target type
+        let args_query = format!("SELECT node_id, props FROM {TBL_NODE} WHERE label = 'ToolArgs'");
+        let mut args_response = self
+            .db
+            .query(&args_query)
+            .await
+            .map_err(map_surreal_error)?;
+        let args_rows: Vec<Value> = args_response.take(0).map_err(map_surreal_error)?;
+
+        // Build set of ToolArgs node_ids
+        let tool_args_node_ids: HashSet<String> = args_rows
+            .iter()
+            .filter_map(|r| r.get("node_id").and_then(Value::as_str).map(String::from))
+            .collect();
+
+        // Build map of ToolCall node_id -> (edge_role, edge_target_type) for contract validation
+        // Only include edges where to_id is a ToolArgs node
+        let mut tool_call_edge_info: HashMap<String, (String, String)> = HashMap::new();
+        for edge in &edge_rows {
+            let from_id = edge
+                .get("from_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let to_id = edge
+                .get("to_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+
+            // Only consider edges to ToolArgs nodes
+            if !tool_args_node_ids.contains(to_id) {
+                continue;
+            }
+
+            let edge_props = edge.get("props").and_then(Value::as_object);
+            let prov_role = edge_props
+                .and_then(|p| p.get("prov_role"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let prov_type = edge_props
+                .and_then(|p| p.get("prov_type"))
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+
+            tool_call_edge_info.insert(from_id.to_string(), (prov_role, prov_type));
+        }
+
         let mut items: Vec<ProvenanceConversationContextItem> = Vec::new();
 
         for row in &msg_rows {
@@ -1409,10 +1404,11 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
                 Some(p) => p,
                 None => continue,
             };
-            let event_id = props
-                .get("a2a_event_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
+            // Gap 11: Skip rows with missing required fields
+            let event_id = match props.get("a2a_event_id").and_then(Value::as_str) {
+                Some(id) if !id.is_empty() => id,
+                _ => continue,
+            };
             let role = props
                 .get("a2a_role")
                 .and_then(Value::as_str)
@@ -1438,19 +1434,56 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
         }
 
         for row in &tool_rows {
+            let node_id = row
+                .get("node_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             let props = match row.get("props") {
                 Some(p) => p,
                 None => continue,
             };
-            let event_id_str = props
-                .get("a2a_event_id")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let tool_name = props
-                .get("a2a_tool_name")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
+
+            // Gap 11: Skip rows with missing required fields (event_id, tool_name)
+            let event_id_str = match props.get("a2a_event_id").and_then(Value::as_str) {
+                Some(id) if !id.is_empty() => id,
+                _ => continue,
+            };
+            let tool_name = match props.get("a2a_tool_name").and_then(Value::as_str) {
+                Some(name) if !name.is_empty() => name.to_string(),
+                _ => continue,
+            };
+
+            // Gap 9: Validate ToolCall-ToolArgs edge topology contract
+            // GraphQLite requires MATCH (t:ToolCall)-[used:WAS_USED_BY]->(args:ToolArgs)
+            // and validates contract_holds() on prov_role/prov_type
+            if let Some((prov_role, prov_type)) = tool_call_edge_info.get(node_id) {
+                // Contract check: role must be empty or "a2a:args", type must be empty or "a2a:ToolArgs"
+                let role_ok = prov_role.is_empty() || prov_role == "a2a:args";
+                let type_ok = prov_type.is_empty() || prov_type == "a2a:ToolArgs";
+                if !role_ok || !type_ok {
+                    continue; // Contract doesn't hold, skip this row
+                }
+            } else {
+                // No edge to ToolArgs found - skip (GraphQLite's MATCH would not return this row)
+                continue;
+            }
+
+            // Gap 10: Read metadata for fallback when payloads are absent
+            let metadata: Value = props
+                .get("a2a_metadata")
+                .and_then(|v| match v {
+                    Value::String(s) => serde_json::from_str(s).ok(),
+                    Value::Object(_) => Some(v.clone()),
+                    _ => None,
+                })
+                .unwrap_or(Value::Object(Map::new()));
+
+            // Read args from metadata for fallback
+            let metadata_args = metadata
+                .get("args")
+                .cloned()
+                .unwrap_or(Value::Object(Map::new()));
+
             let tool_call_payload = self
                 .read_payload_by_event_kind(event_id_str, "tool_call")
                 .await?;
@@ -1458,13 +1491,14 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
                 .read_payload_by_event_kind(event_id_str, "tool_result")
                 .await?;
 
+            // Gap 10: Use metadata as fallback when payload is absent
             let (args, phase) = if let Some(payload) = tool_call_payload {
                 let parsed: Value =
                     serde_json::from_str(&payload.payload_json).unwrap_or(Value::Null);
                 let args = parsed
                     .get("args")
                     .cloned()
-                    .unwrap_or(Value::Object(Map::new()));
+                    .unwrap_or_else(|| metadata_args.clone());
                 let phase_label = parsed
                     .get("phase")
                     .and_then(Value::as_str)
@@ -1475,12 +1509,11 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
                     ToolSessionPhase::from_metadata(&serde_json::json!({ "phase": phase_label })),
                 )
             } else {
-                (
-                    Value::Object(Map::new()),
-                    ToolSessionPhase::from_metadata(&Value::Null),
-                )
+                // Fallback to metadata (parity with GraphQLite)
+                (metadata_args, ToolSessionPhase::from_metadata(&metadata))
             };
 
+            // Gap 10: Use metadata for result/error fallback
             let (result, error) = if let Some(payload) = tool_result_payload {
                 let parsed: Value =
                     serde_json::from_str(&payload.payload_json).unwrap_or(Value::Null);
@@ -1491,7 +1524,13 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
                 let error = parsed.get("error").cloned();
                 (result, error)
             } else {
-                (Value::Object(Map::new()), None)
+                // Fallback to metadata (parity with GraphQLite)
+                let result = metadata
+                    .get("result")
+                    .cloned()
+                    .unwrap_or(Value::Object(Map::new()));
+                let error = metadata_error(&metadata);
+                (result, error)
             };
 
             let has_outcome = has_meaningful_result(&result) || error.is_some();
@@ -1990,18 +2029,22 @@ impl SurrealProvenanceStore {
     async fn query_supersession_edges(
         &self,
         node_label: &str,
-        _task_id: &TaskId,
+        task_id: &TaskId,
         rel_type: &str,
     ) -> Result<Vec<(String, String)>> {
-        // Find edges between nodes of `node_label` with matching task_id
+        // Find edges between nodes of `node_label` where both endpoints are scoped to the task.
         let query = format!(
-            "SELECT from_id, to_id FROM {TBL_EDGE} WHERE rel_type = $rel_type AND from_label = $label AND to_label = $label"
+            "SELECT from_id, to_id FROM {TBL_EDGE} \
+             WHERE rel_type = $rel_type AND from_label = $label AND to_label = $label \
+               AND from_id IN (SELECT VALUE node_id FROM {TBL_NODE} WHERE label = $label AND props.a2a_task_id = $task_id) \
+               AND to_id IN (SELECT VALUE node_id FROM {TBL_NODE} WHERE label = $label AND props.a2a_task_id = $task_id)"
         );
         let mut response = self
             .db
             .query(&query)
             .bind(("rel_type", rel_type.to_string()))
             .bind(("label", node_label.to_string()))
+            .bind(("task_id", task_id.as_str().to_string()))
             .await
             .map_err(map_surreal_error)?;
         let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
@@ -2013,24 +2056,27 @@ impl SurrealProvenanceStore {
                 .and_then(Value::as_str)
                 .unwrap_or_default();
             let to_id = row.get("to_id").and_then(Value::as_str).unwrap_or_default();
-            // Resolve event_ids from the nodes
-            let from_event = self.get_node_event_id(from_id).await?;
-            let to_event = self.get_node_event_id(to_id).await?;
+            if from_id.is_empty() || to_id.is_empty() {
+                continue;
+            }
+            // Resolve event_ids from task-scoped nodes.
+            let from_event = self.get_node(from_id).await?.and_then(|n| {
+                n.get("props")
+                    .and_then(|p| p.get("a2a_event_id"))
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            });
+            let to_event = self.get_node(to_id).await?.and_then(|n| {
+                n.get("props")
+                    .and_then(|p| p.get("a2a_event_id"))
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string)
+            });
             if let (Some(from_event), Some(to_event)) = (from_event, to_event) {
                 results.push((from_event, to_event));
             }
         }
         Ok(results)
-    }
-
-    async fn get_node_event_id(&self, node_id: &str) -> Result<Option<String>> {
-        let node = self.get_node(node_id).await?;
-        Ok(node.and_then(|n| {
-            n.get("props")
-                .and_then(|p| p.get("a2a_event_id"))
-                .and_then(Value::as_str)
-                .map(String::from)
-        }))
     }
 
     async fn collect_superseded_event_ids(
@@ -2053,11 +2099,556 @@ impl SurrealProvenanceStore {
         }
         Ok(superseded)
     }
+
+    // -----------------------------------------------------------------------
+    // Ops query enrichment helpers (parity with GraphQLite)
+    // -----------------------------------------------------------------------
+
+    /// Load agent identity map: agent_id -> (agent_package, agent_version).
+    /// Queries AgentRuntimeInstance nodes for package/version metadata.
+    async fn load_agent_identity_map(&self) -> Result<HashMap<String, (String, String)>> {
+        let query = format!(
+            "SELECT node_id, props.a2a_agent_type AS agent_package, props.a2a_agent_version AS agent_version \
+             FROM {TBL_NODE} WHERE label = 'AgentRuntimeInstance'"
+        );
+        let mut response = self.db.query(&query).await.map_err(map_surreal_error)?;
+        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+
+        let mut out: HashMap<String, (String, String)> = HashMap::new();
+        for row in rows {
+            let instance_id = row
+                .get("node_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let Some(agent_id) = agent_id_from_instance_id(instance_id) else {
+                continue;
+            };
+            let agent_package =
+                normalize_agent_field(row.get("agent_package").and_then(Value::as_str), "unknown");
+            let agent_version =
+                normalize_agent_field(row.get("agent_version").and_then(Value::as_str), "unknown");
+            out.insert(agent_id, (agent_package, agent_version));
+        }
+        Ok(out)
+    }
+
+    /// Load failure classification map: activity_id -> (failure_class, failure_evidence).
+    /// Queries FailureClassification nodes linked to LlmCall/ToolCall via WAS_USED_BY edges.
+    /// Parity with GraphQLite's load_failure_classification_map which queries:
+    ///   MATCH (call)-[used:WAS_USED_BY]->(fc:FailureClassification)
+    ///   WHERE (call:LlmCall OR call:ToolCall)
+    async fn load_failure_classification_map(&self) -> Result<HashMap<String, (String, String)>> {
+        // Step 1: Get all FailureClassification node_ids with their class/evidence
+        let fc_query = format!(
+            "SELECT node_id, props.a2a_failure_class AS failure_class, props.a2a_failure_evidence AS failure_evidence \
+             FROM {TBL_NODE} WHERE label = 'FailureClassification'"
+        );
+        let mut fc_response = self.db.query(&fc_query).await.map_err(map_surreal_error)?;
+        let fc_rows: Vec<Value> = fc_response.take(0).map_err(map_surreal_error)?;
+
+        // Build FC node_id -> (class, evidence) map
+        let mut fc_map: HashMap<String, (String, String)> = HashMap::new();
+        for row in fc_rows {
+            let node_id = row
+                .get("node_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if node_id.is_empty() {
+                continue;
+            }
+            let class = normalize_agent_field(
+                row.get("failure_class").and_then(Value::as_str),
+                "failed_graph_incomplete",
+            );
+            let evidence = normalize_agent_field(
+                row.get("failure_evidence").and_then(Value::as_str),
+                "failed_graph_incomplete",
+            );
+            fc_map.insert(node_id, (class, evidence));
+        }
+
+        if fc_map.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        // Step 2: Get all LlmCall and ToolCall node_ids (the only valid sources for FC edges)
+        let call_query =
+            format!("SELECT node_id FROM {TBL_NODE} WHERE label = 'LlmCall' OR label = 'ToolCall'");
+        let mut call_response = self
+            .db
+            .query(&call_query)
+            .await
+            .map_err(map_surreal_error)?;
+        let call_rows: Vec<Value> = call_response.take(0).map_err(map_surreal_error)?;
+        let call_ids: HashSet<String> = call_rows
+            .iter()
+            .filter_map(|r| r.get("node_id").and_then(Value::as_str).map(String::from))
+            .collect();
+
+        if call_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        // Step 3: Find USED edges from call nodes to FC nodes
+        // We need to check: from_id is a call node, to_id is a FC node
+        // Note: Write path stores edges as "USED" (W3C PROV-DM semantic)
+        let edge_query = format!("SELECT from_id, to_id FROM {TBL_EDGE} WHERE rel_type = 'USED'");
+        let mut edge_response = self
+            .db
+            .query(&edge_query)
+            .await
+            .map_err(map_surreal_error)?;
+        let edge_rows: Vec<Value> = edge_response.take(0).map_err(map_surreal_error)?;
+
+        let mut out: HashMap<String, (String, String)> = HashMap::new();
+        for row in edge_rows {
+            let from_id = row
+                .get("from_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let to_id = row
+                .get("to_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+
+            // Skip if from_id is empty/null or not a call node
+            if from_id.is_empty() || from_id == "null" || !call_ids.contains(&from_id) {
+                continue;
+            }
+
+            // Check if to_id is a FailureClassification node
+            if let Some((class, evidence)) = fc_map.get(&to_id) {
+                if let Some(existing) = out.get(&from_id) {
+                    let incoming = (class.clone(), evidence.clone());
+                    if existing != &incoming {
+                        return Err(ProvenanceError::InvalidEvent {
+                            event_id: from_id,
+                            reason: format!(
+                                "multiple conflicting failure classifications for activity: existing=({}, {}), incoming=({}, {})",
+                                existing.0, existing.1, incoming.0, incoming.1
+                            ),
+                        });
+                    }
+                } else {
+                    out.insert(from_id, (class.clone(), evidence.clone()));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Aggregate LLM call durations by message_id for a context.
+    /// Returns message_id -> total_llm_duration_ms map.
+    /// Parity with GraphQLite TURN_TOTALS_BY_CONTEXT query.
+    async fn load_llm_duration_by_message(
+        &self,
+        context_id: &ContextId,
+    ) -> Result<HashMap<String, u64>> {
+        // Find A2AMessageProcessing nodes and their linked LlmCall nodes via WAS_INVOKED_BY edges
+        // Then aggregate duration_ms by message_id
+        let query = format!(
+            "SELECT props.a2a_message_id AS message_id, props.a2a_duration_ms AS duration_ms \
+             FROM {TBL_NODE} WHERE label = 'LlmCall' AND props.a2a_context_id = $context_id \
+             AND props.a2a_duration_ms IS NOT NULL"
+        );
+        let mut response = self
+            .db
+            .query(&query)
+            .bind(("context_id", context_id.as_str().to_string()))
+            .await
+            .map_err(map_surreal_error)?;
+        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+
+        let mut out: HashMap<String, u64> = HashMap::new();
+        for row in rows {
+            let message_id = row
+                .get("message_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if message_id.is_empty() {
+                continue;
+            }
+            let duration = row.get("duration_ms").and_then(Value::as_u64).unwrap_or(0);
+            *out.entry(message_id).or_insert(0) += duration;
+        }
+        Ok(out)
+    }
+
+    /// Aggregate tool call durations by message_id for a context.
+    /// Returns message_id -> total_tool_duration_ms map.
+    /// Parity with GraphQLite tool duration aggregation query.
+    async fn load_tool_duration_by_message(
+        &self,
+        context_id: &ContextId,
+    ) -> Result<HashMap<String, u64>> {
+        // Find ToolCall nodes with duration_ms for the context, aggregate by message_id
+        let query = format!(
+            "SELECT props.a2a_message_id AS message_id, props.a2a_duration_ms AS duration_ms \
+             FROM {TBL_NODE} WHERE label = 'ToolCall' AND props.a2a_context_id = $context_id \
+             AND props.a2a_duration_ms IS NOT NULL"
+        );
+        let mut response = self
+            .db
+            .query(&query)
+            .bind(("context_id", context_id.as_str().to_string()))
+            .await
+            .map_err(map_surreal_error)?;
+        let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
+
+        let mut out: HashMap<String, u64> = HashMap::new();
+        for row in rows {
+            let message_id = row
+                .get("message_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if message_id.is_empty() {
+                continue;
+            }
+            let duration = row.get("duration_ms").and_then(Value::as_u64).unwrap_or(0);
+            *out.entry(message_id).or_insert(0) += duration;
+        }
+        Ok(out)
+    }
 }
 
 // ---------------------------------------------------------------------------
 // ProvenanceOpsQuery
 // ---------------------------------------------------------------------------
+
+fn ops_row_timestamp_ms(row: &Map<String, Value>) -> u64 {
+    row.get("timestamp_ms").and_then(Value::as_u64).unwrap_or(0)
+}
+
+fn ops_row_is_failed(row: &Map<String, Value>) -> bool {
+    row.get("activity_outcome").and_then(Value::as_str) == Some("Failed")
+}
+
+fn ops_row_is_success(row: &Map<String, Value>) -> bool {
+    row.get("activity_outcome").and_then(Value::as_str) == Some("Success")
+}
+
+// ---------------------------------------------------------------------------
+// Ops query parameter validation (parity with GraphQLite parse_ops_* functions)
+// ---------------------------------------------------------------------------
+
+/// Valid field names for sort_by and group_by parameters.
+/// Must match GraphQLite's OpsField::parse allowlist.
+fn parse_ops_field(raw: &str) -> Option<&str> {
+    match raw {
+        "activity_id"
+        | "activity_kind"
+        | "timestamp_ms"
+        | "duration_ms"
+        | "total_tokens"
+        | "prompt_tokens"
+        | "completion_tokens"
+        | "cached_input_tokens"
+        | "agent_id"
+        | "agent_display"
+        | "agent_package"
+        | "agent_version"
+        | "context_id"
+        | "task_id"
+        | "message_id"
+        | "provider"
+        | "model"
+        | "tool_name"
+        | "baml_prompt"
+        | "role"
+        | "activity_outcome"
+        | "activity_status"
+        | "failure_class"
+        | "failure_evidence"
+        | "total_processing_ms"
+        | "llm_duration_ms_sum"
+        | "tool_duration_ms_sum" => Some(raw),
+        _ => None,
+    }
+}
+
+/// Validate and parse sort_by parameter. Defaults to "timestamp_ms".
+fn parse_ops_sort_by(raw: Option<&str>) -> Result<&str> {
+    let field = raw.unwrap_or("timestamp_ms");
+    parse_ops_field(field).ok_or_else(|| ProvenanceError::InvalidEvent {
+        event_id: "ops_query".to_string(),
+        reason: format!("unsupported sort field: {field}"),
+    })
+}
+
+/// Validate and parse sort_dir parameter. Returns true if descending. Defaults to desc.
+fn parse_ops_sort_dir(raw: Option<&str>) -> Result<bool> {
+    match raw.unwrap_or("desc") {
+        "asc" | "ASC" => Ok(false),
+        "desc" | "DESC" => Ok(true),
+        other => Err(ProvenanceError::InvalidEvent {
+            event_id: "ops_query".to_string(),
+            reason: format!("unsupported sort direction: {other}"),
+        }),
+    }
+}
+
+/// Validate and parse group_by parameter. Defaults to ["agent_id"] if empty.
+fn parse_ops_group_by(raw: &[String]) -> Result<Vec<String>> {
+    if raw.is_empty() {
+        return Ok(vec!["agent_id".to_string()]);
+    }
+    raw.iter()
+        .map(|field| {
+            parse_ops_field(field)
+                .map(|f| f.to_string())
+                .ok_or_else(|| ProvenanceError::InvalidEvent {
+                    event_id: "ops_query".to_string(),
+                    reason: format!("unsupported group dimension: {field}"),
+                })
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Row enrichment helpers (parity with GraphQLite finalize_call_row, apply_agent_identity_fields)
+// ---------------------------------------------------------------------------
+
+/// Extract agent_id from instance_id like "agent_instance:uuid"
+fn agent_id_from_instance_id(instance_id: &str) -> Option<String> {
+    let raw = instance_id.strip_prefix("agent_instance:")?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    Some(raw.to_string())
+}
+
+/// Normalize agent field: trim, filter empty/null strings, use fallback.
+fn normalize_agent_field(raw: Option<&str>, fallback: &str) -> String {
+    raw.map(str::trim)
+        .filter(|s| !s.is_empty() && *s != "null")
+        .unwrap_or(fallback)
+        .to_string()
+}
+
+/// Parse a JSON-like string field from row props.
+fn parse_json_field(row: &Map<String, Value>, field: &str) -> Option<Value> {
+    let raw = row.get(field)?;
+    match raw {
+        Value::String(s) => serde_json::from_str(s).ok(),
+        Value::Object(_) | Value::Array(_) => Some(raw.clone()),
+        _ => None,
+    }
+}
+
+/// Parse a JSON-like string into a Value (string fallback).
+fn parse_json_like_string(raw: &str) -> Value {
+    serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string()))
+}
+
+/// Normalize payload text search query for SurrealDB full-text search.
+/// Parity with GraphQLite's `payload_text_match_query` which tokenizes and quotes terms.
+///
+/// GraphQLite produces: `"hello" AND "world"` for FTS5.
+/// SurrealDB `@@` operator implicitly ANDs space-separated terms, so we just need to:
+/// - Split by whitespace
+/// - Remove empty tokens
+/// - Strip quotes from tokens (to avoid double-quoting)
+/// - Join back with spaces
+///
+/// Returns empty string if no valid tokens found.
+fn normalize_payload_text_query(raw: &str) -> String {
+    raw.split_whitespace()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+        .map(|token| token.replace('"', ""))
+        .filter(|token| !token.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Apply agent identity fields (agent_package, agent_version, agent_display) from identity map.
+fn apply_agent_identity_fields(
+    row: &mut Map<String, Value>,
+    identity_by_agent_id: &HashMap<String, (String, String)>,
+) {
+    let Some(agent_id) = row.get("agent_id").and_then(Value::as_str) else {
+        return;
+    };
+    let Some((agent_package, agent_version)) = identity_by_agent_id.get(agent_id) else {
+        return;
+    };
+    row.insert(
+        "agent_package".to_string(),
+        Value::String(agent_package.clone()),
+    );
+    row.insert(
+        "agent_version".to_string(),
+        Value::String(agent_version.clone()),
+    );
+    row.insert(
+        "agent_display".to_string(),
+        Value::String(format!("{agent_package}/{agent_version}")),
+    );
+}
+
+/// Nest drift fields into a "drift" sub-object (parity with GraphQLite nest_llm_drift_fields).
+fn nest_llm_drift_fields(row: &mut Map<String, Value>) {
+    let drift_score = row.remove("drift_score");
+    let drift_severity = row.remove("drift_severity");
+    let drift_mode = row.remove("drift_mode");
+    let drift_warn_min_score = row.remove("drift_warn_min_score");
+    let drift_block_min_score = row.remove("drift_block_min_score");
+    let intent_text_preview = row.remove("intent_text_preview");
+    let response_text_preview = row.remove("response_text_preview");
+
+    let has_any = drift_score.is_some()
+        || drift_severity.is_some()
+        || drift_mode.is_some()
+        || drift_warn_min_score.is_some()
+        || drift_block_min_score.is_some()
+        || intent_text_preview.is_some()
+        || response_text_preview.is_some();
+    if !has_any {
+        return;
+    }
+
+    let mut drift = Map::new();
+    if let Some(value) = drift_score
+        && !value.is_null()
+    {
+        drift.insert("score".to_string(), value);
+    }
+    if let Some(value) = drift_severity
+        && !value.is_null()
+    {
+        drift.insert("severity".to_string(), value);
+    }
+    if let Some(value) = drift_mode
+        && !value.is_null()
+    {
+        drift.insert("mode".to_string(), value);
+    }
+    if let Some(value) = drift_warn_min_score
+        && !value.is_null()
+    {
+        drift.insert("warnMinScore".to_string(), value);
+    }
+    if let Some(value) = drift_block_min_score
+        && !value.is_null()
+    {
+        drift.insert("blockMinScore".to_string(), value);
+    }
+    if let Some(value) = intent_text_preview
+        && !value.is_null()
+    {
+        drift.insert("intentTextPreview".to_string(), value);
+    }
+    if let Some(value) = response_text_preview
+        && !value.is_null()
+    {
+        drift.insert("responseTextPreview".to_string(), value);
+    }
+    if !drift.is_empty() {
+        row.insert("drift".to_string(), Value::Object(drift));
+    }
+}
+
+fn percentile(sorted_values: &[f64], q: f64) -> f64 {
+    if sorted_values.is_empty() {
+        return 0.0;
+    }
+    let idx = ((sorted_values.len() as f64 - 1.0) * q).round() as usize;
+    sorted_values[idx.min(sorted_values.len() - 1)]
+}
+
+fn build_hotspot_groups(
+    rows: &[Map<String, Value>],
+    group_dims: &[String],
+    top_k: usize,
+) -> Vec<Value> {
+    type HotspotAggregate = (Vec<Option<String>>, u64, u64, u64, u64);
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let mut groups: HashMap<String, HotspotAggregate> = HashMap::new();
+    for row in rows {
+        let group_values: Vec<Option<String>> = group_dims
+            .iter()
+            .map(|d| {
+                row.get(d).and_then(|v| match v {
+                    Value::Null => None,
+                    Value::String(s) => {
+                        let trimmed = s.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(trimmed.to_string())
+                        }
+                    }
+                    _ => Some(v.to_string()),
+                })
+            })
+            .collect();
+        let key = serde_json::to_string(&group_values).unwrap_or_default();
+        let duration = row.get("duration_ms").and_then(Value::as_u64).unwrap_or(0);
+        let tokens = row.get("total_tokens").and_then(Value::as_u64).unwrap_or(0);
+        let failed = u64::from(ops_row_is_failed(row));
+        let entry = groups
+            .entry(key)
+            .or_insert_with(|| (group_values.clone(), 0, 0, 0, 0));
+        entry.1 += 1;
+        entry.2 += failed;
+        entry.3 += duration;
+        entry.4 += tokens;
+    }
+
+    let mut out: Vec<Value> = groups
+        .into_iter()
+        .map(
+            |(_k, (group_values, count, failed, duration_sum, token_sum))| {
+                let avg_duration = if count == 0 {
+                    0.0
+                } else {
+                    duration_sum as f64 / count as f64
+                };
+                let avg_tokens = if count == 0 {
+                    0.0
+                } else {
+                    token_sum as f64 / count as f64
+                };
+                let group_key = group_values
+                    .iter()
+                    .map(|v| v.clone().unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join("|");
+                serde_json::json!({
+                    "groupKey": group_key,
+                    "groupValues": group_values,
+                    "groupDimensions": group_dims,
+                    "count": count,
+                    "failed": failed,
+                    "failureRate": if count == 0 { 0.0 } else { failed as f64 / count as f64 },
+                    "avgDurationMs": avg_duration,
+                    "avgTotalTokens": avg_tokens
+                })
+            },
+        )
+        .collect();
+    out.sort_by(|a, b| {
+        let ad = a
+            .get("avgDurationMs")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let bd = b
+            .get("avgDurationMs")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        bd.partial_cmp(&ad).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    out.truncate(top_k);
+    out
+}
 
 #[async_trait]
 impl ProvenanceOpsQuery for SurrealProvenanceStore {
@@ -2082,33 +2673,76 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
             .unwrap_or(0);
         request.page_size = Some(page_size as u32);
 
+        let compact_profile = matches!(profile, ProvenanceResponseProfile::ToolCompact);
+
+        // Load enrichment maps (parity with GraphQLite query_llm_rows/query_tool_rows).
+        let identity_by_agent_id = self.load_agent_identity_map().await?;
+        let failure_by_activity_id = self.load_failure_classification_map().await?;
+
         let label = match request.resource {
             ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates => "LlmCall",
             ProvenanceOpsResource::ToolCalls => "ToolCall",
             ProvenanceOpsResource::Messages => "Message",
         };
 
-        // Build filter conditions
-        let mut where_clauses = vec![format!("label = '{label}'")];
+        // Build WHERE clause with bind params only.
+        let mut where_clauses = vec!["label = $label".to_string()];
+        let mut binds: Vec<(String, Value)> =
+            vec![("label".to_string(), Value::String(label.to_string()))];
+
         if let Some(ref ctx) = request.filters.context_id {
-            where_clauses.push(format!("props.a2a_context_id = '{}'", ctx.as_str()));
+            where_clauses.push("props.a2a_context_id = $context_id".to_string());
+            binds.push((
+                "context_id".to_string(),
+                Value::String(ctx.as_str().to_string()),
+            ));
         }
-        if let Some(ref tid) = request.filters.task_id {
-            where_clauses.push(format!("props.a2a_task_id = '{}'", tid.as_str()));
+        // Note: GraphQLite query_message_rows does NOT filter by task_id - only by context_id.
+        // For parity, skip task_id filter for Messages resource.
+        if !matches!(request.resource, ProvenanceOpsResource::Messages)
+            && let Some(ref tid) = request.filters.task_id
+        {
+            where_clauses.push("props.a2a_task_id = $task_id".to_string());
+            binds.push((
+                "task_id".to_string(),
+                Value::String(tid.as_str().to_string()),
+            ));
         }
         if let Some(ref tool_name) = request.filters.tool_name {
-            where_clauses.push(format!("props.a2a_tool_name = '{tool_name}'"));
+            where_clauses.push("props.a2a_tool_name = $tool_name".to_string());
+            binds.push((
+                "tool_name".to_string(),
+                Value::String(tool_name.to_string()),
+            ));
         }
         if let Some(ref model) = request.filters.model {
-            where_clauses.push(format!("props.a2a_model = '{model}'"));
+            where_clauses.push("props.a2a_model = $model".to_string());
+            binds.push(("model".to_string(), Value::String(model.to_string())));
+        }
+        if let Some(ref provider) = request.filters.provider {
+            where_clauses.push("props.a2a_client = $provider".to_string());
+            binds.push(("provider".to_string(), Value::String(provider.to_string())));
+        }
+        if let Some(ref agent_id) = request.filters.agent_id {
+            where_clauses.push("props.a2a_agent_id = $agent_id".to_string());
+            binds.push((
+                "agent_id".to_string(),
+                Value::String(agent_id.as_str().to_string()),
+            ));
         }
 
-        let where_clause = where_clauses.join(" AND ");
-        let query = format!("SELECT * OMIT id FROM {TBL_NODE} WHERE {where_clause}");
-        let mut response = self.db.query(&query).await.map_err(map_surreal_error)?;
+        let query = format!(
+            "SELECT node_id, props FROM {TBL_NODE} WHERE {}",
+            where_clauses.join(" AND ")
+        );
+        let mut q = self.db.query(&query);
+        for (k, v) in binds {
+            q = q.bind((k, v));
+        }
+        let mut response = q.await.map_err(map_surreal_error)?;
         let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
 
-        // Convert to ops row format
+        // Canonicalize rows to the public ops shape.
         let mut ops_rows: Vec<Map<String, Value>> = rows
             .iter()
             .filter_map(|row| {
@@ -2125,30 +2759,576 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                 for (k, v) in props {
                     out.insert(k.clone(), v.clone());
                 }
+                if let Some(v) = out.get("a2a_context_id").cloned() {
+                    out.insert("context_id".to_string(), v);
+                }
+                if let Some(v) = out.get("a2a_task_id").cloned() {
+                    out.insert("task_id".to_string(), v);
+                }
+                if let Some(v) = out.get("a2a_message_id").cloned() {
+                    out.insert("message_id".to_string(), v);
+                }
+                if let Some(v) = out.get("a2a_agent_id").cloned() {
+                    out.insert("agent_id".to_string(), v);
+                }
+                if let Some(v) = out.get("a2a_client").cloned() {
+                    out.insert("provider".to_string(), v);
+                }
+                if let Some(v) = out.get("a2a_model").cloned() {
+                    out.insert("model".to_string(), v);
+                }
+                if let Some(v) = out.get("a2a_tool_name").cloned() {
+                    out.insert("tool_name".to_string(), v);
+                }
+                if let Some(v) = out.get("a2a_function_name").cloned() {
+                    out.insert("baml_prompt".to_string(), v);
+                }
+                if let Some(v) = out.get("a2a_duration_ms").cloned() {
+                    out.insert("duration_ms".to_string(), v);
+                }
+                if let Some(v) = out.get("a2a_usage_prompt_tokens").cloned() {
+                    out.insert("prompt_tokens".to_string(), v);
+                }
+                if let Some(v) = out.get("a2a_usage_completion_tokens").cloned() {
+                    out.insert("completion_tokens".to_string(), v);
+                }
+                if let Some(v) = out.get("a2a_usage_total_tokens").cloned() {
+                    out.insert("total_tokens".to_string(), v);
+                }
+                if let Some(v) = out.get("a2a_usage_cached_input_tokens").cloned() {
+                    out.insert("cached_input_tokens".to_string(), v);
+                }
+
+                // Timestamp: prefer prov_endTime > prov_startTime > prov_time > event_id fallback
+                // (parity with GraphQLite's coalesce(c.prov_endTime, c.prov_startTime, 0)).
+                let timestamp_ms = out
+                    .get("prov_endTime")
+                    .and_then(Value::as_u64)
+                    .or_else(|| out.get("prov_startTime").and_then(Value::as_u64))
+                    .or_else(|| out.get("prov_time").and_then(Value::as_u64))
+                    .unwrap_or_else(|| {
+                        let event_id = out
+                            .get("a2a_event_id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        event_id_to_timestamp_ms(event_id)
+                    });
+                out.insert(
+                    "timestamp_ms".to_string(),
+                    Value::Number(timestamp_ms.into()),
+                );
+
+                // Outcome / status: messages are always Completed/Success (GraphQLite parity:
+                // query_message_rows unconditionally sets these). LLM/tool calls derive from
+                // the a2a_activity_outcome property.
+                let is_message = matches!(request.resource, ProvenanceOpsResource::Messages);
+                let (activity_outcome, activity_status) = if is_message {
+                    ("Success".to_string(), "Completed".to_string())
+                } else {
+                    let outcome = out
+                        .get("a2a_activity_outcome")
+                        .and_then(Value::as_str)
+                        .unwrap_or("InProgress")
+                        .to_string();
+                    let status = if matches!(outcome.as_str(), "Success" | "Failed") {
+                        "Completed".to_string()
+                    } else {
+                        "InProgress".to_string()
+                    };
+                    let normalized = match outcome.as_str() {
+                        "Success" => "Success".to_string(),
+                        "Failed" => "Failed".to_string(),
+                        _ => "Indeterminate".to_string(),
+                    };
+                    (normalized, status)
+                };
+                out.insert(
+                    "activity_outcome".to_string(),
+                    Value::String(activity_outcome),
+                );
+                out.insert(
+                    "activity_status".to_string(),
+                    Value::String(activity_status),
+                );
+                out.insert(
+                    "activity_kind".to_string(),
+                    Value::String(match request.resource {
+                        ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates => {
+                            "llm_call".to_string()
+                        }
+                        ProvenanceOpsResource::ToolCalls => "tool_call".to_string(),
+                        ProvenanceOpsResource::Messages => "message_turn".to_string(),
+                    }),
+                );
                 Some(out)
             })
             .collect();
 
-        // Sort
-        let sort_by = request.sort_by.as_deref().unwrap_or("a2a_event_id");
-        let sort_desc = request
-            .sort_dir
-            .as_deref()
-            .map(|d| d.eq_ignore_ascii_case("desc"))
-            .unwrap_or(true);
+        // Load message duration aggregations (only for Messages resource with context_id filter).
+        // Parity with GraphQLite query_message_rows which aggregates LLM/tool durations per message.
+        let (llm_duration_by_message, tool_duration_by_message) =
+            if matches!(request.resource, ProvenanceOpsResource::Messages)
+                && let Some(ref context_id) = request.filters.context_id
+            {
+                let llm_map = self.load_llm_duration_by_message(context_id).await?;
+                let tool_map = self.load_tool_duration_by_message(context_id).await?;
+                (llm_map, tool_map)
+            } else {
+                (HashMap::new(), HashMap::new())
+            };
+
+        // Enrich rows with additional fields (parity with GraphQLite row enrichment).
+        // This adds: activity_ref, payload refs, structured payloads, agent identity, failure fields, drift nesting.
+        for row in &mut ops_rows {
+            let activity_id = row
+                .get("activity_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+
+            // Add activity_ref for all row types
+            if !activity_id.is_empty() {
+                row.insert(
+                    "activity_ref".to_string(),
+                    Value::String(archive_ref_for_activity(&activity_id)),
+                );
+            }
+
+            // Apply agent identity fields (agent_package, agent_version, agent_display)
+            apply_agent_identity_fields(row, &identity_by_agent_id);
+
+            match request.resource {
+                ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates => {
+                    // Add LLM-specific enrichment
+                    // Payload refs
+                    if let Some(payload_id) =
+                        row.get("a2a_llm_call_payload_id").and_then(Value::as_str)
+                    {
+                        row.insert(
+                            "llm_call_ref".to_string(),
+                            Value::String(archive_ref_for_payload(payload_id)),
+                        );
+                    }
+                    if let Some(payload_id) =
+                        row.get("a2a_llm_result_payload_id").and_then(Value::as_str)
+                    {
+                        row.insert(
+                            "llm_result_ref".to_string(),
+                            Value::String(archive_ref_for_payload(payload_id)),
+                        );
+                    }
+
+                    // Structured llm_call (from payload or inline)
+                    let llm_call = if compact_profile {
+                        Value::Null
+                    } else if let Some(payload_id) =
+                        row.get("a2a_llm_call_payload_id").and_then(Value::as_str)
+                    {
+                        self.read_payload_by_id(payload_id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|p| parse_json_like_string(&p.payload_json))
+                            .or_else(|| parse_json_field(row, "a2a_prompt"))
+                            .unwrap_or(Value::Null)
+                    } else {
+                        parse_json_field(row, "a2a_prompt").unwrap_or(Value::Null)
+                    };
+                    row.insert("llm_call".to_string(), llm_call);
+
+                    // Structured llm_result (from payload or inline result/error)
+                    let llm_result = if compact_profile {
+                        Value::Null
+                    } else if let Some(payload_id) =
+                        row.get("a2a_llm_result_payload_id").and_then(Value::as_str)
+                    {
+                        self.read_payload_by_id(payload_id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|p| parse_json_like_string(&p.payload_json))
+                            .unwrap_or(Value::Null)
+                    } else {
+                        let result_value = parse_json_field(row, "a2a_result");
+                        let error_value = parse_json_field(row, "a2a_error");
+                        match (result_value, error_value) {
+                            (Some(result), Some(error)) => serde_json::json!({
+                                "result": result,
+                                "error": error
+                            }),
+                            (Some(result), None) => result,
+                            (None, Some(error)) => serde_json::json!({ "error": error }),
+                            (None, None) => Value::Null,
+                        }
+                    };
+                    row.insert("llm_result".to_string(), llm_result);
+
+                    // Clean up raw fields
+                    row.remove("a2a_result");
+                    row.remove("a2a_error");
+                    row.remove("a2a_llm_call_payload_id");
+                    row.remove("a2a_llm_result_payload_id");
+
+                    // Nest drift fields
+                    // First, copy drift fields from a2a_ prefix to non-prefixed for nesting
+                    if let Some(v) = row.get("a2a_drift_score").cloned() {
+                        row.insert("drift_score".to_string(), v);
+                    }
+                    if let Some(v) = row.get("a2a_drift_severity").cloned() {
+                        row.insert("drift_severity".to_string(), v);
+                    }
+                    if let Some(v) = row.get("a2a_drift_mode").cloned() {
+                        row.insert("drift_mode".to_string(), v);
+                    }
+                    if let Some(v) = row.get("a2a_drift_warn_min_score").cloned() {
+                        row.insert("drift_warn_min_score".to_string(), v);
+                    }
+                    if let Some(v) = row.get("a2a_drift_block_min_score").cloned() {
+                        row.insert("drift_block_min_score".to_string(), v);
+                    }
+                    if let Some(v) = row.get("a2a_intent_text_preview").cloned() {
+                        row.insert("intent_text_preview".to_string(), v);
+                    }
+                    if let Some(v) = row.get("a2a_response_text_preview").cloned() {
+                        row.insert("response_text_preview".to_string(), v);
+                    }
+                    nest_llm_drift_fields(row);
+
+                    // Add failure classification for failed calls (hard-fail if missing - parity with GraphQLite)
+                    if ops_row_is_failed(row) {
+                        let resolved =
+                            failure_by_activity_id.get(&activity_id).ok_or_else(|| {
+                                ProvenanceError::InvalidEvent {
+                                event_id: activity_id.clone(),
+                                reason:
+                                    "missing write-time failure classification for failed llm_call"
+                                        .to_string(),
+                            }
+                            })?;
+                        row.insert(
+                            "failure_class".to_string(),
+                            Value::String(resolved.0.clone()),
+                        );
+                        row.insert(
+                            "failure_evidence".to_string(),
+                            Value::String(resolved.1.clone()),
+                        );
+                    }
+                }
+                ProvenanceOpsResource::ToolCalls => {
+                    // Add Tool-specific enrichment
+                    // Payload refs
+                    if let Some(payload_id) =
+                        row.get("a2a_tool_call_payload_id").and_then(Value::as_str)
+                    {
+                        row.insert(
+                            "tool_call_ref".to_string(),
+                            Value::String(archive_ref_for_payload(payload_id)),
+                        );
+                    }
+                    if let Some(payload_id) = row
+                        .get("a2a_tool_result_payload_id")
+                        .and_then(Value::as_str)
+                    {
+                        row.insert(
+                            "tool_result_ref".to_string(),
+                            Value::String(archive_ref_for_payload(payload_id)),
+                        );
+                    }
+
+                    // Structured tool_call (name, args, phase)
+                    let tool_name = row
+                        .get("tool_name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    let (tool_args, tool_phase) = if let Some(payload_id) =
+                        row.get("a2a_tool_call_payload_id").and_then(Value::as_str)
+                    {
+                        if let Ok(Some(payload)) = self.read_payload_by_id(payload_id).await {
+                            let parsed = parse_json_like_string(&payload.payload_json);
+                            let args = parsed.get("args").cloned().unwrap_or(Value::Null);
+                            let phase = parsed
+                                .get("phase")
+                                .and_then(Value::as_str)
+                                .map(str::trim)
+                                .filter(|v| !v.is_empty())
+                                .map(str::to_string);
+                            (args, phase)
+                        } else {
+                            (
+                                parse_json_field(row, "a2a_args").unwrap_or(Value::Null),
+                                row.get("a2a_phase")
+                                    .and_then(Value::as_str)
+                                    .map(str::trim)
+                                    .filter(|v| !v.is_empty())
+                                    .map(str::to_string),
+                            )
+                        }
+                    } else {
+                        (
+                            parse_json_field(row, "a2a_args").unwrap_or(Value::Null),
+                            row.get("a2a_phase")
+                                .and_then(Value::as_str)
+                                .map(str::trim)
+                                .filter(|v| !v.is_empty())
+                                .map(str::to_string),
+                        )
+                    };
+                    row.insert(
+                        "tool_call".to_string(),
+                        serde_json::json!({
+                            "name": tool_name,
+                            "args": tool_args,
+                            "phase": tool_phase
+                        }),
+                    );
+
+                    // Structured tool_result (from payload or inline result/error)
+                    let tool_result = if let Some(payload_id) = row
+                        .get("a2a_tool_result_payload_id")
+                        .and_then(Value::as_str)
+                    {
+                        self.read_payload_by_id(payload_id)
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|p| parse_json_like_string(&p.payload_json))
+                            .unwrap_or(Value::Null)
+                    } else {
+                        let result_value = parse_json_field(row, "a2a_result");
+                        let error_value = parse_json_field(row, "a2a_error");
+                        match (result_value, error_value) {
+                            (Some(result), Some(error)) => serde_json::json!({
+                                "result": result,
+                                "error": error
+                            }),
+                            (Some(result), None) => result,
+                            (None, Some(error)) => serde_json::json!({ "error": error }),
+                            (None, None) => Value::Null,
+                        }
+                    };
+                    row.insert("tool_result".to_string(), tool_result);
+
+                    // Clean up raw fields
+                    row.remove("a2a_args");
+                    row.remove("a2a_phase");
+                    row.remove("a2a_result");
+                    row.remove("a2a_error");
+                    row.remove("a2a_tool_call_payload_id");
+                    row.remove("a2a_tool_result_payload_id");
+
+                    // Add failure classification for failed calls (hard-fail if missing - parity with GraphQLite)
+                    if ops_row_is_failed(row) {
+                        let resolved =
+                            failure_by_activity_id.get(&activity_id).ok_or_else(|| {
+                                ProvenanceError::InvalidEvent {
+                                event_id: activity_id.clone(),
+                                reason:
+                                    "missing write-time failure classification for failed tool_call"
+                                        .to_string(),
+                            }
+                            })?;
+                        row.insert(
+                            "failure_class".to_string(),
+                            Value::String(resolved.0.clone()),
+                        );
+                        row.insert(
+                            "failure_evidence".to_string(),
+                            Value::String(resolved.1.clone()),
+                        );
+                    }
+                }
+                ProvenanceOpsResource::Messages => {
+                    // Add Message-specific enrichment (parity with GraphQLite query_message_rows)
+
+                    // Get message_id for duration lookups
+                    let message_id = row
+                        .get("message_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+
+                    // Add LLM/tool duration aggregates
+                    let llm_sum = llm_duration_by_message
+                        .get(&message_id)
+                        .copied()
+                        .unwrap_or(0);
+                    let tool_sum = tool_duration_by_message
+                        .get(&message_id)
+                        .copied()
+                        .unwrap_or(0);
+                    row.insert(
+                        "llm_duration_ms_sum".to_string(),
+                        Value::Number(llm_sum.into()),
+                    );
+                    row.insert(
+                        "tool_duration_ms_sum".to_string(),
+                        Value::Number(tool_sum.into()),
+                    );
+                    row.insert(
+                        "total_processing_ms".to_string(),
+                        Value::Number((llm_sum + tool_sum).into()),
+                    );
+                    row.insert(
+                        "duration_ms".to_string(),
+                        Value::Number((llm_sum + tool_sum).into()),
+                    );
+
+                    // Parse message content and extract text (parity with GraphQLite)
+                    let message_content =
+                        parse_json_field(row, "a2a_content").unwrap_or(Value::Array(vec![]));
+                    let message_text = match &message_content {
+                        Value::Array(parts) => parts
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                        Value::String(s) => s.clone(),
+                        _ => String::new(),
+                    };
+                    row.insert("message_content".to_string(), message_content);
+                    if !message_text.is_empty() {
+                        row.insert("message_text".to_string(), Value::String(message_text));
+                    }
+                    row.remove("a2a_content");
+
+                    // Add role and direction fields
+                    if let Some(v) = row.get("a2a_role").cloned() {
+                        row.insert("role".to_string(), v);
+                    }
+                    if let Some(v) = row.get("a2a_direction").cloned() {
+                        row.insert("direction".to_string(), v);
+                    }
+                }
+            }
+        }
+
+        // Exclude non-terminal "open" phase tool rows from ToolCalls responses (parity with GraphQLite).
+        // GraphQLite does this in query_tool_rows before returning rows.
+        if matches!(request.resource, ProvenanceOpsResource::ToolCalls) {
+            ops_rows.retain(|row| {
+                row.get("tool_call")
+                    .and_then(|v| v.get("phase"))
+                    .and_then(Value::as_str)
+                    != Some("open")
+            });
+        }
+
+        // Payload text filter: resolve matching activity_ids via FTS, then filter rows.
+        // GraphQLite only applies payload_text filtering for LlmCalls/ToolCalls/Aggregates,
+        // NOT for Messages (query_message_rows has no payload_text logic).
+        // Also, GraphQLite treats empty/whitespace-only payload_text as "no filter" (None),
+        // not as "filter to empty set" which would return zero rows.
+        let payload_text_activity_filter: Option<HashSet<String>> =
+            if !matches!(request.resource, ProvenanceOpsResource::Messages)
+                && let Some(ref payload_text) = request.filters.payload_text
+            {
+                // Check if normalized query would be empty - if so, treat as no filter (parity with GraphQLite)
+                let normalized = normalize_payload_text_query(payload_text);
+                if normalized.is_empty() {
+                    None
+                } else {
+                    let matching = self.search_payload_activity_ids(payload_text).await?;
+                    Some(matching.into_iter().collect())
+                }
+            } else {
+                None
+            };
+
+        // Rust-side common filters.
+        let prompt_filter_lc = request
+            .filters
+            .baml_prompt
+            .as_ref()
+            .map(|prompt| prompt.to_ascii_lowercase());
+        let outcome_segment = request
+            .outcome
+            .clone()
+            .unwrap_or(crate::store::ProvenanceOutcomeSegment::Both);
+        ops_rows.retain(|row| {
+            if let Some(from_ms) = request.filters.from_timestamp_ms
+                && ops_row_timestamp_ms(row) < from_ms
+            {
+                return false;
+            }
+            if let Some(to_ms) = request.filters.to_timestamp_ms
+                && ops_row_timestamp_ms(row) > to_ms
+            {
+                return false;
+            }
+            if let Some(prompt_lc) = prompt_filter_lc.as_ref() {
+                let prompt_value = row
+                    .get("baml_prompt")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                if !prompt_value.contains(prompt_lc) {
+                    return false;
+                }
+            }
+            if let Some(ref allowed) = payload_text_activity_filter {
+                let activity_id = row
+                    .get("activity_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if !allowed.contains(activity_id) {
+                    return false;
+                }
+            }
+            match outcome_segment {
+                crate::store::ProvenanceOutcomeSegment::FailedOnly => ops_row_is_failed(row),
+                crate::store::ProvenanceOutcomeSegment::SuccessfulOnly => ops_row_is_success(row),
+                crate::store::ProvenanceOutcomeSegment::Both => {
+                    ops_row_is_success(row) || ops_row_is_failed(row)
+                }
+            }
+        });
+
+        // Validate and apply sort parameters (parity with GraphQLite validation).
+        let sort_by = parse_ops_sort_by(request.sort_by.as_deref())?;
+        let sort_desc = parse_ops_sort_dir(request.sort_dir.as_deref())?;
         ops_rows.sort_by(|a, b| {
             let av = a.get(sort_by).cloned().unwrap_or(Value::Null);
             let bv = b.get(sort_by).cloned().unwrap_or(Value::Null);
-            let ord = match (av, bv) {
+            let ord = match (&av, &bv) {
                 (Value::Number(an), Value::Number(bn)) => an
                     .as_f64()
                     .partial_cmp(&bn.as_f64())
                     .unwrap_or(std::cmp::Ordering::Equal),
-                (Value::String(as_), Value::String(bs_)) => as_.cmp(&bs_),
+                (Value::String(as_), Value::String(bs_)) => as_.cmp(bs_),
                 _ => std::cmp::Ordering::Equal,
+            };
+            let ord = if ord == std::cmp::Ordering::Equal {
+                let aid = a
+                    .get("activity_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let bid = b
+                    .get("activity_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                aid.cmp(bid)
+            } else {
+                ord
             };
             if sort_desc { ord.reverse() } else { ord }
         });
+
+        let mut durations: Vec<f64> = ops_rows
+            .iter()
+            .filter_map(|r| r.get("duration_ms").and_then(Value::as_f64))
+            .collect();
+        durations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut tokens: Vec<f64> = ops_rows
+            .iter()
+            .filter_map(|r| r.get("total_tokens").and_then(Value::as_f64))
+            .collect();
+        tokens.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let duration_p95 = percentile(&durations, 0.95);
+        let duration_p99 = percentile(&durations, 0.99);
+        let token_p95 = percentile(&tokens, 0.95);
+        let token_p99 = percentile(&tokens, 0.99);
 
         let total_rows = ops_rows.len();
         let page_end = std::cmp::min(offset.saturating_add(page_size), total_rows);
@@ -2163,27 +3343,72 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
             None
         };
 
-        let _top_k = request.top_k.unwrap_or(10) as usize;
-        let failed_count = ops_rows
+        let top_k = request.top_k.unwrap_or(10) as usize;
+        // Validate group_by (parity with GraphQLite parse_ops_group_by).
+        let effective_group_by = parse_ops_group_by(&request.group_by)?;
+        let hotspot_groups = build_hotspot_groups(&ops_rows, &effective_group_by, top_k);
+        let failed_count = ops_rows.iter().filter(|r| ops_row_is_failed(r)).count();
+        let total_tokens_sum: u64 = ops_rows
             .iter()
-            .filter(|r| {
-                r.get("a2a_activity_outcome")
-                    .and_then(Value::as_str)
-                    .map(|s| s == "Failed")
-                    .unwrap_or(false)
+            .map(|r| r.get("total_tokens").and_then(Value::as_u64).unwrap_or(0))
+            .sum();
+        let prompt_tokens_sum: u64 = ops_rows
+            .iter()
+            .map(|r| r.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0))
+            .sum();
+        let completion_tokens_sum: u64 = ops_rows
+            .iter()
+            .map(|r| {
+                r.get("completion_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
             })
-            .count();
+            .sum();
+        let cached_input_tokens_sum: u64 = ops_rows
+            .iter()
+            .map(|r| {
+                r.get("cached_input_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            })
+            .sum();
+        let total_duration_sum: u64 = ops_rows
+            .iter()
+            .map(|r| r.get("duration_ms").and_then(Value::as_u64).unwrap_or(0))
+            .sum();
 
-        let summary = serde_json::json!({
+        let mut summary = serde_json::json!({
             "count": total_rows,
             "failedCount": failed_count,
+            "durationMsTotal": total_duration_sum,
+            "totalTokens": total_tokens_sum,
+            "promptTokensTotal": prompt_tokens_sum,
+            "completionTokensTotal": completion_tokens_sum,
+            "latencyHotspots": {
+                "p95": duration_p95,
+                "p99": duration_p99
+            },
+            "tokenHotspots": {
+                "p95": token_p95,
+                "p99": token_p99
+            }
         });
+        if matches!(
+            request.resource,
+            ProvenanceOpsResource::LlmCalls | ProvenanceOpsResource::Aggregates
+        ) && let Some(obj) = summary.as_object_mut()
+        {
+            obj.insert(
+                "cachedInputTokensTotal".to_string(),
+                Value::from(cached_input_tokens_sum),
+            );
+        }
 
         Ok(ProvenanceOpsQueryResponse {
             resource: request.resource,
             rows: page_rows.into_iter().map(Value::Object).collect(),
             summary,
-            hotspot_groups: Vec::new(),
+            hotspot_groups,
             next_cursor,
             truncated: total_rows > page_size || requested_page > page_cap,
             applied_caps: Map::from_iter([
@@ -2392,8 +3617,14 @@ impl A2aGraphStore for SurrealProvenanceStore {
         node: &TaskSubgraphNode,
         ord_if_create: i64,
     ) -> A2aGraphStoreResult<()> {
+        // ord is only set on create (ON CREATE SET semantics from GraphQLite).
+        // On update, all other fields are overwritten but ord is preserved.
         let query = format!(
-            "UPSERT {TBL_A2A_TASK} SET task_id = $task_id, context_id = $context_id, status_json = $status_json, metadata_json = $metadata_json, extra_json = $extra_json, artifacts_json = $artifacts_json, ord = $ord WHERE task_id = $task_id"
+            "UPSERT {TBL_A2A_TASK} SET task_id = $task_id, context_id = $context_id, \
+             status_json = $status_json, metadata_json = $metadata_json, \
+             extra_json = $extra_json, artifacts_json = $artifacts_json, \
+             ord = IF ord IS NONE THEN $ord ELSE ord END \
+             WHERE task_id = $task_id"
         );
         self.db
             .query(&query)
@@ -2415,13 +3646,18 @@ impl A2aGraphStore for SurrealProvenanceStore {
         context_id: &str,
         ord_if_create: i64,
     ) -> A2aGraphStoreResult<()> {
-        // Only create if not exists
-        let existing = self.get_task_node(id).await?;
-        if existing.is_some() {
-            return Ok(());
-        }
+        // Atomic: UPSERT creates if no match, does nothing meaningful on match
+        // (all fields are idempotently re-set to their current values by the WHERE match).
+        // On create, the defaults mirror GraphQLite's ON CREATE SET.
         let query = format!(
-            "INSERT INTO {TBL_A2A_TASK} (task_id, context_id, status_json, metadata_json, extra_json, artifacts_json, ord) VALUES ($task_id, $context_id, '', '{{}}', '{{}}', '[]', $ord)"
+            "UPSERT {TBL_A2A_TASK} SET task_id = $task_id, \
+             context_id = IF context_id IS NONE THEN $context_id ELSE context_id END, \
+             status_json = IF status_json IS NONE THEN '' ELSE status_json END, \
+             metadata_json = IF metadata_json IS NONE THEN '{{}}' ELSE metadata_json END, \
+             extra_json = IF extra_json IS NONE THEN '{{}}' ELSE extra_json END, \
+             artifacts_json = IF artifacts_json IS NONE THEN '[]' ELSE artifacts_json END, \
+             ord = IF ord IS NONE THEN $ord ELSE ord END \
+             WHERE task_id = $task_id"
         );
         self.db
             .query(&query)
