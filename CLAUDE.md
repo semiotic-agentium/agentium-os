@@ -5,12 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Development Commands
 
 ```bash
-# Build (requires Rust nightly — edition 2024; use the flake.nix devShell)
+# Build (nightly pinned via rust-toolchain.toml)
 cargo build
 cargo build --release
 
-# Test (source .env first for API-key-dependent tests)
-set -a && source .env && set +a
+# Test — secrets resolved via fnox.toml (see Secrets below)
 cargo test                                     # runs default-members only
 cargo test --workspace                         # runs all crates
 cargo test -- --nocapture
@@ -33,9 +32,6 @@ pre-commit run --all-files
 # Snapshot testing (provenance crate uses insta)
 cargo insta review
 
-# Regenerate TypeScript type declarations from baml_src/ changes
-cargo run -p baml-rt-builder --bin regen_fixtures
-
 # Binaries
 cargo run -p baml-rt-builder --bin baml-agent-builder   # lint, compile, package agents
 cargo run -p baml-agent-runner                           # load packaged agents, serve A2A
@@ -45,28 +41,64 @@ cargo install cargo-nextest        # once
 ./scripts/nextest-ci-local.sh      # full workspace + http-tools; JUnit at target/nextest/ci/junit.xml
 ```
 
+### Secrets
+
+API keys for tests are resolved through `fnox.toml` via `FnoxFileSecretResolver`. The file maps secret names to values with a `default` field. CI writes this file from GitHub secrets; locally, create `fnox.toml` in the project root.
+
 ## Architecture
 
-This is a Rust workspace (edition 2024, requires nightly) for the BAML agent runtime — executing BAML functions, running JavaScript agents via QuickJS, tool orchestration, and serving A2A (agent-to-agent) protocol requests.
+This is a Rust workspace (edition 2024, nightly pinned via `rust-toolchain.toml`) for the BAML agent runtime — executing BAML functions, running JavaScript agents via QuickJS, tool orchestration, and serving A2A (agent-to-agent) protocol requests.
 
-### Crate Dependency Graph (bottom-up)
+### Crate Map
 
+**Foundation**
 - **baml-rt-core** — Shared error types, result types, correlation helpers
 - **baml-rt-id** — Newtype ID wrappers (UUID-based)
+- **baml-rt-hash** — Canonical content-addressable hashing for agent source bundles
+- **baml-rt-config** — Tool configuration storage and resolution
+- **baml-rt-llm-config** — Centralised LLM client configuration; `FnoxFileSecretResolver` for API keys
+- **baml-rt-vocabulary** — Vocabulary types (minimal)
+- **baml-rt-embedding** — Embedding and drift detection
+
+**Runtime**
 - **baml-rt-tools** — Tool trait, registry/executor, session FSM (`ToolSessionPlan` with Open/Send/Next/Finish/Abort ops)
 - **baml-rt-interceptor** — Interceptor trait + pipeline (pre/post execution hooks)
 - **baml-rt-observability** — OpenTelemetry tracing setup, spans, metrics
 - **baml-rt-quickjs** — QuickJS runtime host: loads JS, bridges JS↔Rust, manages BAML runtime invocations
 - **baml-rt-a2a** — Agent-to-agent protocol: JSON-RPC types, SSE streaming transport, streaming task handling
 - **baml-rt-provenance** — Provenance graph: event normalization, GraphQLite persistence
+- **baml-rt-repository** — Agent package repository: content-addressable archive with lineage, versioning, and search
 - **baml-rt-api** — HTTP API surface: agent discovery (GET /agents), A2A JSON-RPC forwarding, OpenAPI via utoipa, RFC 7807 errors
-- **baml-rt-builder** — Agent build pipeline: OXC lint/compile TypeScript, BAML type generation, tar.gz packaging. Binary: `baml-agent-builder`
-- **baml-agent-runner** — Loads packaged agent tar.gz, serves A2A requests. Binary: `baml-agent-runner`
-- **baml-rt** — Facade crate re-exporting subcrates via feature flags (default: all enabled)
+
+**Derive macros**
 - **baml-derive-core** — Core types and rendering for derive macro (`BamlType` trait)
 - **baml-derive** — Proc-macro: `#[derive(BamlType)]` with `#[baml(dynamic)]`, `#[baml(union)]`, `#[baml(alias)]`, `#[baml(skip)]` etc.
-- **baml-derive-tests** — Integration tests for derive macro (not published)
+- **baml-tool-derive** — Proc-macro attribute for registering tool metadata and handlers
+- **baml-derive-tests** — Integration tests for derive macros (not published)
+
+**Integration clients** (`crates/integrations/`)
+- **clickup-client** — Shared ClickUp API client for tools and daemons
+- **github-client** — Shared GitHub REST API client
+- **notion-read** — Shared Notion read-only API client
+- **slack-read** — Shared Slack read-only Web API client
+
+**Tool bundles** (`crates/tools/`)
+- **tools/calculator** — Calculator support tool
+- **tools/claude** — Claude tool bundle (streaming session)
+- **tools/clickup** — ClickUp host tool
+- **tools/notion** — Notion host tool
+- **tools/slack** — Slack host tool (read-only)
+- **tools/system** — System tool bundle (e.g. agent-to-agent calls)
+- **tools/memory** — Persistent graph-based cognitive memory
 - **tools/internal-dev** — Test tool implementations (Calculator, Delay, Uppercase, Weather, A2aRelay) registered via `inventory`
+
+**Top-level binaries and facades**
+- **baml-rt** — Facade crate re-exporting subcrates via feature flags (default: all enabled)
+- **baml-rt-builder** — Agent build pipeline: BAML type generation, tar.gz packaging. Binary: `baml-agent-builder`
+- **baml-agent-runner** — Loads packaged agent tar.gz, serves A2A requests. Binary: `baml-agent-runner`
+- **task-daemon** — Local polling daemon substrate for extracting actionable tasks from sources (Slack, etc.)
+
+**Test**
 - **test-support** — Shared test fixtures and helpers (not published)
 
 ### Key Runtime Flow
@@ -102,19 +134,15 @@ Other fixtures (stream-js-tool, stream-baml-tool, conversational-context-auto, e
 
 ### Test-Gating Feature Flags
 
-- `llm-tests` — LLM-dependent tests requiring API keys; run nightly in `llm-smoke.yml`
-- `http-tools` — HTTP-dependent tools (ClickUp, Notion); tested separately in CI
+- `llm-tests` — LLM-dependent tests requiring API keys (on baml-rt, baml-agent-runner, task-daemon)
+- `http-tools` — HTTP-dependent tools (ClickUp, Notion, Slack; on baml-rt-tools, baml-rt-builder, baml-agent-runner)
 
 ## CI Structure
 
-Three parallel jobs in `rust-ci.yml` (push/PR to main):
+Single job in `rust-ci.yml` (push/PR to main, plus manual dispatch):
 
-1. **cargo-test (light)** — `baml-rt-core`, `baml-rt-id`, `baml-rt-observability`, `baml-derive-tests`
-2. **cargo-test-heavy (serial, -j 1)** — Remaining workspace crates, http-tools tests, baml-rt-a2a
-
-Nightly `llm-smoke.yml` runs `--features llm-tests` on a cron schedule.
-
-All jobs use sccache (GHA backend) + rust-cache with shared key.
+- **nextest (workspace)** — `cargo nextest run --workspace --locked --profile ci` with all feature flags enabled (`http-tools`, `llm-tests`, `memory`). Uses rust-cache with shared key `ci-nextest`. JUnit report published via `mikepenz/action-junit-report`. Secrets written to `fnox.toml` from GitHub secrets.
+- Toolchain: stable for build/test, nightly for `cargo fmt --check` only.
 
 ## Testing Conventions
 
@@ -141,7 +169,6 @@ All jobs use sccache (GHA backend) + rust-cache with shared key.
 
 ## External Dependencies
 
-- **BAML runtime**: pinned git rev from BoundaryML/baml
-- **OXC**: TypeScript parsing/compilation (oxc_parser, oxc_codegen, oxc_transformer, oxc_semantic)
+- **BAML runtime**: git dependency from `ryan-s-roberts/baml` (`canary` branch); `baml-runtime`, `baml-types`, `internal-baml-core`, `internal-llm-client`
 - **QuickJS**: `quickjs_runtime` crate for JS execution
 - **GraphQLite**: SQLite extension for Cypher-backed provenance graph
