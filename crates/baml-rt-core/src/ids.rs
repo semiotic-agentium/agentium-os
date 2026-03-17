@@ -92,6 +92,27 @@ define_id_type!(
     PlanStepId
 );
 
+/// Deterministic parts used to mint temporal-wire-format ids from digest input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DigestIdParts {
+    upper: u64,
+    lower: u64,
+}
+
+impl DigestIdParts {
+    pub const fn new(upper: u64, lower: u64) -> Self {
+        Self { upper, lower }
+    }
+
+    pub const fn upper(self) -> u64 {
+        self.upper
+    }
+
+    pub const fn lower(self) -> u64 {
+        self.lower
+    }
+}
+
 impl MessageId {
     pub fn from_external(id: ExternalId) -> Self {
         Self(id.into_string())
@@ -113,6 +134,16 @@ impl ContextId {
         Self(TemporalId::new("ctx", millis, counter).into_string())
     }
 
+    /// Uses the `ctx-<u64>-<u64>` wire format with deterministic digest parts
+    /// rather than wall-clock millis/counters. This intentionally shares the
+    /// normal context-id wire format; callers that care about provenance origin
+    /// should rely on surrounding metadata rather than the raw id string.
+    pub fn from_digest_parts(parts: DigestIdParts) -> Self {
+        Self(TemporalId::new("ctx", parts.upper(), parts.lower()).into_string())
+    }
+
+    /// Parses the `ctx-<u64>-<u64>` wire format regardless of whether the
+    /// numeric parts originated from wall-clock values or digest-derived ids.
     pub fn parse_temporal(raw: &str) -> Option<Self> {
         let rest = raw.strip_prefix("ctx-")?;
         let mut parts = rest.splitn(2, '-');
@@ -127,6 +158,17 @@ impl CorrelationId {
         Self(TemporalId::new("corr", millis, counter).into_string())
     }
 
+    /// Uses the `corr-<u64>-<u64>` wire format with deterministic digest parts
+    /// rather than wall-clock millis/counters. This intentionally shares the
+    /// normal correlation-id wire format; callers that care about provenance
+    /// origin should rely on surrounding metadata rather than the raw id
+    /// string.
+    pub fn from_digest_parts(parts: DigestIdParts) -> Self {
+        Self(TemporalId::new("corr", parts.upper(), parts.lower()).into_string())
+    }
+
+    /// Parses the `corr-<u64>-<u64>` wire format regardless of whether the
+    /// numeric parts originated from wall-clock values or digest-derived ids.
     pub fn parse_temporal(raw: &str) -> Option<Self> {
         let rest = raw.strip_prefix("corr-")?;
         let mut parts = rest.splitn(2, '-');
@@ -244,6 +286,22 @@ mod tests {
 
     fn id_strategy() -> impl Strategy<Value = String> {
         "[a-z][a-z0-9\\-]{0,20}".prop_map(|s| s)
+    }
+
+    #[test]
+    fn digest_id_parts_share_temporal_wire_format() {
+        let parts = DigestIdParts::new(42, 7);
+
+        let context = ContextId::from_digest_parts(parts);
+        let correlation = CorrelationId::from_digest_parts(parts);
+
+        assert_eq!(context.as_str(), "ctx-42-7");
+        assert_eq!(correlation.as_str(), "corr-42-7");
+        assert_eq!(ContextId::parse_temporal(context.as_str()), Some(context));
+        assert_eq!(
+            CorrelationId::parse_temporal(correlation.as_str()),
+            Some(correlation)
+        );
     }
 
     proptest! {

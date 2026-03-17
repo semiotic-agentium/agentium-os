@@ -28,6 +28,8 @@ pub struct SourcePoll {
     pub source_label: String,
     /// Number of source items scanned during this poll cycle.
     pub source_items_scanned: usize,
+    /// Stable per-poll cursor/fingerprint used to root provenance and event ids.
+    source_cursor: Option<String>,
     payload: SourcePollPayload,
 }
 
@@ -55,6 +57,7 @@ impl SourcePoll {
             source_key,
             source_label,
             source_items_scanned,
+            source_cursor: slack_source_cursor(&messages),
             payload: SourcePollPayload::Slack { messages },
         }
     }
@@ -70,6 +73,7 @@ impl SourcePoll {
             source_key,
             source_label,
             source_items_scanned,
+            source_cursor: clickup_source_cursor(&inferred_tasks),
             payload: SourcePollPayload::Clickup { inferred_tasks },
         }
     }
@@ -95,6 +99,10 @@ impl SourcePoll {
         }
     }
 
+    pub(crate) fn source_cursor(&self) -> Option<&str> {
+        self.source_cursor.as_deref()
+    }
+
     fn into_parts(self) -> (String, String, usize, SourcePollPayload) {
         (
             self.source_key,
@@ -112,6 +120,38 @@ impl SourcePollPayload {
             Self::Clickup { .. } => TaskSourceKind::Clickup,
         }
     }
+}
+
+fn slack_source_cursor(messages: &[SlackMessage]) -> Option<String> {
+    let first = messages.first()?;
+    let last = messages.last()?;
+    // Keep both endpoints even when they are equal so a one-message poll is
+    // distinguishable from a wider window that happens to share the same first
+    // timestamp.
+    Some(format!("slack:{}:{}:{}", first.ts, last.ts, messages.len()))
+}
+
+fn clickup_source_cursor(inferred_tasks: &[InvestigationTask]) -> Option<String> {
+    if inferred_tasks.is_empty() {
+        return None;
+    }
+
+    const CURSOR_KEY_SEPARATOR: &str = "\u{1f}";
+
+    // Sort stable task keys so the same external ClickUp change mints the same
+    // provenance root across retries. If a task key changes (for example a
+    // lifecycle revision suffix changes), that is treated as a new event. Use
+    // an unambiguous separator so unexpected punctuation inside a key does not
+    // collapse distinct task sets onto the same cursor. Deduplicate after
+    // sorting so repeated task keys in one poll window do not bloat the
+    // cursor or perturb retries.
+    let mut task_keys = inferred_tasks
+        .iter()
+        .map(|task| task.key.as_str())
+        .collect::<Vec<_>>();
+    task_keys.sort_unstable();
+    task_keys.dedup();
+    Some(format!("clickup:{}", task_keys.join(CURSOR_KEY_SEPARATOR)))
 }
 
 #[async_trait]
@@ -626,6 +666,83 @@ mod tests {
         assert_eq!(poll.source_kind(), TaskSourceKind::Clickup);
         assert_eq!(poll.inferred_tasks().len(), 1);
         assert!(poll.messages().is_empty());
+    }
+
+    #[test]
+    fn clickup_source_cursor_uses_unambiguous_separator() {
+        let first_poll = SourcePoll::clickup(
+            "clickup:L1".to_string(),
+            "clickup:list:L1".to_string(),
+            vec![
+                InvestigationTask {
+                    key: "a,b".to_string(),
+                    title: "first".to_string(),
+                    description: "first".to_string(),
+                    priority: crate::model::TaskConfidence::Medium,
+                    sources: Vec::new(),
+                },
+                InvestigationTask {
+                    key: "c".to_string(),
+                    title: "second".to_string(),
+                    description: "second".to_string(),
+                    priority: crate::model::TaskConfidence::Medium,
+                    sources: Vec::new(),
+                },
+            ],
+            2,
+        );
+        let second_poll = SourcePoll::clickup(
+            "clickup:L1".to_string(),
+            "clickup:list:L1".to_string(),
+            vec![
+                InvestigationTask {
+                    key: "a".to_string(),
+                    title: "first".to_string(),
+                    description: "first".to_string(),
+                    priority: crate::model::TaskConfidence::Medium,
+                    sources: Vec::new(),
+                },
+                InvestigationTask {
+                    key: "b,c".to_string(),
+                    title: "second".to_string(),
+                    description: "second".to_string(),
+                    priority: crate::model::TaskConfidence::Medium,
+                    sources: Vec::new(),
+                },
+            ],
+            2,
+        );
+
+        assert_eq!(first_poll.source_cursor(), Some("clickup:a,b\u{1f}c"));
+        assert_eq!(second_poll.source_cursor(), Some("clickup:a\u{1f}b,c"));
+        assert_ne!(first_poll.source_cursor(), second_poll.source_cursor());
+    }
+
+    #[test]
+    fn clickup_source_cursor_deduplicates_repeated_task_keys() {
+        let poll = SourcePoll::clickup(
+            "clickup:L1".to_string(),
+            "clickup:list:L1".to_string(),
+            vec![
+                InvestigationTask {
+                    key: "dup".to_string(),
+                    title: "first".to_string(),
+                    description: "first".to_string(),
+                    priority: crate::model::TaskConfidence::Medium,
+                    sources: Vec::new(),
+                },
+                InvestigationTask {
+                    key: "dup".to_string(),
+                    title: "second".to_string(),
+                    description: "second".to_string(),
+                    priority: crate::model::TaskConfidence::Medium,
+                    sources: Vec::new(),
+                },
+            ],
+            2,
+        );
+
+        assert_eq!(poll.source_cursor(), Some("clickup:dup"));
     }
 
     #[tokio::test]
