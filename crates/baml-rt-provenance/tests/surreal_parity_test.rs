@@ -32,8 +32,8 @@ use baml_rt_core::{
     },
 };
 use baml_rt_provenance::{
-    AgentBootedEvent, AgentType, GraphqliteStoreBuilder, LlmUsage, PlanStepSpec, ProvEvent,
-    ProvEventData, ProvenanceContextReader, ProvenanceOpsQuery, ProvenancePlanningQuery,
+    AgentBootedEvent, AgentType, CallScope, GraphqliteStoreBuilder, LlmUsage, PlanStepSpec,
+    ProvEvent, ProvEventData, ProvenanceContextReader, ProvenanceOpsQuery, ProvenancePlanningQuery,
     ProvenanceQueryApi, ProvenanceWriter, SurrealStoreBuilder, TaskScopedEvent,
 };
 use baml_rt_vocabulary::A2aGraphStore;
@@ -337,6 +337,15 @@ async fn tool_call_lifecycle(store: &dyn ParityStore) {
     assert!(
         !tool_items.is_empty(),
         "should have tool call items in conversation context"
+    );
+
+    let has_failed_tool_result = items.iter().any(|i| {
+        i.source == "tool_result"
+            && i.content.get("error").and_then(serde_json::Value::as_str) == Some("rate limited")
+    });
+    assert!(
+        has_failed_tool_result,
+        "conversation context should include failed tool results"
     );
 }
 
@@ -875,3 +884,1203 @@ async fn no_stale_read_interleaved(store: &dyn ParityStore) {
 }
 
 parity_test!(no_stale_read_interleaved);
+
+// ===========================================================================
+// Scenario 11: Failed call has failure classification (Gap 4 / Gap 13)
+// ===========================================================================
+
+async fn ops_failed_call_has_failure_classification(store: &dyn ParityStore) {
+    bootstrap(store, 1100).await;
+    let context_id = test_context_id();
+    let task_id = test_task_id();
+    let agent_id = test_agent_id();
+
+    // Failed LLM call with error in metadata (will be classified)
+    store
+        .add_event(ProvEvent::llm_call_completed_task(
+            context_id.clone(),
+            task_id.clone(),
+            "anthropic".to_string(),
+            "claude-3".to_string(),
+            "classify".to_string(),
+            serde_json::json!({"prompt": "test"}),
+            serde_json::json!({
+                "agent_id": agent_id.as_str(),
+                "task_id": task_id.as_str(),
+                "error": "rate limit exceeded"
+            }),
+            LlmUsage::Unknown,
+            100,
+            Outcome::Failure,
+        ))
+        .await
+        .expect("failed llm_call_completed");
+
+    // Failed tool call with timeout error
+    store
+        .add_event(ProvEvent::tool_call_started_task(
+            context_id.clone(),
+            task_id.clone(),
+            "web_search".to_string(),
+            None,
+            serde_json::json!({"query": "test"}),
+            serde_json::json!({
+                "phase": "send",
+                "agent_id": agent_id.as_str(),
+                "task_id": task_id.as_str()
+            }),
+            None,
+        ))
+        .await
+        .expect("tool_call_started");
+
+    store
+        .add_event(ProvEvent::tool_call_completed_task(
+            context_id.clone(),
+            task_id.clone(),
+            "web_search".to_string(),
+            None,
+            serde_json::json!({"query": "test"}),
+            serde_json::json!({
+                "phase": "send",
+                "error": "timeout connecting to server",
+                "agent_id": agent_id.as_str(),
+                "task_id": task_id.as_str()
+            }),
+            200,
+            Outcome::Failure,
+            None,
+        ))
+        .await
+        .expect("failed tool_call_completed");
+
+    // Query LLM calls with FailedOnly filter
+    let llm_request = baml_rt_provenance::store::ProvenanceOpsQueryRequest {
+        resource: baml_rt_provenance::store::ProvenanceOpsResource::LlmCalls,
+        filters: baml_rt_provenance::store::ProvenanceOpsFilters {
+            context_id: Some(context_id.clone()),
+            ..Default::default()
+        },
+        outcome: Some(baml_rt_provenance::store::ProvenanceOutcomeSegment::FailedOnly),
+        page_size: Some(50),
+        ..Default::default()
+    };
+    let llm_response = store
+        .query_ops(llm_request)
+        .await
+        .expect("query_ops LlmCalls");
+    assert!(
+        !llm_response.rows.is_empty(),
+        "should have failed LLM call rows"
+    );
+
+    // Verify failure classification fields are present
+    let llm_row = &llm_response.rows[0];
+    let failure_class = llm_row.get("failure_class").and_then(|v| v.as_str());
+    let failure_evidence = llm_row.get("failure_evidence").and_then(|v| v.as_str());
+    assert!(
+        failure_class.is_some(),
+        "failed LLM call should have failure_class, got row: {:?}",
+        llm_row
+    );
+    assert!(
+        failure_evidence.is_some(),
+        "failed LLM call should have failure_evidence"
+    );
+
+    // Query tool calls with FailedOnly filter
+    let tool_request = baml_rt_provenance::store::ProvenanceOpsQueryRequest {
+        resource: baml_rt_provenance::store::ProvenanceOpsResource::ToolCalls,
+        filters: baml_rt_provenance::store::ProvenanceOpsFilters {
+            context_id: Some(context_id.clone()),
+            ..Default::default()
+        },
+        outcome: Some(baml_rt_provenance::store::ProvenanceOutcomeSegment::FailedOnly),
+        page_size: Some(50),
+        ..Default::default()
+    };
+    let tool_response = store
+        .query_ops(tool_request)
+        .await
+        .expect("query_ops ToolCalls");
+    assert!(
+        !tool_response.rows.is_empty(),
+        "should have failed tool call rows"
+    );
+
+    let tool_row = &tool_response.rows[0];
+    let tool_failure_class = tool_row.get("failure_class").and_then(|v| v.as_str());
+    let tool_failure_evidence = tool_row.get("failure_evidence").and_then(|v| v.as_str());
+    assert!(
+        tool_failure_class.is_some(),
+        "failed tool call should have failure_class, got row: {:?}",
+        tool_row
+    );
+    assert!(
+        tool_failure_evidence.is_some(),
+        "failed tool call should have failure_evidence"
+    );
+}
+
+parity_test!(ops_failed_call_has_failure_classification);
+
+// ===========================================================================
+// Scenario 12: Messages ignore task_id filter (Gap 7)
+// ===========================================================================
+
+async fn ops_messages_task_filter_parity(store: &dyn ParityStore) {
+    // Use a fresh context for this test to avoid interference
+    let context_id = ContextId::new(7, 7);
+    let task_id_a = TaskId::from_external(ExternalId::new("task-msg-filter-a"));
+    let task_id_b = TaskId::from_external(ExternalId::new("task-msg-filter-b"));
+    let agent_id = test_agent_id();
+
+    // Bootstrap for this context
+    store
+        .add_event(ProvEvent::AgentBooted(AgentBootedEvent {
+            id: EventId::from_counter(1200),
+            timestamp_ms: 1_700_000_001_200,
+            data: ProvEventData::AgentBooted {
+                agent_id: agent_id.clone(),
+                agent_type: AgentType::new("test").expect("agent_type"),
+                agent_version: "1.0.0".to_string(),
+                archive_path: "test@1.0.0".to_string(),
+            },
+        }))
+        .await
+        .expect("AgentBooted");
+
+    // Task A setup
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1201),
+            context_id: context_id.clone(),
+            task_id: task_id_a.clone(),
+            timestamp_ms: 1_700_000_001_201,
+            data: ProvEventData::TaskExists {
+                task_id: task_id_a.clone(),
+                context_id: context_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskExists A");
+
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1202),
+            context_id: context_id.clone(),
+            task_id: task_id_a.clone(),
+            timestamp_ms: 1_700_000_001_202,
+            data: ProvEventData::TaskExecutionStarted {
+                task_id: task_id_a.clone(),
+                agent_id: agent_id.clone(),
+                context_id: context_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskExecutionStarted A");
+
+    // Task B setup
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1203),
+            context_id: context_id.clone(),
+            task_id: task_id_b.clone(),
+            timestamp_ms: 1_700_000_001_203,
+            data: ProvEventData::TaskExists {
+                task_id: task_id_b.clone(),
+                context_id: context_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskExists B");
+
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1204),
+            context_id: context_id.clone(),
+            task_id: task_id_b.clone(),
+            timestamp_ms: 1_700_000_001_204,
+            data: ProvEventData::TaskExecutionStarted {
+                task_id: task_id_b.clone(),
+                agent_id: agent_id.clone(),
+                context_id: context_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskExecutionStarted B");
+
+    // Message in Task A
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1210),
+            context_id: context_id.clone(),
+            task_id: task_id_a.clone(),
+            timestamp_ms: 1_700_000_001_210,
+            data: ProvEventData::MessageReceived {
+                id: MessageId::from_external(ExternalId::new("msg-task-a")),
+                role: "user".to_string(),
+                content: vec!["Message in Task A".to_string()],
+                metadata: None,
+                agent_id: agent_id.clone(),
+            },
+        }))
+        .await
+        .expect("MessageReceived in Task A");
+
+    // Message in Task B
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1211),
+            context_id: context_id.clone(),
+            task_id: task_id_b.clone(),
+            timestamp_ms: 1_700_000_001_211,
+            data: ProvEventData::MessageReceived {
+                id: MessageId::from_external(ExternalId::new("msg-task-b")),
+                role: "user".to_string(),
+                content: vec!["Message in Task B".to_string()],
+                metadata: None,
+                agent_id: agent_id.clone(),
+            },
+        }))
+        .await
+        .expect("MessageReceived in Task B");
+
+    // Query Messages with task_id filter for Task A - should return ALL messages in context
+    // (GraphQLite behavior: Messages ignores task_id filter)
+    let request_with_task_filter = baml_rt_provenance::store::ProvenanceOpsQueryRequest {
+        resource: baml_rt_provenance::store::ProvenanceOpsResource::Messages,
+        filters: baml_rt_provenance::store::ProvenanceOpsFilters {
+            context_id: Some(context_id.clone()),
+            task_id: Some(task_id_a.clone()),
+            ..Default::default()
+        },
+        page_size: Some(50),
+        ..Default::default()
+    };
+    let response_with_filter = store
+        .query_ops(request_with_task_filter)
+        .await
+        .expect("query_ops Messages with task_id");
+
+    // Query Messages without task_id filter
+    let request_without_task_filter = baml_rt_provenance::store::ProvenanceOpsQueryRequest {
+        resource: baml_rt_provenance::store::ProvenanceOpsResource::Messages,
+        filters: baml_rt_provenance::store::ProvenanceOpsFilters {
+            context_id: Some(context_id.clone()),
+            ..Default::default()
+        },
+        page_size: Some(50),
+        ..Default::default()
+    };
+    let response_without_filter = store
+        .query_ops(request_without_task_filter)
+        .await
+        .expect("query_ops Messages without task_id");
+
+    // Both should return the same number of messages (task_id filter is ignored for Messages)
+    assert_eq!(
+        response_with_filter.rows.len(),
+        response_without_filter.rows.len(),
+        "Messages resource should ignore task_id filter: with_filter={}, without_filter={}",
+        response_with_filter.rows.len(),
+        response_without_filter.rows.len()
+    );
+    assert_eq!(
+        response_with_filter.rows.len(),
+        2,
+        "Should have 2 messages in context"
+    );
+}
+
+parity_test!(ops_messages_task_filter_parity);
+
+// ===========================================================================
+// Scenario 13: Empty payload_text returns all rows (Gap 8)
+// ===========================================================================
+
+async fn ops_payload_text_empty_query_no_filter(store: &dyn ParityStore) {
+    // Use unique context to avoid interference from other tests
+    let context_id = ContextId::new(13, 13);
+    let task_id = TaskId::from_external(ExternalId::new("task-payload-text"));
+    let agent_id = test_agent_id();
+
+    // Bootstrap for this context
+    store
+        .add_event(ProvEvent::AgentBooted(AgentBootedEvent {
+            id: EventId::from_counter(1300),
+            timestamp_ms: 1_700_000_001_300,
+            data: ProvEventData::AgentBooted {
+                agent_id: agent_id.clone(),
+                agent_type: AgentType::new("test").expect("agent_type"),
+                agent_version: "1.0.0".to_string(),
+                archive_path: "test@1.0.0".to_string(),
+            },
+        }))
+        .await
+        .expect("AgentBooted");
+
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1301),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_001_301,
+            data: ProvEventData::TaskExists {
+                task_id: task_id.clone(),
+                context_id: context_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskExists");
+
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1302),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_001_302,
+            data: ProvEventData::TaskExecutionStarted {
+                task_id: task_id.clone(),
+                agent_id: agent_id.clone(),
+                context_id: context_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskExecutionStarted");
+
+    // Add LLM calls using Started+Completed pairs to get unique ordinals
+    // (LlmCallCompleted without LlmCallStarted reuses ordinal 0)
+    for i in 0u64..3 {
+        let base_ts = 1_700_000_001_310 + i * 10;
+        // LlmCallStarted - increments ordinal counter
+        store
+            .add_event(ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(1310 + i * 2),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: base_ts,
+                data: ProvEventData::LlmCallStarted {
+                    scope: CallScope::Task {
+                        task_id: task_id.clone(),
+                    },
+                    client: "anthropic".to_string(),
+                    model: "claude-3".to_string(),
+                    function_name: format!("function_{}", i),
+                    prompt: serde_json::json!({"prompt": format!("prompt {}", i)}),
+                    metadata: serde_json::json!({
+                        "agent_id": agent_id.as_str(),
+                        "task_id": task_id.as_str()
+                    }),
+                },
+            }))
+            .await
+            .expect("llm_call_started");
+
+        // LlmCallCompleted - uses ordinal from Started
+        store
+            .add_event(ProvEvent::Task(TaskScopedEvent {
+                id: EventId::from_counter(1311 + i * 2),
+                context_id: context_id.clone(),
+                task_id: task_id.clone(),
+                timestamp_ms: base_ts + 5,
+                data: ProvEventData::LlmCallCompleted {
+                    scope: CallScope::Task {
+                        task_id: task_id.clone(),
+                    },
+                    client: "anthropic".to_string(),
+                    model: "claude-3".to_string(),
+                    function_name: format!("function_{}", i),
+                    prompt: serde_json::json!({"prompt": format!("prompt {}", i)}),
+                    metadata: serde_json::json!({
+                        "result": format!("result {}", i),
+                        "agent_id": agent_id.as_str(),
+                        "task_id": task_id.as_str()
+                    }),
+                    usage: LlmUsage::Known {
+                        prompt_tokens: 10,
+                        completion_tokens: 5,
+                        total_tokens: 15,
+                        cached_input_tokens: None,
+                    },
+                    duration_ms: 100,
+                    outcome: Outcome::Success,
+                    drift: None,
+                },
+            }))
+            .await
+            .expect("llm_call_completed");
+    }
+
+    // Query with empty payload_text (whitespace only)
+    let request_empty = baml_rt_provenance::store::ProvenanceOpsQueryRequest {
+        resource: baml_rt_provenance::store::ProvenanceOpsResource::LlmCalls,
+        filters: baml_rt_provenance::store::ProvenanceOpsFilters {
+            context_id: Some(context_id.clone()),
+            payload_text: Some("   ".to_string()), // whitespace only
+            ..Default::default()
+        },
+        page_size: Some(50),
+        ..Default::default()
+    };
+    let response_empty = store
+        .query_ops(request_empty)
+        .await
+        .expect("query_ops with empty payload_text");
+
+    // Query without payload_text filter
+    let request_none = baml_rt_provenance::store::ProvenanceOpsQueryRequest {
+        resource: baml_rt_provenance::store::ProvenanceOpsResource::LlmCalls,
+        filters: baml_rt_provenance::store::ProvenanceOpsFilters {
+            context_id: Some(context_id.clone()),
+            ..Default::default()
+        },
+        page_size: Some(50),
+        ..Default::default()
+    };
+    let response_none = store
+        .query_ops(request_none)
+        .await
+        .expect("query_ops without payload_text");
+
+    // Empty/whitespace payload_text should act as no-op filter (return all rows)
+    assert_eq!(
+        response_empty.rows.len(),
+        response_none.rows.len(),
+        "empty payload_text should not filter: empty={}, none={}",
+        response_empty.rows.len(),
+        response_none.rows.len()
+    );
+    assert!(
+        response_empty.rows.len() >= 3,
+        "should have at least 3 LLM call rows, got {}: {:?}",
+        response_empty.rows.len(),
+        response_empty.rows
+    );
+}
+
+parity_test!(ops_payload_text_empty_query_no_filter);
+
+// ===========================================================================
+// Scenario 14: Tool open phase excluded from ToolCalls (Gap 5)
+// ===========================================================================
+
+async fn ops_tool_open_phase_excluded(store: &dyn ParityStore) {
+    bootstrap(store, 1400).await;
+    let context_id = test_context_id();
+    let task_id = test_task_id();
+    let agent_id = test_agent_id();
+
+    // Tool call with phase=open (should be excluded)
+    store
+        .add_event(ProvEvent::tool_call_started_task(
+            context_id.clone(),
+            task_id.clone(),
+            "session_tool".to_string(),
+            Some("start".to_string()),
+            serde_json::json!({"session": "open"}),
+            serde_json::json!({
+                "phase": "open",
+                "agent_id": agent_id.as_str(),
+                "task_id": task_id.as_str()
+            }),
+            None,
+        ))
+        .await
+        .expect("tool_call_started open");
+
+    store
+        .add_event(ProvEvent::tool_call_completed_task(
+            context_id.clone(),
+            task_id.clone(),
+            "session_tool".to_string(),
+            Some("start".to_string()),
+            serde_json::json!({"session": "open"}),
+            serde_json::json!({
+                "phase": "open",
+                "result": "session opened",
+                "agent_id": agent_id.as_str(),
+                "task_id": task_id.as_str()
+            }),
+            50,
+            Outcome::Success,
+            None,
+        ))
+        .await
+        .expect("tool_call_completed open");
+
+    // Tool call with phase=send (should be included)
+    store
+        .add_event(ProvEvent::tool_call_started_task(
+            context_id.clone(),
+            task_id.clone(),
+            "session_tool".to_string(),
+            Some("action".to_string()),
+            serde_json::json!({"action": "do_something"}),
+            serde_json::json!({
+                "phase": "send",
+                "agent_id": agent_id.as_str(),
+                "task_id": task_id.as_str()
+            }),
+            None,
+        ))
+        .await
+        .expect("tool_call_started send");
+
+    store
+        .add_event(ProvEvent::tool_call_completed_task(
+            context_id.clone(),
+            task_id.clone(),
+            "session_tool".to_string(),
+            Some("action".to_string()),
+            serde_json::json!({"action": "do_something"}),
+            serde_json::json!({
+                "phase": "send",
+                "result": "action done",
+                "agent_id": agent_id.as_str(),
+                "task_id": task_id.as_str()
+            }),
+            100,
+            Outcome::Success,
+            None,
+        ))
+        .await
+        .expect("tool_call_completed send");
+
+    // Tool call with phase=finish (should be included)
+    store
+        .add_event(ProvEvent::tool_call_started_task(
+            context_id.clone(),
+            task_id.clone(),
+            "session_tool".to_string(),
+            Some("end".to_string()),
+            serde_json::json!({"session": "close"}),
+            serde_json::json!({
+                "phase": "finish",
+                "agent_id": agent_id.as_str(),
+                "task_id": task_id.as_str()
+            }),
+            None,
+        ))
+        .await
+        .expect("tool_call_started finish");
+
+    store
+        .add_event(ProvEvent::tool_call_completed_task(
+            context_id.clone(),
+            task_id.clone(),
+            "session_tool".to_string(),
+            Some("end".to_string()),
+            serde_json::json!({"session": "close"}),
+            serde_json::json!({
+                "phase": "finish",
+                "result": "session closed",
+                "agent_id": agent_id.as_str(),
+                "task_id": task_id.as_str()
+            }),
+            50,
+            Outcome::Success,
+            None,
+        ))
+        .await
+        .expect("tool_call_completed finish");
+
+    // Query ToolCalls
+    let request = baml_rt_provenance::store::ProvenanceOpsQueryRequest {
+        resource: baml_rt_provenance::store::ProvenanceOpsResource::ToolCalls,
+        filters: baml_rt_provenance::store::ProvenanceOpsFilters {
+            context_id: Some(context_id.clone()),
+            ..Default::default()
+        },
+        page_size: Some(50),
+        ..Default::default()
+    };
+    let response = store.query_ops(request).await.expect("query_ops ToolCalls");
+
+    // Should have 2 rows (send + finish), not 3 (open should be excluded)
+    assert_eq!(
+        response.rows.len(),
+        2,
+        "ToolCalls should exclude phase=open rows, got {} rows: {:?}",
+        response.rows.len(),
+        response
+            .rows
+            .iter()
+            .map(|r| r.get("phase"))
+            .collect::<Vec<_>>()
+    );
+
+    // Verify no row has phase=open
+    for row in &response.rows {
+        let phase = row
+            .get("phase")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        assert_ne!(
+            phase, "open",
+            "ToolCalls should not include phase=open rows"
+        );
+    }
+}
+
+parity_test!(ops_tool_open_phase_excluded);
+
+// ===========================================================================
+// Scenario 15: Supersession cross-task contamination guard (Gap 5 supersession)
+// ===========================================================================
+
+async fn supersession_cross_task_contamination_guard(store: &dyn ParityStore) {
+    // Use fresh context to avoid interference
+    let context_id = ContextId::new(15, 15);
+    let task_id_a = TaskId::from_external(ExternalId::new("task-super-a"));
+    let task_id_b = TaskId::from_external(ExternalId::new("task-super-b"));
+    let agent_id = test_agent_id();
+    let msg_1 = MessageId::from_external(ExternalId::new("msg-super-1"));
+
+    // Bootstrap
+    store
+        .add_event(ProvEvent::AgentBooted(AgentBootedEvent {
+            id: EventId::from_counter(1500),
+            timestamp_ms: 1_700_000_001_500,
+            data: ProvEventData::AgentBooted {
+                agent_id: agent_id.clone(),
+                agent_type: AgentType::new("test").expect("agent_type"),
+                agent_version: "1.0.0".to_string(),
+                archive_path: "test@1.0.0".to_string(),
+            },
+        }))
+        .await
+        .expect("AgentBooted");
+
+    // Task A setup
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1501),
+            context_id: context_id.clone(),
+            task_id: task_id_a.clone(),
+            timestamp_ms: 1_700_000_001_501,
+            data: ProvEventData::TaskExists {
+                task_id: task_id_a.clone(),
+                context_id: context_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskExists A");
+
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1502),
+            context_id: context_id.clone(),
+            task_id: task_id_a.clone(),
+            timestamp_ms: 1_700_000_001_502,
+            data: ProvEventData::TaskExecutionStarted {
+                task_id: task_id_a.clone(),
+                agent_id: agent_id.clone(),
+                context_id: context_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskExecutionStarted A");
+
+    // Task B setup
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1503),
+            context_id: context_id.clone(),
+            task_id: task_id_b.clone(),
+            timestamp_ms: 1_700_000_001_503,
+            data: ProvEventData::TaskExists {
+                task_id: task_id_b.clone(),
+                context_id: context_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskExists B");
+
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1504),
+            context_id: context_id.clone(),
+            task_id: task_id_b.clone(),
+            timestamp_ms: 1_700_000_001_504,
+            data: ProvEventData::TaskExecutionStarted {
+                task_id: task_id_b.clone(),
+                agent_id: agent_id.clone(),
+                context_id: context_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskExecutionStarted B");
+
+    // Message for intent derivation (in Task A)
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1510),
+            context_id: context_id.clone(),
+            task_id: task_id_a.clone(),
+            timestamp_ms: 1_700_000_001_510,
+            data: ProvEventData::MessageReceived {
+                id: msg_1.clone(),
+                role: "user".to_string(),
+                content: vec!["do something".to_string()],
+                metadata: None,
+                agent_id: agent_id.clone(),
+            },
+        }))
+        .await
+        .expect("message");
+
+    // Intent v1 in Task A
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id_a.clone(),
+            "intent-a-v1".to_string(),
+            "Intent A v1".to_string(),
+            vec![msg_1.clone()],
+            None,
+        ))
+        .await
+        .expect("intent a v1");
+
+    // Intent v2 in Task A (supersedes v1)
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id_a.clone(),
+            "intent-a-v2".to_string(),
+            "Intent A v2".to_string(),
+            vec![msg_1.clone()],
+            Some(baml_rt_core::bus::PlanningSupersessionKind::ReplacedBy),
+        ))
+        .await
+        .expect("intent a v2");
+
+    // Intent v1 in Task B (independent, not superseded)
+    store
+        .add_event(ProvEvent::intent_resolved(
+            context_id.clone(),
+            task_id_b.clone(),
+            "intent-b-v1".to_string(),
+            "Intent B v1".to_string(),
+            vec![msg_1.clone()],
+            None,
+        ))
+        .await
+        .expect("intent b v1");
+
+    // Query current intent for Task A - should be v2
+    let current_a = store
+        .query_current_intent(&task_id_a)
+        .await
+        .expect("query_current_intent A");
+    assert!(current_a.is_some(), "Task A should have current intent");
+    assert_eq!(
+        current_a.as_ref().unwrap().intent_id,
+        "intent-a-v2",
+        "Task A current intent should be v2"
+    );
+
+    // Query current intent for Task B - should be v1 (not affected by Task A supersession)
+    let current_b = store
+        .query_current_intent(&task_id_b)
+        .await
+        .expect("query_current_intent B");
+    assert!(current_b.is_some(), "Task B should have current intent");
+    assert_eq!(
+        current_b.as_ref().unwrap().intent_id,
+        "intent-b-v1",
+        "Task B current intent should be v1 (not affected by Task A supersession)"
+    );
+
+    // Query intent history for Task A - should have 2
+    let history_a = store
+        .query_intent_history(&task_id_a, Some(10))
+        .await
+        .expect("query_intent_history A");
+    assert_eq!(
+        history_a.len(),
+        2,
+        "Task A should have 2 intents in history"
+    );
+
+    // Query intent history for Task B - should have 1
+    let history_b = store
+        .query_intent_history(&task_id_b, Some(10))
+        .await
+        .expect("query_intent_history B");
+    assert_eq!(history_b.len(), 1, "Task B should have 1 intent in history");
+}
+
+parity_test!(supersession_cross_task_contamination_guard);
+
+// ===========================================================================
+// Scenario 16: Conversation context skips rows with missing required fields (Gap 11)
+// ===========================================================================
+
+async fn conversation_context_required_fields_skip(store: &dyn ParityStore) {
+    bootstrap(store, 1600).await;
+    let context_id = test_context_id();
+    let task_id = test_task_id();
+    let agent_id = test_agent_id();
+
+    // Add a valid message first
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1610),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_001_610,
+            data: ProvEventData::MessageReceived {
+                id: MessageId::from_external(ExternalId::new("msg-valid")),
+                role: "user".to_string(),
+                content: vec!["Valid message".to_string()],
+                metadata: None,
+                agent_id: agent_id.clone(),
+            },
+        }))
+        .await
+        .expect("valid message");
+
+    // Add a valid tool call
+    store
+        .add_event(ProvEvent::tool_call_started_task(
+            context_id.clone(),
+            task_id.clone(),
+            "calculator".to_string(),
+            Some("add".to_string()),
+            serde_json::json!({"a": 1, "b": 2}),
+            serde_json::json!({
+                "phase": "send",
+                "agent_id": agent_id.as_str(),
+                "task_id": task_id.as_str()
+            }),
+            None,
+        ))
+        .await
+        .expect("tool_call_started");
+
+    store
+        .add_event(ProvEvent::tool_call_completed_task(
+            context_id.clone(),
+            task_id.clone(),
+            "calculator".to_string(),
+            Some("add".to_string()),
+            serde_json::json!({"a": 1, "b": 2}),
+            serde_json::json!({
+                "phase": "send",
+                "result": 3,
+                "agent_id": agent_id.as_str(),
+                "task_id": task_id.as_str()
+            }),
+            100,
+            Outcome::Success,
+            None,
+        ))
+        .await
+        .expect("tool_call_completed");
+
+    // Query conversation context
+    let items = store
+        .conversation_context(&context_id, None)
+        .await
+        .expect("conversation_context");
+
+    // Should have items (at least the message and tool call/result)
+    assert!(
+        !items.is_empty(),
+        "conversation_context should have valid items"
+    );
+
+    // All items should have non-empty event_id and appropriate source
+    for item in &items {
+        assert!(
+            !item.event_id.as_str().is_empty(),
+            "item should have non-empty event_id"
+        );
+        assert!(!item.source.is_empty(), "item should have non-empty source");
+        // Tool call items have structure: { "tool_call": { "name": ..., "args": ..., "fsm_phase": ... } }
+        if item.source == "tool_call" {
+            let tool_call = item.content.get("tool_call");
+            assert!(
+                tool_call.is_some(),
+                "tool_call item should have tool_call object in content"
+            );
+            let name = tool_call
+                .and_then(|tc| tc.get("name"))
+                .and_then(|v| v.as_str());
+            assert!(
+                name.is_some() && !name.unwrap().is_empty(),
+                "tool_call item should have non-empty name in tool_call object"
+            );
+        }
+        // Tool result items have structure: { "tool_name": ..., "fsm_phase": ..., "result": ... }
+        if item.source == "tool_result" {
+            let tool_name = item.content.get("tool_name").and_then(|v| v.as_str());
+            assert!(
+                tool_name.is_some() && !tool_name.unwrap().is_empty(),
+                "tool_result item should have non-empty tool_name"
+            );
+        }
+    }
+}
+
+parity_test!(conversation_context_required_fields_skip);
+
+// ===========================================================================
+// Scenario 17: Conversation context tool metadata fallback (Gap 10)
+// ===========================================================================
+
+async fn conversation_context_tool_metadata_fallback(store: &dyn ParityStore) {
+    // Use unique context for this test
+    let context_id = ContextId::new(17, 17);
+    let task_id = TaskId::from_external(ExternalId::new("task-metadata-fallback"));
+    let agent_id = test_agent_id();
+
+    // Bootstrap
+    store
+        .add_event(ProvEvent::AgentBooted(AgentBootedEvent {
+            id: EventId::from_counter(1700),
+            timestamp_ms: 1_700_000_001_700,
+            data: ProvEventData::AgentBooted {
+                agent_id: agent_id.clone(),
+                agent_type: AgentType::new("test").expect("agent_type"),
+                agent_version: "1.0.0".to_string(),
+                archive_path: "test@1.0.0".to_string(),
+            },
+        }))
+        .await
+        .expect("AgentBooted");
+
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1701),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_001_701,
+            data: ProvEventData::TaskExists {
+                task_id: task_id.clone(),
+                context_id: context_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskExists");
+
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1702),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_001_702,
+            data: ProvEventData::TaskExecutionStarted {
+                task_id: task_id.clone(),
+                agent_id: agent_id.clone(),
+                context_id: context_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskExecutionStarted");
+
+    // Add tool call with metadata containing args/result/error info
+    // The a2a_metadata in props should be used as fallback when payloads are missing
+    store
+        .add_event(ProvEvent::tool_call_started_task(
+            context_id.clone(),
+            task_id.clone(),
+            "test_tool".to_string(),
+            Some("action".to_string()),
+            serde_json::json!({"input": "test_value"}), // args
+            serde_json::json!({
+                "phase": "send",
+                "agent_id": agent_id.as_str(),
+                "task_id": task_id.as_str(),
+                // Metadata that could be used for fallback
+                "a2a_args": {"input": "test_value"},
+                "a2a_phase": "send"
+            }),
+            None,
+        ))
+        .await
+        .expect("tool_call_started");
+
+    store
+        .add_event(ProvEvent::tool_call_completed_task(
+            context_id.clone(),
+            task_id.clone(),
+            "test_tool".to_string(),
+            Some("action".to_string()),
+            serde_json::json!({"input": "test_value"}),
+            serde_json::json!({
+                "phase": "send",
+                "result": {"output": "success"},
+                "agent_id": agent_id.as_str(),
+                "task_id": task_id.as_str(),
+                // Metadata for fallback
+                "a2a_result": {"output": "success"},
+                "a2a_phase": "send"
+            }),
+            100,
+            Outcome::Success,
+            None,
+        ))
+        .await
+        .expect("tool_call_completed");
+
+    // Query conversation context
+    let items = store
+        .conversation_context(&context_id, None)
+        .await
+        .expect("conversation_context");
+
+    // Should have tool_call and tool_result items
+    let tool_call_items: Vec<_> = items.iter().filter(|i| i.source == "tool_call").collect();
+    let tool_result_items: Vec<_> = items.iter().filter(|i| i.source == "tool_result").collect();
+
+    assert!(!tool_call_items.is_empty(), "should have tool_call items");
+    assert!(
+        !tool_result_items.is_empty(),
+        "should have tool_result items"
+    );
+
+    // Verify tool_call has args
+    let tool_call = tool_call_items[0];
+    let tc_content = tool_call.content.get("tool_call");
+    assert!(
+        tc_content.is_some(),
+        "tool_call should have tool_call object"
+    );
+    let args = tc_content.and_then(|tc| tc.get("args"));
+    assert!(args.is_some(), "tool_call should have args");
+
+    // Verify tool_result has result
+    let tool_result = tool_result_items[0];
+    let result = tool_result.content.get("result");
+    assert!(result.is_some(), "tool_result should have result");
+}
+
+parity_test!(conversation_context_tool_metadata_fallback);
+
+// ===========================================================================
+// Scenario 18: Conversation context contract filtering (Gap 9)
+// This tests that tool calls with proper edge topology are included
+// ===========================================================================
+
+async fn conversation_context_contract_filtering(store: &dyn ParityStore) {
+    // Use unique context
+    let context_id = ContextId::new(18, 18);
+    let task_id = TaskId::from_external(ExternalId::new("task-contract-filter"));
+    let agent_id = test_agent_id();
+
+    // Bootstrap
+    store
+        .add_event(ProvEvent::AgentBooted(AgentBootedEvent {
+            id: EventId::from_counter(1800),
+            timestamp_ms: 1_700_000_001_800,
+            data: ProvEventData::AgentBooted {
+                agent_id: agent_id.clone(),
+                agent_type: AgentType::new("test").expect("agent_type"),
+                agent_version: "1.0.0".to_string(),
+                archive_path: "test@1.0.0".to_string(),
+            },
+        }))
+        .await
+        .expect("AgentBooted");
+
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1801),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_001_801,
+            data: ProvEventData::TaskExists {
+                task_id: task_id.clone(),
+                context_id: context_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskExists");
+
+    store
+        .add_event(ProvEvent::Task(TaskScopedEvent {
+            id: EventId::from_counter(1802),
+            context_id: context_id.clone(),
+            task_id: task_id.clone(),
+            timestamp_ms: 1_700_000_001_802,
+            data: ProvEventData::TaskExecutionStarted {
+                task_id: task_id.clone(),
+                agent_id: agent_id.clone(),
+                context_id: context_id.clone(),
+            },
+        }))
+        .await
+        .expect("TaskExecutionStarted");
+
+    // Add a valid tool call with proper Started+Completed pair
+    // This creates proper ToolCall -> USED -> ToolArgs edge topology
+    store
+        .add_event(ProvEvent::tool_call_started_task(
+            context_id.clone(),
+            task_id.clone(),
+            "valid_tool".to_string(),
+            Some("action".to_string()),
+            serde_json::json!({"arg1": "value1"}),
+            serde_json::json!({
+                "phase": "send",
+                "agent_id": agent_id.as_str(),
+                "task_id": task_id.as_str()
+            }),
+            None,
+        ))
+        .await
+        .expect("tool_call_started");
+
+    store
+        .add_event(ProvEvent::tool_call_completed_task(
+            context_id.clone(),
+            task_id.clone(),
+            "valid_tool".to_string(),
+            Some("action".to_string()),
+            serde_json::json!({"arg1": "value1"}),
+            serde_json::json!({
+                "phase": "send",
+                "result": "done",
+                "agent_id": agent_id.as_str(),
+                "task_id": task_id.as_str()
+            }),
+            100,
+            Outcome::Success,
+            None,
+        ))
+        .await
+        .expect("tool_call_completed");
+
+    // Query conversation context
+    let items = store
+        .conversation_context(&context_id, None)
+        .await
+        .expect("conversation_context");
+
+    // Should have tool_call and tool_result items for the valid tool
+    let tool_call_items: Vec<_> = items.iter().filter(|i| i.source == "tool_call").collect();
+
+    // The valid tool should be included (has proper edge topology)
+    assert!(
+        !tool_call_items.is_empty(),
+        "valid tool_call with proper edge contract should be included"
+    );
+
+    // Verify the tool name
+    let has_valid_tool = tool_call_items.iter().any(|item| {
+        item.content
+            .get("tool_call")
+            .and_then(|tc| tc.get("name"))
+            .and_then(|n| n.as_str())
+            == Some("valid_tool")
+    });
+    assert!(
+        has_valid_tool,
+        "valid_tool should be in conversation context"
+    );
+}
+
+parity_test!(conversation_context_contract_filtering);

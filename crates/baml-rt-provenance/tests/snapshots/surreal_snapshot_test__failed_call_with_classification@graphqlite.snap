@@ -1,0 +1,32 @@
+---
+source: crates/baml-rt-provenance/tests/surreal_snapshot_test.rs
+assertion_line: 493
+expression: result
+---
+{
+  "resource": "LlmCalls",
+  "row_count": 1,
+  "rows": [
+    {
+      "activity_id": "llm_call:ctx-100-100:task-failed-class:00000000-0000-0000-0000-000000000020:0",
+      "context_id": "ctx-100-100",
+      "task_id": "task-failed-class",
+      "agent_id": "00000000-0000-0000-0000-000000000020",
+      "provider": "anthropic",
+      "model": "claude-3",
+      "tool_name": null,
+      "baml_prompt": "classify_intent",
+      "duration_ms": 500,
+      "activity_outcome": "Failed",
+      "activity_status": "Completed",
+      "activity_kind": "llm_call",
+      "phase": null,
+      "failure_class": "failed_graph_incomplete",
+      "failure_evidence": "metadata",
+      "prompt_tokens": null,
+      "completion_tokens": null,
+      "total_tokens": null
+    }
+  ],
+  "truncated": false
+}
