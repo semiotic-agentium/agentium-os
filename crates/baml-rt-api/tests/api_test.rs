@@ -25,8 +25,8 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, EventId, ExternalId, MessageId, UuidId},
 };
 use baml_rt_provenance::{
-    CallScope, GlobalEvent, GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvEventData,
-    ProvenanceOpsQueryRequest, ProvenanceOpsQueryResponse, ProvenanceWriter, events::LlmDriftInfo,
+    GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvenanceOpsQueryRequest,
+    ProvenanceOpsQueryResponse, ProvenanceWriter, events::LlmDriftInfo,
 };
 use futures_util::{StreamExt, stream};
 use opentelemetry::{global, trace::TracerProvider as _};
@@ -389,53 +389,62 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::GraphqliteProvenan
         ))
         .await
         .unwrap();
+    // Explicit timestamps (1, 2) so pagination sorted by timestamp_ms is deterministic.
     store
-        .add_event(ProvEvent::llm_call_completed_global(
-            context.clone(),
-            msg_a.clone(),
-            "openai".to_string(),
-            "gpt-4o-mini".to_string(),
-            "SummarizePrompt".to_string(),
-            serde_json::json!({"input":"hello"}),
-            call_metadata(&agent_a, &msg_a, None),
-            LlmUsage::Known {
-                prompt_tokens: 12,
-                completion_tokens: 8,
-                total_tokens: 20,
-                cached_input_tokens: None,
-            },
-            180,
-            Outcome::Success,
-        ))
+        .add_event(
+            ProvEvent::llm_call_completed_global(
+                context.clone(),
+                msg_a.clone(),
+                "openai".to_string(),
+                "gpt-4o-mini".to_string(),
+                "SummarizePrompt".to_string(),
+                serde_json::json!({"input":"hello"}),
+                call_metadata(&agent_a, &msg_a, None),
+                LlmUsage::Known {
+                    prompt_tokens: 12,
+                    completion_tokens: 8,
+                    total_tokens: 20,
+                    cached_input_tokens: None,
+                },
+                180,
+                Outcome::Success,
+            )
+            .with_event_id(EventId::from_counter(100))
+            .with_timestamp_ms(1),
+        )
         .await
         .unwrap();
     store
-        .add_event(ProvEvent::llm_call_completed_global_with_drift(
-            context.clone(),
-            msg_a.clone(),
-            "openai".to_string(),
-            "gpt-4o-mini".to_string(),
-            "SummarizePrompt".to_string(),
-            serde_json::json!({"input":"hello with drift"}),
-            call_metadata(&agent_a, &msg_a, None),
-            LlmUsage::Known {
-                prompt_tokens: 10,
-                completion_tokens: 7,
-                total_tokens: 17,
-                cached_input_tokens: None,
-            },
-            181,
-            Outcome::Success,
-            Some(LlmDriftInfo {
-                score: 0.618,
-                severity: "warn".to_string(),
-                mode: "audit".to_string(),
-                warn_min_score: 0.5,
-                block_min_score: 0.25,
-                intent_text_preview: "Create a task titled Research".to_string(),
-                response_text_preview: "Create task in list 901325431486".to_string(),
-            }),
-        ))
+        .add_event(
+            ProvEvent::llm_call_completed_global_with_drift(
+                context.clone(),
+                msg_a.clone(),
+                "openai".to_string(),
+                "gpt-4o-mini".to_string(),
+                "SummarizePrompt".to_string(),
+                serde_json::json!({"input":"hello with drift"}),
+                call_metadata(&agent_a, &msg_a, None),
+                LlmUsage::Known {
+                    prompt_tokens: 10,
+                    completion_tokens: 7,
+                    total_tokens: 17,
+                    cached_input_tokens: None,
+                },
+                181,
+                Outcome::Success,
+                Some(LlmDriftInfo {
+                    score: 0.618,
+                    severity: "warn".to_string(),
+                    mode: "audit".to_string(),
+                    warn_min_score: 0.5,
+                    block_min_score: 0.25,
+                    intent_text_preview: "Create a task titled Research".to_string(),
+                    response_text_preview: "Create task in list 901325431486".to_string(),
+                }),
+            )
+            .with_event_id(EventId::from_counter(200))
+            .with_timestamp_ms(2),
+        )
         .await
         .unwrap();
     store
@@ -467,31 +476,28 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::GraphqliteProvenan
         .unwrap();
     let llm_fail_event_id = EventId::from_counter(500);
     store
-        .add_event(ProvEvent::Global(GlobalEvent {
-            id: llm_fail_event_id.clone(),
-            context_id: context.clone(),
-            timestamp_ms: 3,
-            data: ProvEventData::LlmCallCompleted {
-                scope: CallScope::Message {
-                    message_id: msg_b.clone(),
-                },
-                client: "anthropic".to_string(),
-                model: "claude-3-7-sonnet".to_string(),
-                function_name: "DraftPrompt".to_string(),
-                prompt: serde_json::json!({"input":"world"}),
+        .add_event(
+            ProvEvent::llm_call_completed_global(
+                context.clone(),
+                msg_b.clone(),
+                "anthropic".to_string(),
+                "claude-3-7-sonnet".to_string(),
+                "DraftPrompt".to_string(),
+                serde_json::json!({"input":"world"}),
                 // Sparse metadata on purpose: linked PromptRejected should drive class.
-                metadata: call_metadata(&agent_b, &msg_b, None),
-                usage: LlmUsage::Known {
+                call_metadata(&agent_b, &msg_b, None),
+                LlmUsage::Known {
                     prompt_tokens: 20,
                     completion_tokens: 5,
                     total_tokens: 25,
                     cached_input_tokens: None,
                 },
-                duration_ms: 650,
-                outcome: Outcome::Failure,
-                drift: None,
-            },
-        }))
+                650,
+                Outcome::Failure,
+            )
+            .with_event_id(llm_fail_event_id.clone())
+            .with_timestamp_ms(3),
+        )
         .await
         .unwrap();
     store

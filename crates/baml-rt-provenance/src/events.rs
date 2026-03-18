@@ -270,6 +270,24 @@ pub enum ProvEvent {
 }
 
 impl ProvEvent {
+    pub fn with_event_id(mut self, id: EventId) -> Self {
+        match &mut self {
+            ProvEvent::Task(event) => event.id = id.clone(),
+            ProvEvent::Global(event) => event.id = id.clone(),
+            ProvEvent::AgentBooted(event) => event.id = id,
+        }
+        self
+    }
+
+    pub fn with_timestamp_ms(mut self, timestamp_ms: u64) -> Self {
+        match &mut self {
+            ProvEvent::Task(event) => event.timestamp_ms = timestamp_ms,
+            ProvEvent::Global(event) => event.timestamp_ms = timestamp_ms,
+            ProvEvent::AgentBooted(event) => event.timestamp_ms = timestamp_ms,
+        }
+        self
+    }
+
     pub fn id(&self) -> &EventId {
         match self {
             ProvEvent::Task(event) => &event.id,
