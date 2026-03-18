@@ -1,5 +1,5 @@
 /// <reference path="./baml-runtime.d.ts" />
-import type { RunContext, SessionResult } from "./baml-runtime";
+import type { HostDispatchAck, HostDispatchRequest, RunContext, SessionResult } from "./baml-runtime";
 
 type ToolSessionHandle = {
   send(args: Record<string, unknown>): Promise<unknown>;
@@ -85,21 +85,6 @@ type TaskDaemonInterpretationEvent = {
   messages_scanned?: number;
   interpretation: TaskDaemonInterpretation;
   derived_tasks: TaskDaemonDerivedTask[];
-};
-
-type TaskDaemonDispatchRequest = {
-  routing_key: string;
-  message_type: string;
-  messages: unknown[];
-  context_id?: string;
-  task_id?: string;
-  message_id?: string;
-  metadata?: Record<string, unknown>;
-};
-
-type TaskDaemonDispatchAck = {
-  accepted: boolean;
-  detail?: string;
 };
 
 type IntakeDecisionKind =
@@ -600,14 +585,10 @@ function extractInterpretationEvent(
 }
 
 function extractInterpretationEventFromDispatch(
-  request: TaskDaemonDispatchRequest | null | undefined,
+  request: HostDispatchRequest | null | undefined,
 ): TaskDaemonInterpretationEvent | null {
-  if (!request || !Array.isArray(request.messages)) return null;
-  for (const message of request.messages) {
-    const event = parseInterpretationEventValue(message);
-    if (event) return event;
-  }
-  return null;
+  const raw = extractDispatchEvent(request);
+  return raw != null ? parseInterpretationEventValue(raw) : null;
 }
 
 function intakeRoutingKeyForSource(source: TaskDaemonSourceKind): string {
@@ -976,8 +957,8 @@ async function run(ctx: RunContext): Promise<SessionResult> {
 }
 
 async function onDispatch(
-  request: TaskDaemonDispatchRequest,
-): Promise<TaskDaemonDispatchAck> {
+  request: HostDispatchRequest,
+): Promise<HostDispatchAck> {
   const routingKey = normalizeOptionalString(request.routing_key);
   const messageType = normalizeOptionalString(request.message_type);
   if (messageType !== TASK_DAEMON_INTERPRETATION_SCHEMA_VERSION) {
@@ -1024,9 +1005,4 @@ async function onDispatch(
   };
 }
 
-const dispatchGlobal = globalThis as typeof globalThis & {
-  onDispatch?: (request: TaskDaemonDispatchRequest) => Promise<TaskDaemonDispatchAck>;
-};
-dispatchGlobal.onDispatch = onDispatch;
-
-__chat_register({ run });
+__chat_register({ run, onDispatch });

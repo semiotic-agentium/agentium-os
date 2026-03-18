@@ -235,12 +235,37 @@ export interface RunContext {
   emit: SessionEmitter;
 }
 
+/**
+ * Host-to-agent dispatch request. Delivered by the host when an external event
+ * matches this agent's subscriptions. Fields mirror the Rust AgentDispatchRequest.
+ */
+export interface HostDispatchRequest {
+  routing_key: string;
+  message_type: string;
+  messages: JsonValue[];
+  context_id?: string;
+  task_id?: string;
+  message_id?: string;
+  /** Structured transport metadata (source, schema version, content type). Use `messages` for arbitrary event payloads. */
+  metadata?: JsonObject;
+}
+
+/**
+ * Acknowledgement returned by an agent's onDispatch handler.
+ */
+export interface HostDispatchAck {
+  accepted: boolean;
+  detail?: string;
+}
+
 /** Agent contract: register this; host invokes onChatMessage per message. */
 export interface BamlAgent {
   /** Optional: run(ctx) is the entrypoint; runtime wraps it into onChatMessage. Prefer this over onChatMessage. */
   run?(ctx: RunContext): Promise<SessionResult>;
   /** Optional: raw handler when run is not used. */
   onChatMessage?(message: ChatMessage): Promise<void>;
+  /** Optional: handle host-delivered events matched by this agent's subscriptions. */
+  onDispatch?(request: HostDispatchRequest): Promise<HostDispatchAck>;
   tools?: Record<string, (args: JsonObject) => Promise<JsonValue>>;
 }
 
@@ -270,6 +295,11 @@ declare global {
    */
   function session(message: ChatMessage | null | undefined): SessionBuilder;
   function __chat_register(agent: BamlAgent): void;
+  /**
+   * Extract the first payload from a host dispatch request.
+   * Returns the first element of request.messages cast to T, or null if absent.
+   */
+  function extractDispatchEvent<T = JsonValue>(request: HostDispatchRequest | null | undefined): T | null;
   /** Emit a stream chunk following A2A wire format. */
   function __chat_yield(chunk: YieldChunk): void;
   function openA2aTaskSession<I = Record<string, unknown>>(token: string): Promise<A2aSessionAwaitingInput<I>>;
@@ -298,7 +328,7 @@ declare global {
         }
     );
     tokens.line();
-    // tools used only for iteration; binding suppresses unused warning in codegen path
+    // Dispatch types are agent-agnostic; tools parameter reserved for future tool-specific codegen
     let _ = tools;
 
     tokens

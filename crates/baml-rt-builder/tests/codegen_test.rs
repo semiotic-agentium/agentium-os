@@ -586,6 +586,219 @@ async fn test_generated_a2a_shim_aborts_planning_on_run_failure() {
 }
 
 #[test]
+fn test_generated_ts_declarations_include_host_dispatch_types() {
+    let ts_output =
+        baml_rt_tools::ts_gen::render_tool_typescript(&[]).expect("render tool typescript");
+    assert!(
+        ts_output.contains("export interface HostDispatchRequest"),
+        "generated declarations must include HostDispatchRequest"
+    );
+    assert!(
+        ts_output.contains("export interface HostDispatchAck"),
+        "generated declarations must include HostDispatchAck"
+    );
+    assert!(
+        ts_output.contains("onDispatch?(request: HostDispatchRequest): Promise<HostDispatchAck>"),
+        "BamlAgent must include onDispatch member"
+    );
+    assert!(
+        ts_output.contains("function extractDispatchEvent"),
+        "generated declarations must include extractDispatchEvent global"
+    );
+}
+
+#[tokio::test]
+async fn test_generated_a2a_shim_registers_on_dispatch_via_chat_register() {
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000dd01").unwrap());
+    let (mut bridge, _capture) = make_capturing_bridge(agent_id.clone()).await;
+    bridge
+        .eval_sync("globalThis.__chat_yield = function(_chunk) {};")
+        .await
+        .expect("install dummy chat yield host");
+
+    let shim_js = render_a2a_shim().expect("render generated shim");
+    bridge
+        .eval_sync(&shim_js)
+        .await
+        .expect("evaluate generated a2a shim");
+
+    let js = r#"
+      (async function() {
+        var dispatchCalled = false;
+        var receivedRoutingKey = null;
+
+        __chat_register({
+          run: async function(ctx) { return { message: "ok" }; },
+          onDispatch: async function(request) {
+            dispatchCalled = true;
+            receivedRoutingKey = request.routing_key;
+            return { accepted: true, detail: "handled" };
+          }
+        });
+
+        if (typeof globalThis.onDispatch !== "function") {
+          return { error: "onDispatch was not registered on globalThis" };
+        }
+
+        var ack = await globalThis.onDispatch({
+          routing_key: "slack:intake",
+          message_type: "task-daemon.interpretation.v1",
+          messages: [{ schema_version: "task-daemon.interpretation.v1" }]
+        });
+
+        if (!dispatchCalled) {
+          return { error: "onDispatch handler was not called" };
+        }
+        if (receivedRoutingKey !== "slack:intake") {
+          return { error: "routing_key mismatch: " + receivedRoutingKey };
+        }
+        if (!ack.accepted) {
+          return { error: "ack.accepted should be true" };
+        }
+        return { ok: true };
+      })()
+    "#;
+
+    let context_id = ContextId::new(9_001, 1);
+    let message_id = MessageId::from_external(ExternalId::new("msg-dispatch-reg-1"));
+    let task_id = TaskId::from_external(ExternalId::new("task-dispatch-reg-1"));
+    let scope = RuntimeScope::task_scope(context_id, agent_id, message_id, task_id);
+    let invoke_scope = InvocationScope::new(scope.clone());
+
+    let result = context::with_scope(scope, async {
+        bridge
+            .eval_scoped(&invoke_scope, js)
+            .await
+            .expect("run dispatch registration test")
+    })
+    .await;
+    assert_eq!(
+        result.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "dispatch registration test failed: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_generated_a2a_shim_on_dispatch_preserves_this() {
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000dd03").unwrap());
+    let (mut bridge, _capture) = make_capturing_bridge(agent_id.clone()).await;
+    bridge
+        .eval_sync("globalThis.__chat_yield = function(_chunk) {};")
+        .await
+        .expect("install dummy chat yield host");
+
+    let shim_js = render_a2a_shim().expect("render generated shim");
+    bridge
+        .eval_sync(&shim_js)
+        .await
+        .expect("evaluate generated a2a shim");
+
+    // Register an agent where onDispatch references `this` to access a sibling property.
+    // Without the wrapper function, `this` would be globalThis instead of the agent object.
+    let js = r#"
+      (async function() {
+        var agent = {
+          agentName: "test-this-agent",
+          run: async function(ctx) { return { message: "ok" }; },
+          onDispatch: async function(request) {
+            return { accepted: true, detail: "agent=" + this.agentName };
+          }
+        };
+        __chat_register(agent);
+
+        var ack = await globalThis.onDispatch({
+          routing_key: "test:this",
+          message_type: "test.v1",
+          messages: []
+        });
+
+        if (!ack.accepted) {
+          return { error: "ack.accepted should be true" };
+        }
+        if (ack.detail !== "agent=test-this-agent") {
+          return { error: "this binding lost: detail=" + ack.detail };
+        }
+        return { ok: true };
+      })()
+    "#;
+
+    let context_id = ContextId::new(9_003, 1);
+    let message_id = MessageId::from_external(ExternalId::new("msg-dispatch-this-1"));
+    let task_id = TaskId::from_external(ExternalId::new("task-dispatch-this-1"));
+    let scope = RuntimeScope::task_scope(context_id, agent_id, message_id, task_id);
+    let invoke_scope = InvocationScope::new(scope.clone());
+
+    let result = context::with_scope(scope, async {
+        bridge
+            .eval_scoped(&invoke_scope, js)
+            .await
+            .expect("run dispatch this-binding test")
+    })
+    .await;
+    assert_eq!(
+        result.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "onDispatch this-binding test failed: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_generated_a2a_shim_extract_dispatch_event() {
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000dd02").unwrap());
+    let (mut bridge, _capture) = make_capturing_bridge(agent_id.clone()).await;
+
+    let shim_js = render_a2a_shim().expect("render generated shim");
+    bridge
+        .eval_sync(&shim_js)
+        .await
+        .expect("evaluate generated a2a shim");
+
+    let js = r#"
+      (async function() {
+        var event = extractDispatchEvent({
+          routing_key: "slack:intake",
+          message_type: "test.v1",
+          messages: [{ foo: "bar", num: 42 }]
+        });
+        if (event == null) return { error: "extractDispatchEvent returned null" };
+        if (event.foo !== "bar") return { error: "expected foo=bar, got " + event.foo };
+        if (event.num !== 42) return { error: "expected num=42, got " + event.num };
+
+        var empty = extractDispatchEvent({ routing_key: "x", message_type: "y", messages: [] });
+        if (empty !== null) return { error: "expected null for empty messages" };
+
+        var nullReq = extractDispatchEvent(null);
+        if (nullReq !== null) return { error: "expected null for null request" };
+
+        return { ok: true };
+      })()
+    "#;
+
+    let context_id = ContextId::new(9_002, 1);
+    let message_id = MessageId::from_external(ExternalId::new("msg-extract-1"));
+    let task_id = TaskId::from_external(ExternalId::new("task-extract-1"));
+    let scope = RuntimeScope::task_scope(context_id, agent_id, message_id, task_id);
+    let invoke_scope = InvocationScope::new(scope.clone());
+
+    let result = context::with_scope(scope, async {
+        bridge
+            .eval_scoped(&invoke_scope, js)
+            .await
+            .expect("run extractDispatchEvent test")
+    })
+    .await;
+    assert_eq!(
+        result.get("ok").and_then(Value::as_bool),
+        Some(true),
+        "extractDispatchEvent test failed: {result:?}"
+    );
+}
+
+#[test]
 fn test_generated_a2a_shim_planner_loop_uses_session_context_only() {
     let shim_js = render_a2a_shim().expect("render generated shim");
     assert!(

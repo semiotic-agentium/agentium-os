@@ -55,9 +55,10 @@ pub struct AgentDispatchRequestDto {
     pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
+    /// Structured transport metadata (source, schema version, content type, etc.).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Object)]
-    pub metadata: Option<Value>,
+    pub metadata: Option<baml_rt_core::DispatchMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]

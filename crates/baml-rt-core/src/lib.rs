@@ -34,7 +34,9 @@ pub use context::{
     Scoped,
 };
 pub use deferred::DeferredHolder;
-pub use dispatch::{AgentDispatchAck, AgentDispatchRequest, AgentDispatchRoutingKey};
+pub use dispatch::{
+    AgentDispatchAck, AgentDispatchRequest, AgentDispatchRoutingKey, DispatchMetadata,
+};
 pub use error::{BamlRtError, Result, SessionLifecycleError};
 pub use event_subscription::{
     EventSchemaVersion, EventSourceKey, EventSourceKeyPrefix, EventSourceKind, EventSubscription,

@@ -6,65 +6,85 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
+export interface ClaudeDevAbortStep { op: "Abort";
+ }
+
+export interface ClaudeDevAskUser { action: string;
+prompt: string;
+ }
+
+export interface ClaudeDevFinishStep { op: "Finish";
+ }
+
+export interface ClaudeDevOpenStep { op: "Open";
+initial_input: ClaudeToolOpenInput | null;
+ }
+
+export interface ClaudeDevReadStep { op: "Read";
+input: ClaudeToolSendInput;
+ }
+
+export interface ClaudeDevReport { action: string;
+message: string;
+ }
+
+export interface ClaudeDevSendStep { op: "Send";
+input: ClaudeToolSendInput;
+ }
+
+export interface ClaudeDevSessionPlan { step: ClaudeDevOpenStep | ClaudeDevSendStep | ClaudeDevReadStep | ClaudeDevFinishStep | ClaudeDevAbortStep;
+ }
+
+export interface ClaudeToolOpenInput { workspace: string | null;
+ }
+
+export interface ClaudeToolSendInput { prompt: string | null;
+content: ClaudeUserContentBlockDtoVariant1 | ClaudeUserContentBlockDtoVariant2 | ClaudeUserContentBlockDtoVariant3[] | null;
+ }
+
+export interface ClaudeUserContentBlockDtoVariant1 { text: string;
+kind: string;
+ }
+
+export interface ClaudeUserContentBlockDtoVariant2 { url: string;
+kind: string;
+ }
+
+export interface ClaudeUserContentBlockDtoVariant3 { media_type: string;
+data: string;
+kind: string;
+ }
+
+export interface CodeProposal { file_path: string;
+change_type: string;
+description: string;
+code_snippet: string;
+rationale: string;
+ }
+
+export interface FrontendProposal { summary: string;
+proposals: CodeProposal[];
+impact_assessment: string;
+accessibility_notes: string | null;
+ }
+
 export interface SessionContext { contract_version: string;
 session_open: boolean;
-status_token: string;
 allowed_ops: string[];
-last_status: string | null;
- }
-
-export interface SessionReadEnvelopeLite { refId: string;
-budgetHint: number | null;
- }
-
-export type SessionStepOp = "Open" | "Send" | "Read" | "Finish" | "Abort";
-
-export interface SyntheticPlannerCandidate { ref_id: string;
-failed_count: number;
-uncached_prompt_tokens: number;
-severity: number;
- }
-
-export interface SyntheticPlannerOpenInput { reason: string | null;
- }
-
-export interface SyntheticPlannerPlan { decision: SyntheticPlannerStep;
-reason: string | null;
- }
-
-export interface SyntheticPlannerSendInput { read: SessionReadEnvelopeLite | null;
-goal_id: string | null;
-limit: number | null;
-projection: SyntheticProjectionMode | null;
- }
-
-export interface SyntheticPlannerState { level: string;
-goal_id: string | null;
-refs: string[];
-candidates: SyntheticPlannerCandidate[];
-projection_progress: SyntheticProjectionProgress;
-last_read_ref: string | null;
- }
-
-export interface SyntheticPlannerStep { op: SessionStepOp;
-initial_input: SyntheticPlannerOpenInput | null;
-input: SyntheticPlannerSendInput | null;
-reason: string | null;
- }
-
-export type SyntheticProjectionMode = "SUMMARY" | "IDENTITY" | "DETAIL";
-
-export interface SyntheticProjectionProgress { used: string[];
-required: string[];
+scope_ref: string | null;
+output_ref: string | null;
+evidence_ref: string | null;
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
 declare global {
 
-declare function PlanSyntheticSessionStep(args: { objective: string; session_context: SessionContext; session_state: SyntheticPlannerState | null; output_summary: string | null } & { __baml_invocation_token?: string }): Promise<SyntheticPlannerPlan>;
+declare function AnalyzeFrontend(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<FrontendProposal>;
 
-declare function SummarizeSyntheticSessionOutput(args: { objective: string; tool_output_json: string; used_projections: string[] } & { __baml_invocation_token?: string }): Promise<SyntheticPlannerState>;
+declare function ChooseClaudeDevAction(args: { spec_text: string; validation_criteria_json: string; last_tool_output: string; user_approval_intent: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ClaudeDevReport | ClaudeDevAskUser | ClaudeDevSessionPlan>;
+
+declare function FormatProposal(args: { user_message: string; proposal: FrontendProposal } & { __baml_invocation_token?: string }): Promise<string>;
 
 }
 
@@ -345,4 +365,54 @@ export interface ToolFailure {
     kind: ToolFailureKind;
     message: string;
     retryable: boolean;
+}
+
+/** Generated Step Executor bindings (function -> typed step-executor args/result). */
+
+export type StepExecutorFunctionName = "ChooseClaudeDevAction";
+
+export interface SessionContext {
+    contract_version: "session_context";
+    session_open: boolean;
+    allowed_ops: ("Open" | "Send" | "Read" | "Finish" | "Abort")[];
+    scope_ref: string | null;
+    output_ref: string | null;
+    evidence_ref: string | null;
+}
+
+export interface HistoryContext {
+    hop: number;
+    op: string;
+    status: string;
+    truncated: boolean;
+    cursor: string | null;
+    payload: Record<string, unknown> | null;
+}
+
+export interface StepExecutorStateInput {
+    session_context?: SessionContext | null;
+    history_context?: HistoryContext | null;
+}
+
+export interface StepExecutorRunOptions {
+    max_steps?: number;
+}
+
+export interface StepExecutorRunResult<R = unknown> {
+    last: R;
+    steps: R[];
+    session_context: SessionContext;
+    history_context: HistoryContext | null;
+}
+
+export interface StepExecutorFunctionMap {
+  ChooseClaudeDevAction: { args: Parameters<typeof ChooseClaudeDevAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction>>; };
+}
+
+declare global {
+  function runGeneratedStepExecutor<F extends StepExecutorFunctionName>(
+    stepExecutor: F,
+    args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
+    options?: StepExecutorRunOptions
+  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F]["result"]>>;
 }

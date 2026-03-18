@@ -36,6 +36,9 @@ cargo insta review
 cargo run -p baml-rt-builder --bin baml-agent-builder   # lint, compile, package agents
 cargo run -p baml-agent-runner                           # load packaged agents, serve A2A
 
+# Regenerate fixture and production agent type declarations (baml-runtime.d.ts + generated_*.baml)
+cargo run -p baml-rt-builder --features http-tools,memory --bin regen_fixtures
+
 # Nextest (CI-style: one run, JUnit)
 cargo install cargo-nextest        # once
 ./scripts/nextest-ci-local.sh      # full workspace + http-tools; JUnit at target/nextest/ci/junit.xml
@@ -115,7 +118,7 @@ Host tools are session-based. BAML returns a declarative `ToolSessionPlan` descr
 
 The **best example** of multi-turn conversation and task lifecycle is the **task-lifecycle-demo** fixture: `tests/fixtures/agents/task-lifecycle-demo/src/index.ts`.
 
-- **Entrypoint:** `__chat_register({ run })` — the agent implements `run(ctx: RunContext)`; the runtime wraps it into `onChatMessage`. No boilerplate `session(message).run(...)` in agent code.
+- **Entrypoint:** `__chat_register({ run, onDispatch })` — the agent implements `run(ctx: RunContext)` and optionally `onDispatch(request: HostDispatchRequest)`; the runtime wires both onto `globalThis`. No boilerplate `session(message).run(...)` in agent code.
 - **Context:** `ctx.text` (first text part), `ctx.message` (inbound message), `ctx.emit` (message, artifact, `awaitInput`).
 - **Suspension:** `await ctx.emit.awaitInput(prompt)` emits INPUT_REQUIRED and resumes when the next message is routed to the same task/context.
 - **Helpers:** `messageText(message)` for any message; `session(message).text()` for the initial message. Messages from `awaitInput` have `.text()`.

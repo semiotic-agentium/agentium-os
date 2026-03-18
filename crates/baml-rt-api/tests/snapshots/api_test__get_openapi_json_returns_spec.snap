@@ -1,6 +1,5 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
-assertion_line: 945
 expression: snapshot
 ---
 {
@@ -983,7 +982,8 @@ expression: snapshot
               }
             },
             "metadata": {
-              "type": "object"
+              "type": "object",
+              "description": "Structured transport metadata (source, schema version, content type, etc.)."
             },
             "routing_key": {
               "type": "string"
