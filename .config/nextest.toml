@@ -42,7 +42,7 @@ store-failure-output = true
 # LLM e2e tests hit external APIs with variable latency; cap concurrency to reduce
 # scheduler pressure and timeout flakes on resource-constrained CI runners.
 [test-groups]
-llm = { max-threads = 4 }
+llm = { max-threads = 2 }
 provenance = { max-threads = 1 }
 
 [[profile.ci.overrides]]
