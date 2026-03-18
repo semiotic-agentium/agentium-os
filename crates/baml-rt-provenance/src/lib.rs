@@ -80,10 +80,9 @@ pub use store::{
     ProvenancePlanningQuery, ProvenanceQueryApi, ProvenanceReadIntent, ProvenanceResponseProfile,
     ProvenanceWriter, ToolSessionPhase,
 };
-pub use tool_index::{ToolIndexConfig, index_tools, index_tools_into_connection};
-pub use types::{ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef};
-
 #[cfg(feature = "surreal-backend")]
 pub use surreal_config::SurrealStoreConfig;
 #[cfg(feature = "surreal-backend")]
 pub use surreal_store::{SurrealBackend, SurrealProvenanceStore, SurrealStoreBuilder};
+pub use tool_index::{ToolIndexConfig, index_tools, index_tools_into_connection};
+pub use types::{ProvActivityId, ProvAgentId, ProvEntityId, ProvNodeRef};

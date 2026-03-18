@@ -1752,21 +1752,20 @@ async fn extrospection_session_auto_drilldown_from_hotspot_snapshot() {
         .get("hotspotGroups")
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.first())
+        && let Some(values) = group0.get("groupValues").and_then(|v| v.as_array())
     {
-        if let Some(values) = group0.get("groupValues").and_then(|v| v.as_array()) {
-            derived_agent_id = values
-                .first()
-                .and_then(|v| v.as_str())
-                .map(ToString::to_string);
-            derived_tool_name = values
-                .get(1)
-                .and_then(|v| v.as_str())
-                .map(ToString::to_string);
-            derived_prompt = values
-                .get(2)
-                .and_then(|v| v.as_str())
-                .map(ToString::to_string);
-        }
+        derived_agent_id = values
+            .first()
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string);
+        derived_tool_name = values
+            .get(1)
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string);
+        derived_prompt = values
+            .get(2)
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string);
     }
 
     if let Some(row0) = pass1_payload
