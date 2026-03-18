@@ -23,6 +23,14 @@ export interface InternalA2aTarget { agent_package: string;
 agent_instance_id: string;
  }
 
+export interface SessionContext { contract_version: string;
+session_open: boolean;
+allowed_ops: string[];
+scope_ref: string | null;
+output_ref: string | null;
+evidence_ref: string | null;
+ }
+
 export interface SystemInternal_a2aAbortStep { op: "Abort";
  }
 
@@ -50,7 +58,7 @@ declare global {
 
 declare function ArgumentReply(args: { other_message: string } & { __baml_invocation_token?: string }): Promise<string>;
 
-declare function CleeseSendToChapman(args: { first_line: string } & { __baml_invocation_token?: string }): Promise<SystemInternal_a2aSessionPlan>;
+declare function CleeseSendToChapman(args: { first_line: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SystemInternal_a2aSessionPlan>;
 
 }
 
