@@ -57,7 +57,7 @@ pub struct AgentDispatchRequest {
     /// Message family / schema identifier for the payload batch.
     pub message_type: EventSchemaVersion,
     /// Opaque payloads delivered to the agent.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub messages: Vec<Value>,
     /// Optional existing context to continue under.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -158,5 +158,21 @@ mod tests {
             serde_json::from_str::<AgentDispatchRequest>(raw_array).is_err(),
             "array metadata must be rejected"
         );
+    }
+
+    #[test]
+    fn serializes_empty_messages_field() {
+        let request = AgentDispatchRequest {
+            routing_key: AgentDispatchRoutingKey::parse("slack:intake").unwrap(),
+            message_type: crate::EventSchemaVersion::parse("test.v1").unwrap(),
+            messages: Vec::new(),
+            context_id: None,
+            task_id: None,
+            message_id: None,
+            metadata: None,
+        };
+
+        let json_value = serde_json::to_value(&request).expect("serialize");
+        assert_eq!(json_value.get("messages"), Some(&json!([])));
     }
 }

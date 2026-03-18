@@ -409,13 +409,13 @@ pub fn render_a2a_shim() -> Result<String> {
   }
   globalThis.openA2aExecutionSession = openA2aExecutionSession;
 
-  function extractDispatchEvent(request) {
-    if (request == null || typeof request !== 'object') return null;
+  function extractDispatchMessages(request) {
+    if (request == null || typeof request !== 'object') return [];
     var messages = request.messages;
-    if (!Array.isArray(messages) || messages.length === 0) return null;
-    return messages[0] != null ? messages[0] : null;
+    if (!Array.isArray(messages)) return [];
+    return messages.slice();
   }
-  globalThis.extractDispatchEvent = extractDispatchEvent;
+  globalThis.extractDispatchMessages = extractDispatchMessages;
 
   function __chat_register(agent) {
     if (agent.onDispatch != null && typeof agent.onDispatch === 'function') {

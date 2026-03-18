@@ -1,5 +1,5 @@
 /// <reference path="./baml-runtime.d.ts" />
-import type { HostDispatchAck, HostDispatchRequest, RunContext, SessionResult } from "./baml-runtime";
+import type { ChatMessage, HostDispatchAck, HostDispatchRequest, RunContext, SessionResult } from "./baml-runtime";
 
 type ToolSessionHandle = {
   send(args: Record<string, unknown>): Promise<unknown>;
@@ -587,8 +587,12 @@ function extractInterpretationEvent(
 function extractInterpretationEventFromDispatch(
   request: HostDispatchRequest | null | undefined,
 ): TaskDaemonInterpretationEvent | null {
-  const raw = extractDispatchEvent(request);
-  return raw != null ? parseInterpretationEventValue(raw) : null;
+  if (!request || !Array.isArray(request.messages)) return null;
+  for (const message of request.messages) {
+    const event = parseInterpretationEventValue(message);
+    if (event) return event;
+  }
+  return null;
 }
 
 function intakeRoutingKeyForSource(source: TaskDaemonSourceKind): string {

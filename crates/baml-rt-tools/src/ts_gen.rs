@@ -1,9 +1,7 @@
 use baml_rt_core::{BamlRtError, Result};
 use genco::{lang::js, prelude::*};
 
-use crate::tools::ToolFunctionMetadata;
-
-pub fn render_tool_typescript(tools: &[ToolFunctionMetadata]) -> Result<String> {
+pub fn render_tool_typescript() -> Result<String> {
     let mut tokens: js::Tokens = quote!(
         // TypeScript declarations for A2A task-only runtime API
         // This file is auto-generated - do not edit manually
@@ -296,10 +294,10 @@ declare global {
   function session(message: ChatMessage | null | undefined): SessionBuilder;
   function __chat_register(agent: BamlAgent): void;
   /**
-   * Extract the first payload from a host dispatch request.
-   * Returns the first element of request.messages cast to T, or null if absent.
+   * Extract all payloads from a host dispatch request.
+   * Batch-safe helper: returns a shallow copy of request.messages, or [] if absent.
    */
-  function extractDispatchEvent<T = JsonValue>(request: HostDispatchRequest | null | undefined): T | null;
+  function extractDispatchMessages(request: HostDispatchRequest | null | undefined): JsonValue[];
   /** Emit a stream chunk following A2A wire format. */
   function __chat_yield(chunk: YieldChunk): void;
   function openA2aTaskSession<I = Record<string, unknown>>(token: string): Promise<A2aSessionAwaitingInput<I>>;
@@ -328,9 +326,6 @@ declare global {
         }
     );
     tokens.line();
-    // Dispatch types are agent-agnostic; tools parameter reserved for future tool-specific codegen
-    let _ = tools;
-
     tokens
         .to_file_string()
         .map_err(|e| BamlRtError::InvalidArgument(format!("TypeScript render error: {}", e)))

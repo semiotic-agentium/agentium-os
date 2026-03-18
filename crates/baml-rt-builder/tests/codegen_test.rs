@@ -11,7 +11,7 @@ use baml_rt_builder::builder::{
     baml_gen::render_baml_tool_interfaces,
     baml_signature_gen::{extract_baml_signatures, session_plan_functions_map},
     schema_to_baml::generate_baml_types_from_schemas,
-    ts_gen::{load_manifest_tools, render_ts_declarations},
+    ts_gen::render_ts_declarations,
 };
 use baml_rt_core::{
     bus::EffectEvent,
@@ -146,10 +146,8 @@ async fn test_typescript_declaration_generation() {
     let runtime = BamlRuntime::from_directory(&baml_src, env_vars, FeatureFlags::default())
         .expect("load BAML runtime from fixture");
     let ir_signature = extract_baml_signatures(&runtime).expect("extract IR signatures");
-    let tool_names = load_manifest_tools(&baml_src).expect("load manifest tools");
-
     let session_plan_map = session_plan_functions_map(&ir_signature);
-    let ts_output = render_ts_declarations(&ir_signature, &tool_names, &session_plan_map)
+    let ts_output = render_ts_declarations(&ir_signature, &session_plan_map)
         .expect("Should generate TypeScript declarations");
 
     insta::assert_snapshot!("typescript_declarations", ts_output);
@@ -588,7 +586,7 @@ async fn test_generated_a2a_shim_aborts_planning_on_run_failure() {
 #[test]
 fn test_generated_ts_declarations_include_host_dispatch_types() {
     let ts_output =
-        baml_rt_tools::ts_gen::render_tool_typescript(&[]).expect("render tool typescript");
+        baml_rt_tools::ts_gen::render_tool_typescript().expect("render tool typescript");
     assert!(
         ts_output.contains("export interface HostDispatchRequest"),
         "generated declarations must include HostDispatchRequest"
@@ -602,8 +600,16 @@ fn test_generated_ts_declarations_include_host_dispatch_types() {
         "BamlAgent must include onDispatch member"
     );
     assert!(
-        ts_output.contains("function extractDispatchEvent"),
-        "generated declarations must include extractDispatchEvent global"
+        ts_output.contains("function extractDispatchMessages"),
+        "generated declarations must include extractDispatchMessages global"
+    );
+    assert!(
+        !ts_output.contains("function extractDispatchEvent"),
+        "generated declarations must not include the removed extractDispatchEvent global"
+    );
+    assert!(
+        ts_output.contains("Batch-safe helper: returns a shallow copy of request.messages"),
+        "extractDispatchMessages docs must describe the batch-safe copy semantics"
     );
 }
 
@@ -746,7 +752,7 @@ async fn test_generated_a2a_shim_on_dispatch_preserves_this() {
 }
 
 #[tokio::test]
-async fn test_generated_a2a_shim_extract_dispatch_event() {
+async fn test_generated_a2a_shim_extract_dispatch_messages() {
     let agent_id =
         AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000dd02").unwrap());
     let (mut bridge, _capture) = make_capturing_bridge(agent_id.clone()).await;
@@ -759,20 +765,35 @@ async fn test_generated_a2a_shim_extract_dispatch_event() {
 
     let js = r#"
       (async function() {
-        var event = extractDispatchEvent({
+        if (typeof extractDispatchEvent !== "undefined") {
+          return { error: "extractDispatchEvent should not be installed" };
+        }
+
+        var request = {
           routing_key: "slack:intake",
           message_type: "test.v1",
-          messages: [{ foo: "bar", num: 42 }]
-        });
-        if (event == null) return { error: "extractDispatchEvent returned null" };
-        if (event.foo !== "bar") return { error: "expected foo=bar, got " + event.foo };
-        if (event.num !== 42) return { error: "expected num=42, got " + event.num };
+          messages: [{ foo: "bar", num: 42 }, { foo: "baz", num: 7 }]
+        };
+        var messages = extractDispatchMessages(request);
+        if (!Array.isArray(messages)) return { error: "extractDispatchMessages did not return an array" };
+        if (messages.length !== 2) return { error: "expected 2 messages, got " + messages.length };
+        if (messages[0].foo !== "bar") return { error: "expected first foo=bar, got " + messages[0].foo };
+        if (messages[1].foo !== "baz") return { error: "expected second foo=baz, got " + messages[1].foo };
 
-        var empty = extractDispatchEvent({ routing_key: "x", message_type: "y", messages: [] });
-        if (empty !== null) return { error: "expected null for empty messages" };
+        messages.push({ foo: "qux", num: 99 });
+        if (request.messages.length !== 2) return { error: "expected returned array to be a copy" };
 
-        var nullReq = extractDispatchEvent(null);
-        if (nullReq !== null) return { error: "expected null for null request" };
+        var empty = extractDispatchMessages({ routing_key: "x", message_type: "y", messages: [] });
+        if (!Array.isArray(empty) || empty.length !== 0) return { error: "expected [] for empty messages" };
+
+        var undefinedReq = extractDispatchMessages(undefined);
+        if (!Array.isArray(undefinedReq) || undefinedReq.length !== 0) return { error: "expected [] for undefined request" };
+
+        var nullMessages = extractDispatchMessages({ routing_key: "x", message_type: "y", messages: null });
+        if (!Array.isArray(nullMessages) || nullMessages.length !== 0) return { error: "expected [] for non-array messages" };
+
+        var nullReq = extractDispatchMessages(null);
+        if (!Array.isArray(nullReq) || nullReq.length !== 0) return { error: "expected [] for null request" };
 
         return { ok: true };
       })()
@@ -788,13 +809,13 @@ async fn test_generated_a2a_shim_extract_dispatch_event() {
         bridge
             .eval_scoped(&invoke_scope, js)
             .await
-            .expect("run extractDispatchEvent test")
+            .expect("run extractDispatchMessages test")
     })
     .await;
     assert_eq!(
         result.get("ok").and_then(Value::as_bool),
         Some(true),
-        "extractDispatchEvent test failed: {result:?}"
+        "extractDispatchMessages test failed: {result:?}"
     );
 }
 

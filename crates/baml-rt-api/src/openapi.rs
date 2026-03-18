@@ -46,7 +46,7 @@ pub struct AgentDiscoveryEntryDto {
 pub struct AgentDispatchRequestDto {
     pub routing_key: String,
     pub message_type: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     #[schema(value_type = Vec<Object>)]
     pub messages: Vec<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -198,6 +198,22 @@ mod tests {
             baml_rt_core::AgentDispatchRequest::try_from(request).expect("dispatch request");
 
         assert_eq!(parsed.message_id.as_deref(), Some("dispatch-msg-1"));
+    }
+
+    #[test]
+    fn dispatch_request_dto_serializes_empty_messages_field() {
+        let request = AgentDispatchRequestDto {
+            routing_key: "slack:intake".to_string(),
+            message_type: "task-daemon.interpretation.v1".to_string(),
+            messages: Vec::new(),
+            context_id: None,
+            task_id: None,
+            message_id: None,
+            metadata: None,
+        };
+
+        let json_value = serde_json::to_value(&request).expect("serialize");
+        assert_eq!(json_value.get("messages"), Some(&serde_json::json!([])));
     }
 }
 

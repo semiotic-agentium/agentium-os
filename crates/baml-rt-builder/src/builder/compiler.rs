@@ -304,7 +304,7 @@ impl TypeGenerator for RuntimeTypeGenerator {
 
         let ir_signature = extract_baml_signatures(&runtime)?;
         let session_plan_map = session_plan_functions_map(&ir_signature);
-        let declarations = render_ts_declarations(&ir_signature, &tool_names, &session_plan_map)?;
+        let declarations = render_ts_declarations(&ir_signature, &session_plan_map)?;
 
         // Write baml-runtime.d.ts into agent's src/ so tsc resolves it directly.
         let src_dts = agent_dir.src().join("baml-runtime.d.ts");
