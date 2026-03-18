@@ -115,6 +115,12 @@ filter = 'package(baml-rt-a2a) and (binary(run_handle_a2a_property_test) or bina
 test-group = "provenance"
 slow-timeout = { period = "60s", terminate-after = 2 }
 
+# A2A interleaving property test: 4 proptest cases × up to 6 serialized stream
+# ops through the QuickJS bridge; allow generous CI headroom.
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-a2a) and test(prop_interleaved_a2a_tool_llm_multi_context_isolation)'
+slow-timeout = { period = "300s", terminate-after = 1 }
+
 # A2A property test drives many concurrent INPUT_REQUIRED/resume cycles;
 # allow up to 5 minutes for the proptest + async overhead.
 [[profile.ci.overrides]]
