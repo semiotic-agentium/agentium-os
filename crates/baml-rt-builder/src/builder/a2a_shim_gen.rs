@@ -419,7 +419,7 @@ pub fn render_a2a_shim() -> Result<String> {
 
   function __chat_register(agent) {
     if (agent.onDispatch != null && typeof agent.onDispatch === 'function') {
-      globalThis.onDispatch = async function (request) { return agent.onDispatch(request); };
+      globalThis.onDispatch = async function (request) { return agent.onDispatch.call(agent, request); };
     }
     if (agent.run != null && typeof agent.run === 'function') {
       globalThis.onChatMessage = async function (message) {

@@ -39,7 +39,7 @@ export interface ClaudeToolOpenInput { workspace: string | null;
  }
 
 export interface ClaudeToolSendInput { prompt: string | null;
-content: ClaudeUserContentBlockDtoVariant1 | ClaudeUserContentBlockDtoVariant2 | ClaudeUserContentBlockDtoVariant3[] | null;
+content: (ClaudeUserContentBlockDtoVariant1 | ClaudeUserContentBlockDtoVariant2 | ClaudeUserContentBlockDtoVariant3)[] | null;
  }
 
 export interface ClaudeUserContentBlockDtoVariant1 { text: string;

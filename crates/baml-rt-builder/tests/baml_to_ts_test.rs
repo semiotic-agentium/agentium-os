@@ -114,6 +114,17 @@ async fn baml_to_ts_primitive_and_object_types_in_output() {
     );
 }
 
+#[tokio::test]
+async fn baml_to_ts_parenthesizes_union_before_array_suffix() {
+    let ts = generate_ts_from_fixture("frontend-expert").expect("generate TS");
+    assert!(
+        ts.contains(
+            "content: (ClaudeUserContentBlockDtoVariant1 | ClaudeUserContentBlockDtoVariant2 | ClaudeUserContentBlockDtoVariant3)[] | null;"
+        ),
+        "expected parenthesized union array for ClaudeToolSendInput.content"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // A2A runtime section present and typed
 // ---------------------------------------------------------------------------

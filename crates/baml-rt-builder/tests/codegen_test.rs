@@ -428,6 +428,10 @@ async fn test_generated_a2a_shim_emits_planning_effects() {
     let (mut bridge, capture) = make_capturing_bridge(agent_id.clone()).await;
 
     let shim_js = render_a2a_shim().expect("render generated shim");
+    assert!(
+        shim_js.contains("agent.onDispatch.call(agent, request)"),
+        "onDispatch wrapper must bind the agent explicitly"
+    );
     bridge
         .eval_sync(&shim_js)
         .await
