@@ -27,16 +27,21 @@ graphqlite = { workspace = true }
 uuid = { workspace = true }
 clap = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
+surrealdb = { workspace = true, optional = true }
 
 [dev-dependencies]
 insta = { workspace = true, features = ["json"] }
 tempfile = { workspace = true }
 test-support = { path = "../test-support" }
 criterion = "0.5"
+paste = { workspace = true }
+# SurrealDB needed at dev time for parity tests even when surreal-backend feature is active
+surrealdb = { workspace = true }
 
 [features]
 default = []
 cli = ["dep:clap", "dep:anyhow"]
+surreal-backend = ["dep:surrealdb"]
 
 [[bin]]
 name = "graph_exporter"

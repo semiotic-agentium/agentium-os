@@ -1,0 +1,77 @@
+---
+source: crates/baml-rt-provenance/tests/surreal_snapshot_test.rs
+assertion_line: 632
+expression: result
+---
+{
+  "item_count": 6,
+  "items": [
+    {
+      "role": "ROLE_USER",
+      "source": "message",
+      "content_keys": [],
+      "tool_name": null,
+      "tool_phase": null,
+      "has_result": false,
+      "has_error": false
+    },
+    {
+      "role": "ROLE_AGENT",
+      "source": "message",
+      "content_keys": [],
+      "tool_name": null,
+      "tool_phase": null,
+      "has_result": false,
+      "has_error": false
+    },
+    {
+      "role": "assistant",
+      "source": "tool_call",
+      "content_keys": [
+        "tool_call"
+      ],
+      "tool_name": "calculator",
+      "tool_phase": "send",
+      "has_result": false,
+      "has_error": false
+    },
+    {
+      "role": "tool",
+      "source": "tool_result",
+      "content_keys": [
+        "fsm_phase",
+        "result",
+        "tool_name"
+      ],
+      "tool_name": "calculator",
+      "tool_phase": "send",
+      "has_result": true,
+      "has_error": false
+    },
+    {
+      "role": "assistant",
+      "source": "tool_call",
+      "content_keys": [
+        "tool_call"
+      ],
+      "tool_name": "divide",
+      "tool_phase": "send",
+      "has_result": false,
+      "has_error": false
+    },
+    {
+      "role": "tool",
+      "source": "tool_result",
+      "content_keys": [
+        "error",
+        "fsm_phase",
+        "result",
+        "tool_name"
+      ],
+      "tool_name": "divide",
+      "tool_phase": "send",
+      "has_result": true,
+      "has_error": true
+    }
+  ]
+}

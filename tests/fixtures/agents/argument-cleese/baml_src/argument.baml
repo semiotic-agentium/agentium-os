@@ -12,25 +12,28 @@ function ArgumentReply(other_message: string) -> string {
   "#
 }
 
-// Returns one session step at a time to send Cleese's line to Chapman; keep chat policy in prompt, not agent logic.
-function CleeseSendToChapman(first_line: string) -> SystemInternal_a2aSessionPlan {
+// Returns one session step at a time to send Cleese's line to Chapman via internal_a2a.
+// Uses session_context to determine which FSM step to emit (Open/Send/Read/Finish).
+function CleeseSendToChapman(first_line: string, session_context: SessionContext?) -> SystemInternal_a2aSessionPlan {
   client DefaultClient
   prompt #"
-    You are coordinating the argument sketch.
-    Return ONLY a valid JSON object for a strict incremental system/internal_a2a session fragment.
+    You are coordinating the argument sketch. Send Cleese's line to Chapman via internal_a2a.
+    Return ONLY a valid JSON object for a strict incremental session fragment.
     Emit exactly one `step` object per reply.
 
-    If no session is open, return Open with:
-    { "initial_input": { "target": { "agent_package": "argument-chapman", "agent_instance_id": "default" } } }
+    DECISION LADDER — choose the FIRST matching rule:
+    1. session_context is null or allowed_ops contains only "Open" → emit Open:
+       {"step":{"op":"Open","initial_input":{"target":{"agent_package":"argument-chapman","agent_instance_id":"default"}}}}
+    2. allowed_ops contains "Send" → emit Send with the message:
+       {"step":{"op":"Send","input":{"parts":[{"text":"{{ first_line }}"}]}}}
+    3. allowed_ops contains "Read" → emit Read:
+       {"step":{"op":"Read","input":{"parts":[]}}}
+    4. allowed_ops contains "Finish" → emit Finish:
+       {"step":{"op":"Finish"}}
 
-    If session is open and message not sent yet, return Send with:
-    { "input": { "parts": [{ "text": "{{ first_line }}" }] } }
-
-    Then use Next, and Finish when done.
-    No prose. No markdown.
+    No prose. No markdown. Return only the JSON object.
     {{ ctx.output_format }}
-    {{ _.role('user') }}
-    Cleese's line to send to Chapman: {{ first_line }}
+    {% if session_context %}Allowed ops: {{ session_context.allowed_ops }}{% endif %}
   "#
 }
 
