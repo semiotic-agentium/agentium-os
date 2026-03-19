@@ -21,6 +21,7 @@ members = [
   "crates/baml-rt-quickjs",
   "crates/baml-rt-repository",
   "crates/baml-rt-tools",
+  "crates/baml-tool-links",
   "crates/test-support",
   "crates/task-daemon",
   "crates/tools/calculator",

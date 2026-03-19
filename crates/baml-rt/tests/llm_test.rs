@@ -44,19 +44,15 @@ impl BundleType for TestEvalBundle {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 enum SyntheticProjection {
     #[serde(alias = "IDENTITY", alias = "Identity")]
     Identity,
     #[serde(alias = "SUMMARY", alias = "Summary")]
+    #[default]
     Summary,
     #[serde(alias = "DETAIL", alias = "Detail")]
     Detail,
-}
-
-impl Default for SyntheticProjection {
-    fn default() -> Self {
-        Self::Summary
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -254,11 +250,7 @@ fn synthetic_session_eval_handler(
                 }
             };
 
-            let retrieve_ref = if let Some(read) = args.read.as_ref() {
-                Some(read.ref_id.as_str())
-            } else {
-                None
-            };
+            let retrieve_ref = args.read.as_ref().map(|read| read.ref_id.as_str());
             if let Some(retrieve_ref) = retrieve_ref {
                 if retrieve_ref == "root" {
                     let refs = root_rows

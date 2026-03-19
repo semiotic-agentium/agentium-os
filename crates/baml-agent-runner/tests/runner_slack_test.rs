@@ -1,5 +1,6 @@
 #![cfg(feature = "slack")]
 
+#[allow(dead_code, unused_imports)]
 mod common;
 
 use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
@@ -13,7 +14,7 @@ use baml_rt_provenance::{
     AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
     ProvenanceContextReader, ProvenanceConversationContextItem, ProvenanceWriter,
 };
-use baml_tools_slack::SlackTool;
+use baml_tool_links::baml_tools_slack::SlackTool;
 use common::{
     RunningHttpServer, TempDirCleanup, TempEnvVar, build_slack_agent_to_temp_async, contains_kv,
     e2e_serial_gate, post_a2a_sse_collect, start_http_server, start_runner_api_server,

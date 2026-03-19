@@ -5,6 +5,7 @@
 //! Uses curated prompts and verifies the planner routes to expected agent targets.
 //! Requires OPENROUTER_API_KEY to be set.
 
+#[allow(dead_code, unused_imports)]
 mod common;
 
 use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};

@@ -1,5 +1,6 @@
 #![cfg(all(feature = "llm-tests", feature = "clickup"))]
 
+#[allow(dead_code, unused_imports)]
 mod common;
 
 use std::{fs, path::PathBuf, sync::Arc};
@@ -13,7 +14,7 @@ use baml_rt_provenance::{
     AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
     ProvenanceContextReader, ProvenanceConversationContextItem, ProvenanceWriter,
 };
-use baml_tools_clickup::ClickUpTool;
+use baml_tool_links::baml_tools_clickup::ClickUpTool;
 use common::{
     RunningHttpServer, TempDirCleanup, TempEnvVar, build_clickup_agent_to_temp_async, contains_kv,
     e2e_serial_gate, post_a2a_sse_collect, start_http_server, start_runner_api_server,
@@ -197,6 +198,7 @@ fn maybe_task_status(status: &Value) -> Option<String> {
     })
 }
 
+#[allow(dead_code)]
 async fn fetch_mermaid_context(base_url: &str, context_id: &ContextId) -> String {
     let http_client = reqwest::Client::new();
     let mermaid_url = format!("{base_url}/contexts/{}/mermaid", context_id.as_str());

@@ -1,5 +1,6 @@
 #![cfg(feature = "notion")]
 
+#[allow(dead_code, unused_imports)]
 mod common;
 
 use std::{fs, path::PathBuf, sync::Arc};
@@ -13,7 +14,7 @@ use baml_rt_provenance::{
     AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
     ProvenanceContextReader, ProvenanceConversationContextItem, ProvenanceWriter,
 };
-use baml_tools_notion::NotionTool;
+use baml_tool_links::baml_tools_notion::NotionTool;
 use common::{
     RunningHttpServer, TempDirCleanup, TempEnvVar, build_notion_agent_to_temp_async, contains_kv,
     e2e_serial_gate, post_a2a_sse_collect, start_http_server, start_runner_api_server,

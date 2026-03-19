@@ -1421,11 +1421,7 @@ dependencies = [
  "baml-rt-quickjs",
  "baml-rt-tools",
  "baml-rt-tools-claude",
- "baml-tools-calculator",
- "baml-tools-clickup",
- "baml-tools-memory",
- "baml-tools-notion",
- "baml-tools-slack",
+ "baml-tool-links",
  "baml-tools-system",
  "clap",
  "dotenvy",
@@ -1672,14 +1668,8 @@ dependencies = [
  "baml-rt-observability",
  "baml-rt-quickjs",
  "baml-rt-tools",
- "baml-rt-tools-claude",
  "baml-runtime",
- "baml-tools-calculator",
- "baml-tools-clickup",
- "baml-tools-memory",
- "baml-tools-notion",
- "baml-tools-slack",
- "baml-tools-system",
+ "baml-tool-links",
  "baml-types",
  "clap",
  "dotenvy",
@@ -2073,6 +2063,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "baml-tool-links"
+version = "0.1.0"
+dependencies = [
+ "baml-rt-tools-claude",
+ "baml-tools-calculator",
+ "baml-tools-clickup",
+ "baml-tools-internal-dev",
+ "baml-tools-memory",
+ "baml-tools-notion",
+ "baml-tools-slack",
+ "baml-tools-system",
 ]
 
 [[package]]

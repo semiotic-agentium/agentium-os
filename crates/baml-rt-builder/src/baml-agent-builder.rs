@@ -7,6 +7,8 @@
 
 #![recursion_limit = "256"]
 
+mod optional_tool_bundles;
+
 use std::{
     collections::HashSet,
     fs,
@@ -28,15 +30,10 @@ use baml_rt_tools::{
     ManifestToolNames, ToolAccessPolicy, parse_access_allowlist, register_manifest_tools,
     tool_catalog::all_tool_metadata,
 };
-use baml_rt_tools_claude as _;
-use baml_tools_calculator as _;
-#[cfg(feature = "clickup")]
-use baml_tools_clickup as _;
-#[cfg(feature = "notion")]
-use baml_tools_notion as _;
-#[cfg(feature = "slack")]
-use baml_tools_slack as _;
-use baml_tools_system as _;
+
+// Force-link all tool crates into the binary's inventory.
+// The macro handles conditional compilation based on feature flags.
+baml_tool_links::force_link_all_tools!();
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 use tokio::sync::Mutex;
@@ -468,6 +465,12 @@ async fn load_agent_package(
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+
+        optional_tool_bundles::register_optional_tool_bundles(
+            &name,
+            &tools,
+            rm.tool_registry().as_ref(),
+        )?;
 
         if !tools.is_empty() {
             rm.set_tool_allowlist(tools.iter().cloned().collect::<HashSet<_>>())
