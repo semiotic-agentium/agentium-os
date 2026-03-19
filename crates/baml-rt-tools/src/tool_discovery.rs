@@ -133,6 +133,7 @@ mod tests {
             origin: ToolOrigin::Host,
             projection_semantics: None,
             session_policy: crate::tools::SessionPolicy::default(),
+            event_sources: vec![],
         }
     }
 

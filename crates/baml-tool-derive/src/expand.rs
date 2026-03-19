@@ -84,6 +84,28 @@ fn extra_ts_decls_tokens(extra_ts_types: &[Path]) -> TokenStream {
     }
 }
 
+/// Emit the `with_event_sources(...)` builder call (or nothing if empty).
+///
+/// Safety: `parse.rs` rejects empty string literals at compile time,
+/// so `EventSourceKind::parse` will always return `Some` here.
+fn event_sources_tokens(event_sources: &[syn::LitStr]) -> TokenStream {
+    if event_sources.is_empty() {
+        return TokenStream::new();
+    }
+    let values = event_sources.iter().map(|s| {
+        let msg = format!(
+            "event_sources value {:?} validated at compile time",
+            s.value()
+        );
+        quote! {
+            ::baml_rt_core::EventSourceKind::parse(#s).unwrap_or_else(|| unreachable!(#msg))
+        }
+    });
+    quote! {
+        .with_event_sources(::std::vec![#(#values),*])
+    }
+}
+
 /// Emit the `with_baml_decl(...)` builder call (or nothing if no baml_types).
 fn baml_decl_tokens(baml_types: &[Path]) -> TokenStream {
     if baml_types.is_empty() {
@@ -148,6 +170,7 @@ pub(crate) fn expand_impl(attrs: &ToolAttrs, impl_block: &ItemImpl) -> syn::Resu
     let tags = tags_tokens(&attrs.tags);
     let secrets = secrets_tokens(&attrs.secrets);
     let access = access_tokens(&attrs.access);
+    let event_sources = event_sources_tokens(&attrs.event_sources);
     let baml_decl = baml_decl_tokens(&attrs.baml_types);
     let extra_ts = extra_ts_decls_tokens(&attrs.extra_ts_types);
 
@@ -183,6 +206,7 @@ pub(crate) fn expand_impl(attrs: &ToolAttrs, impl_block: &ItemImpl) -> syn::Resu
             #tags
             #secrets
             #access
+            #event_sources
             .build_metadata()
         }
 
@@ -219,6 +243,7 @@ pub(crate) fn expand_struct(attrs: &ToolAttrs, item: &ItemStruct) -> syn::Result
     let tags = tags_tokens(&attrs.tags);
     let secrets = secrets_tokens(&attrs.secrets);
     let access = access_tokens(&attrs.access);
+    let event_sources = event_sources_tokens(&attrs.event_sources);
     let baml_decl = baml_decl_tokens(&attrs.baml_types);
     let extra_ts = extra_ts_decls_tokens(&attrs.extra_ts_types);
 
@@ -248,6 +273,7 @@ pub(crate) fn expand_struct(attrs: &ToolAttrs, item: &ItemStruct) -> syn::Result
             #tags
             #secrets
             #access
+            #event_sources
             .build_metadata()
         }
 

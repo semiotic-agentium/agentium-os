@@ -106,11 +106,15 @@ This is a Rust workspace (edition 2024, nightly pinned via `rust-toolchain.toml`
 
 ### Key Runtime Flow
 
-JS code → `QuickJSBridge` → checks `globalThis` for JS function → if missing, falls back to `BamlRuntimeManager` → runs interceptor pipeline → calls BAML runtime → LLM provider → tool session execution (host tools run in Rust, never JS) → interceptor post-hooks → result back to JS as resolved Promise.
+**Conversational (A2A):** JS code → `QuickJSBridge` → checks `globalThis` for JS function → if missing, falls back to `BamlRuntimeManager` → runs interceptor pipeline → calls BAML runtime → LLM provider → tool session execution (host tools run in Rust, never JS) → interceptor post-hooks → result back to JS as resolved Promise.
+
+**Dispatch (event delivery):** `AgentDispatchRequest` → `POST /agents/{pkg}/{inst}/dispatch` → A2A transport → calls `onDispatch` on `globalThis` → agent returns `AgentDispatchAck`. No conversational context; used for host-to-agent event delivery from sources like task-daemon.
 
 ### Host Tool Contract
 
 Host tools are session-based. BAML returns a declarative `ToolSessionPlan` describing FSM steps (Open → Send* → Next → Finish/Abort). The Rust runtime executes these steps; JavaScript never mediates host tool execution.
+
+Tools have two roles: **invoke** (agent calls tool via session FSM) and optionally **produce events** (tool declares `event_sources` in metadata, host polls and routes to subscribed agents). See `docs/host-to-agent-event-delivery.md` for the full model.
 
 **BAML return shape and session plans:** Any BAML result with a top-level `"steps"` array is parsed as a `ToolSessionPlan` (steps must have `op`: Open/Send/Next/Finish/Abort). BAML functions that return a *product* plan (e.g. ordered steps for a coordinator) must use a different key (e.g. `plan_steps`) so the runtime does not treat the result as an executable session plan. Only functions that are intended to return a session plan (and are listed in the builder-generated `session_plan_functions.json`) should emit `steps`.
 
@@ -125,6 +129,8 @@ The **best example** of multi-turn conversation and task lifecycle is the **task
 - **Flow:** Path choice → review loop → sign-off loop → COMPLETED (sequential loops, no nesting).
 
 Other fixtures (stream-js-tool, stream-baml-tool, conversational-context-auto, etc.) use the same DSL; task-lifecycle-demo is the most complete reference.
+
+**Dispatch (event delivery):** `dispatch-echo` fixture (`tests/fixtures/agents/dispatch-echo/`) is the minimal example of `onDispatch` handling. Agents declare subscriptions in `manifest.json` under `discovery.subscriptions` to receive events. See `docs/host-to-agent-event-delivery.md`.
 
 ### Feature Flags (baml-rt facade)
 

@@ -43,6 +43,7 @@ async fn tool_index_creates_tool_nodes() {
         access: None,
         origin: baml_rt_tools::ToolOrigin::Host,
         projection_semantics: None,
+        event_sources: Vec::new(),
     }];
 
     let conn = index_tools_into_connection(&config, &tools)

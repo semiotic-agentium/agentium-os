@@ -213,6 +213,8 @@ pub struct ToolDiscoveryRecordDto {
     pub bundle: String,
     pub description: String,
     pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_sources: Vec<String>,
 }
 
 // --- system/introspection + system/extrospection ---
