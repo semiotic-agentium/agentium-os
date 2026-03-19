@@ -68,6 +68,14 @@ pub async fn make_capturing_bridge(
     (bridge, capture)
 }
 
+pub fn init_test_tracing() {
+    use std::sync::OnceLock;
+    static TRACING: OnceLock<()> = OnceLock::new();
+    TRACING.get_or_init(|| {
+        baml_rt::tracing_setup::init_tracing();
+    });
+}
+
 pub fn fixture_path(relative_path: &str) -> PathBuf {
     workspace_root()
         .join("tests")

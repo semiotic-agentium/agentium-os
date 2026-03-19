@@ -734,6 +734,29 @@ impl QuickJSBridge {
         }
     }
 
+    /// Invoke an optional JS global function with the brief-lock pattern.
+    ///
+    /// Returns `Ok(None)` when the JS function is absent and `Ok(Some(value))` when it exists.
+    /// Any thrown/returned JS error is surfaced as `Err(BamlRtError::QuickJs(...))`.
+    pub async fn invoke_optional_js_function_nonblocking(
+        bridge: Arc<Mutex<Self>>,
+        scope: &InvocationScope,
+        function_name: &str,
+        args: Value,
+    ) -> Result<Option<Value>> {
+        let args_json = serde_json::to_string(&args).map_err(BamlRtError::Json)?;
+        let js_code =
+            invocation::build_optional_js_function_invoke_js_code(function_name, &args_json);
+        let result = if correlation::current_correlation_id().is_some() {
+            Self::eval_brief_lock(bridge, scope, &js_code).await?
+        } else {
+            let cid = correlation::generate_correlation_id();
+            correlation::with_correlation_id(cid, Self::eval_brief_lock(bridge, scope, &js_code))
+                .await?
+        };
+        Self::parse_optional_js_function_result(function_name, result)
+    }
+
     /// Invoke a JS tool with the brief-lock pattern.
     /// The bridge lock is released before the promise-polling loop so concurrent contexts
     /// are not blocked behind this invocation's async tool execution.
@@ -954,24 +977,7 @@ impl QuickJSBridge {
             })
             .await?
         };
-
-        if let Value::Object(map) = &result {
-            if map
-                .get("__absent")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                return Ok(None);
-            }
-            if let Some(error) = map.get("error").and_then(Value::as_str) {
-                return Err(BamlRtError::QuickJs(format!(
-                    "JS function invocation error ({}): {}",
-                    function_name, error
-                )));
-            }
-        }
-
-        Ok(Some(result))
+        Self::parse_optional_js_function_result(function_name, result)
     }
 
     /// Invoke a streaming JavaScript or BAML function by name.
@@ -1006,5 +1012,27 @@ impl QuickJSBridge {
             ))),
             other => Ok(vec![other]),
         }
+    }
+
+    fn parse_optional_js_function_result(
+        function_name: &str,
+        result: Value,
+    ) -> Result<Option<Value>> {
+        if let Value::Object(map) = &result {
+            if map
+                .get("__absent")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                return Ok(None);
+            }
+            if let Some(error) = map.get("error").and_then(Value::as_str) {
+                return Err(BamlRtError::QuickJs(format!(
+                    "JS function invocation error ({function_name}): {error}"
+                )));
+            }
+        }
+
+        Ok(Some(result))
     }
 }

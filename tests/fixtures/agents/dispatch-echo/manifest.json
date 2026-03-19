@@ -1,0 +1,17 @@
+{
+  "version": "1.0.0",
+  "name": "dispatch-echo",
+  "entry_point": "src/index.ts",
+  "signature": "dispatch-echo@1.0.0",
+  "tools": [],
+  "discovery": {
+    "description": "Fixture: echoes dispatch requests back as acknowledgements",
+    "capabilities": ["dispatch:echo"],
+    "subscriptions": [
+      {
+        "schema_versions": ["task-daemon.interpretation.v1"],
+        "source_kinds": ["slack", "clickup", "github_issues"]
+      }
+    ]
+  }
+}

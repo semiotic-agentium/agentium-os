@@ -34,7 +34,7 @@ use baml_rt_core::{
     bus::BusStream,
     collect_a2a_stream,
     context::{self, InvocationScope},
-    ids::{AgentId, DerivedId, ExternalId, MessageId, TaskId},
+    ids::{AgentId, DerivedId, ExternalId, TaskId},
     route_key_from_request,
 };
 use baml_rt_llm_config::{
@@ -393,25 +393,7 @@ impl BootedAgent {
     }
 
     async fn handle_dispatch(&self, request: AgentDispatchRequest) -> Result<AgentDispatchAck> {
-        let response = self
-            .invoke_function(
-                "onDispatch",
-                serde_json::to_value(&request).map_err(BamlRtError::Json)?,
-            )
-            .await?;
-
-        if let Some(error) = response.get("error").and_then(Value::as_str) {
-            if error == "JS function not found: onDispatch" {
-                return Err(BamlRtError::FunctionNotFound("onDispatch".to_string()));
-            }
-            return Err(BamlRtError::QuickJs(error.to_string()));
-        }
-
-        serde_json::from_value(response).map_err(|source| BamlRtError::InvalidArgumentWithSource {
-            message: "dispatch handler must return { accepted: boolean, detail?: string }"
-                .to_string(),
-            source: Box::new(source),
-        })
+        self.agent.handle_dispatch(request).await
     }
 }
 
@@ -604,11 +586,7 @@ impl AgentRunner {
                     ))
                 })?
         };
-        let scope = scope_from_dispatch_request(&request, booted_agent.agent.agent_id().clone());
-        context::with_scope(scope.as_scope().clone(), async move {
-            booted_agent.handle_dispatch(request).await
-        })
-        .await
+        booted_agent.handle_dispatch(request).await
     }
 
     /// Run the A2A JSON-RPC loop over the given reader/writer (one JSON-RPC request per line).
@@ -944,35 +922,6 @@ fn scope_from_request(request: &serde_json::Value, agent_id: AgentId) -> Invocat
             agent_id,
         )),
         Err(_) => InvocationScope::synthetic_message(agent_id),
-    }
-}
-
-fn scope_from_dispatch_request(
-    request: &AgentDispatchRequest,
-    agent_id: AgentId,
-) -> InvocationScope {
-    let Some(context_id) = request.context_id.clone() else {
-        return InvocationScope::synthetic_message(agent_id);
-    };
-
-    let message_id = request
-        .message_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(|value| MessageId::from_external(ExternalId::new(value.to_string())))
-        .unwrap_or_else(|| {
-            let seq = MESSAGE_COUNTER.fetch_add(1, Ordering::Relaxed);
-            MessageId::from_external(ExternalId::new(format!("dispatch-msg-{seq}")))
-        });
-
-    match request.task_id.clone() {
-        Some(task_id) => InvocationScope::new(RuntimeScope::task_scope(
-            context_id, agent_id, message_id, task_id,
-        )),
-        None => InvocationScope::new(RuntimeScope::message_scope(
-            context_id, agent_id, message_id,
-        )),
     }
 }
 
@@ -2141,37 +2090,6 @@ globalThis.onChatMessage = async function(_message) {
         .await;
 
         assert_eq!(scope.as_scope(), &expected);
-    }
-
-    #[test]
-    fn scope_from_dispatch_request_uses_supplied_context_task_and_message_ids() {
-        let agent_id =
-            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000122").unwrap());
-        let context_id = ContextId::new(122, 1);
-        let task_id = TaskId::from_external(ExternalId::new("dispatch-task-122"));
-        let request = AgentDispatchRequest {
-            routing_key: baml_rt_core::AgentDispatchRoutingKey::parse("slack:intake")
-                .expect("routing key"),
-            message_type: baml_rt_core::EventSchemaVersion::parse("task-daemon.interpretation.v1")
-                .expect("schema version"),
-            messages: vec![],
-            context_id: Some(context_id.clone()),
-            task_id: Some(task_id.clone()),
-            message_id: Some("dispatch-msg-122".to_string()),
-            metadata: None,
-        };
-
-        let scope = scope_from_dispatch_request(&request, agent_id.clone());
-
-        assert_eq!(
-            scope.as_scope(),
-            &RuntimeScope::task_scope(
-                context_id,
-                agent_id,
-                MessageId::from_external(ExternalId::new("dispatch-msg-122")),
-                task_id,
-            )
-        );
     }
 
     #[tokio::test]

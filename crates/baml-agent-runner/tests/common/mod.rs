@@ -1,8 +1,18 @@
-use std::{
-    path::PathBuf,
-    sync::{Arc, OnceLock},
-};
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+use std::sync::Arc;
+use std::{path::PathBuf, sync::OnceLock};
 
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 use async_trait::async_trait;
 #[cfg(any(
     feature = "clickup",
@@ -28,6 +38,12 @@ use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
     AgentDispatchRequest, AgentLister, AgentRouteKey,
 };
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
 use baml_rt_provenance::GraphqliteProvenanceStore;
 #[cfg(any(
     feature = "clickup",
@@ -57,10 +73,7 @@ pub use test_support::common::{TempDirCleanup, TempEnvVar};
 use tokio::sync::Semaphore;
 
 pub fn init_test_tracing() {
-    static TRACING: OnceLock<()> = OnceLock::new();
-    TRACING.get_or_init(|| {
-        baml_rt_observability::init_tracing();
-    });
+    test_support::common::init_test_tracing();
 }
 
 pub fn e2e_serial_gate() -> &'static Semaphore {
@@ -166,7 +179,7 @@ impl AgentRegistry for SingleAgentRegistry {
     async fn handle_dispatch(
         &self,
         key: &AgentRouteKey,
-        _request: AgentDispatchRequest,
+        request: AgentDispatchRequest,
     ) -> baml_rt_core::Result<AgentDispatchAck> {
         if key.agent_package.as_str() != self.package
             || key.agent_instance_id.as_str() != self.instance_id
@@ -177,9 +190,7 @@ impl AgentRegistry for SingleAgentRegistry {
                 key.agent_instance_id.as_str()
             )));
         }
-        Err(baml_rt_core::BamlRtError::FunctionNotFound(
-            "onDispatch".to_string(),
-        ))
+        self.agent.handle_dispatch(request).await
     }
 }
 
@@ -384,6 +395,7 @@ pub fn contains_kv(value: &Value, key: &str, expected: &str) -> bool {
 }
 
 /// Builds an agent at the given path using the builder crate (in-process, no cargo subprocess).
+#[allow(dead_code)] // Shared across test binaries; not every target uses it in each build.
 pub async fn build_agent_dir_to_temp_async(agent_dir: PathBuf, package_label: &str) -> PathBuf {
     test_support::common::build_agent_package_to_temp(agent_dir, package_label).await
 }
