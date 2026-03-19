@@ -2,14 +2,17 @@
 //!
 //! This crate provides:
 //! - The [`BamlType`] trait that derive-annotated types implement
+//! - The [`TsType`] trait for TypeScript declaration generation
 //! - Structured definition types ([`BamlDefinition`], [`BamlClassDef`], etc.)
 //! - BAML text rendering via [`render_baml_types`]
 //! - [`BamlFileOutput`] and [`BamlRenderTarget`] for `generate_baml!()` integration
 
 pub mod render;
+pub mod ts_render;
 pub mod types;
 
 pub use render::render_baml_types;
+pub use ts_render::render_ts_declarations;
 pub use types::{
     BamlClassDef, BamlDefinition, BamlEnumDef, BamlFieldDef, BamlFileOutput, BamlRenderTarget,
     BamlUnionDef, BamlVariantDef,
@@ -39,5 +42,54 @@ pub trait BamlType: Send + Sync + 'static {
     /// Used to ensure referenced types are included when rendering files.
     fn baml_dependencies() -> Vec<&'static str> {
         vec![]
+    }
+}
+
+/// Trait implemented by types that can emit TypeScript type declarations.
+///
+/// This is automatically derived via `#[derive(BamlType)]` from the
+/// `baml-derive` crate, alongside the `BamlType` implementation. It drives
+/// the TypeScript declaration output used in `ToolFunctionMetadata` and the
+/// `baml-runtime.d.ts` generated file.
+///
+/// # TypeScript output shapes
+///
+/// - Rust **struct** → `export interface Foo { field: string; count: number | null; }`
+/// - Rust **unit enum** → `export type Status = "Open" | "Closed";`
+/// - Rust **newtype union enum** (`#[baml(union)]`) → `export type Foo = TypeA | TypeB;`
+///
+/// # Attribute interaction
+///
+/// - `#[baml(skip)]` suppresses the field/variant from both BAML and TypeScript output.
+/// - `#[baml(alias)]` and `#[baml(description)]` are BAML-only; TypeScript uses the
+///   original Rust identifier as the field/property name.
+pub trait TsType: Send + Sync + 'static {
+    /// The TypeScript type name (mirrors the Rust type name).
+    fn ts_type_name() -> &'static str;
+
+    /// Pre-rendered TypeScript declaration string.
+    ///
+    /// Returns `None` for the unit type `()` and other types that have no
+    /// standalone TypeScript declaration.
+    fn ts_decl() -> Option<String>;
+
+    /// Collect all transitive TypeScript type dependency names.
+    ///
+    /// Used to ensure referenced types are declared before this type when
+    /// rendering a TypeScript output file.
+    fn ts_dependencies() -> Vec<&'static str> {
+        vec![]
+    }
+}
+
+/// `TsType` for the Rust unit type `()`.
+///
+/// `()` has no TypeScript representation; `ts_decl()` returns `None`.
+impl TsType for () {
+    fn ts_type_name() -> &'static str {
+        "()"
+    }
+    fn ts_decl() -> Option<String> {
+        None
     }
 }

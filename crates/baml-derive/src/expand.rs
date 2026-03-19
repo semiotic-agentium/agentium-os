@@ -1,9 +1,9 @@
 //! Code generation for `#[derive(BamlType)]`.
 //!
 //! Handles expansion for:
-//! - Named structs → `BamlDefinition::Class`
-//! - Enums with unit variants → `BamlDefinition::Enum`
-//! - Enums with `#[baml(union)]` and newtype variants → `BamlDefinition::Union`
+//! - Named structs → `BamlDefinition::Class` + TypeScript `export interface`
+//! - Enums with unit variants → `BamlDefinition::Enum` + TypeScript string union
+//! - Enums with `#[baml(union)]` and newtype variants → `BamlDefinition::Union` + TypeScript union
 
 use proc_macro2::TokenStream;
 use quote::quote;
@@ -12,6 +12,7 @@ use syn::{DataEnum, DataStruct, DeriveInput, Fields, Type};
 use crate::{
     attrs::{extract_doc_comment, parse_container_attrs, parse_field_attrs, parse_variant_attrs},
     resolve::resolve_type_tokens,
+    ts_resolve::resolve_ts_type_tokens,
 };
 
 /// Main entry point: expand `#[derive(BamlType)]` for any supported data type.
@@ -59,7 +60,10 @@ fn expand_struct(
     };
 
     let mut field_tokens = Vec::new();
+    // Each entry is `Some((field_name_str, ts_type_expr))` for non-skipped fields.
+    let mut ts_field_pairs: Vec<(String, TokenStream)> = Vec::new();
     let mut dep_names = Vec::new();
+    let mut ts_dep_names: Vec<String> = Vec::new();
 
     for field in fields {
         let field_attrs = parse_field_attrs(&field.attrs)?;
@@ -88,7 +92,25 @@ fn expand_struct(
             && field_attrs.type_override.is_none()
             && let Some(dep) = extract_user_type_dep(&field.ty)
         {
-            dep_names.push(dep);
+            dep_names.push(dep.clone());
+            ts_dep_names.push(dep);
+        }
+
+        // TypeScript field — only for non-skipped fields.
+        if !skip {
+            // For TS we use the resolved TS type; fall back gracefully on
+            // type_override fields (treat them as `any`).
+            let ts_type_expr = if field_attrs.type_override.is_some() {
+                // Explicit BAML override with no corresponding TS type — use `any`.
+                quote! { ::std::string::String::from("any") }
+            } else {
+                match resolve_ts_type_tokens(&field.ty) {
+                    Ok(expr) => expr,
+                    // Unsupported type → fall back to `any` rather than a hard error.
+                    Err(_) => quote! { ::std::string::String::from("any") },
+                }
+            };
+            ts_field_pairs.push((field_name_str.clone(), ts_type_expr));
         }
 
         field_tokens.push(quote! {
@@ -103,6 +125,20 @@ fn expand_struct(
     }
 
     let dep_tokens = dep_names.iter().map(|d| quote! { #d }).collect::<Vec<_>>();
+    let ts_dep_tokens = ts_dep_names.iter().map(|d| quote! { #d }).collect::<Vec<_>>();
+
+    // Build the TypeScript `export interface` body at runtime.
+    // Each non-skipped field contributes a `"  name: type;\n"` line.
+    let ts_field_stmts: Vec<TokenStream> = ts_field_pairs
+        .iter()
+        .map(|(fname, ts_expr)| {
+            quote! {
+                out.push_str(&::std::format!("  {}: {};\n", #fname, #ts_expr));
+            }
+        })
+        .collect();
+
+    let ts_header = format!("export interface {name_str} {{\n");
 
     Ok(quote! {
         impl ::baml_derive_core::BamlType for #name {
@@ -123,6 +159,23 @@ fn expand_struct(
                 ::std::vec![#(#dep_tokens),*]
             }
         }
+
+        impl ::baml_derive_core::TsType for #name {
+            fn ts_type_name() -> &'static str {
+                #name_str
+            }
+
+            fn ts_decl() -> ::std::option::Option<::std::string::String> {
+                let mut out = ::std::string::String::from(#ts_header);
+                #(#ts_field_stmts)*
+                out.push('}');
+                ::std::option::Option::Some(out)
+            }
+
+            fn ts_dependencies() -> ::std::vec::Vec<&'static str> {
+                ::std::vec![#(#ts_dep_tokens),*]
+            }
+        }
     })
 }
 
@@ -135,6 +188,8 @@ fn expand_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream, syn:
     let doc_tokens = option_str_tokens(&doc);
 
     let mut variant_tokens = Vec::new();
+    // Collect non-skipped variant name strings for the TypeScript union.
+    let mut ts_variant_names: Vec<String> = Vec::new();
 
     for variant in &data.variants {
         // Ensure all variants are unit variants for a regular BAML enum.
@@ -151,6 +206,10 @@ fn expand_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream, syn:
         let desc_tokens = option_str_tokens(&variant_attrs.description);
         let skip = variant_attrs.skip;
 
+        if !skip {
+            ts_variant_names.push(variant_name_str.clone());
+        }
+
         variant_tokens.push(quote! {
             ::baml_derive_core::BamlVariantDef {
                 name: #variant_name_str,
@@ -160,6 +219,21 @@ fn expand_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream, syn:
             }
         });
     }
+
+    // Build the TypeScript `export type Foo = "A" | "B" | ...;` expression.
+    let ts_decl_expr = if ts_variant_names.is_empty() {
+        // All variants skipped — emit `export type Foo = never;`
+        let never_decl = format!("export type {name_str} = never;");
+        quote! { ::std::option::Option::Some(::std::string::String::from(#never_decl)) }
+    } else {
+        let joined = ts_variant_names
+            .iter()
+            .map(|v| format!("\"{v}\""))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let full_decl = format!("export type {name_str} = {joined};");
+        quote! { ::std::option::Option::Some(::std::string::String::from(#full_decl)) }
+    };
 
     Ok(quote! {
         impl ::baml_derive_core::BamlType for #name {
@@ -173,6 +247,16 @@ fn expand_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream, syn:
                     doc: #doc_tokens,
                     variants: ::std::vec![#(#variant_tokens),*],
                 })
+            }
+        }
+
+        impl ::baml_derive_core::TsType for #name {
+            fn ts_type_name() -> &'static str {
+                #name_str
+            }
+
+            fn ts_decl() -> ::std::option::Option<::std::string::String> {
+                #ts_decl_expr
             }
         }
     })
@@ -220,6 +304,10 @@ fn expand_union_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream
 
     let dep_tokens = dep_names.iter().map(|d| quote! { #d }).collect::<Vec<_>>();
 
+    // Build `export type Foo = TypeA | TypeB | ...;`
+    let ts_union = variant_type_names.join(" | ");
+    let ts_decl_str = format!("export type {name_str} = {ts_union};");
+
     Ok(quote! {
         impl ::baml_derive_core::BamlType for #name {
             fn baml_type_name() -> &'static str {
@@ -235,6 +323,20 @@ fn expand_union_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream
             }
 
             fn baml_dependencies() -> ::std::vec::Vec<&'static str> {
+                ::std::vec![#(#dep_tokens),*]
+            }
+        }
+
+        impl ::baml_derive_core::TsType for #name {
+            fn ts_type_name() -> &'static str {
+                #name_str
+            }
+
+            fn ts_decl() -> ::std::option::Option<::std::string::String> {
+                ::std::option::Option::Some(::std::string::String::from(#ts_decl_str))
+            }
+
+            fn ts_dependencies() -> ::std::vec::Vec<&'static str> {
                 ::std::vec![#(#dep_tokens),*]
             }
         }
