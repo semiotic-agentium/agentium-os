@@ -3,13 +3,12 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use baml_derive::BamlType;
 use baml_rt::{A2aRequestHandler, Result, tools::BamlTool};
 use baml_rt_tools::bundles::Support;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::task;
-use ts_rs::TS;
 
 #[derive(Clone)]
 pub struct A2aInMemoryClient {
@@ -63,16 +62,12 @@ impl BamlTool for A2aRelayTool {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct A2aRelayInput {
-    #[ts(type = "any")]
     request: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct A2aRelayOutput {
-    #[ts(type = "any[]")]
     responses: Vec<Value>,
 }

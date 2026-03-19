@@ -39,7 +39,6 @@ testing = []
 [dev-dependencies]
 test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
-schemars = { workspace = true }
-ts-rs = { workspace = true }
+baml-derive = { path = "../baml-derive" }
 proptest = "1.5"
 insta = { workspace = true }

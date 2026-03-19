@@ -18,9 +18,7 @@ use integrations_notion_read::{
 pub use notion_read::BASE_URL;
 /// Notion API version header value.
 pub use notion_read::NOTION_VERSION;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 const MAX_BLOCK_DEPTH: u32 = 10;
 const BLOCK_TEXT_MAX_CHARS: usize = 200;
 
@@ -109,25 +107,22 @@ fn backoff_delay(retries: usize) -> std::time::Duration {
 // Input types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct NotionSearchPagesInput {
     pub query: Option<String>,
     pub start_cursor: Option<String>,
     pub page_size: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct NotionGetPageInput {
     pub page_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct NotionGetPageBlocksInput {
     pub block_id: String,
     pub start_cursor: Option<String>,
@@ -143,10 +138,9 @@ pub struct NotionGetPageBlocksInput {
 /// `deny_unknown_fields` on each variant ensures untagged routing rejects
 /// mismatched fields. An empty object `{}` resolves to `SearchPages` (all
 /// fields optional), which is intentional: a bare search is a safe default.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[baml(union)]
 #[serde(untagged)]
-#[ts(export)]
 pub enum NotionInput {
     SearchPages(NotionSearchPagesInput),
     GetPage(NotionGetPageInput),
@@ -157,8 +151,7 @@ pub enum NotionInput {
 // Output types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct NotionPageSummary {
     pub id: String,
     pub title: String,
@@ -167,8 +160,7 @@ pub struct NotionPageSummary {
     pub last_edited_time: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct NotionBlockSummary {
     pub id: String,
     pub block_type: String,
@@ -177,8 +169,7 @@ pub struct NotionBlockSummary {
     pub has_children: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct NotionSource {
     pub page_id: String,
     pub url: String,
@@ -192,8 +183,7 @@ pub enum NotionOperation {
     GetPageBlocks,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct NotionOutput {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pages: Vec<NotionPageSummary>,
@@ -206,14 +196,11 @@ pub struct NotionOutput {
     pub sources: Vec<NotionSource>,
     pub message: String,
     #[baml(skip)]
-    #[schemars(skip)]
-    #[ts(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<NotionOperation>,
 }
 
-#[derive(Debug, Default, Clone, Copy, Serialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Default, Clone, Copy, Serialize, BamlType)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockRenderMode {
     Raw,

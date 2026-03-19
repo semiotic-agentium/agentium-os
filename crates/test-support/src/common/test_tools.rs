@@ -3,21 +3,17 @@
 use async_trait::async_trait;
 use baml_rt::{Result, tools::BamlTool};
 use baml_rt_tools::bundles::{BundleType, Support};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 /// Example weather tool
 pub struct WeatherTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeatherInput {
     location: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeatherOutput {
     location: String,
     temperature: String,
@@ -60,14 +56,12 @@ impl BamlTool for WeatherTool {
 /// Example uppercase string tool
 pub struct UppercaseTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UppercaseInput {
     text: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UppercaseOutput {
     result: String,
     original: String,
@@ -96,8 +90,7 @@ impl BamlTool for UppercaseTool {
 /// Delayed response tool for testing async operations
 pub struct DelayedResponseTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelayedInput {
     message: String,
 }
@@ -115,15 +108,13 @@ impl BundleType for Test {
 /// Example add-numbers tool for A2A tests.
 pub struct AddNumbersTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddNumbersInput {
     pub a: f64,
     pub b: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AddNumbersOutput {
     pub result: f64,
 }
@@ -147,8 +138,7 @@ impl BamlTool for AddNumbersTool {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DelayedOutput {
     response: String,
     timestamp: String,

@@ -4,16 +4,14 @@
 //! schema/TypeScript bindings are self-documenting and invalid values are
 //! rejected at deserialization time.
 
-use schemars::JsonSchema;
+use baml_derive::BamlType;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 // ---------------------------------------------------------------------------
 // memory/add
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryEventType {
     Fact,
@@ -24,8 +22,7 @@ pub enum MemoryEventType {
     Episode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryEdgeType {
     CausedBy,
@@ -37,8 +34,7 @@ pub enum MemoryEdgeType {
     TemporalNext,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryTraversalDirection {
     Forward,
@@ -46,8 +42,7 @@ pub enum MemoryTraversalDirection {
     Both,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoryHealthStatus {
     Pass,
@@ -55,8 +50,7 @@ pub enum MemoryHealthStatus {
     Fail,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryEventInput {
     /// Event type.
@@ -71,8 +65,7 @@ pub struct MemoryEventInput {
     pub confidence: Option<f32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryEdgeInput {
     /// Source node ID.
@@ -86,16 +79,14 @@ pub struct MemoryEdgeInput {
     pub weight: Option<f32>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryAddOpenInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryAddSendInput {
     /// Cognitive events to store.
@@ -107,8 +98,7 @@ pub struct MemoryAddSendInput {
     pub edges: Option<Vec<MemoryEdgeInput>>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryAddNextOutput {
     /// IDs of newly created nodes (in the same order as input events).
@@ -122,16 +112,14 @@ pub struct MemoryAddNextOutput {
 // memory/search
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemorySearchOpenInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemorySearchSendInput {
     /// Text query (BM25 ranked).
@@ -147,8 +135,7 @@ pub struct MemorySearchSendInput {
     pub max: Option<usize>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemorySearchMatch {
     pub id: u64,
@@ -161,8 +148,7 @@ pub struct MemorySearchMatch {
     pub confidence: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemorySearchNextOutput {
     pub matches: Vec<MemorySearchMatch>,
@@ -173,16 +159,14 @@ pub struct MemorySearchNextOutput {
 // memory/traverse
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryTraverseOpenInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryTraverseSendInput {
     /// Starting node ID.
@@ -198,8 +182,7 @@ pub struct MemoryTraverseSendInput {
     pub depth: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct TraversalNode {
     pub id: u64,
@@ -209,8 +192,7 @@ pub struct TraversalNode {
     pub depth: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct TraversalEdge {
     pub source: u64,
@@ -219,8 +201,7 @@ pub struct TraversalEdge {
     pub weight: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryTraverseNextOutput {
     pub nodes: Vec<TraversalNode>,
@@ -232,24 +213,21 @@ pub struct MemoryTraverseNextOutput {
 // memory/resolve
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryResolveOpenInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryResolveSendInput {
     /// Node ID to resolve (follows supersedes chain to current truth).
     pub node_id: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryResolveNextOutput {
     pub id: u64,
@@ -265,16 +243,14 @@ pub struct MemoryResolveNextOutput {
 // memory/impact
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryImpactOpenInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryImpactSendInput {
     /// Node ID to analyze impact for.
@@ -284,8 +260,7 @@ pub struct MemoryImpactSendInput {
     pub depth: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryImpactNextOutput {
     pub dependent_count: usize,
@@ -299,24 +274,21 @@ pub struct MemoryImpactNextOutput {
 // memory/link
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryLinkOpenInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryLinkSendInput {
     /// Edges to create.
     pub edges: Vec<MemoryEdgeInput>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryLinkNextOutput {
     pub edges_created: usize,
@@ -327,27 +299,23 @@ pub struct MemoryLinkNextOutput {
 // memory/stats
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryStatsOpenInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryStatsSendInput {
     /// Reserved optional field: the BAML schema generator currently rejects
     /// empty classes, so this keeps the wire input effectively `{}`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(skip)]
     pub reserved: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryStatsNextOutput {
     /// Overall health.

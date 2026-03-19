@@ -1,0 +1,173 @@
+//! Rust → JSON Schema resolution at the AST level.
+//!
+//! Mirrors `resolve.rs` and `ts_resolve.rs` but emits `serde_json::Value`
+//! expressions (as `TokenStream`) for JSON Schema generation, inserted into
+//! `JsonSchemaType` impls.
+//!
+//! Every function here returns a `TokenStream` that evaluates to a
+//! `serde_json::Value` at the call site (i.e. inside the generated `impl`).
+//! No `serde_json` runtime dependency is required in this proc-macro crate.
+
+use proc_macro2::TokenStream;
+use quote::quote;
+use syn::Type;
+
+/// Returns `true` when `ty` is `Option<_>` at the top level.
+///
+/// Used to determine which struct fields should appear in JSON Schema `required`.
+pub(crate) fn is_option_type(ty: &Type) -> bool {
+    if let Type::Path(tp) = ty {
+        if let Some(last) = tp.path.segments.last() {
+            return last.ident == "Option";
+        }
+    }
+    false
+}
+
+/// Generate a `TokenStream` expression that evaluates to a `serde_json::Value`
+/// representing the inline JSON Schema for the given Rust type.
+pub(crate) fn resolve_schema_tokens(ty: &Type) -> Result<TokenStream, syn::Error> {
+    match ty {
+        Type::Path(type_path) => resolve_schema_path_tokens(type_path),
+        Type::Reference(type_ref) => resolve_schema_tokens(&type_ref.elem),
+        _ => Err(syn::Error::new_spanned(
+            ty,
+            "unsupported type for JSON Schema derivation",
+        )),
+    }
+}
+
+fn resolve_schema_path_tokens(type_path: &syn::TypePath) -> Result<TokenStream, syn::Error> {
+    let path = &type_path.path;
+    let last_segment = path.segments.last().ok_or_else(|| {
+        syn::Error::new_spanned(path, "empty path cannot be resolved to a JSON Schema type")
+    })?;
+
+    let ident = &last_segment.ident;
+    let ident_str = ident.to_string();
+
+    // Primitives — emit a literal serde_json::json!({...}) expression.
+    if let Some(schema_expr) = schema_primitive_tokens(&ident_str) {
+        return Ok(schema_expr);
+    }
+
+    // Special: serde_json::Value (or any bare `Value` ident) → "any" schema
+    if ident_str == "Value" {
+        return Ok(quote! { ::serde_json::json!({}) });
+    }
+
+    // Generic wrappers
+    match ident_str.as_str() {
+        "Option" => {
+            let inner = extract_single_generic_arg(last_segment)?;
+            let inner_tokens = resolve_schema_tokens(&inner)?;
+            return Ok(quote! {
+                {
+                    let __inner = #inner_tokens;
+                    ::serde_json::json!({"anyOf": [__inner, {"type": "null"}]})
+                }
+            });
+        }
+        "Vec" => {
+            let inner = extract_single_generic_arg(last_segment)?;
+            let inner_tokens = resolve_schema_tokens(&inner)?;
+            return Ok(quote! {
+                {
+                    let __items = #inner_tokens;
+                    ::serde_json::json!({"type": "array", "items": __items})
+                }
+            });
+        }
+        "HashMap" | "BTreeMap" => {
+            let (_key, val) = extract_two_generic_args(last_segment)?;
+            let val_tokens = resolve_schema_tokens(&val)?;
+            return Ok(quote! {
+                {
+                    let __add_props = #val_tokens;
+                    ::serde_json::json!({"type": "object", "additionalProperties": __add_props})
+                }
+            });
+        }
+        "Box" => {
+            let inner = extract_single_generic_arg(last_segment)?;
+            return resolve_schema_tokens(&inner);
+        }
+        _ => {}
+    }
+
+    // Unknown generics → fall back to "any" rather than a hard error.
+    if has_generic_args(last_segment) {
+        return Ok(quote! { ::serde_json::json!({}) });
+    }
+
+    // User-defined type — delegate to its `JsonSchemaType` impl.
+    Ok(quote! {
+        <#ident as ::baml_derive_core::JsonSchemaType>::json_schema_inline()
+    })
+}
+
+/// Return a `TokenStream` for the JSON Schema of a Rust primitive type,
+/// or `None` if the type is not a known primitive.
+///
+/// Each returned expression evaluates to a `serde_json::Value` at runtime.
+fn schema_primitive_tokens(ident: &str) -> Option<TokenStream> {
+    match ident {
+        "String" | "str" => Some(quote! { ::serde_json::json!({"type": "string"}) }),
+        "bool" => Some(quote! { ::serde_json::json!({"type": "boolean"}) }),
+        "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128"
+        | "isize" | "usize" => Some(quote! { ::serde_json::json!({"type": "integer"}) }),
+        "f32" | "f64" => Some(quote! { ::serde_json::json!({"type": "number"}) }),
+        _ => None,
+    }
+}
+
+fn extract_single_generic_arg(segment: &syn::PathSegment) -> Result<Type, syn::Error> {
+    match &segment.arguments {
+        syn::PathArguments::AngleBracketed(args) => {
+            let first = args.args.first().ok_or_else(|| {
+                syn::Error::new_spanned(segment, "expected at least one generic argument")
+            })?;
+            match first {
+                syn::GenericArgument::Type(ty) => Ok(ty.clone()),
+                _ => Err(syn::Error::new_spanned(
+                    first,
+                    "expected a type argument, not a lifetime or const",
+                )),
+            }
+        }
+        _ => Err(syn::Error::new_spanned(
+            segment,
+            "expected angle-bracketed generic arguments",
+        )),
+    }
+}
+
+fn extract_two_generic_args(segment: &syn::PathSegment) -> Result<(Type, Type), syn::Error> {
+    match &segment.arguments {
+        syn::PathArguments::AngleBracketed(args) => {
+            if args.args.len() < 2 {
+                return Err(syn::Error::new_spanned(
+                    segment,
+                    "expected two generic arguments for map type",
+                ));
+            }
+            let key = match &args.args[0] {
+                syn::GenericArgument::Type(ty) => ty.clone(),
+                other => return Err(syn::Error::new_spanned(other, "expected a type argument")),
+            };
+            let val = match &args.args[1] {
+                syn::GenericArgument::Type(ty) => ty.clone(),
+                other => return Err(syn::Error::new_spanned(other, "expected a type argument")),
+            };
+            Ok((key, val))
+        }
+        _ => Err(syn::Error::new_spanned(
+            segment,
+            "expected angle-bracketed generic arguments",
+        )),
+    }
+}
+
+fn has_generic_args(segment: &syn::PathSegment) -> bool {
+    !matches!(segment.arguments, syn::PathArguments::None)
+}

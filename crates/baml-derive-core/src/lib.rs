@@ -8,10 +8,12 @@
 //! - [`BamlFileOutput`] and [`BamlRenderTarget`] for `generate_baml!()` integration
 
 pub mod render;
+pub mod schema;
 pub mod ts_render;
 pub mod types;
 
 pub use render::render_baml_types;
+pub use schema::{JsonSchemaType, root_json_schema};
 pub use ts_render::render_ts_declarations;
 pub use types::{
     BamlClassDef, BamlDefinition, BamlEnumDef, BamlFieldDef, BamlFileOutput, BamlRenderTarget,
@@ -88,6 +90,18 @@ pub trait TsType: Send + Sync + 'static {
 impl TsType for () {
     fn ts_type_name() -> &'static str {
         "()"
+    }
+    fn ts_decl() -> Option<String> {
+        None
+    }
+}
+
+/// `TsType` for `serde_json::Value`.
+///
+/// Maps to TypeScript `any`, as `serde_json::Value` can hold any JSON value.
+impl TsType for serde_json::Value {
+    fn ts_type_name() -> &'static str {
+        "any"
     }
     fn ts_decl() -> Option<String> {
         None

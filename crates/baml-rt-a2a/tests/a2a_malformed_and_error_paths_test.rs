@@ -28,12 +28,11 @@ use baml_rt::{
     A2aAgent, A2aRequestHandler, QuickJSConfig, baml::BamlRuntimeManager, tools::BamlTool,
 };
 use baml_rt_tools::bundles::BundleType;
-use schemars::JsonSchema;
+use baml_derive::BamlType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use test_support::common::{AddNumbersTool, chunk_content, send_stream_request};
 use tokio::time::timeout;
-use ts_rs::TS;
 
 struct Test;
 
@@ -201,13 +200,11 @@ async fn test_concurrent_stream_phase_matrix_regression_under_load() {
 /// Tool that always returns `Err` on execute; used to assert streaming error handling.
 struct FailingTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct FailingInput {
     msg: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct FailingOutput {
     ok: bool,
 }

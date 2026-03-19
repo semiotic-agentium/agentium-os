@@ -34,7 +34,7 @@ use baml_rt_core::{
     context::{self, InvocationScope},
     ids::{AgentId, UuidId},
 };
-use schemars::JsonSchema;
+use baml_derive::BamlType;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use test_support::common::{
@@ -46,7 +46,6 @@ use tokio::{
     sync::Barrier,
     time::{Duration, timeout},
 };
-use ts_rs::TS;
 
 /// Stub interceptor: strict-mode single fragment for calculator session tests.
 struct StubChooseCalcToolStrictInterceptor;
@@ -161,14 +160,12 @@ async fn test_llm_tool_calling_js() {
     // Register a tool using the trait
     struct ReverseStringTool;
 
-    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-    #[ts(export)]
+    #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
     struct ReverseInput {
         text: String,
     }
 
-    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-    #[ts(export)]
+    #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
     struct ReverseOutput {
         reversed: String,
         original: String,

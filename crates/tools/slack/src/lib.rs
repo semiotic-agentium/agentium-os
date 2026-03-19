@@ -15,9 +15,7 @@ use baml_derive::BamlType;
 use baml_rt_core::{BamlRtError, Result};
 use baml_rt_tools::{baml_tool, bundles::Support, tools::BamlTool};
 use integrations_slack_read::{self as slack_read, SlackReadClient, SlackReadError};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
 /// Slack API base URL.
 pub const BASE_URL: &str = "https://slack.com/api";
@@ -68,9 +66,8 @@ fn backoff_delay(retries: usize) -> std::time::Duration {
 // ---------------------------------------------------------------------------
 
 #[derive(
-    Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, BamlType,
+    Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, BamlType,
 )]
-#[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackAuthPreference {
     #[default]
@@ -79,8 +76,7 @@ pub enum SlackAuthPreference {
     User,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackConversationKind {
     PublicChannel,
@@ -100,8 +96,7 @@ impl SlackConversationKind {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackHistoryOrder {
     #[default]
@@ -109,8 +104,7 @@ pub enum SlackHistoryOrder {
     OldestFirst,
 }
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackUserResolutionMode {
     None,
@@ -118,8 +112,7 @@ pub enum SlackUserResolutionMode {
     ResolveUsers,
 }
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackSearchSort {
     #[default]
@@ -127,8 +120,7 @@ pub enum SlackSearchSort {
     Timestamp,
 }
 
-#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackSearchDirection {
     Asc,
@@ -137,9 +129,8 @@ pub enum SlackSearchDirection {
 }
 
 /// List conversations available to the authorized token.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct ListConversationsInput {
     /// Slack conversation kinds to include.
     pub kinds: Vec<SlackConversationKind>,
@@ -151,9 +142,8 @@ pub struct ListConversationsInput {
 }
 
 /// Retrieve messages from a channel conversation history.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct GetConversationHistoryInput {
     pub channel_id: String,
     pub cursor: Option<String>,
@@ -167,9 +157,8 @@ pub struct GetConversationHistoryInput {
 }
 
 /// Retrieve replies in a thread.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct GetThreadRepliesInput {
     pub channel_id: String,
     pub thread_ts: String,
@@ -184,9 +173,8 @@ pub struct GetThreadRepliesInput {
 }
 
 /// Resolve specific Slack user IDs to display data.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct ResolveUsersInput {
     pub user_ids: Vec<String>,
     pub auth: Option<SlackAuthPreference>,
@@ -195,9 +183,8 @@ pub struct ResolveUsersInput {
 /// Search Slack messages.
 ///
 /// Requires a user token (`SLACK_USER_TOKEN`) in most Slack orgs.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(deny_unknown_fields)]
-#[ts(export)]
 pub struct SearchMessagesInput {
     pub query: String,
     pub count: Option<u16>,
@@ -209,10 +196,9 @@ pub struct SearchMessagesInput {
 }
 
 /// Typed action union for `support/slack`.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[baml(union)]
 #[serde(untagged)]
-#[ts(export)]
 pub enum SlackInput {
     GetThreadReplies(GetThreadRepliesInput),
     GetConversationHistory(GetConversationHistoryInput),
@@ -225,8 +211,7 @@ pub enum SlackInput {
 // Output types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackSourceKind {
     Conversation,
@@ -236,8 +221,7 @@ pub enum SlackSourceKind {
     User,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct SlackSource {
     pub kind: SlackSourceKind,
     /// Stable Slack reference (for example `slack://channel/C123/p1700000000000000`).
@@ -262,8 +246,7 @@ pub enum SlackOperation {
     SearchMessages,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct SlackConversationSummary {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -276,8 +259,7 @@ pub struct SlackConversationSummary {
     pub num_members: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct SlackUserSummary {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -292,8 +274,7 @@ pub struct SlackUserSummary {
     pub email: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct SlackMessageSummary {
     pub channel_id: String,
     pub ts: String,
@@ -311,8 +292,7 @@ pub struct SlackMessageSummary {
     pub permalink: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct SlackOutput {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub conversations: Vec<SlackConversationSummary>,
@@ -327,8 +307,6 @@ pub struct SlackOutput {
     pub sources: Vec<SlackSource>,
     pub message: String,
     #[baml(skip)]
-    #[schemars(skip)]
-    #[ts(skip)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub operation: Option<SlackOperation>,
 }

@@ -17,11 +17,10 @@ use baml_rt_core::{
     ids::{AgentId, TaskId},
 };
 use dashmap::DashMap;
-use schemars::JsonSchema;
+use baml_derive::BamlType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::Mutex as TokioMutex;
-use ts_rs::TS;
 
 use crate::{
     bundles::BundleType,
@@ -138,20 +137,17 @@ pub fn parse_tool_name_and_class(name: &str) -> Result<(ToolName, String)> {
 /// use baml_rt_tools::{BamlTool, Support};
 /// use baml_rt_core::Result;
 /// use serde::{Deserialize, Serialize};
-/// use schemars::JsonSchema;
-/// use ts_rs::TS;
+/// use baml_derive::BamlType;
 /// use async_trait::async_trait;
 ///
 /// struct WeatherTool;
 ///
-/// #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-/// #[ts(export)]
+/// #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 /// struct WeatherInput {
 ///     location: String,
 /// }
 ///
-/// #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-/// #[ts(export)]
+/// #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 /// struct WeatherOutput {
 ///     temperature: String,
 ///     location: String,
@@ -994,16 +990,14 @@ pub struct ToolSessionContext {
 ///
 /// This is runtime-general and tool-agnostic. Tools may opt into supporting one or more
 /// read modes and must validate mode-specific constraints.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionReadMode {
     #[serde(alias = "RETRIEVE_REF", alias = "RetrieveRef")]
     RetrieveRef,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionReadEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1015,8 +1009,7 @@ pub struct SessionReadEnvelope {
     pub budget_hint: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, PartialEq, Eq)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct HistoryContextV1 {
     pub hop: u32,
@@ -1026,8 +1019,8 @@ pub struct HistoryContextV1 {
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
-    #[ts(type = "Record<string, unknown> | null")]
-    #[schemars(with = "Option<std::collections::BTreeMap<String, serde_json::Value>>")]
+    // `BTreeMap<String, Value>` auto-maps to `Record<string, any> | null` in TS
+    // and `{"type":"object","additionalProperties":{}} | null` in JSON Schema.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payload: Option<BTreeMap<String, Value>>,
 }
@@ -1496,12 +1489,10 @@ impl ToolRegistry {
     ///
     /// struct MyTool;
     ///
-    /// #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-    /// #[ts(export)]
+    /// #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
     /// struct MyInput {}
     ///
-    /// #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-    /// #[ts(export)]
+    /// #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
     /// struct MyOutput {}
     ///
     /// #[async_trait]

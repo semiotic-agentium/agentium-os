@@ -2,20 +2,16 @@ use async_trait::async_trait;
 use baml_derive::BamlType;
 use baml_rt_core::Result;
 use baml_rt_tools::{baml_tool, bundles::Support, tools::BamlTool};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct Expression {
     pub left: i64,
     pub operation: MathOperation,
     pub right: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub enum MathOperation {
     #[serde(alias = "+")]
     #[baml(alias = "+")]
@@ -31,14 +27,12 @@ pub enum MathOperation {
     Divide,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct CalculatorInput {
     pub expression: Expression,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct CalculatorOutput {
     pub expression: String,
     pub result: f64,

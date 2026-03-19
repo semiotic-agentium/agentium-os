@@ -10,12 +10,11 @@ description = "System tool bundle (e.g. system/a2a for agent-to-agent calls)"
 baml-rt-core = { path = "../../baml-rt-core" }
 baml-rt-provenance = { path = "../../baml-rt-provenance" }
 baml-rt-tools = { path = "../../baml-rt-tools" }
+baml-derive = { path = "../../baml-derive" }
 async-trait = { workspace = true }
 inventory = { workspace = true }
-schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-ts-rs = { workspace = true }
 tokio = { workspace = true }
 futures-util = { workspace = true }
 uuid = { workspace = true }

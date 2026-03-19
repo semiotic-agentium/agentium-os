@@ -1410,6 +1410,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "baml-derive 0.1.0",
  "baml-rt",
  "baml-rt-a2a",
  "baml-rt-api",
@@ -1429,14 +1430,12 @@ dependencies = [
  "futures-util",
  "insta",
  "reqwest 0.12.26",
- "schemars 1.2.1",
  "serde",
  "serde_json",
  "tar",
  "test-support",
  "tokio",
  "tracing",
- "ts-rs",
  "uuid",
 ]
 
@@ -1484,6 +1483,7 @@ version = "0.1.0"
 dependencies = [
  "insta",
  "inventory",
+ "serde_json",
 ]
 
 [[package]]
@@ -1493,6 +1493,7 @@ dependencies = [
  "baml-derive 0.1.0",
  "baml-derive-core",
  "insta",
+ "serde_json",
 ]
 
 [[package]]
@@ -1569,6 +1570,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "baml-derive 0.1.0",
  "baml-rt-a2a",
  "baml-rt-builder",
  "baml-rt-core",
@@ -1582,7 +1584,6 @@ dependencies = [
  "flate2",
  "futures-util",
  "regex",
- "schemars 1.2.1",
  "serde",
  "serde_json",
  "tar",
@@ -1591,7 +1592,6 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
- "ts-rs",
  "uuid",
 ]
 
@@ -1602,6 +1602,7 @@ dependencies = [
  "async-channel 2.5.0",
  "async-stream",
  "async-trait",
+ "baml-derive 0.1.0",
  "baml-rt",
  "baml-rt-core",
  "baml-rt-observability",
@@ -1615,7 +1616,6 @@ dependencies = [
  "opentelemetry 0.26.0",
  "opentelemetry_sdk",
  "proptest",
- "schemars 1.2.1",
  "serde",
  "serde_json",
  "test-support",
@@ -1623,7 +1623,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
- "ts-rs",
  "uuid",
 ]
 
@@ -1830,6 +1829,7 @@ dependencies = [
  "anyhow",
  "async-channel 2.5.0",
  "async-trait",
+ "baml-derive 0.1.0",
  "baml-rt",
  "baml-rt-core",
  "baml-rt-interceptor",
@@ -1846,7 +1846,6 @@ dependencies = [
  "proptest",
  "quickjs_runtime",
  "regex",
- "schemars 1.2.1",
  "serde",
  "serde_json",
  "test-support",
@@ -1855,7 +1854,6 @@ dependencies = [
  "tokio-test",
  "tokio-util",
  "tracing",
- "ts-rs",
  "uuid",
 ]
 
@@ -1900,14 +1898,12 @@ dependencies = [
  "genco",
  "inventory",
  "opentelemetry 0.26.0",
- "schemars 1.2.1",
  "serde",
  "serde_json",
  "test-support",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "ts-rs",
  "uuid",
 ]
 
@@ -1917,18 +1913,18 @@ version = "0.1.0"
 dependencies = [
  "async-channel 2.5.0",
  "async-trait",
+ "baml-derive 0.1.0",
+ "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
  "claude-agent-sdk-rs",
  "futures-util",
  "inventory",
- "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing",
- "ts-rs",
 ]
 
 [[package]]
@@ -2089,9 +2085,8 @@ dependencies = [
  "baml-rt-core",
  "baml-rt-tools",
  "inventory",
- "schemars 1.2.1",
  "serde",
- "ts-rs",
+ "serde_json",
 ]
 
 [[package]]
@@ -2106,12 +2101,10 @@ dependencies = [
  "integrations-clickup-client",
  "inventory",
  "reqwest 0.12.26",
- "schemars 1.2.1",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "tracing",
- "ts-rs",
 ]
 
 [[package]]
@@ -2119,15 +2112,14 @@ name = "baml-tools-internal-dev"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "baml-derive 0.1.0",
  "baml-rt-core",
  "baml-rt-tools",
  "inventory",
- "schemars 1.2.1",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
- "ts-rs",
 ]
 
 [[package]]
@@ -2136,18 +2128,17 @@ version = "0.1.0"
 dependencies = [
  "agentic-memory",
  "async-trait",
+ "baml-derive 0.1.0",
  "baml-rt-core",
  "baml-rt-tools",
  "inventory",
  "libc",
- "schemars 1.2.1",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "ts-rs",
 ]
 
 [[package]]
@@ -2162,14 +2153,12 @@ dependencies = [
  "integrations-notion-read",
  "inventory",
  "reqwest 0.12.26",
- "schemars 1.2.1",
  "serde",
  "serde_json",
  "test-support",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "ts-rs",
 ]
 
 [[package]]
@@ -2185,14 +2174,12 @@ dependencies = [
  "integrations-slack-read",
  "inventory",
  "reqwest 0.12.26",
- "schemars 1.2.1",
  "serde",
  "serde_json",
  "test-support",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
- "ts-rs",
 ]
 
 [[package]]
@@ -2201,6 +2188,7 @@ version = "0.1.0"
 dependencies = [
  "async-channel 2.5.0",
  "async-trait",
+ "baml-derive 0.1.0",
  "baml-rt-core",
  "baml-rt-provenance",
  "baml-rt-tools",
@@ -2208,12 +2196,10 @@ dependencies = [
  "futures-util",
  "insta",
  "inventory",
- "schemars 1.2.1",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
- "ts-rs",
  "uuid",
 ]
 
@@ -9462,21 +9448,8 @@ checksum = "a2b42f36aa1cd011945615b92222f6bf73c599a102a300334cd7f8dbeec726cc"
 dependencies = [
  "dyn-clone",
  "ref-cast",
- "schemars_derive",
  "serde",
  "serde_json",
-]
-
-[[package]]
-name = "schemars_derive"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d115b50f4aaeea07e79c1912f645c7513d81715d0420f8bc77a18c6260b307f"
-dependencies = [
- "proc-macro2",
- "quote",
- "serde_derive_internals",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -9643,17 +9616,6 @@ name = "serde_derive"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d540f220d3187173da220f885ab66608367b6574e925011a9353e4badda91d79"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "serde_derive_internals"
-version = "0.29.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18d26a20a969b9e3fdf2fc2d9f21eda6c40e2de84c9408bb5d3b05d499aae711"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -10618,6 +10580,7 @@ name = "test-support"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "baml-derive 0.1.0",
  "baml-rt",
  "baml-rt-builder",
  "baml-rt-core",
@@ -10627,13 +10590,11 @@ dependencies = [
  "baml-tools-calculator",
  "dotenvy",
  "flate2",
- "schemars 1.2.1",
  "serde",
  "serde_json",
  "tar",
  "tokio",
  "tracing",
- "ts-rs",
  "uuid",
 ]
 

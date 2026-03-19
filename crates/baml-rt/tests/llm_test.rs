@@ -21,7 +21,7 @@ use baml_rt_tools::{
     parse_tool_name_and_class,
     tools::{ToolFunctionMetadata, ToolMetadataBuilder, TypeBasedMetadataBuilder},
 };
-use schemars::JsonSchema;
+use baml_derive::BamlType;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use test_support::common::{
@@ -29,7 +29,6 @@ use test_support::common::{
     setup_baml_runtime_from_fixture, setup_bridge,
 };
 use tokio::sync::Mutex;
-use ts_rs::TS;
 use uuid::Uuid;
 
 struct TestEvalBundle;
@@ -41,8 +40,7 @@ impl BundleType for TestEvalBundle {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "snake_case")]
 #[derive(Default)]
 enum SyntheticProjection {
@@ -55,8 +53,7 @@ enum SyntheticProjection {
     Detail,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct SyntheticSessionEvalInput {
     #[serde(default)]
     read: Option<SyntheticReadEnvelope>,
@@ -68,8 +65,7 @@ struct SyntheticSessionEvalInput {
     projection: SyntheticProjection,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 struct SyntheticReadEnvelope {
     ref_id: String,
@@ -77,8 +73,7 @@ struct SyntheticReadEnvelope {
     budget_hint: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct SyntheticSessionEvalOutput {
     projection: SyntheticProjection,
     goal_id: Option<String>,
@@ -91,8 +86,7 @@ struct SyntheticSessionEvalOutput {
     returned_items: u32,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 struct SyntheticSummary {
     count: u32,
     failed_count: u32,
@@ -103,8 +97,7 @@ struct SyntheticSummary {
     cached_input_tokens_total: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct SyntheticEvalRow {
     ref_id: String,
     label: String,
@@ -118,8 +111,7 @@ struct SyntheticEvalRow {
     cached_input_tokens_total: u32,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 struct SyntheticSessionEvalOpenInput {
     #[serde(default)]
     reason: Option<String>,

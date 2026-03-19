@@ -1,22 +1,19 @@
 //! Internal development tool implementations (testing and dev only).
 
-use schemars::JsonSchema;
+use baml_derive::BamlType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use ts_rs::TS;
 
 // ---------- Calculator types (moved from baml-rt-tools::support) ----------
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct Expression {
     pub left: i64,
     pub operation: MathOperation,
     pub right: i64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub enum MathOperation {
     #[serde(alias = "+")]
     Add,
@@ -28,14 +25,12 @@ pub enum MathOperation {
     Divide,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct CalculatorInput {
     pub expression: Expression,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct CalculatorOutput {
     pub expression: String,
     pub result: f64,
@@ -44,14 +39,12 @@ pub struct CalculatorOutput {
 
 // ---------- Weather types ----------
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct WeatherInput {
     pub location: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct WeatherOutput {
     pub location: String,
     pub temperature: String,
@@ -64,14 +57,12 @@ pub struct WeatherOutput {
 
 // ---------- Uppercase types ----------
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct UppercaseInput {
     pub text: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct UppercaseOutput {
     pub result: String,
     pub original: String,
@@ -79,14 +70,12 @@ pub struct UppercaseOutput {
 
 // ---------- Delayed types ----------
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct DelayedInput {
     pub message: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct DelayedOutput {
     pub response: String,
     pub timestamp: String,
@@ -94,16 +83,12 @@ pub struct DelayedOutput {
 
 // ---------- A2A relay types ----------
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct A2aRelayInput {
-    #[ts(type = "any")]
     pub request: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct A2aRelayOutput {
-    #[ts(type = "any[]")]
     pub responses: Vec<Value>,
 }

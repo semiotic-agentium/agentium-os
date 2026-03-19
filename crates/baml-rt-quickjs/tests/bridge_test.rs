@@ -23,11 +23,10 @@ use baml_rt_provenance::{
     GraphqliteStoreBuilder, ProvEvent, ProvenanceEffectSubscriber, ProvenanceWriter,
 };
 use baml_rt_tools::{BamlTool, bundles::BundleType};
-use schemars::JsonSchema;
+use baml_derive::BamlType;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{sync::Mutex, task::LocalSet};
-use ts_rs::TS;
 
 // Test bundle for test tools
 struct Test;
@@ -426,8 +425,7 @@ async fn test_bridge_lock_not_held_across_async_work() {
 #[derive(Debug)]
 struct ScopeEchoTool;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct ScopeEchoInput {
     text: Option<String>,
     context_id: Option<String>,
@@ -435,8 +433,7 @@ struct ScopeEchoInput {
     task_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct ScopeEchoOutput {
     context_id: Option<String>,
     message_id: Option<String>,
@@ -473,12 +470,10 @@ impl BamlTool for ScopeEchoTool {
 /// work) would deadlock since the second invocation can never enter execute().
 struct BarrierTool(Arc<tokio::sync::Barrier>);
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, Default)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType, Default)]
 struct BarrierInput {}
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 struct BarrierOutput {
     done: bool,
 }

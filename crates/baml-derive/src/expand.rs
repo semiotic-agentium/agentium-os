@@ -12,6 +12,7 @@ use syn::{DataEnum, DataStruct, DeriveInput, Fields, Type};
 use crate::{
     attrs::{extract_doc_comment, parse_container_attrs, parse_field_attrs, parse_variant_attrs},
     resolve::resolve_type_tokens,
+    schema_resolve::{is_option_type, resolve_schema_tokens},
     ts_resolve::resolve_ts_type_tokens,
 };
 
@@ -60,8 +61,10 @@ fn expand_struct(
     };
 
     let mut field_tokens = Vec::new();
-    // Each entry is `Some((field_name_str, ts_type_expr))` for non-skipped fields.
+    // Each entry is `(field_name_str, ts_type_expr)` for non-skipped fields.
     let mut ts_field_pairs: Vec<(String, TokenStream)> = Vec::new();
+    // Each entry is `(field_name_str, schema_expr, is_required)` for non-skipped fields.
+    let mut schema_field_triples: Vec<(String, TokenStream, bool)> = Vec::new();
     let mut dep_names = Vec::new();
     let mut ts_dep_names: Vec<String> = Vec::new();
 
@@ -81,7 +84,6 @@ fn expand_struct(
         let baml_type_expr = if let Some(ref override_type) = field_attrs.type_override {
             quote! { ::std::string::String::from(#override_type) }
         } else if skip {
-            // Skipped fields don't need type resolution — use a placeholder.
             quote! { ::std::string::String::new() }
         } else {
             resolve_type_tokens(&field.ty)?
@@ -96,21 +98,33 @@ fn expand_struct(
             ts_dep_names.push(dep);
         }
 
-        // TypeScript field — only for non-skipped fields.
         if !skip {
-            // For TS we use the resolved TS type; fall back gracefully on
-            // type_override fields (treat them as `any`).
-            let ts_type_expr = if field_attrs.type_override.is_some() {
-                // Explicit BAML override with no corresponding TS type — use `any`.
+            // TypeScript — respect explicit ts_type override, then auto-resolve.
+            let ts_type_expr = if let Some(ref explicit) = field_attrs.ts_type {
+                quote! { ::std::string::String::from(#explicit) }
+            } else if field_attrs.type_override.is_some() {
                 quote! { ::std::string::String::from("any") }
             } else {
                 match resolve_ts_type_tokens(&field.ty) {
                     Ok(expr) => expr,
-                    // Unsupported type → fall back to `any` rather than a hard error.
                     Err(_) => quote! { ::std::string::String::from("any") },
                 }
             };
             ts_field_pairs.push((field_name_str.clone(), ts_type_expr));
+
+            // JSON Schema — when there's a BAML type override we don't know the
+            // actual JSON structure, so fall back to `{}` (any schema).
+            // Otherwise auto-resolve; fall back to `{}` on failure.
+            let schema_expr = if field_attrs.type_override.is_some() {
+                quote! { ::serde_json::json!({}) }
+            } else {
+                match resolve_schema_tokens(&field.ty) {
+                    Ok(expr) => expr,
+                    Err(_) => quote! { ::serde_json::json!({}) },
+                }
+            };
+            let is_required = !is_option_type(&field.ty);
+            schema_field_triples.push((field_name_str.clone(), schema_expr, is_required));
         }
 
         field_tokens.push(quote! {
@@ -127,8 +141,7 @@ fn expand_struct(
     let dep_tokens = dep_names.iter().map(|d| quote! { #d }).collect::<Vec<_>>();
     let ts_dep_tokens = ts_dep_names.iter().map(|d| quote! { #d }).collect::<Vec<_>>();
 
-    // Build the TypeScript `export interface` body at runtime.
-    // Each non-skipped field contributes a `"  name: type;\n"` line.
+    // TypeScript: build `export interface` body.
     let ts_field_stmts: Vec<TokenStream> = ts_field_pairs
         .iter()
         .map(|(fname, ts_expr)| {
@@ -137,8 +150,27 @@ fn expand_struct(
             }
         })
         .collect();
-
     let ts_header = format!("export interface {name_str} {{\n");
+
+    // JSON Schema: build properties insertions and required list.
+    let schema_prop_stmts: Vec<TokenStream> = schema_field_triples
+        .iter()
+        .map(|(fname, schema_expr, _)| {
+            quote! {
+                __props.insert(#fname.to_string(), #schema_expr);
+            }
+        })
+        .collect();
+    let schema_required_stmts: Vec<TokenStream> = schema_field_triples
+        .iter()
+        .filter(|(_, _, req)| *req)
+        .map(|(fname, _, _)| {
+            quote! {
+                __required.push(::serde_json::Value::String(#fname.to_string()));
+            }
+        })
+        .collect();
+    let title_str = name_str.clone();
 
     Ok(quote! {
         impl ::baml_derive_core::BamlType for #name {
@@ -174,6 +206,23 @@ fn expand_struct(
 
             fn ts_dependencies() -> ::std::vec::Vec<&'static str> {
                 ::std::vec![#(#ts_dep_tokens),*]
+            }
+        }
+
+        impl ::baml_derive_core::JsonSchemaType for #name {
+            fn json_schema_inline() -> ::serde_json::Value {
+                let mut __props = ::serde_json::Map::new();
+                #(#schema_prop_stmts)*
+                let mut __required: ::std::vec::Vec<::serde_json::Value> = ::std::vec::Vec::new();
+                #(#schema_required_stmts)*
+                let mut __schema = ::serde_json::Map::new();
+                __schema.insert("type".to_string(), ::serde_json::Value::String("object".to_string()));
+                __schema.insert("title".to_string(), ::serde_json::Value::String(#title_str.to_string()));
+                __schema.insert("properties".to_string(), ::serde_json::Value::Object(__props));
+                if !__required.is_empty() {
+                    __schema.insert("required".to_string(), ::serde_json::Value::Array(__required));
+                }
+                ::serde_json::Value::Object(__schema)
             }
         }
     })
@@ -259,6 +308,15 @@ fn expand_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream, syn:
                 #ts_decl_expr
             }
         }
+
+        impl ::baml_derive_core::JsonSchemaType for #name {
+            fn json_schema_inline() -> ::serde_json::Value {
+                let __variants: ::std::vec::Vec<::serde_json::Value> = ::std::vec![
+                    #(::serde_json::Value::String(#ts_variant_names.to_string())),*
+                ];
+                ::serde_json::json!({"type": "string", "enum": __variants})
+            }
+        }
     })
 }
 
@@ -308,6 +366,15 @@ fn expand_union_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream
     let ts_union = variant_type_names.join(" | ");
     let ts_decl_str = format!("export type {name_str} = {ts_union};");
 
+    // Collect ident tokens for JsonSchemaType anyOf calls.
+    let variant_ident_tokens: Vec<TokenStream> = variant_type_names
+        .iter()
+        .map(|n| {
+            let ident = syn::parse_str::<syn::Ident>(n).expect("variant type name is a valid ident");
+            quote! { <#ident as ::baml_derive_core::JsonSchemaType>::json_schema_inline() }
+        })
+        .collect();
+
     Ok(quote! {
         impl ::baml_derive_core::BamlType for #name {
             fn baml_type_name() -> &'static str {
@@ -338,6 +405,14 @@ fn expand_union_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream
 
             fn ts_dependencies() -> ::std::vec::Vec<&'static str> {
                 ::std::vec![#(#dep_tokens),*]
+            }
+        }
+
+        impl ::baml_derive_core::JsonSchemaType for #name {
+            fn json_schema_inline() -> ::serde_json::Value {
+                let __any_of: ::std::vec::Vec<::serde_json::Value> =
+                    ::std::vec![#(#variant_ident_tokens),*];
+                ::serde_json::json!({"anyOf": __any_of})
             }
         }
     })

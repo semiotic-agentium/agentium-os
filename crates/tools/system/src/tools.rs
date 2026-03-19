@@ -1,26 +1,22 @@
 //! Structured request and response types for system tools.
 
+use baml_derive::BamlType;
 use baml_rt_core::ids::{AgentId, ContextId, TaskId};
 use baml_rt_tools::tools::{HistoryContextV1, SessionReadEnvelope, SessionReadMode};
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use ts_rs::TS;
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct InternalA2aTarget {
     pub agent_package: String,
     pub agent_instance_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 pub struct InternalA2aOpenInput {
     pub target: InternalA2aTarget,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationPart {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -35,8 +31,7 @@ pub struct ConversationPart {
     pub media_type: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 /// Message sent to a remote agent.
 /// Provide at least one part with text content.
@@ -45,8 +40,7 @@ pub struct InternalA2aSendInput {
     pub parts: Vec<ConversationPart>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,8 +48,7 @@ pub struct ConversationMessage {
     pub parts: Vec<ConversationPart>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationChunk {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -70,8 +63,7 @@ pub struct ConversationChunk {
 
 /// Completion reason for internal_a2a stream. When INPUT_REQUIRED, the delegated agent
 /// suspended for input; caller can resume with a new Send + Read using the same context_id.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum InternalA2aCompletion {
     #[default]
@@ -80,8 +72,7 @@ pub enum InternalA2aCompletion {
     Failed,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct InternalA2aNextOutput {
     pub chunks: Vec<ConversationChunk>,
@@ -95,8 +86,7 @@ pub struct InternalA2aNextOutput {
 // --- system/discover_agents ---
 
 /// Starts an agent-discovery session.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoverAgentsOpenInput {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -105,8 +95,7 @@ pub struct DiscoverAgentsOpenInput {
 
 /// Requests one page of agents, optionally filtered by text, capability, or event subscription.
 /// Send = one list request. Multiple Send/Read = multiple pages.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoverAgentsSendInput {
     /// Optional text filter over agent name, package, or description.
@@ -127,8 +116,7 @@ pub struct DiscoverAgentsSendInput {
     pub offset: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoverAgentsNextOutput {
     pub agents: Vec<AgentCardDto>,
@@ -137,8 +125,7 @@ pub struct DiscoverAgentsNextOutput {
     pub history_context: Option<HistoryContextV1>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCardDto {
     pub name: String,
@@ -153,8 +140,7 @@ pub struct AgentCardDto {
     pub subscriptions: Vec<AgentEventSubscriptionDto>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentEventSubscriptionDto {
     // Keep these fields in sync with the OpenAPI `AgentEventSubscriptionDto`.
@@ -172,8 +158,7 @@ pub struct AgentEventSubscriptionDto {
 // --- system/discover_tools ---
 
 /// Starts a tool-discovery session.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoverToolsOpenInput {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -181,8 +166,7 @@ pub struct DiscoverToolsOpenInput {
 }
 
 /// Send = one search request. Multiple Send/Read cycles = multiple queries per session.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoverToolsSendInput {
     /// Optional case-insensitive filter over tool name, bundle, or description.
@@ -195,8 +179,7 @@ pub struct DiscoverToolsSendInput {
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoverToolsNextOutput {
     pub tools: Vec<ToolDiscoveryRecordDto>,
@@ -205,8 +188,7 @@ pub struct DiscoverToolsNextOutput {
     pub history_context: Option<HistoryContextV1>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolDiscoveryRecordDto {
     pub name: String,
@@ -217,16 +199,14 @@ pub struct ToolDiscoveryRecordDto {
 
 // --- system/introspection + system/extrospection ---
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvenanceQueryOpenInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvenanceQuerySendInput {
     /// Optional runtime-general explicit read request envelope.
@@ -234,16 +214,10 @@ pub struct ProvenanceQuerySendInput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub read: Option<SessionReadEnvelope>,
     pub resource: String,
-    #[ts(type = "string | null")]
-    #[schemars(with = "Option<String>")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_id: Option<ContextId>,
-    #[ts(type = "string | null")]
-    #[schemars(with = "Option<String>")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<TaskId>,
-    #[ts(type = "string | null")]
-    #[schemars(with = "Option<String>")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<AgentId>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -272,8 +246,7 @@ pub struct ProvenanceQuerySendInput {
     pub top_k: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvenanceQueryNextOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -289,8 +262,7 @@ pub struct ProvenanceQueryNextOutput {
     pub history_context: Option<HistoryContextV1>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvenanceRetrievalBudgetDto {
     pub calls_used: u32,
@@ -301,16 +273,14 @@ pub struct ProvenanceRetrievalBudgetDto {
     pub items_cap: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvenanceArchiveRecordDto {
     pub archive_ref: String,
     pub payloads: Vec<ProvenanceArchivePayloadDto>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "snake_case")]
 pub enum ProvenanceReadProjectionDto {
     Identity,
@@ -318,8 +288,7 @@ pub enum ProvenanceReadProjectionDto {
     Detail,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvenanceArchiveSummaryDto {
     pub archive_ref: String,
@@ -327,8 +296,7 @@ pub struct ProvenanceArchiveSummaryDto {
     pub payload_sources: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum ProvenanceArchivePayloadDto {
     LlmCall {
@@ -355,8 +323,7 @@ pub enum ProvenanceArchivePayloadDto {
     },
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionReadResultDto {
     pub mode: SessionReadMode,

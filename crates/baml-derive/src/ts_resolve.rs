@@ -49,6 +49,11 @@ fn resolve_ts_path_tokens(type_path: &syn::TypePath) -> Result<TokenStream, syn:
         return Ok(quote! { ::std::string::String::from(#lit) });
     }
 
+    // Special: serde_json::Value (bare `Value` ident) → TypeScript `any`
+    if ident_str == "Value" {
+        return Ok(quote! { ::std::string::String::from("any") });
+    }
+
     // Generic wrappers
     match ident_str.as_str() {
         "Option" => {

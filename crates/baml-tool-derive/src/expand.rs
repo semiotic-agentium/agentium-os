@@ -68,13 +68,16 @@ fn access_tokens(access: &Option<Ident>) -> TokenStream {
 }
 
 /// Emit the `with_extra_ts_decls(...)` builder call (or nothing if empty).
+///
+/// Uses `TsType::ts_decl()` via `baml_rt_tools::ts_decl` which now delegates
+/// to the `TsType` trait from `baml-derive-core`.
 fn extra_ts_decls_tokens(extra_ts_types: &[Path]) -> TokenStream {
     if extra_ts_types.is_empty() {
         return TokenStream::new();
     }
     let decl_calls = extra_ts_types.iter().map(|ty| {
         quote! {
-            ::baml_rt_tools::ts_decl::<#ty>()
+            <#ty as ::baml_derive_core::TsType>::ts_decl()
         }
     });
     quote! {

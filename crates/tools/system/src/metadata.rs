@@ -50,9 +50,9 @@ fn build_discover_metadata<Open, SendInput, Next>(
     description: &str,
 ) -> ToolFunctionMetadata
 where
-    Open: schemars::JsonSchema + ts_rs::TS + Send + Sync + 'static,
-    SendInput: schemars::JsonSchema + ts_rs::TS + Send + Sync + 'static,
-    Next: schemars::JsonSchema + ts_rs::TS + Send + Sync + 'static,
+    Open: baml_derive_core::JsonSchemaType + baml_derive_core::TsType + Send + Sync + 'static,
+    SendInput: baml_derive_core::JsonSchemaType + baml_derive_core::TsType + Send + Sync + 'static,
+    Next: baml_derive_core::JsonSchemaType + baml_derive_core::TsType + Send + Sync + 'static,
 {
     let (name, class_name) = parse_tool_name_and_class(tool_name)
         .expect("discover tool name is a compile-time constant");

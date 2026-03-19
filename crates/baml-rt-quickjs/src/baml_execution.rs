@@ -810,10 +810,9 @@ fn parse_tool_call_object(
 mod tests {
     use async_trait::async_trait;
     use baml_rt_tools::{BamlTool, bundles::BundleType};
-    use schemars::JsonSchema;
+    use baml_derive::BamlType;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
-    use ts_rs::TS;
 
     use super::*;
 
@@ -829,16 +828,13 @@ mod tests {
 
     struct EchoTool;
 
-    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-    #[ts(export)]
+    #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
     struct EchoInput {
         message: String,
     }
 
-    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-    #[ts(export)]
+    #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
     struct EchoOutput {
-        #[ts(type = "any")]
         echo: serde_json::Value,
     }
 

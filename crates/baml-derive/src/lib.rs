@@ -17,6 +17,7 @@
 mod attrs;
 mod expand;
 mod resolve;
+mod schema_resolve;
 mod ts_resolve;
 
 use proc_macro::TokenStream;
