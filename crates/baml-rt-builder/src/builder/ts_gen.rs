@@ -48,7 +48,6 @@ pub fn load_manifest_tools(baml_src: &Path) -> Result<Vec<String>> {
 /// Generate TypeScript declarations for BAML runtime: typed function signatures and supporting types.
 pub fn render_ts_declarations(
     ir_signature: &IRSignature,
-    tool_names: &[String],
     session_plan_functions: &std::collections::HashMap<String, String>,
 ) -> Result<String> {
     let header = "/**
@@ -96,8 +95,7 @@ pub fn render_ts_declarations(
         "/** Runtime interaction API: A2A task FSM (message-first, typestate rails). */";
     quote_in!(tokens => $(tool_comment));
     tokens.line();
-    let _ = tool_names;
-    let tool_ts = render_tool_typescript(&[])?;
+    let tool_ts = render_tool_typescript()?;
     for line in tool_ts.lines() {
         quote_in!(tokens => $(line));
         tokens.push();

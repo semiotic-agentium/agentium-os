@@ -6,62 +6,85 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface ActionableGoal { goal: string;
-owner: string | null;
-due_date: string | null;
+export interface ClaudeDevAbortStep { op: "Abort";
  }
 
-export interface AgentCandidate { agent_package: string;
-agent_instance_id: string;
-name: string;
-description: string | null;
-capabilities: string[];
-tools: string[];
+export interface ClaudeDevAskUser { action: string;
+prompt: string;
  }
 
-export interface CoordinatorAnswer { answer: string;
-actionable_goals: ActionableGoal[];
-sources: string[];
-confidence: number;
-gaps: string[];
-clarification_question: string | null;
+export interface ClaudeDevFinishStep { op: "Finish";
  }
 
-export interface ForeachTemplate { id_prefix: string;
-target: WorkflowTarget;
-prompt_template: string;
-max_items: number | null;
+export interface ClaudeDevOpenStep { op: "Open";
+initial_input: ClaudeToolOpenInput | null;
  }
 
-export type NodeKind = "CallAgent" | "Foreach" | "Synthesize" | "Clarify" | "DirectAnswer";
-
-export interface WorkflowNode { id: string;
-kind: NodeKind;
-depends_on: string[];
-target: WorkflowTarget | null;
-prompt_template: string | null;
-foreach_from: string | null;
-foreach_template: ForeachTemplate | null;
-synthesis_template: string | null;
-rationale: string | null;
+export interface ClaudeDevReadStep { op: "Read";
+input: ClaudeToolSendInput;
  }
 
-export interface WorkflowPlan { goal: string;
-nodes: WorkflowNode[];
-final_node_id: string | null;
+export interface ClaudeDevReport { action: string;
+message: string;
  }
 
-export interface WorkflowTarget { agent_package: string;
-agent_instance_id: string;
+export interface ClaudeDevSendStep { op: "Send";
+input: ClaudeToolSendInput;
+ }
+
+export interface ClaudeDevSessionPlan { step: ClaudeDevOpenStep | ClaudeDevSendStep | ClaudeDevReadStep | ClaudeDevFinishStep | ClaudeDevAbortStep;
+ }
+
+export interface ClaudeToolOpenInput { workspace: string | null;
+ }
+
+export interface ClaudeToolSendInput { prompt: string | null;
+content: (ClaudeUserContentBlockDtoVariant1 | ClaudeUserContentBlockDtoVariant2 | ClaudeUserContentBlockDtoVariant3)[] | null;
+ }
+
+export interface ClaudeUserContentBlockDtoVariant1 { text: string;
+kind: string;
+ }
+
+export interface ClaudeUserContentBlockDtoVariant2 { url: string;
+kind: string;
+ }
+
+export interface ClaudeUserContentBlockDtoVariant3 { media_type: string;
+data: string;
+kind: string;
+ }
+
+export interface CodeProposal { file_path: string;
+change_type: string;
+description: string;
+code_snippet: string;
+rationale: string;
+ }
+
+export interface FrontendProposal { summary: string;
+proposals: CodeProposal[];
+impact_assessment: string;
+accessibility_notes: string | null;
+ }
+
+export interface SessionContext { contract_version: string;
+session_open: boolean;
+allowed_ops: string[];
+scope_ref: string | null;
+output_ref: string | null;
+evidence_ref: string | null;
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
 declare global {
 
-declare function PlanCoordinatorWorkflow(args: { user_message: string; available_agents: AgentCandidate[]; conversation_context: string | null } & { __baml_invocation_token?: string }): Promise<WorkflowPlan>;
+declare function AnalyzeFrontend(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<FrontendProposal>;
 
-declare function SynthesizeCoordinatorResponse(args: { user_message: string; delegated_transcript: string; conversation_context: string | null } & { __baml_invocation_token?: string }): Promise<CoordinatorAnswer>;
+declare function ChooseClaudeDevAction(args: { spec_text: string; validation_criteria_json: string; last_tool_output: string; user_approval_intent: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ClaudeDevReport | ClaudeDevAskUser | ClaudeDevSessionPlan>;
+
+declare function FormatProposal(args: { user_message: string; proposal: FrontendProposal } & { __baml_invocation_token?: string }): Promise<string>;
 
 }
 
@@ -342,4 +365,54 @@ export interface ToolFailure {
     kind: ToolFailureKind;
     message: string;
     retryable: boolean;
+}
+
+/** Generated Step Executor bindings (function -> typed step-executor args/result). */
+
+export type StepExecutorFunctionName = "ChooseClaudeDevAction";
+
+export interface SessionContext {
+    contract_version: "session_context";
+    session_open: boolean;
+    allowed_ops: ("Open" | "Send" | "Read" | "Finish" | "Abort")[];
+    scope_ref: string | null;
+    output_ref: string | null;
+    evidence_ref: string | null;
+}
+
+export interface HistoryContext {
+    hop: number;
+    op: string;
+    status: string;
+    truncated: boolean;
+    cursor: string | null;
+    payload: Record<string, unknown> | null;
+}
+
+export interface StepExecutorStateInput {
+    session_context?: SessionContext | null;
+    history_context?: HistoryContext | null;
+}
+
+export interface StepExecutorRunOptions {
+    max_steps?: number;
+}
+
+export interface StepExecutorRunResult<R = unknown> {
+    last: R;
+    steps: R[];
+    session_context: SessionContext;
+    history_context: HistoryContext | null;
+}
+
+export interface StepExecutorFunctionMap {
+  ChooseClaudeDevAction: { args: Parameters<typeof ChooseClaudeDevAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction>>; };
+}
+
+declare global {
+  function runGeneratedStepExecutor<F extends StepExecutorFunctionName>(
+    stepExecutor: F,
+    args: Omit<StepExecutorFunctionMap[F]["args"], keyof StepExecutorStateInput>,
+    options?: StepExecutorRunOptions
+  ): Promise<StepExecutorRunResult<StepExecutorFunctionMap[F]["result"]>>;
 }

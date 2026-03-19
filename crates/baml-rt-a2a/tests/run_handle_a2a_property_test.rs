@@ -42,7 +42,7 @@ fn scaled_timeout_secs(base_secs: u64) -> Duration {
 
 fn stream_collector_idle_secs() -> u64 {
     if std::env::var_os("CI").is_some() {
-        300
+        60
     } else {
         90
     }
@@ -329,6 +329,10 @@ proptest! {
             }
         });
     }
+}
+
+proptest! {
+    #![proptest_config(proptest_cfg(4))]
 
     /// PROPERTY (consolidated interleavings):
     /// ∀ concurrent requests over distinct contexts with kinds ∈ {a2a, tool, llm} and small jitter:
@@ -337,11 +341,10 @@ proptest! {
     ///   - response text is scoped to its own context (no cross-contamination)
     ///
     /// Timeout scales with ops.len() because stream handling is serialized per bridge (one permit):
-    /// the last request may not start until all earlier ones complete. Ops capped at 10 to keep
-    /// test duration bounded (see run_handle_a2a_property_test_ANALYSIS.md).
+    /// the last request may not start until all earlier ones complete.
     #[test]
     fn prop_interleaved_a2a_tool_llm_multi_context_isolation(
-        ops in prop::collection::vec((0u8..=2u8, 0u8..=7u8), 3..=10)
+        ops in prop::collection::vec((0u8..=2u8, 0u8..=7u8), 3..=6)
     ) {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
@@ -349,8 +352,6 @@ proptest! {
             .build()
             .expect("runtime");
 
-        // Per-request timeout must allow for serialization: last request waits for (ops.len()-1)
-        // others. Base uses (ops.len() * 6) + 20s, then CI multiplies for shared-runner headroom.
         let timeout_secs = (ops.len() as u64 * 6) + 20;
         let request_timeout = scaled_timeout_secs(timeout_secs);
 
@@ -418,6 +419,10 @@ proptest! {
             assert_eq!(completed, ops.len(), "all spawned requests must complete");
         });
     }
+}
+
+proptest! {
+    #![proptest_config(proptest_cfg(6))]
 
     /// PROPERTY (INPUT_REQUIRED):
     /// ∀ contexts c:

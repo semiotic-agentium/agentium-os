@@ -105,6 +105,23 @@ test-group = "llm"
 slow-timeout = { period = "60s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "3s" }
 
+# Test-specific overrides MUST come before the binary-level override below,
+# because nextest applies the first matching override for each field.
+
+# A2A interleaving property test: 4 proptest cases × up to 6 serialized stream
+# ops through the QuickJS bridge; allow generous CI headroom.
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-a2a) and test(prop_interleaved_a2a_tool_llm_multi_context_isolation)'
+test-group = "provenance"
+slow-timeout = { period = "300s", terminate-after = 1 }
+
+# A2A property test drives many concurrent INPUT_REQUIRED/resume cycles;
+# allow up to 5 minutes for the proptest + async overhead.
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-a2a) and test(prop_input_required_resume_positive_and_no_auto_final)'
+test-group = "provenance"
+slow-timeout = { period = "300s", terminate-after = 1 }
+
 # A2A GraphQLite-using test binaries: route to provenance group so they don't
 # contend on GRAPHQLITE_SERIAL with baml-tools-system snapshot tests. Both
 # run_handle_a2a_property_test and a2a_malformed_and_error_paths_test create
@@ -114,9 +131,3 @@ retries = { backoff = "fixed", count = 1, delay = "3s" }
 filter = 'package(baml-rt-a2a) and (binary(run_handle_a2a_property_test) or binary(a2a_malformed_and_error_paths_test))'
 test-group = "provenance"
 slow-timeout = { period = "60s", terminate-after = 2 }
-
-# A2A property test drives many concurrent INPUT_REQUIRED/resume cycles;
-# allow up to 5 minutes for the proptest + async overhead.
-[[profile.ci.overrides]]
-filter = 'package(baml-rt-a2a) and test(prop_input_required_resume_positive_and_no_auto_final)'
-slow-timeout = { period = "300s", terminate-after = 1 }

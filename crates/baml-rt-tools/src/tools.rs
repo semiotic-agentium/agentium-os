@@ -26,7 +26,6 @@ use ts_rs::TS;
 use crate::{
     bundles::BundleType,
     config_resolver::ConfigResolver,
-    tool_catalog::{InventoryCatalog, ToolCatalog},
     tool_fsm::{SessionPhase, ToolFailure, ToolSession, ToolSessionError, ToolSessionId, ToolStep},
     tool_schema::{ToolType, json_schema_value},
     ts_gen::render_tool_typescript,
@@ -1715,38 +1714,7 @@ impl ToolRegistry {
     }
 
     pub fn typescript_declarations(&self) -> Result<String> {
-        let catalog = InventoryCatalog::new();
-        self.typescript_declarations_with_catalog(&catalog)
-    }
-
-    pub fn typescript_declarations_with_catalog<C: ToolCatalog>(
-        &self,
-        catalog: &C,
-    ) -> Result<String> {
-        let allowlist = {
-            let inner = self.inner.lock().unwrap();
-            inner.allowlist.clone()
-        };
-        let tools = if let Some(allowlist) = &allowlist {
-            let mut tools = Vec::with_capacity(allowlist.len());
-            let mut missing = Vec::new();
-            for name in allowlist {
-                match catalog.by_name(name) {
-                    Some(metadata) => tools.push(metadata.clone()),
-                    None => missing.push(name.to_string()),
-                }
-            }
-            if !missing.is_empty() {
-                return Err(BamlRtError::InvalidArgument(format!(
-                    "Tool metadata missing for: {}",
-                    missing.join(", ")
-                )));
-            }
-            tools
-        } else {
-            self.export_metadata()
-        };
-        render_tool_typescript(&tools)
+        render_tool_typescript()
     }
 
     pub fn write_typescript_declarations(&self, path: &std::path::Path) -> Result<()> {

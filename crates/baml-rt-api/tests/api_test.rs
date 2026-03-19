@@ -25,8 +25,8 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, EventId, ExternalId, MessageId, UuidId},
 };
 use baml_rt_provenance::{
-    CallScope, GlobalEvent, GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvEventData,
-    ProvenanceOpsQueryRequest, ProvenanceOpsQueryResponse, ProvenanceWriter, events::LlmDriftInfo,
+    GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvenanceOpsQueryRequest,
+    ProvenanceOpsQueryResponse, ProvenanceWriter, events::LlmDriftInfo,
 };
 use futures_util::{StreamExt, stream};
 use opentelemetry::{global, trace::TracerProvider as _};
@@ -378,179 +378,209 @@ async fn seeded_provenance_store() -> Arc<baml_rt_provenance::GraphqliteProvenan
     msg_meta.insert("channel".to_string(), "api-test".to_string());
 
     store
-        .add_event(ProvEvent::message_received_global(
-            context.clone(),
-            msg_a.clone(),
-            "ROLE_USER".to_string(),
-            vec!["run analysis".to_string()],
-            Some(msg_meta.clone()),
-            agent_a.clone(),
-            1,
-        ))
+        .add_event(
+            ProvEvent::message_received_global(
+                context.clone(),
+                msg_a.clone(),
+                "ROLE_USER".to_string(),
+                vec!["run analysis".to_string()],
+                Some(msg_meta.clone()),
+                agent_a.clone(),
+                1,
+            )
+            .with_timestamp_ms(0),
+        )
+        .await
+        .unwrap();
+    // Explicit provenance-event timestamps keep ordering deterministic for pagination and future sort-based tests.
+    store
+        .add_event(
+            ProvEvent::llm_call_completed_global(
+                context.clone(),
+                msg_a.clone(),
+                "openai".to_string(),
+                "gpt-4o-mini".to_string(),
+                "SummarizePrompt".to_string(),
+                serde_json::json!({"input":"hello"}),
+                call_metadata(&agent_a, &msg_a, None),
+                LlmUsage::Known {
+                    prompt_tokens: 12,
+                    completion_tokens: 8,
+                    total_tokens: 20,
+                    cached_input_tokens: None,
+                },
+                180,
+                Outcome::Success,
+            )
+            .with_event_id(EventId::from_counter(100))
+            .with_timestamp_ms(1),
+        )
         .await
         .unwrap();
     store
-        .add_event(ProvEvent::llm_call_completed_global(
-            context.clone(),
-            msg_a.clone(),
-            "openai".to_string(),
-            "gpt-4o-mini".to_string(),
-            "SummarizePrompt".to_string(),
-            serde_json::json!({"input":"hello"}),
-            call_metadata(&agent_a, &msg_a, None),
-            LlmUsage::Known {
-                prompt_tokens: 12,
-                completion_tokens: 8,
-                total_tokens: 20,
-                cached_input_tokens: None,
-            },
-            180,
-            Outcome::Success,
-        ))
+        .add_event(
+            ProvEvent::llm_call_completed_global_with_drift(
+                context.clone(),
+                msg_a.clone(),
+                "openai".to_string(),
+                "gpt-4o-mini".to_string(),
+                "SummarizePrompt".to_string(),
+                serde_json::json!({"input":"hello with drift"}),
+                call_metadata(&agent_a, &msg_a, None),
+                LlmUsage::Known {
+                    prompt_tokens: 10,
+                    completion_tokens: 7,
+                    total_tokens: 17,
+                    cached_input_tokens: None,
+                },
+                181,
+                Outcome::Success,
+                Some(LlmDriftInfo {
+                    score: 0.618,
+                    severity: "warn".to_string(),
+                    mode: "audit".to_string(),
+                    warn_min_score: 0.5,
+                    block_min_score: 0.25,
+                    intent_text_preview: "Create a task titled Research".to_string(),
+                    response_text_preview: "Create task in list 901325431486".to_string(),
+                }),
+            )
+            .with_event_id(EventId::from_counter(200))
+            .with_timestamp_ms(2),
+        )
         .await
         .unwrap();
     store
-        .add_event(ProvEvent::llm_call_completed_global_with_drift(
-            context.clone(),
-            msg_a.clone(),
-            "openai".to_string(),
-            "gpt-4o-mini".to_string(),
-            "SummarizePrompt".to_string(),
-            serde_json::json!({"input":"hello with drift"}),
-            call_metadata(&agent_a, &msg_a, None),
-            LlmUsage::Known {
-                prompt_tokens: 10,
-                completion_tokens: 7,
-                total_tokens: 17,
-                cached_input_tokens: None,
-            },
-            181,
-            Outcome::Success,
-            Some(LlmDriftInfo {
-                score: 0.618,
-                severity: "warn".to_string(),
-                mode: "audit".to_string(),
-                warn_min_score: 0.5,
-                block_min_score: 0.25,
-                intent_text_preview: "Create a task titled Research".to_string(),
-                response_text_preview: "Create task in list 901325431486".to_string(),
-            }),
-        ))
-        .await
-        .unwrap();
-    store
-        .add_event(ProvEvent::tool_call_completed_global(
-            context.clone(),
-            msg_a.clone(),
-            "support/calculate".to_string(),
-            Some("CalcPrompt".to_string()),
-            serde_json::json!({"expression":"2+2"}),
-            call_metadata(&agent_a, &msg_a, Some("timeout while calling tool")),
-            420,
-            Outcome::Failure,
-            None,
-        ))
+        .add_event(
+            ProvEvent::tool_call_completed_global(
+                context.clone(),
+                msg_a.clone(),
+                "support/calculate".to_string(),
+                Some("CalcPrompt".to_string()),
+                serde_json::json!({"expression":"2+2"}),
+                call_metadata(&agent_a, &msg_a, Some("timeout while calling tool")),
+                420,
+                Outcome::Failure,
+                None,
+            )
+            .with_timestamp_ms(3),
+        )
         .await
         .unwrap();
 
     store
-        .add_event(ProvEvent::message_received_global(
-            context.clone(),
-            msg_b.clone(),
-            "ROLE_USER".to_string(),
-            vec!["secondary flow".to_string()],
-            Some(msg_meta),
-            agent_b.clone(),
-            2,
-        ))
+        .add_event(
+            ProvEvent::message_received_global(
+                context.clone(),
+                msg_b.clone(),
+                "ROLE_USER".to_string(),
+                vec!["secondary flow".to_string()],
+                Some(msg_meta),
+                agent_b.clone(),
+                2,
+            )
+            .with_timestamp_ms(4),
+        )
         .await
         .unwrap();
     let llm_fail_event_id = EventId::from_counter(500);
     store
-        .add_event(ProvEvent::Global(GlobalEvent {
-            id: llm_fail_event_id.clone(),
-            context_id: context.clone(),
-            timestamp_ms: 3,
-            data: ProvEventData::LlmCallCompleted {
-                scope: CallScope::Message {
-                    message_id: msg_b.clone(),
-                },
-                client: "anthropic".to_string(),
-                model: "claude-3-7-sonnet".to_string(),
-                function_name: "DraftPrompt".to_string(),
-                prompt: serde_json::json!({"input":"world"}),
+        .add_event(
+            ProvEvent::llm_call_completed_global(
+                context.clone(),
+                msg_b.clone(),
+                "anthropic".to_string(),
+                "claude-3-7-sonnet".to_string(),
+                "DraftPrompt".to_string(),
+                serde_json::json!({"input":"world"}),
                 // Sparse metadata on purpose: linked PromptRejected should drive class.
-                metadata: call_metadata(&agent_b, &msg_b, None),
-                usage: LlmUsage::Known {
+                call_metadata(&agent_b, &msg_b, None),
+                LlmUsage::Known {
                     prompt_tokens: 20,
                     completion_tokens: 5,
                     total_tokens: 25,
                     cached_input_tokens: None,
                 },
-                duration_ms: 650,
-                outcome: Outcome::Failure,
-                drift: None,
-            },
-        }))
+                650,
+                Outcome::Failure,
+            )
+            .with_event_id(llm_fail_event_id.clone())
+            .with_timestamp_ms(5),
+        )
         .await
         .unwrap();
     store
-        .add_event(ProvEvent::prompt_rejected_global(
-            context.clone(),
-            msg_b.clone(),
-            llm_fail_event_id,
-            "BAML validation failed: invalid response schema".to_string(),
-        ))
+        .add_event(
+            ProvEvent::prompt_rejected_global(
+                context.clone(),
+                msg_b.clone(),
+                llm_fail_event_id,
+                "BAML validation failed: invalid response schema".to_string(),
+            )
+            .with_timestamp_ms(6),
+        )
         .await
         .unwrap();
     store
-        .add_event(ProvEvent::message_sent_global(
-            context.clone(),
-            msg_b.clone(),
-            "ROLE_AGENT".to_string(),
-            vec!["BAML validation failed: invalid response schema".to_string()],
-            None,
-            agent_b.clone(),
-            4,
-        ))
+        .add_event(
+            ProvEvent::message_sent_global(
+                context.clone(),
+                msg_b.clone(),
+                "ROLE_AGENT".to_string(),
+                vec!["BAML validation failed: invalid response schema".to_string()],
+                None,
+                agent_b.clone(),
+                4,
+            )
+            .with_timestamp_ms(7),
+        )
         .await
         .unwrap();
     store
-        .add_event(ProvEvent::message_received_global(
-            context.clone(),
-            msg_c.clone(),
-            "ROLE_USER".to_string(),
-            vec!["third flow".to_string()],
-            None,
-            agent_a.clone(),
-            5,
-        ))
+        .add_event(
+            ProvEvent::message_received_global(
+                context.clone(),
+                msg_c.clone(),
+                "ROLE_USER".to_string(),
+                vec!["third flow".to_string()],
+                None,
+                agent_a.clone(),
+                5,
+            )
+            .with_timestamp_ms(8),
+        )
         .await
         .unwrap();
     store
-        .add_event(ProvEvent::tool_call_completed_global(
-            context.clone(),
-            msg_c.clone(),
-            "support/delegate".to_string(),
-            Some("DelegatePrompt".to_string()),
-            serde_json::json!({"objective":"narrow evidence fixture"}),
-            call_metadata(&agent_a, &msg_c, None),
-            240,
-            Outcome::Failure,
-            None,
-        ))
+        .add_event(
+            ProvEvent::tool_call_completed_global(
+                context.clone(),
+                msg_c.clone(),
+                "support/delegate".to_string(),
+                Some("DelegatePrompt".to_string()),
+                serde_json::json!({"objective":"narrow evidence fixture"}),
+                call_metadata(&agent_a, &msg_c, None),
+                240,
+                Outcome::Failure,
+                None,
+            )
+            .with_timestamp_ms(9),
+        )
         .await
         .unwrap();
     store
-        .add_event(ProvEvent::message_sent_global(
-            context.clone(),
-            msg_c,
-            "ROLE_AGENT".to_string(),
-            vec!["authentication failed: 401 unauthorized invalid api key".to_string()],
-            None,
-            agent_a,
-            6,
-        ))
+        .add_event(
+            ProvEvent::message_sent_global(
+                context.clone(),
+                msg_c,
+                "ROLE_AGENT".to_string(),
+                vec!["authentication failed: 401 unauthorized invalid api key".to_string()],
+                None,
+                agent_a,
+                6,
+            )
+            .with_timestamp_ms(10),
+        )
         .await
         .unwrap();
 

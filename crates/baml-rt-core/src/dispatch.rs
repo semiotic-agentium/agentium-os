@@ -3,6 +3,14 @@ use std::fmt;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
+/// Structured transport metadata attached to a host-to-agent dispatch.
+///
+/// Object-shaped by design: `messages` carries arbitrary event payloads,
+/// while `metadata` carries structured delivery context (source identifier,
+/// schema version, content type, etc.).  Using a `Map` rather than a free-form
+/// `Value` enforces this separation at the type level.
+pub type DispatchMetadata = serde_json::Map<String, Value>;
+
 use crate::{
     EventSchemaVersion,
     ids::{ContextId, TaskId},
@@ -49,7 +57,7 @@ pub struct AgentDispatchRequest {
     /// Message family / schema identifier for the payload batch.
     pub message_type: EventSchemaVersion,
     /// Opaque payloads delivered to the agent.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub messages: Vec<Value>,
     /// Optional existing context to continue under.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -60,9 +68,11 @@ pub struct AgentDispatchRequest {
     /// Optional caller-supplied message id for provenance continuity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message_id: Option<String>,
-    /// Optional transport metadata for the receiving agent.
+    /// Structured transport metadata (source, schema version, content type, etc.).
+    ///
+    /// Object-shaped: use `messages` for arbitrary event payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<Value>,
+    pub metadata: Option<DispatchMetadata>,
 }
 
 /// Buffered acknowledgement for deterministic host delivery.
@@ -77,7 +87,9 @@ pub struct AgentDispatchAck {
 
 #[cfg(test)]
 mod tests {
-    use super::AgentDispatchRoutingKey;
+    use serde_json::json;
+
+    use super::{AgentDispatchRequest, AgentDispatchRoutingKey, DispatchMetadata};
 
     #[test]
     fn routing_key_parse_rejects_blank_values() {
@@ -90,5 +102,77 @@ mod tests {
         let key: AgentDispatchRoutingKey =
             serde_json::from_str("\"  slack:intake  \"").expect("routing key should deserialize");
         assert_eq!(key.as_str(), "slack:intake");
+    }
+
+    #[test]
+    fn metadata_round_trips_as_structured_object() {
+        let mut meta = DispatchMetadata::new();
+        meta.insert("source".into(), json!("baml-task-daemon"));
+        meta.insert(
+            "content_type".into(),
+            json!("application/vnd.baml.interpretation+json"),
+        );
+
+        let request = AgentDispatchRequest {
+            routing_key: AgentDispatchRoutingKey::parse("slack:intake").unwrap(),
+            message_type: crate::EventSchemaVersion::parse("test.v1").unwrap(),
+            messages: vec![json!({"payload": "data"})],
+            context_id: None,
+            task_id: None,
+            message_id: None,
+            metadata: Some(meta),
+        };
+
+        let json_str = serde_json::to_string(&request).expect("serialize");
+        let parsed: AgentDispatchRequest = serde_json::from_str(&json_str).expect("deserialize");
+
+        let meta = parsed.metadata.as_ref().expect("metadata present");
+        assert_eq!(
+            meta.get("source").and_then(|v| v.as_str()),
+            Some("baml-task-daemon")
+        );
+        assert_eq!(
+            meta.get("content_type").and_then(|v| v.as_str()),
+            Some("application/vnd.baml.interpretation+json")
+        );
+    }
+
+    #[test]
+    fn metadata_rejects_non_object_json() {
+        let raw = r#"{
+            "routing_key": "slack:intake",
+            "message_type": "test.v1",
+            "metadata": "not-an-object"
+        }"#;
+        assert!(
+            serde_json::from_str::<AgentDispatchRequest>(raw).is_err(),
+            "string metadata must be rejected"
+        );
+
+        let raw_array = r#"{
+            "routing_key": "slack:intake",
+            "message_type": "test.v1",
+            "metadata": [1, 2, 3]
+        }"#;
+        assert!(
+            serde_json::from_str::<AgentDispatchRequest>(raw_array).is_err(),
+            "array metadata must be rejected"
+        );
+    }
+
+    #[test]
+    fn serializes_empty_messages_field() {
+        let request = AgentDispatchRequest {
+            routing_key: AgentDispatchRoutingKey::parse("slack:intake").unwrap(),
+            message_type: crate::EventSchemaVersion::parse("test.v1").unwrap(),
+            messages: Vec::new(),
+            context_id: None,
+            task_id: None,
+            message_id: None,
+            metadata: None,
+        };
+
+        let json_value = serde_json::to_value(&request).expect("serialize");
+        assert_eq!(json_value.get("messages"), Some(&json!([])));
     }
 }

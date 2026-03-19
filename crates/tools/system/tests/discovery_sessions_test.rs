@@ -8,10 +8,7 @@ use baml_rt_core::{
     BusStream, ContextId, EventSchemaVersion, EventSourceKind, EventSubscription, Outcome, Result,
     ids::{AgentId, EventId, ExternalId, MessageId, UuidId},
 };
-use baml_rt_provenance::{
-    CallScope, GlobalEvent, GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvEventData,
-    ProvenanceWriter,
-};
+use baml_rt_provenance::{GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvenanceWriter};
 use baml_rt_tools::{ToolRegistry, ToolStep};
 use baml_tools_calculator::CalculatorTool;
 use baml_tools_system::SystemBundle;
@@ -174,77 +171,69 @@ async fn seeded_store_for_context(
 
     // ts=200: caller LLM call (success)
     store
-        .add_event(ProvEvent::Global(GlobalEvent {
-            id: EventId::from_counter(10),
-            context_id: context_id.clone(),
-            timestamp_ms: 200,
-            data: ProvEventData::LlmCallCompleted {
-                scope: CallScope::Message {
-                    message_id: msg_caller.clone(),
-                },
-                client: "openai".to_string(),
-                model: "gpt-4o-mini".to_string(),
-                function_name: "CallerPrompt".to_string(),
-                prompt: json!({"input":"caller"}),
-                metadata: call_metadata(caller_agent, &msg_caller, None),
-                usage: LlmUsage::Known {
+        .add_event(
+            ProvEvent::llm_call_completed_global(
+                context_id.clone(),
+                msg_caller.clone(),
+                "openai".to_string(),
+                "gpt-4o-mini".to_string(),
+                "CallerPrompt".to_string(),
+                json!({"input":"caller"}),
+                call_metadata(caller_agent, &msg_caller, None),
+                LlmUsage::Known {
                     prompt_tokens: 5,
                     completion_tokens: 3,
                     total_tokens: 8,
                     cached_input_tokens: None,
                 },
-                duration_ms: 100,
-                outcome: Outcome::Success,
-                drift: None,
-            },
-        }))
+                100,
+                Outcome::Success,
+            )
+            .with_event_id(EventId::from_counter(10))
+            .with_timestamp_ms(200),
+        )
         .await
         .unwrap();
 
     // ts=300: caller LLM call (failure — linked to PromptRejected below)
     let caller_failed_llm_event_id = EventId::from_counter(900);
     store
-        .add_event(ProvEvent::Global(GlobalEvent {
-            id: caller_failed_llm_event_id.clone(),
-            context_id: context_id.clone(),
-            timestamp_ms: 300,
-            data: ProvEventData::LlmCallCompleted {
-                scope: CallScope::Message {
-                    message_id: msg_caller.clone(),
-                },
-                client: "openai".to_string(),
-                model: "gpt-4o-mini".to_string(),
-                function_name: "CallerPrompt".to_string(),
-                prompt: json!({"input":"caller-failed"}),
-                metadata: call_metadata(caller_agent, &msg_caller, None),
-                usage: LlmUsage::Known {
+        .add_event(
+            ProvEvent::llm_call_completed_global(
+                context_id.clone(),
+                msg_caller.clone(),
+                "openai".to_string(),
+                "gpt-4o-mini".to_string(),
+                "CallerPrompt".to_string(),
+                json!({"input":"caller-failed"}),
+                call_metadata(caller_agent, &msg_caller, None),
+                LlmUsage::Known {
                     prompt_tokens: 7,
                     completion_tokens: 0,
                     total_tokens: 7,
                     cached_input_tokens: None,
                 },
-                duration_ms: 220,
-                outcome: Outcome::Failure,
-                drift: None,
-            },
-        }))
+                220,
+                Outcome::Failure,
+            )
+            .with_event_id(caller_failed_llm_event_id.clone())
+            .with_timestamp_ms(300),
+        )
         .await
         .unwrap();
 
     // ts=400: prompt rejected (linked to failed LLM call above)
     store
-        .add_event(ProvEvent::Global(GlobalEvent {
-            id: EventId::from_counter(20),
-            context_id: context_id.clone(),
-            timestamp_ms: 400,
-            data: ProvEventData::PromptRejected {
-                scope: CallScope::Message {
-                    message_id: msg_caller.clone(),
-                },
-                llm_call_event_id: caller_failed_llm_event_id,
-                reason: "BAML validation failed: missing required field".to_string(),
-            },
-        }))
+        .add_event(
+            ProvEvent::prompt_rejected_global(
+                context_id.clone(),
+                msg_caller.clone(),
+                caller_failed_llm_event_id,
+                "BAML validation failed: missing required field".to_string(),
+            )
+            .with_event_id(EventId::from_counter(20))
+            .with_timestamp_ms(400),
+        )
         .await
         .unwrap();
 
@@ -264,23 +253,21 @@ async fn seeded_store_for_context(
 
     // ts=600: tool call (support/calculate, failure)
     store
-        .add_event(ProvEvent::Global(GlobalEvent {
-            id: EventId::from_counter(30),
-            context_id: context_id.clone(),
-            timestamp_ms: 600,
-            data: ProvEventData::ToolCallCompleted {
-                scope: CallScope::Message {
-                    message_id: msg_caller.clone(),
-                },
-                tool_name: "support/calculate".to_string(),
-                function_name: Some("CalcPrompt".to_string()),
-                args: json!({"expression":"1+1"}),
-                metadata: call_metadata(caller_agent, &msg_caller, Some("timeout")),
-                duration_ms: 500,
-                outcome: Outcome::Failure,
-                delegation_target: None,
-            },
-        }))
+        .add_event(
+            ProvEvent::tool_call_completed_global(
+                context_id.clone(),
+                msg_caller.clone(),
+                "support/calculate".to_string(),
+                Some("CalcPrompt".to_string()),
+                json!({"expression":"1+1"}),
+                call_metadata(caller_agent, &msg_caller, Some("timeout")),
+                500,
+                Outcome::Failure,
+                None,
+            )
+            .with_event_id(EventId::from_counter(30))
+            .with_timestamp_ms(600),
+        )
         .await
         .unwrap();
 
@@ -300,23 +287,21 @@ async fn seeded_store_for_context(
 
     // ts=800: tool call (support/delegate, failure)
     store
-        .add_event(ProvEvent::Global(GlobalEvent {
-            id: EventId::from_counter(40),
-            context_id: context_id.clone(),
-            timestamp_ms: 800,
-            data: ProvEventData::ToolCallCompleted {
-                scope: CallScope::Message {
-                    message_id: msg_linked.clone(),
-                },
-                tool_name: "support/delegate".to_string(),
-                function_name: Some("DelegatePrompt".to_string()),
-                args: json!({"objective":"linked emitted message evidence"}),
-                metadata: call_metadata(caller_agent, &msg_linked, None),
-                duration_ms: 330,
-                outcome: Outcome::Failure,
-                delegation_target: None,
-            },
-        }))
+        .add_event(
+            ProvEvent::tool_call_completed_global(
+                context_id.clone(),
+                msg_linked.clone(),
+                "support/delegate".to_string(),
+                Some("DelegatePrompt".to_string()),
+                json!({"objective":"linked emitted message evidence"}),
+                call_metadata(caller_agent, &msg_linked, None),
+                330,
+                Outcome::Failure,
+                None,
+            )
+            .with_event_id(EventId::from_counter(40))
+            .with_timestamp_ms(800),
+        )
         .await
         .unwrap();
 
@@ -350,30 +335,27 @@ async fn seeded_store_for_context(
 
     // ts=1100: other agent LLM call (success)
     store
-        .add_event(ProvEvent::Global(GlobalEvent {
-            id: EventId::from_counter(50),
-            context_id: context_id.clone(),
-            timestamp_ms: 1100,
-            data: ProvEventData::LlmCallCompleted {
-                scope: CallScope::Message {
-                    message_id: msg_other.clone(),
-                },
-                client: "anthropic".to_string(),
-                model: "claude-3-7-sonnet".to_string(),
-                function_name: "OtherPrompt".to_string(),
-                prompt: json!({"input":"other"}),
-                metadata: call_metadata(other_agent, &msg_other, None),
-                usage: LlmUsage::Known {
+        .add_event(
+            ProvEvent::llm_call_completed_global(
+                context_id.clone(),
+                msg_other.clone(),
+                "anthropic".to_string(),
+                "claude-3-7-sonnet".to_string(),
+                "OtherPrompt".to_string(),
+                json!({"input":"other"}),
+                call_metadata(other_agent, &msg_other, None),
+                LlmUsage::Known {
                     prompt_tokens: 20,
                     completion_tokens: 5,
                     total_tokens: 25,
                     cached_input_tokens: None,
                 },
-                duration_ms: 300,
-                outcome: Outcome::Success,
-                drift: None,
-            },
-        }))
+                300,
+                Outcome::Success,
+            )
+            .with_event_id(EventId::from_counter(50))
+            .with_timestamp_ms(1100),
+        )
         .await
         .unwrap();
 
