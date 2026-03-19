@@ -70,6 +70,9 @@ jobs:
             exit 1
           }
 
+      - name: Workspace integrity check
+        run: cargo run -p cargo-agent-platform -- doctor --ci
+
       - name: System info
         run: |
           echo "=== lscpu ==="
