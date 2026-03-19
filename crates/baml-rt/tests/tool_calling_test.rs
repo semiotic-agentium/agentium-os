@@ -30,11 +30,11 @@ impl BundleType for Test {
 }
 use std::sync::Arc;
 
+use baml_derive::BamlType;
 use baml_rt_core::{
     context::{self, InvocationScope},
     ids::{AgentId, UuidId},
 };
-use baml_derive::BamlType;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use test_support::common::{

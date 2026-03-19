@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex as StdMutex};
 
 use async_trait::async_trait;
+use baml_derive::BamlType;
 use baml_rt::tools::BamlTool;
 use baml_rt_core::{
     context::InvocationScope,
@@ -14,7 +15,6 @@ use baml_rt_tools::{
     bundles::BundleType,
     tools::{ToolFunctionMetadata, ToolSessionContext},
 };
-use baml_derive::BamlType;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use test_support::common::{

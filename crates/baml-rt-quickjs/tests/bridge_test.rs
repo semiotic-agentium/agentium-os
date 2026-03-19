@@ -5,6 +5,7 @@
 use std::sync::{Arc, Mutex as StdMutex};
 
 use async_trait::async_trait;
+use baml_derive::BamlType;
 use baml_rt::{
     baml::{
         BamlRuntimeManager, CanonicalIntentSubmission, CanonicalPlanStepStatusChange,
@@ -23,7 +24,6 @@ use baml_rt_provenance::{
     GraphqliteStoreBuilder, ProvEvent, ProvenanceEffectSubscriber, ProvenanceWriter,
 };
 use baml_rt_tools::{BamlTool, bundles::BundleType};
-use baml_derive::BamlType;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::{sync::Mutex, task::LocalSet};

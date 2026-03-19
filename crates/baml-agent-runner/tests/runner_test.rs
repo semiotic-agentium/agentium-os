@@ -11,6 +11,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use baml_derive::BamlType;
 use baml_rt::{A2aRequestHandler, baml::BamlRuntimeManager, tools::BamlTool};
 use baml_rt_a2a::RegistrationMode;
 use baml_rt_core::{
@@ -26,7 +27,6 @@ use baml_rt_tools::bundles::BundleType;
 #[cfg(feature = "slack")]
 use baml_tool_links::baml_tools_slack as _;
 use flate2::{Compression, write::GzEncoder};
-use baml_derive::BamlType;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tar::Builder;

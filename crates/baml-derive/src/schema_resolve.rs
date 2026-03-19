@@ -114,8 +114,8 @@ fn schema_primitive_tokens(ident: &str) -> Option<TokenStream> {
     match ident {
         "String" | "str" => Some(quote! { ::serde_json::json!({"type": "string"}) }),
         "bool" => Some(quote! { ::serde_json::json!({"type": "boolean"}) }),
-        "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128"
-        | "isize" | "usize" => Some(quote! { ::serde_json::json!({"type": "integer"}) }),
+        "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "isize"
+        | "usize" => Some(quote! { ::serde_json::json!({"type": "integer"}) }),
         "f32" | "f64" => Some(quote! { ::serde_json::json!({"type": "number"}) }),
         _ => None,
     }

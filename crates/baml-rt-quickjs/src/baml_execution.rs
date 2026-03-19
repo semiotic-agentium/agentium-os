@@ -809,8 +809,8 @@ fn parse_tool_call_object(
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
-    use baml_rt_tools::{BamlTool, bundles::BundleType};
     use baml_derive::BamlType;
+    use baml_rt_tools::{BamlTool, bundles::BundleType};
     use serde::{Deserialize, Serialize};
     use serde_json::json;
 

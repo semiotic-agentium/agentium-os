@@ -24,11 +24,11 @@ mod common;
 
 use std::{sync::Arc, time::Duration};
 
+use baml_derive::BamlType;
 use baml_rt::{
     A2aAgent, A2aRequestHandler, QuickJSConfig, baml::BamlRuntimeManager, tools::BamlTool,
 };
 use baml_rt_tools::bundles::BundleType;
-use baml_derive::BamlType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use test_support::common::{AddNumbersTool, chunk_content, send_stream_request};

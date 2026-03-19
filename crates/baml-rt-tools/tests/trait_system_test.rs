@@ -6,13 +6,13 @@
 //! E2E authority for LLM→tool is in baml-rt (voidship) and runner.
 
 use async_trait::async_trait;
+use baml_derive::BamlType;
 use baml_rt::tools::BamlTool;
 use baml_rt_core::{
     context,
     ids::{AgentId, UuidId},
 };
 use baml_rt_tools::bundles::BundleType;
-use baml_derive::BamlType;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use test_support::common::{

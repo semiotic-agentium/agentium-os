@@ -133,7 +133,10 @@ fn skip_field_absent_in_schema() {
     let schema = SchSkipField::json_schema_inline();
     let props = schema["properties"].as_object().expect("properties object");
     assert!(props.contains_key("public"), "public should be in schema");
-    assert!(!props.contains_key("internal"), "internal should be skipped");
+    assert!(
+        !props.contains_key("internal"),
+        "internal should be skipped"
+    );
 }
 
 // ─── Unit enum → string enum schema ──────────────────────────────
@@ -166,7 +169,10 @@ fn unit_enum_skip_variant_in_schema() {
     }
     let schema = SchStatusSkip::json_schema_inline();
     let vals = schema["enum"].as_array().expect("enum values");
-    assert!(!vals.iter().any(|v| v == "Internal"), "skipped variant must not appear");
+    assert!(
+        !vals.iter().any(|v| v == "Internal"),
+        "skipped variant must not appear"
+    );
     assert!(vals.iter().any(|v| v == "Open"));
     assert!(vals.iter().any(|v| v == "Closed"));
 }
@@ -206,7 +212,12 @@ fn root_schema_has_schema_pointer() {
     use baml_derive_core::root_json_schema;
     let schema = root_json_schema::<SchSimpleInput>();
     assert!(schema["$schema"].is_string(), "$schema should be set");
-    assert!(schema["$schema"].as_str().unwrap().contains("json-schema.org"));
+    assert!(
+        schema["$schema"]
+            .as_str()
+            .unwrap()
+            .contains("json-schema.org")
+    );
 }
 
 // ─── () → empty schema (any) ─────────────────────────────────────
@@ -214,5 +225,8 @@ fn root_schema_has_schema_pointer() {
 #[test]
 fn unit_type_any_schema() {
     let schema = <()>::json_schema_inline();
-    assert!(schema.as_object().map(|o| o.is_empty()).unwrap_or(false), "() should be {{}}");
+    assert!(
+        schema.as_object().map(|o| o.is_empty()).unwrap_or(false),
+        "() should be {{}}"
+    );
 }

@@ -139,7 +139,10 @@ fn expand_struct(
     }
 
     let dep_tokens = dep_names.iter().map(|d| quote! { #d }).collect::<Vec<_>>();
-    let ts_dep_tokens = ts_dep_names.iter().map(|d| quote! { #d }).collect::<Vec<_>>();
+    let ts_dep_tokens = ts_dep_names
+        .iter()
+        .map(|d| quote! { #d })
+        .collect::<Vec<_>>();
 
     // TypeScript: build `export interface` body.
     let ts_field_stmts: Vec<TokenStream> = ts_field_pairs
@@ -370,7 +373,8 @@ fn expand_union_enum(input: &DeriveInput, data: &DataEnum) -> Result<TokenStream
     let variant_ident_tokens: Vec<TokenStream> = variant_type_names
         .iter()
         .map(|n| {
-            let ident = syn::parse_str::<syn::Ident>(n).expect("variant type name is a valid ident");
+            let ident =
+                syn::parse_str::<syn::Ident>(n).expect("variant type name is a valid ident");
             quote! { <#ident as ::baml_derive_core::JsonSchemaType>::json_schema_inline() }
         })
         .collect();

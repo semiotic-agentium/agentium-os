@@ -101,8 +101,8 @@ fn ts_primitive_mapping(ident: &str) -> Option<&'static str> {
     match ident {
         "String" | "str" => Some("string"),
         "bool" => Some("boolean"),
-        "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128"
-        | "isize" | "usize" => Some("number"),
+        "i8" | "i16" | "i32" | "i64" | "i128" | "u8" | "u16" | "u32" | "u64" | "u128" | "isize"
+        | "usize" => Some("number"),
         "f32" | "f64" => Some("number"),
         _ => None,
     }

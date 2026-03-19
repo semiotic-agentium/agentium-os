@@ -7,6 +7,7 @@
 #![recursion_limit = "256"]
 
 use async_trait::async_trait;
+use baml_derive::BamlType;
 use baml_rt::baml::BamlRuntimeManager;
 use baml_rt_core::{
     context::{self, InvocationScope, RuntimeScope},
@@ -14,7 +15,6 @@ use baml_rt_core::{
 };
 use baml_rt_tools::{BamlTool, ToolStep, bundles::BundleType};
 use proptest::prelude::*;
-use baml_derive::BamlType;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 

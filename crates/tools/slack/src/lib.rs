@@ -65,9 +65,7 @@ fn backoff_delay(retries: usize) -> std::time::Duration {
 // Input types
 // ---------------------------------------------------------------------------
 
-#[derive(
-    Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, BamlType,
-)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, BamlType)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackAuthPreference {
     #[default]

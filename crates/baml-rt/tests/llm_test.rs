@@ -9,6 +9,7 @@
 
 use std::{collections::BTreeSet, sync::Arc};
 
+use baml_derive::BamlType;
 use baml_rt::{QuickJSConfig, baml_execution::ParseRetryPolicy, quickjs_bridge::QuickJSBridge};
 use baml_rt_core::{
     bus::{BusWithEffects, EffectEmitter, EffectEvent, EffectLiveness, EffectSubscriber, LlmUsage},
@@ -21,7 +22,6 @@ use baml_rt_tools::{
     parse_tool_name_and_class,
     tools::{ToolFunctionMetadata, ToolMetadataBuilder, TypeBasedMetadataBuilder},
 };
-use baml_derive::BamlType;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use test_support::common::{
