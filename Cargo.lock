@@ -2638,6 +2638,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-agent-platform"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "baml-rt-core",
+ "baml-rt-tools",
+ "baml-tool-links",
+ "clap",
+ "console 0.15.11",
+ "regex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "toml_edit 0.22.27",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

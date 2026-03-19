@@ -1,0 +1,38 @@
+[package]
+name = "cargo-agent-platform"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "CLI tool for scaffolding BAML tools and agents"
+
+[[bin]]
+name = "cargo-agent-platform"
+path = "src/main.rs"
+
+[dependencies]
+# Workspace runtime crates
+baml-rt-core = { path = "../baml-rt-core" }
+baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
+
+# Centralized force-link crate - all-tools ensures complete inventory
+baml-tool-links = { path = "../baml-tool-links", features = ["all-tools"] }
+
+# CLI parsing
+clap = { workspace = true }
+
+# TOML editing (format-preserving)
+toml_edit = "0.22"
+
+# General utilities
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+
+# Terminal output formatting
+console = "0.15"
+
+[dev-dependencies]
+tempfile = { workspace = true }
