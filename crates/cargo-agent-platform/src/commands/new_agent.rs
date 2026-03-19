@@ -49,6 +49,7 @@ pub fn run(
     description: &str,
     output: Option<&str>,
     dry_run: bool,
+    interactive: bool,
 ) -> Result<()> {
     // Validate agent name
     let slug = validate_agent_name(name)?;
@@ -73,9 +74,24 @@ pub fn run(
         None => workspace_root.join("agents").join(&slug),
     };
 
+    // Show summary for interactive or dry-run mode
+    if interactive || dry_run {
+        print_summary(&slug, &tool_ids, template, description, &output_dir);
+    }
+
     if dry_run {
-        print_dry_run_summary(&slug, &tool_ids, template, description, &output_dir);
+        println!();
+        println!("{}", style("Dry run - no changes made.").yellow());
         return Ok(());
+    }
+
+    // In interactive mode, ask for confirmation
+    if interactive {
+        println!();
+        if !crate::interactive::confirm_proceed()? {
+            println!("{}", style("Aborted - no changes made.").yellow());
+            return Ok(());
+        }
     }
 
     // Check if directory already exists
@@ -90,6 +106,7 @@ pub fn run(
     }
 
     // Create agent based on template
+    println!();
     println!(
         "{} Creating agent '{}' with template '{}'...",
         style("[1/2]").bold().dim(),
@@ -212,41 +229,37 @@ fn find_workspace_root() -> Result<PathBuf> {
     }
 }
 
-/// Print dry-run summary.
-fn print_dry_run_summary(
+/// Print summary of what will be created.
+fn print_summary(
     slug: &str,
     tool_ids: &[String],
     template: AgentTemplate,
     description: &str,
     output_dir: &Path,
 ) {
-    println!(
-        "{}",
-        style("Dry run - no files will be created").yellow().bold()
-    );
     println!();
-    println!("Would create agent:");
-    println!("  Name: {}", style(slug).cyan());
-    println!("  Template: {}", style(template.name()).green());
+    println!("{}", style("Summary:").bold());
+    println!("  Name:        {}", style(slug).cyan());
+    println!("  Template:    {}", style(template.name()).green());
     println!(
         "  Description: {}",
         if description.is_empty() {
-            "(none)"
+            "(none)".to_string()
         } else {
-            description
+            description.to_string()
         }
     );
     println!(
-        "  Tools: {}",
+        "  Tools:       {}",
         if tool_ids.is_empty() {
             "(none)".to_string()
         } else {
             tool_ids.join(", ")
         }
     );
-    println!("  Output: {}", style(output_dir.display()).cyan());
+    println!("  Output:      {}", style(output_dir.display()).cyan());
     println!();
-    println!("Files that would be created:");
+    println!("{}", style("Files to be created:").bold());
     println!("  {}/", output_dir.display());
     println!("    manifest.json");
     println!("    tsconfig.json");

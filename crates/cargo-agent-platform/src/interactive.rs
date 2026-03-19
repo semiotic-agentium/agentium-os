@@ -207,3 +207,17 @@ fn truncate(s: &str, max_len: usize) -> String {
         format!("{}...", &s[..max_len - 3])
     }
 }
+
+// ---------------------------------------------------------------------------
+// Confirmation prompts
+// ---------------------------------------------------------------------------
+
+/// Prompt for confirmation before proceeding.
+/// Returns true if user confirms, false otherwise.
+pub fn confirm_proceed() -> Result<bool> {
+    let confirmed = inquire::Confirm::new("Proceed?")
+        .with_default(true)
+        .prompt()?;
+
+    Ok(confirmed)
+}

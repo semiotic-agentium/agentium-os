@@ -21,7 +21,7 @@ use crate::{
 };
 
 /// Run the new-tool command.
-pub fn run(name: &str, bundle: &str, access: &str, dry_run: bool) -> Result<()> {
+pub fn run(name: &str, bundle: &str, access: &str, dry_run: bool, interactive: bool) -> Result<()> {
     // Validate inputs
     validate_tool_name(name)?;
     validate_bundle(bundle)?;
@@ -71,32 +71,52 @@ pub fn run(name: &str, bundle: &str, access: &str, dry_run: bool) -> Result<()> 
     // 6. Patch baml-rt-builder/Cargo.toml
     patch_file(&mut writer, &workspace_root, &BuilderTomlPatcher, name)?;
 
-    // Show summary
+    // Show summary (for interactive or dry-run mode)
+    if interactive || dry_run {
+        println!();
+        println!("{}", style("Summary:").bold());
+        println!("  Name:   {}", style(name).cyan());
+        println!("  Bundle: {}", style(bundle).cyan());
+        println!("  Access: {}", style(access).cyan());
+    }
+
     println!();
     println!("{}", style("Operations to perform:").bold());
     for line in writer.summary() {
         println!("  {line}");
     }
 
+    // Show note about complex tools
+    println!();
+    println!("{}", style("Note:").yellow().bold());
+    println!("  Most tools are auto-registered via inventory and need no extra setup.");
+    println!("  If your tool requires runtime context (e.g., agent name, manifest data),");
+    println!("  you'll also need to manually edit:");
+    println!(
+        "    - {}",
+        style("crates/baml-agent-runner/src/optional_tool_bundles.rs").cyan()
+    );
+    println!(
+        "    - {}",
+        style("crates/baml-rt-builder/src/optional_tool_bundles.rs").cyan()
+    );
+    println!("  See the {} tool for an example.", style("memory").cyan());
+
     if dry_run {
         println!();
         println!("{}", style("Dry run - no changes made.").yellow());
-        println!();
-        println!("{}", style("Note:").yellow().bold());
-        println!("  Most tools are auto-registered via inventory and need no extra setup.");
-        println!("  If your tool requires runtime context (e.g., agent name, manifest data),");
-        println!("  you'll also need to manually edit:");
-        println!(
-            "    - {}",
-            style("crates/baml-agent-runner/src/optional_tool_bundles.rs").cyan()
-        );
-        println!(
-            "    - {}",
-            style("crates/baml-rt-builder/src/optional_tool_bundles.rs").cyan()
-        );
-        println!("  See the {} tool for an example.", style("memory").cyan());
         writer.discard();
         return Ok(());
+    }
+
+    // In interactive mode, ask for confirmation
+    if interactive {
+        println!();
+        if !crate::interactive::confirm_proceed()? {
+            println!("{}", style("Aborted - no changes made.").yellow());
+            writer.discard();
+            return Ok(());
+        }
     }
 
     // Commit the transaction

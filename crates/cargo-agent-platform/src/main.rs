@@ -54,13 +54,9 @@ enum Commands {
         #[arg(long)]
         access: Option<String>,
 
-        /// Print what would be created/modified without writing
+        /// Print what would be created/modified without writing (non-interactive only)
         #[arg(long)]
         dry_run: bool,
-
-        /// Run in interactive mode (prompts for all options)
-        #[arg(long, short)]
-        interactive: bool,
     },
 
     /// Create a new agent package
@@ -84,13 +80,9 @@ enum Commands {
         #[arg(long)]
         output: Option<String>,
 
-        /// Print what would be created without writing
+        /// Print what would be created without writing (non-interactive only)
         #[arg(long)]
         dry_run: bool,
-
-        /// Run in interactive mode (prompts for all options)
-        #[arg(long, short)]
-        interactive: bool,
     },
 
     /// List all registered tools from the inventory
@@ -134,15 +126,13 @@ fn main() -> anyhow::Result<()> {
             bundle,
             access,
             dry_run,
-            interactive,
         } => {
-            // Use interactive mode if flag is set or name is missing
-            let interactive = interactive || name.is_none();
+            // Interactive mode when name is not provided
+            let interactive = name.is_none();
 
             let name = match name {
                 Some(n) => n,
-                None if interactive => interactive::prompt_tool_name()?,
-                None => anyhow::bail!("Tool name is required. Use --interactive for guided mode."),
+                None => interactive::prompt_tool_name()?,
             };
 
             let bundle = match bundle {
@@ -157,7 +147,10 @@ fn main() -> anyhow::Result<()> {
                 None => "read".to_string(),
             };
 
-            commands::new_tool::run(&name, &bundle, &access, dry_run)
+            // In interactive mode, ignore --dry-run (confirmation prompt replaces it)
+            let dry_run = if interactive { false } else { dry_run };
+
+            commands::new_tool::run(&name, &bundle, &access, dry_run, interactive)
         }
 
         Commands::NewAgent {
@@ -167,15 +160,13 @@ fn main() -> anyhow::Result<()> {
             description,
             output,
             dry_run,
-            interactive,
         } => {
-            // Use interactive mode if flag is set or name is missing
-            let interactive = interactive || name.is_none();
+            // Interactive mode when name is not provided
+            let interactive = name.is_none();
 
             let name = match name {
                 Some(n) => n,
-                None if interactive => interactive::prompt_agent_name()?,
-                None => anyhow::bail!("Agent name is required. Use --interactive for guided mode."),
+                None => interactive::prompt_agent_name()?,
             };
 
             let description = match description {
@@ -199,6 +190,9 @@ fn main() -> anyhow::Result<()> {
                 None => None,
             };
 
+            // In interactive mode, ignore --dry-run (confirmation prompt replaces it)
+            let dry_run = if interactive { false } else { dry_run };
+
             commands::new_agent::run(
                 &name,
                 tools.as_deref(),
@@ -206,6 +200,7 @@ fn main() -> anyhow::Result<()> {
                 &description,
                 output.as_deref(),
                 dry_run,
+                interactive,
             )
         }
 
