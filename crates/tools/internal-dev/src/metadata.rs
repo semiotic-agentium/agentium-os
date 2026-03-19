@@ -27,6 +27,7 @@ pub struct InternalDevCalculate;
     name = "internal-dev/get_weather",
     description = "Gets the current weather for a specific location. Returns temperature, condition, and humidity.",
     tags = ["internal-dev", "get_weather"],
+    event_sources = ["weather"],
     metadata_only,
     open_input = (),
     input = WeatherInput,
@@ -69,3 +70,21 @@ pub struct InternalDevDelayedResponse;
     output = A2aRelayOutput,
 )]
 pub struct InternalDevA2aRelay;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn weather_tool_declares_event_sources() {
+        let meta = internal_dev_get_weather_metadata();
+        assert_eq!(meta.event_sources.len(), 1);
+        assert_eq!(meta.event_sources[0].as_str(), "weather");
+    }
+
+    #[test]
+    fn calculate_tool_has_no_event_sources() {
+        let meta = internal_dev_calculate_metadata();
+        assert!(meta.event_sources.is_empty());
+    }
+}

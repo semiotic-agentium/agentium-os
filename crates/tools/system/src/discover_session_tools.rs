@@ -200,6 +200,7 @@ pub fn discover_tools_handler(
                     bundle: r.bundle.as_str().to_string(),
                     description: r.description,
                     tags: r.tags,
+                    event_sources: r.event_sources.iter().map(|s| s.to_string()).collect(),
                 })
                 .collect();
             Ok(DiscoverToolsNextOutput {

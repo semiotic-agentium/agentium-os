@@ -13,7 +13,7 @@ use std::{
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    BamlRtError, ContextId, Result, SessionLifecycleError,
+    BamlRtError, ContextId, EventSourceKind, Result, SessionLifecycleError,
     ids::{AgentId, TaskId},
 };
 use dashmap::DashMap;
@@ -643,6 +643,9 @@ pub struct ToolFunctionMetadata {
     /// FSM scheduling policy for the step executor. Controls which ops are
     /// offered after a Send. Defaults to `Strict` (one Send per hop).
     pub session_policy: SessionPolicy,
+    /// Event source kinds this tool can produce when polled.
+    /// Empty means the tool is invoke-only (no event production).
+    pub event_sources: Vec<EventSourceKind>,
 }
 
 /// Trait for building ToolFunctionMetadata consistently
@@ -718,6 +721,7 @@ impl ToolFunctionMetadata {
             origin,
             projection_semantics: None,
             session_policy: SessionPolicy::default(),
+            event_sources: Vec::new(),
         }
     }
 }
@@ -737,6 +741,7 @@ pub struct TypeBasedMetadataBuilder<OpenInput, Input, Output> {
     extra_ts_decls: Vec<String>,
     access: Option<ToolAccess>,
     session_policy: SessionPolicy,
+    event_sources: Vec<EventSourceKind>,
     _phantom: std::marker::PhantomData<(OpenInput, Input, Output)>,
 }
 
@@ -762,6 +767,7 @@ where
             origin: ToolOrigin::Host,
             projection_semantics: None,
             session_policy: SessionPolicy::default(),
+            event_sources: Vec::new(),
             _phantom: std::marker::PhantomData,
         }
     }
@@ -837,6 +843,12 @@ where
         self.session_policy = policy;
         self
     }
+
+    /// Set event source kinds this tool can produce when polled.
+    pub fn with_event_sources(mut self, event_sources: Vec<EventSourceKind>) -> Self {
+        self.event_sources = event_sources;
+        self
+    }
 }
 
 impl<OpenInput, Input, Output> ToolMetadataBuilder
@@ -862,6 +874,7 @@ where
         metadata.config_bundle = self.config_bundle;
         metadata.projection_semantics = self.projection_semantics;
         metadata.session_policy = self.session_policy;
+        metadata.event_sources = self.event_sources;
         metadata
     }
 }
@@ -885,6 +898,8 @@ pub struct ToolFunctionMetadataExport {
     pub config: Option<ToolConfigMetadata>,
     pub origin: ToolOrigin,
     pub projection_semantics: Option<ToolProjectionSemantics>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_sources: Vec<EventSourceKind>,
 }
 
 impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
@@ -907,12 +922,13 @@ impl From<&ToolFunctionMetadata> for ToolFunctionMetadataExport {
             config: metadata.config.clone(),
             origin: metadata.origin,
             projection_semantics: metadata.projection_semantics.clone(),
+            event_sources: metadata.event_sources.clone(),
         }
     }
 }
 
-/// Discovery record for tool search (name, bundle, description, tags, access, origin).
-/// Discovery lists globally available tools only; no per-agent invokability.
+/// Discovery record for tool search (name, bundle, description, tags, access, origin, event_sources).
+/// Lists globally available tools only; no per-agent invokability.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolDiscoveryRecord {
     pub name: ToolName,
@@ -921,6 +937,8 @@ pub struct ToolDiscoveryRecord {
     pub tags: Vec<String>,
     pub access: Option<ToolAccess>,
     pub origin: ToolOrigin,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub event_sources: Vec<EventSourceKind>,
 }
 
 impl ToolDiscoveryRecord {
@@ -932,6 +950,7 @@ impl ToolDiscoveryRecord {
             tags: metadata.tags.clone(),
             access: metadata.access,
             origin: metadata.origin,
+            event_sources: metadata.event_sources.clone(),
         }
     }
 }

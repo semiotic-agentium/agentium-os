@@ -219,6 +219,7 @@ class ToolDiscoveryRecordDto {
   bundle string
   description string
   tags string[]
+  eventSources string[]?
 }
 
 

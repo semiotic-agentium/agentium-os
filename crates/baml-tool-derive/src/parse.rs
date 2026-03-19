@@ -36,6 +36,8 @@ pub(crate) struct ToolAttrs {
     pub baml_types: Vec<Path>,
     /// Types whose `ts_decl()` produces extra TypeScript declarations.
     pub extra_ts_types: Vec<Path>,
+    /// Event source kinds this tool can produce when polled (e.g. `["slack"]`).
+    pub event_sources: Vec<LitStr>,
     /// Whether this is a metadata-only registration (no runtime handler).
     pub metadata_only: bool,
     /// Override for the default build function.
@@ -56,6 +58,7 @@ enum AttrEntry {
     Tags(Vec<LitStr>),
     Secrets(Vec<SecretDef>),
     Access(Ident),
+    EventSources(Vec<LitStr>),
     BamlTypes(Vec<Path>),
     ExtraTsTypes(Vec<Path>),
     MetadataOnly,
@@ -75,6 +78,7 @@ impl Parse for ToolAttrs {
         let mut tags: Vec<LitStr> = Vec::new();
         let mut secrets: Vec<SecretDef> = Vec::new();
         let mut access: Option<Ident> = None;
+        let mut event_sources: Vec<LitStr> = Vec::new();
         let mut baml_types: Vec<Path> = Vec::new();
         let mut extra_ts_types: Vec<Path> = Vec::new();
         let mut metadata_only = false;
@@ -90,6 +94,7 @@ impl Parse for ToolAttrs {
                 AttrEntry::Tags(v) => tags = v,
                 AttrEntry::Secrets(v) => secrets = v,
                 AttrEntry::Access(v) => access = Some(v),
+                AttrEntry::EventSources(v) => event_sources = v,
                 AttrEntry::BamlTypes(v) => baml_types = v,
                 AttrEntry::ExtraTsTypes(v) => extra_ts_types = v,
                 AttrEntry::MetadataOnly => metadata_only = true,
@@ -124,6 +129,7 @@ impl Parse for ToolAttrs {
             tags,
             secrets,
             access,
+            event_sources,
             baml_types,
             extra_ts_types,
             metadata_only,
@@ -236,6 +242,18 @@ impl Parse for AttrEntry {
                     ));
                 }
                 Ok(AttrEntry::Access(ident))
+            }
+            "event_sources" => {
+                let strings = parse_string_array(input)?;
+                for s in &strings {
+                    if s.value().trim().is_empty() {
+                        return Err(syn::Error::new(
+                            s.span(),
+                            "baml_tool: `event_sources` entries must be non-empty strings",
+                        ));
+                    }
+                }
+                Ok(AttrEntry::EventSources(strings))
             }
             "baml_types" => {
                 let paths = parse_path_array(input)?;

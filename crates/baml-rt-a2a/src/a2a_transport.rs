@@ -474,6 +474,7 @@ impl A2aAgent {
             origin: baml_rt_tools::ToolOrigin::Guest,
             projection_semantics: None,
             session_policy: baml_rt_tools::SessionPolicy::default(),
+            event_sources: Vec::new(),
         };
 
         let handler: Arc<dyn ToolHandler> = Arc::new(JsToolHandler {
