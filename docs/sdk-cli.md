@@ -83,7 +83,7 @@ cargo run -p cargo-agent-platform -- list-tools
 - Tool name (e.g., `support/github`, `system/internal_a2a`)
 - Description (truncated)
 - Tags
-- Access level (Read, Write, Delete, or None)
+- Access level (Read, Write, or None)
 
 **Example output:**
 ```
@@ -103,6 +103,48 @@ Total: 20 tool(s) registered
 
 Creates a new tool crate with all necessary file patches for it to compile and be discoverable.
 
+**Interactive Mode (recommended):**
+
+```bash
+cargo run -p cargo-agent-platform -- new-tool
+```
+
+When no name is provided, interactive mode guides you through the process:
+
+```
+? Tool name (kebab-case): github
+? Bundle type: support (default) - Standard support tool
+? Access level: read (default) - Query-only, no side effects
+
+Summary:
+  Name:   github
+  Bundle: support
+  Access: read
+
+Operations to perform:
+  CREATE DIR  crates/tools/github
+  CREATE DIR  crates/tools/github/src
+  CREATE      crates/tools/github/Cargo.toml
+  CREATE      crates/tools/github/src/lib.rs
+  EDIT        Cargo.toml
+  EDIT        crates/baml-tool-links/Cargo.toml
+  EDIT        crates/baml-tool-links/src/lib.rs
+  EDIT        crates/baml-agent-runner/Cargo.toml
+  EDIT        crates/baml-rt-builder/Cargo.toml
+
+Note:
+  Most tools are auto-registered via inventory and need no extra setup.
+  If your tool requires runtime context (e.g., agent name, manifest data),
+  you'll also need to manually edit:
+    - crates/baml-agent-runner/src/optional_tool_bundles.rs
+    - crates/baml-rt-builder/src/optional_tool_bundles.rs
+  See the memory tool for an example.
+
+? Proceed? (Y/n):
+```
+
+**Non-Interactive Mode:**
+
 ```bash
 cargo run -p cargo-agent-platform -- new-tool <name> [options]
 ```
@@ -111,26 +153,36 @@ cargo run -p cargo-agent-platform -- new-tool <name> [options]
 
 | Argument | Description |
 |----------|-------------|
-| `<name>` | Tool name in kebab-case (e.g., `github`, `jira`, `linear`) |
+| `<name>` | Tool name in kebab-case (e.g., `github`, `jira`, `linear`). Omit for interactive mode. |
 
 **Options:**
 
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--bundle <type>` | `support` | Bundle type. Currently only `support` is supported. |
-| `--access <level>` | `read` | Access level: `read`, `write`, or `delete` |
-| `--dry-run` | - | Preview changes without writing any files |
+| `--access <level>` | `read` | Access level: `read` (query-only) or `write` (can mutate) |
+| `--dry-run` | - | Preview changes without writing any files (non-interactive only) |
+
+**Access Levels:**
+
+| Level | Description |
+|-------|-------------|
+| `read` | Query-only, no side effects. Default for most tools. |
+| `write` | Can mutate data (create, update, delete). Use for tools that modify external state. |
 
 **Examples:**
 
 ```bash
-# Preview what would be created
+# Interactive mode (recommended for new users)
+cargo run -p cargo-agent-platform -- new-tool
+
+# Preview what would be created (non-interactive)
 cargo run -p cargo-agent-platform -- new-tool github --dry-run
 
-# Create a read-only tool
+# Create a read-only tool (non-interactive with defaults)
 cargo run -p cargo-agent-platform -- new-tool github
 
-# Create a tool with write access
+# Create a tool with write access (non-interactive)
 cargo run -p cargo-agent-platform -- new-tool github --access write
 ```
 
@@ -240,6 +292,47 @@ This exits with code 1 if any issues are found, suitable for CI pipelines.
 
 Creates a new agent package with generated BAML prompts, TypeScript entry point, and type declarations.
 
+**Interactive Mode (recommended):**
+
+```bash
+cargo run -p cargo-agent-platform -- new-agent
+```
+
+When no name is provided, interactive mode guides you through the process:
+
+```
+? Agent name: github-agent
+? Description (optional): GitHub issue and PR assistant
+? Template: planner - 3-phase: Intent -> Plan -> Execute
+? Select tools (Space to select, Enter to confirm):
+  [x] support/github
+  [ ] support/clickup
+  [x] system/internal_a2a
+  [ ] system/discover_agents
+
+Summary:
+  Name:        github-agent
+  Template:    planner
+  Description: GitHub issue and PR assistant
+  Tools:       support/github, system/internal_a2a
+  Output:      /path/to/agents/github-agent
+
+Files to be created:
+  agents/github-agent/
+    manifest.json
+    tsconfig.json
+    baml_src/
+      github_agent_prompt.baml
+      generated_tools.baml (after type generation)
+    src/
+      index.ts
+      baml-runtime.d.ts (after type generation)
+
+? Proceed? (Y/n):
+```
+
+**Non-Interactive Mode:**
+
 ```bash
 cargo run -p cargo-agent-platform -- new-agent <name> [options]
 ```
@@ -248,7 +341,7 @@ cargo run -p cargo-agent-platform -- new-agent <name> [options]
 
 | Argument | Description |
 |----------|-------------|
-| `<name>` | Agent name in kebab-case (e.g., `github-agent`, `task-manager`) |
+| `<name>` | Agent name in kebab-case (e.g., `github-agent`, `task-manager`). Omit for interactive mode. |
 
 **Options:**
 
@@ -258,7 +351,7 @@ cargo run -p cargo-agent-platform -- new-agent <name> [options]
 | `--template <template>` | `simple` | Agent template: `simple`, `basic-tools`, `planner`, `coordinator` |
 | `--description <desc>` | `""` | Human-readable description for agent discovery |
 | `--output <dir>` | `agents/<name>` | Target directory for the agent package |
-| `--dry-run` | - | Preview changes without writing any files |
+| `--dry-run` | - | Preview changes without writing any files (non-interactive only) |
 
 **Templates:**
 
@@ -272,7 +365,10 @@ cargo run -p cargo-agent-platform -- new-agent <name> [options]
 **Examples:**
 
 ```bash
-# Preview what would be created
+# Interactive mode (recommended for new users)
+cargo run -p cargo-agent-platform -- new-agent
+
+# Preview what would be created (non-interactive)
 cargo run -p cargo-agent-platform -- new-agent github-agent --dry-run
 
 # Create a simple agent (no tools)
