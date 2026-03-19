@@ -9,7 +9,7 @@ use baml_rt_core::{AgentManifest, package::ManifestDiscovery};
 
 /// Convert a string to PascalCase.
 fn to_pascal_case(s: &str) -> String {
-    s.split(|c: char| c == '-' || c == '_')
+    s.split(['-', '_'])
         .filter(|part| !part.is_empty())
         .map(|part| {
             let mut chars = part.chars();
