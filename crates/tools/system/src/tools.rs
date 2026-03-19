@@ -1,7 +1,6 @@
 //! Structured request and response types for system tools.
 
 use baml_derive::BamlType;
-use baml_rt_core::ids::{AgentId, ContextId, TaskId};
 use baml_rt_tools::tools::{HistoryContextV1, SessionReadEnvelope, SessionReadMode};
 use serde::{Deserialize, Serialize};
 
@@ -215,11 +214,11 @@ pub struct ProvenanceQuerySendInput {
     pub read: Option<SessionReadEnvelope>,
     pub resource: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub context_id: Option<ContextId>,
+    pub context_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<TaskId>,
+    pub task_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<AgentId>,
+    pub agent_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -297,30 +296,43 @@ pub struct ProvenanceArchiveSummaryDto {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
+pub struct ProvenancePayloadLlmCallDto {
+    pub payload_ref: String,
+    pub activity_ref: String,
+    pub prompt_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
+pub struct ProvenancePayloadLlmResultDto {
+    pub payload_ref: String,
+    pub activity_ref: String,
+    pub result_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
+pub struct ProvenancePayloadToolCallDto {
+    pub payload_ref: String,
+    pub activity_ref: String,
+    pub tool_name: Option<String>,
+    pub phase: Option<String>,
+    pub args_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
+pub struct ProvenancePayloadToolResultDto {
+    pub payload_ref: String,
+    pub activity_ref: String,
+    pub result_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
+#[baml(union)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum ProvenanceArchivePayloadDto {
-    LlmCall {
-        payload_ref: String,
-        activity_ref: String,
-        prompt_json: String,
-    },
-    LlmResult {
-        payload_ref: String,
-        activity_ref: String,
-        result_json: String,
-    },
-    ToolCall {
-        payload_ref: String,
-        activity_ref: String,
-        tool_name: Option<String>,
-        phase: Option<String>,
-        args_json: String,
-    },
-    ToolResult {
-        payload_ref: String,
-        activity_ref: String,
-        result_json: String,
-    },
+    LlmCall(ProvenancePayloadLlmCallDto),
+    LlmResult(ProvenancePayloadLlmResultDto),
+    ToolCall(ProvenancePayloadToolCallDto),
+    ToolResult(ProvenancePayloadToolResultDto),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, BamlType)]
