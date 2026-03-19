@@ -14,7 +14,6 @@ pub fn generate(name: &str, bundle: &str, access: &str) -> String {
 
     let access_attr = match access {
         "write" => "\n    access = Write,",
-        "delete" => "\n    access = Delete,",
         _ => "", // read is the default, no need to specify
     };
 

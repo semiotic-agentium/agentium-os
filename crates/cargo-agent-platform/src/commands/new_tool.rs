@@ -218,8 +218,8 @@ fn validate_bundle(bundle: &str) -> Result<()> {
 /// Validate access level.
 fn validate_access(access: &str) -> Result<()> {
     match access {
-        "read" | "write" | "delete" => Ok(()),
-        _ => bail!("Access level must be one of: read, write, delete"),
+        "read" | "write" => Ok(()),
+        _ => bail!("Access level must be one of: read (default, query-only), write (can mutate)"),
     }
 }
 
@@ -280,7 +280,7 @@ mod tests {
     fn test_validate_access() {
         assert!(validate_access("read").is_ok());
         assert!(validate_access("write").is_ok());
-        assert!(validate_access("delete").is_ok());
+        assert!(validate_access("delete").is_err()); // delete no longer valid
         assert!(validate_access("admin").is_err());
     }
 }

@@ -203,3 +203,15 @@ test-unit:
 # Usage: just provenance-mermaid ctx-1771426017780-2
 provenance-mermaid context_id: build-release
     {{graph_exporter_bin}} --db {{provenance_db}} --context-id {{context_id}} --simplify --format mermaid
+
+# SDK CLI: workspace integrity check
+doctor:
+    cargo run -p cargo-agent-platform -- doctor
+
+# SDK CLI: list all registered tools
+list-tools:
+    cargo run -p cargo-agent-platform -- list-tools
+
+# SDK CLI: list all agent packages
+list-agents:
+    cargo run -p cargo-agent-platform -- list-agents

@@ -49,7 +49,7 @@ enum Commands {
         #[arg(long, default_value = "support")]
         bundle: String,
 
-        /// Access level: read, write, or delete
+        /// Access level: read (default, query-only) or write (can mutate)
         #[arg(long, default_value = "read")]
         access: String,
 
