@@ -2,13 +2,17 @@
 
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    A2aRequestHandler, A2aStreamChunk, A2aWireRequest, BamlRtError, Result,
+    A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentDispatchAck, AgentDispatchRequest,
+    BamlRtError, Result,
     bus::{BusStream, EffectEmitter},
     context::{self, InvocationScope, OutcomeInvocationContext, RequestScope},
     correlation,
@@ -486,6 +490,32 @@ impl A2aAgent {
         registry.register_dynamic(metadata, handler)?;
 
         Ok(())
+    }
+
+    /// Invoke the JS `onDispatch` handler registered by `__chat_register({ onDispatch })`.
+    ///
+    /// Returns `FunctionNotFound("onDispatch")` when the agent did not register a handler.
+    pub async fn handle_dispatch(&self, request: AgentDispatchRequest) -> Result<AgentDispatchAck> {
+        // Dispatch scope is carried explicitly into the handover lane. We intentionally do not
+        // rely on a caller-side task-local here: native callbacks resolve scope from the bridge's
+        // invocation registry once the eval starts, and async BAML/tool work re-enters
+        // `context::with_scope` inside the bridge.
+        let scope = scope_from_dispatch_request(&request, self.agent_id.clone());
+        let args = serde_json::to_value(&request).map_err(BamlRtError::Json)?;
+        let response = baml_rt_quickjs::invoke_optional_js_function_handover(
+            self.bridge_handle.as_ref(),
+            scope,
+            "onDispatch",
+            args,
+        )
+        .await?
+        .ok_or_else(|| BamlRtError::FunctionNotFound("onDispatch".to_string()))?;
+
+        serde_json::from_value(response).map_err(|source| BamlRtError::InvalidArgumentWithSource {
+            message: "dispatch handler must return { accepted: boolean, detail?: string }"
+                .to_string(),
+            source: Box::new(source),
+        })
     }
 
     pub async fn register_a2a_session_tool(&self) -> Result<()> {
@@ -1135,6 +1165,39 @@ fn build_stream_sessions_and_relay(
     let pusher = Arc::new(WorkingChunkPusher::new(stream_sessions.clone()));
     let relay = Arc::new(LiveStreamWorkingRelay::new(pusher));
     (stream_sessions, relay)
+}
+
+static DISPATCH_MSG_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Build an invocation scope from a dispatch request, threading context/task/message IDs
+/// from the inbound event so tracing and provenance link to the dispatch origin.
+fn scope_from_dispatch_request(
+    request: &AgentDispatchRequest,
+    agent_id: baml_rt_core::ids::AgentId,
+) -> InvocationScope {
+    let Some(context_id) = request.context_id.clone() else {
+        return InvocationScope::synthetic_message(agent_id);
+    };
+
+    let message_id = request
+        .message_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| MessageId::from_external(ExternalId::new(value.to_string())))
+        .unwrap_or_else(|| {
+            let seq = DISPATCH_MSG_COUNTER.fetch_add(1, Ordering::Relaxed);
+            MessageId::from_external(ExternalId::new(format!("dispatch-msg-{seq}")))
+        });
+
+    match request.task_id.clone() {
+        Some(task_id) => InvocationScope::new(context::RuntimeScope::task_scope(
+            context_id, agent_id, message_id, task_id,
+        )),
+        None => InvocationScope::new(context::RuntimeScope::message_scope(
+            context_id, agent_id, message_id,
+        )),
+    }
 }
 
 /// Scope resolution for outcome handling. No optionality; branching is on the typed invocation context.
@@ -2005,14 +2068,17 @@ mod tests {
     use std::sync::Arc;
 
     use baml_rt_core::{
-        BamlRtError,
+        AgentDispatchRequest, AgentDispatchRoutingKey, BamlRtError, EventSchemaVersion,
         context::InvocationScope,
         ids::{ContextId, ExternalId, MessageId, TaskId},
     };
     use baml_rt_provenance::ProvenanceContextReader;
     use serde_json::json;
 
-    use super::{A2aAgent, GraphqliteRuntimeStore, TaskRepository, synthesized_live_task_id};
+    use super::{
+        A2aAgent, GraphqliteRuntimeStore, TaskRepository, scope_from_dispatch_request,
+        synthesized_live_task_id,
+    };
     use crate::a2a_types::{A2aMessageId, Message, MessageRole, Part};
 
     #[test]
@@ -2183,5 +2249,103 @@ mod tests {
             }
             other => panic!("expected conflict error, got {other:?}"),
         }
+    }
+
+    fn test_agent_id() -> baml_rt_core::ids::AgentId {
+        baml_rt_core::ids::AgentId::from_uuid(
+            baml_rt_core::ids::UuidId::parse_str("00000000-0000-0000-0000-000000000122").unwrap(),
+        )
+    }
+
+    fn test_dispatch_request(
+        context_id: Option<ContextId>,
+        task_id: Option<TaskId>,
+        message_id: Option<&str>,
+    ) -> AgentDispatchRequest {
+        AgentDispatchRequest {
+            routing_key: AgentDispatchRoutingKey::parse("slack:intake").expect("routing key"),
+            message_type: EventSchemaVersion::parse("task-daemon.interpretation.v1")
+                .expect("schema version"),
+            messages: vec![],
+            context_id,
+            task_id,
+            message_id: message_id.map(String::from),
+            metadata: None,
+        }
+    }
+
+    #[test]
+    fn dispatch_scope_threads_context_task_and_message_ids() {
+        let agent_id = test_agent_id();
+        let context_id = ContextId::new(122, 1);
+        let task_id = TaskId::from_external(ExternalId::new("dispatch-task-122"));
+        let request = test_dispatch_request(
+            Some(context_id.clone()),
+            Some(task_id.clone()),
+            Some("dispatch-msg-122"),
+        );
+
+        let scope = scope_from_dispatch_request(&request, agent_id.clone());
+
+        assert_eq!(
+            scope.as_scope(),
+            &baml_rt_core::context::RuntimeScope::task_scope(
+                context_id,
+                agent_id,
+                MessageId::from_external(ExternalId::new("dispatch-msg-122")),
+                task_id,
+            )
+        );
+    }
+
+    #[test]
+    fn dispatch_scope_without_task_id_uses_message_scope() {
+        let agent_id = test_agent_id();
+        let context_id = ContextId::new(123, 1);
+        let request =
+            test_dispatch_request(Some(context_id.clone()), None, Some("dispatch-msg-123"));
+
+        let scope = scope_from_dispatch_request(&request, agent_id.clone());
+
+        assert_eq!(
+            scope.as_scope(),
+            &baml_rt_core::context::RuntimeScope::message_scope(
+                context_id,
+                agent_id,
+                MessageId::from_external(ExternalId::new("dispatch-msg-123")),
+            )
+        );
+    }
+
+    #[test]
+    fn dispatch_scope_without_context_id_returns_synthetic() {
+        let agent_id = test_agent_id();
+        let request = test_dispatch_request(None, None, None);
+
+        let scope = scope_from_dispatch_request(&request, agent_id);
+
+        assert!(
+            scope.as_scope().task_id_opt().is_none(),
+            "synthetic scope should have no task_id"
+        );
+        assert!(
+            scope.context_id().as_str().starts_with("ctx-"),
+            "synthetic scope should have a generated context_id prefix"
+        );
+    }
+
+    #[test]
+    fn dispatch_scope_generates_message_id_when_absent() {
+        let agent_id = test_agent_id();
+        let context_id = ContextId::new(124, 1);
+        let request = test_dispatch_request(Some(context_id), None, None);
+
+        let scope = scope_from_dispatch_request(&request, agent_id);
+        let msg_id = scope.as_scope().message_id().as_str();
+
+        assert!(
+            msg_id.starts_with("dispatch-msg-"),
+            "expected generated dispatch-msg- prefix, got: {msg_id}"
+        );
     }
 }

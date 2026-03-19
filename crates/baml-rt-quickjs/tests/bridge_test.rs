@@ -1193,3 +1193,81 @@ async fn test_invoke_function_with_explicit_scope_fails_for_missing_function() {
         }
     }
 }
+
+#[tokio::test]
+async fn test_invoke_optional_js_function_nonblocking_returns_none_when_missing() {
+    let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::builder().build().unwrap()));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000032").unwrap());
+    let mut bridge = QuickJSBridge::new(baml_manager, agent_id).await.unwrap();
+    bridge.set_effect_liveness(Arc::new(BusWithEffects::new()) as Arc<dyn EffectLiveness>);
+    bridge
+        .register_baml_functions()
+        .await
+        .expect("register helpers");
+    let invoke_scope = InvocationScope::synthetic_message(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-000000000033").unwrap(),
+    ));
+    let bridge = Arc::new(Mutex::new(bridge));
+
+    let result = QuickJSBridge::invoke_optional_js_function_nonblocking(
+        bridge,
+        &invoke_scope,
+        "MissingOptionalFunction",
+        json!({}),
+    )
+    .await
+    .expect("optional invoke should not error when function is absent");
+
+    assert!(
+        result.is_none(),
+        "missing optional function should return None, got: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_invoke_optional_js_function_nonblocking_includes_function_name_in_error() {
+    let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::builder().build().unwrap()));
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000034").unwrap());
+    let mut bridge = QuickJSBridge::new(baml_manager, agent_id).await.unwrap();
+    bridge.set_effect_liveness(Arc::new(BusWithEffects::new()) as Arc<dyn EffectLiveness>);
+    bridge
+        .register_baml_functions()
+        .await
+        .expect("register helpers");
+    bridge
+        .eval_sync(
+            r#"(function() {
+                globalThis.optionalBoom = function(_args) {
+                    throw new Error("kaboom");
+                };
+                return { "ready": true };
+            })()"#,
+        )
+        .await
+        .expect("install optionalBoom");
+    let invoke_scope = InvocationScope::synthetic_message(AgentId::from_uuid(
+        UuidId::parse_str("00000000-0000-0000-0000-000000000035").unwrap(),
+    ));
+    let bridge = Arc::new(Mutex::new(bridge));
+
+    let err = QuickJSBridge::invoke_optional_js_function_nonblocking(
+        bridge,
+        &invoke_scope,
+        "optionalBoom",
+        json!({}),
+    )
+    .await
+    .expect_err("optional JS error should surface as QuickJs");
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("optionalBoom"),
+        "error should include function name, got: {msg}"
+    );
+    assert!(
+        msg.contains("kaboom"),
+        "error should include JS message, got: {msg}"
+    );
+}
