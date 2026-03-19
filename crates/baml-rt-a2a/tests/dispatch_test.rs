@@ -8,8 +8,7 @@ use baml_rt_core::{
 use baml_rt_quickjs::BamlRuntimeManager;
 use serde_json::json;
 use test_support::common::{
-    TempDirCleanup, build_agent_package_to_temp, init_test_tracing, test_graphqlite_store,
-    workspace_root,
+    TempDirCleanup, build_agent_package_to_temp, test_surreal_store, workspace_root,
 };
 
 fn fixture_agent_dir(name: &str) -> PathBuf {
@@ -35,7 +34,7 @@ async fn setup_fixture_agent(name: &str) -> (A2aAgent, PathBuf) {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_graphqlite_store(test_graphqlite_store())
+        .with_surreal_store(test_surreal_store().await)
         .build()
         .await
         .expect("build fixture agent");
@@ -61,7 +60,6 @@ fn make_dispatch_request(
 
 #[tokio::test]
 async fn dispatch_echo_accepts_matching_event() {
-    init_test_tracing();
     let (agent, built_dir) = setup_fixture_agent("dispatch-echo").await;
     let _cleanup = TempDirCleanup::new(built_dir);
 
@@ -87,7 +85,6 @@ async fn dispatch_echo_accepts_matching_event() {
 
 #[tokio::test]
 async fn dispatch_echo_handles_empty_messages() {
-    init_test_tracing();
     let (agent, built_dir) = setup_fixture_agent("dispatch-echo").await;
     let _cleanup = TempDirCleanup::new(built_dir);
 
@@ -104,7 +101,6 @@ async fn dispatch_echo_handles_empty_messages() {
 
 #[tokio::test]
 async fn dispatch_returns_function_not_found_when_agent_lacks_on_dispatch() {
-    init_test_tracing();
     let (agent, built_dir) = setup_fixture_agent("argument-chapman").await;
     let _cleanup = TempDirCleanup::new(built_dir);
 

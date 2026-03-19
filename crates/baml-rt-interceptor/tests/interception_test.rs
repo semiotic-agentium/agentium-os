@@ -564,7 +564,8 @@ async fn test_multiple_interceptors_integration() {
     // Verify both interceptors received the same context
     if !pre_calls1_guard.is_empty() {
         assert_eq!(
-            pre_calls1_guard[0].function_name, pre_calls2_guard[0].function_name,
+            pre_calls1_guard[0].function_id.prompt_name().as_str(),
+            pre_calls2_guard[0].function_id.prompt_name().as_str(),
             "Both interceptors should receive the same function name"
         );
         tracing::info!(

@@ -57,7 +57,7 @@ impl LLMInterceptor for StubChooseCalcToolStrictInterceptor {
         &self,
         context: &LLMCallContext,
     ) -> baml_rt_core::Result<InterceptorDecision> {
-        if context.function_name == STREAM_BAML_TOOL_FUNCTION {
+        if context.function_id.prompt_name().as_str() == STREAM_BAML_TOOL_FUNCTION {
             Ok(InterceptorDecision::Substitute(json!({
                 "step": {
                     "op": "Send",

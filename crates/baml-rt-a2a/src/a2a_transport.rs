@@ -2,13 +2,17 @@
 
 use std::{
     collections::HashMap,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    A2aRequestHandler, A2aStreamChunk, A2aWireRequest, BamlRtError, Result,
+    A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentDispatchAck, AgentDispatchRequest,
+    BamlRtError, Result,
     bus::{BusStream, EffectEmitter},
     context::{self, InvocationScope, OutcomeInvocationContext, RequestScope},
     correlation,
@@ -23,7 +27,8 @@ use baml_rt_provenance::{
 };
 use baml_rt_quickjs::{
     BamlRuntimeManager, BridgeHandle, QuickJSBridge, QuickJSConfig,
-    baml_execution::ConversationContextProvider, invoke_tool_handover,
+    baml_execution::ConversationContextProvider, invoke_optional_js_function_handover,
+    invoke_tool_handover,
 };
 use baml_rt_tools::{
     ToolFailure, ToolHandler, ToolName, ToolRegistry, ToolSession, ToolSessionError, ToolTypeSpec,
@@ -502,6 +507,28 @@ impl A2aAgent {
     /// Get the agent ID (generated during build)
     pub fn agent_id(&self) -> &baml_rt_core::ids::AgentId {
         &self.agent_id
+    }
+
+    /// Invoke the JS `onDispatch` handler registered by `__chat_register({ onDispatch })`.
+    ///
+    /// Returns `FunctionNotFound("onDispatch")` when the agent did not register a handler.
+    pub async fn handle_dispatch(&self, request: AgentDispatchRequest) -> Result<AgentDispatchAck> {
+        let scope = scope_from_dispatch_request(&request, self.agent_id.clone());
+        let args = serde_json::to_value(&request).map_err(BamlRtError::Json)?;
+        let response = invoke_optional_js_function_handover(
+            self.bridge_handle.as_ref(),
+            scope,
+            "onDispatch",
+            args,
+        )
+        .await?
+        .ok_or_else(|| BamlRtError::FunctionNotFound("onDispatch".to_string()))?;
+
+        serde_json::from_value(response).map_err(|source| BamlRtError::InvalidArgumentWithSource {
+            message: "dispatch handler must return { accepted: boolean, detail?: string }"
+                .to_string(),
+            source: Box::new(source),
+        })
     }
 
     /// Access the underlying runtime manager.
@@ -1273,6 +1300,39 @@ fn build_stream_sessions_and_relay(
 /// synthesize a deterministic live-session task id derived from (context_id, message_id).
 /// This keeps MessageReceived attributed to the receiver's (agent_id, task_id) without collapsing
 /// task_id to context_id.
+static DISPATCH_MSG_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+/// Build an invocation scope from a dispatch request, threading context/task/message IDs
+/// from the inbound event so tracing and provenance link to the dispatch origin.
+fn scope_from_dispatch_request(
+    request: &AgentDispatchRequest,
+    agent_id: AgentId,
+) -> InvocationScope {
+    let Some(context_id) = request.context_id.clone() else {
+        return InvocationScope::synthetic_message(agent_id);
+    };
+
+    let message_id = request
+        .message_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| MessageId::from_external(ExternalId::new(value.to_string())))
+        .unwrap_or_else(|| {
+            let seq = DISPATCH_MSG_COUNTER.fetch_add(1, Ordering::Relaxed);
+            MessageId::from_external(ExternalId::new(format!("dispatch-msg-{seq}")))
+        });
+
+    match request.task_id.clone() {
+        Some(task_id) => InvocationScope::new(context::RuntimeScope::task_scope(
+            context_id, agent_id, message_id, task_id,
+        )),
+        None => InvocationScope::new(context::RuntimeScope::message_scope(
+            context_id, agent_id, message_id,
+        )),
+    }
+}
+
 fn synthesized_live_task_id(context_id: &ContextId, message_id: &MessageId) -> TaskId {
     TaskId::from_external(ExternalId::new(format!(
         "live-task:{}:{}",

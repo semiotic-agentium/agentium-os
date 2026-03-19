@@ -104,7 +104,7 @@ impl LLMInterceptor for CountingInterceptor {
         &self,
         ctx: &LLMCallContext,
     ) -> baml_rt_core::Result<InterceptorDecision> {
-        match ctx.function_name.as_str() {
+        match ctx.function_id.prompt_name().as_str() {
             "ClassifyBusinessIntent" => Ok(InterceptorDecision::Substitute(
                 self.classify_response.clone(),
             )),
