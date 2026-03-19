@@ -5,7 +5,7 @@
 //! material that was polled, through interpretation, to the tasks produced
 //! from it.
 
-use baml_rt_core::ids::{ContextId, CorrelationId, DigestIdParts, EventId, TaskId};
+use baml_rt_core::ids::{ContextId, CorrelationId, EventId, TaskId};
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
@@ -269,12 +269,12 @@ fn provenance_for_source_poll(
     ];
 
     if value.context_id.is_none() {
-        let parts = stable_id_parts("td-external-context", &seed_parts);
-        value.context_id = Some(ContextId::from_digest_parts(parts));
+        let (upper, lower) = stable_id_parts("td-external-context", &seed_parts);
+        value.context_id = Some(ContextId::new(upper, lower));
     }
     if value.correlation_id.is_none() {
-        let parts = stable_id_parts("td-external-correlation", &seed_parts);
-        value.correlation_id = Some(CorrelationId::from_digest_parts(parts));
+        let (upper, lower) = stable_id_parts("td-external-correlation", &seed_parts);
+        value.correlation_id = Some(CorrelationId::new(upper, lower));
     }
 
     if value.is_empty() { None } else { Some(value) }
@@ -355,7 +355,7 @@ impl StableIdLane {
     }
 }
 
-fn stable_id_parts(namespace: &str, parts: &[&str]) -> DigestIdParts {
+fn stable_id_parts(namespace: &str, parts: &[&str]) -> (u64, u64) {
     // These ids need deterministic separation, not cryptographic randomness.
     // A namespaced/lane-split 64-bit FNV-1a digest keeps collision risk
     // negligible for task-daemon poll volumes, and `.max(1)` avoids zero
@@ -370,9 +370,7 @@ fn stable_id_parts(namespace: &str, parts: &[&str]) -> DigestIdParts {
         lower_raw, 0,
         "FNV digest unexpectedly produced zero for lower lane"
     );
-    let upper = upper_raw.max(1);
-    let lower = lower_raw.max(1);
-    DigestIdParts::new(upper, lower)
+    (upper_raw.max(1), lower_raw.max(1))
 }
 
 fn hash_digest_with_namespace(namespace: &str, lane: StableIdLane, parts: &[&str]) -> u64 {

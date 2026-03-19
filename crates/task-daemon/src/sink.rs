@@ -12,7 +12,8 @@ use anyhow::{Context, Result, anyhow};
 use async_trait::async_trait;
 use baml_rt_core::{
     AgentDiscoveryEntry, AgentDispatchAck, AgentDispatchRequest, AgentInstanceId, AgentPackageName,
-    AgentRouteKey, PublishedEvent, subscriptions_match_published_event,
+    AgentRouteKey,
+    event_subscription::{PublishedEvent, subscriptions_match_published_event},
 };
 use integrations_clickup_client::ClickUpClient;
 use integrations_github_client::GitHubClient;
