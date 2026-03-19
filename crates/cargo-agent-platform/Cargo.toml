@@ -34,6 +34,9 @@ regex = { workspace = true }
 # Terminal output formatting
 console = "0.15"
 
+# Interactive prompts
+inquire = "0.7"
+
 # Builder for run_bootstrap and regen functionality
 baml-rt-builder = { path = "../baml-rt-builder" }
 

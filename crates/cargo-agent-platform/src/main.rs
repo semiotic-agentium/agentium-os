@@ -16,6 +16,7 @@
 //! - `doctor` — Validate workspace integrity
 
 mod commands;
+mod interactive;
 mod patchers;
 mod templates;
 mod transaction;
@@ -42,38 +43,42 @@ struct Cli {
 enum Commands {
     /// Create a new tool crate with all necessary patches
     NewTool {
-        /// Tool name in kebab-case (e.g., github, jira, linear)
-        name: String,
+        /// Tool name in kebab-case (e.g., github, jira, linear). Omit for interactive mode.
+        name: Option<String>,
 
         /// Bundle type (only 'support' is currently supported)
-        #[arg(long, default_value = "support")]
-        bundle: String,
+        #[arg(long)]
+        bundle: Option<String>,
 
         /// Access level: read (default, query-only) or write (can mutate)
-        #[arg(long, default_value = "read")]
-        access: String,
+        #[arg(long)]
+        access: Option<String>,
 
         /// Print what would be created/modified without writing
         #[arg(long)]
         dry_run: bool,
+
+        /// Run in interactive mode (prompts for all options)
+        #[arg(long, short)]
+        interactive: bool,
     },
 
     /// Create a new agent package
     NewAgent {
-        /// Agent name in kebab-case (e.g., github-agent, task-manager)
-        name: String,
+        /// Agent name in kebab-case (e.g., github-agent, task-manager). Omit for interactive mode.
+        name: Option<String>,
 
         /// Comma-separated tool IDs (e.g., support/github,system/internal_a2a)
         #[arg(long)]
         tools: Option<String>,
 
         /// Agent template: simple, basic-tools, planner, coordinator
-        #[arg(long, default_value = "simple")]
-        template: String,
+        #[arg(long)]
+        template: Option<String>,
 
         /// Human-readable description for discovery
-        #[arg(long, default_value = "")]
-        description: String,
+        #[arg(long)]
+        description: Option<String>,
 
         /// Target directory (defaults to agents/<name>)
         #[arg(long)]
@@ -82,6 +87,10 @@ enum Commands {
         /// Print what would be created without writing
         #[arg(long)]
         dry_run: bool,
+
+        /// Run in interactive mode (prompts for all options)
+        #[arg(long, short)]
+        interactive: bool,
     },
 
     /// List all registered tools from the inventory
@@ -125,7 +134,31 @@ fn main() -> anyhow::Result<()> {
             bundle,
             access,
             dry_run,
-        } => commands::new_tool::run(&name, &bundle, &access, dry_run),
+            interactive,
+        } => {
+            // Use interactive mode if flag is set or name is missing
+            let interactive = interactive || name.is_none();
+
+            let name = match name {
+                Some(n) => n,
+                None if interactive => interactive::prompt_tool_name()?,
+                None => anyhow::bail!("Tool name is required. Use --interactive for guided mode."),
+            };
+
+            let bundle = match bundle {
+                Some(b) => b,
+                None if interactive => interactive::prompt_bundle()?,
+                None => "support".to_string(),
+            };
+
+            let access = match access {
+                Some(a) => a,
+                None if interactive => interactive::prompt_access()?,
+                None => "read".to_string(),
+            };
+
+            commands::new_tool::run(&name, &bundle, &access, dry_run)
+        }
 
         Commands::NewAgent {
             name,
@@ -134,14 +167,47 @@ fn main() -> anyhow::Result<()> {
             description,
             output,
             dry_run,
-        } => commands::new_agent::run(
-            &name,
-            tools.as_deref(),
-            &template,
-            &description,
-            output.as_deref(),
-            dry_run,
-        ),
+            interactive,
+        } => {
+            // Use interactive mode if flag is set or name is missing
+            let interactive = interactive || name.is_none();
+
+            let name = match name {
+                Some(n) => n,
+                None if interactive => interactive::prompt_agent_name()?,
+                None => anyhow::bail!("Agent name is required. Use --interactive for guided mode."),
+            };
+
+            let description = match description {
+                Some(d) => d,
+                None if interactive => interactive::prompt_agent_description()?,
+                None => String::new(),
+            };
+
+            let template = match template {
+                Some(t) => t,
+                None if interactive => interactive::prompt_template()?,
+                None => "simple".to_string(),
+            };
+
+            // For interactive mode with basic-tools or planner, prompt for tools
+            let tools = match tools {
+                Some(t) => Some(t),
+                None if interactive && (template == "basic-tools" || template == "planner") => {
+                    interactive::prompt_tools()?
+                }
+                None => None,
+            };
+
+            commands::new_agent::run(
+                &name,
+                tools.as_deref(),
+                &template,
+                &description,
+                output.as_deref(),
+                dry_run,
+            )
+        }
 
         Commands::ListTools => commands::list_tools::run(),
 
