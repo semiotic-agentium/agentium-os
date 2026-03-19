@@ -10,6 +10,7 @@ description = "Memory tool bundle — persistent graph-based cognitive memory fo
 baml-rt-core = { path = "../../baml-rt-core" }
 baml-rt-tools = { path = "../../baml-rt-tools" }
 baml-derive = { path = "../../baml-derive" }
+baml-derive-core = { path = "../../baml-derive-core" }
 agentic-memory = { workspace = true }
 async-trait = { workspace = true }
 inventory = { workspace = true }

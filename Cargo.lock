@@ -2113,6 +2113,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "baml-derive 0.1.0",
+ "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
  "inventory",
@@ -2129,6 +2130,7 @@ dependencies = [
  "agentic-memory",
  "async-trait",
  "baml-derive 0.1.0",
+ "baml-derive-core",
  "baml-rt-core",
  "baml-rt-tools",
  "inventory",

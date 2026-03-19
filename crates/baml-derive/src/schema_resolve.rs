@@ -16,10 +16,10 @@ use syn::Type;
 ///
 /// Used to determine which struct fields should appear in JSON Schema `required`.
 pub(crate) fn is_option_type(ty: &Type) -> bool {
-    if let Type::Path(tp) = ty {
-        if let Some(last) = tp.path.segments.last() {
-            return last.ident == "Option";
-        }
+    if let Type::Path(tp) = ty
+        && let Some(last) = tp.path.segments.last()
+    {
+        return last.ident == "Option";
     }
     false
 }
