@@ -85,9 +85,7 @@ graphqlite = { version = "0.3", default-features = false, features = ["bundled-e
 testcontainers = "0.23"
 insta = { version = "1.46.3", features = ["json"] }
 uuid = { version = "1.10", features = ["v4", "serde"] }
-schemars = "1.1.0"
 jsonschema = "0.18"
-ts-rs = "11.1.0"
 genco = "0.19.0"
 inventory = "0.3.20"
 syn = { version = "2", features = ["full", "extra-traits"] }
