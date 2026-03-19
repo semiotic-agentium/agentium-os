@@ -46,9 +46,7 @@ async fn tool_index_creates_tool_nodes() {
         event_sources: Vec::new(),
     }];
 
-    index_tools(&store, &tools)
-        .await
-        .expect("index tools");
+    index_tools(&store, &tools).await.expect("index tools");
 
     let mut result = store
         .db()

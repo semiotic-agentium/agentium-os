@@ -90,12 +90,20 @@ pub trait ConfigReader: Send + Sync {
 pub trait ConfigWriter: Send + Sync {
     async fn set(&self, bundle_name: &BundleName, config: Value) -> Result<ConfigVersion>;
     async fn delete(&self, bundle_name: &BundleName) -> Result<()>;
-    async fn get_version(&self, bundle_name: &BundleName, version: u64) -> Result<Option<ConfigVersion>>;
+    async fn get_version(
+        &self,
+        bundle_name: &BundleName,
+        version: u64,
+    ) -> Result<Option<ConfigVersion>>;
     async fn list_versions(&self, bundle_name: &BundleName) -> Result<Vec<ConfigVersion>>;
 }
 
 /// Combined read-write config service (bundle config + internal config).
 pub trait ConfigService:
-    ConfigReader + ConfigWriter + baml_rt_tools::ConfigResolver + InternalConfigReader + InternalConfigWriter
+    ConfigReader
+    + ConfigWriter
+    + baml_rt_tools::ConfigResolver
+    + InternalConfigReader
+    + InternalConfigWriter
 {
 }

@@ -21,7 +21,6 @@
 //! 9. Payload/archive behavior
 //! 10. No-stale-read interleaved test
 
-
 use std::sync::Arc;
 
 use baml_rt_core::{
@@ -1785,13 +1784,18 @@ async fn conversation_context_required_fields_skip(store: &dyn ParityStore) {
     );
 
     // All items should have non-empty event_id and appropriate source
-    use baml_rt_provenance::store::{ConversationItemContent as CIC, ToolCallContent as TCC, ToolResultContent as TRC};
+    use baml_rt_provenance::store::{
+        ConversationItemContent as CIC, ToolCallContent as TCC, ToolResultContent as TRC,
+    };
     for item in &items {
         assert!(
             !item.event_id.as_str().is_empty(),
             "item should have non-empty event_id"
         );
-        assert!(!item.source_name().is_empty(), "item should have non-empty source");
+        assert!(
+            !item.source_name().is_empty(),
+            "item should have non-empty source"
+        );
         if let CIC::ToolCall(tc) = &item.content {
             assert!(
                 !tc.tool_name.is_empty(),
@@ -1915,8 +1919,14 @@ async fn conversation_context_tool_metadata_fallback(store: &dyn ParityStore) {
         .expect("conversation_context");
 
     // Should have tool_call and tool_result items
-    let tool_call_items: Vec<_> = items.iter().filter(|i| i.source_name() == "tool_call").collect();
-    let tool_result_items: Vec<_> = items.iter().filter(|i| i.source_name() == "tool_result").collect();
+    let tool_call_items: Vec<_> = items
+        .iter()
+        .filter(|i| i.source_name() == "tool_call")
+        .collect();
+    let tool_result_items: Vec<_> = items
+        .iter()
+        .filter(|i| i.source_name() == "tool_result")
+        .collect();
 
     assert!(!tool_call_items.is_empty(), "should have tool_call items");
     assert!(
@@ -1927,15 +1937,27 @@ async fn conversation_context_tool_metadata_fallback(store: &dyn ParityStore) {
     // Verify tool_call has args
     let tool_call = tool_call_items[0];
     if let baml_rt_provenance::store::ConversationItemContent::ToolCall(tc) = &tool_call.content {
-        assert!(!serde_json::to_string(&tc.args).unwrap_or_default().is_empty(), "tool_call should have args");
+        assert!(
+            !serde_json::to_string(&tc.args)
+                .unwrap_or_default()
+                .is_empty(),
+            "tool_call should have args"
+        );
     } else {
         panic!("expected ToolCall variant");
     }
 
     // Verify tool_result has meaningful outcome
     let tool_result = tool_result_items[0];
-    if let baml_rt_provenance::store::ConversationItemContent::ToolResult(tr) = &tool_result.content {
-        assert!(!matches!(&tr.outcome, baml_rt_provenance::store::ToolOutcome::StatusOnly), "tool_result should have result or error");
+    if let baml_rt_provenance::store::ConversationItemContent::ToolResult(tr) = &tool_result.content
+    {
+        assert!(
+            !matches!(
+                &tr.outcome,
+                baml_rt_provenance::store::ToolOutcome::StatusOnly
+            ),
+            "tool_result should have result or error"
+        );
     } else {
         panic!("expected ToolResult variant");
     }
@@ -2044,7 +2066,10 @@ async fn conversation_context_contract_filtering(store: &dyn ParityStore) {
         .expect("conversation_context");
 
     // Should have tool_call and tool_result items for the valid tool
-    let tool_call_items: Vec<_> = items.iter().filter(|i| i.source_name() == "tool_call").collect();
+    let tool_call_items: Vec<_> = items
+        .iter()
+        .filter(|i| i.source_name() == "tool_call")
+        .collect();
 
     // The valid tool should be included (has proper edge topology)
     assert!(

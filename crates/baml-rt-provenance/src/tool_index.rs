@@ -48,7 +48,10 @@ fn surreal_err(e: surrealdb::Error) -> crate::error::ProvenanceError {
     crate::error::ProvenanceError::Storage(Box::new(e))
 }
 
-async fn upsert_tool(store: &SurrealProvenanceStore, tool: &ToolFunctionMetadataExport) -> Result<()> {
+async fn upsert_tool(
+    store: &SurrealProvenanceStore,
+    tool: &ToolFunctionMetadataExport,
+) -> Result<()> {
     let name = tool.name.to_string();
     let description = tool.description.to_string();
     let tags = tool.tags.join(" ");
@@ -63,8 +66,10 @@ async fn upsert_tool(store: &SurrealProvenanceStore, tool: &ToolFunctionMetadata
     // Use individual prop fields (same pattern as surreal_store's write_normalized)
     // rather than binding a JSON object to `props`, which SurrealDB's bind API
     // does not reliably persist on schemaless tables.
-    store.db()
-        .query("UPSERT prov_node SET \
+    store
+        .db()
+        .query(
+            "UPSERT prov_node SET \
             node_id = $node_id, \
             label = $label, \
             props.description = $description, \
@@ -76,7 +81,8 @@ async fn upsert_tool(store: &SurrealProvenanceStore, tool: &ToolFunctionMetadata
             props.output_schema = $output_schema, \
             props.secret_requirements = $secret_requirements, \
             props.is_host_tool = $is_host_tool \
-            WHERE node_id = $node_id")
+            WHERE node_id = $node_id",
+        )
         .bind(("node_id", name))
         .bind(("label", TOOL_LABEL))
         .bind(("description", description))

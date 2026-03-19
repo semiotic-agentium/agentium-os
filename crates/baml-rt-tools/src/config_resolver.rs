@@ -15,7 +15,10 @@ use crate::BundleName;
 pub trait ConfigResolver: Send + Sync {
     async fn get_config(&self, bundle_name: &BundleName) -> Result<Option<Value>>;
 
-    async fn get_config_with_version(&self, bundle_name: &BundleName) -> Result<Option<(Value, u64)>> {
+    async fn get_config_with_version(
+        &self,
+        bundle_name: &BundleName,
+    ) -> Result<Option<(Value, u64)>> {
         Ok(self.get_config(bundle_name).await?.map(|v| (v, 0)))
     }
 }

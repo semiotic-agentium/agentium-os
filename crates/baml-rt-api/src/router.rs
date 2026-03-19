@@ -52,8 +52,11 @@ pub async fn api_router(
     web_dir: Option<&Path>,
 ) -> Router {
     let tool_catalog: Arc<dyn ToolCatalog> = Arc::new(InventoryCatalog::new());
-    let config_service: Arc<dyn ConfigService> =
-        Arc::new(SurrealConfigStore::in_memory().await.expect("in-memory config store for API"));
+    let config_service: Arc<dyn ConfigService> = Arc::new(
+        SurrealConfigStore::in_memory()
+            .await
+            .expect("in-memory config store for API"),
+    );
     let secret_resolver: Arc<dyn SecretResolver> = Arc::new(EmptySecretResolver);
     api_router_with_services(
         registry,
@@ -130,7 +133,8 @@ pub fn api_router_with_services(
         Some("Agent discovery, deterministic dispatch, and A2A JSON-RPC".to_string());
     let mut tag_mermaid = utoipa::openapi::Tag::new("mermaid");
     tag_mermaid.description = Some(
-        "Provenance graph as Mermaid sequence diagrams (when SurrealDB provenance is enabled)".to_string(),
+        "Provenance graph as Mermaid sequence diagrams (when SurrealDB provenance is enabled)"
+            .to_string(),
     );
     let mut tag_provenance = utoipa::openapi::Tag::new("provenance");
     tag_provenance.description =
@@ -177,8 +181,11 @@ pub async fn serve(
     web_dir: Option<&Path>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tool_catalog: Arc<dyn ToolCatalog> = Arc::new(InventoryCatalog::new());
-    let config_service: Arc<dyn ConfigService> =
-        Arc::new(SurrealConfigStore::in_memory().await.expect("in-memory config store for API"));
+    let config_service: Arc<dyn ConfigService> = Arc::new(
+        SurrealConfigStore::in_memory()
+            .await
+            .expect("in-memory config store for API"),
+    );
     let secret_resolver: Arc<dyn SecretResolver> = Arc::new(EmptySecretResolver);
     serve_with_services(
         registry,

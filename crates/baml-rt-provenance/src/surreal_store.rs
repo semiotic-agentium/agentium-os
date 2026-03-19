@@ -631,7 +631,9 @@ impl SurrealProvenanceStore {
         match role {
             Some(r) if r == a2a_roles::INPUT_MESSAGE => match from_label {
                 l if l == GraphNodeLabel::TaskExecution.as_str() => semantic_labels::WAS_SPAWNED_BY,
-                l if l == GraphNodeLabel::MessageProcessing.as_str() => semantic_labels::WAS_RECEIVED_BY,
+                l if l == GraphNodeLabel::MessageProcessing.as_str() => {
+                    semantic_labels::WAS_RECEIVED_BY
+                }
                 l if l == GraphNodeLabel::LlmCall.as_str() => semantic_labels::WAS_CONSUMED_BY,
                 l if l == GraphNodeLabel::ToolCall.as_str() => semantic_labels::WAS_CONSUMED_BY,
                 _ => semantic_labels::WAS_USED_BY,
@@ -642,17 +644,41 @@ impl SurrealProvenanceStore {
             Some(r) if r == a2a_roles::ARCHIVE => semantic_labels::WAS_BOOTSTRAPPED_BY,
             Some(r) if r == a2a_roles::REJECTED_OUTPUT => semantic_labels::WAS_USED_BY,
             Some(r) if r == a2a_roles::DELEGATION_TARGET => semantic_labels::WAS_DELEGATED_TO,
-            Some(r) if r == a2a_roles::FAILURE_CLASSIFICATION || r == a2a_roles::FAILURE_EVIDENCE => semantic_labels::WAS_USED_BY,
+            Some(r)
+                if r == a2a_roles::FAILURE_CLASSIFICATION || r == a2a_roles::FAILURE_EVIDENCE =>
+            {
+                semantic_labels::WAS_USED_BY
+            }
             _ => semantic_labels::WAS_USED_BY,
         }
     }
 
     fn semantic_generated_by_label(from_label: &str, to_label: &str) -> &'static str {
         match (from_label, to_label) {
-            (f, t) if f == GraphNodeLabel::Message.as_str() && t == GraphNodeLabel::MessageProcessing.as_str() => semantic_labels::WAS_EMITTED_BY,
-            (f, t) if f == GraphNodeLabel::Artifact.as_str() && t == GraphNodeLabel::TaskExecution.as_str() => semantic_labels::WAS_GENERATED_BY,
-            (f, t) if f == GraphNodeLabel::Task.as_str() && t == GraphNodeLabel::TaskExecution.as_str() => semantic_labels::WAS_CREATED_BY,
-            (f, t) if f == GraphNodeLabel::AgentRuntimeInstance.as_str() && t == GraphNodeLabel::AgentBoot.as_str() => semantic_labels::WAS_SPAWNED_BY,
+            (f, t)
+                if f == GraphNodeLabel::Message.as_str()
+                    && t == GraphNodeLabel::MessageProcessing.as_str() =>
+            {
+                semantic_labels::WAS_EMITTED_BY
+            }
+            (f, t)
+                if f == GraphNodeLabel::Artifact.as_str()
+                    && t == GraphNodeLabel::TaskExecution.as_str() =>
+            {
+                semantic_labels::WAS_GENERATED_BY
+            }
+            (f, t)
+                if f == GraphNodeLabel::Task.as_str()
+                    && t == GraphNodeLabel::TaskExecution.as_str() =>
+            {
+                semantic_labels::WAS_CREATED_BY
+            }
+            (f, t)
+                if f == GraphNodeLabel::AgentRuntimeInstance.as_str()
+                    && t == GraphNodeLabel::AgentBoot.as_str() =>
+            {
+                semantic_labels::WAS_SPAWNED_BY
+            }
             _ => semantic_labels::WAS_GENERATED_BY,
         }
     }
@@ -670,7 +696,9 @@ impl SurrealProvenanceStore {
     fn semantic_derived_from_label(prov_type: Option<&str>) -> &'static str {
         use crate::vocabulary::a2a_relation_types;
         match prov_type {
-            Some(t) if t == a2a_relation_types::STATUS_TRANSITION => semantic_labels::WAS_TRANSITIONED_FROM,
+            Some(t) if t == a2a_relation_types::STATUS_TRANSITION => {
+                semantic_labels::WAS_TRANSITIONED_FROM
+            }
             _ => crate::vocabulary::prov_relations::WAS_DERIVED_FROM,
         }
     }
@@ -1164,7 +1192,10 @@ impl SurrealProvenanceStore {
             .await
             .map_err(map_surreal_error)?;
         let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
-        Ok(rows.into_iter().next().and_then(|v| serde_json::from_value(v).ok()))
+        Ok(rows
+            .into_iter()
+            .next()
+            .and_then(|v| serde_json::from_value(v).ok()))
     }
 
     async fn read_payload_by_event_kind(
@@ -1183,7 +1214,10 @@ impl SurrealProvenanceStore {
             .await
             .map_err(map_surreal_error)?;
         let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
-        Ok(rows.into_iter().next().and_then(|v| serde_json::from_value(v).ok()))
+        Ok(rows
+            .into_iter()
+            .next()
+            .and_then(|v| serde_json::from_value(v).ok()))
     }
 
     async fn read_payloads_by_activity(&self, activity_id: &str) -> Result<Vec<PayloadRecord>> {
@@ -1197,7 +1231,10 @@ impl SurrealProvenanceStore {
             .await
             .map_err(map_surreal_error)?;
         let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
-        Ok(rows.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
+        Ok(rows
+            .into_iter()
+            .filter_map(|v| serde_json::from_value(v).ok())
+            .collect())
     }
 
     /// Payload text search via SurrealDB BM25 full-text index.
@@ -1398,8 +1435,10 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
         // Step 2: Find edges from ToolCall to ToolArgs nodes
         // and collect their prov_role/prov_type for contract validation.
         // The semantic mapping writes these as WAS_USED_BY.
-        let edge_query =
-            format!("SELECT from_id, to_id, props OMIT id FROM {TBL_EDGE} WHERE rel_type = '{}'", semantic_labels::WAS_USED_BY);
+        let edge_query = format!(
+            "SELECT from_id, to_id, props OMIT id FROM {TBL_EDGE} WHERE rel_type = '{}'",
+            semantic_labels::WAS_USED_BY
+        );
         let mut edge_response = self
             .db
             .query(&edge_query)
@@ -2334,7 +2373,10 @@ impl SurrealProvenanceStore {
 
         // Step 3: Find edges from call nodes to FC nodes.
         // The semantic mapping writes these as WAS_USED_BY (from semantic_used_label).
-        let edge_query = format!("SELECT from_id, to_id OMIT id FROM {TBL_EDGE} WHERE rel_type = '{}'", semantic_labels::WAS_USED_BY);
+        let edge_query = format!(
+            "SELECT from_id, to_id OMIT id FROM {TBL_EDGE} WHERE rel_type = '{}'",
+            semantic_labels::WAS_USED_BY
+        );
         let mut edge_response = self
             .db
             .query(&edge_query)
@@ -2972,7 +3014,8 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
                 }
                 // Use a2a_prompt_name (base logical prompt) for display if available,
                 // falling back to a2a_function_name (full variant) for backward compat.
-                let baml_prompt_val = out.get("a2a_prompt_name")
+                let baml_prompt_val = out
+                    .get("a2a_prompt_name")
                     .or_else(|| out.get("a2a_function_name"))
                     .cloned();
                 if let Some(v) = baml_prompt_val {

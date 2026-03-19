@@ -135,8 +135,11 @@ async fn prov_test_router(
     use baml_rt_tools::InventoryCatalog;
 
     let tool_catalog: Arc<dyn baml_rt_tools::ToolCatalog> = Arc::new(InventoryCatalog::new());
-    let config_service: Arc<dyn baml_rt_config::ConfigService> =
-        Arc::new(SurrealConfigStore::in_memory().await.expect("in-memory config store for test"));
+    let config_service: Arc<dyn baml_rt_config::ConfigService> = Arc::new(
+        SurrealConfigStore::in_memory()
+            .await
+            .expect("in-memory config store for test"),
+    );
     let secret_resolver: Arc<dyn baml_rt_llm_config::SecretResolver> =
         Arc::new(EmptySecretResolver);
     api_router_with_services(

@@ -137,16 +137,20 @@ async fn file_backed_export_renders_expected_sequence_flow() {
         .expect("export_by_context");
 
     // Count total edges in DB for this test
-    let mut edge_count_resp = store.db()
+    let mut edge_count_resp = store
+        .db()
         .query("SELECT count() AS cnt OMIT id FROM prov_edge GROUP ALL")
-        .await.expect("edge count");
+        .await
+        .expect("edge count");
     let edge_count: Vec<serde_json::Value> = edge_count_resp.take(0).unwrap_or_default();
     eprintln!("DEBUG total edges in DB: {:?}", edge_count);
 
     // All edge types
-    let mut sample_edges = store.db()
+    let mut sample_edges = store
+        .db()
         .query("SELECT rel_type OMIT id FROM prov_edge GROUP BY rel_type")
-        .await.expect("edge types");
+        .await
+        .expect("edge types");
     let sample: Vec<serde_json::Value> = sample_edges.take(0).unwrap_or_default();
     for e in &sample {
         eprintln!("  DB EDGE: {:?}", e);
@@ -154,17 +158,26 @@ async fn file_backed_export_renders_expected_sequence_flow() {
 
     // Test: does IN $ids work with Vec<String> bind?
     let test_ids = vec!["message_processing:ctx-1771470000000-1:msg-user-1".to_string()];
-    let mut test_resp = store.db()
+    let mut test_resp = store
+        .db()
         .query("SELECT from_id, rel_type OMIT id FROM prov_edge WHERE from_id IN $ids")
         .bind(("ids", test_ids))
-        .await.expect("test IN");
+        .await
+        .expect("test IN");
     let test_rows: Vec<serde_json::Value> = test_resp.take(0).unwrap_or_default();
     eprintln!("DEBUG IN test: {} rows", test_rows.len());
 
-    eprintln!("DEBUG graph: {} nodes, {} edges", graph.nodes.len(), graph.edges.len());
+    eprintln!(
+        "DEBUG graph: {} nodes, {} edges",
+        graph.nodes.len(),
+        graph.edges.len()
+    );
     for node in &graph.nodes {
         let prop_keys: Vec<_> = node.properties.keys().collect();
-        eprintln!("  NODE id={} label={} order={:?} display={} props={:?}", node.id, node.label, node.event_order, node.display_name, prop_keys);
+        eprintln!(
+            "  NODE id={} label={} order={:?} display={} props={:?}",
+            node.id, node.label, node.event_order, node.display_name, prop_keys
+        );
     }
     for edge in graph.edges.iter().take(20) {
         eprintln!("  EDGE {} --[{}]--> {}", edge.from, edge.relation, edge.to);
@@ -176,11 +189,20 @@ async fn file_backed_export_renders_expected_sequence_flow() {
     );
 
     let simplified = simplify_graph(&graph);
-    eprintln!("DEBUG simplified: {} nodes, {} edges", simplified.nodes.len(), simplified.edges.len());
+    eprintln!(
+        "DEBUG simplified: {} nodes, {} edges",
+        simplified.nodes.len(),
+        simplified.edges.len()
+    );
     for node in &simplified.nodes {
-        eprintln!("  SIMPLIFIED NODE id={} label={} order={:?} display={} props={:?}",
-            node.id, node.label, node.event_order, node.display_name,
-            node.properties.keys().collect::<Vec<_>>());
+        eprintln!(
+            "  SIMPLIFIED NODE id={} label={} order={:?} display={} props={:?}",
+            node.id,
+            node.label,
+            node.event_order,
+            node.display_name,
+            node.properties.keys().collect::<Vec<_>>()
+        );
     }
     let mermaid = render_sequence_diagram(&simplified);
     eprintln!("DEBUG mermaid:\n{}", mermaid);

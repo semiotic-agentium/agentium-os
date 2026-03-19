@@ -21,9 +21,7 @@ use baml_rt_core::{
 };
 #[cfg(feature = "llm-tests")]
 use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter};
-use baml_rt_provenance::{
-    SurrealProvenanceStore, SurrealStoreBuilder, ProvenanceContextReader,
-};
+use baml_rt_provenance::{ProvenanceContextReader, SurrealProvenanceStore, SurrealStoreBuilder};
 use baml_rt_tools::bundles::BundleType;
 #[cfg(feature = "slack")]
 use baml_tools_slack as _;

@@ -144,7 +144,6 @@ async fn test_store() -> Arc<SurrealProvenanceStore> {
         .expect("build isolated surreal store")
 }
 
-
 #[cfg(feature = "security-eval")]
 async fn build_agent(
     interceptor: CountingInterceptor,

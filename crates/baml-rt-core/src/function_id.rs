@@ -18,8 +18,7 @@
 //! string splitting across consumers, and enables config inheritance from
 //! a base prompt to all its variants.
 
-use std::fmt;
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -243,7 +242,10 @@ mod tests {
     fn parse_act() {
         let id = BamlFunctionId::parse("GetDiscoverAgentsPlan__act__system_discover_agents");
         assert_eq!(id.prompt_name().as_str(), "GetDiscoverAgentsPlan");
-        assert_eq!(id.full_name(), "GetDiscoverAgentsPlan__act__system_discover_agents");
+        assert_eq!(
+            id.full_name(),
+            "GetDiscoverAgentsPlan__act__system_discover_agents"
+        );
         assert_eq!(
             id.phase(),
             Some(&VariantPhase::Act {

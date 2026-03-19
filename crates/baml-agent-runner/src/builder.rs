@@ -8,7 +8,8 @@ use std::{path::Path, sync::Arc};
 
 use baml_rt_a2a::A2aRequestHandler;
 use baml_rt_core::{
-    AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey, BamlFunctionId, BamlRtError, Result,
+    AgentInstanceId, AgentLister, AgentPackageName, AgentRouteKey, BamlFunctionId, BamlRtError,
+    Result,
 };
 use baml_rt_provenance::ToolIndexConfig;
 use serde_json::Value;
@@ -97,7 +98,12 @@ impl RunnerBuilder<Loading> {
             // Parse each name and keep only base (non-variant) prompt names, deduplicated.
             let mut seen = std::collections::HashSet::new();
             all.into_iter()
-                .map(|name| BamlFunctionId::parse(&name).prompt_name().as_str().to_string())
+                .map(|name| {
+                    BamlFunctionId::parse(&name)
+                        .prompt_name()
+                        .as_str()
+                        .to_string()
+                })
                 .filter(|name| seen.insert(name.clone()))
                 .collect()
         };

@@ -8,9 +8,9 @@ pub mod context;
 pub mod correlation;
 pub mod deferred;
 pub mod dispatch;
-pub mod function_id;
 pub mod error;
 pub mod event_subscription;
+pub mod function_id;
 pub mod ids;
 pub mod json;
 pub mod package;
@@ -36,12 +36,12 @@ pub use context::{
 };
 pub use deferred::DeferredHolder;
 pub use dispatch::{AgentDispatchAck, AgentDispatchRequest, AgentDispatchRoutingKey};
-pub use function_id::{BamlFunctionId, BamlPromptName, VariantPhase};
 pub use error::{BamlRtError, Result, SessionLifecycleError};
 pub use event_subscription::{
     EventSchemaVersion, EventSourceKind, EventSubscription, EventSubscriptionFilter,
     subscriptions_match_filter,
 };
+pub use function_id::{BamlFunctionId, BamlPromptName, VariantPhase};
 pub use ids::{
     AgentId, ArtifactId, ContextId, CorrelationId, EventId, ExecutionSessionId, IntentId,
     MessageId, PlanId, PlanStepId, TaskId,

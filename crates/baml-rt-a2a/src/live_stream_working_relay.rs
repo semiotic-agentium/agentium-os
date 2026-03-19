@@ -71,7 +71,9 @@ impl EffectSubscriber for LiveStreamWorkingRelay {
                     format!(
                         "Calling model: {} ({})",
                         metadata.model,
-                        BamlFunctionId::parse(&metadata.function_name).prompt_name().as_str()
+                        BamlFunctionId::parse(&metadata.function_name)
+                            .prompt_name()
+                            .as_str()
                     ),
                     None,
                 )

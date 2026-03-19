@@ -32,14 +32,12 @@ const SCHEMA_QUERIES: &[&str] = &[
     "DEFINE FIELD IF NOT EXISTS version ON config_current TYPE int",
     "DEFINE FIELD IF NOT EXISTS updated_at_ms ON config_current TYPE int",
     "DEFINE INDEX IF NOT EXISTS idx_cc_bundle ON config_current FIELDS bundle_name UNIQUE",
-
     "DEFINE TABLE IF NOT EXISTS config_version_history SCHEMAFULL",
     "DEFINE FIELD IF NOT EXISTS bundle_name ON config_version_history TYPE string",
     "DEFINE FIELD IF NOT EXISTS version ON config_version_history TYPE int",
     "DEFINE FIELD IF NOT EXISTS config_json ON config_version_history TYPE string",
     "DEFINE FIELD IF NOT EXISTS created_at_ms ON config_version_history TYPE int",
     "DEFINE INDEX IF NOT EXISTS idx_cvh_bundle_ver ON config_version_history FIELDS bundle_name, version UNIQUE",
-
     "DEFINE TABLE IF NOT EXISTS config_internal SCHEMAFULL",
     "DEFINE FIELD IF NOT EXISTS key ON config_internal TYPE string",
     "DEFINE FIELD IF NOT EXISTS config_json ON config_internal TYPE string",
@@ -96,10 +94,16 @@ impl ConfigReader for SurrealConfigStore {
             .map(|opt| opt.map(|s| s.config))
     }
 
-    async fn get_with_version(&self, bundle_name: &BundleName) -> Result<Option<crate::StoredConfig>> {
+    async fn get_with_version(
+        &self,
+        bundle_name: &BundleName,
+    ) -> Result<Option<crate::StoredConfig>> {
         let name = bundle_name.as_str().to_string();
-        let mut resp = self.db
-            .query("SELECT config_json, version FROM config_current WHERE bundle_name = $name LIMIT 1")
+        let mut resp = self
+            .db
+            .query(
+                "SELECT config_json, version FROM config_current WHERE bundle_name = $name LIMIT 1",
+            )
             .bind(("name", name))
             .await
             .map_err(map_err)?;
@@ -107,7 +111,10 @@ impl ConfigReader for SurrealConfigStore {
         match rows.first() {
             None => Ok(None),
             Some(row) => {
-                let config_json = row.get("config_json").and_then(Value::as_str).unwrap_or("{}");
+                let config_json = row
+                    .get("config_json")
+                    .and_then(Value::as_str)
+                    .unwrap_or("{}");
                 let version = row.get("version").and_then(Value::as_i64).unwrap_or(0);
                 let config: Value = serde_json::from_str(config_json)?;
                 Ok(Some(crate::StoredConfig {
@@ -119,7 +126,8 @@ impl ConfigReader for SurrealConfigStore {
     }
 
     async fn list_with_config(&self) -> Result<Vec<BundleName>> {
-        let mut resp = self.db
+        let mut resp = self
+            .db
             .query("SELECT bundle_name FROM config_current")
             .await
             .map_err(map_err)?;
@@ -161,13 +169,15 @@ impl ConfigWriter for SurrealConfigStore {
             .map_err(map_err)?;
 
         // After COMMIT, read back the version we just wrote
-        let mut ver_resp = self.db
+        let mut ver_resp = self
+            .db
             .query("SELECT version OMIT id FROM config_current WHERE bundle_name = $name LIMIT 1")
             .bind(("name", name))
             .await
             .map_err(map_err)?;
         let ver_rows: Vec<Value> = ver_resp.take(0).map_err(map_err)?;
-        let new_version = ver_rows.first()
+        let new_version = ver_rows
+            .first()
             .and_then(|r| r.get("version").and_then(Value::as_u64))
             .unwrap_or(1);
 
@@ -181,18 +191,24 @@ impl ConfigWriter for SurrealConfigStore {
 
     async fn delete(&self, bundle_name: &BundleName) -> Result<()> {
         let name = bundle_name.as_str().to_string();
-        self.db.query("DELETE FROM config_current WHERE bundle_name = $name")
+        self.db
+            .query("DELETE FROM config_current WHERE bundle_name = $name")
             .bind(("name", name.clone()))
             .await
             .map_err(map_err)?;
-        self.db.query("DELETE FROM config_version_history WHERE bundle_name = $name")
+        self.db
+            .query("DELETE FROM config_version_history WHERE bundle_name = $name")
             .bind(("name", name))
             .await
             .map_err(map_err)?;
         Ok(())
     }
 
-    async fn get_version(&self, bundle_name: &BundleName, version: u64) -> Result<Option<ConfigVersion>> {
+    async fn get_version(
+        &self,
+        bundle_name: &BundleName,
+        version: u64,
+    ) -> Result<Option<ConfigVersion>> {
         let name = bundle_name.as_str().to_string();
         let mut resp = self.db
             .query("SELECT config_json, created_at_ms FROM config_version_history WHERE bundle_name = $name AND version = $ver LIMIT 1")
@@ -204,8 +220,14 @@ impl ConfigWriter for SurrealConfigStore {
         match rows.first() {
             None => Ok(None),
             Some(row) => {
-                let config_json = row.get("config_json").and_then(Value::as_str).unwrap_or("{}");
-                let created_at_ms = row.get("created_at_ms").and_then(Value::as_i64).unwrap_or(0);
+                let config_json = row
+                    .get("config_json")
+                    .and_then(Value::as_str)
+                    .unwrap_or("{}");
+                let created_at_ms = row
+                    .get("created_at_ms")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
                 let config: Value = serde_json::from_str(config_json)?;
                 Ok(Some(ConfigVersion {
                     bundle_name: bundle_name.clone(),
@@ -228,8 +250,14 @@ impl ConfigWriter for SurrealConfigStore {
         let mut out = Vec::new();
         for row in &rows {
             let version = row.get("version").and_then(Value::as_i64).unwrap_or(0);
-            let config_json = row.get("config_json").and_then(Value::as_str).unwrap_or("{}");
-            let created_at_ms = row.get("created_at_ms").and_then(Value::as_i64).unwrap_or(0);
+            let config_json = row
+                .get("config_json")
+                .and_then(Value::as_str)
+                .unwrap_or("{}");
+            let created_at_ms = row
+                .get("created_at_ms")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
             let config: Value = serde_json::from_str(config_json)?;
             out.push(ConfigVersion {
                 bundle_name: bundle_name.clone(),
@@ -246,7 +274,8 @@ impl ConfigWriter for SurrealConfigStore {
 impl InternalConfigReader for SurrealConfigStore {
     async fn get_internal(&self, key: &str) -> Result<Option<Value>> {
         let key = key.to_string();
-        let mut resp = self.db
+        let mut resp = self
+            .db
             .query("SELECT config_json FROM config_internal WHERE key = $key LIMIT 1")
             .bind(("key", key))
             .await
@@ -255,7 +284,10 @@ impl InternalConfigReader for SurrealConfigStore {
         match rows.first() {
             None => Ok(None),
             Some(row) => {
-                let config_json = row.get("config_json").and_then(Value::as_str).unwrap_or("{}");
+                let config_json = row
+                    .get("config_json")
+                    .and_then(Value::as_str)
+                    .unwrap_or("{}");
                 let config: Value = serde_json::from_str(config_json)?;
                 Ok(Some(config))
             }
@@ -268,7 +300,8 @@ impl InternalConfigWriter for SurrealConfigStore {
     async fn set_internal(&self, key: &str, value: Value) -> Result<()> {
         let key = key.to_string();
         let config_json = serde_json::to_string(&value)?;
-        self.db.query("UPSERT config_internal SET key = $key, config_json = $cj WHERE key = $key")
+        self.db
+            .query("UPSERT config_internal SET key = $key, config_json = $cj WHERE key = $key")
             .bind(("key", key))
             .bind(("cj", config_json))
             .await

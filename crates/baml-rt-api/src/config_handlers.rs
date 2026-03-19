@@ -296,10 +296,14 @@ pub async fn put_secret(
         })?
         .into_string();
     store.set(&request_name, SecretValue::new(value));
-    let mut link_state = load_secret_links_state(state.config_service.as_ref()).await.map_err(|e| *e)?;
+    let mut link_state = load_secret_links_state(state.config_service.as_ref())
+        .await
+        .map_err(|e| *e)?;
     link_state.links.insert(request_name, store_key);
     link_state.unlinked.retain(|r| r.as_str() != name);
-    save_secret_links_state(state.config_service.as_ref(), &link_state).await.map_err(|e| *e)?;
+    save_secret_links_state(state.config_service.as_ref(), &link_state)
+        .await
+        .map_err(|e| *e)?;
     Ok(AxumStatus::NO_CONTENT)
 }
 
@@ -333,12 +337,16 @@ pub async fn delete_secret(
     }
     let request = SecretRequestName::new(name);
     store.remove(&request);
-    let mut link_state = load_secret_links_state(state.config_service.as_ref()).await.map_err(|e| *e)?;
+    let mut link_state = load_secret_links_state(state.config_service.as_ref())
+        .await
+        .map_err(|e| *e)?;
     link_state.links.remove(&request);
     if !link_state.unlinked.iter().any(|r| r.as_str() == name) {
         link_state.unlinked.push(request);
     }
-    save_secret_links_state(state.config_service.as_ref(), &link_state).await.map_err(|e| *e)?;
+    save_secret_links_state(state.config_service.as_ref(), &link_state)
+        .await
+        .map_err(|e| *e)?;
     Ok(AxumStatus::NO_CONTENT)
 }
 
@@ -439,7 +447,11 @@ pub async fn get_config(
     })?;
 
     let (config_value, version) = if parsed.as_str() == LLM_CONFIG_BUNDLE_NAME {
-        match config.get_with_version(&parsed).await.map_err(config_err_500)? {
+        match config
+            .get_with_version(&parsed)
+            .await
+            .map_err(config_err_500)?
+        {
             Some(s) => (s.config, s.version.into()),
             None => (
                 serde_json::to_value(LlmClientConfig::sensible_default()).map_err(|e| {
@@ -469,7 +481,11 @@ pub async fn get_config(
             )
         })?;
 
-        match config.get_with_version(&parsed).await.map_err(config_err_500)? {
+        match config
+            .get_with_version(&parsed)
+            .await
+            .map_err(config_err_500)?
+        {
             Some(s) => (s.config, s.version.into()),
             None => (config_meta.default.clone(), 0),
         }
@@ -668,7 +684,10 @@ pub async fn list_config_versions(
         })?;
     }
 
-    let versions = config.list_versions(&parsed).await.map_err(config_err_500)?;
+    let versions = config
+        .list_versions(&parsed)
+        .await
+        .map_err(config_err_500)?;
 
     let dtos: Vec<ConfigVersionDto> = versions
         .into_iter()

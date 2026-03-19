@@ -5,7 +5,9 @@ use baml_rt_tools::BundleName;
 use serde_json::json;
 
 async fn mem_store() -> SurrealConfigStore {
-    SurrealConfigStore::in_memory().await.expect("in-memory config store")
+    SurrealConfigStore::in_memory()
+        .await
+        .expect("in-memory config store")
 }
 
 #[tokio::test]
@@ -25,7 +27,11 @@ async fn store_roundtrip() {
     let written = store.set(&bundle, config.clone()).await.expect("set");
     assert_eq!(written.version.0, 1);
 
-    let got = store.get(&bundle).await.expect("get").expect("config present");
+    let got = store
+        .get(&bundle)
+        .await
+        .expect("get")
+        .expect("config present");
     assert_eq!(got.get("default").and_then(|v| v.as_str()), Some("Default"));
 
     let list = store.list_with_config().await.expect("list_with_config");
@@ -77,7 +83,13 @@ async fn store_delete() {
     assert!(store.get(&bundle).await.expect("get").is_some());
 
     store.delete(&bundle).await.expect("delete");
-    assert!(store.get(&bundle).await.expect("get after delete").is_none());
+    assert!(
+        store
+            .get(&bundle)
+            .await
+            .expect("get after delete")
+            .is_none()
+    );
     let list = store.list_with_config().await.expect("list");
     assert!(list.is_empty());
 }
@@ -90,6 +102,10 @@ async fn store_in_memory() {
         .set(&bundle, json!({ "default": "Default" }))
         .await
         .expect("set");
-    let got = store.get(&bundle).await.expect("get").expect("config present");
+    let got = store
+        .get(&bundle)
+        .await
+        .expect("get")
+        .expect("config present");
     assert_eq!(got.get("default").and_then(|v| v.as_str()), Some("Default"));
 }

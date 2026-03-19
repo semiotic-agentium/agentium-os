@@ -4,8 +4,13 @@
 //! with existing consumer code in baml-agent-runner.
 
 use std::collections::HashMap;
+
 use serde_json::Value;
-use crate::{error::{ProvenanceError, Result}, surreal_store::SurrealProvenanceStore};
+
+use crate::{
+    error::{ProvenanceError, Result},
+    surreal_store::SurrealProvenanceStore,
+};
 
 fn surreal_err(e: surrealdb::Error) -> ProvenanceError {
     ProvenanceError::Storage(Box::new(e))
@@ -29,14 +34,20 @@ pub async fn session_totals_by_context(
           AND props.a2a_context_id = $context_id \
           AND props.a2a_usage_total_tokens IS NOT NULL \
         GROUP ALL";
-    let mut resp = store.db()
+    let mut resp = store
+        .db()
         .query(query)
         .bind(("context_id", context_id.to_string()))
         .await
         .map_err(|e| surreal_err(e))?;
-    let rows: Vec<Value> = resp.take(0)
-        .map_err(|e| surreal_err(e))?;
-    Ok(rows.into_iter().filter_map(|v| v.as_object().map(|m| m.iter().map(|(k,v)| (k.clone(), v.clone())).collect())).collect())
+    let rows: Vec<Value> = resp.take(0).map_err(|e| surreal_err(e))?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|v| {
+            v.as_object()
+                .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        })
+        .collect())
 }
 
 pub async fn turn_totals_by_context(
@@ -49,17 +60,19 @@ pub async fn turn_totals_by_context(
         WHERE rel_type = 'WAS_INVOKED_BY' \
           AND from_label = 'A2AMessageProcessing' \
           AND to_label = 'LlmCall'";
-    let mut edge_resp = store.db()
+    let mut edge_resp = store
+        .db()
         .query(edge_query)
         .await
         .map_err(|e| surreal_err(e))?;
-    let edge_rows: Vec<Value> = edge_resp.take(0)
-        .map_err(|e| surreal_err(e))?;
+    let edge_rows: Vec<Value> = edge_resp.take(0).map_err(|e| surreal_err(e))?;
 
-    let msg_ids: Vec<String> = edge_rows.iter()
+    let msg_ids: Vec<String> = edge_rows
+        .iter()
         .filter_map(|r| r.get("from_id").and_then(Value::as_str).map(String::from))
         .collect();
-    let llm_ids: Vec<String> = edge_rows.iter()
+    let llm_ids: Vec<String> = edge_rows
+        .iter()
         .filter_map(|r| r.get("to_id").and_then(Value::as_str).map(String::from))
         .collect();
 
@@ -76,11 +89,14 @@ pub async fn turn_totals_by_context(
         let rows: Vec<Value> = resp.take(0).map_err(|e| surreal_err(e))?;
         msg_rows.extend(rows);
     }
-    let msg_map: HashMap<String, String> = msg_rows.iter()
+    let msg_map: HashMap<String, String> = msg_rows
+        .iter()
         .filter_map(|r| {
             let nid = r.get("node_id").and_then(Value::as_str)?;
             let ctx = r.get("ctx").and_then(Value::as_str)?;
-            if ctx != context_id { return None; }
+            if ctx != context_id {
+                return None;
+            }
             let mid = r.get("message_id").and_then(Value::as_str)?;
             Some((nid.to_string(), mid.to_string()))
         })
@@ -96,18 +112,28 @@ pub async fn turn_totals_by_context(
         let rows: Vec<Value> = resp.take(0).map_err(|e| surreal_err(e))?;
         llm_rows.extend(rows);
     }
-    let llm_map: HashMap<String, Value> = llm_rows.iter()
+    let llm_map: HashMap<String, Value> = llm_rows
+        .iter()
         .filter_map(|r| {
             let nid = r.get("node_id").and_then(Value::as_str)?;
-            Some((nid.to_string(), r.get("props").cloned().unwrap_or(Value::Null)))
+            Some((
+                nid.to_string(),
+                r.get("props").cloned().unwrap_or(Value::Null),
+            ))
         })
         .collect();
 
     // Join edges with node data to compute per-message aggregates
     let mut by_message: HashMap<String, (i64, i64, i64, u64, i64, String)> = HashMap::new();
     for edge in &edge_rows {
-        let from_id = edge.get("from_id").and_then(Value::as_str).unwrap_or_default();
-        let to_id = edge.get("to_id").and_then(Value::as_str).unwrap_or_default();
+        let from_id = edge
+            .get("from_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let to_id = edge
+            .get("to_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let message_id = match msg_map.get(from_id) {
             Some(m) => m.clone(),
             None => continue,
@@ -116,29 +142,49 @@ pub async fn turn_totals_by_context(
             Some(p) => p,
             None => continue,
         };
-        let entry = by_message.entry(message_id).or_insert((0, 0, 0, 0, 0, String::new()));
-        entry.0 += props.get("a2a_usage_prompt_tokens").and_then(Value::as_i64).unwrap_or(0);
-        entry.1 += props.get("a2a_usage_completion_tokens").and_then(Value::as_i64).unwrap_or(0);
-        entry.2 += props.get("a2a_usage_total_tokens").and_then(Value::as_i64).unwrap_or(0);
+        let entry = by_message
+            .entry(message_id)
+            .or_insert((0, 0, 0, 0, 0, String::new()));
+        entry.0 += props
+            .get("a2a_usage_prompt_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        entry.1 += props
+            .get("a2a_usage_completion_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        entry.2 += props
+            .get("a2a_usage_total_tokens")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
         entry.3 += 1;
-        entry.4 += props.get("a2a_duration_ms").and_then(Value::as_i64).unwrap_or(0);
-        let eid = props.get("a2a_event_id").and_then(Value::as_str).unwrap_or_default();
+        entry.4 += props
+            .get("a2a_duration_ms")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        let eid = props
+            .get("a2a_event_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         if entry.5.is_empty() || eid < entry.5.as_str() {
             entry.5 = eid.to_string();
         }
     }
 
-    let mut results: Vec<(String, MetricsRow)> = by_message.into_iter().map(|(mid, (ti, to, tt, cc, dur, feid))| {
-        let mut row = MetricsRow::new();
-        row.insert("message_id".into(), Value::String(mid.clone()));
-        row.insert("tokens_in".into(), serde_json::json!(ti));
-        row.insert("tokens_out".into(), serde_json::json!(to));
-        row.insert("tokens_total".into(), serde_json::json!(tt));
-        row.insert("llm_call_count".into(), serde_json::json!(cc));
-        row.insert("llm_duration_ms_total".into(), serde_json::json!(dur));
-        row.insert("first_event_id".into(), Value::String(feid.clone()));
-        (feid, row)
-    }).collect();
+    let mut results: Vec<(String, MetricsRow)> = by_message
+        .into_iter()
+        .map(|(mid, (ti, to, tt, cc, dur, feid))| {
+            let mut row = MetricsRow::new();
+            row.insert("message_id".into(), Value::String(mid.clone()));
+            row.insert("tokens_in".into(), serde_json::json!(ti));
+            row.insert("tokens_out".into(), serde_json::json!(to));
+            row.insert("tokens_total".into(), serde_json::json!(tt));
+            row.insert("llm_call_count".into(), serde_json::json!(cc));
+            row.insert("llm_duration_ms_total".into(), serde_json::json!(dur));
+            row.insert("first_event_id".into(), Value::String(feid.clone()));
+            (feid, row)
+        })
+        .collect();
     results.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(results.into_iter().map(|(_, row)| row).collect())
 }
@@ -155,12 +201,18 @@ pub async fn user_prompts_by_context(
           AND props.a2a_direction = 'received' \
           AND (props.a2a_role = 'user' OR props.a2a_role = 'ROLE_USER') \
         GROUP BY props.a2a_message_id";
-    let mut resp = store.db()
+    let mut resp = store
+        .db()
         .query(query)
         .bind(("context_id", context_id.to_string()))
         .await
         .map_err(|e| surreal_err(e))?;
-    let rows: Vec<Value> = resp.take(0)
-        .map_err(|e| surreal_err(e))?;
-    Ok(rows.into_iter().filter_map(|v| v.as_object().map(|m| m.iter().map(|(k,v)| (k.clone(), v.clone())).collect())).collect())
+    let rows: Vec<Value> = resp.take(0).map_err(|e| surreal_err(e))?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|v| {
+            v.as_object()
+                .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        })
+        .collect())
 }

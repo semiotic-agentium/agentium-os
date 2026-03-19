@@ -129,19 +129,25 @@ impl GraphExporter {
         let node_query = format!(
             "SELECT node_id, label, props OMIT id FROM prov_node WHERE node_id IN {scoped_ids_subquery}"
         );
-        let mut node_response = self.store.db()
+        let mut node_response = self
+            .store
+            .db()
             .query(&node_query)
             .await
             .map_err(|e| surreal_err(e))?;
-        let node_rows: Vec<Value> = node_response.take(0)
-            .map_err(|e| surreal_err(e))?;
+        let node_rows: Vec<Value> = node_response.take(0).map_err(|e| surreal_err(e))?;
 
         if node_rows.is_empty() {
             tracing::debug!(context_id = %context_id, "no scoped nodes found");
-            return Ok(ExportedGraph { nodes: vec![], edges: vec![], scope: ExportScope::Context(context_id.to_string()) });
+            return Ok(ExportedGraph {
+                nodes: vec![],
+                edges: vec![],
+                scope: ExportScope::Context(context_id.to_string()),
+            });
         }
 
-        let scoped_ids: HashSet<String> = node_rows.iter()
+        let scoped_ids: HashSet<String> = node_rows
+            .iter()
             .filter_map(|r| r.get("node_id").and_then(Value::as_str).map(String::from))
             .collect();
 
@@ -150,15 +156,17 @@ impl GraphExporter {
             "SELECT from_id, from_label, to_id, to_label, rel_type, props OMIT id FROM prov_edge \
              WHERE from_id IN {scoped_ids_subquery} AND rel_type != '{scoped_to}'"
         );
-        let mut edge_response = self.store.db()
+        let mut edge_response = self
+            .store
+            .db()
             .query(&edge_query)
             .await
             .map_err(|e| surreal_err(e))?;
-        let edge_rows: Vec<Value> = edge_response.take(0)
-            .map_err(|e| surreal_err(e))?;
+        let edge_rows: Vec<Value> = edge_response.take(0).map_err(|e| surreal_err(e))?;
 
         // Collect target node IDs not in the scoped set (e.g. AgentRuntimeInstance)
-        let extra_ids: HashSet<String> = edge_rows.iter()
+        let extra_ids: HashSet<String> = edge_rows
+            .iter()
             .filter_map(|r| r.get("to_id").and_then(Value::as_str).map(String::from))
             .filter(|id| !scoped_ids.contains(id))
             .collect();
@@ -182,7 +190,9 @@ impl GraphExporter {
         let t1 = std::time::Instant::now();
 
         let mut graph = parse_surreal_export_result(
-            &node_rows, &extra_node_rows, &edge_rows,
+            &node_rows,
+            &extra_node_rows,
+            &edge_rows,
             ExportScope::Context(context_id.to_string()),
         );
         enrich::enrich_derived_properties(&mut graph);
@@ -219,29 +229,31 @@ impl GraphExporter {
     /// List all distinct context IDs in the provenance graph.
     pub async fn list_contexts(&self) -> Result<Vec<String>> {
         let ctx_label = context_scope::LABEL;
-        let query = format!(
-            "SELECT node_id OMIT id FROM prov_node WHERE label = $label"
-        );
-        let mut response = self.store.db()
+        let query = format!("SELECT node_id OMIT id FROM prov_node WHERE label = $label");
+        let mut response = self
+            .store
+            .db()
             .query(&query)
             .bind(("label", ctx_label))
             .await
             .map_err(|e| surreal_err(e))?;
-        let rows: Vec<Value> = response.take(0)
-            .map_err(|e| surreal_err(e))?;
-        let mut ids: Vec<String> = rows.iter()
+        let rows: Vec<Value> = response.take(0).map_err(|e| surreal_err(e))?;
+        let mut ids: Vec<String> = rows
+            .iter()
             .filter_map(|r| r.get("node_id").and_then(Value::as_str).map(String::from))
             .filter(|s| !s.is_empty())
             .collect();
         if ids.is_empty() {
             let fallback = "SELECT DISTINCT props.a2a_context_id AS ctx_id OMIT id FROM prov_node WHERE props.a2a_context_id IS NOT NULL";
-            let mut fb_response = self.store.db()
+            let mut fb_response = self
+                .store
+                .db()
                 .query(fallback)
                 .await
                 .map_err(|e| surreal_err(e))?;
-            let fb_rows: Vec<Value> = fb_response.take(0)
-                .map_err(|e| surreal_err(e))?;
-            ids = fb_rows.iter()
+            let fb_rows: Vec<Value> = fb_response.take(0).map_err(|e| surreal_err(e))?;
+            ids = fb_rows
+                .iter()
                 .filter_map(|r| r.get("ctx_id").and_then(Value::as_str).map(String::from))
                 .filter(|s| !s.is_empty())
                 .collect();
@@ -254,14 +266,16 @@ impl GraphExporter {
     async fn task_context_id(&self, task_id: &str) -> Result<Option<String>> {
         let query = "SELECT props.a2a_context_id AS ctx_id OMIT id FROM prov_node \
                      WHERE props.a2a_task_id = $task_id AND props.a2a_context_id IS NOT NULL LIMIT 1";
-        let mut response = self.store.db()
+        let mut response = self
+            .store
+            .db()
             .query(query)
             .bind(("task_id", task_id.to_string()))
             .await
             .map_err(|e| surreal_err(e))?;
-        let rows: Vec<Value> = response.take(0)
-            .map_err(|e| surreal_err(e))?;
-        let ctx_id = rows.first()
+        let rows: Vec<Value> = response.take(0).map_err(|e| surreal_err(e))?;
+        let ctx_id = rows
+            .first()
             .and_then(|r| r.get("ctx_id"))
             .and_then(Value::as_str)
             .map(String::from);
@@ -281,7 +295,10 @@ fn parse_surreal_export_result(
     let mut nodes_map: HashMap<String, ExportedNode> = HashMap::new();
 
     for row in node_rows.iter().chain(extra_node_rows.iter()) {
-        let node_id = row.get("node_id").and_then(Value::as_str).unwrap_or_default();
+        let node_id = row
+            .get("node_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         let label = row.get("label").and_then(Value::as_str).unwrap_or_default();
         let props = surreal_props_to_map(row.get("props"));
         if !node_id.is_empty() {
@@ -291,25 +308,49 @@ fn parse_surreal_export_result(
 
     let mut edges: Vec<ExportedEdge> = Vec::new();
     for row in edge_rows {
-        let from_id = row.get("from_id").and_then(Value::as_str).unwrap_or_default().to_string();
-        let to_id = row.get("to_id").and_then(Value::as_str).unwrap_or_default().to_string();
-        let rel_type = row.get("rel_type").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+        let from_id = row
+            .get("from_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let to_id = row
+            .get("to_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let rel_type = row
+            .get("rel_type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string();
         let rel_props = surreal_props_to_map(row.get("props"));
 
         // If target node wasn't fetched yet (rare), insert a stub
         if !to_id.is_empty() && !nodes_map.contains_key(&to_id) {
-            let to_label = row.get("to_label").and_then(Value::as_str).unwrap_or_default();
-            nodes_map.insert(to_id.clone(), ExportedNode {
-                id: to_id.clone(),
-                label: to_label.to_string(),
-                display_name: to_label.to_string(),
-                properties: HashMap::new(),
-                event_order: None,
-            });
+            let to_label = row
+                .get("to_label")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            nodes_map.insert(
+                to_id.clone(),
+                ExportedNode {
+                    id: to_id.clone(),
+                    label: to_label.to_string(),
+                    display_name: to_label.to_string(),
+                    properties: HashMap::new(),
+                    event_order: None,
+                },
+            );
         }
 
         if !from_id.is_empty() && !to_id.is_empty() && !rel_type.is_empty() {
-            edges.push(ExportedEdge { from: from_id, to: to_id, relation: rel_type, properties: rel_props });
+            edges.push(ExportedEdge {
+                from: from_id,
+                to: to_id,
+                relation: rel_type,
+                properties: rel_props,
+            });
         }
     }
 
@@ -332,7 +373,11 @@ fn parse_surreal_export_result(
     });
     edges.dedup_by(|a, b| a.from == b.from && a.to == b.to && a.relation == b.relation);
 
-    ExportedGraph { nodes, edges, scope }
+    ExportedGraph {
+        nodes,
+        edges,
+        scope,
+    }
 }
 
 /// Extract properties from a SurrealDB props object and normalize keys to a2a: form.
@@ -341,7 +386,10 @@ fn surreal_props_to_map(props: Option<&Value>) -> HashMap<String, serde_json::Va
         Some(Value::Object(m)) => m.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
         Some(Value::String(s)) => serde_json::from_str::<Value>(s)
             .ok()
-            .and_then(|v| v.as_object().map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()))
+            .and_then(|v| {
+                v.as_object()
+                    .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            })
             .unwrap_or_default(),
         _ => HashMap::new(),
     };

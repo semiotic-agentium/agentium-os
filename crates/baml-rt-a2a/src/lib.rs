@@ -11,7 +11,6 @@ pub mod auto_status;
 pub mod error_classifier;
 pub mod error_mapping;
 pub mod events;
-pub mod task_subgraph_store;
 pub mod handlers;
 pub(crate) mod live_stream;
 pub(crate) mod live_stream_working_relay;
@@ -21,6 +20,7 @@ pub mod result_deduplicator;
 pub mod result_extractor;
 pub mod result_pipeline;
 pub mod result_processor;
+pub mod task_subgraph_store;
 pub(crate) mod wire;
 
 pub use a2a::{A2aMethod, A2aOutcome, A2aRequest};

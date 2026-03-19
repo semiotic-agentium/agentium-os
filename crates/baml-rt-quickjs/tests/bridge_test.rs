@@ -20,7 +20,7 @@ use baml_rt_core::{
     },
 };
 use baml_rt_provenance::{
-    SurrealStoreBuilder, ProvEvent, ProvenanceEffectSubscriber, ProvenanceWriter,
+    ProvEvent, ProvenanceEffectSubscriber, ProvenanceWriter, SurrealStoreBuilder,
 };
 use baml_rt_tools::{BamlTool, bundles::BundleType};
 use schemars::JsonSchema;
@@ -1207,7 +1207,10 @@ async fn test_runtime_canonical_planning_uses_custom_resolver_and_dynamic_contex
         .bind(("iid", "intent-canon".to_string()))
         .await.expect("intent query");
     let intent_rows: Vec<Value> = intent_resp.take(0).unwrap_or_default();
-    let intent_count = intent_rows.first().and_then(|r| r.get("cnt").and_then(Value::as_i64)).unwrap_or(0);
+    let intent_count = intent_rows
+        .first()
+        .and_then(|r| r.get("cnt").and_then(Value::as_i64))
+        .unwrap_or(0);
 
     let mut plan_resp = store.db()
         .query("SELECT count() AS cnt FROM prov_node WHERE label = 'Plan' AND props.a2a_context_id = $ctx AND props.a2a_task_id = $tid AND props.a2a_plan_id = $pid AND props.a2a_intent_id = $iid GROUP ALL")
@@ -1217,7 +1220,10 @@ async fn test_runtime_canonical_planning_uses_custom_resolver_and_dynamic_contex
         .bind(("iid", "intent-canon".to_string()))
         .await.expect("plan query");
     let plan_rows: Vec<Value> = plan_resp.take(0).unwrap_or_default();
-    let plan_count = plan_rows.first().and_then(|r| r.get("cnt").and_then(Value::as_i64)).unwrap_or(0);
+    let plan_count = plan_rows
+        .first()
+        .and_then(|r| r.get("cnt").and_then(Value::as_i64))
+        .unwrap_or(0);
 
     let mut step_resp = store.db()
         .query("SELECT count() AS cnt FROM prov_node WHERE label = 'PlanStep' AND props.a2a_context_id = $ctx AND props.a2a_task_id = $tid AND props.a2a_plan_id = $pid AND props.a2a_step_id = $sid GROUP ALL")
@@ -1227,7 +1233,10 @@ async fn test_runtime_canonical_planning_uses_custom_resolver_and_dynamic_contex
         .bind(("sid", "step-canon".to_string()))
         .await.expect("step query");
     let step_rows: Vec<Value> = step_resp.take(0).unwrap_or_default();
-    let step_count = step_rows.first().and_then(|r| r.get("cnt").and_then(Value::as_i64)).unwrap_or(0);
+    let step_count = step_rows
+        .first()
+        .and_then(|r| r.get("cnt").and_then(Value::as_i64))
+        .unwrap_or(0);
 
     assert_eq!(intent_count, 1);
     assert_eq!(plan_count, 1);

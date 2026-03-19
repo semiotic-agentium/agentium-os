@@ -21,7 +21,6 @@
 //! cargo insta review
 //! ```
 
-
 use std::sync::Arc;
 
 use baml_rt_core::{
@@ -270,14 +269,22 @@ fn normalize_context_item(
     let (content_keys, tool_name, tool_phase, has_result, has_error) = match &item.content {
         ConversationItemContent::Message(_) => (vec!["text".to_string()], None, None, false, false),
         ConversationItemContent::ToolCall(tc) => (
-            vec!["args".to_string(), "fsm_phase".to_string(), "tool_name".to_string()],
+            vec![
+                "args".to_string(),
+                "fsm_phase".to_string(),
+                "tool_name".to_string(),
+            ],
             Some(tc.tool_name.clone()),
             Some(tc.fsm_phase.label()),
             false,
             false,
         ),
         ConversationItemContent::ToolResult(tr) => (
-            vec!["fsm_phase".to_string(), "outcome".to_string(), "tool_name".to_string()],
+            vec![
+                "fsm_phase".to_string(),
+                "outcome".to_string(),
+                "tool_name".to_string(),
+            ],
             Some(tr.tool_name.clone()),
             Some(tr.fsm_phase.label()),
             matches!(&tr.outcome, ToolOutcome::Result(_)),

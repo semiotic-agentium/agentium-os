@@ -173,10 +173,7 @@ impl EffectSubscriber for AutoWorkingStatusSubscriber {
                     .prompt_name()
                     .as_str()
                     .to_string();
-                let text = format!(
-                    "Calling model: {} ({})",
-                    metadata.model, prompt_name
-                );
+                let text = format!("Calling model: {} ({})", metadata.model, prompt_name);
                 if let Err(e) = self.emit_working(context_id, task_id, text, None).await {
                     tracing::debug!(error = ?e, "Auto WORKING status update (llm) failed");
                 }

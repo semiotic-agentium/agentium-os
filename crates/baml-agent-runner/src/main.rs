@@ -42,9 +42,9 @@ use baml_rt_llm_config::{
 };
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_provenance::{
-    AgentType, GraphExporter, ProvEvent,
-    ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
-    ProvenancePlanningQuery, ProvenanceWriter, SurrealStoreBuilder, ToolIndexConfig, context_metrics_queries,
+    AgentType, GraphExporter, ProvEvent, ProvenanceOpsFilters, ProvenanceOpsQuery,
+    ProvenanceOpsQueryRequest, ProvenanceOpsResource, ProvenancePlanningQuery, ProvenanceWriter,
+    SurrealStoreBuilder, ToolIndexConfig, context_metrics_queries,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
     index_tools,
 };
@@ -1257,11 +1257,14 @@ impl ProvenanceConfigBuilder {
 async fn provenance_config_builder(db: &ProvenanceDb) -> Result<ProvenanceConfigBuilder> {
     match db {
         ProvenanceDb::InMemory => {
-            let store = SurrealStoreBuilder::in_memory().build().await.map_err(|e| {
-                BamlRtError::InvalidArgument(format!(
-                    "Provenance in-memory store failed to build: {e}",
-                ))
-            })?;
+            let store = SurrealStoreBuilder::in_memory()
+                .build()
+                .await
+                .map_err(|e| {
+                    BamlRtError::InvalidArgument(format!(
+                        "Provenance in-memory store failed to build: {e}",
+                    ))
+                })?;
             Ok(ProvenanceConfigBuilder::new(store, None))
         }
         ProvenanceDb::File(path) => {
@@ -1328,10 +1331,11 @@ impl baml_rt_api::MermaidService for MermaidServiceImpl {
         context_id: &str,
     ) -> std::result::Result<String, baml_rt_api::MermaidError> {
         if let Some(ref cache) = self.cache
-            && let Some(cached) = cache.get(context_id) {
-                tracing::debug!(context_id = %context_id, "mermaid: cache HIT");
-                return Ok(cached);
-            }
+            && let Some(cached) = cache.get(context_id)
+        {
+            tracing::debug!(context_id = %context_id, "mermaid: cache HIT");
+            return Ok(cached);
+        }
         tracing::info!(context_id = %context_id, "mermaid: START export_by_context");
         let t0 = std::time::Instant::now();
         let graph = self.export_by_context(context_id).await?;
@@ -1450,19 +1454,26 @@ impl baml_rt_api::ContextMetricsService for ContextMetricsServiceImpl {
         let turn_rows = context_metrics_queries::turn_totals_by_context(&self.store, context_id)
             .await
             .map_err(|e| {
-                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(e.to_string())))
+                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(
+                    e.to_string(),
+                )))
             })?;
 
-        let session_rows = context_metrics_queries::session_totals_by_context(&self.store, context_id)
-            .await
-            .map_err(|e| {
-                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(e.to_string())))
-            })?;
+        let session_rows =
+            context_metrics_queries::session_totals_by_context(&self.store, context_id)
+                .await
+                .map_err(|e| {
+                    baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(
+                        e.to_string(),
+                    )))
+                })?;
 
         let prompt_rows = context_metrics_queries::user_prompts_by_context(&self.store, context_id)
             .await
             .map_err(|e| {
-                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(e.to_string())))
+                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(
+                    e.to_string(),
+                )))
             })?;
 
         let mut prompt_count_by_message: HashMap<String, u64> = HashMap::new();
@@ -1880,17 +1891,18 @@ async fn main() -> anyhow::Result<()> {
     let fnox_resolver = Arc::new(FnoxFileSecretResolver::default_path_resolver());
     let overlay = Arc::new(OverlaySecretResolver::new(fnox_resolver.clone()));
     // Apply persisted secret link/unlink state (internal config, not a bundle).
-    let link_state: SecretLinksState = match config_service.get_internal(SECRET_LINKS_CONFIG_KEY).await {
-        Ok(Some(v)) => serde_json::from_value(v).unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "secret link state parse failed; using default");
-            SecretLinksState::default()
-        }),
-        Ok(None) => SecretLinksState::default(),
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to load secret link state; using default");
-            SecretLinksState::default()
-        }
-    };
+    let link_state: SecretLinksState =
+        match config_service.get_internal(SECRET_LINKS_CONFIG_KEY).await {
+            Ok(Some(v)) => serde_json::from_value(v).unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "secret link state parse failed; using default");
+                SecretLinksState::default()
+            }),
+            Ok(None) => SecretLinksState::default(),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load secret link state; using default");
+                SecretLinksState::default()
+            }
+        };
     apply_secret_links_state(&link_state, overlay.as_ref(), fnox_resolver.as_ref());
 
     let provenance_config = provenance_config_builder(&config.provenance_db)

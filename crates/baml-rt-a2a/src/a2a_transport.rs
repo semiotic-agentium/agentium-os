@@ -98,12 +98,10 @@ impl SurrealRuntimeStore {
         let graph: Arc<dyn A2aGraphStore> = provenance.clone();
         let context_reader: Arc<dyn ProvenanceContextReader> = provenance.clone();
         Arc::new(Self {
-            task_store: Arc::new(
-                crate::task_subgraph_store::TaskSubgraphStore::new(
-                    graph,
-                    context_reader,
-                ),
-            ),
+            task_store: Arc::new(crate::task_subgraph_store::TaskSubgraphStore::new(
+                graph,
+                context_reader,
+            )),
             provenance,
             agent_id,
         })
@@ -2328,8 +2326,8 @@ mod tests {
     async fn session_history_renders_correctly_through_full_pipeline() {
         use baml_rt_core::ids::{AgentId, ExternalId, MessageId, UuidId};
         use baml_rt_provenance::{
-            CallScope, SurrealStoreBuilder, ProvEvent, ProvenanceContextReader,
-            ProvenanceWriter, store::SessionStepOp,
+            CallScope, ProvEvent, ProvenanceContextReader, ProvenanceWriter, SurrealStoreBuilder,
+            store::SessionStepOp,
         };
         use baml_rt_tools::{
             ToolRegistry,

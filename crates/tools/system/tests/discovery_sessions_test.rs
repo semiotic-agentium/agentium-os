@@ -9,8 +9,8 @@ use baml_rt_core::{
     ids::{AgentId, EventId, ExternalId, MessageId, UuidId},
 };
 use baml_rt_provenance::{
-    CallScope, GlobalEvent, SurrealStoreBuilder, LlmUsage, ProvEvent, ProvEventData,
-    ProvenanceWriter,
+    CallScope, GlobalEvent, LlmUsage, ProvEvent, ProvEventData, ProvenanceWriter,
+    SurrealStoreBuilder,
 };
 use baml_rt_tools::{ToolRegistry, ToolStep};
 use baml_tools_calculator::CalculatorTool;
@@ -778,8 +778,13 @@ async fn discover_agents_session_returns_declared_subscriptions() {
         "1.0.0",
         Some("Consumes task-daemon events"),
         vec![EventSubscription {
-            schema_versions: vec![baml_rt_core::EventSchemaVersion::parse("task-daemon.interpretation.v1").unwrap()],
-            source_kinds: vec![baml_rt_core::EventSourceKind::parse("slack").unwrap(), baml_rt_core::EventSourceKind::parse("clickup").unwrap()],
+            schema_versions: vec![
+                baml_rt_core::EventSchemaVersion::parse("task-daemon.interpretation.v1").unwrap(),
+            ],
+            source_kinds: vec![
+                baml_rt_core::EventSourceKind::parse("slack").unwrap(),
+                baml_rt_core::EventSourceKind::parse("clickup").unwrap(),
+            ],
             ..EventSubscription::default()
         }],
     )];
@@ -842,7 +847,10 @@ async fn discover_agents_session_filters_by_event_subscription() {
             "1.0.0",
             Some("Consumes task-daemon Slack events"),
             vec![EventSubscription {
-                schema_versions: vec![baml_rt_core::EventSchemaVersion::parse("task-daemon.interpretation.v1").unwrap()],
+                schema_versions: vec![
+                    baml_rt_core::EventSchemaVersion::parse("task-daemon.interpretation.v1")
+                        .unwrap(),
+                ],
                 source_kinds: vec![baml_rt_core::EventSourceKind::parse("slack").unwrap()],
                 ..EventSubscription::default()
             }],
@@ -853,7 +861,10 @@ async fn discover_agents_session_filters_by_event_subscription() {
             "1.0.0",
             Some("Consumes task-daemon ClickUp events"),
             vec![EventSubscription {
-                schema_versions: vec![baml_rt_core::EventSchemaVersion::parse("task-daemon.interpretation.v1").unwrap()],
+                schema_versions: vec![
+                    baml_rt_core::EventSchemaVersion::parse("task-daemon.interpretation.v1")
+                        .unwrap(),
+                ],
                 source_kinds: vec![baml_rt_core::EventSourceKind::parse("clickup").unwrap()],
                 ..EventSubscription::default()
             }],

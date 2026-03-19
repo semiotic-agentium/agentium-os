@@ -265,7 +265,8 @@ async fn test_pre_execution_interception_integration() {
     // Verify we got proper context from build_request
     for call in pre_calls_guard.iter() {
         assert_eq!(
-            call.function_id.prompt_name().as_str(), "SimpleGreeting",
+            call.function_id.prompt_name().as_str(),
+            "SimpleGreeting",
             "Function name should match"
         );
         // Client and model should be extracted from the HTTPRequest
@@ -326,7 +327,8 @@ async fn test_post_execution_interception_integration() {
 
         for (idx, (context, success, duration_ms)) in post_calls_guard.iter().enumerate() {
             assert_eq!(
-                context.function_id.prompt_name().as_str(), "SimpleGreeting",
+                context.function_id.prompt_name().as_str(),
+                "SimpleGreeting",
                 "Function name should match"
             );
             // duration_ms is u64, so it's always >= 0

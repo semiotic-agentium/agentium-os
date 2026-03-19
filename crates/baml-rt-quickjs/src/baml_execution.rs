@@ -6,7 +6,9 @@
 use std::{collections::HashMap, path::Path, str::FromStr, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlFunctionId, BamlRtError, InvocationKind, Outcome, Result, bus::EffectEmitter, context};
+use baml_rt_core::{
+    BamlFunctionId, BamlRtError, InvocationKind, Outcome, Result, bus::EffectEmitter, context,
+};
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry};
 use baml_runtime::{
     BamlRuntime, FunctionResultStream, RuntimeContextManager,
@@ -305,7 +307,8 @@ impl BamlExecutor {
         // Create collector for LLM interception if registry is provided (Arc so we can pass a clone to completion handle).
         let collector: Option<Arc<BamlLLMCollector>> =
             interceptor_registry.as_ref().map(|registry| {
-                let mut coll = BamlLLMCollector::new(registry.clone(), BamlFunctionId::parse(function_name));
+                let mut coll =
+                    BamlLLMCollector::new(registry.clone(), BamlFunctionId::parse(function_name));
                 if let Some(ref emitter) = self.effect_emitter {
                     coll.set_effect_emitter(emitter.clone());
                 }

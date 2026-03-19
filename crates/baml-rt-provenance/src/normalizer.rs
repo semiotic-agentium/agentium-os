@@ -457,8 +457,14 @@ fn normalize_event_with_registry(
             attrs.insert(a2a::MODEL.to_string(), Value::String(resolved_model));
             {
                 let fid = BamlFunctionId::parse(function_name);
-                attrs.insert(a2a::FUNCTION_NAME.to_string(), Value::String(fid.full_name()));
-                attrs.insert(a2a::PROMPT_NAME.to_string(), Value::String(fid.prompt_name().as_str().to_string()));
+                attrs.insert(
+                    a2a::FUNCTION_NAME.to_string(),
+                    Value::String(fid.full_name()),
+                );
+                attrs.insert(
+                    a2a::PROMPT_NAME.to_string(),
+                    Value::String(fid.prompt_name().as_str().to_string()),
+                );
             }
             let agent_id = metadata
                 .get("agent_id")
@@ -559,8 +565,14 @@ fn normalize_event_with_registry(
             attrs.insert(a2a::MODEL.to_string(), Value::String(resolved_model));
             {
                 let fid = BamlFunctionId::parse(function_name);
-                attrs.insert(a2a::FUNCTION_NAME.to_string(), Value::String(fid.full_name()));
-                attrs.insert(a2a::PROMPT_NAME.to_string(), Value::String(fid.prompt_name().as_str().to_string()));
+                attrs.insert(
+                    a2a::FUNCTION_NAME.to_string(),
+                    Value::String(fid.full_name()),
+                );
+                attrs.insert(
+                    a2a::PROMPT_NAME.to_string(),
+                    Value::String(fid.prompt_name().as_str().to_string()),
+                );
             }
             let agent_id = metadata
                 .get("agent_id")
