@@ -1,0 +1,32 @@
+[package]
+name = "baml-tool-links"
+version = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+publish = false
+description = "Centralized force-link crate for all BAML tool crates"
+
+[dependencies]
+# Unconditional (core platform tools - always linked)
+baml-rt-tools-claude = { path = "../tools/claude" }
+baml-tools-system = { path = "../tools/system" }
+baml-tools-calculator = { path = "../tools/calculator" }
+
+# Feature-gated (integration tools)
+baml-tools-clickup = { path = "../tools/clickup", optional = true }
+baml-tools-memory = { path = "../tools/memory", optional = true }
+baml-tools-notion = { path = "../tools/notion", optional = true }
+baml-tools-slack = { path = "../tools/slack", optional = true }
+
+# Test-only tools (not included in all-tools)
+baml-tools-internal-dev = { path = "../tools/internal-dev", optional = true }
+
+[features]
+default = []
+clickup = ["dep:baml-tools-clickup"]
+memory = ["dep:baml-tools-memory"]
+notion = ["dep:baml-tools-notion"]
+slack = ["dep:baml-tools-slack"]
+internal-dev = ["dep:baml-tools-internal-dev"]
+http-tools = ["clickup", "notion", "slack"]
+all-tools = ["http-tools", "memory"]

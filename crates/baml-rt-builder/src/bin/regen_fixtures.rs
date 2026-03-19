@@ -8,10 +8,10 @@ use anyhow::{Context as _, Result, bail};
 use baml_rt_builder::builder::{
     AgentDir, BuildDir, RuntimeTypeGenerator, TypeGenerator, compiler::write_canonical_tsconfig,
 };
-use baml_rt_tools_claude as _; // Force link so claude tool metadata is in inventory
-#[cfg(feature = "slack")]
-use baml_tools_slack as _; // Force link so slack tool metadata is in inventory
-use baml_tools_system as _; // Force link so system tool metadata is in inventory
+
+// Force-link all tool crates into the binary's inventory.
+// The macro handles conditional compilation based on feature flags.
+baml_tool_links::force_link_all_tools!();
 
 fn fixture_agents_dir() -> Result<PathBuf> {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

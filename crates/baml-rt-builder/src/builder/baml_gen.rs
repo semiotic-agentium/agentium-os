@@ -6,7 +6,13 @@
 use std::collections::{HashMap, HashSet};
 
 use baml_rt_tools::{tool_catalog::resolve_manifest_tools, tools::ToolFunctionMetadata};
-use baml_tools_calculator as _;
+#[cfg(feature = "clickup")]
+use baml_tool_links::baml_tools_clickup;
+#[cfg(feature = "notion")]
+use baml_tool_links::baml_tools_notion;
+#[cfg(feature = "slack")]
+use baml_tool_links::baml_tools_slack;
+use baml_tool_links::{baml_rt_tools_claude, baml_tools_calculator, baml_tools_system};
 use serde_json::Value;
 
 use crate::builder::{

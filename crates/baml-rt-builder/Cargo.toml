@@ -14,13 +14,8 @@ baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-quickjs = { path = "../baml-rt-quickjs" }
 baml-rt-tools = { path = "../baml-rt-tools", default-features = false }
-baml-rt-tools-claude = { path = "../tools/claude" }
-baml-tools-system = { path = "../tools/system" }
-baml-tools-calculator = { path = "../tools/calculator" }
-baml-tools-clickup = { path = "../tools/clickup", optional = true }
-baml-tools-memory = { path = "../tools/memory", optional = true }
-baml-tools-notion = { path = "../tools/notion", optional = true }
-baml-tools-slack = { path = "../tools/slack", optional = true }
+# Centralized force-link crate - features forward tool dependencies
+baml-tool-links = { path = "../baml-tool-links" }
 baml-runtime = { workspace = true }
 baml-types = { workspace = true }
 internal-baml-core = { workspace = true }
@@ -47,8 +42,10 @@ insta = { workspace = true }
 
 [features]
 default = []
-clickup = ["dep:baml-tools-clickup"]
-memory = ["dep:baml-tools-memory"]
-notion = ["dep:baml-tools-notion"]
-slack = ["dep:baml-tools-slack"]
-http-tools = ["clickup", "notion", "slack"]
+# Tool features forward to baml-tool-links
+clickup = ["baml-tool-links/clickup"]
+internal-dev = ["baml-tool-links/internal-dev"]
+memory = ["baml-tool-links/memory"]
+notion = ["baml-tool-links/notion"]
+slack = ["baml-tool-links/slack"]
+http-tools = ["baml-tool-links/http-tools"]

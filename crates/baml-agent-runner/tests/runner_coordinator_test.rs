@@ -1,5 +1,6 @@
 #![cfg(feature = "llm-tests")]
 
+#[allow(dead_code, unused_imports)]
 mod common;
 
 use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};

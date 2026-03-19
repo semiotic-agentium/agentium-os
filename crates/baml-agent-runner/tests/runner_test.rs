@@ -24,7 +24,7 @@ use baml_rt_provenance::{
 };
 use baml_rt_tools::bundles::BundleType;
 #[cfg(feature = "slack")]
-use baml_tools_slack as _;
+use baml_tool_links::baml_tools_slack as _;
 use flate2::{Compression, write::GzEncoder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

@@ -7,6 +7,7 @@
 #![recursion_limit = "256"]
 
 mod builder;
+mod optional_tool_bundles;
 mod package;
 
 use std::{
@@ -57,16 +58,11 @@ use baml_rt_tools::{
     register_manifest_tools,
 };
 use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
-use baml_tools_calculator as _;
-#[cfg(feature = "clickup")]
-use baml_tools_clickup as _;
-#[cfg(feature = "memory")]
-use baml_tools_memory as _;
-#[cfg(feature = "notion")]
-use baml_tools_notion as _;
-#[cfg(feature = "slack")]
-use baml_tools_slack as _;
 use baml_tools_system::SystemBundle;
+
+// Force-link all tool crates into the binary's inventory.
+// The macro handles conditional compilation based on feature flags.
+baml_tool_links::force_link_all_tools!();
 use clap::Parser;
 use serde_json::{Map, Value};
 use tokio::{
@@ -187,11 +183,10 @@ impl AgentPackage {
             AgentWorkspaceRegistry::new(claude_workspace_root),
         )))?;
 
-        #[cfg(feature = "memory")]
-        if self.manifest.tools.iter().any(|t| t.starts_with("memory/")) {
-            let memory_bundle = baml_tools_memory::MemoryBundle::new(&self.manifest.name)?;
-            tool_registry.register_bundle(memory_bundle)?;
-        }
+        optional_tool_bundles::register_optional_tool_bundles(
+            &self.manifest,
+            tool_registry.as_ref(),
+        )?;
 
         register_manifest_tools(
             runtime_manager.tool_registry().as_ref(),
@@ -1362,11 +1357,11 @@ impl baml_rt_api::MermaidService for MermaidServiceImpl {
         &self,
         context_id: &str,
     ) -> std::result::Result<String, baml_rt_api::MermaidError> {
-        if let Some(ref cache) = self.cache {
-            if let Some(cached) = cache.get(context_id) {
-                tracing::debug!(context_id = %context_id, "mermaid: cache HIT");
-                return Ok(cached);
-            }
+        if let Some(ref cache) = self.cache
+            && let Some(cached) = cache.get(context_id)
+        {
+            tracing::debug!(context_id = %context_id, "mermaid: cache HIT");
+            return Ok(cached);
         }
         tracing::info!(context_id = %context_id, "mermaid: START export_by_context");
         let t0 = std::time::Instant::now();
