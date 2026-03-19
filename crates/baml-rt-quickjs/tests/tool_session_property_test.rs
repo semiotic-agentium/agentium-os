@@ -39,6 +39,11 @@ struct EchoTool;
 struct EchoInput {
     text: String,
 }
+impl baml_rt_tools::DescribeAction for EchoInput {
+    fn describe(&self) -> String {
+        "EchoInput".to_string()
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 struct EchoOutput {
     echo: String,

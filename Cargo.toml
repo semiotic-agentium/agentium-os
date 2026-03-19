@@ -3,6 +3,7 @@ members = [
   "crates/baml-agent-runner",
   "crates/baml-derive-tests",
   "crates/cargo-agent-platform",
+  "crates/baml-tool-links",
   "crates/integrations/clickup-client",
   "crates/integrations/github-client",
   "crates/integrations/notion-read",
@@ -22,12 +23,12 @@ members = [
   "crates/baml-rt-quickjs",
   "crates/baml-rt-repository",
   "crates/baml-rt-tools",
-  "crates/baml-tool-links",
   "crates/test-support",
   "crates/task-daemon",
   "crates/tools/calculator",
   "crates/tools/claude",
   "crates/tools/internal-dev",
+  "crates/tools/security-eval",
   "crates/tools/clickup",
   "crates/tools/slack",
   "crates/tools/notion",
@@ -79,7 +80,6 @@ opentelemetry_sdk = "0.26"
 tracing-opentelemetry = "0.27"
 tokio-tungstenite = "0.28.0"
 futures-util = "0.3.31"
-graphqlite = { version = "0.3", default-features = false, features = ["bundled-extension"] }
 testcontainers = "0.23"
 insta = { version = "1.46.3", features = ["json"] }
 uuid = { version = "1.10", features = ["v4", "serde"] }
@@ -111,12 +111,9 @@ quickjs_runtime = { version = "0.15", default-features = false, features = ["bel
 # Agent memory
 agentic-memory = "0.2.6"
 # SurrealDB embedded (no client-server) — Phase 1 provenance backend.
-# Pinned to v2: surrealdb v3 pulls wasm-bindgen-futures 0.4.58 which requires js-sys =0.3.85,
-# conflicting with baml-runtime (ryan-s-roberts/baml canary) which pins js-sys =0.3.82.
-# Upgrade to v3 once the upstream fork relaxes the js-sys pin.
-surrealdb = { version = "2", default-features = false, features = ["kv-mem", "kv-surrealkv"] }
+surrealdb = { version = "3", default-features = false, features = ["kv-mem", "kv-surrealkv"] }
 # Embedding / drift detection
-fastembed = "4"
+fastembed = { version = "4", default-features = false, features = ["ort-download-binaries", "hf-hub-native-tls"] }
 dashmap = "6"
 axum = "0.8"
 # Testing / dev

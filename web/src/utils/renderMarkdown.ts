@@ -6,7 +6,7 @@ marked.setOptions({
   gfm: true,
 });
 
-const PURIFY_CONFIG: DOMPurify.Config = {
+const PURIFY_CONFIG = {
   ALLOWED_TAGS: [
     "p", "br", "strong", "em", "s", "code", "pre", "blockquote",
     "h1", "h2", "h3", "h4", "h5", "h6",
@@ -20,5 +20,5 @@ const PURIFY_CONFIG: DOMPurify.Config = {
 export function renderMarkdown(text: string | null | undefined): string {
   if (!text) return "";
   const raw = marked(text) as string;
-  return DOMPurify.sanitize(raw, PURIFY_CONFIG);
+  return DOMPurify.sanitize(raw, PURIFY_CONFIG) as string;
 }

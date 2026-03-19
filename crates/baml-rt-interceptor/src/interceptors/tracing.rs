@@ -43,7 +43,7 @@ impl LLMInterceptor for TracingLLMInterceptor {
             "baml_rt.llm_call",
             client = %context.client,
             model = %context.model,
-            function = %context.function_name,
+            function = %context.function_id.prompt_name(),
             context_id = %context.runtime_scope.context_id(),
         );
         let _guard = span.enter();
@@ -69,7 +69,7 @@ impl LLMInterceptor for TracingLLMInterceptor {
             "baml_rt.llm_call_complete",
             client = %context.client,
             model = %context.model,
-            function = %context.function_name,
+            function = %context.function_id.prompt_name(),
             duration_ms = duration_ms,
             context_id = %context.runtime_scope.context_id(),
         );

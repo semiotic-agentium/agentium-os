@@ -159,6 +159,21 @@ pub enum ClickUpInput {
     DeleteTask(DeleteTaskInput),
 }
 
+impl baml_rt_tools::DescribeAction for ClickUpInput {
+    fn describe(&self) -> String {
+        match self {
+            ClickUpInput::ListTeams(_) => "listing ClickUp teams".to_string(),
+            ClickUpInput::ListSpaces(_) => "listing ClickUp spaces".to_string(),
+            ClickUpInput::ListLists(_) => "listing ClickUp task lists".to_string(),
+            ClickUpInput::ListTasks(_) => "listing ClickUp tasks".to_string(),
+            ClickUpInput::GetTask(_) => "retrieving ClickUp task details".to_string(),
+            ClickUpInput::CreateTask(p) => format!("creating ClickUp task '{}'", p.name),
+            ClickUpInput::UpdateTask(_) => "updating ClickUp task".to_string(),
+            ClickUpInput::DeleteTask(_) => "deleting ClickUp task".to_string(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Output types
 // ---------------------------------------------------------------------------
@@ -753,14 +768,19 @@ impl BamlTool for ClickUpTool {
         }
     }
 
-    fn compact_result(&self, content: &mut serde_json::Value) {
-        // Provider-side tool_result content usually has envelope shape:
-        // {"tool_name":"support/clickup","fsm_phase":"send","result":{...}}
-        // Compact the nested result when present; otherwise compact the value directly.
-        if let Some(result) = content.get_mut("result") {
-            Self::compact_tool_result_payload(result);
+    fn describe_result(&self, output: &Self::Output) -> String {
+        let task_count = output.tasks.len();
+        let item_count = output.items.len();
+        if task_count > 0 {
+            format!("returned {} ClickUp task(s)", task_count)
+        } else if item_count > 0 {
+            format!("returned {} ClickUp item(s)", item_count)
         } else {
-            Self::compact_tool_result_payload(content);
+            output.message.clone()
         }
+    }
+
+    fn describe_open(&self) -> String {
+        "using ClickUp for workspace navigation and task management".to_string()
     }
 }

@@ -2,9 +2,8 @@
 /**
  * Fixture: tool-discovery-demo
  * Uses system/discover_tools to find tools by query and respond.
- * When the user asks about "Notion", "ClickUp", "calculate", etc., we call
- * ChooseDiscoverToolsQuery which returns a session plan; the runtime executes it
- * and returns the discover_tools output (tools list). We format that as the reply.
+ * Flow: ChooseDiscoverToolsQuery → Open → Send (blocking, archives result @1) → Finish.
+ * The blocking Send result carries `result: { tools:[...], done:bool }`.
  */
 
 function formatToolsList(tools: Array<{ name: string; bundle: string; description: string }>): string {
@@ -14,32 +13,49 @@ function formatToolsList(tools: Array<{ name: string; bundle: string; descriptio
     .join("\n");
 }
 
+function extractTools(step: unknown): Array<{ name: string; bundle: string; description: string }> | null {
+  if (!step || typeof step !== "object") return null;
+  const s = step as Record<string, unknown>;
+
+  // New path: blocking Send puts raw discover_tools JSON in `result`
+  const rawResult = s.result as Record<string, unknown> | undefined;
+  if (rawResult && Array.isArray(rawResult.tools)) {
+    return rawResult.tools as Array<{ name: string; bundle: string; description: string }>;
+  }
+
+  // Legacy path: tools directly on the step or in output
+  if (Array.isArray(s.tools)) {
+    return s.tools as Array<{ name: string; bundle: string; description: string }>;
+  }
+  const out = s.output as Record<string, unknown> | undefined;
+  if (out && Array.isArray(out.tools)) {
+    return out.tools as Array<{ name: string; bundle: string; description: string }>;
+  }
+  return null;
+}
+
 __chat_register({
   run: async (ctx) => {
     const text = ctx.text?.trim() || "";
     if (!text) return { message: "Send a message like: what tools do you have for Notion? or tell me about ClickUp." };
 
-    // Use the step-executor loop: Open → Send (with query) → Read (get tools) → Finish
     const run = await runGeneratedStepExecutor("ChooseDiscoverToolsQuery", { user_message: text }, { max_steps: 6 });
 
-    // Scan steps in reverse for the Read result that contains tools
-    let tools: Array<{ name: string; bundle: string; description: string }> | undefined;
-    let done = true;
+    // Check run.last first (blocking Send result is the primary source)
+    const last = run.last as unknown;
+    const lastTools = extractTools(last);
+    if (lastTools) {
+      return { message: `Here are the tools I found:\n\n${formatToolsList(lastTools)}` };
+    }
+
+    // Fallback: scan steps in reverse
     for (const step of [...run.steps].reverse()) {
-      const s = step as { tools?: Array<{ name: string; bundle: string; description: string }>; done?: boolean };
-      if (Array.isArray(s.tools)) {
-        tools = s.tools;
-        done = typeof s.done === "boolean" ? s.done : true;
-        break;
+      const tools = extractTools(step);
+      if (tools) {
+        return { message: `Here are the tools I found:\n\n${formatToolsList(tools)}` };
       }
     }
 
-    if (Array.isArray(tools)) {
-      const message = done !== false
-        ? `Here are the tools I found:\n\n${formatToolsList(tools)}`
-        : `Tools (partial):\n\n${formatToolsList(tools)}`;
-      return { message };
-    }
     return { message: "No tools found for that query." };
   },
 });

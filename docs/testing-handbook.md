@@ -141,7 +141,7 @@ Before adding a test that touches any of the following, check the authority map 
 
 Some tests use real infrastructure:
 
-- Provenance tests in `crates/baml-rt-provenance/tests/` use in-memory GraphQLite
+- Provenance tests in `crates/baml-rt-provenance/tests/` use in-memory SurrealDB
   or file-backed stores; no external graph server required.
 
 ---
@@ -152,7 +152,7 @@ We use `insta` for JSON snapshots in provenance tests:
 
 - Snapshots live in `crates/baml-rt-provenance/tests/snapshots/`
 - Example usage: `insta::assert_json_snapshot!` in
-  `crates/baml-rt-provenance/tests/graphqlite_store_test.rs`
+  `crates/baml-rt-provenance/tests/surreal_snapshot_test.rs`
 - Update snapshots with `cargo insta review` after intentional changes
 
 Keep snapshot inputs deterministic where possible (fixed IDs, stable ordering,

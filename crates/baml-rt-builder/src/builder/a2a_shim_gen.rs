@@ -176,161 +176,19 @@ pub fn render_a2a_shim() -> Result<String> {
   globalThis.session = session;
   globalThis.messageText = messageText;
 
-  function extractStepExecutorStatus(raw) {
-    if (raw != null && typeof raw === "object") {
-      if (typeof raw.status === "string") return raw.status;
-      if (raw.output != null && typeof raw.output === "object" && typeof raw.output.status === "string") {
-        return raw.output.status;
-      }
-    }
-    return null;
-  }
-
-  function executionStatusKeepsSessionOpen(status) {
-    return status === "open"
-      || status === "sent"
-      || status === "streaming"
-      || status === "suspended";
-  }
-
-  function executionStatusTerminal(status) {
-    return status === "done" || status === "finished" || status === "aborted";
-  }
-
-  function canonicalizeStepExecutorValue(value) {
-    if (value == null || typeof value !== "object") return value;
-    if (Array.isArray(value)) {
-      var arr = [];
-      for (var i = 0; i < value.length; i++) {
-        arr.push(canonicalizeStepExecutorValue(value[i]));
-      }
-      return arr;
-    }
-    var out = {};
-    var keys = Object.keys(value).sort();
-    for (var j = 0; j < keys.length; j++) {
-      var key = keys[j];
-      out[key] = canonicalizeStepExecutorValue(value[key]);
-    }
-    return out;
-  }
-
-  function allowedStepExecutorOps(sessionOpen, lastStatus, stepExecutor) {
-    if (typeof globalThis.__step_executor_allowed_ops !== "function") {
-      throw new Error("__step_executor_allowed_ops host helper is not registered");
-    }
-    var payload = {
-      session_open: !!sessionOpen,
-      last_status: lastStatus == null ? null : String(lastStatus),
-      step_executor: stepExecutor == null ? "unknown_step_executor" : String(stepExecutor)
-    };
-    var encoded = globalThis.__step_executor_allowed_ops(JSON.stringify(payload));
-    var parsed = JSON.parse(encoded);
-    return Array.isArray(parsed) ? parsed : ["Read"];
-  }
-
-  function validateStepExecutorTransition(sessionOpenBeforeHop, lastStatusBeforeHop, op, status, stepExecutor) {
-    if (typeof globalThis.__step_executor_validate_transition !== "function") {
-      throw new Error("__step_executor_validate_transition host helper is not registered");
-    }
-    var payload = {
-      session_open_before_hop: !!sessionOpenBeforeHop,
-      last_status_before_hop: lastStatusBeforeHop == null ? null : String(lastStatusBeforeHop),
-      op: op == null ? null : String(op),
-      status: status == null ? "" : String(status),
-      step_executor: stepExecutor == null ? "unknown_step_executor" : String(stepExecutor)
-    };
-    globalThis.__step_executor_validate_transition(JSON.stringify(payload));
-  }
-
-  function buildSessionContext(sessionOpen, allowedOps) {
-    return {
-      contract_version: "session_context",
-      session_open: !!sessionOpen,
-      allowed_ops: allowedOps
-    };
-  }
-
-  function extractStepExecutorOp(raw) {
-    if (raw != null && typeof raw === "object") {
-      if (typeof raw.op === "string") return raw.op;
-      if (raw.step != null && typeof raw.step === "object" && typeof raw.step.op === "string") {
-        return raw.step.op;
-      }
-    }
-    return null;
-  }
-
   /**
-   * Generated Step Executor runtime helper.
-   * Calls a step-executor function repeatedly under strict single-fragment mode and
-   * threads runtime-owned `session_context` only.
+   * Step Executor: thin wrapper over Rust-hosted __run_step_executor.
+   * All FSM state, policy resolution, polymorphic narrowing, and multi-hop
+   * coordination live in the Rust host. JS is only the call-through.
    */
   async function runGeneratedStepExecutor(stepExecutor, args, options) {
-    var stepExecutorFn = globalThis[stepExecutor];
-    if (typeof stepExecutorFn !== "function") {
-      throw new Error("Step Executor function '" + String(stepExecutor) + "' is not registered on globalThis");
+    if (typeof globalThis.__run_step_executor !== "function") {
+      throw new Error("__run_step_executor host helper is not registered");
     }
-    var baseArgs = canonicalizeStepExecutorValue((args != null && typeof args === "object") ? args : {});
-    var maxSteps = 8;
-    if (options != null && typeof options === "object" && Number.isFinite(options.max_steps)) {
-      var requested = Math.trunc(options.max_steps);
-      if (requested > 0) maxSteps = requested;
-    }
-    var sessionOpen = false;
-    var lastStatus = null;
-    var history = [];
-    var last = null;
-    var finalContext = buildSessionContext(sessionOpen, ["Open"]);
-
-    for (var i = 0; i < maxSteps; i++) {
-      var allowedOps = allowedStepExecutorOps(sessionOpen, lastStatus, stepExecutor);
-      finalContext = buildSessionContext(
-        sessionOpen,
-        allowedOps
-      );
-      var stepExecutorArgs = Object.assign({}, baseArgs, {
-        session_context: finalContext
-      });
-      stepExecutorArgs = canonicalizeStepExecutorValue(stepExecutorArgs);
-      var stepRaw = await stepExecutorFn(stepExecutorArgs);
-      var step = canonicalizeStepExecutorValue(stepRaw);
-      last = step;
-      history.push(step);
-      var op = extractStepExecutorOp(step);
-      if (op != null && allowedOps.indexOf(op) < 0) {
-        throw new Error(
-          "runtime step executor contract violation (" + String(stepExecutor)
-          + "): expected op in [" + allowedOps.join(",") + "], got '" + String(op) + "'"
-        );
-      }
-
-      var status = extractStepExecutorStatus(step);
-      if (status != null) {
-        validateStepExecutorTransition(sessionOpen, lastStatus, op, status, stepExecutor);
-      }
-      if (status == null) {
-        break;
-      }
-      lastStatus = status;
-      if (executionStatusKeepsSessionOpen(status)) {
-        sessionOpen = true;
-      }
-      if (executionStatusTerminal(status)) {
-        break;
-      }
-    }
-
-    finalContext = buildSessionContext(
-      sessionOpen,
-      allowedStepExecutorOps(sessionOpen, lastStatus, stepExecutor)
-    );
-
-    return {
-      last: last,
-      steps: history,
-      session_context: finalContext
-    };
+    var argsJson = JSON.stringify((args != null && typeof args === "object") ? args : {});
+    var optionsJson = (options != null && typeof options === "object") ? JSON.stringify(options) : null;
+    var resultJson = await globalThis.__run_step_executor(String(stepExecutor), argsJson, optionsJson);
+    return JSON.parse(resultJson);
   }
   globalThis.runGeneratedStepExecutor = runGeneratedStepExecutor;
 
@@ -409,18 +267,7 @@ pub fn render_a2a_shim() -> Result<String> {
   }
   globalThis.openA2aExecutionSession = openA2aExecutionSession;
 
-  function extractDispatchMessages(request) {
-    if (request == null || typeof request !== 'object') return [];
-    var messages = request.messages;
-    if (!Array.isArray(messages)) return [];
-    return messages.slice();
-  }
-  globalThis.extractDispatchMessages = extractDispatchMessages;
-
   function __chat_register(agent) {
-    if (agent.onDispatch != null && typeof agent.onDispatch === 'function') {
-      globalThis.onDispatch = async function (request) { return agent.onDispatch.call(agent, request); };
-    }
     if (agent.run != null && typeof agent.run === 'function') {
       globalThis.onChatMessage = async function (message) {
         var s = session(message);

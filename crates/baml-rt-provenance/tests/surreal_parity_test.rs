@@ -1,5 +1,5 @@
-//! Backend-agnostic parity tests: same scenario runs against GraphQLite and SurrealDB,
-//! results are compared for behavioral equivalence.
+//! Backend parity tests: scenarios validate behavioral equivalence of the SurrealDB
+//! provenance store.
 //!
 //! Feature-gated behind `surreal-backend` so CI can run incrementally.
 //!
@@ -21,7 +21,6 @@
 //! 9. Payload/archive behavior
 //! 10. No-stale-read interleaved test
 
-#![cfg(feature = "surreal-backend")]
 
 use std::sync::Arc;
 
@@ -32,9 +31,9 @@ use baml_rt_core::{
     },
 };
 use baml_rt_provenance::{
-    AgentBootedEvent, AgentType, CallScope, GraphqliteStoreBuilder, LlmUsage, PlanStepSpec,
-    ProvEvent, ProvEventData, ProvenanceContextReader, ProvenanceOpsQuery, ProvenancePlanningQuery,
-    ProvenanceQueryApi, ProvenanceWriter, SurrealStoreBuilder, TaskScopedEvent,
+    AgentBootedEvent, AgentType, CallScope, LlmUsage, PlanStepSpec, ProvEvent, ProvEventData,
+    ProvenanceContextReader, ProvenanceOpsQuery, ProvenancePlanningQuery, ProvenanceQueryApi,
+    ProvenanceWriter, SurrealStoreBuilder, TaskScopedEvent,
 };
 use baml_rt_vocabulary::A2aGraphStore;
 
@@ -42,7 +41,7 @@ use baml_rt_vocabulary::A2aGraphStore;
 // Unified store trait object — all query traits the parity tests need
 // ---------------------------------------------------------------------------
 
-/// Combined trait for parity assertions. Both GraphQLite and Surreal implement all of these.
+/// Combined trait for parity assertions. SurrealDB implements all of these.
 trait ParityStore:
     ProvenanceWriter
     + ProvenanceContextReader
@@ -70,12 +69,6 @@ impl<T> ParityStore for T where
 // ---------------------------------------------------------------------------
 // Store factories
 // ---------------------------------------------------------------------------
-
-fn build_graphqlite_store() -> Arc<dyn ParityStore> {
-    GraphqliteStoreBuilder::in_memory_isolated()
-        .build()
-        .expect("build GraphQLite isolated store")
-}
 
 async fn build_surreal_store() -> Arc<dyn ParityStore> {
     SurrealStoreBuilder::in_memory_isolated()
@@ -159,12 +152,6 @@ macro_rules! parity_test {
     ($name:ident) => {
         paste::paste! {
             #[tokio::test]
-            async fn [<graphqlite_ $name>]() {
-                let store = build_graphqlite_store();
-                $name(&*store).await;
-            }
-
-            #[tokio::test]
             async fn [<surreal_ $name>]() {
                 let store = build_surreal_store().await;
                 $name(&*store).await;
@@ -237,9 +224,9 @@ async fn message_lifecycle(store: &dyn ParityStore) {
         .expect("conversation_context");
     assert_eq!(items.len(), 2, "expect 2 conversation items");
     assert_eq!(items[0].role, "ROLE_USER");
-    assert_eq!(items[0].source, "message");
+    assert_eq!(items[0].source_name(), "message");
     assert_eq!(items[1].role, "ROLE_AGENT");
-    assert_eq!(items[1].source, "message");
+    assert_eq!(items[1].source_name(), "message");
 
     // Assert limit works
     let limited = store
@@ -332,16 +319,19 @@ async fn tool_call_lifecycle(store: &dyn ParityStore) {
     // (tool_call + tool_result for the successful one)
     let tool_items: Vec<_> = items
         .iter()
-        .filter(|i| i.source == "tool_call" || i.source == "tool_result")
+        .filter(|i| i.source_name() == "tool_call" || i.source_name() == "tool_result")
         .collect();
     assert!(
         !tool_items.is_empty(),
         "should have tool call items in conversation context"
     );
 
+    use baml_rt_provenance::store::ConversationItemContent;
     let has_failed_tool_result = items.iter().any(|i| {
-        i.source == "tool_result"
-            && i.content.get("error").and_then(serde_json::Value::as_str) == Some("rate limited")
+        matches!(
+            &i.content,
+            ConversationItemContent::ToolResult(tr) if matches!(&tr.outcome, baml_rt_provenance::store::ToolOutcome::Error(_))
+        )
     });
     assert!(
         has_failed_tool_result,
@@ -480,6 +470,7 @@ async fn planning_entities(store: &dyn ParityStore) {
             "Generate a report".to_string(),
             vec![msg_1.clone()],
             None,
+            None,
         ))
         .await
         .expect("intent v1");
@@ -511,6 +502,7 @@ async fn planning_entities(store: &dyn ParityStore) {
             "Generate a detailed report".to_string(),
             vec![msg_1.clone()],
             Some(baml_rt_core::bus::PlanningSupersessionKind::ReplacedBy),
+            None,
         ))
         .await
         .expect("intent v2");
@@ -789,11 +781,8 @@ async fn a2a_graph_traversals(store: &dyn ParityStore) {
     assert_eq!(max_ord, 2);
 }
 
-// NOTE: A2A graph traversals are tested separately per backend because GraphQLite's
-// MERGE pattern for A2ATaskMessageSubgraph uses $param in node identity which the
-// extension does not resolve (requires escaped literals). The existing A2A tests in
-// graphqlite_store_test.rs / a2a_graph_store.rs cover GraphQLite; this test validates
-// SurrealDB parity for the A2aGraphStore trait.
+// NOTE: A2A graph traversals are tested separately for the SurrealDB backend.
+// This test validates the A2aGraphStore trait implementation.
 #[tokio::test]
 async fn surreal_a2a_graph_traversals() {
     let store = build_surreal_store().await;
@@ -1147,7 +1136,7 @@ async fn ops_messages_task_filter_parity(store: &dyn ParityStore) {
         .expect("MessageReceived in Task B");
 
     // Query Messages with task_id filter for Task A - should return ALL messages in context
-    // (GraphQLite behavior: Messages ignores task_id filter)
+    // (Messages resource ignores task_id filter — returns all messages in context)
     let request_with_task_filter = baml_rt_provenance::store::ProvenanceOpsQueryRequest {
         resource: baml_rt_provenance::store::ProvenanceOpsResource::Messages,
         filters: baml_rt_provenance::store::ProvenanceOpsFilters {
@@ -1639,6 +1628,7 @@ async fn supersession_cross_task_contamination_guard(store: &dyn ParityStore) {
             "Intent A v1".to_string(),
             vec![msg_1.clone()],
             None,
+            None,
         ))
         .await
         .expect("intent a v1");
@@ -1652,6 +1642,7 @@ async fn supersession_cross_task_contamination_guard(store: &dyn ParityStore) {
             "Intent A v2".to_string(),
             vec![msg_1.clone()],
             Some(baml_rt_core::bus::PlanningSupersessionKind::ReplacedBy),
+            None,
         ))
         .await
         .expect("intent a v2");
@@ -1664,6 +1655,7 @@ async fn supersession_cross_task_contamination_guard(store: &dyn ParityStore) {
             "intent-b-v1".to_string(),
             "Intent B v1".to_string(),
             vec![msg_1.clone()],
+            None,
             None,
         ))
         .await
@@ -1793,32 +1785,22 @@ async fn conversation_context_required_fields_skip(store: &dyn ParityStore) {
     );
 
     // All items should have non-empty event_id and appropriate source
+    use baml_rt_provenance::store::{ConversationItemContent as CIC, ToolCallContent as TCC, ToolResultContent as TRC};
     for item in &items {
         assert!(
             !item.event_id.as_str().is_empty(),
             "item should have non-empty event_id"
         );
-        assert!(!item.source.is_empty(), "item should have non-empty source");
-        // Tool call items have structure: { "tool_call": { "name": ..., "args": ..., "fsm_phase": ... } }
-        if item.source == "tool_call" {
-            let tool_call = item.content.get("tool_call");
+        assert!(!item.source_name().is_empty(), "item should have non-empty source");
+        if let CIC::ToolCall(tc) = &item.content {
             assert!(
-                tool_call.is_some(),
-                "tool_call item should have tool_call object in content"
-            );
-            let name = tool_call
-                .and_then(|tc| tc.get("name"))
-                .and_then(|v| v.as_str());
-            assert!(
-                name.is_some() && !name.unwrap().is_empty(),
-                "tool_call item should have non-empty name in tool_call object"
+                !tc.tool_name.is_empty(),
+                "tool_call item should have non-empty tool_name"
             );
         }
-        // Tool result items have structure: { "tool_name": ..., "fsm_phase": ..., "result": ... }
-        if item.source == "tool_result" {
-            let tool_name = item.content.get("tool_name").and_then(|v| v.as_str());
+        if let CIC::ToolResult(tr) = &item.content {
             assert!(
-                tool_name.is_some() && !tool_name.unwrap().is_empty(),
+                !tr.tool_name.is_empty(),
                 "tool_result item should have non-empty tool_name"
             );
         }
@@ -1933,8 +1915,8 @@ async fn conversation_context_tool_metadata_fallback(store: &dyn ParityStore) {
         .expect("conversation_context");
 
     // Should have tool_call and tool_result items
-    let tool_call_items: Vec<_> = items.iter().filter(|i| i.source == "tool_call").collect();
-    let tool_result_items: Vec<_> = items.iter().filter(|i| i.source == "tool_result").collect();
+    let tool_call_items: Vec<_> = items.iter().filter(|i| i.source_name() == "tool_call").collect();
+    let tool_result_items: Vec<_> = items.iter().filter(|i| i.source_name() == "tool_result").collect();
 
     assert!(!tool_call_items.is_empty(), "should have tool_call items");
     assert!(
@@ -1944,18 +1926,19 @@ async fn conversation_context_tool_metadata_fallback(store: &dyn ParityStore) {
 
     // Verify tool_call has args
     let tool_call = tool_call_items[0];
-    let tc_content = tool_call.content.get("tool_call");
-    assert!(
-        tc_content.is_some(),
-        "tool_call should have tool_call object"
-    );
-    let args = tc_content.and_then(|tc| tc.get("args"));
-    assert!(args.is_some(), "tool_call should have args");
+    if let baml_rt_provenance::store::ConversationItemContent::ToolCall(tc) = &tool_call.content {
+        assert!(!serde_json::to_string(&tc.args).unwrap_or_default().is_empty(), "tool_call should have args");
+    } else {
+        panic!("expected ToolCall variant");
+    }
 
-    // Verify tool_result has result
+    // Verify tool_result has meaningful outcome
     let tool_result = tool_result_items[0];
-    let result = tool_result.content.get("result");
-    assert!(result.is_some(), "tool_result should have result");
+    if let baml_rt_provenance::store::ConversationItemContent::ToolResult(tr) = &tool_result.content {
+        assert!(!matches!(&tr.outcome, baml_rt_provenance::store::ToolOutcome::StatusOnly), "tool_result should have result or error");
+    } else {
+        panic!("expected ToolResult variant");
+    }
 }
 
 parity_test!(conversation_context_tool_metadata_fallback);
@@ -2061,7 +2044,7 @@ async fn conversation_context_contract_filtering(store: &dyn ParityStore) {
         .expect("conversation_context");
 
     // Should have tool_call and tool_result items for the valid tool
-    let tool_call_items: Vec<_> = items.iter().filter(|i| i.source == "tool_call").collect();
+    let tool_call_items: Vec<_> = items.iter().filter(|i| i.source_name() == "tool_call").collect();
 
     // The valid tool should be included (has proper edge topology)
     assert!(
@@ -2071,11 +2054,11 @@ async fn conversation_context_contract_filtering(store: &dyn ParityStore) {
 
     // Verify the tool name
     let has_valid_tool = tool_call_items.iter().any(|item| {
-        item.content
-            .get("tool_call")
-            .and_then(|tc| tc.get("name"))
-            .and_then(|n| n.as_str())
-            == Some("valid_tool")
+        if let baml_rt_provenance::store::ConversationItemContent::ToolCall(tc) = &item.content {
+            tc.tool_name == "valid_tool"
+        } else {
+            false
+        }
     });
     assert!(
         has_valid_tool,

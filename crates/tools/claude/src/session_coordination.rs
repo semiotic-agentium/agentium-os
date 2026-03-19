@@ -63,10 +63,11 @@ pub fn render_claude_dev_session_coordination() -> Result<String> {
 
     {{ ctx.output_format }}
 
-    {% if ctx.tags.event_log %}
-    Event log (most recent context):
-    {% for event in ctx.tags.event_log %}
-    - {{ event.role }} | {{ event.source }} | {{ event.content }}
+    {% if ctx.tags.conversation_history %}
+    Conversation history:
+    {% for msg in ctx.tags.conversation_history %}
+    {{ _.role(msg.role) }}
+    {{ msg.content }}
     {% endfor %}
     {% endif %}
 

@@ -1,18 +1,8 @@
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
-use std::sync::Arc;
-use std::{path::PathBuf, sync::OnceLock};
+use std::{
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+};
 
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
 use async_trait::async_trait;
 #[cfg(any(
     feature = "clickup",
@@ -38,13 +28,7 @@ use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
     AgentDispatchRequest, AgentLister, AgentRouteKey,
 };
-#[cfg(any(
-    feature = "clickup",
-    feature = "notion",
-    feature = "slack",
-    feature = "llm-tests"
-))]
-use baml_rt_provenance::GraphqliteProvenanceStore;
+use baml_rt_provenance::SurrealProvenanceStore;
 #[cfg(any(
     feature = "clickup",
     feature = "notion",
@@ -73,7 +57,10 @@ pub use test_support::common::{TempDirCleanup, TempEnvVar};
 use tokio::sync::Semaphore;
 
 pub fn init_test_tracing() {
-    test_support::common::init_test_tracing();
+    static TRACING: OnceLock<()> = OnceLock::new();
+    TRACING.get_or_init(|| {
+        baml_rt_observability::init_tracing();
+    });
 }
 
 pub fn e2e_serial_gate() -> &'static Semaphore {
@@ -179,7 +166,7 @@ impl AgentRegistry for SingleAgentRegistry {
     async fn handle_dispatch(
         &self,
         key: &AgentRouteKey,
-        request: AgentDispatchRequest,
+        _request: AgentDispatchRequest,
     ) -> baml_rt_core::Result<AgentDispatchAck> {
         if key.agent_package.as_str() != self.package
             || key.agent_instance_id.as_str() != self.instance_id
@@ -190,7 +177,9 @@ impl AgentRegistry for SingleAgentRegistry {
                 key.agent_instance_id.as_str()
             )));
         }
-        self.agent.handle_dispatch(request).await
+        Err(baml_rt_core::BamlRtError::FunctionNotFound(
+            "onDispatch".to_string(),
+        ))
     }
 }
 
@@ -201,7 +190,7 @@ impl AgentRegistry for SingleAgentRegistry {
     feature = "llm-tests"
 ))]
 pub struct TestMermaidService {
-    store: Arc<GraphqliteProvenanceStore>,
+    store: Arc<SurrealProvenanceStore>,
 }
 
 #[cfg(any(
@@ -211,7 +200,7 @@ pub struct TestMermaidService {
     feature = "llm-tests"
 ))]
 impl TestMermaidService {
-    pub fn new(store: Arc<GraphqliteProvenanceStore>) -> Self {
+    pub fn new(store: Arc<SurrealProvenanceStore>) -> Self {
         Self { store }
     }
 }
@@ -363,7 +352,7 @@ pub async fn start_http_server(app: axum::Router) -> std::io::Result<RunningHttp
 pub async fn start_runner_api_server(
     agent_package: &str,
     agent: baml_rt::A2aAgent,
-    provenance: Arc<GraphqliteProvenanceStore>,
+    provenance: Arc<SurrealProvenanceStore>,
 ) -> std::io::Result<RunningHttpServer> {
     let registry: Arc<dyn AgentRegistry> = Arc::new(SingleAgentRegistry::new(
         agent_package,
@@ -395,7 +384,6 @@ pub fn contains_kv(value: &Value, key: &str, expected: &str) -> bool {
 }
 
 /// Builds an agent at the given path using the builder crate (in-process, no cargo subprocess).
-#[allow(dead_code)] // Shared across test binaries; not every target uses it in each build.
 pub async fn build_agent_dir_to_temp_async(agent_dir: PathBuf, package_label: &str) -> PathBuf {
     test_support::common::build_agent_package_to_temp(agent_dir, package_label).await
 }

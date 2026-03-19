@@ -215,12 +215,10 @@ async function runNotionPlan(
     : null;
 
   // ── Execute each tool step independently (persona pattern) ──────────────
-  // Each step gets its own executor run; prior results thread forward so
-  // "read" steps can use page IDs discovered by preceding "discover" steps.
+  // Each step drives its own support/notion session: Open → Send → Read @N grep=... → Finish.
+  // Read results accumulate in intra-turn history for ReactToNotionResults.
   const toolSteps = steps.filter((s) => s.kind !== "synthesize");
   const synthesizeStep = steps.find((s) => s.kind === "synthesize");
-  const allStepOutputs: unknown[][] = [];
-  let priorResultsJson: string | null = null;
 
   try {
     for (const toolStep of toolSteps) {
@@ -231,44 +229,35 @@ async function runNotionPlan(
         );
       }
 
-      const run = await runGeneratedStepExecutor("ChooseNotionAction", {
+      await runGeneratedStepExecutor("ChooseNotionAction", {
         goal,
         step_description: toolStep.description,
-        prior_results: priorResultsJson,
       }, { max_steps: MAX_REACT_STEPS });
-
-      allStepOutputs.push(run.steps);
-      priorResultsJson = collectToolResultsJson(run.steps);
 
       if (executable) {
         await executable.completeStep?.(
           toolStep.id,
-          `Completed ${toolStep.kind}: ${run.steps.length} result(s).`,
+          `Completed ${toolStep.kind}.`,
         );
       }
     }
 
-    // ── Synthesize across all step outputs ──────────────────────────────
+    // ── Synthesize from conversation history ────────────────────────────
+    // History contains Read results from all ChooseNotionAction runs above.
     if (synthesizeStep && executable) {
       await executable.startStep?.(synthesizeStep.id, `Synthesizing answer: ${goal}`);
     }
-
-    const allOutputsFlat = allStepOutputs.flat();
-    const toolResultsJson = collectToolResultsJson(allOutputsFlat);
 
     let finalMessage: string;
     try {
       const reaction = await ReactToNotionResults({
         goal,
         user_message: userText,
-        tool_results_json: toolResultsJson,
       });
-      finalMessage = typeof reaction === "string" ? reaction.trim()
-        : (isObject(reaction) && typeof (reaction as { content?: unknown }).content === "string"
-            ? String((reaction as { content?: unknown }).content).trim() : "");
+      finalMessage = typeof reaction === "string" ? reaction.trim() : "";
       if (!finalMessage) throw new Error("empty reaction");
     } catch (_) {
-      finalMessage = await renderToolOutput(allOutputsFlat, goal);
+      finalMessage = "Notion returned no usable content for this request.";
     }
 
     if (synthesizeStep && executable) {

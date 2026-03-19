@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Arc, time::Instant};
 
 use anyhow::{Context, bail};
 use baml_rt_provenance::{
-    GraphExporter, GraphqliteProvenanceStore, GraphqliteStoreBuilder,
+    GraphExporter, SurrealProvenanceStore, SurrealStoreBuilder,
     graph_export::{
         dot::{DotOptions, render_dot},
         sequence::render_sequence_diagram,
@@ -14,10 +14,10 @@ use clap::{Parser, ValueEnum};
 #[derive(Parser)]
 #[command(
     name = "graph_exporter",
-    about = "Export provenance graphs from GraphQLite as Mermaid, DOT, or JSON"
+    about = "Export provenance graphs from SurrealDB as Mermaid, DOT, or JSON"
 )]
 struct Cli {
-    /// Path to GraphQLite database (or ":memory:" for in-memory).
+    /// Path to SurrealDB database directory (or ":memory:" for in-memory).
     #[arg(long, default_value = "provenance.db")]
     db: PathBuf,
 
@@ -57,7 +57,7 @@ struct Cli {
     #[arg(long)]
     profile: bool,
 
-    /// Diagnose: count total graph size, time main Cypher vs parse vs boot chain. Explains slowness.
+    /// Diagnose: count total graph size, time main query vs parse vs boot chain. Explains slowness.
     #[arg(long)]
     diagnose: bool,
 }
@@ -89,7 +89,7 @@ Use the same file path passed to baml-agent-runner --provenance-db <path>."
         );
     }
 
-    let store: Arc<GraphqliteProvenanceStore> = GraphqliteStoreBuilder::file(&cli.db).build()?;
+    let store: Arc<SurrealProvenanceStore> = SurrealStoreBuilder::file(&cli.db).build().await?;
     let exporter = GraphExporter::new(store.clone());
 
     if cli.list_contexts {

@@ -10,7 +10,9 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, EventId, TaskId},
 };
 use baml_rt_observability::metrics;
-use baml_rt_provenance::{ProvEvent, ProvenanceConversationContextItem, ProvenanceWriter};
+use baml_rt_provenance::{
+    ProvEvent, ProvenanceConversationContextItem, ProvenanceWriter, store::ConversationItemContent,
+};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -276,7 +278,7 @@ impl ProvenanceTaskStore {
         }
     }
 
-    /// Task store backed by a persistent backend (e.g. [crate::graphqlite_task_subgraph_store::GraphqliteTaskSubgraphStore])
+    /// Task store backed by a persistent backend (e.g. [crate::task_subgraph_store::TaskSubgraphStore])
     /// with optional provenance writer. Use the same store as both backend and writer for unified persistence.
     pub fn with_backend(
         inner: Arc<dyn TaskStoreBackend>,
@@ -601,7 +603,7 @@ impl TaskRepository for ProvenanceTaskStore {
         self.record_event_required(event, "insert_message message lifecycle")
             .await?;
 
-        // Task-scoped backends (e.g. GraphqliteTaskSubgraphStore) require task_id; global
+        // Task-scoped backends (e.g. TaskSubgraphStore) require task_id; global
         // messages are only in the provenance event stream and appear in context_messages.
         if message.task_id.is_some() {
             let start = Instant::now();
@@ -662,18 +664,12 @@ fn message_to_context_item(
 ) -> ProvenanceConversationContextItem {
     let role = message_role_string(&message.role);
     let content_parts = message_content(message);
-    let content = Value::Array(
-        content_parts
-            .into_iter()
-            .map(Value::String)
-            .collect::<Vec<_>>(),
-    );
+    let text = content_parts.join(" ");
     ProvenanceConversationContextItem {
         timestamp_ms,
         event_id: EventId::from(message.message_id.as_message_id().as_str()),
         role,
-        content,
-        source: "message".to_string(),
+        content: ConversationItemContent::Message(text),
     }
 }
 

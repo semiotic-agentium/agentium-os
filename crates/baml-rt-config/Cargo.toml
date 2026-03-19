@@ -7,13 +7,15 @@ publish = false
 description = "Tool configuration storage and resolution"
 
 [dependencies]
+async-trait = { workspace = true }
 baml-rt-core = { path = "../baml-rt-core" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 serde = { workspace = true }
 serde_json = { workspace = true }
-graphqlite = { workspace = true }
+surrealdb = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

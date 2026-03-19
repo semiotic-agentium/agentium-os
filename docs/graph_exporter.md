@@ -1,12 +1,12 @@
 # Graph Exporter
 
-The graph exporter is a CLI tool that reads provenance data from a GraphQLite
+The graph exporter is a CLI tool that reads provenance data from a SurrealDB
 database and renders agent conversation graphs in multiple output formats. It
 lives in `crates/baml-rt-provenance/src/bin/graph_exporter.rs`.
 
 ## Quick Start
 
-Requires a GraphQLite database file with provenance data (the agent runner
+Requires a SurrealDB database directory with provenance data (the agent runner
 writes to it when started with `--provenance-db <path>`).
 
 Example runner invocation with file-backed provenance:
@@ -151,7 +151,7 @@ debugging provenance issues but produces noisy diagrams.
 
 ## Connection Options
 
-- `--db <PATH>` — Path to GraphQLite database file (default: `provenance.db`).
+- `--db <PATH>` — Path to SurrealDB database directory (default: `provenance.db`).
   `:memory:` is process-local and not usable for cross-process export.
   Ensure runner was started with `--provenance-db <PATH>`.
 - `--output <PATH>` — write to file instead of stdout

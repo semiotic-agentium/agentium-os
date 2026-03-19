@@ -56,14 +56,6 @@ class AgentCardDto {
   tools string[]
   description string?
   capabilities string[]
-  subscriptions AgentEventSubscriptionDto[]?
-}
-
-class AgentEventSubscriptionDto {
-  schemaVersions string[]?
-  sourceKinds string[]?
-  sourceKeys string[]?
-  sourceKeyPrefixes string[]?
 }
 
 class DiscoverAgentsNextOutput {
@@ -77,10 +69,7 @@ class DiscoverAgentsOpenInput {
 }
 
 class DiscoverAgentsSendInput {
-  query string? @description("Optional text filter over agent name, package, or description.")
-  requiredCapabilities string[]? @description("Only return agents that declare every listed capability.")
-  requiredSchemaVersions string[]? @description("Only return agents with a matching event subscription for any listed schema version.")
-  requiredSourceKinds string[]? @description("Only return agents with a matching event subscription for any listed source kind.")
+  query string? @description("Optional filter: only agents whose name, agent_package, or description contain this string. Omit or null to return all agents (e.g. when user asks \"who is available?\" or \"list agents\").")
   limit int?
   offset int?
 }
@@ -213,24 +202,29 @@ class SessionReadResultDto {
 class SystemExtrospectionOpenStep {
   op "Open"
   initial_input ProvenanceQueryOpenInput? @description("Optional open payload.")
+  reason string? @description("Optional reason.")
 }
 
 class SystemExtrospectionSendStep {
   op "Send"
   input ProvenanceQuerySendInput @description("Payload for this step.")
+  reason string? @description("Optional reason.")
 }
 
 class SystemExtrospectionReadStep {
   op "Read"
   input ProvenanceQuerySendInput @description("Read payload for this step.")
+  reason string? @description("Optional reason.")
 }
 
 class SystemExtrospectionFinishStep {
   op "Finish"
+  reason string? @description("Optional reason.")
 }
 
 class SystemExtrospectionAbortStep {
   op "Abort"
+  reason string? @description("Optional reason.")
 }
 
 type SystemExtrospectionSessionStep = SystemExtrospectionOpenStep | SystemExtrospectionSendStep | SystemExtrospectionReadStep | SystemExtrospectionFinishStep | SystemExtrospectionAbortStep
@@ -242,24 +236,29 @@ class SystemExtrospectionSessionPlan {
 class SystemDiscover_agentsOpenStep {
   op "Open"
   initial_input DiscoverAgentsOpenInput? @description("Optional open payload.")
+  reason string? @description("Optional reason.")
 }
 
 class SystemDiscover_agentsSendStep {
   op "Send"
   input DiscoverAgentsSendInput @description("Payload for this step.")
+  reason string? @description("Optional reason.")
 }
 
 class SystemDiscover_agentsReadStep {
   op "Read"
   input DiscoverAgentsSendInput @description("Read payload for this step.")
+  reason string? @description("Optional reason.")
 }
 
 class SystemDiscover_agentsFinishStep {
   op "Finish"
+  reason string? @description("Optional reason.")
 }
 
 class SystemDiscover_agentsAbortStep {
   op "Abort"
+  reason string? @description("Optional reason.")
 }
 
 type SystemDiscover_agentsSessionStep = SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep
@@ -267,4 +266,3 @@ type SystemDiscover_agentsSessionStep = SystemDiscover_agentsOpenStep | SystemDi
 class SystemDiscover_agentsSessionPlan {
   step SystemDiscover_agentsSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. After Send, prefer Read before further Send/Finish so you consume tool output and status.")
 }
-

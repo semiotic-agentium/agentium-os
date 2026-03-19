@@ -1,7 +1,7 @@
 //! Integration tests for graph export and sequence rendering.
 //!
-//! **Why export-scope bugs weren't caught before:** All other tests (here and in
-//! `graphqlite_store`) use a single-context DB or an isolated store per test. The
+//! **Why export-scope bugs weren't caught before:** All other tests use a
+//! single-context DB or an isolated store per test. The
 //! over-broad export query (`OR labels(a)[0] IN ['AgentRuntimeInstance', ...]`)
 //! only blows up when the same DB has many contexts with agent boots; with one
 //! context we get a small graph either way. So we add
@@ -13,23 +13,21 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentType, GraphExporter, GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvenanceWriter,
+    AgentType, GraphExporter, LlmUsage, ProvEvent, ProvenanceWriter, SurrealStoreBuilder,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
 };
 use insta::assert_snapshot;
-use tempfile::tempdir;
 
 /// End-to-end check for file-backed provenance export:
 /// write events -> export graph by context -> simplify -> render Mermaid sequence.
 ///
-/// This guards the GraphQLite path used by the graph_exporter binary so storage/query
+/// This guards the storage path used by the graph_exporter binary so storage/query
 /// refactors do not silently break sequence diagrams.
 #[tokio::test]
 async fn file_backed_export_renders_expected_sequence_flow() {
-    let dir = tempdir().expect("tempdir");
-    let db_path = dir.path().join("provenance_sequence.db");
-    let store = GraphqliteStoreBuilder::file(&db_path)
+    let store = SurrealStoreBuilder::in_memory_isolated()
         .build()
+        .await
         .expect("build store");
 
     let context_id = ContextId::new(1_771_470_000_000, 1);
@@ -132,21 +130,60 @@ async fn file_backed_export_renders_expected_sequence_flow() {
         .await
         .expect("message_sent");
 
-    let export_store = GraphqliteStoreBuilder::file(&db_path)
-        .build()
-        .expect("build export store");
-    let exporter = GraphExporter::new(export_store);
+    let exporter = GraphExporter::new(store.clone());
     let graph = exporter
         .export_by_context(context_id.as_str())
         .await
         .expect("export_by_context");
+
+    // Count total edges in DB for this test
+    let mut edge_count_resp = store.db()
+        .query("SELECT count() AS cnt OMIT id FROM prov_edge GROUP ALL")
+        .await.expect("edge count");
+    let edge_count: Vec<serde_json::Value> = edge_count_resp.take(0).unwrap_or_default();
+    eprintln!("DEBUG total edges in DB: {:?}", edge_count);
+
+    // All edge types
+    let mut sample_edges = store.db()
+        .query("SELECT rel_type OMIT id FROM prov_edge GROUP BY rel_type")
+        .await.expect("edge types");
+    let sample: Vec<serde_json::Value> = sample_edges.take(0).unwrap_or_default();
+    for e in &sample {
+        eprintln!("  DB EDGE: {:?}", e);
+    }
+
+    // Test: does IN $ids work with Vec<String> bind?
+    let test_ids = vec!["message_processing:ctx-1771470000000-1:msg-user-1".to_string()];
+    let mut test_resp = store.db()
+        .query("SELECT from_id, rel_type OMIT id FROM prov_edge WHERE from_id IN $ids")
+        .bind(("ids", test_ids))
+        .await.expect("test IN");
+    let test_rows: Vec<serde_json::Value> = test_resp.take(0).unwrap_or_default();
+    eprintln!("DEBUG IN test: {} rows", test_rows.len());
+
+    eprintln!("DEBUG graph: {} nodes, {} edges", graph.nodes.len(), graph.edges.len());
+    for node in &graph.nodes {
+        let prop_keys: Vec<_> = node.properties.keys().collect();
+        eprintln!("  NODE id={} label={} order={:?} display={} props={:?}", node.id, node.label, node.event_order, node.display_name, prop_keys);
+    }
+    for edge in graph.edges.iter().take(20) {
+        eprintln!("  EDGE {} --[{}]--> {}", edge.from, edge.relation, edge.to);
+    }
+
     assert!(
         !graph.nodes.is_empty(),
         "expected exported graph to have nodes"
     );
 
     let simplified = simplify_graph(&graph);
+    eprintln!("DEBUG simplified: {} nodes, {} edges", simplified.nodes.len(), simplified.edges.len());
+    for node in &simplified.nodes {
+        eprintln!("  SIMPLIFIED NODE id={} label={} order={:?} display={} props={:?}",
+            node.id, node.label, node.event_order, node.display_name,
+            node.properties.keys().collect::<Vec<_>>());
+    }
     let mermaid = render_sequence_diagram(&simplified);
+    eprintln!("DEBUG mermaid:\n{}", mermaid);
 
     assert!(mermaid.contains("sequenceDiagram"), "{mermaid}");
     assert!(mermaid.contains("actor User"), "{mermaid}");
@@ -202,10 +239,9 @@ async fn file_backed_export_renders_expected_sequence_flow() {
 /// agent chain, not all agents).
 #[tokio::test]
 async fn export_by_context_is_scoped_when_db_has_multiple_contexts() {
-    let dir = tempdir().expect("tempdir");
-    let db_path = dir.path().join("provenance_multi_ctx.db");
-    let store = GraphqliteStoreBuilder::file(&db_path)
+    let store = SurrealStoreBuilder::in_memory_isolated()
         .build()
+        .await
         .expect("build store");
 
     const N_CONTEXTS: u64 = 8;
@@ -254,10 +290,7 @@ async fn export_by_context_is_scoped_when_db_has_multiple_contexts() {
             .expect("message_received");
     }
 
-    let export_store = GraphqliteStoreBuilder::file(&db_path)
-        .build()
-        .expect("build export store");
-    let graph = GraphExporter::new(export_store)
+    let graph = GraphExporter::new(store.clone())
         .export_by_context(requested_context.as_str())
         .await
         .expect("export_by_context");
@@ -288,10 +321,9 @@ async fn export_by_context_is_scoped_when_db_has_multiple_contexts() {
 /// MessageProcessing to Agent via metadata.agent_id so the initial User→Agent arrow appears.
 #[tokio::test]
 async fn message_received_global_with_agent_id_renders_initial_user_message() {
-    let dir = tempdir().expect("tempdir");
-    let db_path = dir.path().join("provenance_global_msg.db");
-    let store = GraphqliteStoreBuilder::file(&db_path)
+    let store = SurrealStoreBuilder::in_memory_isolated()
         .build()
+        .await
         .expect("build store");
 
     let context_id = ContextId::new(1_771_470_000_100, 1);
@@ -321,10 +353,7 @@ async fn message_received_global_with_agent_id_renders_initial_user_message() {
         .await
         .expect("message_received_global");
 
-    let export_store = GraphqliteStoreBuilder::file(&db_path)
-        .build()
-        .expect("export store");
-    let exporter = GraphExporter::new(export_store);
+    let exporter = GraphExporter::new(store.clone());
     let graph = exporter
         .export_by_context(context_id.as_str())
         .await
@@ -345,10 +374,9 @@ async fn message_received_global_with_agent_id_renders_initial_user_message() {
 /// the delegated JSON. Tests that parent context merge includes the first message.
 #[tokio::test]
 async fn coordinator_flow_shows_initial_user_message_before_delegated_message() {
-    let dir = tempdir().expect("tempdir");
-    let db_path = dir.path().join("provenance_coordinator_flow.db");
-    let store = GraphqliteStoreBuilder::file(&db_path)
+    let store = SurrealStoreBuilder::in_memory_isolated()
         .build()
+        .await
         .expect("build store");
 
     let context_id = ContextId::new(1_771_470_000_200, 1);
@@ -424,10 +452,7 @@ async fn coordinator_flow_shows_initial_user_message_before_delegated_message() 
         .await
         .expect("message_received_task");
 
-    let export_store = GraphqliteStoreBuilder::file(&db_path)
-        .build()
-        .expect("export store");
-    let exporter = GraphExporter::new(export_store);
+    let exporter = GraphExporter::new(store.clone());
     let graph = exporter
         .export_by_context(context_id.as_str())
         .await
@@ -450,10 +475,9 @@ async fn coordinator_flow_shows_initial_user_message_before_delegated_message() 
 /// both user messages, both replies, and at least two task rects.
 #[tokio::test]
 async fn two_tasks_in_same_context_both_render_with_separate_rects() {
-    let dir = tempdir().expect("tempdir");
-    let db_path = dir.path().join("provenance_two_tasks.db");
-    let store = GraphqliteStoreBuilder::file(&db_path)
+    let store = SurrealStoreBuilder::in_memory_isolated()
         .build()
+        .await
         .expect("build store");
 
     let context_id = ContextId::new(1_771_470_000_300, 1);
@@ -616,10 +640,7 @@ async fn two_tasks_in_same_context_both_render_with_separate_rects() {
         .await
         .expect("message_sent");
 
-    let export_store = GraphqliteStoreBuilder::file(&db_path)
-        .build()
-        .expect("export store");
-    let exporter = GraphExporter::new(export_store);
+    let exporter = GraphExporter::new(store.clone());
     let graph = exporter
         .export_by_context(context_id.as_str())
         .await

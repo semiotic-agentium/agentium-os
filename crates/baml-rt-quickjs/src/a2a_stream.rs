@@ -94,19 +94,9 @@ pub(crate) enum HandoverJob {
     Invoke {
         bridge: Arc<Mutex<QuickJSBridge>>,
         scope: InvocationScope,
-        function_name: String,
         request: Value,
         tx_result:
             tokio::sync::oneshot::Sender<std::result::Result<Value, baml_rt_core::BamlRtError>>,
-    },
-    InvokeOptional {
-        bridge: Arc<Mutex<QuickJSBridge>>,
-        scope: InvocationScope,
-        function_name: String,
-        request: Value,
-        tx_result: tokio::sync::oneshot::Sender<
-            std::result::Result<Option<Value>, baml_rt_core::BamlRtError>,
-        >,
     },
     ToolInvoke {
         bridge: Arc<Mutex<QuickJSBridge>>,
@@ -202,37 +192,12 @@ impl BridgeHandle {
                                 HandoverJob::Invoke {
                                     bridge,
                                     scope,
-                                    function_name,
                                     request,
                                     tx_result,
                                 } => {
-                                    let out = run_invoke_same_thread(
-                                        bridge,
-                                        scope,
-                                        &function_name,
-                                        request,
-                                    )
-                                    .await;
+                                    let out = run_invoke_same_thread(bridge, scope, request).await;
                                     if tx_result.send(out).is_err() {
                                         tracing::debug!("handover Invoke: result receiver dropped (task cancelled)");
-                                    }
-                                }
-                                HandoverJob::InvokeOptional {
-                                    bridge,
-                                    scope,
-                                    function_name,
-                                    request,
-                                    tx_result,
-                                } => {
-                                    let out = run_optional_invoke_same_thread(
-                                        bridge,
-                                        scope,
-                                        &function_name,
-                                        request,
-                                    )
-                                    .await;
-                                    if tx_result.send(out).is_err() {
-                                        tracing::debug!("handover InvokeOptional: result receiver dropped (task cancelled)");
                                     }
                                 }
                                 HandoverJob::ToolInvoke {
@@ -311,21 +276,9 @@ impl Drop for BridgeHandle {
 async fn run_invoke_same_thread(
     bridge: Arc<Mutex<QuickJSBridge>>,
     scope: InvocationScope,
-    function_name: &str,
     request: Value,
 ) -> std::result::Result<Value, baml_rt_core::BamlRtError> {
-    QuickJSBridge::invoke_js_function_nonblocking(bridge, &scope, function_name, request).await
-}
-
-/// Runs a single optional JS invoke using the brief-lock pattern.
-async fn run_optional_invoke_same_thread(
-    bridge: Arc<Mutex<QuickJSBridge>>,
-    scope: InvocationScope,
-    function_name: &str,
-    request: Value,
-) -> std::result::Result<Option<Value>, baml_rt_core::BamlRtError> {
-    QuickJSBridge::invoke_optional_js_function_nonblocking(bridge, &scope, function_name, request)
-        .await
+    QuickJSBridge::invoke_js_function_nonblocking(bridge, &scope, "onChatMessage", request).await
 }
 
 /// Runs a single JS tool invoke using the brief-lock pattern.
@@ -482,49 +435,12 @@ pub async fn invoke_handler_handover(
     scope: InvocationScope,
     request: Value,
 ) -> Result<Value> {
-    invoke_js_function_handover(handle, scope, "onChatMessage", request).await
-}
-
-/// Enqueues a single JS function invoke to the bridge's handover lane and waits for the result.
-pub async fn invoke_js_function_handover(
-    handle: &BridgeHandle,
-    scope: InvocationScope,
-    function_name: impl Into<String>,
-    request: Value,
-) -> Result<Value> {
     let (tx_result, rx_result) = tokio::sync::oneshot::channel();
     handle
         .handover_sender()
         .send(HandoverJob::Invoke {
             bridge: handle.bridge().clone(),
             scope,
-            function_name: function_name.into(),
-            request,
-            tx_result,
-        })
-        .await
-        .map_err(|_| {
-            baml_rt_core::BamlRtError::InvalidArgument("handover lane closed".to_string())
-        })?;
-    rx_result.await.map_err(|_| {
-        baml_rt_core::BamlRtError::InvalidArgument("handover invoke dropped".to_string())
-    })?
-}
-
-/// Enqueues a single optional JS function invoke to the bridge's handover lane and waits for the result.
-pub async fn invoke_optional_js_function_handover(
-    handle: &BridgeHandle,
-    scope: InvocationScope,
-    function_name: impl Into<String>,
-    request: Value,
-) -> Result<Option<Value>> {
-    let (tx_result, rx_result) = tokio::sync::oneshot::channel();
-    handle
-        .handover_sender()
-        .send(HandoverJob::InvokeOptional {
-            bridge: handle.bridge().clone(),
-            scope,
-            function_name: function_name.into(),
             request,
             tx_result,
         })

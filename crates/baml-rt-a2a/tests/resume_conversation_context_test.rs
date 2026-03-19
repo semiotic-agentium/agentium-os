@@ -15,7 +15,6 @@ use baml_rt_a2a::{
     a2a_types::{Message, MessageRole, Part},
 };
 use baml_rt_core::ids::{ContextId, ExternalId, TaskId};
-use serde_json::Value;
 use tokio::sync::Mutex;
 
 fn make_message(
@@ -41,30 +40,17 @@ fn make_message(
 }
 
 /// Asserts that conversation_context for context_id contains at least one item
-/// whose content (string or array of strings) includes expected_substring.
+/// whose content includes expected_substring.
 fn assert_conversation_contains(
     items: &[baml_rt_provenance::ProvenanceConversationContextItem],
     expected_substring: &str,
 ) {
+    use baml_rt_provenance::store::ConversationItemContent;
     let contents: Vec<String> = items
         .iter()
-        .filter_map(|item| {
-            let c = &item.content;
-            match c {
-                Value::String(s) => Some(s.clone()),
-                Value::Array(arr) => {
-                    let parts: Vec<String> = arr
-                        .iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect();
-                    if parts.is_empty() {
-                        None
-                    } else {
-                        Some(parts.join(" "))
-                    }
-                }
-                _ => None,
-            }
+        .filter_map(|item| match &item.content {
+            ConversationItemContent::Message(s) => Some(s.clone()),
+            _ => None,
         })
         .collect();
     assert!(

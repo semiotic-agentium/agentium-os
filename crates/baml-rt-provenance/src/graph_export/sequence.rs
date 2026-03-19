@@ -1523,6 +1523,11 @@ fn llm_usage_summary(node: &ExportedNode) -> Option<String> {
 }
 
 /// Build a compact drift summary from LLM call drift properties when present.
+///
+/// When plan drift data is available, the note is formatted as:
+///   `Drift 0.820 | plan 0.710 warn`
+/// Otherwise just the tactical drift:
+///   `Drift 0.820`
 fn llm_drift_summary(node: &ExportedNode) -> Option<String> {
     let score = node
         .properties
@@ -1541,7 +1546,29 @@ fn llm_drift_summary(node: &ExportedNode) -> Option<String> {
         note.push(' ');
         note.push_str(&severity);
     }
+
+    // Append plan drift summary when available.
+    if let Some(plan_adherence) = prop_f64(node, a2a::PLAN_DRIFT_ADHERENCE) {
+        let plan_sev = prop_str(node, a2a::PLAN_DRIFT_COMPOSITE_SEVERITY);
+        note.push_str(&format!(" | plan {plan_adherence:.3}"));
+        if let Some(sev) = plan_sev
+            && !sev.eq_ignore_ascii_case("acceptable")
+            && !sev.is_empty()
+        {
+            note.push(' ');
+            note.push_str(&sev);
+        }
+    }
+
     Some(note)
+}
+
+fn prop_f64(node: &ExportedNode, key: &str) -> Option<f64> {
+    node.properties.get(key).and_then(|value| match value {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(raw) => raw.parse::<f64>().ok(),
+        _ => None,
+    })
 }
 
 /// Heuristic: skip the synthetic "previous" status companion that shares the

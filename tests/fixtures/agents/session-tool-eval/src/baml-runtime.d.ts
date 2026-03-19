@@ -6,24 +6,11 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface SessionContext { contract_version: string;
-session_open: boolean;
-status_token: string;
-allowed_ops: string[];
-last_status: string | null;
- }
-
 export interface SessionReadEnvelopeLite { refId: string;
 budgetHint: number | null;
  }
 
 export type SessionStepOp = "Open" | "Send" | "Read" | "Finish" | "Abort";
-
-export interface SyntheticPlannerCandidate { ref_id: string;
-failed_count: number;
-uncached_prompt_tokens: number;
-severity: number;
- }
 
 export interface SyntheticPlannerOpenInput { reason: string | null;
  }
@@ -38,14 +25,6 @@ limit: number | null;
 projection: SyntheticProjectionMode | null;
  }
 
-export interface SyntheticPlannerState { level: string;
-goal_id: string | null;
-refs: string[];
-candidates: SyntheticPlannerCandidate[];
-projection_progress: SyntheticProjectionProgress;
-last_read_ref: string | null;
- }
-
 export interface SyntheticPlannerStep { op: SessionStepOp;
 initial_input: SyntheticPlannerOpenInput | null;
 input: SyntheticPlannerSendInput | null;
@@ -54,17 +33,11 @@ reason: string | null;
 
 export type SyntheticProjectionMode = "SUMMARY" | "IDENTITY" | "DETAIL";
 
-export interface SyntheticProjectionProgress { used: string[];
-required: string[];
- }
-
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
 declare global {
 
-declare function PlanSyntheticSessionStep(args: { objective: string; session_context: SessionContext; session_state: SyntheticPlannerState | null; output_summary: string | null } & { __baml_invocation_token?: string }): Promise<SyntheticPlannerPlan>;
-
-declare function SummarizeSyntheticSessionOutput(args: { objective: string; tool_output_json: string; used_projections: string[] } & { __baml_invocation_token?: string }): Promise<SyntheticPlannerState>;
+declare function PlanSyntheticSessionStep(args: { objective: string } & { __baml_invocation_token?: string }): Promise<SyntheticPlannerPlan>;
 
 }
 
@@ -268,35 +241,12 @@ export interface RunContext {
   /** Emitter for working message, artifact, awaitInput; use when you need to stream or suspend. */
   emit: SessionEmitter;
 }
-/**
- * Host-to-agent dispatch request. Delivered by the host when an external event
- * matches this agent's subscriptions. Fields mirror the Rust AgentDispatchRequest.
- */
-export interface HostDispatchRequest {
-  routing_key: string;
-  message_type: string;
-  messages: JsonValue[];
-  context_id?: string;
-  task_id?: string;
-  message_id?: string;
-  /** Structured transport metadata (source, schema version, content type). Use `messages` for arbitrary event payloads. */
-  metadata?: JsonObject;
-}
-/**
- * Acknowledgement returned by an agent's onDispatch handler.
- */
-export interface HostDispatchAck {
-  accepted: boolean;
-  detail?: string;
-}
 /** Agent contract: register this; host invokes onChatMessage per message. */
 export interface BamlAgent {
   /** Optional: run(ctx) is the entrypoint; runtime wraps it into onChatMessage. Prefer this over onChatMessage. */
   run?(ctx: RunContext): Promise<SessionResult>;
   /** Optional: raw handler when run is not used. */
   onChatMessage?(message: ChatMessage): Promise<void>;
-  /** Optional: handle host-delivered events matched by this agent's subscriptions. */
-  onDispatch?(request: HostDispatchRequest): Promise<HostDispatchAck>;
   tools?: Record<string, (args: JsonObject) => Promise<JsonValue>>;
 }
 declare global {
@@ -324,11 +274,6 @@ declare global {
    */
   function session(message: ChatMessage | null | undefined): SessionBuilder;
   function __chat_register(agent: BamlAgent): void;
-  /**
-   * Extract all payloads from a host dispatch request.
-   * Batch-safe helper: returns a shallow copy of request.messages, or [] if absent.
-   */
-  function extractDispatchMessages(request: HostDispatchRequest | null | undefined): JsonValue[];
   /** Emit a stream chunk following A2A wire format. */
   function __chat_yield(chunk: YieldChunk): void;
   function openA2aTaskSession<I = Record<string, unknown>>(token: string): Promise<A2aSessionAwaitingInput<I>>;

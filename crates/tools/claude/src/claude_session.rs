@@ -527,6 +527,34 @@ impl ToolHandler for ClaudeSessionToolHandler {
         ToolCapability::Streaming
     }
 
+    fn describe_invocation(&self, content: &serde_json::Value) -> Option<String> {
+        let step = content.get("step")?;
+        let op = step.get("op")?.as_str()?;
+        match op {
+            "Open" => {
+                let open: ClaudeToolOpenInput =
+                    serde_json::from_value(step.get("input")?.clone()).ok()?;
+                match open.workspace.as_deref() {
+                    Some(ws) => Some(format!("opening Claude dev session in workspace '{ws}'")),
+                    None => Some("opening Claude dev session".to_string()),
+                }
+            }
+            "Send" => {
+                let send: ClaudeToolSendInput =
+                    serde_json::from_value(step.get("input")?.clone()).ok()?;
+                match send.prompt.as_deref() {
+                    Some(p) if p.len() > 60 => Some(format!("prompting Claude: '{}...'", &p[..57])),
+                    Some(p) => Some(format!("prompting Claude: '{p}'")),
+                    None => Some("sending input to Claude dev session".to_string()),
+                }
+            }
+            "Read" => Some("reading Claude dev session output".to_string()),
+            "Finish" => Some("completed Claude dev session".to_string()),
+            "Abort" => Some("aborted Claude dev session".to_string()),
+            _ => None,
+        }
+    }
+
     async fn open_session(
         &self,
         ctx: ToolSessionContext,

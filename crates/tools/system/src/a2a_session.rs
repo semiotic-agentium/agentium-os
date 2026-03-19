@@ -72,6 +72,37 @@ impl ToolHandler for A2aSessionToolHandler {
         ToolCapability::Streaming
     }
 
+    fn describe_invocation(&self, content: &Value) -> Option<String> {
+        let step = content.get("step")?;
+        let op = step.get("op")?.as_str()?;
+        match op {
+            "Open" => {
+                let open: InternalA2aOpenInput =
+                    serde_json::from_value(step.get("input")?.clone()).ok()?;
+                Some(format!(
+                    "delegating to agent '{}'",
+                    open.target.agent_package
+                ))
+            }
+            "Send" => {
+                let send: InternalA2aSendInput =
+                    serde_json::from_value(step.get("input")?.clone()).ok()?;
+                let text = send.parts.first().and_then(|p| p.text.as_deref());
+                match text {
+                    Some(t) if t.len() > 60 => Some(format!(
+                        "sending message to delegated agent: '{}...'",
+                        &t[..57]
+                    )),
+                    Some(t) => Some(format!("sending message to delegated agent: '{t}'")),
+                    None => Some("sending message to delegated agent".to_string()),
+                }
+            }
+            // Read/Finish/Abort: no semantic intent for drift scoring.
+            "Read" | "Finish" | "Abort" => None,
+            _ => None,
+        }
+    }
+
     async fn open_session(
         &self,
         ctx: ToolSessionContext,

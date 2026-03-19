@@ -5,10 +5,13 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use baml_rt_core::{
     A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentLister,
-    BusStream, ContextId, EventSchemaVersion, EventSourceKind, EventSubscription, Outcome, Result,
+    BusStream, ContextId, EventSubscription, Outcome, Result,
     ids::{AgentId, EventId, ExternalId, MessageId, UuidId},
 };
-use baml_rt_provenance::{GraphqliteStoreBuilder, LlmUsage, ProvEvent, ProvenanceWriter};
+use baml_rt_provenance::{
+    CallScope, GlobalEvent, SurrealStoreBuilder, LlmUsage, ProvEvent, ProvEventData,
+    ProvenanceWriter,
+};
 use baml_rt_tools::{ToolRegistry, ToolStep};
 use baml_tools_calculator::CalculatorTool;
 use baml_tools_system::SystemBundle;
@@ -34,14 +37,6 @@ struct MockAgentList {
 fn suite_lock() -> &'static tokio::sync::Mutex<()> {
     static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-}
-
-fn schema_version(value: &str) -> EventSchemaVersion {
-    EventSchemaVersion::parse(value).expect("valid schema version")
-}
-
-fn source_kind(value: &str) -> EventSourceKind {
-    EventSourceKind::parse(value).expect("valid source kind")
 }
 
 fn call_metadata(
@@ -97,10 +92,10 @@ fn redact_runtime_fields(value: serde_json::Value) -> serde_json::Value {
             V::Object(sorted.into_iter().collect())
         }
         // Normalize floats for cross-platform stability:
-        // - Integer-valued floats (0.0 → 0, 220.0 → 220): SQLite/graphqlite may return the
+        // - Integer-valued floats (0.0 → 0, 220.0 → 220): the store may return the
         //   same logical integer as float on one platform and integer on another.
         // - Non-integer floats (percentiles, ratios): round to 2 decimal places to eliminate
-        //   ARM64 vs x86_64 floating-point rounding noise from graphqlite C aggregates
+        //   ARM64 vs x86_64 floating-point rounding noise from backend aggregates
         //   (e.g. p95 computed as 491.50000000000006 on Linux vs 491.5 on macOS).
         V::Number(n) if n.is_f64() => {
             let f = n.as_f64().unwrap_or(0.0);
@@ -140,16 +135,17 @@ async fn seeded_store_for_context(
     context_id: &ContextId,
     caller_agent: &AgentId,
     other_agent: &AgentId,
-) -> Arc<baml_rt_provenance::GraphqliteProvenanceStore> {
+) -> Arc<baml_rt_provenance::SurrealProvenanceStore> {
     // Use isolated in-memory stores: avoids WAL/file-IO platform differences (macOS vs Linux)
     // that caused non-deterministic snapshot content across CI environments.
     //
-    // ALL events use hardcoded monotonic timestamps (1, 2, 3, …) so Cypher ORDER BY
+    // ALL events use hardcoded monotonic timestamps (1, 2, 3, …) so ORDER BY
     // timestamp_ms produces deterministic results regardless of platform clock resolution.
     // Events created with now_millis() could collide on fast machines, causing non-deterministic
     // sort order and snapshot mismatches between macOS (ARM64) and Linux CI (x86_64).
-    let store = GraphqliteStoreBuilder::in_memory_isolated()
+    let store = SurrealStoreBuilder::in_memory_isolated()
         .build()
+        .await
         .expect("build isolated in-memory store");
     let msg_caller = MessageId::from_external(ExternalId::new("tool-msg-caller".to_string()));
     let msg_other = MessageId::from_external(ExternalId::new("tool-msg-other".to_string()));
@@ -171,69 +167,77 @@ async fn seeded_store_for_context(
 
     // ts=200: caller LLM call (success)
     store
-        .add_event(
-            ProvEvent::llm_call_completed_global(
-                context_id.clone(),
-                msg_caller.clone(),
-                "openai".to_string(),
-                "gpt-4o-mini".to_string(),
-                "CallerPrompt".to_string(),
-                json!({"input":"caller"}),
-                call_metadata(caller_agent, &msg_caller, None),
-                LlmUsage::Known {
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(10),
+            context_id: context_id.clone(),
+            timestamp_ms: 200,
+            data: ProvEventData::LlmCallCompleted {
+                scope: CallScope::Message {
+                    message_id: msg_caller.clone(),
+                },
+                client: "openai".to_string(),
+                model: "gpt-4o-mini".to_string(),
+                function_name: "CallerPrompt".to_string(),
+                prompt: json!({"input":"caller"}),
+                metadata: call_metadata(caller_agent, &msg_caller, None),
+                usage: LlmUsage::Known {
                     prompt_tokens: 5,
                     completion_tokens: 3,
                     total_tokens: 8,
                     cached_input_tokens: None,
                 },
-                100,
-                Outcome::Success,
-            )
-            .with_event_id(EventId::from_counter(10))
-            .with_timestamp_ms(200),
-        )
+                duration_ms: 100,
+                outcome: Outcome::Success,
+                drift: None,
+            },
+        }))
         .await
         .unwrap();
 
     // ts=300: caller LLM call (failure — linked to PromptRejected below)
     let caller_failed_llm_event_id = EventId::from_counter(900);
     store
-        .add_event(
-            ProvEvent::llm_call_completed_global(
-                context_id.clone(),
-                msg_caller.clone(),
-                "openai".to_string(),
-                "gpt-4o-mini".to_string(),
-                "CallerPrompt".to_string(),
-                json!({"input":"caller-failed"}),
-                call_metadata(caller_agent, &msg_caller, None),
-                LlmUsage::Known {
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: caller_failed_llm_event_id.clone(),
+            context_id: context_id.clone(),
+            timestamp_ms: 300,
+            data: ProvEventData::LlmCallCompleted {
+                scope: CallScope::Message {
+                    message_id: msg_caller.clone(),
+                },
+                client: "openai".to_string(),
+                model: "gpt-4o-mini".to_string(),
+                function_name: "CallerPrompt".to_string(),
+                prompt: json!({"input":"caller-failed"}),
+                metadata: call_metadata(caller_agent, &msg_caller, None),
+                usage: LlmUsage::Known {
                     prompt_tokens: 7,
                     completion_tokens: 0,
                     total_tokens: 7,
                     cached_input_tokens: None,
                 },
-                220,
-                Outcome::Failure,
-            )
-            .with_event_id(caller_failed_llm_event_id.clone())
-            .with_timestamp_ms(300),
-        )
+                duration_ms: 220,
+                outcome: Outcome::Failure,
+                drift: None,
+            },
+        }))
         .await
         .unwrap();
 
     // ts=400: prompt rejected (linked to failed LLM call above)
     store
-        .add_event(
-            ProvEvent::prompt_rejected_global(
-                context_id.clone(),
-                msg_caller.clone(),
-                caller_failed_llm_event_id,
-                "BAML validation failed: missing required field".to_string(),
-            )
-            .with_event_id(EventId::from_counter(20))
-            .with_timestamp_ms(400),
-        )
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(20),
+            context_id: context_id.clone(),
+            timestamp_ms: 400,
+            data: ProvEventData::PromptRejected {
+                scope: CallScope::Message {
+                    message_id: msg_caller.clone(),
+                },
+                llm_call_event_id: caller_failed_llm_event_id,
+                reason: "BAML validation failed: missing required field".to_string(),
+            },
+        }))
         .await
         .unwrap();
 
@@ -253,21 +257,23 @@ async fn seeded_store_for_context(
 
     // ts=600: tool call (support/calculate, failure)
     store
-        .add_event(
-            ProvEvent::tool_call_completed_global(
-                context_id.clone(),
-                msg_caller.clone(),
-                "support/calculate".to_string(),
-                Some("CalcPrompt".to_string()),
-                json!({"expression":"1+1"}),
-                call_metadata(caller_agent, &msg_caller, Some("timeout")),
-                500,
-                Outcome::Failure,
-                None,
-            )
-            .with_event_id(EventId::from_counter(30))
-            .with_timestamp_ms(600),
-        )
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(30),
+            context_id: context_id.clone(),
+            timestamp_ms: 600,
+            data: ProvEventData::ToolCallCompleted {
+                scope: CallScope::Message {
+                    message_id: msg_caller.clone(),
+                },
+                tool_name: "support/calculate".to_string(),
+                function_name: Some("CalcPrompt".to_string()),
+                args: json!({"expression":"1+1"}),
+                metadata: call_metadata(caller_agent, &msg_caller, Some("timeout")),
+                duration_ms: 500,
+                outcome: Outcome::Failure,
+                delegation_target: None,
+            },
+        }))
         .await
         .unwrap();
 
@@ -287,21 +293,23 @@ async fn seeded_store_for_context(
 
     // ts=800: tool call (support/delegate, failure)
     store
-        .add_event(
-            ProvEvent::tool_call_completed_global(
-                context_id.clone(),
-                msg_linked.clone(),
-                "support/delegate".to_string(),
-                Some("DelegatePrompt".to_string()),
-                json!({"objective":"linked emitted message evidence"}),
-                call_metadata(caller_agent, &msg_linked, None),
-                330,
-                Outcome::Failure,
-                None,
-            )
-            .with_event_id(EventId::from_counter(40))
-            .with_timestamp_ms(800),
-        )
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(40),
+            context_id: context_id.clone(),
+            timestamp_ms: 800,
+            data: ProvEventData::ToolCallCompleted {
+                scope: CallScope::Message {
+                    message_id: msg_linked.clone(),
+                },
+                tool_name: "support/delegate".to_string(),
+                function_name: Some("DelegatePrompt".to_string()),
+                args: json!({"objective":"linked emitted message evidence"}),
+                metadata: call_metadata(caller_agent, &msg_linked, None),
+                duration_ms: 330,
+                outcome: Outcome::Failure,
+                delegation_target: None,
+            },
+        }))
         .await
         .unwrap();
 
@@ -335,27 +343,30 @@ async fn seeded_store_for_context(
 
     // ts=1100: other agent LLM call (success)
     store
-        .add_event(
-            ProvEvent::llm_call_completed_global(
-                context_id.clone(),
-                msg_other.clone(),
-                "anthropic".to_string(),
-                "claude-3-7-sonnet".to_string(),
-                "OtherPrompt".to_string(),
-                json!({"input":"other"}),
-                call_metadata(other_agent, &msg_other, None),
-                LlmUsage::Known {
+        .add_event(ProvEvent::Global(GlobalEvent {
+            id: EventId::from_counter(50),
+            context_id: context_id.clone(),
+            timestamp_ms: 1100,
+            data: ProvEventData::LlmCallCompleted {
+                scope: CallScope::Message {
+                    message_id: msg_other.clone(),
+                },
+                client: "anthropic".to_string(),
+                model: "claude-3-7-sonnet".to_string(),
+                function_name: "OtherPrompt".to_string(),
+                prompt: json!({"input":"other"}),
+                metadata: call_metadata(other_agent, &msg_other, None),
+                usage: LlmUsage::Known {
                     prompt_tokens: 20,
                     completion_tokens: 5,
                     total_tokens: 25,
                     cached_input_tokens: None,
                 },
-                300,
-                Outcome::Success,
-            )
-            .with_event_id(EventId::from_counter(50))
-            .with_timestamp_ms(1100),
-        )
+                duration_ms: 300,
+                outcome: Outcome::Success,
+                drift: None,
+            },
+        }))
         .await
         .unwrap();
 
@@ -767,8 +778,8 @@ async fn discover_agents_session_returns_declared_subscriptions() {
         "1.0.0",
         Some("Consumes task-daemon events"),
         vec![EventSubscription {
-            schema_versions: vec![schema_version("task-daemon.interpretation.v1")],
-            source_kinds: vec![source_kind("slack"), source_kind("clickup")],
+            schema_versions: vec![baml_rt_core::EventSchemaVersion::parse("task-daemon.interpretation.v1").unwrap()],
+            source_kinds: vec![baml_rt_core::EventSourceKind::parse("slack").unwrap(), baml_rt_core::EventSourceKind::parse("clickup").unwrap()],
             ..EventSubscription::default()
         }],
     )];
@@ -831,8 +842,8 @@ async fn discover_agents_session_filters_by_event_subscription() {
             "1.0.0",
             Some("Consumes task-daemon Slack events"),
             vec![EventSubscription {
-                schema_versions: vec![schema_version("task-daemon.interpretation.v1")],
-                source_kinds: vec![source_kind("slack")],
+                schema_versions: vec![baml_rt_core::EventSchemaVersion::parse("task-daemon.interpretation.v1").unwrap()],
+                source_kinds: vec![baml_rt_core::EventSourceKind::parse("slack").unwrap()],
                 ..EventSubscription::default()
             }],
         ),
@@ -842,8 +853,8 @@ async fn discover_agents_session_filters_by_event_subscription() {
             "1.0.0",
             Some("Consumes task-daemon ClickUp events"),
             vec![EventSubscription {
-                schema_versions: vec![schema_version("task-daemon.interpretation.v1")],
-                source_kinds: vec![source_kind("clickup")],
+                schema_versions: vec![baml_rt_core::EventSchemaVersion::parse("task-daemon.interpretation.v1").unwrap()],
+                source_kinds: vec![baml_rt_core::EventSourceKind::parse("clickup").unwrap()],
                 ..EventSubscription::default()
             }],
         ),
@@ -1734,20 +1745,21 @@ async fn extrospection_session_auto_drilldown_from_hotspot_snapshot() {
         .get("hotspotGroups")
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.first())
-        && let Some(values) = group0.get("groupValues").and_then(|v| v.as_array())
     {
-        derived_agent_id = values
-            .first()
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string);
-        derived_tool_name = values
-            .get(1)
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string);
-        derived_prompt = values
-            .get(2)
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string);
+        if let Some(values) = group0.get("groupValues").and_then(|v| v.as_array()) {
+            derived_agent_id = values
+                .first()
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+            derived_tool_name = values
+                .get(1)
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+            derived_prompt = values
+                .get(2)
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string);
+        }
     }
 
     if let Some(row0) = pass1_payload

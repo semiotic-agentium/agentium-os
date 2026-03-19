@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use baml_rt_a2a::{A2aAgent, A2aRequestHandler};
 use baml_rt_core::ids::ContextId;
-use baml_rt_provenance::GraphqliteProvenanceStore;
+use baml_rt_provenance::SurrealProvenanceStore;
 use serde_json::Value;
 use test_support::{common::send_stream_request, support::a2a::A2aInMemoryClient};
 use tokio::time::Duration;
@@ -27,7 +27,7 @@ async fn collect_responses(
 
 /// Minimal agent that yields one chunk and signals completion so the host's collect()
 /// returns immediately (no 60s safety timeout). Uses TASK_STATE_COMPLETED so chunk_has_final_state is true.
-async fn setup_agent(store: Arc<GraphqliteProvenanceStore>) -> A2aAgent {
+async fn setup_agent(store: Arc<SurrealProvenanceStore>) -> A2aAgent {
     let js_code = r#"
         globalThis.onChatMessage = async function(message) {
             __chat_yield({
@@ -63,8 +63,8 @@ fn expect_context_id(responses: Vec<Value>) -> String {
 
 #[tokio::test]
 async fn test_context_id_propagates_across_agents() {
-    let writer1 = common::provenance::build_graphqlite_test_store();
-    let writer2 = common::provenance::build_graphqlite_test_store();
+    let writer1 = common::provenance::build_surreal_test_store().await;
+    let writer2 = common::provenance::build_surreal_test_store().await;
     let agent1 = setup_agent(writer1).await;
     let agent2 = setup_agent(writer2.clone()).await;
 
@@ -94,7 +94,7 @@ async fn test_context_id_propagates_across_agents() {
 /// verifies that each response carries the context_id from its request.
 #[tokio::test]
 async fn test_context_id_preserved_per_request() {
-    let writer = common::provenance::build_graphqlite_test_store();
+    let writer = common::provenance::build_surreal_test_store().await;
     let agent = setup_agent(writer).await;
 
     let context_ids: Vec<ContextId> = (0..4).map(|i| ContextId::new(10, i as u64)).collect();

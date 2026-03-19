@@ -148,10 +148,10 @@ async fn acquire_test_permit() -> tokio::sync::OwnedSemaphorePermit {
 
 async fn setup_agent() -> A2aAgent {
     let manager = BamlRuntimeManager::builder().build().unwrap();
-    let store = common::provenance::build_graphqlite_test_store();
+    let store = common::provenance::build_surreal_test_store().await;
     A2aAgent::builder()
         .with_runtime_manager(manager)
-        .with_graphqlite_store(store)
+        .with_surreal_store(store)
         .with_init_js(fixture_js_code())
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
@@ -163,10 +163,10 @@ async fn setup_agent() -> A2aAgent {
 /// Agent with 5s stream collector idle timeout for tests that assert timeout cancellation.
 async fn setup_agent_with_stream_idle_5s() -> A2aAgent {
     let manager = BamlRuntimeManager::builder().build().unwrap();
-    let store = common::provenance::build_graphqlite_test_store();
+    let store = common::provenance::build_surreal_test_store().await;
     A2aAgent::builder()
         .with_runtime_manager(manager)
-        .with_graphqlite_store(store)
+        .with_surreal_store(store)
         .with_init_js(fixture_js_code())
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(
@@ -184,10 +184,10 @@ const SYSTEM_A2A_TOOL: &str = "system/internal_a2a";
 /// Agent with system/internal_a2a tool registered (for session FSM tests).
 async fn setup_agent_with_a2a_session_tool() -> A2aAgent {
     let manager = BamlRuntimeManager::builder().build().unwrap();
-    let store = common::provenance::build_graphqlite_test_store();
+    let store = common::provenance::build_surreal_test_store().await;
     let agent = A2aAgent::builder()
         .with_runtime_manager(manager)
-        .with_graphqlite_store(store)
+        .with_surreal_store(store)
         .with_init_js(fixture_js_code())
         .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()))
         .with_quickjs_config(QuickJSConfig::new().with_max_attempts_ms(Some(15_000)))
@@ -340,8 +340,8 @@ async fn test_stream_collector_idle_timeout_cancels_perverse_stream() {
 /// The fixture emits task.id = task-{messageId}; the host must pass messageId in the JS request so
 /// the stored task id matches what first_task_id_from_stream extracts for subscribe.
 ///
-/// **Store/connection scope:** The same agent (and thus the same `GraphqliteProvenanceStore` /
-/// worker/connection) is used for both create-stream and subscribe: a single `setup_agent()` call
+/// **Store/connection scope:** The same agent (and thus the same `SurrealProvenanceStore`)
+/// is used for both create-stream and subscribe: a single `setup_agent()` call
 /// builds one file-backed store and one agent; both `handle_a2a_stream(create_request)` and
 /// `handle_a2a_stream(subscribe_request)` use that agent. If subscribe returns "Task not found",
 /// the cause is likely **A2A messaging identity alignment** (e.g. id written by the pipeline vs id

@@ -37,6 +37,19 @@ pub struct CalculatorInput {
     pub expression: Expression,
 }
 
+impl baml_rt_tools::DescribeAction for CalculatorInput {
+    fn describe(&self) -> String {
+        let e = &self.expression;
+        let op = match e.operation {
+            MathOperation::Add => "+",
+            MathOperation::Subtract => "-",
+            MathOperation::Multiply => "*",
+            MathOperation::Divide => "/",
+        };
+        format!("computing {} {} {}", e.left, op, e.right)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 pub struct CalculatorOutput {
@@ -65,6 +78,10 @@ impl BamlTool for CalculatorTool {
 
     fn description(&self) -> &'static str {
         "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division."
+    }
+
+    fn describe_open(&self) -> String {
+        "using calculator for arithmetic".to_string()
     }
 
     async fn execute(&self, args: Self::Input) -> Result<Self::Output> {

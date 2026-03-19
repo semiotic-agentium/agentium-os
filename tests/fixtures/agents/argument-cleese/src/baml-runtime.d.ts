@@ -6,6 +6,12 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
+export interface ArchiveReadInput { archive_ref: string;
+offset: number | null;
+limit: number | null;
+grep: string | null;
+ }
+
 export interface ConversationPart { text: string | null;
 raw: string | null;
 url: string | null;
@@ -23,14 +29,6 @@ export interface InternalA2aTarget { agent_package: string;
 agent_instance_id: string;
  }
 
-export interface SessionContext { contract_version: string;
-session_open: boolean;
-allowed_ops: string[];
-scope_ref: string | null;
-output_ref: string | null;
-evidence_ref: string | null;
- }
-
 export interface SystemInternal_a2aAbortStep { op: "Abort";
  }
 
@@ -38,11 +36,12 @@ export interface SystemInternal_a2aFinishStep { op: "Finish";
  }
 
 export interface SystemInternal_a2aOpenStep { op: "Open";
+tool_name: "system/internal_a2a";
 initial_input: InternalA2aOpenInput;
  }
 
 export interface SystemInternal_a2aReadStep { op: "Read";
-input: InternalA2aSendInput;
+input: ArchiveReadInput;
  }
 
 export interface SystemInternal_a2aSendStep { op: "Send";
@@ -58,7 +57,13 @@ declare global {
 
 declare function ArgumentReply(args: { other_message: string } & { __baml_invocation_token?: string }): Promise<string>;
 
-declare function CleeseSendToChapman(args: { first_line: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SystemInternal_a2aSessionPlan>;
+declare function CleeseSendToChapman(args: { first_line: string } & { __baml_invocation_token?: string }): Promise<SystemInternal_a2aSessionPlan>;
+
+declare function CleeseSendToChapman__act__system_internal_a2a(args: { first_line: string } & { __baml_invocation_token?: string }): Promise<SystemInternal_a2aSendStep>;
+
+declare function CleeseSendToChapman__continue__system_internal_a2a(args: { first_line: string } & { __baml_invocation_token?: string }): Promise<SystemInternal_a2aSendStep | SystemInternal_a2aReadStep | SystemInternal_a2aFinishStep>;
+
+declare function CleeseSendToChapman__select(args: { first_line: string } & { __baml_invocation_token?: string }): Promise<SystemInternal_a2aOpenStep>;
 
 }
 
@@ -262,35 +267,12 @@ export interface RunContext {
   /** Emitter for working message, artifact, awaitInput; use when you need to stream or suspend. */
   emit: SessionEmitter;
 }
-/**
- * Host-to-agent dispatch request. Delivered by the host when an external event
- * matches this agent's subscriptions. Fields mirror the Rust AgentDispatchRequest.
- */
-export interface HostDispatchRequest {
-  routing_key: string;
-  message_type: string;
-  messages: JsonValue[];
-  context_id?: string;
-  task_id?: string;
-  message_id?: string;
-  /** Structured transport metadata (source, schema version, content type). Use `messages` for arbitrary event payloads. */
-  metadata?: JsonObject;
-}
-/**
- * Acknowledgement returned by an agent's onDispatch handler.
- */
-export interface HostDispatchAck {
-  accepted: boolean;
-  detail?: string;
-}
 /** Agent contract: register this; host invokes onChatMessage per message. */
 export interface BamlAgent {
   /** Optional: run(ctx) is the entrypoint; runtime wraps it into onChatMessage. Prefer this over onChatMessage. */
   run?(ctx: RunContext): Promise<SessionResult>;
   /** Optional: raw handler when run is not used. */
   onChatMessage?(message: ChatMessage): Promise<void>;
-  /** Optional: handle host-delivered events matched by this agent's subscriptions. */
-  onDispatch?(request: HostDispatchRequest): Promise<HostDispatchAck>;
   tools?: Record<string, (args: JsonObject) => Promise<JsonValue>>;
 }
 declare global {
@@ -318,11 +300,6 @@ declare global {
    */
   function session(message: ChatMessage | null | undefined): SessionBuilder;
   function __chat_register(agent: BamlAgent): void;
-  /**
-   * Extract all payloads from a host dispatch request.
-   * Batch-safe helper: returns a shallow copy of request.messages, or [] if absent.
-   */
-  function extractDispatchMessages(request: HostDispatchRequest | null | undefined): JsonValue[];
   /** Emit a stream chunk following A2A wire format. */
   function __chat_yield(chunk: YieldChunk): void;
   function openA2aTaskSession<I = Record<string, unknown>>(token: string): Promise<A2aSessionAwaitingInput<I>>;
@@ -343,7 +320,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "CleeseSendToChapman";
+export type StepExecutorFunctionName = "CleeseSendToChapman" | "CleeseSendToChapman__act__system_internal_a2a" | "CleeseSendToChapman__continue__system_internal_a2a" | "CleeseSendToChapman__select";
 
 export interface SessionContext {
     contract_version: "session_context";
@@ -377,10 +354,14 @@ export interface StepExecutorRunResult<R = unknown> {
     steps: R[];
     session_context: SessionContext;
     history_context: HistoryContext | null;
+    selected_tool: string | null;
 }
 
 export interface StepExecutorFunctionMap {
   CleeseSendToChapman: { args: Parameters<typeof CleeseSendToChapman>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof CleeseSendToChapman>>; };
+  CleeseSendToChapman__act__system_internal_a2a: { args: Parameters<typeof CleeseSendToChapman__act__system_internal_a2a>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof CleeseSendToChapman__act__system_internal_a2a>>; };
+  CleeseSendToChapman__continue__system_internal_a2a: { args: Parameters<typeof CleeseSendToChapman__continue__system_internal_a2a>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof CleeseSendToChapman__continue__system_internal_a2a>>; };
+  CleeseSendToChapman__select: { args: Parameters<typeof CleeseSendToChapman__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof CleeseSendToChapman__select>>; };
 }
 
 declare global {

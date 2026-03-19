@@ -197,7 +197,24 @@ fn unwrap_llm_call_trace(value: &Value) -> Option<Value> {
 /// 3. **Plain string** — the value is a `Value::String` (e.g. natural-language reply).
 /// 4. **Fallback** — serialise the entire value as a compact JSON string.
 fn extract_from_content(value: &Value) -> String {
-    // Shape 1: session plan with steps array
+    // Shape 1a: structured plan with intent_description/objective (PlanReportingWork, MakeStructuredPlan).
+    // Extract the semantic goal text, not the raw step array.
+    if let Some(intent) = value.get("intent_description").and_then(Value::as_str) {
+        let mut parts = vec![intent];
+        if let Some(obj) = value.get("objective").and_then(Value::as_str) {
+            parts.push(obj);
+        }
+        if let Some(steps) = value.get("steps").and_then(Value::as_array) {
+            for step in steps {
+                if let Some(desc) = step.get("description").and_then(Value::as_str) {
+                    parts.push(desc);
+                }
+            }
+        }
+        return parts.join(". ");
+    }
+
+    // Shape 1b: session plan with steps array (Send/Read/Finish ops)
     if let Some(steps) = value.get("steps").and_then(Value::as_array) {
         let mut parts: Vec<&str> = Vec::new();
 
@@ -206,6 +223,9 @@ fn extract_from_content(value: &Value) -> String {
         }
 
         for step in steps {
+            if let Some(desc) = step.get("description").and_then(Value::as_str) {
+                parts.push(desc);
+            }
             let is_send = step
                 .get("type")
                 .and_then(Value::as_str)
@@ -213,13 +233,11 @@ fn extract_from_content(value: &Value) -> String {
             if is_send && let Some(input) = step.get("input").and_then(Value::as_str) {
                 parts.push(input);
             }
-            // Non-Send steps (e.g. ToolCall, Wait) don't carry user-facing text.
         }
 
         if !parts.is_empty() {
             return parts.join(" ");
         }
-        // steps array was empty / had no Send — fall through.
     }
 
     // Shape 2: FinalResponse with message
@@ -232,7 +250,60 @@ fn extract_from_content(value: &Value) -> String {
         return text.to_owned();
     }
 
-    // Shape 4: fallback — compact JSON serialisation
+    // Shape 4: session plan step.
+    // Two forms:
+    //   wrapped:   { step: { op: "Send"|"Read"|..., input: {...} } }   (session plan class)
+    //   unwrapped: { op: "Send"|"Read"|..., input: {...} }              (phase function result)
+    // Only Send/Open carry semantic intent worth scoring; Finish/Abort/Read → skip.
+    let step_obj = value.get("step").and_then(Value::as_object).or_else(|| {
+        // Unwrapped form: top-level object with "op" key
+        value.as_object().filter(|m| m.contains_key("op"))
+    });
+    if let Some(step_obj) = step_obj {
+        let op = step_obj.get("op").and_then(Value::as_str).unwrap_or("step");
+        if matches!(op, "Finish" | "Abort" | "Read") {
+            return String::new();
+        }
+        let input_desc: String = step_obj
+            .get("input")
+            .and_then(Value::as_object)
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| {
+                        if k == "archive_ref" {
+                            return None;
+                        }
+                        v.as_str()
+                            .filter(|s| !s.is_empty())
+                            .map(|s| format!("{k}={}", s.chars().take(60).collect::<String>()))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        return if input_desc.is_empty() {
+            op.to_owned()
+        } else {
+            format!("{op} {input_desc}")
+        };
+    }
+
+    // Shape 5: single semantic string field (e.g. {"intent": "..."} or {"reason": "..."}).
+    // Guard: skip if the sole string value is a raw FSM op name (would have been
+    // caught above if the object had an "op" key, but guard defensively).
+    if let Some(obj) = value.as_object() {
+        let string_fields: Vec<&str> = obj.values().filter_map(Value::as_str).collect();
+        if string_fields.len() == 1
+            && !matches!(
+                string_fields[0],
+                "Finish" | "Abort" | "Read" | "Open" | "Send"
+            )
+        {
+            return string_fields[0].to_owned();
+        }
+    }
+
+    // Shape 6: fallback — compact JSON serialisation
     value.to_string()
 }
 
@@ -337,6 +408,31 @@ mod tests {
         assert!(
             text.contains("Do something"),
             "should fall through to session plan extraction, got: {text}"
+        );
+    }
+
+    #[test]
+    fn response_extracts_single_semantic_string_field() {
+        // {"intent": "..."} — InferNotionIntent return type
+        let response = json!({"intent": "List the user's existing Notion pages"});
+        assert_eq!(
+            extract_response_text(&response),
+            "List the user's existing Notion pages"
+        );
+
+        // {"reason": "..."} — rejection reason
+        let response = json!({"reason": "Not related to Notion content."});
+        assert_eq!(
+            extract_response_text(&response),
+            "Not related to Notion content."
+        );
+
+        // Multi-string-field objects fall through to JSON serialisation
+        let response = json!({"intent": "foo", "reason": "bar"});
+        let text = extract_response_text(&response);
+        assert!(
+            text.contains("intent"),
+            "multi-field should serialize as JSON: {text}"
         );
     }
 }

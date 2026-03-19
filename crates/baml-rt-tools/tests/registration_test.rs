@@ -43,6 +43,11 @@ struct AddNumbersInput {
     a: f64,
     b: f64,
 }
+impl baml_rt_tools::DescribeAction for AddNumbersInput {
+    fn describe(&self) -> String {
+        "AddNumbersInput".to_string()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
@@ -75,6 +80,11 @@ struct GreetTool;
 #[ts(export)]
 struct GreetInput {
     name: String,
+}
+impl baml_rt_tools::DescribeAction for GreetInput {
+    fn describe(&self) -> String {
+        "GreetInput".to_string()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -109,6 +119,11 @@ struct StreamLettersTool;
 struct StreamLettersInput {
     word: String,
 }
+impl baml_rt_tools::DescribeAction for StreamLettersInput {
+    fn describe(&self) -> String {
+        "StreamLettersInput".to_string()
+    }
+}
 
 struct SyntheticSessionEvalTool;
 
@@ -116,6 +131,11 @@ struct SyntheticSessionEvalTool;
 #[ts(export)]
 struct SyntheticSessionEvalInput {
     retrieve_ref: Option<String>,
+}
+impl baml_rt_tools::DescribeAction for SyntheticSessionEvalInput {
+    fn describe(&self) -> String {
+        "SyntheticSessionEvalInput".to_string()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -199,6 +219,11 @@ struct ScopeCaptureHandler {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 struct ScopeCaptureInput {}
+impl baml_rt_tools::DescribeAction for ScopeCaptureInput {
+    fn describe(&self) -> String {
+        "ScopeCaptureInput".to_string()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
@@ -547,6 +572,11 @@ async fn test_js_tool_name_conflict_with_rust_tool() {
     #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
     #[ts(export)]
     struct ConflictInput {}
+    impl baml_rt_tools::DescribeAction for ConflictInput {
+        fn describe(&self) -> String {
+            "ConflictInput".to_string()
+        }
+    }
 
     #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
     #[ts(export)]

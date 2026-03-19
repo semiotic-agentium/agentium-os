@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use baml_rt_core::{
+    BamlFunctionId,
     bus::PlanningSupersessionKind,
     ids::{
         AgentId, ArtifactId, ContextId, EventId, ExternalId, IntentId, MessageId, PlanId,
@@ -454,10 +455,11 @@ fn normalize_event_with_registry(
                 canonicalize_llm_client_model(event, client, model, prompt, metadata)?;
             attrs.insert(a2a::CLIENT.to_string(), Value::String(resolved_client));
             attrs.insert(a2a::MODEL.to_string(), Value::String(resolved_model));
-            attrs.insert(
-                a2a::FUNCTION_NAME.to_string(),
-                Value::String(function_name.clone()),
-            );
+            {
+                let fid = BamlFunctionId::parse(function_name);
+                attrs.insert(a2a::FUNCTION_NAME.to_string(), Value::String(fid.full_name()));
+                attrs.insert(a2a::PROMPT_NAME.to_string(), Value::String(fid.prompt_name().as_str().to_string()));
+            }
             let agent_id = metadata
                 .get("agent_id")
                 .and_then(Value::as_str)
@@ -555,10 +557,11 @@ fn normalize_event_with_registry(
                 canonicalize_llm_client_model(event, client, model, prompt, metadata)?;
             attrs.insert(a2a::CLIENT.to_string(), Value::String(resolved_client));
             attrs.insert(a2a::MODEL.to_string(), Value::String(resolved_model));
-            attrs.insert(
-                a2a::FUNCTION_NAME.to_string(),
-                Value::String(function_name.clone()),
-            );
+            {
+                let fid = BamlFunctionId::parse(function_name);
+                attrs.insert(a2a::FUNCTION_NAME.to_string(), Value::String(fid.full_name()));
+                attrs.insert(a2a::PROMPT_NAME.to_string(), Value::String(fid.prompt_name().as_str().to_string()));
+            }
             let agent_id = metadata
                 .get("agent_id")
                 .and_then(Value::as_str)
@@ -654,6 +657,47 @@ fn normalize_event_with_registry(
                     a2a::RESPONSE_TEXT_PREVIEW.to_string(),
                     Value::String(drift.response_text_preview.clone()),
                 );
+                if !drift.step_text_preview.is_empty() {
+                    attrs.insert(
+                        a2a::STEP_TEXT_PREVIEW.to_string(),
+                        Value::String(drift.step_text_preview.clone()),
+                    );
+                }
+                if let Some(ref plan_drift) = drift.plan_drift {
+                    use crate::events::LlmPlanDriftInfo;
+                    attrs.insert(
+                        a2a::PLAN_DRIFT_INTENT_ALIGNMENT.to_string(),
+                        serde_json::json!(plan_drift.intent_alignment()),
+                    );
+                    attrs.insert(
+                        a2a::PLAN_DRIFT_TRAJECTORY.to_string(),
+                        serde_json::json!(plan_drift.trajectory_drift()),
+                    );
+                    attrs.insert(
+                        a2a::PLAN_DRIFT_ADHERENCE.to_string(),
+                        serde_json::json!(plan_drift.plan_adherence_score()),
+                    );
+                    attrs.insert(
+                        a2a::PLAN_DRIFT_COMPOSITE_SEVERITY.to_string(),
+                        Value::String(plan_drift.composite_severity().to_string()),
+                    );
+                    // PlanCommitted-only fields: step alignment and XE score.
+                    if let LlmPlanDriftInfo::PlanCommitted {
+                        step_alignment,
+                        cross_encoder_step_score,
+                        ..
+                    } = plan_drift
+                    {
+                        attrs.insert(
+                            a2a::PLAN_DRIFT_STEP_ALIGNMENT.to_string(),
+                            serde_json::json!(step_alignment),
+                        );
+                        attrs.insert(
+                            a2a::PLAN_DRIFT_CROSS_ENCODER_STEP.to_string(),
+                            serde_json::json!(cross_encoder_step_score),
+                        );
+                    }
+                }
             }
             let is_success = bool::from(*outcome);
             let failure_resolution = if is_success {
@@ -1457,6 +1501,7 @@ fn normalize_event_with_registry(
             description,
             derived_from_messages,
             supersession,
+            revision_intent_drift,
         } => {
             let _task_entity = ensure_task_entity(&mut doc, task_id);
             let intent_entity = intent_entity_id(task_id, intent_id);
@@ -1470,6 +1515,12 @@ fn normalize_event_with_registry(
                 Value::String("resolved".to_string()),
             );
             intent_attrs.insert(prov::LABEL.to_string(), Value::String(description.clone()));
+            if let Some(drift_score) = revision_intent_drift {
+                intent_attrs.insert(
+                    a2a::REVISION_INTENT_DRIFT.to_string(),
+                    serde_json::json!(drift_score),
+                );
+            }
             doc.insert_entity(
                 intent_entity.clone(),
                 Entity {
@@ -1810,6 +1861,43 @@ fn normalize_event_with_registry(
                     attributes: attrs,
                 });
             }
+        }
+        ProvEventData::ToolSessionStep {
+            tool_name,
+            session_id,
+            op_kind,
+            header,
+            archive_ref,
+            grep,
+            offset: _,
+            limit: _,
+            ..
+        } => {
+            let step_id = format!("session-step:{}", event.id().as_str());
+            let mut attrs = base_attrs(event);
+            attrs.insert(a2a::TOOL_NAME.to_string(), Value::String(tool_name.clone()));
+            attrs.insert("session_id".to_string(), Value::String(session_id.clone()));
+            attrs.insert("op_kind".to_string(), Value::String(op_kind.clone()));
+            if let Some(h) = header {
+                attrs.insert("header".to_string(), Value::String(h.clone()));
+            }
+            if let Some(r) = archive_ref {
+                attrs.insert("archive_ref".to_string(), Value::String(r.clone()));
+            }
+            if let Some(g) = grep {
+                attrs.insert("grep".to_string(), Value::String(g.clone()));
+            }
+            // Use serde round-trip to construct ProvEntityId from a raw string.
+            let entity_id: ProvEntityId =
+                serde_json::from_value(serde_json::Value::String(step_id.clone()))
+                    .expect("ProvEntityId serde is transparent String");
+            doc.insert_entity(
+                entity_id,
+                Entity {
+                    prov_type: Some("SessionStep".to_string()),
+                    attributes: attrs,
+                },
+            );
         }
     }
 

@@ -89,7 +89,7 @@ with `deny_unknown_fields` per variant.
 
 `∀ user_turn t: ∃ provenance_context(t) ∧ Mermaid(context_id(t)) != ∅`
 
-**Enforcement:** GraphQLite provenance writer + `/contexts/{id}/mermaid` API.
+**Enforcement:** SurrealDB provenance writer + `/contexts/{id}/mermaid` API.
 **Testing:** runner E2E tests call Mermaid endpoint and assert sequence output.
 
 ## Demo Narrative (What Teammates Should See)

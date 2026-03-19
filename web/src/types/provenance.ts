@@ -99,11 +99,59 @@ export interface PlanningStepSummary {
   pending: number;
 }
 
+export type DriftSeverity = "acceptable" | "warn" | "block";
+
+export interface DriftedCallDetail {
+  functionName: string;
+  severity: string;
+  intentAlignment: number;
+  stepAlignment: number | null;
+  crossEncoderStepScore: number | null;
+  intentTextPreview: string;
+  responseTextPreview: string;
+  stepTextPreview?: string;
+}
+
+export interface TaskPlanDriftSummary {
+  compositeSeverity: DriftSeverity | null;
+  intentAlignment: number | null;
+  stepAlignment: number | null;
+  crossEncoderStepScore: number | null;
+  trajectoryDrift: number | null;
+  planAdherenceScore: number | null;
+  scoredCallCount: number;
+  warnCount: number;
+  blockCount: number;
+  driftedCalls?: DriftedCallDetail[];
+}
+
+export interface PlanDriftOnRow {
+  intentAlignment?: number;
+  stepAlignment?: number;
+  /** Cross-encoder logit for (step_description, response). Always present when stepAlignment present. */
+  crossEncoderStepScore?: number;
+  trajectoryDrift?: number;
+  planAdherenceScore?: number;
+  compositeSeverity?: DriftSeverity;
+}
+
+export interface DriftOnRow {
+  score?: number;
+  severity?: string;
+  mode?: string;
+  warnMinScore?: number;
+  blockMinScore?: number;
+  intentTextPreview?: string;
+  responseTextPreview?: string;
+  plan?: PlanDriftOnRow;
+}
+
 export interface ContextPlanningTaskSnapshot {
   taskId: string;
   currentIntent: PlanningIntentView | null;
   currentPlan: PlanningPlanView | null;
   stepSummary: PlanningStepSummary;
+  drift?: TaskPlanDriftSummary;
 }
 
 export interface ContextPlanningResponse {

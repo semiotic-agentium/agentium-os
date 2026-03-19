@@ -189,7 +189,7 @@ export function useA2aClient() {
 
   function updateWorkflowPhase(text: string): void {
     if (/discovering available/i.test(text)) {
-      workflowProgress.value = { phase: "discovery", nodes: [], completedNodes: workflowProgress.value.completedNodes };
+      workflowProgress.value = { phase: "discovery", nodes: [], completedNodes: workflowProgress.value.completedNodes, pipelineActive: true };
     } else if (/planning workflow/i.test(text)) {
       const iterMatch = text.match(/iteration\s+(\d+)/i);
       workflowProgress.value = {
@@ -197,6 +197,7 @@ export function useA2aClient() {
         iteration: iterMatch ? parseInt(iterMatch[1]!, 10) : undefined,
         nodes: [],
         completedNodes: workflowProgress.value.completedNodes,
+        pipelineActive: true,
       };
     } else if (/executing\s+\d+\s+workflow\s+node/i.test(text)) {
       const nodeListMatch = text.match(/node\(s\):\s*(.+)/i);

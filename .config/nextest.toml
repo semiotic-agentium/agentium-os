@@ -9,69 +9,45 @@ experimental = ["setup-scripts"]
 command = 'cargo run -p baml-rt-builder --features http-tools,memory --bin regen_fixtures'
 slow-timeout = { period = "120s", terminate-after = 2 }
 
-# Pre-extract the bundled GraphQLite .so/.dylib once before tests run in parallel.
-# Without this, concurrent test processes race to write the same file, causing
-# "file too short" errors when one process loads a partially-written extension.
-[scripts.setup.pre-extract-graphqlite]
-command = 'cargo run -p baml-rt-provenance --bin pre_extract_graphqlite'
-slow-timeout = { period = "60s", terminate-after = 2 }
-
 [[profile.default.scripts]]
 filter = 'all()'
 setup = 'regen-fixtures'
 
-# Only run graphqlite pre-extraction for packages that transitively depend on it.
-[[profile.default.scripts]]
-filter = 'package(baml-rt-provenance) | package(baml-rt-a2a) | package(baml-rt-quickjs) | package(baml-rt-tools) | package(baml-rt) | package(baml-agent-runner)'
-setup = 'pre-extract-graphqlite'
-
 [profile.ci]
-# Do not stop scheduling on first failure; surface full suite results in CI.
 fail-fast = false
-# JUnit output for GitHub Actions junit-report-action.
 [profile.ci.junit]
 path = "junit.xml"
 store-failure-output = true
 
-# Rate-limit provenance/heavy tests (max 1 at a time) to avoid resource contention.
-# The graphqlite C extension serialises all Cypher operations process-wide via
-# GRAPHQLITE_SERIAL; running graphqlite-heavy test binaries concurrently would
-# cause each test to queue on that mutex, inflating wall-clock time dramatically.
-# Routing them to the "provenance" group (max-threads = 1) eliminates contention.
-#
-# LLM e2e tests hit external APIs with variable latency; cap concurrency to reduce
-# scheduler pressure and timeout flakes on resource-constrained CI runners.
+# Rate-limit provenance tests (max 1 at a time) to avoid SurrealDB embedded
+# resource contention. LLM e2e tests cap concurrency for API rate limits.
 [test-groups]
 llm = { max-threads = 2 }
 provenance = { max-threads = 1 }
 
 [[profile.ci.overrides]]
-filter = 'package(baml-rt-provenance) and (binary(graphqlite_store_test) or binary(tool_index_test))'
+filter = 'package(baml-rt-provenance) and binary(tool_index_test)'
 test-group = "provenance"
 
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-a2a) and (binary(provenance_context_test) or binary(provenance_property_test))'
 test-group = "provenance"
 
-# baml-rt-api integration tests write to graphqlite stores; serialise to avoid mutex contention.
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-api)'
 test-group = "provenance"
 
-# baml-tools-system discovery/introspection/extrospection tests write to graphqlite stores.
 [[profile.ci.overrides]]
 filter = 'package(baml-tools-system)'
 test-group = "provenance"
 
-# E2E: build fixture (OXC + BAML + tar) + agent setup; allow long run.
+# E2E: build fixture + agent setup; allow long run.
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and test(~conversational_context_auto_via_provenance)'
 test-group = "provenance"
 slow-timeout = { period = "120s", terminate-after = 10 }
 
-# QuickJS C engine shows rare process-level SIGBUS/SIGSEGV flakes in CI
-# during bridge initialization. Retry these tests to absorb transient
-# runtime crashes while preserving failure visibility if persistent.
+# QuickJS C engine shows rare SIGBUS/SIGSEGV flakes in CI. Retry.
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and test(~test_e2e_stream_baml_tool)'
 retries = { backoff = "fixed", count = 2, delay = "2s" }
@@ -86,7 +62,6 @@ filter = 'package(baml-rt-a2a) and (test(~test_interleaved) or test(~interleaved
 retries = { backoff = "fixed", count = 2, delay = "2s" }
 
 # LLM-dependent e2e tests: throttle concurrency and allow generous timeouts.
-# These hit external LLM APIs (OpenRouter) whose latency varies wildly on CI.
 [[profile.ci.overrides]]
 filter = 'package(baml-agent-runner) and test(~test_e2e_)'
 test-group = "llm"
@@ -98,36 +73,19 @@ filter = 'package(baml-rt-interceptor) and test(~test_e2e_)'
 test-group = "llm"
 retries = { backoff = "fixed", count = 1, delay = "2s" }
 
-# baml-rt-a2a streaming tests: timing-sensitive, flake under CI resource contention.
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-a2a) and binary(task_streaming_test)'
 test-group = "llm"
 slow-timeout = { period = "60s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "3s" }
 
-# Test-specific overrides MUST come before the binary-level override below,
-# because nextest applies the first matching override for each field.
-
-# A2A interleaving property test: 4 proptest cases × up to 6 serialized stream
-# ops through the QuickJS bridge; allow generous CI headroom.
-[[profile.ci.overrides]]
-filter = 'package(baml-rt-a2a) and test(prop_interleaved_a2a_tool_llm_multi_context_isolation)'
-test-group = "provenance"
-slow-timeout = { period = "300s", terminate-after = 1 }
-
-# A2A property test drives many concurrent INPUT_REQUIRED/resume cycles;
-# allow up to 5 minutes for the proptest + async overhead.
-[[profile.ci.overrides]]
-filter = 'package(baml-rt-a2a) and test(prop_input_required_resume_positive_and_no_auto_final)'
-test-group = "provenance"
-slow-timeout = { period = "300s", terminate-after = 1 }
-
-# A2A GraphQLite-using test binaries: route to provenance group so they don't
-# contend on GRAPHQLITE_SERIAL with baml-tools-system snapshot tests. Both
-# run_handle_a2a_property_test and a2a_malformed_and_error_paths_test create
-# graphqlite stores; running them alongside snapshot tests causes the serial
-# mutex to queue for hundreds of seconds, making snapshot tests appear to hang.
+# A2A provenance-using test binaries: route to provenance group.
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-a2a) and (binary(run_handle_a2a_property_test) or binary(a2a_malformed_and_error_paths_test))'
 test-group = "provenance"
 slow-timeout = { period = "60s", terminate-after = 2 }
+
+# A2A property test drives many concurrent INPUT_REQUIRED/resume cycles.
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-a2a) and test(prop_input_required_resume_positive_and_no_auto_final)'
+slow-timeout = { period = "300s", terminate-after = 1 }

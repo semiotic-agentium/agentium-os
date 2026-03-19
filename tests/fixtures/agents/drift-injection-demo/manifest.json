@@ -1,0 +1,1 @@
+{"version":"1.0.0","name":"drift-injection-demo","entry_point":"src/index.ts","signature":"drift-injection-demo@1.0.0","tools":[],"discovery":{"description":"Fixture: deliberately drifted agent with simulated prompt injection in hop 2. Produces block-severity plan drift for testing and observability demos.","capabilities":["testing:drift-injection"]}}

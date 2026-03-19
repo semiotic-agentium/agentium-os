@@ -7,7 +7,6 @@
 #![recursion_limit = "256"]
 
 mod builder;
-mod optional_tool_bundles;
 mod package;
 
 use std::{
@@ -29,9 +28,8 @@ use baml_rt_a2a::{
     },
 };
 use baml_rt_core::{
-    A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
-    AgentDispatchRequest, AgentInstanceId, AgentLister, AgentManifest, AgentPackageName,
-    AgentRouteKey, BamlRtError, ContextId, Result, RuntimeScope,
+    A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentLister,
+    AgentManifest, AgentPackageName, AgentRouteKey, BamlRtError, ContextId, Result, RuntimeScope,
     bus::BusStream,
     collect_a2a_stream,
     context::{self, InvocationScope},
@@ -44,27 +42,32 @@ use baml_rt_llm_config::{
 };
 use baml_rt_observability::{spans, tracing_setup};
 use baml_rt_provenance::{
-    AgentType, GraphExporter, GraphQueryParams, GraphStore, GraphqliteStoreBuilder, ProvEvent,
+    AgentType, GraphExporter, ProvEvent,
     ProvenanceOpsFilters, ProvenanceOpsQuery, ProvenanceOpsQueryRequest, ProvenanceOpsResource,
-    ProvenancePlanningQuery, ProvenanceWriter, ToolIndexConfig, context_metrics_queries,
+    ProvenancePlanningQuery, ProvenanceWriter, SurrealStoreBuilder, ToolIndexConfig, context_metrics_queries,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
     index_tools,
 };
-use baml_rt_quickjs::{
-    BamlRuntimeManager, SecretResolverToLlmAdapter, invoke_js_function_handover,
-};
+use baml_rt_quickjs::{BamlRuntimeManager, QuickJSBridge, SecretResolverToLlmAdapter};
 use baml_rt_tools::{
     InventoryCatalog, ManifestToolNames, ToolAccessPolicy, parse_access_allowlist,
     register_manifest_tools,
 };
 use baml_rt_tools_claude::{AgentWorkspaceRegistry, ClaudeSessionBundle};
+use baml_tools_calculator as _;
+#[cfg(feature = "clickup")]
+use baml_tools_clickup as _;
+#[cfg(feature = "memory")]
+use baml_tools_memory as _;
+#[cfg(feature = "notion")]
+use baml_tools_notion as _;
+#[cfg(feature = "security-eval")]
+use baml_tools_security_eval as _;
+#[cfg(feature = "slack")]
+use baml_tools_slack as _;
 use baml_tools_system::SystemBundle;
-
-// Force-link all tool crates into the binary's inventory.
-// The macro handles conditional compilation based on feature flags.
-baml_tool_links::force_link_all_tools!();
 use clap::Parser;
-use serde_json::{Map, Value};
+use serde_json::Value;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt},
     sync::Mutex,
@@ -130,7 +133,7 @@ impl AgentPackage {
         a2a_handler: Arc<dyn A2aRequestHandler>,
         provenance_query: Arc<dyn ProvenanceOpsQuery>,
     ) -> Result<ToolsRegistered> {
-        let runtime_manager = loaded.runtime_manager;
+        let mut runtime_manager = loaded.runtime_manager;
         let manifest_tool_names = ManifestToolNames::parse(&self.manifest.tools)?;
 
         // Host composes tool catalogue:
@@ -183,16 +186,19 @@ impl AgentPackage {
             AgentWorkspaceRegistry::new(claude_workspace_root),
         )))?;
 
-        optional_tool_bundles::register_optional_tool_bundles(
-            &self.manifest,
-            tool_registry.as_ref(),
-        )?;
+        #[cfg(feature = "memory")]
+        if self.manifest.tools.iter().any(|t| t.starts_with("memory/")) {
+            let memory_bundle = baml_tools_memory::MemoryBundle::new(&self.manifest.name)?;
+            tool_registry.register_bundle(memory_bundle)?;
+        }
 
         register_manifest_tools(
             runtime_manager.tool_registry().as_ref(),
             &manifest_tool_names,
             policy,
         )?;
+
+        runtime_manager.rebuild_function_tool_manifest();
 
         // Apply allowlist after host bundle registration so system/* tools are optional
         // unless explicitly declared in the agent manifest.
@@ -227,7 +233,7 @@ impl AgentPackage {
             .with_baml_helpers(true)
             .with_effect_emitter(Arc::new(baml_rt_core::bus::BusWithEffects::new()));
 
-        agent_builder = agent_builder.with_graphqlite_store(provenance_config.store().clone());
+        agent_builder = agent_builder.with_surreal_store(provenance_config.store().clone());
 
         let agent = agent_builder.build().await?;
         Ok(JsInitialized {
@@ -279,7 +285,7 @@ impl AgentPackage {
     pub(crate) async fn boot(
         &self,
         provenance_config: &ProvenanceConfig,
-        tool_index: Option<ToolIndexConfig>,
+        _tool_index: Option<ToolIndexConfig>,
         policy: &ToolAccessPolicy,
         agent_list_catalogue: Arc<dyn AgentLister>,
         a2a_handler: Arc<dyn A2aRequestHandler>,
@@ -304,13 +310,13 @@ impl AgentPackage {
         let agent = initialized.agent;
         let runtime_manager_arc = initialized.runtime_manager;
 
-        if let Some(index_config) = tool_index {
+        {
             let manager = runtime_manager_arc.lock().await;
             let tools = manager.export_tool_metadata().await;
-            if let Err(err) = index_tools(&index_config, &tools).await {
-                warn!(error = %err, "Failed to index tool metadata in GraphQLite");
+            if let Err(err) = index_tools(provenance_config.store().as_ref(), &tools).await {
+                warn!(error = %err, "Failed to index tool metadata in provenance store");
             } else {
-                info!("Tool metadata indexed in GraphQLite");
+                info!("Tool metadata indexed in provenance store");
             }
         }
 
@@ -370,10 +376,10 @@ impl BootedAgent {
     }
 
     async fn invoke_function(&self, function_name: &str, args: Value) -> Result<Value> {
-        let scope = invocation_scope_for_agent(self.agent.agent_id().clone());
-        invoke_js_function_handover(
-            self.agent.bridge_handle().as_ref(),
-            scope,
+        let scope = InvocationScope::synthetic_message(self.agent.agent_id().clone());
+        QuickJSBridge::invoke_js_function_nonblocking(
+            self.agent.bridge(),
+            &scope,
             function_name,
             args,
         )
@@ -385,10 +391,6 @@ impl BootedAgent {
         request: A2aWireRequest,
     ) -> Result<BusStream<A2aStreamChunk>> {
         self.agent.handle_a2a_stream(request).await
-    }
-
-    async fn handle_dispatch(&self, request: AgentDispatchRequest) -> Result<AgentDispatchAck> {
-        self.agent.handle_dispatch(request).await
     }
 }
 
@@ -553,35 +555,6 @@ impl AgentRunner {
             routed_agent.handle_a2a_stream(request).await
         })
         .await
-    }
-
-    pub(crate) async fn handle_dispatch_by_key(
-        &self,
-        key: &AgentRouteKey,
-        request: AgentDispatchRequest,
-    ) -> Result<AgentDispatchAck> {
-        if key.agent_instance_id.as_str() != AgentInstanceId::DEFAULT {
-            return Err(BamlRtError::AgentNotFound(format!(
-                "Agent {agent_package}/{agent_instance_id} not found",
-                agent_package = key.agent_package.as_str(),
-                agent_instance_id = key.agent_instance_id.as_str()
-            )));
-        }
-
-        let booted_agent = {
-            let agents = self.agents.read().expect("RwLock poison");
-            agents
-                .get(key.agent_package.as_str())
-                .cloned()
-                .ok_or_else(|| {
-                    BamlRtError::AgentNotFound(format!(
-                        "Agent {agent_package}/{agent_instance_id} not found",
-                        agent_package = key.agent_package.as_str(),
-                        agent_instance_id = key.agent_instance_id.as_str()
-                    ))
-                })?
-        };
-        booted_agent.handle_dispatch(request).await
     }
 
     /// Run the A2A JSON-RPC loop over the given reader/writer (one JSON-RPC request per line).
@@ -792,10 +765,12 @@ impl AgentRegistry for RunnerRegistry {
 
     async fn handle_dispatch(
         &self,
-        key: &AgentRouteKey,
-        request: AgentDispatchRequest,
-    ) -> Result<AgentDispatchAck> {
-        self.0.handle_dispatch_by_key(key, request).await
+        _key: &AgentRouteKey,
+        _request: baml_rt_core::AgentDispatchRequest,
+    ) -> Result<baml_rt_core::AgentDispatchAck> {
+        Err(baml_rt_core::BamlRtError::InvalidArgument(
+            "dispatch not yet implemented for this runner".to_string(),
+        ))
     }
 }
 
@@ -918,12 +893,6 @@ fn scope_from_request(request: &serde_json::Value, agent_id: AgentId) -> Invocat
         )),
         Err(_) => InvocationScope::synthetic_message(agent_id),
     }
-}
-
-fn invocation_scope_for_agent(agent_id: AgentId) -> InvocationScope {
-    context::current_scope()
-        .map(InvocationScope::new)
-        .unwrap_or_else(|_| InvocationScope::synthetic_message(agent_id))
 }
 
 fn extract_internal_a2a_target(request: &Value) -> Option<AgentRouteKey> {
@@ -1161,10 +1130,10 @@ impl Cli {
     }
 }
 
-/// Provenance configuration: GraphQLite store with required config and secret services.
+/// Provenance configuration: SurrealDB store with required config and secret services.
 pub(crate) enum ProvenanceConfig {
-    Graphqlite {
-        store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+    Surreal {
+        store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
         mermaid_cache: Option<Arc<baml_rt_provenance::MermaidCache>>,
         /// Config store for registry (session open) and HTTP API. Required; use builder to guarantee.
         config_service: Arc<dyn baml_rt_config::ConfigService>,
@@ -1176,23 +1145,23 @@ pub(crate) enum ProvenanceConfig {
 }
 
 impl ProvenanceConfig {
-    pub(crate) fn store(&self) -> &Arc<baml_rt_provenance::GraphqliteProvenanceStore> {
-        let ProvenanceConfig::Graphqlite { store, .. } = self;
+    pub(crate) fn store(&self) -> &Arc<baml_rt_provenance::SurrealProvenanceStore> {
+        let ProvenanceConfig::Surreal { store, .. } = self;
         store
     }
 
     pub(crate) fn mermaid_cache(&self) -> Option<Arc<baml_rt_provenance::MermaidCache>> {
-        let ProvenanceConfig::Graphqlite { mermaid_cache, .. } = self;
+        let ProvenanceConfig::Surreal { mermaid_cache, .. } = self;
         mermaid_cache.clone()
     }
 
     pub(crate) fn config_service(&self) -> Arc<dyn baml_rt_config::ConfigService> {
-        let ProvenanceConfig::Graphqlite { config_service, .. } = self;
+        let ProvenanceConfig::Surreal { config_service, .. } = self;
         config_service.clone()
     }
 
     pub(crate) fn llm_secret_resolver(&self) -> Arc<dyn baml_rt_llm_config::SecretResolver> {
-        let ProvenanceConfig::Graphqlite {
+        let ProvenanceConfig::Surreal {
             llm_secret_resolver,
             ..
         } = self;
@@ -1202,7 +1171,7 @@ impl ProvenanceConfig {
     pub(crate) fn runtime_secret_store(
         &self,
     ) -> Option<Arc<dyn baml_rt_llm_config::RuntimeSecretStore>> {
-        let ProvenanceConfig::Graphqlite {
+        let ProvenanceConfig::Surreal {
             runtime_secret_store,
             ..
         } = self;
@@ -1212,7 +1181,7 @@ impl ProvenanceConfig {
 
 /// Linear builder for provenance config. Call `with_config_service` and `with_llm_secret_resolver` to satisfy required dependencies, then `build`.
 pub(crate) struct ProvenanceConfigBuilder {
-    store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+    store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
     mermaid_cache: Option<Arc<baml_rt_provenance::MermaidCache>>,
     config_service: Option<Arc<dyn baml_rt_config::ConfigService>>,
     llm_secret_resolver: Option<Arc<dyn baml_rt_llm_config::SecretResolver>>,
@@ -1222,7 +1191,7 @@ pub(crate) struct ProvenanceConfigBuilder {
 impl ProvenanceConfigBuilder {
     /// Start building from the given store (and optional mermaid cache). You must then call `with_config_service` and `with_llm_secret_resolver` before `build`.
     fn new(
-        store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+        store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
         mermaid_cache: Option<Arc<baml_rt_provenance::MermaidCache>>,
     ) -> Self {
         Self {
@@ -1274,7 +1243,7 @@ impl ProvenanceConfigBuilder {
                 "ProvenanceConfigBuilder: llm_secret_resolver required (call with_llm_secret_resolver)".into(),
             )
         })?;
-        Ok(ProvenanceConfig::Graphqlite {
+        Ok(ProvenanceConfig::Surreal {
             store: self.store,
             mermaid_cache: self.mermaid_cache,
             config_service,
@@ -1285,10 +1254,10 @@ impl ProvenanceConfigBuilder {
 }
 
 /// Build the store and a linear builder for provenance config. Caller must call `with_config_service` and `with_llm_secret_resolver` then `build`.
-fn provenance_config_builder(db: &ProvenanceDb) -> Result<ProvenanceConfigBuilder> {
+async fn provenance_config_builder(db: &ProvenanceDb) -> Result<ProvenanceConfigBuilder> {
     match db {
         ProvenanceDb::InMemory => {
-            let store = GraphqliteStoreBuilder::in_memory().build().map_err(|e| {
+            let store = SurrealStoreBuilder::in_memory().build().await.map_err(|e| {
                 BamlRtError::InvalidArgument(format!(
                     "Provenance in-memory store failed to build: {e}",
                 ))
@@ -1297,9 +1266,10 @@ fn provenance_config_builder(db: &ProvenanceDb) -> Result<ProvenanceConfigBuilde
         }
         ProvenanceDb::File(path) => {
             let cache = baml_rt_provenance::MermaidCache::new();
-            let store = GraphqliteStoreBuilder::file(path)
+            let store = SurrealStoreBuilder::file(path)
                 .with_mermaid_cache(cache.clone())
                 .build()
+                .await
                 .map_err(|e| {
                     BamlRtError::InvalidArgument(format!(
                         "Provenance file store failed to build at {}: {:#}",
@@ -1312,17 +1282,17 @@ fn provenance_config_builder(db: &ProvenanceDb) -> Result<ProvenanceConfigBuilde
     }
 }
 
-/// Mermaid diagram service backed by GraphQLite provenance. Exported when runner serves HTTP with GraphQLite.
-/// Uses in-process GraphExporter; GraphQLite fork has reentrant parser so no broker IPC needed.
-/// Cache avoids repeated Cypher export + simplify + render on repeat requests for the same context.
+/// Mermaid diagram service backed by SurrealDB provenance. Exported when runner serves HTTP.
+/// Uses in-process GraphExporter.
+/// Cache avoids repeated export + simplify + render on repeat requests for the same context.
 struct MermaidServiceImpl {
-    store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+    store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
     cache: Option<Arc<baml_rt_provenance::MermaidCache>>,
 }
 
 impl MermaidServiceImpl {
     fn new(
-        store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+        store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
         cache: Option<Arc<baml_rt_provenance::MermaidCache>>,
     ) -> Self {
         Self { store, cache }
@@ -1358,11 +1328,10 @@ impl baml_rt_api::MermaidService for MermaidServiceImpl {
         context_id: &str,
     ) -> std::result::Result<String, baml_rt_api::MermaidError> {
         if let Some(ref cache) = self.cache
-            && let Some(cached) = cache.get(context_id)
-        {
-            tracing::debug!(context_id = %context_id, "mermaid: cache HIT");
-            return Ok(cached);
-        }
+            && let Some(cached) = cache.get(context_id) {
+                tracing::debug!(context_id = %context_id, "mermaid: cache HIT");
+                return Ok(cached);
+            }
         tracing::info!(context_id = %context_id, "mermaid: START export_by_context");
         let t0 = std::time::Instant::now();
         let graph = self.export_by_context(context_id).await?;
@@ -1441,24 +1410,15 @@ impl baml_rt_api::MermaidService for MermaidServiceImpl {
     }
 }
 
-/// Context metrics service backed by GraphQLite provenance.
+/// Context metrics service backed by SurrealDB provenance.
 struct ContextMetricsServiceImpl {
-    store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+    store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
 }
 
 impl ContextMetricsServiceImpl {
-    fn new(store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>) -> Self {
+    fn new(store: Arc<baml_rt_provenance::SurrealProvenanceStore>) -> Self {
         Self { store }
     }
-}
-
-fn metrics_query_params(context_id: &str) -> GraphQueryParams {
-    let mut params = Map::new();
-    params.insert(
-        "context_id".to_string(),
-        Value::String(context_id.to_string()),
-    );
-    params
 }
 
 fn value_as_u64(value: Option<&Value>) -> u64 {
@@ -1487,30 +1447,22 @@ impl baml_rt_api::ContextMetricsService for ContextMetricsServiceImpl {
         context_id: &str,
     ) -> std::result::Result<baml_rt_api::ContextMetricsResponseDto, baml_rt_api::ContextMetricsError>
     {
-        let params = metrics_query_params(context_id);
-
-        let turn_rows = self
-            .store
-            .query(context_metrics_queries::TURN_TOTALS_BY_CONTEXT, &params)
+        let turn_rows = context_metrics_queries::turn_totals_by_context(&self.store, context_id)
             .await
             .map_err(|e| {
-                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(e)))
+                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(e.to_string())))
             })?;
 
-        let session_rows = self
-            .store
-            .query(context_metrics_queries::SESSION_TOTALS_BY_CONTEXT, &params)
+        let session_rows = context_metrics_queries::session_totals_by_context(&self.store, context_id)
             .await
             .map_err(|e| {
-                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(e)))
+                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(e.to_string())))
             })?;
 
-        let prompt_rows = self
-            .store
-            .query(context_metrics_queries::USER_PROMPTS_BY_CONTEXT, &params)
+        let prompt_rows = context_metrics_queries::user_prompts_by_context(&self.store, context_id)
             .await
             .map_err(|e| {
-                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(e)))
+                baml_rt_api::ContextMetricsError::Other(Box::new(std::io::Error::other(e.to_string())))
             })?;
 
         let mut prompt_count_by_message: HashMap<String, u64> = HashMap::new();
@@ -1589,11 +1541,11 @@ impl baml_rt_api::ContextMetricsService for ContextMetricsServiceImpl {
 }
 
 struct ProvenanceOpsServiceImpl {
-    store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+    store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
 }
 
 impl ProvenanceOpsServiceImpl {
-    fn new(store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>) -> Self {
+    fn new(store: Arc<baml_rt_provenance::SurrealProvenanceStore>) -> Self {
         Self { store }
     }
 }
@@ -1615,11 +1567,11 @@ impl baml_rt_api::ProvenanceOpsService for ProvenanceOpsServiceImpl {
 }
 
 struct PlanningServiceImpl {
-    store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>,
+    store: Arc<baml_rt_provenance::SurrealProvenanceStore>,
 }
 
 impl PlanningServiceImpl {
-    fn new(store: Arc<baml_rt_provenance::GraphqliteProvenanceStore>) -> Self {
+    fn new(store: Arc<baml_rt_provenance::SurrealProvenanceStore>) -> Self {
         Self { store }
     }
 
@@ -1646,6 +1598,102 @@ impl PlanningServiceImpl {
             }
         }
         summary
+    }
+
+    async fn aggregate_drift(
+        store: &baml_rt_provenance::SurrealProvenanceStore,
+        context_id: &str,
+        task_id: &str,
+    ) -> Option<baml_rt_api::TaskPlanDriftSummary> {
+        use baml_rt_provenance::store::*;
+
+        let report = store
+            .query_ops(ProvenanceOpsQueryRequest {
+                resource: ProvenanceOpsResource::LlmCalls,
+                filters: ProvenanceOpsFilters {
+                    context_id: Some(ContextId::from(context_id)),
+                    task_id: Some(TaskId::from_external(ExternalId::new(task_id.to_string()))),
+                    ..Default::default()
+                },
+                page_size: Some(100),
+                sort_by: Some("timestamp_ms".to_string()),
+                sort_dir: Some("desc".to_string()),
+                ..Default::default()
+            })
+            .await
+            .ok()?;
+
+        let mut scored_count = 0u32;
+        let mut warn_count = 0u32;
+        let mut block_count = 0u32;
+        let mut latest_plan_drift: Option<&serde_json::Value> = None;
+        let mut drifted_calls = Vec::new();
+
+        fn f32_field(obj: &serde_json::Value, key: &str) -> Option<f32> {
+            obj.get(key).and_then(|v| v.as_f64()).map(|v| v as f32)
+        }
+        fn str_field(obj: &serde_json::Value, key: &str) -> String {
+            obj.get(key)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        }
+
+        for row in &report.rows {
+            let Some(drift_obj) = row.get("drift") else {
+                continue;
+            };
+            let Some(plan) = drift_obj.get("plan") else {
+                continue;
+            };
+            scored_count += 1;
+
+            if latest_plan_drift.is_none() {
+                latest_plan_drift = Some(plan);
+            }
+
+            let severity = plan
+                .get("compositeSeverity")
+                .and_then(|v| v.as_str())
+                .unwrap_or("acceptable");
+            match severity {
+                "warn" => warn_count += 1,
+                "block" => block_count += 1,
+                _ => {}
+            }
+
+            drifted_calls.push(baml_rt_api::DriftedCallDetail {
+                function_name: row
+                    .get("baml_prompt")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string(),
+                severity: severity.to_string(),
+                intent_alignment: f32_field(plan, "intentAlignment").unwrap_or(0.0),
+                step_alignment: f32_field(plan, "stepAlignment"),
+                cross_encoder_step_score: f32_field(plan, "crossEncoderStepScore"),
+                intent_text_preview: str_field(drift_obj, "intentTextPreview"),
+                response_text_preview: str_field(drift_obj, "responseTextPreview"),
+                step_text_preview: str_field(drift_obj, "stepTextPreview"),
+            });
+        }
+
+        let plan = latest_plan_drift?;
+
+        Some(baml_rt_api::TaskPlanDriftSummary {
+            composite_severity: plan
+                .get("compositeSeverity")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            intent_alignment: f32_field(plan, "intentAlignment"),
+            step_alignment: f32_field(plan, "stepAlignment"),
+            trajectory_drift: f32_field(plan, "trajectoryDrift"),
+            plan_adherence_score: f32_field(plan, "planAdherenceScore"),
+            scored_call_count: scored_count,
+            warn_count,
+            block_count,
+            drifted_calls,
+        })
     }
 }
 
@@ -1726,6 +1774,7 @@ impl baml_rt_api::PlanningService for PlanningServiceImpl {
             }
 
             let step_summary = Self::summarize_steps(current_plan.as_ref());
+            let drift = Self::aggregate_drift(&self.store, context_id, &task_id_raw).await;
             tasks.push(baml_rt_api::TaskPlanningSnapshot {
                 task_id: task_id_raw,
                 current_intent,
@@ -1733,6 +1782,7 @@ impl baml_rt_api::PlanningService for PlanningServiceImpl {
                 intent_history,
                 plan_history,
                 step_summary,
+                drift,
             });
         }
 
@@ -1810,11 +1860,12 @@ async fn main() -> anyhow::Result<()> {
     }
     let config_service: Arc<dyn baml_rt_config::ConfigService> = match &config.provenance_db {
         ProvenanceDb::InMemory => Arc::new(
-            baml_rt_config::SqliteConfigStore::in_memory()
+            baml_rt_config::SurrealConfigStore::in_memory()
+                .await
                 .context("Failed to create in-memory config store")?,
         ),
         ProvenanceDb::File(path) => Arc::new(
-            baml_rt_config::SqliteConfigStore::open(
+            baml_rt_config::SurrealConfigStore::open(
                 path.parent()
                     .unwrap_or_else(|| {
                         tracing::debug!(path = %path.display(), "no parent, using path as config base");
@@ -1822,13 +1873,14 @@ async fn main() -> anyhow::Result<()> {
                     })
                     .join("config.db"),
             )
+            .await
             .context("Failed to open config store (config.db)")?,
         ),
     };
     let fnox_resolver = Arc::new(FnoxFileSecretResolver::default_path_resolver());
     let overlay = Arc::new(OverlaySecretResolver::new(fnox_resolver.clone()));
     // Apply persisted secret link/unlink state (internal config, not a bundle).
-    let link_state: SecretLinksState = match config_service.get_internal(SECRET_LINKS_CONFIG_KEY) {
+    let link_state: SecretLinksState = match config_service.get_internal(SECRET_LINKS_CONFIG_KEY).await {
         Ok(Some(v)) => serde_json::from_value(v).unwrap_or_else(|e| {
             tracing::warn!(error = %e, "secret link state parse failed; using default");
             SecretLinksState::default()
@@ -1842,6 +1894,7 @@ async fn main() -> anyhow::Result<()> {
     apply_secret_links_state(&link_state, overlay.as_ref(), fnox_resolver.as_ref());
 
     let provenance_config = provenance_config_builder(&config.provenance_db)
+        .await
         .context("Failed to initialize provenance storage")?
         .with_config_service(config_service)
         .with_llm_secret_resolver(overlay.clone())
@@ -2012,10 +2065,14 @@ mod tests {
 
     use super::*;
 
-    fn test_provenance_config() -> ProvenanceConfig {
-        let config_service =
-            Arc::new(baml_rt_config::SqliteConfigStore::in_memory().expect("in-memory config"));
+    async fn test_provenance_config() -> ProvenanceConfig {
+        let config_service = Arc::new(
+            baml_rt_config::SurrealConfigStore::in_memory()
+                .await
+                .expect("in-memory config"),
+        );
         provenance_config_builder(&ProvenanceDb::InMemory)
+            .await
             .expect("provenance builder")
             .with_config_service(config_service)
             .with_llm_secret_resolver(Arc::new(EmptySecretResolver))
@@ -2027,8 +2084,9 @@ mod tests {
         let manager = BamlRuntimeManager::builder()
             .build()
             .expect("create runtime manager");
-        let store = GraphqliteStoreBuilder::in_memory()
+        let store = SurrealStoreBuilder::in_memory()
             .build()
+            .await
             .expect("in-memory store for test agent");
         let code = r#"
 globalThis.onChatMessage = async function(_message) {
@@ -2040,7 +2098,7 @@ globalThis.onChatMessage = async function(_message) {
             .with_runtime_manager(manager)
             .with_init_js(code)
             .with_effect_emitter(Arc::new(BusWithEffects::new()))
-            .with_graphqlite_store(store)
+            .with_surreal_store(store)
             .build()
             .await
             .expect("build test agent")
@@ -2069,28 +2127,9 @@ globalThis.onChatMessage = async function(_message) {
     }
 
     #[tokio::test]
-    async fn invocation_scope_for_agent_prefers_current_scope() {
-        let agent_id =
-            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000121").unwrap());
-        let expected = RuntimeScope::task_scope(
-            ContextId::new(121, 1),
-            agent_id.clone(),
-            MessageId::from_external(ExternalId::new("dispatch-msg-121")),
-            TaskId::from_external(ExternalId::new("dispatch-task-121")),
-        );
-
-        let scope = context::with_scope(expected.clone(), async move {
-            invocation_scope_for_agent(agent_id)
-        })
-        .await;
-
-        assert_eq!(scope.as_scope(), &expected);
-    }
-
-    #[tokio::test]
     async fn prepare_a2a_request_defaults_to_coordinator_for_plaintext_with_multiple_agents() {
         let runner = AgentRunner::new(
-            test_provenance_config(),
+            test_provenance_config().await,
             None,
             ToolAccessPolicy::default(),
             None,
@@ -2128,8 +2167,9 @@ globalThis.onChatMessage = async function(_message) {
 
     #[tokio::test]
     async fn planning_service_for_context_returns_current_and_mixed_history_consistently() {
-        let store = GraphqliteStoreBuilder::in_memory()
+        let store = SurrealStoreBuilder::in_memory()
             .build()
+            .await
             .expect("in-memory store");
         let service = PlanningServiceImpl::new(store.clone());
 
@@ -2182,6 +2222,7 @@ globalThis.onChatMessage = async function(_message) {
                 "seed intent".to_string(),
                 vec![msg.clone()],
                 None,
+                None,
             ))
             .await
             .expect("intent v1");
@@ -2210,6 +2251,7 @@ globalThis.onChatMessage = async function(_message) {
                 "refined intent".to_string(),
                 vec![msg.clone()],
                 Some(PlanningSupersessionKind::RefinedBy),
+                None,
             ))
             .await
             .expect("intent v2");
@@ -2238,6 +2280,7 @@ globalThis.onChatMessage = async function(_message) {
                 "replacement intent".to_string(),
                 vec![msg],
                 Some(PlanningSupersessionKind::ReplacedBy),
+                None,
             ))
             .await
             .expect("intent v3");
@@ -2321,7 +2364,7 @@ globalThis.onChatMessage = async function(_message) {
     #[tokio::test]
     async fn prepare_a2a_request_still_errors_without_coordinator_when_multiple_agents_loaded() {
         let runner = AgentRunner::new(
-            test_provenance_config(),
+            test_provenance_config().await,
             None,
             ToolAccessPolicy::default(),
             None,
@@ -2343,7 +2386,7 @@ globalThis.onChatMessage = async function(_message) {
     #[tokio::test]
     async fn internal_a2a_router_rejects_self_routing_by_route_key() {
         let runner = Arc::new(AgentRunner::new(
-            test_provenance_config(),
+            test_provenance_config().await,
             None,
             ToolAccessPolicy::default(),
             None,
@@ -2384,7 +2427,7 @@ globalThis.onChatMessage = async function(_message) {
     #[tokio::test]
     async fn handle_a2a_by_key_respects_instance_id() {
         let runner = AgentRunner::new(
-            test_provenance_config(),
+            test_provenance_config().await,
             None,
             ToolAccessPolicy::default(),
             None,

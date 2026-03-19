@@ -9,7 +9,7 @@ expression: baml_output
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
 // 2. Send: Can occur AFTER Open, including multiple times across a session
-// 3. Read: Retrieves output/progress using explicit read input
+// 3. Read: Dereference an archive ref (@N) from the previous Send result
 // 4. Finish: Closes the session gracefully
 // 5. Abort: Closes the session with an error
 //
@@ -17,7 +17,8 @@ expression: baml_output
 // - Open MUST come before any Send step
 // - Open may include 'initial_input' only when the step schema defines that field
 // - Send uses 'input' field (for subsequent inputs)
-// - Use Read to fetch pending output/chunks; Read may repeat between Send steps
+// - Every Send result produces an archive ref (@N). Use Read { archive_ref: "@N" }
+// - Read returns YAML-formatted lines. Use grep to filter, offset/limit to paginate.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -40,6 +41,16 @@ class SessionContext {
   scope_ref string?
   output_ref string?
   evidence_ref string?
+}
+
+// Read input: dereference an archive ref from a previous Send result.
+// Use grep to filter lines, offset/limit to paginate.
+// grep supports CLI flags: -i (case insensitive), -E (regex). Example: '-iE error|warn'
+class ArchiveReadInput {
+  archive_ref string @description("Ref from the previous Send result, e.g. '@3'.")
+  offset int? @description("Skip first N matching lines. Default: 0.")
+  limit int? @description("Return at most N lines. Default: 20, max: 100.")
+  grep string? @description("Filter lines. Supports grep flags: -i, -E. Example: '-iE error|warn'")
 }
 
 class HistoryContext {
@@ -75,8 +86,18 @@ class CalculatorOutput {
   formatted string
 }
 
+/// Tool card for support/calculate: metadata for polymorphic Open selection.
+class SupportCalculateToolCard {
+  tool_name "support/calculate"
+  description "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division."
+  session_policy "Strict"
+  input_summary "{ expression: any }"
+  tags string[] @description("Tool tags: support, calculate")
+}
+
 class SupportCalculateOpenStep {
   op "Open"
+  tool_name "support/calculate" @description("Tool to open")
 }
 
 class SupportCalculateSendStep {
@@ -86,7 +107,7 @@ class SupportCalculateSendStep {
 
 class SupportCalculateReadStep {
   op "Read"
-  input CalculatorInput @description("Read payload for this step.")
+  input ArchiveReadInput @description("Read archived tool output. Use archive_ref from the previous Send result.")
 }
 
 class SupportCalculateFinishStep {

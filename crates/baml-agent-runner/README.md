@@ -18,7 +18,7 @@ handling example).
 
 ## Provenance architecture
 
-- In GraphQLite mode, the runner wires a single concrete provenance store and
+- In SurrealDB mode, the runner wires a single concrete provenance store and
   projects it into narrow trait interfaces used by A2A/runtime components.
 - Task/message/status/artifact writes and provenance events share the same
   underlying store instance (single causality graph).

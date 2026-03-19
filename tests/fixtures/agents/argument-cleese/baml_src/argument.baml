@@ -12,28 +12,22 @@ function ArgumentReply(other_message: string) -> string {
   "#
 }
 
-// Returns one session step at a time to send Cleese's line to Chapman via internal_a2a.
-// Uses session_context to determine which FSM step to emit (Open/Send/Read/Finish).
-function CleeseSendToChapman(first_line: string, session_context: SessionContext?) -> SystemInternal_a2aSessionPlan {
+// Send Cleese's line to Chapman via an A2A session. FSM phase instructions injected by codegen.
+function CleeseSendToChapman(first_line: string) -> SystemInternal_a2aSessionPlan {
   client DefaultClient
   prompt #"
-    You are coordinating the argument sketch. Send Cleese's line to Chapman via internal_a2a.
-    Return ONLY a valid JSON object for a strict incremental session fragment.
-    Emit exactly one `step` object per reply.
+    Coordinate the argument sketch with agent argument-chapman.
+    For Open: set initial_input.target to { agent_package: "argument-chapman", agent_instance_id: "default" }.
+    For Send: set input.parts to [{ "text": "{{ first_line }}" }].
 
-    DECISION LADDER — choose the FIRST matching rule:
-    1. session_context is null or allowed_ops contains only "Open" → emit Open:
-       {"step":{"op":"Open","initial_input":{"target":{"agent_package":"argument-chapman","agent_instance_id":"default"}}}}
-    2. allowed_ops contains "Send" → emit Send with the message:
-       {"step":{"op":"Send","input":{"parts":[{"text":"{{ first_line }}"}]}}}
-    3. allowed_ops contains "Read" → emit Read:
-       {"step":{"op":"Read","input":{"parts":[]}}}
-    4. allowed_ops contains "Finish" → emit Finish:
-       {"step":{"op":"Finish"}}
+    {% if ctx.tags.conversation_history %}
+    Session history:
+    {% for msg in ctx.tags.conversation_history %}
+    {{ msg.role }}: {{ msg.content }}
+    {% endfor %}
+    {% endif %}
 
-    No prose. No markdown. Return only the JSON object.
     {{ ctx.output_format }}
-    {% if session_context %}Allowed ops: {{ session_context.allowed_ops }}{% endif %}
   "#
 }
 

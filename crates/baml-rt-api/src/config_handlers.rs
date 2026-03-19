@@ -78,11 +78,12 @@ fn config_err_500(e: impl std::fmt::Display) -> HttpApiProblem {
     problem(500, "Internal Error", "Configuration operation failed")
 }
 
-fn load_secret_links_state(
+async fn load_secret_links_state(
     config_service: &dyn InternalConfigReader,
 ) -> Result<SecretLinksState, Box<HttpApiProblem>> {
     let opt = config_service
         .get_internal(SECRET_LINKS_CONFIG_KEY)
+        .await
         .map_err(|e| Box::new(config_err_500(e)))?;
     let state: SecretLinksState = opt.map_or_else(SecretLinksState::default, |v| {
         serde_json::from_value(v).unwrap_or_else(|e| {
@@ -93,7 +94,7 @@ fn load_secret_links_state(
     Ok(state)
 }
 
-fn save_secret_links_state(
+async fn save_secret_links_state(
     config_service: &dyn InternalConfigWriter,
     state: &SecretLinksState,
 ) -> Result<(), Box<HttpApiProblem>> {
@@ -103,6 +104,7 @@ fn save_secret_links_state(
     })?;
     config_service
         .set_internal(SECRET_LINKS_CONFIG_KEY, value)
+        .await
         .map_err(|e| Box::new(config_err_500(e)))?;
     Ok(())
 }
@@ -134,6 +136,7 @@ pub async fn list_secrets_overview(
     let llm_config = match state
         .config_service
         .get_with_version(&llm_bundle)
+        .await
         .map_err(config_err_500)?
     {
         Some(s) => match LlmClientConfig::from_value(s.config) {
@@ -183,7 +186,7 @@ pub async fn list_secrets_overview(
     }
 
     let resolver = &state.secret_resolver;
-    let link_state = match load_secret_links_state(state.config_service.as_ref()) {
+    let link_state = match load_secret_links_state(state.config_service.as_ref()).await {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!(error = ?e, "secret link state load failed; reporting as empty");
@@ -293,10 +296,10 @@ pub async fn put_secret(
         })?
         .into_string();
     store.set(&request_name, SecretValue::new(value));
-    let mut link_state = load_secret_links_state(state.config_service.as_ref()).map_err(|e| *e)?;
+    let mut link_state = load_secret_links_state(state.config_service.as_ref()).await.map_err(|e| *e)?;
     link_state.links.insert(request_name, store_key);
     link_state.unlinked.retain(|r| r.as_str() != name);
-    save_secret_links_state(state.config_service.as_ref(), &link_state).map_err(|e| *e)?;
+    save_secret_links_state(state.config_service.as_ref(), &link_state).await.map_err(|e| *e)?;
     Ok(AxumStatus::NO_CONTENT)
 }
 
@@ -330,12 +333,12 @@ pub async fn delete_secret(
     }
     let request = SecretRequestName::new(name);
     store.remove(&request);
-    let mut link_state = load_secret_links_state(state.config_service.as_ref()).map_err(|e| *e)?;
+    let mut link_state = load_secret_links_state(state.config_service.as_ref()).await.map_err(|e| *e)?;
     link_state.links.remove(&request);
     if !link_state.unlinked.iter().any(|r| r.as_str() == name) {
         link_state.unlinked.push(request);
     }
-    save_secret_links_state(state.config_service.as_ref(), &link_state).map_err(|e| *e)?;
+    save_secret_links_state(state.config_service.as_ref(), &link_state).await.map_err(|e| *e)?;
     Ok(AxumStatus::NO_CONTENT)
 }
 
@@ -357,6 +360,7 @@ pub async fn list_config(
 
     let with_config: std::collections::HashSet<String> = config
         .list_with_config()
+        .await
         .map_err(config_err_500)?
         .into_iter()
         .map(|b| b.as_str().to_string())
@@ -435,7 +439,7 @@ pub async fn get_config(
     })?;
 
     let (config_value, version) = if parsed.as_str() == LLM_CONFIG_BUNDLE_NAME {
-        match config.get_with_version(&parsed).map_err(config_err_500)? {
+        match config.get_with_version(&parsed).await.map_err(config_err_500)? {
             Some(s) => (s.config, s.version.into()),
             None => (
                 serde_json::to_value(LlmClientConfig::sensible_default()).map_err(|e| {
@@ -465,7 +469,7 @@ pub async fn get_config(
             )
         })?;
 
-        match config.get_with_version(&parsed).map_err(config_err_500)? {
+        match config.get_with_version(&parsed).await.map_err(config_err_500)? {
             Some(s) => (s.config, s.version.into()),
             None => (config_meta.default.clone(), 0),
         }
@@ -552,6 +556,7 @@ pub async fn put_config(
         })?;
         let current = config
             .get_with_version(&parsed)
+            .await
             .map_err(config_err_500)?
             .map(|s| s.version.into())
             .unwrap_or(0u64);
@@ -566,7 +571,7 @@ pub async fn put_config(
         }
     }
 
-    let version = config.set(&parsed, body_to_store).map_err(|e| {
+    let version = config.set(&parsed, body_to_store).await.map_err(|e| {
         tracing::error!(error = %e, "config set failed");
         problem(400, "Bad Request", e.to_string())
     })?;
@@ -621,7 +626,7 @@ pub async fn delete_config(
         )
     })?;
 
-    config.delete(&parsed).map_err(config_err_500)?;
+    config.delete(&parsed).await.map_err(config_err_500)?;
 
     Ok(AxumStatus::NO_CONTENT)
 }
@@ -663,7 +668,7 @@ pub async fn list_config_versions(
         })?;
     }
 
-    let versions = config.list_versions(&parsed).map_err(config_err_500)?;
+    let versions = config.list_versions(&parsed).await.map_err(config_err_500)?;
 
     let dtos: Vec<ConfigVersionDto> = versions
         .into_iter()
@@ -719,6 +724,7 @@ pub async fn get_config_version(
 
     let v = config
         .get_version(&parsed, version)
+        .await
         .map_err(config_err_500)?
         .ok_or_else(|| problem(404, "Not Found", format!("Version {version} not found")))?;
 

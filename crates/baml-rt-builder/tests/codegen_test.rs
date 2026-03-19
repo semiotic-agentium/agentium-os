@@ -11,7 +11,7 @@ use baml_rt_builder::builder::{
     baml_gen::render_baml_tool_interfaces,
     baml_signature_gen::{extract_baml_signatures, session_plan_functions_map},
     schema_to_baml::generate_baml_types_from_schemas,
-    ts_gen::render_ts_declarations,
+    ts_gen::{load_manifest_tools, render_ts_declarations},
 };
 use baml_rt_core::{
     bus::EffectEvent,
@@ -146,8 +146,10 @@ async fn test_typescript_declaration_generation() {
     let runtime = BamlRuntime::from_directory(&baml_src, env_vars, FeatureFlags::default())
         .expect("load BAML runtime from fixture");
     let ir_signature = extract_baml_signatures(&runtime).expect("extract IR signatures");
+    let tool_names = load_manifest_tools(&baml_src).expect("load manifest tools");
+
     let session_plan_map = session_plan_functions_map(&ir_signature);
-    let ts_output = render_ts_declarations(&ir_signature, &session_plan_map)
+    let ts_output = render_ts_declarations(&ir_signature, &tool_names, &session_plan_map)
         .expect("Should generate TypeScript declarations");
 
     insta::assert_snapshot!("typescript_declarations", ts_output);
@@ -428,10 +430,6 @@ async fn test_generated_a2a_shim_emits_planning_effects() {
     let (mut bridge, capture) = make_capturing_bridge(agent_id.clone()).await;
 
     let shim_js = render_a2a_shim().expect("render generated shim");
-    assert!(
-        shim_js.contains("agent.onDispatch.call(agent, request)"),
-        "onDispatch wrapper must bind the agent explicitly"
-    );
     bridge
         .eval_sync(&shim_js)
         .await
@@ -588,262 +586,22 @@ async fn test_generated_a2a_shim_aborts_planning_on_run_failure() {
 }
 
 #[test]
-fn test_generated_ts_declarations_include_host_dispatch_types() {
-    let ts_output =
-        baml_rt_tools::ts_gen::render_tool_typescript().expect("render tool typescript");
-    assert!(
-        ts_output.contains("export interface HostDispatchRequest"),
-        "generated declarations must include HostDispatchRequest"
-    );
-    assert!(
-        ts_output.contains("export interface HostDispatchAck"),
-        "generated declarations must include HostDispatchAck"
-    );
-    assert!(
-        ts_output.contains("onDispatch?(request: HostDispatchRequest): Promise<HostDispatchAck>"),
-        "BamlAgent must include onDispatch member"
-    );
-    assert!(
-        ts_output.contains("function extractDispatchMessages"),
-        "generated declarations must include extractDispatchMessages global"
-    );
-    assert!(
-        !ts_output.contains("function extractDispatchEvent"),
-        "generated declarations must not include the removed extractDispatchEvent global"
-    );
-    assert!(
-        ts_output.contains("Batch-safe helper: returns a shallow copy of request.messages"),
-        "extractDispatchMessages docs must describe the batch-safe copy semantics"
-    );
-}
-
-#[tokio::test]
-async fn test_generated_a2a_shim_registers_on_dispatch_via_chat_register() {
-    let agent_id =
-        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000dd01").unwrap());
-    let (mut bridge, _capture) = make_capturing_bridge(agent_id.clone()).await;
-    bridge
-        .eval_sync("globalThis.__chat_yield = function(_chunk) {};")
-        .await
-        .expect("install dummy chat yield host");
-
-    let shim_js = render_a2a_shim().expect("render generated shim");
-    bridge
-        .eval_sync(&shim_js)
-        .await
-        .expect("evaluate generated a2a shim");
-
-    let js = r#"
-      (async function() {
-        var dispatchCalled = false;
-        var receivedRoutingKey = null;
-
-        __chat_register({
-          run: async function(ctx) { return { message: "ok" }; },
-          onDispatch: async function(request) {
-            dispatchCalled = true;
-            receivedRoutingKey = request.routing_key;
-            return { accepted: true, detail: "handled" };
-          }
-        });
-
-        if (typeof globalThis.onDispatch !== "function") {
-          return { error: "onDispatch was not registered on globalThis" };
-        }
-
-        var ack = await globalThis.onDispatch({
-          routing_key: "slack:intake",
-          message_type: "task-daemon.interpretation.v1",
-          messages: [{ schema_version: "task-daemon.interpretation.v1" }]
-        });
-
-        if (!dispatchCalled) {
-          return { error: "onDispatch handler was not called" };
-        }
-        if (receivedRoutingKey !== "slack:intake") {
-          return { error: "routing_key mismatch: " + receivedRoutingKey };
-        }
-        if (!ack.accepted) {
-          return { error: "ack.accepted should be true" };
-        }
-        return { ok: true };
-      })()
-    "#;
-
-    let context_id = ContextId::new(9_001, 1);
-    let message_id = MessageId::from_external(ExternalId::new("msg-dispatch-reg-1"));
-    let task_id = TaskId::from_external(ExternalId::new("task-dispatch-reg-1"));
-    let scope = RuntimeScope::task_scope(context_id, agent_id, message_id, task_id);
-    let invoke_scope = InvocationScope::new(scope.clone());
-
-    let result = context::with_scope(scope, async {
-        bridge
-            .eval_scoped(&invoke_scope, js)
-            .await
-            .expect("run dispatch registration test")
-    })
-    .await;
-    assert_eq!(
-        result.get("ok").and_then(Value::as_bool),
-        Some(true),
-        "dispatch registration test failed: {result:?}"
-    );
-}
-
-#[tokio::test]
-async fn test_generated_a2a_shim_on_dispatch_preserves_this() {
-    let agent_id =
-        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000dd03").unwrap());
-    let (mut bridge, _capture) = make_capturing_bridge(agent_id.clone()).await;
-    bridge
-        .eval_sync("globalThis.__chat_yield = function(_chunk) {};")
-        .await
-        .expect("install dummy chat yield host");
-
-    let shim_js = render_a2a_shim().expect("render generated shim");
-    bridge
-        .eval_sync(&shim_js)
-        .await
-        .expect("evaluate generated a2a shim");
-
-    // Register an agent where onDispatch references `this` to access a sibling property.
-    // Without the wrapper function, `this` would be globalThis instead of the agent object.
-    let js = r#"
-      (async function() {
-        var agent = {
-          agentName: "test-this-agent",
-          run: async function(ctx) { return { message: "ok" }; },
-          onDispatch: async function(request) {
-            return { accepted: true, detail: "agent=" + this.agentName };
-          }
-        };
-        __chat_register(agent);
-
-        var ack = await globalThis.onDispatch({
-          routing_key: "test:this",
-          message_type: "test.v1",
-          messages: []
-        });
-
-        if (!ack.accepted) {
-          return { error: "ack.accepted should be true" };
-        }
-        if (ack.detail !== "agent=test-this-agent") {
-          return { error: "this binding lost: detail=" + ack.detail };
-        }
-        return { ok: true };
-      })()
-    "#;
-
-    let context_id = ContextId::new(9_003, 1);
-    let message_id = MessageId::from_external(ExternalId::new("msg-dispatch-this-1"));
-    let task_id = TaskId::from_external(ExternalId::new("task-dispatch-this-1"));
-    let scope = RuntimeScope::task_scope(context_id, agent_id, message_id, task_id);
-    let invoke_scope = InvocationScope::new(scope.clone());
-
-    let result = context::with_scope(scope, async {
-        bridge
-            .eval_scoped(&invoke_scope, js)
-            .await
-            .expect("run dispatch this-binding test")
-    })
-    .await;
-    assert_eq!(
-        result.get("ok").and_then(Value::as_bool),
-        Some(true),
-        "onDispatch this-binding test failed: {result:?}"
-    );
-}
-
-#[tokio::test]
-async fn test_generated_a2a_shim_extract_dispatch_messages() {
-    let agent_id =
-        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-00000000dd02").unwrap());
-    let (mut bridge, _capture) = make_capturing_bridge(agent_id.clone()).await;
-
-    let shim_js = render_a2a_shim().expect("render generated shim");
-    bridge
-        .eval_sync(&shim_js)
-        .await
-        .expect("evaluate generated a2a shim");
-
-    let js = r#"
-      (async function() {
-        if (typeof extractDispatchEvent !== "undefined") {
-          return { error: "extractDispatchEvent should not be installed" };
-        }
-
-        var request = {
-          routing_key: "slack:intake",
-          message_type: "test.v1",
-          messages: [{ foo: "bar", num: 42 }, { foo: "baz", num: 7 }]
-        };
-        var messages = extractDispatchMessages(request);
-        if (!Array.isArray(messages)) return { error: "extractDispatchMessages did not return an array" };
-        if (messages.length !== 2) return { error: "expected 2 messages, got " + messages.length };
-        if (messages[0].foo !== "bar") return { error: "expected first foo=bar, got " + messages[0].foo };
-        if (messages[1].foo !== "baz") return { error: "expected second foo=baz, got " + messages[1].foo };
-
-        messages.push({ foo: "qux", num: 99 });
-        if (request.messages.length !== 2) return { error: "expected returned array to be a copy" };
-
-        var empty = extractDispatchMessages({ routing_key: "x", message_type: "y", messages: [] });
-        if (!Array.isArray(empty) || empty.length !== 0) return { error: "expected [] for empty messages" };
-
-        var undefinedReq = extractDispatchMessages(undefined);
-        if (!Array.isArray(undefinedReq) || undefinedReq.length !== 0) return { error: "expected [] for undefined request" };
-
-        var nullMessages = extractDispatchMessages({ routing_key: "x", message_type: "y", messages: null });
-        if (!Array.isArray(nullMessages) || nullMessages.length !== 0) return { error: "expected [] for non-array messages" };
-
-        var nullReq = extractDispatchMessages(null);
-        if (!Array.isArray(nullReq) || nullReq.length !== 0) return { error: "expected [] for null request" };
-
-        return { ok: true };
-      })()
-    "#;
-
-    let context_id = ContextId::new(9_002, 1);
-    let message_id = MessageId::from_external(ExternalId::new("msg-extract-1"));
-    let task_id = TaskId::from_external(ExternalId::new("task-extract-1"));
-    let scope = RuntimeScope::task_scope(context_id, agent_id, message_id, task_id);
-    let invoke_scope = InvocationScope::new(scope.clone());
-
-    let result = context::with_scope(scope, async {
-        bridge
-            .eval_scoped(&invoke_scope, js)
-            .await
-            .expect("run extractDispatchMessages test")
-    })
-    .await;
-    assert_eq!(
-        result.get("ok").and_then(Value::as_bool),
-        Some(true),
-        "extractDispatchMessages test failed: {result:?}"
-    );
-}
-
-#[test]
-fn test_generated_a2a_shim_planner_loop_uses_session_context_only() {
+fn test_generated_a2a_shim_step_executor_delegates_to_rust_host() {
     let shim_js = render_a2a_shim().expect("render generated shim");
     assert!(
-        shim_js.contains("session_context"),
-        "step-executor loop contract must include session_context"
+        shim_js.contains("__run_step_executor"),
+        "step-executor must delegate to Rust-hosted __run_step_executor"
     );
     assert!(
-        !shim_js.contains("session_context_v1"),
-        "step-executor loop contract must not include versioned session_context_v1 alias"
+        !shim_js.contains("allowedStepExecutorOps"),
+        "JS shim must not contain FSM policy logic (moved to Rust host)"
     );
     assert!(
-        !shim_js.contains("last_tool_output"),
-        "step-executor loop contract must not expose legacy last_tool_output"
+        !shim_js.contains("validateStepExecutorTransition"),
+        "JS shim must not contain transition validation (moved to Rust host)"
     );
     assert!(
-        !shim_js.contains("last_output_mode"),
-        "step-executor loop contract must not expose legacy last_output_mode"
-    );
-    assert!(
-        !shim_js.contains("hopMetrics"),
-        "step-executor loop contract must not expose hopMetrics in step-executor args"
+        !shim_js.contains("canonicalizeStepExecutorValue"),
+        "JS shim must not contain value canonicalization (moved to Rust host)"
     );
 }

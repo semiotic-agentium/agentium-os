@@ -22,6 +22,12 @@ sourceKeys: string[] | null;
 sourceKeyPrefixes: string[] | null;
  }
 
+export interface ArchiveReadInput { archive_ref: string;
+offset: number | null;
+limit: number | null;
+grep: string | null;
+ }
+
 export interface DiscoverAgentsOpenInput { reason: string | null;
  }
 
@@ -77,14 +83,6 @@ description: string | null;
 capabilities: string[];
  }
 
-export interface SessionContext { contract_version: string;
-session_open: boolean;
-allowed_ops: string[];
-scope_ref: string | null;
-output_ref: string | null;
-evidence_ref: string | null;
- }
-
 export interface SessionReadEnvelope { mode: SessionReadMode | null;
 refId: string;
 projection: string | null;
@@ -100,11 +98,12 @@ export interface SystemDiscover_agentsFinishStep { op: "Finish";
  }
 
 export interface SystemDiscover_agentsOpenStep { op: "Open";
+tool_name: "system/discover_agents";
 initial_input: DiscoverAgentsOpenInput | null;
  }
 
 export interface SystemDiscover_agentsReadStep { op: "Read";
-input: DiscoverAgentsSendInput;
+input: ArchiveReadInput;
  }
 
 export interface SystemDiscover_agentsSendStep { op: "Send";
@@ -121,11 +120,12 @@ export interface SystemExtrospectionFinishStep { op: "Finish";
  }
 
 export interface SystemExtrospectionOpenStep { op: "Open";
+tool_name: "system/extrospection";
 initial_input: ProvenanceQueryOpenInput | null;
  }
 
 export interface SystemExtrospectionReadStep { op: "Read";
-input: ProvenanceQuerySendInput;
+input: ArchiveReadInput;
  }
 
 export interface SystemExtrospectionSendStep { op: "Send";
@@ -139,11 +139,11 @@ export interface SystemExtrospectionSessionPlan { step: SystemExtrospectionOpenS
 
 declare global {
 
-declare function BuildExtrospectionPlan(args: { intent: QueryIntent; selected_agent: SelectedAgent | null; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SystemExtrospectionSessionPlan>;
+declare function BuildExtrospectionPlan(args: { intent: QueryIntent; selected_agent: SelectedAgent | null } & { __baml_invocation_token?: string }): Promise<SystemExtrospectionSessionPlan>;
 
 declare function DetermineExtrospectionIntent(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<NeedClarification | QueryIntent>;
 
-declare function GetDiscoverAgentsPlan(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSessionPlan>;
+declare function GetDiscoverAgentsPlan(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSessionPlan>;
 
 declare function SelectAgentFocus(args: { user_message: string; agents: AgentCardDto[] } & { __baml_invocation_token?: string }): Promise<SelectedAgent | null>;
 
@@ -351,35 +351,12 @@ export interface RunContext {
   /** Emitter for working message, artifact, awaitInput; use when you need to stream or suspend. */
   emit: SessionEmitter;
 }
-/**
- * Host-to-agent dispatch request. Delivered by the host when an external event
- * matches this agent's subscriptions. Fields mirror the Rust AgentDispatchRequest.
- */
-export interface HostDispatchRequest {
-  routing_key: string;
-  message_type: string;
-  messages: JsonValue[];
-  context_id?: string;
-  task_id?: string;
-  message_id?: string;
-  /** Structured transport metadata (source, schema version, content type). Use `messages` for arbitrary event payloads. */
-  metadata?: JsonObject;
-}
-/**
- * Acknowledgement returned by an agent's onDispatch handler.
- */
-export interface HostDispatchAck {
-  accepted: boolean;
-  detail?: string;
-}
 /** Agent contract: register this; host invokes onChatMessage per message. */
 export interface BamlAgent {
   /** Optional: run(ctx) is the entrypoint; runtime wraps it into onChatMessage. Prefer this over onChatMessage. */
   run?(ctx: RunContext): Promise<SessionResult>;
   /** Optional: raw handler when run is not used. */
   onChatMessage?(message: ChatMessage): Promise<void>;
-  /** Optional: handle host-delivered events matched by this agent's subscriptions. */
-  onDispatch?(request: HostDispatchRequest): Promise<HostDispatchAck>;
   tools?: Record<string, (args: JsonObject) => Promise<JsonValue>>;
 }
 declare global {
@@ -407,11 +384,6 @@ declare global {
    */
   function session(message: ChatMessage | null | undefined): SessionBuilder;
   function __chat_register(agent: BamlAgent): void;
-  /**
-   * Extract all payloads from a host dispatch request.
-   * Batch-safe helper: returns a shallow copy of request.messages, or [] if absent.
-   */
-  function extractDispatchMessages(request: HostDispatchRequest | null | undefined): JsonValue[];
   /** Emit a stream chunk following A2A wire format. */
   function __chat_yield(chunk: YieldChunk): void;
   function openA2aTaskSession<I = Record<string, unknown>>(token: string): Promise<A2aSessionAwaitingInput<I>>;
@@ -432,7 +404,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "BuildExtrospectionPlan" | "GetDiscoverAgentsPlan";
+export type StepExecutorFunctionName = "BuildExtrospectionPlan" | "BuildExtrospectionPlan__act__system_extrospection" | "BuildExtrospectionPlan__continue__system_extrospection" | "BuildExtrospectionPlan__select" | "GetDiscoverAgentsPlan" | "GetDiscoverAgentsPlan__act__system_discover_agents" | "GetDiscoverAgentsPlan__continue__system_discover_agents" | "GetDiscoverAgentsPlan__select";
 
 export interface SessionContext {
     contract_version: "session_context";
@@ -466,11 +438,18 @@ export interface StepExecutorRunResult<R = unknown> {
     steps: R[];
     session_context: SessionContext;
     history_context: HistoryContext | null;
+    selected_tool: string | null;
 }
 
 export interface StepExecutorFunctionMap {
   BuildExtrospectionPlan: { args: Parameters<typeof BuildExtrospectionPlan>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan>>; };
+  BuildExtrospectionPlan__act__system_extrospection: { args: Parameters<typeof BuildExtrospectionPlan__act__system_extrospection>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan__act__system_extrospection>>; };
+  BuildExtrospectionPlan__continue__system_extrospection: { args: Parameters<typeof BuildExtrospectionPlan__continue__system_extrospection>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan__continue__system_extrospection>>; };
+  BuildExtrospectionPlan__select: { args: Parameters<typeof BuildExtrospectionPlan__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan__select>>; };
   GetDiscoverAgentsPlan: { args: Parameters<typeof GetDiscoverAgentsPlan>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan>>; };
+  GetDiscoverAgentsPlan__act__system_discover_agents: { args: Parameters<typeof GetDiscoverAgentsPlan__act__system_discover_agents>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__act__system_discover_agents>>; };
+  GetDiscoverAgentsPlan__continue__system_discover_agents: { args: Parameters<typeof GetDiscoverAgentsPlan__continue__system_discover_agents>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__continue__system_discover_agents>>; };
+  GetDiscoverAgentsPlan__select: { args: Parameters<typeof GetDiscoverAgentsPlan__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__select>>; };
 }
 
 declare global {

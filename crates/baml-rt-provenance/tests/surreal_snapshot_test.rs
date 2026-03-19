@@ -1,4 +1,4 @@
-//! Snapshot-based parity tests for GraphQLite and SurrealDB backends.
+//! Snapshot-based parity tests for the SurrealDB provenance backend.
 //!
 //! These tests produce structured output that is captured via `insta` snapshots.
 //! Both backends should produce identical (or semantically equivalent) snapshots,
@@ -7,7 +7,7 @@
 //! ## Snapshot Strategy
 //!
 //! - Each scenario produces a normalized output structure
-//! - Snapshots are named with backend suffix: `{scenario}@graphqlite` and `{scenario}@surreal`
+//! - Snapshots are named with backend suffix: `{scenario}@surreal`
 //! - Outputs are normalized before snapshotting to handle:
 //!   - Timestamp differences (replaced with deterministic values)
 //!   - Ordering differences (sorted by stable keys)
@@ -21,7 +21,6 @@
 //! cargo insta review
 //! ```
 
-#![cfg(feature = "surreal-backend")]
 
 use std::sync::Arc;
 
@@ -30,9 +29,9 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, EventId, ExternalId, MessageId, TaskId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentBootedEvent, AgentType, CallScope, GraphqliteStoreBuilder, LlmUsage, ProvEvent,
-    ProvEventData, ProvenanceContextReader, ProvenanceOpsQuery, ProvenancePlanningQuery,
-    ProvenanceQueryApi, ProvenanceWriter, SurrealStoreBuilder, TaskScopedEvent,
+    AgentBootedEvent, AgentType, CallScope, LlmUsage, ProvEvent, ProvEventData,
+    ProvenanceContextReader, ProvenanceOpsQuery, ProvenancePlanningQuery, ProvenanceQueryApi,
+    ProvenanceWriter, SurrealStoreBuilder, TaskScopedEvent,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -66,12 +65,6 @@ impl<T> SnapshotStore for T where
 // ---------------------------------------------------------------------------
 // Store factories
 // ---------------------------------------------------------------------------
-
-fn build_graphqlite_store() -> Arc<dyn SnapshotStore> {
-    GraphqliteStoreBuilder::in_memory_isolated()
-        .build()
-        .expect("build GraphQLite isolated store")
-}
 
 async fn build_surreal_store() -> Arc<dyn SnapshotStore> {
     SurrealStoreBuilder::in_memory_isolated()
@@ -272,45 +265,36 @@ struct NormalizedContextItem {
 fn normalize_context_item(
     item: &baml_rt_provenance::store::ProvenanceConversationContextItem,
 ) -> NormalizedContextItem {
-    let content_keys: Vec<String> = if let Value::Object(map) = &item.content {
-        let mut keys: Vec<_> = map.keys().cloned().collect();
-        keys.sort();
-        keys
-    } else {
-        vec![]
-    };
+    use baml_rt_provenance::store::{ConversationItemContent, ToolOutcome};
 
-    let (tool_name, tool_phase) = if item.source == "tool_call" {
-        let tc = item.content.get("tool_call");
-        (
-            tc.and_then(|t| t.get("name"))
-                .and_then(Value::as_str)
-                .map(String::from),
-            tc.and_then(|t| t.get("fsm_phase"))
-                .and_then(Value::as_str)
-                .map(String::from),
-        )
-    } else if item.source == "tool_result" {
-        (
-            item.content
-                .get("tool_name")
-                .and_then(Value::as_str)
-                .map(String::from),
-            item.content
-                .get("fsm_phase")
-                .and_then(Value::as_str)
-                .map(String::from),
-        )
-    } else {
-        (None, None)
+    let (content_keys, tool_name, tool_phase, has_result, has_error) = match &item.content {
+        ConversationItemContent::Message(_) => (vec!["text".to_string()], None, None, false, false),
+        ConversationItemContent::ToolCall(tc) => (
+            vec!["args".to_string(), "fsm_phase".to_string(), "tool_name".to_string()],
+            Some(tc.tool_name.clone()),
+            Some(tc.fsm_phase.label()),
+            false,
+            false,
+        ),
+        ConversationItemContent::ToolResult(tr) => (
+            vec!["fsm_phase".to_string(), "outcome".to_string(), "tool_name".to_string()],
+            Some(tr.tool_name.clone()),
+            Some(tr.fsm_phase.label()),
+            matches!(&tr.outcome, ToolOutcome::Result(_)),
+            matches!(&tr.outcome, ToolOutcome::Error(_)),
+        ),
+        ConversationItemContent::SessionStep(ss) => (
+            vec!["op".to_string(), "tool_name".to_string()],
+            Some(ss.tool_name.clone()),
+            None,
+            false,
+            false,
+        ),
     };
-
-    let has_result = item.content.get("result").is_some();
-    let has_error = item.content.get("error").is_some();
 
     NormalizedContextItem {
         role: item.role.clone(),
-        source: item.source.clone(),
+        source: item.source_name().to_string(),
         content_keys,
         tool_name,
         tool_phase,
@@ -344,17 +328,6 @@ fn normalize_conversation_context(
 macro_rules! snapshot_test {
     ($name:ident, $setup:expr, $query:expr) => {
         paste::paste! {
-            #[tokio::test]
-            async fn [<graphqlite_snapshot_ $name>]() {
-                let store = build_graphqlite_store();
-                $setup(&*store).await;
-                let result = $query(&*store).await;
-                insta::assert_json_snapshot!(
-                    concat!(stringify!($name), "@graphqlite"),
-                    result
-                );
-            }
-
             #[tokio::test]
             async fn [<surreal_snapshot_ $name>]() {
                 let store = build_surreal_store().await;

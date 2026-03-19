@@ -44,15 +44,19 @@ impl BundleType for TestEvalBundle {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
-#[derive(Default)]
 enum SyntheticProjection {
     #[serde(alias = "IDENTITY", alias = "Identity")]
     Identity,
     #[serde(alias = "SUMMARY", alias = "Summary")]
-    #[default]
     Summary,
     #[serde(alias = "DETAIL", alias = "Detail")]
     Detail,
+}
+
+impl Default for SyntheticProjection {
+    fn default() -> Self {
+        Self::Summary
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -66,6 +70,11 @@ struct SyntheticSessionEvalInput {
     limit: Option<u32>,
     #[serde(default)]
     projection: SyntheticProjection,
+}
+impl baml_rt_tools::DescribeAction for SyntheticSessionEvalInput {
+    fn describe(&self) -> String {
+        "SyntheticSessionEvalInput".to_string()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -123,6 +132,11 @@ struct SyntheticEvalRow {
 struct SyntheticSessionEvalOpenInput {
     #[serde(default)]
     reason: Option<String>,
+}
+impl baml_rt_tools::DescribeAction for SyntheticSessionEvalOpenInput {
+    fn describe(&self) -> String {
+        "SyntheticSessionEvalOpenInput".to_string()
+    }
 }
 
 fn synthetic_session_eval_metadata() -> ToolFunctionMetadata {
@@ -250,7 +264,11 @@ fn synthetic_session_eval_handler(
                 }
             };
 
-            let retrieve_ref = args.read.as_ref().map(|read| read.ref_id.as_str());
+            let retrieve_ref = if let Some(read) = args.read.as_ref() {
+                Some(read.ref_id.as_str())
+            } else {
+                None
+            };
             if let Some(retrieve_ref) = retrieve_ref {
                 if retrieve_ref == "root" {
                     let refs = root_rows
@@ -864,12 +882,10 @@ async fn test_llm_gated_planner_with_synthetic_retrieval_eval() {
         }
         match op {
             "Open" => {
-                // LLM may return `"initial_input": null`; treat null the same as absent.
                 let open_input = step
                     .get("initial_input")
-                    .and_then(|v| if v.is_null() { None } else { Some(v) })
                     .cloned()
-                    .unwrap_or_else(|| json!({"reason": "integration eval"}));
+                    .unwrap_or_else(|| json!({"reason":"integration eval"}));
                 let sid = registry
                     .open_session(
                         "test_eval/synthetic_session_eval",

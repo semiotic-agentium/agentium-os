@@ -20,7 +20,7 @@ use baml_rt_core::{
     },
 };
 use baml_rt_provenance::{
-    GraphqliteStoreBuilder, ProvEvent, ProvenanceEffectSubscriber, ProvenanceWriter,
+    SurrealStoreBuilder, ProvEvent, ProvenanceEffectSubscriber, ProvenanceWriter,
 };
 use baml_rt_tools::{BamlTool, bundles::BundleType};
 use schemars::JsonSchema;
@@ -311,19 +311,16 @@ async fn test_quickjs_concurrent_stream_scope_propagation() {
 /// across the entire promise-polling loop, so the second context could not enter JS
 /// until the first had fully completed — including any async tool/LLM latency.
 ///
-/// Proof strategy: BarrierTool::execute() waits at a two-party Barrier.  If both
-/// invocations can enter execute() concurrently the barrier unblocks immediately.
-/// If the bridge lock is held across async work, the second invocation can never
-/// start, the barrier never unblocks, and the test times out (5s) — proving the bug.
-/// This avoids any wall-clock timing dependency.
+/// This test uses a tool with a 200ms sleep to simulate LLM-scale latency.
+/// Two invocations are launched simultaneously; if they run sequentially (bug present),
+/// total time ≥ 400ms. If they run concurrently (bug fixed), total time ≈ 200ms.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_bridge_lock_not_held_across_async_work() {
-    let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let mut manager = BamlRuntimeManager::builder().build().unwrap();
     manager
-        .register_tool(BarrierTool(barrier))
+        .register_tool(SlowTool)
         .await
-        .expect("register barrier tool");
+        .expect("register slow tool");
     let manager = Arc::new(Mutex::new(manager));
     let effect_bus = Arc::new(BusWithEffects::new());
     {
@@ -341,86 +338,91 @@ async fn test_bridge_lock_not_held_across_async_work() {
 
     bridge
         .register_js_tool(
-            "js/barrier_tool",
+            "js/slow_tool",
             r#"async function(args) {
-                const session = await openToolSession("test/barrier");
+                const session = await openToolSession("test/slow");
                 await session.send(args || {});
                 const step = await session.continue();
                 return step && step.output ? step.output : {};
             }"#,
         )
         .await
-        .expect("register barrier js tool");
+        .expect("register slow js tool");
 
     let bridge = Arc::new(Mutex::new(bridge));
+    let start = std::time::Instant::now();
 
+    // Launch two concurrent invocations — each tool takes ~200ms.
     // Uses invoke_js_tool_nonblocking so the bridge Mutex is released before the poll loop,
     // allowing both contexts to make progress concurrently. This is how the handover lane
     // dispatches invocations in production.
-    let (r1, r2) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        tokio::join!(
-            {
-                let bridge = bridge.clone();
-                async move {
-                    let context_id = ContextId::new(9, 1);
-                    let agent_id = AgentId::from_uuid(
-                        UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
-                    );
-                    let scope = RuntimeScope::task_scope(
-                        context_id.clone(),
-                        agent_id,
-                        MessageId::from_external(ExternalId::new("msg-barrier-1")),
-                        TaskId::from_external(ExternalId::new("task-barrier-1")),
-                    );
-                    let inv = InvocationScope::new(scope.clone());
-                    context::with_scope(scope, async move {
-                        QuickJSBridge::invoke_js_tool_nonblocking(
-                            bridge,
-                            &inv,
-                            "js/barrier_tool",
-                            json!({}),
-                        )
-                        .await
-                    })
+    let (r1, r2) = tokio::join!(
+        {
+            let bridge = bridge.clone();
+            async move {
+                let context_id = ContextId::new(9, 1);
+                let agent_id = AgentId::from_uuid(
+                    UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
+                );
+                let scope = RuntimeScope::task_scope(
+                    context_id.clone(),
+                    agent_id,
+                    MessageId::from_external(ExternalId::new("msg-slow-1")),
+                    TaskId::from_external(ExternalId::new("task-slow-1")),
+                );
+                let inv = InvocationScope::new(scope.clone());
+                context::with_scope(scope, async move {
+                    QuickJSBridge::invoke_js_tool_nonblocking(
+                        bridge,
+                        &inv,
+                        "js/slow_tool",
+                        json!({}),
+                    )
                     .await
-                }
-            },
-            {
-                let bridge = bridge.clone();
-                async move {
-                    let context_id = ContextId::new(9, 2);
-                    let agent_id = AgentId::from_uuid(
-                        UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
-                    );
-                    let scope = RuntimeScope::task_scope(
-                        context_id.clone(),
-                        agent_id,
-                        MessageId::from_external(ExternalId::new("msg-barrier-2")),
-                        TaskId::from_external(ExternalId::new("task-barrier-2")),
-                    );
-                    let inv = InvocationScope::new(scope.clone());
-                    context::with_scope(scope, async move {
-                        QuickJSBridge::invoke_js_tool_nonblocking(
-                            bridge,
-                            &inv,
-                            "js/barrier_tool",
-                            json!({}),
-                        )
-                        .await
-                    })
-                    .await
-                }
+                })
+                .await
             }
-        )
-    })
-    .await
-    .expect(
-        "timed out after 5s — barrier never unblocked, indicating the bridge lock was held \
-         across async work (second invocation could not enter JS while first was waiting)",
+        },
+        {
+            let bridge = bridge.clone();
+            async move {
+                let context_id = ContextId::new(9, 2);
+                let agent_id = AgentId::from_uuid(
+                    UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap(),
+                );
+                let scope = RuntimeScope::task_scope(
+                    context_id.clone(),
+                    agent_id,
+                    MessageId::from_external(ExternalId::new("msg-slow-2")),
+                    TaskId::from_external(ExternalId::new("task-slow-2")),
+                );
+                let inv = InvocationScope::new(scope.clone());
+                context::with_scope(scope, async move {
+                    QuickJSBridge::invoke_js_tool_nonblocking(
+                        bridge,
+                        &inv,
+                        "js/slow_tool",
+                        json!({}),
+                    )
+                    .await
+                })
+                .await
+            }
+        }
     );
+
+    let elapsed = start.elapsed();
 
     r1.expect("invocation 1 must succeed");
     r2.expect("invocation 2 must succeed");
+
+    // Sequential execution would take ≥ 400ms; parallel should take ≈ 200-250ms.
+    // We use 350ms as the threshold with generous margin for CI load.
+    assert!(
+        elapsed.as_millis() < 350,
+        "concurrent contexts should overlap (elapsed {}ms ≥ 350ms — possible bridge lock held across async work)",
+        elapsed.as_millis()
+    );
 }
 
 #[derive(Debug)]
@@ -433,6 +435,11 @@ struct ScopeEchoInput {
     context_id: Option<String>,
     message_id: Option<String>,
     task_id: Option<String>,
+}
+impl baml_rt_tools::DescribeAction for ScopeEchoInput {
+    fn describe(&self) -> String {
+        "ScopeEchoInput".to_string()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -468,36 +475,38 @@ impl BamlTool for ScopeEchoTool {
 /// Used by `test_bridge_lock_not_held_across_async_work` to verify that the bridge
 /// lock is released during async work so concurrent contexts can make progress.
 #[derive(Debug)]
-/// BarrierTool waits at a two-party tokio Barrier.  Two concurrent invocations unblock
-/// each other immediately; a sequential execution order (bridge lock held across async
-/// work) would deadlock since the second invocation can never enter execute().
-struct BarrierTool(Arc<tokio::sync::Barrier>);
+struct SlowTool;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, Default)]
 #[ts(export)]
-struct BarrierInput {}
+struct SlowInput {}
+impl baml_rt_tools::DescribeAction for SlowInput {
+    fn describe(&self) -> String {
+        "SlowInput".to_string()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
-struct BarrierOutput {
+struct SlowOutput {
     done: bool,
 }
 
 #[async_trait]
-impl BamlTool for BarrierTool {
+impl BamlTool for SlowTool {
     type Bundle = Test;
-    const LOCAL_NAME: &'static str = "barrier";
+    const LOCAL_NAME: &'static str = "slow";
     type OpenInput = ();
-    type Input = BarrierInput;
-    type Output = BarrierOutput;
+    type Input = SlowInput;
+    type Output = SlowOutput;
 
     fn description(&self) -> &'static str {
-        "Waits at a two-party barrier to prove concurrent execution."
+        "Sleeps 200ms to simulate latency."
     }
 
     async fn execute(&self, _args: Self::Input) -> baml_rt::Result<Self::Output> {
-        self.0.wait().await;
-        Ok(BarrierOutput { done: true })
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        Ok(SlowOutput { done: true })
     }
 }
 
@@ -878,7 +887,8 @@ async fn test_tool_session_plan_requires_manifest_mapping() {
     tracing::info!("✅ ToolSessionPlan enforces manifest mapping with no metadata fallback");
 }
 
-/// Strict-mode sequence must execute one fragment per invocation: Open -> Send -> Read -> Finish.
+/// Strict-mode sequence via per-fragment execution: Open -> Send -> Read -> Finish.
+/// Tests execute_tool_from_baml_result_or_value directly (not through step executor loop).
 #[tokio::test]
 async fn test_tool_session_plan_open_send_next_finish_runs_finish() {
     use baml_rt::baml::BamlRuntimeManager;
@@ -886,11 +896,10 @@ async fn test_tool_session_plan_open_send_next_finish_runs_finish() {
 
     let mut manager = BamlRuntimeManager::builder().build().unwrap();
     manager.register_tool(ScopeEchoTool).await.unwrap();
-    // ScopeEchoTool: Bundle Test, LOCAL_NAME scope_echo → class_name "TestScope_echo"
     let mut map = std::collections::HashMap::new();
     map.insert(
         "EchoPlanFn".to_string(),
-        "TestScope_echoSessionPlan".to_string(),
+        vec![baml_rt_tools::SessionPlanTypeName::new("TestScope_echoSessionPlan").unwrap()],
     );
     manager.set_session_plan_functions(Some(map));
 
@@ -923,25 +932,40 @@ async fn test_tool_session_plan_open_send_next_finish_runs_finish() {
             .await
     })
     .await
-    .expect("strict Send should succeed");
-    assert_eq!(sent.get("status").and_then(Value::as_str), Some("sent"));
+    .expect("blocking Send should succeed");
+    // Send now blocks until Done and returns archive_ref + output header.
+    assert_eq!(
+        sent.get("status").and_then(Value::as_str),
+        Some("done"),
+        "Send must return 'done' status (blocking); got: {:?}",
+        sent
+    );
+    let archive_ref = sent
+        .get("archive_ref")
+        .and_then(Value::as_str)
+        .expect("Send result must include archive_ref")
+        .to_string();
+    assert!(
+        archive_ref.starts_with('@'),
+        "archive_ref must start with '@'; got {archive_ref}"
+    );
 
     let read = context::with_scope(scope.as_scope().clone(), async {
         manager
             .execute_tool_from_baml_result_or_value(
                 scope.as_scope(),
-                json!({ "step": { "op": "Read", "input": {} } }),
+                json!({ "step": { "op": "Read", "input": { "archive_ref": archive_ref } } }),
                 Some("EchoPlanFn"),
                 None,
             )
             .await
     })
     .await
-    .expect("strict Read should succeed");
-    assert_eq!(read.get("status").and_then(Value::as_str), Some("done"));
+    .expect("Read with archive_ref should succeed");
     assert!(
         read.get("output").is_some(),
-        "Read should include output payload"
+        "Read should include output payload; got: {:?}",
+        read
     );
 
     let finish = context::with_scope(scope.as_scope().clone(), async {
@@ -963,6 +987,120 @@ async fn test_tool_session_plan_open_send_next_finish_runs_finish() {
     );
 }
 
+/// End-to-end test of `run_step_executor_loop` with interceptor-substituted LLM responses.
+/// Exercises the real path: loop calls invoke_function per hop, which hits the interceptor,
+/// parses the result, executes the tool session plan fragment, and returns the tool output.
+/// The loop advances the FSM based on the returned status until terminal.
+#[tokio::test]
+async fn test_step_executor_loop_drives_full_session_with_interceptor() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use baml_rt::baml::BamlRuntimeManager;
+    use baml_rt_core::context::InvocationScope;
+    use baml_rt_quickjs::step_executor_loop::run_step_executor_loop;
+    use serde_json::json;
+
+    test_support::common::ensure_fixture_runtime_types();
+    let agent_dir =
+        test_support::common::workspace_root().join("tests/fixtures/agents/stream-baml-tool");
+    let built =
+        test_support::common::build_agent_package_to_temp(agent_dir, "stream-baml-tool").await;
+
+    let mut manager = BamlRuntimeManager::builder().build().unwrap();
+    manager
+        .load_schema(built.to_str().unwrap())
+        .expect("load schema");
+
+    let manifest = baml_rt_tools::ManifestToolNames::parse(&["support/calculate".to_string()])
+        .expect("parse manifest");
+    let policy = baml_rt_tools::parse_access_allowlist();
+    manager
+        .set_tool_allowlist(
+            ["support/calculate"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        )
+        .await
+        .unwrap();
+    baml_rt_tools::register_manifest_tools(manager.tool_registry().as_ref(), &manifest, &policy)
+        .unwrap();
+    manager.rebuild_function_tool_manifest();
+
+    // Interceptor: returns Open, Send (blocking until Done), Finish in sequence.
+    // Read is now optional — Send blocks and archives; the FSM goes directly to __continue__.
+    let call_count = Arc::new(AtomicU32::new(0));
+    let call_count_clone = call_count.clone();
+
+    struct SequenceInterceptor {
+        count: Arc<AtomicU32>,
+    }
+
+    #[async_trait]
+    impl baml_rt::interceptor::LLMInterceptor for SequenceInterceptor {
+        async fn intercept_llm_call(
+            &self,
+            _ctx: &baml_rt::interceptor::LLMCallContext,
+        ) -> baml_rt_core::Result<baml_rt::interceptor::InterceptorDecision> {
+            let n = self.count.fetch_add(1, Ordering::Relaxed);
+            let response = match n {
+                0 => json!({ "step": { "op": "Open" } }),
+                1 => {
+                    json!({ "step": { "op": "Send", "input": { "expression": { "left": 2, "operation": "Add", "right": 3 } } } })
+                }
+                // Send now blocks until Done; FSM advances to __continue__ (Read/Finish allowed).
+                2 => json!({ "step": { "op": "Finish" } }),
+                _ => json!({ "message": "done" }),
+            };
+            Ok(baml_rt::interceptor::InterceptorDecision::Substitute(
+                response,
+            ))
+        }
+
+        async fn on_llm_call_complete(
+            &self,
+            _: &baml_rt::interceptor::LLMCallContext,
+            _: &baml_rt_core::Result<Value>,
+            _: u64,
+        ) {
+        }
+    }
+
+    manager
+        .register_llm_interceptor(SequenceInterceptor {
+            count: call_count_clone,
+        })
+        .await;
+
+    let agent_id =
+        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000099").unwrap());
+    let scope = InvocationScope::synthetic_message(agent_id);
+    let manager = Arc::new(Mutex::new(manager));
+
+    let result = context::with_scope(
+        scope.as_scope().clone(),
+        run_step_executor_loop(
+            &manager,
+            scope.as_scope(),
+            "ChooseCalcTool",
+            json!({ "user_message": "what is 2 + 3?" }),
+            8,
+        ),
+    )
+    .await
+    .expect("step executor loop should complete");
+
+    assert!(
+        result.steps.len() >= 3,
+        "loop should have executed at least 3 hops (Open, Send[blocking], Finish), got {}",
+        result.steps.len()
+    );
+    assert!(
+        call_count.load(Ordering::Relaxed) >= 3,
+        "interceptor should have been called at least 3 times (Open, Send, Finish)"
+    );
+}
+
 #[tokio::test]
 async fn test_runtime_canonical_planning_uses_custom_resolver_and_dynamic_context() {
     let mut manager = BamlRuntimeManager::new().expect("create runtime manager");
@@ -971,8 +1109,9 @@ async fn test_runtime_canonical_planning_uses_custom_resolver_and_dynamic_contex
         .await
         .expect("register scope echo tool");
     let effect_bus = Arc::new(BusWithEffects::new());
-    let store = GraphqliteStoreBuilder::in_memory()
+    let store = SurrealStoreBuilder::in_memory()
         .build()
+        .await
         .expect("build in-memory provenance store");
     effect_bus
         .subscribe_effect_subscriber(Arc::new(ProvenanceEffectSubscriber::new(store.clone())))
@@ -1058,53 +1197,41 @@ async fn test_runtime_canonical_planning_uses_custom_resolver_and_dynamic_contex
         .await
         .expect("step status changed");
 
-    let mut params = serde_json::Map::new();
-    params.insert(
-        "context_id".to_string(),
-        Value::String(context_id.as_str().to_string()),
-    );
-    params.insert(
-        "task_id".to_string(),
-        Value::String(task_id.as_str().to_string()),
-    );
-    params.insert(
-        "intent_id".to_string(),
-        Value::String("intent-canon".to_string()),
-    );
-    params.insert(
-        "plan_id".to_string(),
-        Value::String("plan-canon".to_string()),
-    );
-    params.insert(
-        "step_id".to_string(),
-        Value::String("step-canon".to_string()),
-    );
-    let rows = store
-        .run_cypher_read(
-            "MATCH (i:Intent), (p:Plan), (s:PlanStep) \
-             WHERE i.a2a_context_id = $context_id \
-               AND i.a2a_task_id = $task_id \
-               AND i.a2a_intent_id = $intent_id \
-               AND p.a2a_context_id = $context_id \
-               AND p.a2a_task_id = $task_id \
-               AND p.a2a_plan_id = $plan_id \
-               AND p.a2a_intent_id = $intent_id \
-               AND s.a2a_context_id = $context_id \
-               AND s.a2a_task_id = $task_id \
-               AND s.a2a_plan_id = $plan_id \
-               AND s.a2a_step_id = $step_id \
-             RETURN count(i) AS intent_count, count(p) AS plan_count, count(s) AS step_count",
-            &params,
-        )
-        .await
-        .expect("query canonical planning nodes");
-    let row = rows.iter().next().expect("canonical row");
-    let intent_count: Option<i64> = row.get("intent_count").ok();
-    let plan_count: Option<i64> = row.get("plan_count").ok();
-    let step_count: Option<i64> = row.get("step_count").ok();
-    assert_eq!(intent_count, Some(1));
-    assert_eq!(plan_count, Some(1));
-    assert_eq!(step_count, Some(1));
+    let ctx_str = context_id.as_str().to_string();
+    let task_str = task_id.as_str().to_string();
+
+    let mut intent_resp = store.db()
+        .query("SELECT count() AS cnt FROM prov_node WHERE label = 'Intent' AND props.a2a_context_id = $ctx AND props.a2a_task_id = $tid AND props.a2a_intent_id = $iid GROUP ALL")
+        .bind(("ctx", ctx_str.clone()))
+        .bind(("tid", task_str.clone()))
+        .bind(("iid", "intent-canon".to_string()))
+        .await.expect("intent query");
+    let intent_rows: Vec<Value> = intent_resp.take(0).unwrap_or_default();
+    let intent_count = intent_rows.first().and_then(|r| r.get("cnt").and_then(Value::as_i64)).unwrap_or(0);
+
+    let mut plan_resp = store.db()
+        .query("SELECT count() AS cnt FROM prov_node WHERE label = 'Plan' AND props.a2a_context_id = $ctx AND props.a2a_task_id = $tid AND props.a2a_plan_id = $pid AND props.a2a_intent_id = $iid GROUP ALL")
+        .bind(("ctx", ctx_str.clone()))
+        .bind(("tid", task_str.clone()))
+        .bind(("pid", "plan-canon".to_string()))
+        .bind(("iid", "intent-canon".to_string()))
+        .await.expect("plan query");
+    let plan_rows: Vec<Value> = plan_resp.take(0).unwrap_or_default();
+    let plan_count = plan_rows.first().and_then(|r| r.get("cnt").and_then(Value::as_i64)).unwrap_or(0);
+
+    let mut step_resp = store.db()
+        .query("SELECT count() AS cnt FROM prov_node WHERE label = 'PlanStep' AND props.a2a_context_id = $ctx AND props.a2a_task_id = $tid AND props.a2a_plan_id = $pid AND props.a2a_step_id = $sid GROUP ALL")
+        .bind(("ctx", ctx_str))
+        .bind(("tid", task_str))
+        .bind(("pid", "plan-canon".to_string()))
+        .bind(("sid", "step-canon".to_string()))
+        .await.expect("step query");
+    let step_rows: Vec<Value> = step_resp.take(0).unwrap_or_default();
+    let step_count = step_rows.first().and_then(|r| r.get("cnt").and_then(Value::as_i64)).unwrap_or(0);
+
+    assert_eq!(intent_count, 1);
+    assert_eq!(plan_count, 1);
+    assert_eq!(step_count, 1);
 
     let seen = observation
         .lock()
@@ -1192,82 +1319,4 @@ async fn test_invoke_function_with_explicit_scope_fails_for_missing_function() {
             );
         }
     }
-}
-
-#[tokio::test]
-async fn test_invoke_optional_js_function_nonblocking_returns_none_when_missing() {
-    let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::builder().build().unwrap()));
-    let agent_id =
-        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000032").unwrap());
-    let mut bridge = QuickJSBridge::new(baml_manager, agent_id).await.unwrap();
-    bridge.set_effect_liveness(Arc::new(BusWithEffects::new()) as Arc<dyn EffectLiveness>);
-    bridge
-        .register_baml_functions()
-        .await
-        .expect("register helpers");
-    let invoke_scope = InvocationScope::synthetic_message(AgentId::from_uuid(
-        UuidId::parse_str("00000000-0000-0000-0000-000000000033").unwrap(),
-    ));
-    let bridge = Arc::new(Mutex::new(bridge));
-
-    let result = QuickJSBridge::invoke_optional_js_function_nonblocking(
-        bridge,
-        &invoke_scope,
-        "MissingOptionalFunction",
-        json!({}),
-    )
-    .await
-    .expect("optional invoke should not error when function is absent");
-
-    assert!(
-        result.is_none(),
-        "missing optional function should return None, got: {result:?}"
-    );
-}
-
-#[tokio::test]
-async fn test_invoke_optional_js_function_nonblocking_includes_function_name_in_error() {
-    let baml_manager = Arc::new(Mutex::new(BamlRuntimeManager::builder().build().unwrap()));
-    let agent_id =
-        AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000034").unwrap());
-    let mut bridge = QuickJSBridge::new(baml_manager, agent_id).await.unwrap();
-    bridge.set_effect_liveness(Arc::new(BusWithEffects::new()) as Arc<dyn EffectLiveness>);
-    bridge
-        .register_baml_functions()
-        .await
-        .expect("register helpers");
-    bridge
-        .eval_sync(
-            r#"(function() {
-                globalThis.optionalBoom = function(_args) {
-                    throw new Error("kaboom");
-                };
-                return { "ready": true };
-            })()"#,
-        )
-        .await
-        .expect("install optionalBoom");
-    let invoke_scope = InvocationScope::synthetic_message(AgentId::from_uuid(
-        UuidId::parse_str("00000000-0000-0000-0000-000000000035").unwrap(),
-    ));
-    let bridge = Arc::new(Mutex::new(bridge));
-
-    let err = QuickJSBridge::invoke_optional_js_function_nonblocking(
-        bridge,
-        &invoke_scope,
-        "optionalBoom",
-        json!({}),
-    )
-    .await
-    .expect_err("optional JS error should surface as QuickJs");
-
-    let msg = err.to_string();
-    assert!(
-        msg.contains("optionalBoom"),
-        "error should include function name, got: {msg}"
-    );
-    assert!(
-        msg.contains("kaboom"),
-        "error should include JS message, got: {msg}"
-    );
 }

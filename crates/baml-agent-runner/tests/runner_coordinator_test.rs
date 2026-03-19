@@ -1,6 +1,5 @@
 #![cfg(feature = "llm-tests")]
 
-#[allow(dead_code, unused_imports)]
 mod common;
 
 use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
@@ -13,7 +12,7 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent, ProvenanceWriter,
+    AgentType, ProvEvent, ProvenanceWriter, SurrealProvenanceStore, SurrealStoreBuilder,
 };
 use baml_tools_system::SystemBundle;
 use common::{
@@ -49,15 +48,11 @@ impl A2aRequestHandler for EmptyA2aHandler {
     }
 }
 
-fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
-    let path = std::env::temp_dir().join(format!(
-        "baml-rt-runner-coordinator-{pid}-{unique}.db",
-        pid = std::process::id(),
-        unique = uuid::Uuid::new_v4(),
-    ));
-    GraphqliteStoreBuilder::file(path)
+async fn build_surreal_test_store() -> Arc<SurrealProvenanceStore> {
+    SurrealStoreBuilder::in_memory_isolated()
         .build()
-        .expect("build isolated GraphQLite store")
+        .await
+        .expect("build isolated SurrealDB store")
 }
 
 async fn build_coordinator_smoke_fixture() -> PathBuf {
@@ -71,7 +66,7 @@ async fn build_workspace_coordinator_agent() -> PathBuf {
 }
 
 async fn setup_coordinator_agent_with_provenance()
--> (baml_rt::A2aAgent, Arc<GraphqliteProvenanceStore>, PathBuf) {
+-> (baml_rt::A2aAgent, Arc<SurrealProvenanceStore>, PathBuf) {
     ensure_fixture_runtime_types();
 
     let built = build_coordinator_smoke_fixture().await;
@@ -103,7 +98,7 @@ async fn setup_coordinator_agent_with_provenance()
         ))
         .expect("register SystemBundle");
 
-    let provenance = build_graphqlite_test_store();
+    let provenance = build_surreal_test_store().await;
     let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
     provenance
         .add_event(ProvEvent::agent_booted(
@@ -119,7 +114,7 @@ async fn setup_coordinator_agent_with_provenance()
         .expect("coordinator-smoke dist/index.js");
     let agent = baml_rt::A2aAgent::builder()
         .with_agent_id(agent_id)
-        .with_graphqlite_store(provenance.clone())
+        .with_surreal_store(provenance.clone())
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
@@ -130,7 +125,7 @@ async fn setup_coordinator_agent_with_provenance()
 }
 
 async fn setup_workspace_coordinator_with_provenance()
--> (baml_rt::A2aAgent, Arc<GraphqliteProvenanceStore>, PathBuf) {
+-> (baml_rt::A2aAgent, Arc<SurrealProvenanceStore>, PathBuf) {
     ensure_fixture_runtime_types();
 
     let built = build_workspace_coordinator_agent().await;
@@ -162,7 +157,7 @@ async fn setup_workspace_coordinator_with_provenance()
         ))
         .expect("register SystemBundle");
 
-    let provenance = build_graphqlite_test_store();
+    let provenance = build_surreal_test_store().await;
     let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
     provenance
         .add_event(ProvEvent::agent_booted(
@@ -178,7 +173,7 @@ async fn setup_workspace_coordinator_with_provenance()
         .expect("coordinator-agent dist/index.js");
     let agent = baml_rt::A2aAgent::builder()
         .with_agent_id(agent_id)
-        .with_graphqlite_store(provenance.clone())
+        .with_surreal_store(provenance.clone())
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))

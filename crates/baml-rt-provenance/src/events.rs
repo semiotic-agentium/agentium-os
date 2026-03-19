@@ -96,6 +96,98 @@ pub struct LlmDriftInfo {
     pub block_min_score: f32,
     pub intent_text_preview: String,
     pub response_text_preview: String,
+    /// The plan step description that the response was compared against.
+    /// Present for PlanCommitted calls; empty for pre-plan calls.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub step_text_preview: String,
+    /// Plan-anchored drift fields — present only when the task has an active
+    /// committed plan at the time of the LLM call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_drift: Option<LlmPlanDriftInfo>,
+}
+
+/// Plan-anchored drift scores attached to an LLM call completion.
+///
+/// Discriminated by plan phase so the pre-plan/post-plan distinction is
+/// preserved end-to-end from scorer → events → store → API → UI.
+/// Pre-plan variants structurally cannot contain step alignment.
+/// Post-plan variants structurally guarantee it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "phase")]
+pub enum LlmPlanDriftInfo {
+    #[serde(rename = "pre_plan")]
+    PrePlan {
+        intent_alignment: f32,
+        trajectory_drift: f32,
+        plan_adherence_score: f32,
+        composite_severity: String,
+    },
+    #[serde(rename = "plan_committed")]
+    PlanCommitted {
+        intent_alignment: f32,
+        step_alignment: f32,
+        /// Cross-encoder relevance logit for (step_description, response).
+        /// Always present when PlanCommitted — the reranker is always configured.
+        cross_encoder_step_score: f32,
+        trajectory_drift: f32,
+        plan_adherence_score: f32,
+        composite_severity: String,
+    },
+}
+
+impl LlmPlanDriftInfo {
+    pub fn intent_alignment(&self) -> f32 {
+        match self {
+            Self::PrePlan {
+                intent_alignment, ..
+            } => *intent_alignment,
+            Self::PlanCommitted {
+                intent_alignment, ..
+            } => *intent_alignment,
+        }
+    }
+
+    pub fn step_alignment(&self) -> Option<f32> {
+        match self {
+            Self::PrePlan { .. } => None,
+            Self::PlanCommitted { step_alignment, .. } => Some(*step_alignment),
+        }
+    }
+
+    pub fn trajectory_drift(&self) -> f32 {
+        match self {
+            Self::PrePlan {
+                trajectory_drift, ..
+            } => *trajectory_drift,
+            Self::PlanCommitted {
+                trajectory_drift, ..
+            } => *trajectory_drift,
+        }
+    }
+
+    pub fn plan_adherence_score(&self) -> f32 {
+        match self {
+            Self::PrePlan {
+                plan_adherence_score,
+                ..
+            } => *plan_adherence_score,
+            Self::PlanCommitted {
+                plan_adherence_score,
+                ..
+            } => *plan_adherence_score,
+        }
+    }
+
+    pub fn composite_severity(&self) -> &str {
+        match self {
+            Self::PrePlan {
+                composite_severity, ..
+            } => composite_severity,
+            Self::PlanCommitted {
+                composite_severity, ..
+            } => composite_severity,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -133,7 +225,7 @@ pub enum ProvEventData {
         usage: LlmUsage,
         duration_ms: u64,
         outcome: Outcome,
-        drift: Option<LlmDriftInfo>,
+        drift: Option<Box<LlmDriftInfo>>,
     },
     ToolCallStarted {
         scope: CallScope,
@@ -155,6 +247,25 @@ pub enum ProvEventData {
         outcome: Outcome,
         /// For system/internal_a2a: the delegated-to agent package (write-time provenance).
         delegation_target: Option<String>,
+    },
+    /// A single step within a tool session (Open / SendDone / Read).
+    /// Written synchronously so conversation_context sees session state mid-execution.
+    ToolSessionStep {
+        scope: CallScope,
+        tool_name: String,
+        session_id: String,
+        /// Discriminant: "open" | "send_done" | "read".
+        op_kind: String,
+        /// For SendDone: full display string `"@1 tool 'summary' [N lines, KB]"`.
+        header: Option<String>,
+        /// For SendDone/Read: canonical archive ref string e.g. `"@1"`.
+        archive_ref: Option<String>,
+        /// For Read: grep pattern used.
+        grep: Option<String>,
+        /// For Read: line offset (0-based count of matched lines to skip).
+        offset: Option<usize>,
+        /// For Read: page limit used.
+        limit: Option<usize>,
     },
     AgentBooted {
         agent_id: AgentId,
@@ -194,6 +305,16 @@ pub enum ProvEventData {
         description: String,
         derived_from_messages: Vec<MessageId>,
         supersession: Option<PlanningSupersessionKind>,
+        /// Cosine similarity between the previous intent embedding and this
+        /// new one.  Present only on supersession events.
+        ///
+        /// - ≈ 1.0: new intent closely paraphrases the old one (legitimate replan)
+        /// - ≈ 0.5: moderate semantic shift (suspicious)
+        /// - ≈ 0.0: completely different goal (potential control hijacking)
+        ///
+        /// `None` for the first intent (no previous to compare against).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revision_intent_drift: Option<f32>,
     },
     PlanGenerated {
         task_id: TaskId,
@@ -270,24 +391,6 @@ pub enum ProvEvent {
 }
 
 impl ProvEvent {
-    pub fn with_event_id(mut self, id: EventId) -> Self {
-        match &mut self {
-            ProvEvent::Task(event) => event.id = id.clone(),
-            ProvEvent::Global(event) => event.id = id.clone(),
-            ProvEvent::AgentBooted(event) => event.id = id,
-        }
-        self
-    }
-
-    pub fn with_timestamp_ms(mut self, timestamp_ms: u64) -> Self {
-        match &mut self {
-            ProvEvent::Task(event) => event.timestamp_ms = timestamp_ms,
-            ProvEvent::Global(event) => event.timestamp_ms = timestamp_ms,
-            ProvEvent::AgentBooted(event) => event.timestamp_ms = timestamp_ms,
-        }
-        self
-    }
-
     pub fn id(&self) -> &EventId {
         match self {
             ProvEvent::Task(event) => &event.id,
@@ -432,7 +535,7 @@ impl ProvEvent {
         usage: LlmUsage,
         duration_ms: u64,
         outcome: Outcome,
-        drift: Option<LlmDriftInfo>,
+        drift: Option<Box<LlmDriftInfo>>,
     ) -> Self {
         ProvEvent::Global(GlobalEvent {
             id: next_event_id(),
@@ -493,7 +596,7 @@ impl ProvEvent {
         usage: LlmUsage,
         duration_ms: u64,
         outcome: Outcome,
-        drift: Option<LlmDriftInfo>,
+        drift: Option<Box<LlmDriftInfo>>,
     ) -> Self {
         ProvEvent::Task(TaskScopedEvent {
             id: next_event_id(),
@@ -660,6 +763,58 @@ impl ProvEvent {
         })
     }
 
+    pub fn tool_session_step(
+        context_id: ContextId,
+        scope: CallScope,
+        tool_name: String,
+        session_id: String,
+        op: &crate::store::SessionStepOp,
+    ) -> Self {
+        let (op_kind, header, archive_ref, grep, offset, limit) = match op {
+            crate::store::SessionStepOp::Open => ("open".to_string(), None, None, None, None, None),
+            crate::store::SessionStepOp::SendDone {
+                archive_ref,
+                header,
+            } => (
+                "send_done".to_string(),
+                Some(header.clone()),
+                Some(archive_ref.clone()),
+                None,
+                None,
+                None,
+            ),
+            crate::store::SessionStepOp::Read {
+                archive_ref,
+                grep,
+                offset,
+                limit,
+            } => (
+                "read".to_string(),
+                None,
+                Some(archive_ref.clone()),
+                grep.clone(),
+                Some(*offset),
+                Some(*limit),
+            ),
+        };
+        ProvEvent::Global(GlobalEvent {
+            id: next_event_id(),
+            context_id,
+            timestamp_ms: now_millis(),
+            data: ProvEventData::ToolSessionStep {
+                scope,
+                tool_name,
+                session_id,
+                op_kind,
+                header,
+                archive_ref,
+                grep,
+                offset,
+                limit,
+            },
+        })
+    }
+
     pub fn agent_booted(
         agent_id: AgentId,
         agent_type: AgentType,
@@ -770,6 +925,7 @@ impl ProvEvent {
         description: String,
         derived_from_messages: Vec<MessageId>,
         supersession: Option<PlanningSupersessionKind>,
+        revision_intent_drift: Option<f32>,
     ) -> Self {
         let intent_id = intent_id.into();
         ProvEvent::Task(TaskScopedEvent {
@@ -783,6 +939,7 @@ impl ProvEvent {
                 description,
                 derived_from_messages,
                 supersession,
+                revision_intent_drift,
             },
         })
     }

@@ -6,9 +6,8 @@
 use std::{collections::HashMap, path::Path, str::FromStr, sync::Arc, time::Instant};
 
 use async_trait::async_trait;
-use baml_rt_core::{BamlRtError, InvocationKind, Outcome, Result, bus::EffectEmitter, context};
+use baml_rt_core::{BamlFunctionId, BamlRtError, InvocationKind, Outcome, Result, bus::EffectEmitter, context};
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry};
-use baml_rt_tools::ToolRegistry;
 use baml_runtime::{
     BamlRuntime, FunctionResultStream, RuntimeContextManager,
     client_registry::{ClientProperty, ClientProvider, ClientRegistry},
@@ -76,13 +75,12 @@ async fn build_session_fsm_client_registry(
     scope: &context::RuntimeScope,
     function_name: &str,
     args: &Value,
-    force_session_fsm_client: bool,
     params: &BamlMap<String, BamlValue>,
     ctx_manager: &RuntimeContextManager,
     llm_secret_resolver: Option<&dyn LlmSecretResolver>,
     planning_step: Option<(&str, &str)>,
 ) -> Result<Option<ClientRegistry>> {
-    if !force_session_fsm_client && planner_state_telemetry(args).is_none() {
+    if planner_state_telemetry(args).is_none() {
         return Ok(None);
     }
 
@@ -210,7 +208,6 @@ pub trait ConversationContextProvider: Send + Sync {
 
 pub struct BamlExecutor {
     runtime: Arc<BamlRuntime>,
-    tool_registry: Arc<ToolRegistry>,
     effect_emitter: Option<Arc<dyn EffectEmitter>>,
     conversation_context_provider: Option<Arc<dyn ConversationContextProvider>>,
     parse_retry_policy: ParseRetryPolicy,
@@ -225,11 +222,7 @@ impl BamlExecutor {
     /// `env_vars` should include resolved LLM secrets (e.g. OPENROUTER_API_KEY) so that
     /// BAML schema's `api_key env.X` references resolve correctly without relying on
     /// std::env::var. Pass the result of `BamlRuntimeManager::resolve_secrets_as_env_vars()`.
-    pub fn load_il(
-        baml_src_dir: &Path,
-        tool_registry: Arc<ToolRegistry>,
-        env_vars: HashMap<String, String>,
-    ) -> Result<Self> {
+    pub fn load_il(baml_src_dir: &Path, env_vars: HashMap<String, String>) -> Result<Self> {
         tracing::info!(?baml_src_dir, "Loading BAML runtime from directory");
 
         let feature_flags = internal_baml_core::feature_flags::FeatureFlags::default();
@@ -239,7 +232,6 @@ impl BamlExecutor {
 
         Ok(Self {
             runtime: Arc::new(runtime),
-            tool_registry,
             effect_emitter: None,
             conversation_context_provider: None,
             parse_retry_policy: ParseRetryPolicy::default(),
@@ -274,15 +266,18 @@ impl BamlExecutor {
 
     /// Execute a BAML function using the compiled IL.
     /// Returns `(value, Some(handle))` on success when the manager will run tool/plan execution;
+    #[allow(clippy::too_many_arguments)]
     /// the manager must call `handle.complete(Success, None)` or `handle.complete(Failure, Some(reason))` after.
     pub async fn execute_function(
         &self,
         scope: &context::RuntimeScope,
         function_name: &str,
         args: Value,
-        force_session_fsm_client: bool,
         interceptor_registry: Option<Arc<Mutex<InterceptorRegistry>>>,
         planning_step: Option<(String, String)>,
+        function_tool_manifest: &crate::baml::FunctionToolManifest,
+        // Override context tags — merged intra-turn history. When Some, skips provider query.
+        override_context_tags: Option<HashMap<String, BamlValue>>,
     ) -> Result<(Value, Option<LLMCompletionHandle>)> {
         tracing::debug!(
             function = function_name,
@@ -310,7 +305,7 @@ impl BamlExecutor {
         // Create collector for LLM interception if registry is provided (Arc so we can pass a clone to completion handle).
         let collector: Option<Arc<BamlLLMCollector>> =
             interceptor_registry.as_ref().map(|registry| {
-                let mut coll = BamlLLMCollector::new(registry.clone(), function_name.to_string());
+                let mut coll = BamlLLMCollector::new(registry.clone(), BamlFunctionId::parse(function_name));
                 if let Some(ref emitter) = self.effect_emitter {
                     coll.set_effect_emitter(emitter.clone());
                 }
@@ -318,7 +313,10 @@ impl BamlExecutor {
             });
 
         // Pre-execution interception: intercept LLM calls before they're sent
-        let context_tags = self.build_conversation_context_tags(scope).await?;
+        let context_tags = match override_context_tags {
+            Some(tags) => Some(tags),
+            None => self.build_conversation_context_tags(scope).await?,
+        };
         let ctx_manager = self.create_ctx_manager_for_scope(scope, context_tags)?;
         let planning_step_refs = planning_step
             .as_ref()
@@ -328,7 +326,6 @@ impl BamlExecutor {
             scope,
             function_name,
             &args,
-            force_session_fsm_client,
             &params,
             &ctx_manager,
             self.llm_secret_resolver.as_deref(),
@@ -352,6 +349,7 @@ impl BamlExecutor {
                 self.effect_emitter.as_ref(),
                 collector.as_ref().map(Arc::as_ref),
                 planning_step_refs,
+                function_tool_manifest,
             )
             .await
             {
@@ -372,7 +370,12 @@ impl BamlExecutor {
                 Ok(InterceptorDecision::Substitute(value)) => {
                     if let Some(ref collector) = collector {
                         collector
-                            .complete_pending_effects(Outcome::Success, 0, None, None)
+                            .complete_pending_effects(
+                                Outcome::Success,
+                                0,
+                                None,
+                                Some(value.clone()),
+                            )
                             .await;
                     }
                     return Ok((value, None));
@@ -492,65 +495,17 @@ impl BamlExecutor {
                     let json_value = serde_json::to_value(parsed.serialize_partial())
                         .map_err(BamlRtError::Json)?;
 
-                    let elapsed_ms = start_time.elapsed().as_millis() as u64;
-                    match maybe_execute_tool_from_result(&self.tool_registry, &json_value, scope)
-                        .await
-                    {
-                        Err(e) => {
-                            if let Some(ref collector) = collector {
-                                collector
-                                    .complete_pending_effects(
-                                        Outcome::Failure,
-                                        elapsed_ms,
-                                        None,
-                                        None,
-                                    )
-                                    .await;
-                            }
-                            return Err(e);
-                        }
-                        Ok(None) => {
-                            // Defer: manager will run execute_tool_from_baml_result_or_value (e.g.
-                            // session plans). Do NOT call process_trace_events here — it always
-                            // passes Ok to the interceptor, so we'd write Success. The real outcome
-                            // (Success or Failure from plan extraction/execution) comes from the
-                            // effect completion. If we notified here, we'd race with the correct
-                            // outcome and risk showing Success in the sequence diagram when the
-                            // plan had empty steps.
-                            let handle = collector.as_ref().map(|c| {
-                                BamlLLMCollector::completion_handle(
-                                    c.clone(),
-                                    start_time,
-                                    scope.clone(),
-                                    json_value.clone(),
-                                )
-                            });
-                            return Ok((json_value, handle));
-                        }
-                        Ok(Some(tool_result)) => {
-                            // Immediate tool execution completed; no plan to run. Safe to notify
-                            // interceptors now.
-                            if let Some(ref collector) = collector
-                                && let Err(e) = collector.process_trace_events(scope).await
-                            {
-                                tracing::warn!(
-                                    error = ?e,
-                                    "Failed to process trace events for LLM interception"
-                                );
-                            }
-                            if let Some(ref collector) = collector {
-                                collector
-                                    .complete_pending_effects(
-                                        Outcome::Success,
-                                        elapsed_ms,
-                                        None,
-                                        Some(json_value.clone()),
-                                    )
-                                    .await;
-                            }
-                            return Ok((tool_result, None));
-                        }
-                    }
+                    // All tool/session-plan execution deferred to invoke_function's
+                    // execute_tool_from_baml_result_or_value — the single canonical path.
+                    let handle = collector.as_ref().map(|c| {
+                        BamlLLMCollector::completion_handle(
+                            c.clone(),
+                            start_time,
+                            scope.clone(),
+                            json_value.clone(),
+                        )
+                    });
+                    return Ok((json_value, handle));
                 }
                 Err(e) => {
                     last_parse_err = Some(anyhow::Error::msg(e.to_string()));
@@ -673,21 +628,28 @@ impl BamlExecutor {
             return Ok(None);
         };
 
-        let mut tags = HashMap::new();
-        if let Some(obj) = payload.as_object()
-            && obj.contains_key("conversation_history")
+        // Provider returns a flat JSON array of {role, content} items.
+        // Legacy providers may return a keyed object — extract conversation_history key
+        // for backward compatibility during transition.
+        let history = if payload.is_array() {
+            &payload
+        } else if let Some(obj) = payload.as_object()
+            && let Some(ch) = obj.get("conversation_history")
         {
-            for key in ["conversation_history", "event_log", "session_state"] {
-                if let Some(value) = obj.get(key) {
-                    tags.insert(key.to_string(), self.json_to_baml_value(value)?);
-                }
-            }
+            ch
         } else {
-            tags.insert(
-                "conversation_history".to_string(),
-                self.json_to_baml_value(&payload)?,
-            );
+            &payload
+        };
+
+        if history.as_array().map(|a| a.is_empty()).unwrap_or(false) {
+            return Ok(None);
         }
+
+        let mut tags = HashMap::new();
+        tags.insert(
+            "conversation_history".to_string(),
+            self.json_to_baml_value(history)?,
+        );
         Ok(Some(tags))
     }
 
@@ -746,156 +708,5 @@ impl BamlExecutor {
             }
             Value::Null => Ok(BamlValue::Null),
         }
-    }
-}
-
-async fn maybe_execute_tool_from_result(
-    tool_registry: &Arc<ToolRegistry>,
-    result: &Value,
-    scope: &baml_rt_core::context::RuntimeScope,
-) -> Result<Option<Value>> {
-    let Some((tool_name, tool_args)) = extract_tool_call(result)? else {
-        return Ok(None);
-    };
-
-    let tool_result = tool_registry
-        .execute(&tool_name, tool_args, scope.context_id(), scope.agent_id())
-        .await?;
-    Ok(Some(tool_result))
-}
-
-fn extract_tool_call(result: &Value) -> Result<Option<(String, Value)>> {
-    let obj = match result.as_object() {
-        Some(obj) => obj,
-        None => return Ok(None),
-    };
-
-    if let Some(tool_name) = obj.get("tool_name") {
-        return Ok(Some(parse_tool_call_object(obj, tool_name)?));
-    }
-
-    if obj.len() == 1 {
-        let (_, value) = obj.iter().next().ok_or_else(|| {
-            BamlRtError::InvalidArgument("Expected non-empty tool object".to_string())
-        })?;
-        if let Some(inner) = value.as_object()
-            && let Some(tool_name) = inner.get("tool_name")
-        {
-            return Ok(Some(parse_tool_call_object(inner, tool_name)?));
-        }
-    }
-
-    Ok(None)
-}
-
-fn parse_tool_call_object(
-    obj: &serde_json::Map<String, Value>,
-    tool_name_value: &Value,
-) -> Result<(String, Value)> {
-    let tool_name = tool_name_value
-        .as_str()
-        .ok_or_else(|| BamlRtError::InvalidArgument("tool_name must be a string".to_string()))?;
-
-    let mut tool_args = serde_json::Map::new();
-    for (key, value) in obj {
-        if key != "tool_name" && key != "__type" {
-            tool_args.insert(key.clone(), value.clone());
-        }
-    }
-
-    Ok((tool_name.to_string(), Value::Object(tool_args)))
-}
-
-#[cfg(test)]
-mod tests {
-    use async_trait::async_trait;
-    use baml_rt_tools::{BamlTool, bundles::BundleType};
-    use schemars::JsonSchema;
-    use serde::{Deserialize, Serialize};
-    use serde_json::json;
-    use ts_rs::TS;
-
-    use super::*;
-
-    // Test bundle for test tools
-    struct Test;
-
-    impl BundleType for Test {
-        const NAME: &'static str = "test";
-        fn description() -> &'static str {
-            "Test tools for unit testing"
-        }
-    }
-
-    struct EchoTool;
-
-    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-    #[ts(export)]
-    struct EchoInput {
-        message: String,
-    }
-
-    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
-    #[ts(export)]
-    struct EchoOutput {
-        #[ts(type = "any")]
-        echo: serde_json::Value,
-    }
-
-    #[async_trait]
-    impl BamlTool for EchoTool {
-        type Bundle = Test;
-        const LOCAL_NAME: &'static str = "echo_tool";
-        type OpenInput = ();
-        type Input = EchoInput;
-        type Output = EchoOutput;
-
-        fn description(&self) -> &'static str {
-            "Echoes the input payload."
-        }
-
-        async fn execute(&self, args: Self::Input) -> Result<Self::Output> {
-            Ok(EchoOutput {
-                echo: json!({ "message": args.message }),
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn executes_tool_when_explicit_variant_is_present() {
-        use baml_rt_core::ids::{AgentId, UuidId};
-        let registry = Arc::new(ToolRegistry::new());
-        registry.register(EchoTool).unwrap();
-        let agent_id =
-            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000040").unwrap());
-        let scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id);
-
-        let result = json!({
-            "tool_name": "test/echo_tool",
-            "message": "hello"
-        });
-
-        let tool_result = maybe_execute_tool_from_result(&registry, &result, scope.as_scope())
-            .await
-            .unwrap()
-            .expect("expected tool execution");
-
-        assert_eq!(tool_result["echo"]["message"], "hello");
-    }
-
-    #[tokio::test]
-    async fn leaves_non_tool_results_untouched() {
-        use baml_rt_core::ids::{AgentId, UuidId};
-        let registry = Arc::new(ToolRegistry::new());
-        let agent_id =
-            AgentId::from_uuid(UuidId::parse_str("00000000-0000-0000-0000-000000000041").unwrap());
-        let scope = baml_rt_core::context::InvocationScope::synthetic_message(agent_id);
-        let result = json!({ "value": "not a tool" });
-
-        let tool_result = maybe_execute_tool_from_result(&registry, &result, scope.as_scope())
-            .await
-            .unwrap();
-
-        assert!(tool_result.is_none());
     }
 }

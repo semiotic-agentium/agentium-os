@@ -166,6 +166,11 @@ async fn test_llm_tool_calling_js() {
     struct ReverseInput {
         text: String,
     }
+    impl baml_rt_tools::DescribeAction for ReverseInput {
+        fn describe(&self) -> String {
+            format!("Reverse text: {}", self.text)
+        }
+    }
 
     #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
     #[ts(export)]

@@ -153,6 +153,40 @@ pub enum NotionInput {
     GetPageBlocks(NotionGetPageBlocksInput),
 }
 
+impl baml_rt_tools::DescribeAction for NotionInput {
+    fn describe(&self) -> String {
+        match self {
+            NotionInput::SearchPages(p) => match &p.query {
+                Some(q) if !q.is_empty() => format!("searching Notion for '{q}'"),
+                _ => "listing all Notion pages".to_string(),
+            },
+            NotionInput::GetPage(_) => "retrieving Notion page metadata".to_string(),
+            NotionInput::GetPageBlocks(_) => "retrieving Notion page content".to_string(),
+        }
+    }
+}
+
+impl baml_rt_tools::DescribeAction for NotionSearchPagesInput {
+    fn describe(&self) -> String {
+        match &self.query {
+            Some(q) if !q.is_empty() => format!("searching Notion for '{q}'"),
+            _ => "listing all Notion pages".to_string(),
+        }
+    }
+}
+
+impl baml_rt_tools::DescribeAction for NotionGetPageInput {
+    fn describe(&self) -> String {
+        "retrieving Notion page metadata".to_string()
+    }
+}
+
+impl baml_rt_tools::DescribeAction for NotionGetPageBlocksInput {
+    fn describe(&self) -> String {
+        "retrieving Notion page content".to_string()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Output types
 // ---------------------------------------------------------------------------
@@ -1048,12 +1082,20 @@ impl BamlTool for NotionTool {
         }
     }
 
-    fn compact_result(&self, content: &mut serde_json::Value) {
-        if let Some(result) = content.get_mut("result") {
-            compact_notion_payload(result);
+    fn describe_result(&self, output: &Self::Output) -> String {
+        let page_count = output.pages.len();
+        let block_count = output.blocks.len();
+        if page_count > 0 {
+            format!("found {} Notion page(s)", page_count)
+        } else if block_count > 0 {
+            format!("retrieved {} Notion block(s)", block_count)
         } else {
-            compact_notion_payload(content);
+            "Notion query returned no results".to_string()
         }
+    }
+
+    fn describe_open(&self) -> String {
+        "using Notion for read-only page retrieval".to_string()
     }
 }
 
@@ -1112,11 +1154,15 @@ impl BamlTool for NotionSearchPagesTool {
             .await
     }
 
-    fn compact_result(&self, content: &mut serde_json::Value) {
-        if let Some(result) = content.get_mut("result") {
-            compact_notion_payload(result);
+    fn describe_result(&self, output: &Self::Output) -> String {
+        let page_count = output.pages.len();
+        let block_count = output.blocks.len();
+        if page_count > 0 {
+            format!("found {} Notion page(s)", page_count)
+        } else if block_count > 0 {
+            format!("retrieved {} Notion block(s)", block_count)
         } else {
-            compact_notion_payload(content);
+            "Notion query returned no results".to_string()
         }
     }
 }
@@ -1169,11 +1215,15 @@ impl BamlTool for NotionGetPageTool {
         self.client.get_page(api_key, &args.page_id).await
     }
 
-    fn compact_result(&self, content: &mut serde_json::Value) {
-        if let Some(result) = content.get_mut("result") {
-            compact_notion_payload(result);
+    fn describe_result(&self, output: &Self::Output) -> String {
+        let page_count = output.pages.len();
+        let block_count = output.blocks.len();
+        if page_count > 0 {
+            format!("found {} Notion page(s)", page_count)
+        } else if block_count > 0 {
+            format!("retrieved {} Notion block(s)", block_count)
         } else {
-            compact_notion_payload(content);
+            "Notion query returned no results".to_string()
         }
     }
 }
@@ -1237,11 +1287,15 @@ impl BamlTool for NotionGetPageBlocksTool {
             .await
     }
 
-    fn compact_result(&self, content: &mut serde_json::Value) {
-        if let Some(result) = content.get_mut("result") {
-            compact_notion_payload(result);
+    fn describe_result(&self, output: &Self::Output) -> String {
+        let page_count = output.pages.len();
+        let block_count = output.blocks.len();
+        if page_count > 0 {
+            format!("found {} Notion page(s)", page_count)
+        } else if block_count > 0 {
+            format!("retrieved {} Notion block(s)", block_count)
         } else {
-            compact_notion_payload(content);
+            "Notion query returned no results".to_string()
         }
     }
 }
@@ -1607,34 +1661,5 @@ mod compaction_tests {
         };
         compact_notion_output(&mut output);
         assert!(output.operation.is_none());
-    }
-
-    // -----------------------------------------------------------------------
-    // compact_notion_payload — envelope handling
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn compact_payload_via_result_envelope() {
-        let long_text = "y".repeat(300);
-        let output = NotionOutput {
-            pages: vec![],
-            blocks: vec![make_block("paragraph", Some(&long_text))],
-            next_cursor: None,
-            has_more: false,
-            sources: vec![],
-            message: "test".to_string(),
-            operation: Some(NotionOperation::GetPageBlocks),
-        };
-        let mut content = serde_json::json!({
-            "tool_name": "support/notion",
-            "result": serde_json::to_value(&output).unwrap(),
-        });
-        let tool = NotionTool::new();
-        tool.compact_result(&mut content);
-        let result: NotionOutput =
-            serde_json::from_value(content.get("result").unwrap().clone()).unwrap();
-        let text = result.blocks[0].text.as_ref().unwrap();
-        assert!(text.ends_with("..."));
-        assert!(text.chars().count() <= BLOCK_TEXT_MAX_CHARS + 3);
     }
 }

@@ -52,15 +52,23 @@ impl DriftAssessment {
 
 /// Compute drift between a prompt and a completed LLM response.
 ///
-/// Returns `None` when the prompt has no extractable intent or when embedding
+/// `intent_override` — when `Some`, use this text as the intent anchor instead
+/// of extracting from the raw prompt. Pass the committed plan intent_description
+/// when a plan tracker exists; fall back to `None` for pre-plan calls.
+///
+/// Returns `None` when the intent text is empty/unextractable or when embedding
 /// computation fails.
 pub fn score_drift(
     prompt: &Value,
     response: &Value,
     config: &DriftConfig,
     provider: &dyn EmbeddingProvider,
+    intent_override: Option<&str>,
 ) -> Option<DriftAssessment> {
-    let intent_text = extract_intent_from_prompt(prompt)?;
+    let intent_text = match intent_override {
+        Some(text) if !text.trim().is_empty() => text.to_owned(),
+        _ => extract_intent_from_prompt(prompt)?,
+    };
     let response_text = extract_response_text(response);
     let embeddings = match provider.embed_batch(&[&intent_text, &response_text]) {
         Ok(embeddings) if embeddings.len() == 2 => embeddings,
@@ -158,8 +166,8 @@ mod tests {
         let prompt = json!([{"role": "user", "content": "Create a task titled 'Research'."}]);
         let response = json!({"message": "Create task in list 901325431486"});
 
-        let assessment =
-            score_drift(&prompt, &response, &DriftConfig::default(), &provider).expect("score");
+        let assessment = score_drift(&prompt, &response, &DriftConfig::default(), &provider, None)
+            .expect("score");
 
         assert!(assessment.score > 0.9, "score={}", assessment.score);
         assert_eq!(assessment.severity, DriftSeverity::Acceptable);
@@ -190,7 +198,7 @@ mod tests {
             vec![0.0; 4],
         );
         let warn_assessment =
-            score_drift(&prompt, &response, &config, &warn_provider).expect("warn score");
+            score_drift(&prompt, &response, &config, &warn_provider, None).expect("warn score");
         assert_eq!(warn_assessment.severity, DriftSeverity::Warn);
 
         let block_provider = MockProvider::new(
@@ -201,7 +209,7 @@ mod tests {
             vec![0.0; 4],
         );
         let block_assessment =
-            score_drift(&prompt, &response, &config, &block_provider).expect("block score");
+            score_drift(&prompt, &response, &config, &block_provider, None).expect("block score");
         assert_eq!(block_assessment.severity, DriftSeverity::Block);
     }
 
@@ -211,7 +219,9 @@ mod tests {
         let prompt = json!([{"role": "system", "content": "You are an agent."}]);
         let response = json!({"message": "Task created."});
 
-        assert!(score_drift(&prompt, &response, &DriftConfig::default(), &provider).is_none());
+        assert!(
+            score_drift(&prompt, &response, &DriftConfig::default(), &provider, None).is_none()
+        );
     }
 
     #[test]

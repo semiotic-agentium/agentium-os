@@ -23,7 +23,7 @@ A BAML / ts runtime that can:
       * Tool discovery
       * Agent Discovery
       * Agent Communication
-      * Agent Storage (A tenanted/acl controlled? provenance graph?, raw cypher / natural language interface)
+      * Agent Storage (A tenanted/acl controlled? provenance graph?, raw SurrealQL / natural language interface)
       * Agent Memory (a subgraph linked to prov, with temporal logic, narrower interface?)
       * Sidecar execution
       * TUI automation??

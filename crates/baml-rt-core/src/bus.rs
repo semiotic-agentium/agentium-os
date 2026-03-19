@@ -84,6 +84,27 @@ pub struct ToolEffectMetadata {
     pub delegation_target: Option<String>,
 }
 
+/// How the tool_name was resolved for an LLM effect.
+#[derive(Debug, Clone)]
+pub enum ToolNameResolution {
+    /// Resolved from the function-tool manifest at pre-execution time.
+    /// Canonical path for session plan functions.
+    FromManifest(String),
+    /// Extracted from the LLM result payload (tool_name field in JSON).
+    FromPayload(String),
+    /// This LLM function does not produce a tool invocation.
+    NotApplicable,
+}
+
+impl ToolNameResolution {
+    pub fn as_tool_name(&self) -> Option<&str> {
+        match self {
+            Self::FromManifest(s) | Self::FromPayload(s) => Some(s),
+            Self::NotApplicable => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct LlmEffectMetadata {
     pub client: String,
@@ -91,6 +112,9 @@ pub struct LlmEffectMetadata {
     pub function_name: String,
     pub prompt: serde_json::Value,
     pub metadata: serde_json::Value,
+    /// Tool name resolution for this LLM call. Used by drift scoring to
+    /// route `describe_invocation` to the correct tool handler.
+    pub tool_name: ToolNameResolution,
 }
 
 impl ToolEffectMetadata {
@@ -133,6 +157,24 @@ pub struct A2aEffectMetadata {
     pub request_id: Option<String>,
     pub liveness_role: A2aLivenessRole,
     pub metadata: serde_json::Value,
+}
+
+/// An individual operation within a tool session.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum SessionStepOp {
+    /// Session opened — tool session is now active, next op is Send.
+    Open,
+    /// Blocking Send completed — result archived at `archive_ref` (e.g. `"@1"`).
+    /// `header` is the full display string: `"@1 tool_name 'summary' [N lines, KB]"`.
+    SendDone { archive_ref: String, header: String },
+    /// LLM read the archive at `archive_ref`. Parameters stored so the cat-n
+    /// output can be re-derived deterministically for conversation history.
+    Read {
+        archive_ref: String,
+        grep: Option<String>,
+        offset: usize,
+        limit: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -208,6 +250,15 @@ pub enum EffectEvent {
     },
     /// Tool stream chunk (Streaming/Suspended step). Relay to HTTP A2A session immediately so the UI sees it; PROV is already recorded via the tool interceptor.
     ToolStreamChunk { context_id: ContextId, chunk: Value },
+    /// An individual step within a tool session — emitted for each meaningful op.
+    /// Enables conversation_context to surface session state between executor hops
+    /// without waiting for the session to close.
+    ToolSessionStep {
+        context_id: ContextId,
+        tool_name: String,
+        session_id: String,
+        op: SessionStepOp,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -226,7 +277,8 @@ impl EffectEvent {
         match self {
             EffectEvent::ToolStarted { .. }
             | EffectEvent::ToolCompleted { .. }
-            | EffectEvent::ToolStreamChunk { .. } => EffectKind::Tool,
+            | EffectEvent::ToolStreamChunk { .. }
+            | EffectEvent::ToolSessionStep { .. } => EffectKind::Tool,
             EffectEvent::LlmStarted { .. } | EffectEvent::LlmCompleted { .. } => EffectKind::Llm,
             EffectEvent::A2aStarted { .. }
             | EffectEvent::A2aCompleted { .. }
@@ -240,7 +292,8 @@ impl EffectEvent {
         match self {
             EffectEvent::ToolStarted { context_id, .. }
             | EffectEvent::ToolCompleted { context_id, .. }
-            | EffectEvent::ToolStreamChunk { context_id, .. } => context_id,
+            | EffectEvent::ToolStreamChunk { context_id, .. }
+            | EffectEvent::ToolSessionStep { context_id, .. } => context_id,
             EffectEvent::LlmStarted { context_id, .. }
             | EffectEvent::LlmCompleted { context_id, .. } => context_id,
             EffectEvent::A2aStarted { context_id, .. }
@@ -336,10 +389,18 @@ impl EffectStartToken<LlmKind> {
         rejection_reason: Option<String>,
     ) -> crate::Result<()> {
         let (context_id, metadata) = take_token_parts(&mut self.context_id, &mut self.metadata);
-        let metadata = match metadata {
+        let mut metadata = match metadata {
             EffectStartMetadata::Llm(meta) => meta,
             _ => unreachable!(),
         };
+        // If tool_name wasn't resolved from the manifest, try the payload as fallback
+        // for single-shot tool calls that embed tool_name in their result.
+        if matches!(metadata.tool_name, ToolNameResolution::NotApplicable)
+            && let Some(ref payload) = result_payload
+            && let Some(name) = extract_tool_name(payload)
+        {
+            metadata.tool_name = ToolNameResolution::FromPayload(name);
+        }
         emitter
             .emit(EffectEvent::LlmCompleted {
                 context_id,
@@ -352,6 +413,30 @@ impl EffectStartToken<LlmKind> {
             })
             .await
     }
+}
+
+/// Extract tool name from a BAML-parsed LLM result payload.
+/// Handles:
+/// - `{"tool_name": "..."}` (direct tool call)
+/// - `{Variant: {"tool_name": "..."}}` (wrapped variant)
+/// - `{"step": {"tool_name": "...", "op": "Open", ...}}` (polymorphic session Open)
+fn extract_tool_name(payload: &Value) -> Option<String> {
+    let obj = payload.as_object()?;
+    if let Some(name) = obj.get("tool_name").and_then(Value::as_str) {
+        return Some(name.to_string());
+    }
+    if let Some(step) = obj.get("step")
+        && let Some(name) = step.get("tool_name").and_then(Value::as_str)
+    {
+        return Some(name.to_string());
+    }
+    if obj.len() == 1 {
+        let (_, inner) = obj.iter().next()?;
+        if let Some(name) = inner.get("tool_name").and_then(Value::as_str) {
+            return Some(name.to_string());
+        }
+    }
+    None
 }
 
 impl EffectStartToken<A2aKind> {
@@ -684,6 +769,8 @@ impl BusWithEffects {
                 | EffectEvent::PlanGenerated { .. }
                 | EffectEvent::PlanStepStatusChanged { .. } => {}
                 EffectEvent::ToolStreamChunk { .. } => {}
+                // Session steps don't affect in-flight counts — they're informational.
+                EffectEvent::ToolSessionStep { .. } => {}
             }
             if !entry.any() {
                 counts.remove(&context_id);

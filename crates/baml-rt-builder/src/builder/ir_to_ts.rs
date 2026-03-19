@@ -53,11 +53,6 @@ fn type_to_ts_inner(ty: &TypeNonStreaming, deps: &mut Vec<String>) -> Result<Str
         }
         T::List(inner, _) => {
             let inner_ts = recursive(inner)?;
-            let inner_ts = if needs_parentheses_for_array_suffix(&inner_ts) {
-                format!("({inner_ts})")
-            } else {
-                inner_ts
-            };
             format!("{inner_ts}[]")
         }
         T::Map(_k, v, _) => {
@@ -104,10 +99,6 @@ fn type_to_ts_inner(ty: &TypeNonStreaming, deps: &mut Vec<String>) -> Result<Str
             ));
         }
     })
-}
-
-fn needs_parentheses_for_array_suffix(expr: &str) -> bool {
-    expr.contains(" | ") || expr.contains(" & ")
 }
 
 /// Collect all type names that need declarations (classes, enums, type aliases) from a fragment's deps.

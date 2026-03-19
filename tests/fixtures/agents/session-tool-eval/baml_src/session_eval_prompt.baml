@@ -1,67 +1,34 @@
 function PlanSyntheticSessionStep(
   objective: string,
-  session_context: SessionContext,
-  session_state: SyntheticPlannerState?,
-  output_summary: string?,
 ) -> SyntheticPlannerPlan {
   client DefaultClient
   prompt #"
-    Output ONLY one JSON object with exactly one session `decision`.
-    No prose. No markdown.
-    Read required operation from session_context.allowed_ops (authoritative).
-    Emit exactly one decision whose op is one of allowed_ops.
-    If allowed_ops has a single entry, emit that op exactly.
+    Output ONLY one JSON object with exactly one session `decision`. No prose. No markdown.
 
     Objective:
     1) reach goal_id = non_trivial_scope_cache_goal
     2) minimize wasted reads and payload
     3) use projection progression: summary -> identity -> detail before Finish
 
-    Rules:
-    - Open: optional reason only.
-    - Send: set/refresh scope defaults.
-    - Read: include input.read.refId; projection MUST be one of summary|identity|detail.
-    - If session_state is null and Read is allowed, use read.refId = "root" with projection "summary".
-    - If Read is allowed and session_state.candidates is non-empty, pick max severity ref_id.
-    - If Read is allowed and candidates empty but refs non-empty, use refs[0].
-    - Finish only when session_state.goal_id == "non_trivial_scope_cache_goal"
-      and session_state.projection_progress.used includes summary, identity, and detail.
-    - Do not emit extra keys outside schema.
+    Look at the session history to determine the current state and what to do next:
+    - No prior session step in history → emit Open (optional reason only)
+    - Session opened, no Send → emit Send to set/refresh scope defaults
+    - Send completed, no Read yet → emit Read with input.read.refId = "root" and projection "summary"
+    - Prior Read results available → inspect them to decide:
+      - If candidates present: Read with max severity ref_id
+      - If refs present but no candidates: Read with refs[0]
+      - If goal_id = "non_trivial_scope_cache_goal" and summary+identity+detail all used → emit Finish
+      - Otherwise continue reading with next projection in the sequence
 
     Current objective: {{ objective }}
-    Runtime state:
-    - session_context: {{ session_context }}
-    - session_state: {{ session_state }}
-    {{ ctx.output_format }}
-  "#
-}
 
-function SummarizeSyntheticSessionOutput(
-  objective: string,
-  tool_output_json: string,
-  used_projections: string[],
-) -> SyntheticPlannerState {
-  client DefaultClient
-  prompt #"
-    Output ONLY one JSON object. No prose. No markdown.
+    {% if ctx.tags.conversation_history %}
+    Session history:
+    {% for msg in ctx.tags.conversation_history %}
+    {{ msg.role }}: {{ msg.content }}
+    {% endfor %}
+    {% endif %}
 
-    Build SyntheticPlannerState from tool_output_json.
-    - Parse tool_output_json as JSON.
-    - level = output.level (default "unknown")
-    - goal_id = output.goal_id or null
-    - refs = output.refs as string[] (default [])
-    - candidates: derive from output.rows by:
-      failed_count = row.failed_count
-      uncached_prompt_tokens = row.prompt_tokens_total - row.cached_input_tokens_total
-      severity = (failed_count * 100) + uncached_prompt_tokens
-    - projection_progress.used = used_projections (lowercase)
-    - projection_progress.required = ["summary","identity","detail"]
-    - last_read_ref = first ref in refs when present, else null
-
-    Current objective: {{ objective }}
-    Inputs:
-    - tool_output_json: {{ tool_output_json }}
-    - used_projections: {{ used_projections }}
     {{ ctx.output_format }}
   "#
 }

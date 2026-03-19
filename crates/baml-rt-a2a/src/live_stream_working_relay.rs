@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use baml_rt_core::{
+    BamlFunctionId,
     bus::{EffectEvent, EffectSubscriber},
     to_json_value,
 };
@@ -69,7 +70,8 @@ impl EffectSubscriber for LiveStreamWorkingRelay {
                     Some(task_id),
                     format!(
                         "Calling model: {} ({})",
-                        metadata.model, metadata.function_name
+                        metadata.model,
+                        BamlFunctionId::parse(&metadata.function_name).prompt_name().as_str()
                     ),
                     None,
                 )

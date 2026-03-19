@@ -221,6 +221,24 @@ pub enum SlackInput {
     ListConversations(ListConversationsInput),
 }
 
+impl baml_rt_tools::DescribeAction for SlackInput {
+    fn describe(&self) -> String {
+        match self {
+            SlackInput::ListConversations(_) => "listing Slack conversations".to_string(),
+            SlackInput::GetConversationHistory(_) => {
+                "retrieving Slack conversation history".to_string()
+            }
+            SlackInput::GetThreadReplies(_) => "retrieving Slack thread replies".to_string(),
+            SlackInput::ResolveUsers(p) => {
+                format!("resolving {} Slack user(s)", p.user_ids.len())
+            }
+            SlackInput::SearchMessages(p) => {
+                format!("searching Slack messages for '{}'", p.query)
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Output types
 // ---------------------------------------------------------------------------
@@ -1450,12 +1468,20 @@ impl BamlTool for SlackTool {
         }
     }
 
-    fn compact_result(&self, content: &mut serde_json::Value) {
-        if let Some(result) = content.get_mut("result") {
-            compact_slack_payload(result);
+    fn describe_result(&self, output: &Self::Output) -> String {
+        let msg_count = output.messages.len();
+        let conv_count = output.conversations.len();
+        if msg_count > 0 {
+            format!("returned {} Slack message(s)", msg_count)
+        } else if conv_count > 0 {
+            format!("returned {} Slack conversation(s)", conv_count)
         } else {
-            compact_slack_payload(content);
+            "Slack query returned no results".to_string()
         }
+    }
+
+    fn describe_open(&self) -> String {
+        "using Slack for conversation retrieval and analysis".to_string()
     }
 }
 
@@ -1945,34 +1971,5 @@ mod compaction_tests {
         };
         compact_slack_output(&mut output);
         assert!(output.operation.is_none());
-    }
-
-    // -----------------------------------------------------------------------
-    // compact_slack_payload — envelope handling
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn compact_payload_via_result_envelope() {
-        let long_text = "y".repeat(500);
-        let output = SlackOutput {
-            conversations: vec![],
-            messages: vec![make_message(&long_text)],
-            users: vec![],
-            next_cursor: None,
-            has_more: false,
-            sources: vec![],
-            message: "test".to_string(),
-            operation: Some(SlackOperation::GetConversationHistory),
-        };
-        let mut content = serde_json::json!({
-            "tool_name": "support/slack",
-            "result": serde_json::to_value(&output).unwrap(),
-        });
-        let tool = SlackTool::new();
-        tool.compact_result(&mut content);
-        let result: SlackOutput =
-            serde_json::from_value(content.get("result").unwrap().clone()).unwrap();
-        assert!(result.messages[0].text.ends_with("..."));
-        assert!(result.messages[0].text.chars().count() <= HISTORY_TEXT_MAX_CHARS + 3);
     }
 }

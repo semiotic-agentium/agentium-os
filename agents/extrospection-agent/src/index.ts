@@ -5,7 +5,6 @@ declare function DetermineExtrospectionIntent(args: {
 }): Promise<unknown>;
 declare function GetDiscoverAgentsPlan(args: {
   user_message: string;
-  session_context: unknown | null;
 }): Promise<unknown>;
 declare function SelectAgentFocus(args: {
   user_message: string;
@@ -14,7 +13,6 @@ declare function SelectAgentFocus(args: {
 declare function BuildExtrospectionPlan(args: {
   intent: unknown;
   selected_agent: unknown | null;
-  session_context: unknown | null;
 }): Promise<unknown>;
 declare function SummarizeExtrospectionReport(args: {
   user_message: string;

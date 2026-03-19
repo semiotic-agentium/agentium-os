@@ -19,17 +19,21 @@ use baml_rt_core::{
     context::{self, InvocationScope},
     ids::{AgentId, ContextId, ExternalId, TaskId, UuidId},
 };
+#[cfg(feature = "llm-tests")]
+use baml_rt_provenance::{AgentType, ProvEvent, ProvenanceWriter};
 use baml_rt_provenance::{
-    GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvenanceContextReader,
+    SurrealProvenanceStore, SurrealStoreBuilder, ProvenanceContextReader,
 };
 use baml_rt_tools::bundles::BundleType;
 #[cfg(feature = "slack")]
-use baml_tool_links::baml_tools_slack as _;
+use baml_tools_slack as _;
 use flate2::{Compression, write::GzEncoder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tar::Builder;
+#[cfg(feature = "llm-tests")]
+use tokio::time::{Duration, sleep, timeout};
 use ts_rs::TS;
 
 // Bundle type for test tools (used as AddNumbersTool::Bundle; referenced in test_runner_tool_types_for_package_build).
@@ -77,7 +81,7 @@ impl A2aRequestHandler for EmptyA2aHandler {
     }
 }
 
-use baml_rt_config::{ConfigReader, ConfigWriter, SqliteConfigStore};
+use baml_rt_config::{ConfigReader, ConfigWriter, SurrealConfigStore};
 use baml_rt_core::{context::RuntimeScope, ids::MessageId};
 use baml_rt_llm_config::{
     ClientDef, EmptySecretResolver, LLM_CONFIG_BUNDLE_NAME, LlmClientConfig, LlmClientResolver,
@@ -99,11 +103,6 @@ fn stream_collector_idle_secs() -> u64 {
     } else {
         90
     }
-}
-
-fn test_quickjs_config() -> baml_rt::QuickJSConfig {
-    baml_rt::QuickJSConfig::new()
-        .with_stream_collector_idle_secs(Some(stream_collector_idle_secs()))
 }
 
 async fn build_fixture_to_temp_async(fixture_name: &str) -> std::path::PathBuf {
@@ -212,6 +211,11 @@ struct AddNumbersTool;
 struct AddNumbersInput {
     a: f64,
     b: f64,
+}
+impl baml_rt_tools::DescribeAction for AddNumbersInput {
+    fn describe(&self) -> String {
+        format!("adding {} + {}", self.a, self.b)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
@@ -330,8 +334,7 @@ async fn setup_stream_baml_tool_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_quickjs_config(test_quickjs_config())
-        .with_graphqlite_store(build_graphqlite_test_store())
+        .with_surreal_store(build_surreal_test_store().await)
         .build()
         .await
         .unwrap()
@@ -377,8 +380,7 @@ async fn setup_tool_discovery_demo_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_quickjs_config(test_quickjs_config())
-        .with_graphqlite_store(build_graphqlite_test_store())
+        .with_surreal_store(build_surreal_test_store().await)
         .build()
         .await
         .unwrap()
@@ -404,8 +406,7 @@ async fn setup_stream_js_tool_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_quickjs_config(test_quickjs_config())
-        .with_graphqlite_store(build_graphqlite_test_store())
+        .with_surreal_store(build_surreal_test_store().await)
         .build()
         .await
         .unwrap()
@@ -449,11 +450,11 @@ async fn setup_internal_a2a_router_agents(
 ) -> (
     baml_rt::A2aAgent,
     baml_rt::A2aAgent,
-    Arc<GraphqliteProvenanceStore>,
-    Arc<GraphqliteProvenanceStore>,
+    Arc<SurrealProvenanceStore>,
+    Arc<SurrealProvenanceStore>,
 ) {
     let responder_manager = BamlRuntimeManager::builder().build().unwrap();
-    let responder_store = build_graphqlite_test_store();
+    let responder_store = build_surreal_test_store().await;
     let responder_code = r#"
 globalThis.onChatMessage = async function(message) {
   const text = message?.parts?.[0]?.text || "unknown";
@@ -465,8 +466,11 @@ globalThis.onChatMessage = async function(message) {
         .with_runtime_manager(responder_manager)
         .with_init_js(responder_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_quickjs_config(test_quickjs_config())
-        .with_graphqlite_store(responder_store.clone())
+        .with_quickjs_config(
+            baml_rt::QuickJSConfig::new()
+                .with_stream_collector_idle_secs(Some(stream_collector_idle_secs())),
+        )
+        .with_surreal_store(responder_store.clone())
         .build()
         .await
         .unwrap();
@@ -477,7 +481,7 @@ globalThis.onChatMessage = async function(message) {
 
     let initiator_manager = BamlRuntimeManager::builder().build().unwrap();
     let target_literal = serde_json::to_string(target_package).expect("serialize target package");
-    let initiator_store = build_graphqlite_test_store();
+    let initiator_store = build_surreal_test_store().await;
     let initiator_code = r#"
 globalThis.onChatMessage = async function(message) {
     const userText = message?.parts?.[0]?.text || "ping";
@@ -543,8 +547,11 @@ globalThis.onChatMessage = async function(message) {
         .with_a2a_session_tool(RegistrationMode::Register)
         .with_a2a_session_router(router)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_quickjs_config(test_quickjs_config())
-        .with_graphqlite_store(initiator_store.clone())
+        .with_quickjs_config(
+            baml_rt::QuickJSConfig::new()
+                .with_stream_collector_idle_secs(Some(stream_collector_idle_secs())),
+        )
+        .with_surreal_store(initiator_store.clone())
         .build()
         .await
         .unwrap();
@@ -563,11 +570,11 @@ async fn setup_internal_a2a_parallel_fanout_agents(
 ) -> (
     baml_rt::A2aAgent,
     baml_rt::A2aAgent,
-    Arc<GraphqliteProvenanceStore>,
-    Arc<GraphqliteProvenanceStore>,
+    Arc<SurrealProvenanceStore>,
+    Arc<SurrealProvenanceStore>,
 ) {
     let responder_manager = BamlRuntimeManager::builder().build().unwrap();
-    let responder_store = build_graphqlite_test_store();
+    let responder_store = build_surreal_test_store().await;
     let responder_code = r#"
 globalThis.onChatMessage = async function(message) {
   const text = message?.parts?.[0]?.text || "unknown";
@@ -579,8 +586,7 @@ globalThis.onChatMessage = async function(message) {
         .with_runtime_manager(responder_manager)
         .with_init_js(responder_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_quickjs_config(test_quickjs_config())
-        .with_graphqlite_store(responder_store.clone())
+        .with_surreal_store(responder_store.clone())
         .build()
         .await
         .unwrap();
@@ -592,7 +598,7 @@ globalThis.onChatMessage = async function(message) {
     let initiator_manager = BamlRuntimeManager::builder().build().unwrap();
     let target_literal = serde_json::to_string(target_package).expect("serialize target package");
     let fanout_literal = fanout.to_string();
-    let initiator_store = build_graphqlite_test_store();
+    let initiator_store = build_surreal_test_store().await;
     let initiator_code = r#"
 globalThis.onChatMessage = async function(message) {
   const baseText = message?.parts?.[0]?.text || "ping parallel";
@@ -676,8 +682,7 @@ globalThis.onChatMessage = async function(message) {
         .with_a2a_session_tool(RegistrationMode::Register)
         .with_a2a_session_router(router)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_quickjs_config(test_quickjs_config())
-        .with_graphqlite_store(initiator_store.clone())
+        .with_surreal_store(initiator_store.clone())
         .build()
         .await
         .unwrap();
@@ -710,8 +715,7 @@ async fn setup_task_lifecycle_demo_agent() -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_quickjs_config(test_quickjs_config())
-        .with_graphqlite_store(build_graphqlite_test_store())
+        .with_surreal_store(build_surreal_test_store().await)
         .build()
         .await
         .unwrap()
@@ -732,8 +736,7 @@ async fn setup_argument_fixture_agent(fixture: &str) -> baml_rt::A2aAgent {
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_quickjs_config(test_quickjs_config())
-        .with_graphqlite_store(build_graphqlite_test_store())
+        .with_surreal_store(build_surreal_test_store().await)
         .build()
         .await
         .unwrap()
@@ -801,8 +804,7 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
         .with_runtime_manager(manager)
         .with_init_js(entry_js)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_quickjs_config(test_quickjs_config())
-        .with_graphqlite_store(build_graphqlite_test_store())
+        .with_surreal_store(build_surreal_test_store().await)
         .build()
         .await
         .expect("build packaged A2A agent");
@@ -811,7 +813,7 @@ async fn setup_packaged_stream_baml_tool_agent() -> (baml_rt::A2aAgent, std::pat
 }
 
 /// Build coordinator-agent from workspace agents/coordinator-agent and return an A2aAgent.
-/// Uses GraphQLite store so persistent mode is satisfied. Call only when agents/coordinator-agent exists.
+/// Uses SurrealDB store so persistent mode is satisfied. Call only when agents/coordinator-agent exists.
 /// Kept for use by test on base branch after merge (test removed here to avoid duplicate definition in PR #62).
 #[cfg(feature = "llm-tests")]
 #[allow(dead_code)] // used by coordinator E2E when run with llm-tests feature
@@ -857,27 +859,22 @@ async fn setup_coordinator_agent() -> baml_rt::A2aAgent {
     let entry_js = fs::read_to_string(extract_dir.join("dist").join("index.js"))
         .expect("coordinator-agent dist/index.js");
     // Persistent mode requires a store; omit and A2aAgent::build() returns InvalidArgument.
-    let store = build_graphqlite_test_store();
+    let store = build_surreal_test_store().await;
     baml_rt::A2aAgent::builder()
         .with_runtime_manager(manager)
         .with_init_js(entry_js)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
-        .with_quickjs_config(test_quickjs_config())
-        .with_graphqlite_store(store)
+        .with_surreal_store(store)
         .build()
         .await
         .expect("build coordinator agent")
 }
 
-fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
-    let path = std::env::temp_dir().join(format!(
-        "baml-rt-runner-test-{pid}-{unique}.db",
-        pid = std::process::id(),
-        unique = uuid::Uuid::new_v4(),
-    ));
-    GraphqliteStoreBuilder::file(path)
+async fn build_surreal_test_store() -> Arc<SurrealProvenanceStore> {
+    SurrealStoreBuilder::in_memory_isolated()
         .build()
-        .expect("build isolated GraphQLite store")
+        .await
+        .expect("build isolated surreal store")
 }
 
 #[tokio::test]
@@ -1003,8 +1000,9 @@ async fn test_runtime_manager_loads_schema() {
 /// works so BAML overrides the schema's minimal client at runtime from persistent configuration.
 #[tokio::test]
 async fn test_client_registry_substitution_from_config() {
-    let store =
-        SqliteConfigStore::in_memory().expect("in-memory config store for integration test");
+    let store = SurrealConfigStore::in_memory()
+        .await
+        .expect("in-memory config store for integration test");
 
     let mut options = HashMap::new();
     options.insert("model".to_string(), "openai/gpt-4o-mini".to_string());
@@ -1029,10 +1027,12 @@ async fn test_client_registry_substitution_from_config() {
             &bundle,
             serde_json::to_value(&config).expect("serialize LLM config"),
         )
+        .await
         .expect("save LLM config to store");
 
     let value = store
         .get(&bundle)
+        .await
         .expect("read from store")
         .expect("config present");
     let loaded = LlmClientConfig::from_value(value).expect("deserialize LLM config from store");
@@ -1233,21 +1233,13 @@ async fn test_tool_discovery_demo_responds_with_tool_list() {
                 }
                 eprintln!("tool_discovery_demo: chunks.len()={}", chunks.len());
             }
-            // Also scan every chunk for calculate-related content; the agent may surface
-            // results in status-message parts rather than top-level message-role chunks.
-            let all_text: String = chunks
-                .iter()
-                .filter_map(|c| serde_json::to_string(c).ok())
-                .collect::<Vec<_>>()
-                .join(" ");
+            let combined = texts.join(" ");
             assert!(
-                all_text.contains("support/calculate")
-                    || all_text.to_lowercase().contains("calculate")
-                    || all_text.contains("No tools found"),
-                "Expected tool-discovery response to mention calculate or support/calculate or 'No tools found'. \
-                 message texts: {:?}; full chunk content (first 500 chars): {}",
-                texts,
-                all_text.chars().take(500).collect::<String>()
+                combined.contains("support/calculate")
+                    || combined.to_lowercase().contains("calculate")
+                    || combined.contains("No tools found"),
+                "Expected tool-discovery response to mention calculate or support/calculate or 'No tools found'. Got: {:?}",
+                texts
             );
         }
         Err(e) => {
@@ -1404,20 +1396,21 @@ async fn run_argument_sketch_two_agents_body() {
         first_states
     );
     let first_texts = message_texts_from_chunks(&first_chunks);
-    let contradiction_like = |t: &String| {
-        let trimmed = t.trim();
-        let lower = trimmed.to_lowercase();
-        !trimmed.is_empty()
-            && trimmed.len() <= 40
-            && (lower.starts_with("no")
-                || lower.starts_with("yes")
-                || lower.contains("n't")
-                || lower.contains(" not")
-                || lower.contains("certainly")
-                || lower.contains("you do")
-                || lower.contains("you did")
-                || lower.contains("i'm not")
-                || lower.contains("you are"))
+    let argument_like = |t: &String| {
+        let lower = t.to_lowercase();
+        lower.contains("yes it is")
+            || lower.contains("no it isn't")
+            || lower.contains("no it isnt")
+            || lower.contains("i didn't")
+            || lower.contains("you did")
+            || lower.contains("i'm not")
+            || lower.contains("you are")
+            || lower.contains("i won't")
+            || lower.contains("i will not")
+            || lower.contains("i shan't")
+            || lower.contains("certainly")
+            || lower.contains("it is")
+            || lower.contains("it isn")
     };
     // Prefer two chunks (Cleese then Chapman); stream-yield/task-local can sometimes deliver only one (see docs/argument-sketch-stream-trace.md).
     assert!(
@@ -1427,7 +1420,7 @@ async fn run_argument_sketch_two_agents_body() {
         serde_json::to_string_pretty(&first_responses).unwrap_or_else(|_| "?".to_string())
     );
     assert!(
-        first_texts.iter().any(contradiction_like),
+        first_texts.iter().any(argument_like),
         "Expected at least one argument-sketch style line. Texts: {:?}",
         first_texts
     );

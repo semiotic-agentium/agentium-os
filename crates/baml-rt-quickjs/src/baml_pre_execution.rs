@@ -9,8 +9,8 @@ use std::{
 };
 
 use baml_rt_core::{
-    BamlRtError, InvocationKind, Result,
-    bus::{EffectEmitter, LlmEffectMetadata},
+    BamlFunctionId, BamlRtError, InvocationKind, Result,
+    bus::{EffectEmitter, LlmEffectMetadata, ToolNameResolution},
     context,
 };
 use baml_rt_interceptor::{InterceptorDecision, InterceptorRegistry, LLMCallContext};
@@ -19,14 +19,20 @@ use baml_types::{BamlMap, BamlValue};
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
+use crate::baml::FunctionToolManifest;
+
 // Helper function for ergonomic metadata construction
-fn llm_effect_metadata_from_context(ctx: &LLMCallContext) -> LlmEffectMetadata {
+fn llm_effect_metadata_from_context(
+    ctx: &LLMCallContext,
+    resolved_tool_name: ToolNameResolution,
+) -> LlmEffectMetadata {
     LlmEffectMetadata {
         client: ctx.client.clone(),
         model: ctx.model.clone(),
-        function_name: ctx.function_name.clone(),
+        function_name: ctx.function_id.full_name(),
         prompt: ctx.prompt.clone(),
         metadata: ctx.metadata.clone(),
+        tool_name: resolved_tool_name,
     }
 }
 
@@ -161,7 +167,7 @@ fn minimal_llm_context(scope: &context::RuntimeScope, function_name: &str) -> LL
     LLMCallContext {
         client: String::new(),
         model: String::new(),
-        function_name: function_name.to_string(),
+        function_id: BamlFunctionId::parse(function_name),
         runtime_scope: scope.clone(),
         prompt: Value::Null,
         metadata: Value::Object(metadata_map),
@@ -278,7 +284,7 @@ pub fn extract_context_from_http_request(
     Ok(LLMCallContext {
         client,
         model,
-        function_name: function_name.to_string(),
+        function_id: BamlFunctionId::parse(function_name),
         runtime_scope: scope.clone(),
         prompt,
         metadata: Value::Object(metadata_map),
@@ -306,6 +312,7 @@ pub async fn intercept_llm_call_pre_execution(
     effect_emitter: Option<&Arc<dyn EffectEmitter>>,
     collector: Option<&crate::baml_collector::BamlLLMCollector>,
     planning_step: Option<(&str, &str)>,
+    function_tool_manifest: &FunctionToolManifest,
 ) -> Result<InterceptorDecision> {
     // Build the HTTP request to get LLM call details
     // This doesn't actually send the request, just builds it
@@ -353,8 +360,14 @@ pub async fn intercept_llm_call_pre_execution(
     let context =
         extract_context_from_http_request(scope, &http_request, function_name, planning_step)?;
 
+    // Resolve tool name from the manifest (set at schema load time, no heuristics).
+    let tool_name_resolution = match function_tool_manifest.tool_name_for_function(function_name) {
+        Some(name) => ToolNameResolution::FromManifest(name.to_string()),
+        None => ToolNameResolution::NotApplicable,
+    };
+
     // Start effect and get token (type-safe start/complete pairing)
-    let mut effect_metadata = llm_effect_metadata_from_context(&context);
+    let mut effect_metadata = llm_effect_metadata_from_context(&context, tool_name_resolution);
     if !secret_keys_accessed.is_empty() {
         let mut obj = effect_metadata
             .metadata

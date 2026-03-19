@@ -8,6 +8,7 @@ use std::{
 
 use async_trait::async_trait;
 use baml_rt_core::{
+    BamlFunctionId,
     bus::{EffectEvent, EffectSubscriber},
     ids::{ContextId, DerivedId, ExternalId, TaskId},
 };
@@ -168,9 +169,13 @@ impl EffectSubscriber for AutoWorkingStatusSubscriber {
                 let Some(task_id) = task_id_from_metadata(&metadata.metadata) else {
                     return Ok(());
                 };
+                let prompt_name = BamlFunctionId::parse(&metadata.function_name)
+                    .prompt_name()
+                    .as_str()
+                    .to_string();
                 let text = format!(
                     "Calling model: {} ({})",
-                    metadata.model, metadata.function_name
+                    metadata.model, prompt_name
                 );
                 if let Err(e) = self.emit_working(context_id, task_id, text, None).await {
                     tracing::debug!(error = ?e, "Auto WORKING status update (llm) failed");

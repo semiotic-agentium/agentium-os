@@ -15,7 +15,7 @@ use tokio::task;
 
 use crate::builder::{
     a2a_shim_gen::render_a2a_shim,
-    baml_gen::render_baml_tool_interfaces,
+    baml_gen::{render_baml_tool_interfaces, render_generated_session_baml_from_ir},
     baml_signature_gen::{extract_baml_signatures, session_plan_functions_map},
     error::{BamlBuilderError, Result},
     traits::{TypeGenerator, TypeScriptCompiler},
@@ -136,12 +136,9 @@ impl TypeScriptCompiler for TscCompiler {
 
 /// Ensure the agent has a `tsconfig.json` with the canonical settings.
 fn ensure_tsconfig(agent_dir: &AgentDir) -> Result<()> {
-    write_canonical_tsconfig(agent_dir.as_path())
-}
-
-pub fn write_canonical_tsconfig(root: &Path) -> Result<()> {
-    let tsconfig_path = root.join("tsconfig.json");
-    atomic_write(&tsconfig_path, TSCONFIG_JSON.as_bytes())
+    let tsconfig_path = agent_dir.as_path().join("tsconfig.json");
+    fs::write(&tsconfig_path, TSCONFIG_JSON)?;
+    Ok(())
 }
 
 /// Locate and run `tsc` with the agent's tsconfig.
@@ -310,7 +307,18 @@ impl TypeGenerator for RuntimeTypeGenerator {
                 }
             }
 
-            // Load BAML runtime from build_dir/baml_src to discover functions
+
+            // Resolve tool metadata once — used by both polymorphic type generation
+            // and per-phase function generation.
+            let tool_metadata = if !tool_names.is_empty() {
+                baml_rt_tools::tool_catalog::resolve_manifest_tools(&tool_names)?
+            } else {
+                Vec::new()
+            };
+
+            // First compile: user BAML + generated tool interfaces.
+            // Polymorphic session types are generated from the IR *after* this compile,
+            // so we do not need a pre-compile source scan.
             let env_vars: HashMap<String, String> = HashMap::new();
             let feature_flags = internal_baml_core::feature_flags::FeatureFlags::default();
 
@@ -319,7 +327,68 @@ impl TypeGenerator for RuntimeTypeGenerator {
 
             let ir_signature = extract_baml_signatures(&runtime)?;
             let session_plan_map = session_plan_functions_map(&ir_signature);
-            let declarations = render_ts_declarations(&ir_signature, &session_plan_map)?;
+
+            // Generate polymorphic session types AND per-phase step executor functions
+            // from the compiled IR — single pass, no source text parsing.
+            let mut session_plan_map = session_plan_map;
+            if !tool_metadata.is_empty() {
+                let (poly_baml, phase_baml) =
+                    render_generated_session_baml_from_ir(&runtime, &tool_metadata)?;
+
+                if !poly_baml.is_empty() {
+                    let poly_path = baml_src_build.join("generated_polymorphic_sessions.baml");
+                    atomic_write(&poly_path, poly_baml.as_bytes())?;
+                }
+                if !phase_baml.is_empty() {
+                    let phase_path = baml_src_build.join("generated_phase_functions.baml");
+                    atomic_write(&phase_path, phase_baml.as_bytes())?;
+
+                    // Register phase functions for all session functions (single- and multi-tool).
+                    let poly_entries: Vec<(String, Vec<baml_rt_tools::SessionPlanTypeName>)> =
+                        session_plan_map
+                            .iter()
+                            .filter(|(_, v)| !v.is_empty())
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect();
+                    for (func_name, plan_types) in &poly_entries {
+                        session_plan_map.insert(
+                            baml_rt_tools::SessionTypeNames::select(func_name),
+                            plan_types.clone(),
+                        );
+                        for tool in &tool_metadata {
+                            let slug = tool.name.slug();
+                            let tool_plan: Vec<baml_rt_tools::SessionPlanTypeName> = plan_types
+                                .iter()
+                                .filter(|pt| pt.class_name() == tool.class_name)
+                                .cloned()
+                                .collect();
+                            if !tool_plan.is_empty() {
+                                session_plan_map.insert(
+                                    baml_rt_tools::SessionTypeNames::act(func_name, &slug),
+                                    tool_plan.clone(),
+                                );
+                                // No __consume__ phase: Send blocks until Done.
+                                session_plan_map.insert(
+                                    baml_rt_tools::SessionTypeNames::r#continue(func_name, &slug),
+                                    tool_plan,
+                                );
+                            }
+                        }
+                    }
+                }
+
+                // Second compile to include the generated types and phase functions.
+                if !poly_baml.is_empty() || !phase_baml.is_empty() {
+                    let env_vars2: HashMap<String, String> = HashMap::new();
+                    let feature_flags2 = internal_baml_core::feature_flags::FeatureFlags::default();
+                    let _runtime2 =
+                        BamlRuntime::from_directory(&baml_src_build, env_vars2, feature_flags2)
+                            .map_err(|e| BamlBuilderError::RuntimeLoadFailed { source: e })?;
+                }
+            }
+            let declarations =
+                render_ts_declarations(&ir_signature, &tool_names, &session_plan_map)?;
+
 
             // Write baml-runtime.d.ts into agent's src/ so tsc resolves it directly.
             let src_dts = agent_dir.src().join("baml-runtime.d.ts");
@@ -337,6 +406,7 @@ impl TypeGenerator for RuntimeTypeGenerator {
 
             // Emit session-plan function map so the runtime can resolve tool from the invoking
             // function name (no reliance on __type in prompt output).
+            // Values are always arrays of plan type names (length 1 = single-tool, >1 = polymorphic).
             if !session_plan_map.is_empty() {
                 let manifest_path = build_dir.join("session_plan_functions.json");
                 let json = serde_json::to_string_pretty(&session_plan_map)
@@ -344,11 +414,49 @@ impl TypeGenerator for RuntimeTypeGenerator {
                 atomic_write(&manifest_path, json.as_bytes())?;
             }
 
+            // Emit tool-to-step-executor mapping for polymorphic shim auto-narrowing.
+            // Direct tool_name → single-tool step executor function name.
+            let tool_step_executors = build_tool_step_executors_map(&session_plan_map);
+            if !tool_step_executors.is_empty() {
+                let executors_path = build_dir.join("tool_step_executors.json");
+                let json = serde_json::to_string_pretty(&tool_step_executors)
+                    .map_err(BamlBuilderError::Json)?;
+                atomic_write(&executors_path, json.as_bytes())?;
+            }
+
             Ok(())
         })
         .await
         .map_err(|e| BamlBuilderError::BlockingTaskJoin { source: e })?
+
     }
+}
+
+/// Build a mapping from tool_name to single-tool step executor function name.
+///
+/// For each single-tool entry (Vec length 1) in the session plan map, maps the
+/// tool's qualified name (e.g. "support/calculate") to the BAML function name
+/// (e.g. "ChooseCalcAction"). Used by the shim to auto-narrow after a polymorphic
+/// Open selects a tool — one direct lookup, no reverse index.
+fn build_tool_step_executors_map(
+    session_plan_map: &baml_rt_tools::SessionPlanFunctionsMap,
+) -> std::collections::HashMap<String, String> {
+    let tool_metadata = baml_rt_tools::tool_catalog::all_tool_metadata();
+    let class_to_tool: std::collections::HashMap<&str, String> = tool_metadata
+        .iter()
+        .map(|m| (m.class_name.as_str(), m.name.to_string()))
+        .collect();
+
+    let mut map = std::collections::HashMap::new();
+    for (func_name, plan_types) in session_plan_map {
+        if plan_types.len() == 1 {
+            let class_name = plan_types[0].class_name();
+            if let Some(tool_name) = class_to_tool.get(class_name) {
+                map.insert(tool_name.clone(), func_name.clone());
+            }
+        }
+    }
+    map
 }
 
 fn copy_dir_all_impl(src: &Path, dst: &Path) -> Result<()> {
@@ -369,7 +477,7 @@ fn copy_dir_all_impl(src: &Path, dst: &Path) -> Result<()> {
 /// Write `data` to a temporary file in the same directory, then atomically rename
 /// over `dest`.  On Unix `rename(2)` is atomic, so concurrent readers never see
 /// a half-written file — they get either the old content or the new content.
-pub(crate) fn atomic_write(dest: &Path, data: &[u8]) -> Result<()> {
+fn atomic_write(dest: &Path, data: &[u8]) -> Result<()> {
     use std::io::Write;
 
     let parent = dest.parent().unwrap_or(Path::new("."));
@@ -378,4 +486,9 @@ pub(crate) fn atomic_write(dest: &Path, data: &[u8]) -> Result<()> {
     tmp.persist(dest)
         .map_err(|e| BamlBuilderError::Io(e.error))?;
     Ok(())
+}
+
+pub fn write_canonical_tsconfig(root: &Path) -> Result<()> {
+    let tsconfig_path = root.join("tsconfig.json");
+    atomic_write(&tsconfig_path, TSCONFIG_JSON.as_bytes())
 }

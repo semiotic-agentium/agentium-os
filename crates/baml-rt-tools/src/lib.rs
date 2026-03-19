@@ -1,6 +1,8 @@
 //! Tool registry and mapping utilities.
 
 pub mod access;
+pub mod archive_read;
+pub mod archive_refs;
 pub mod bundles;
 pub mod config_resolver;
 pub mod host_registration;
@@ -29,11 +31,13 @@ pub use tool_fsm::{
     SessionPhase, ToolFailure, ToolFailureKind, ToolSession, ToolSessionError, ToolSessionId,
     ToolStep,
 };
-pub use tool_schema::{ToolType, json_schema_value, ts_decl, ts_name};
+pub use tool_schema::{DescribeAction, ToolType, json_schema_value, ts_decl, ts_name};
 pub use tools::{
-    BamlTool, BundleName, LocalToolName, SecretRequest, SecretType, SessionPolicy, ToolAccess,
-    ToolBundle, ToolBundleMetadata, ToolCapability, ToolConfigMetadata, ToolDiscoveryRecord,
-    ToolExecutor, ToolFunctionMetadataExport, ToolHandler, ToolMetadataBuilder, ToolName,
-    ToolOrigin, ToolRegistry, ToolSessionAdvance, ToolSessionHandle, ToolTypeSpec,
-    TypeBasedMetadataBuilder, create_multi_send_session_tool_from_async, parse_tool_name_and_class,
+    BamlTool, BundleName, FunctionPlanBinding, FunctionRole, LocalToolName, SecretRequest,
+    SecretType, SessionPlanFunctionsMap, SessionPlanTypeName, SessionPolicy, SessionTypeNames,
+    ToolAccess, ToolBundle, ToolBundleMetadata, ToolCapability, ToolConfigMetadata,
+    ToolDiscoveryRecord, ToolExecutor, ToolFunctionMetadataExport, ToolHandler,
+    ToolMetadataBuilder, ToolName, ToolOrigin, ToolRegistry, ToolSessionAdvance, ToolSessionHandle,
+    ToolSlug, ToolTypeSpec, TypeBasedMetadataBuilder, create_multi_send_session_tool_from_async,
+    parse_tool_name_and_class,
 };

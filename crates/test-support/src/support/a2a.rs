@@ -69,6 +69,11 @@ pub struct A2aRelayInput {
     #[ts(type = "any")]
     request: Value,
 }
+impl baml_rt_tools::DescribeAction for A2aRelayInput {
+    fn describe(&self) -> String {
+        "relaying A2A request".to_string()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]

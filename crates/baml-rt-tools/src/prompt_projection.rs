@@ -1,100 +1,212 @@
+//! Conversation context projection for BAML prompt injection.
+//!
+//! Produces a flat `conversation_history` array for `ctx.tags`.
+//! Each item has `{role, content}` — rendered by the trait system:
+//!
+//! - `Message`     → text as-is
+//! - `ToolCall`    → `describe_invocation_with_hint` (DescribeAction trait)
+//! - `ToolResult`  → archive_read render of result value (first 40 lines)
+//! - `ToolError`   → archive_read render of error value
+//! - `StatusOnly` items are discarded at the conversion boundary before reaching here.
+
 use serde_json::{Value, json};
 
 use crate::tools::ToolRegistry;
 
-const EVENT_LOG_TEXT_CAP: usize = 512;
+/// Session step op for prompt projection — mirrors `SessionStepOp` from provenance.
+#[derive(Debug, Clone)]
+pub enum SessionStepProjection {
+    Open,
+    /// `header` is the full display: `"@1 tool_name 'summary' [N lines, KB]"`.
+    SendDone {
+        archive_ref: String,
+        header: String,
+    },
+    Read {
+        archive_ref: String,
+        grep: Option<String>,
+        offset: usize,
+        limit: usize,
+    },
+}
+
+/// Typed content for a conversation projection item.
+/// The `source` string discriminant is replaced by the variant itself.
+/// `StatusOnly` results are never present here — they are discarded at the
+/// `baml-rt-a2a` conversion boundary before `PromptProjectionItem` is constructed.
+#[derive(Debug, Clone)]
+pub enum PromptProjectionContent {
+    Message(String),
+    /// Tool invocation. `args` is the BAML step payload `{"op":"Send","input":{...}}`
+    /// forwarded directly to `ToolHandler::describe_invocation`.
+    ToolCall {
+        tool_name: String,
+        args: Value,
+    },
+    /// Tool result with actual data.
+    ToolResult {
+        tool_name: String,
+        result: Value,
+    },
+    /// Tool returned an error.
+    ToolError {
+        tool_name: String,
+        error: Value,
+    },
+    /// An individual step within an in-progress session.
+    SessionStep {
+        tool_name: String,
+        op: SessionStepProjection,
+    },
+}
 
 #[derive(Debug, Clone)]
 pub struct PromptProjectionItem {
     pub timestamp_ms: u64,
     pub event_id: String,
     pub role: String,
-    pub source: String,
-    pub content: Value,
+    pub content: PromptProjectionContent,
 }
 
-fn content_to_string(v: &Value) -> String {
-    serde_json::to_string(v).unwrap_or_else(|_| v.to_string())
+/// Output from rendering a single projection item.
+///
+/// A single item in the source can map to zero, one, or two attributed
+/// history entries (e.g. `SendDone` emits the archive header then the
+/// inline content as separate entries so both carry the `assistant:` prefix).
+pub enum RenderedEntry {
+    /// Item is filtered — contributes nothing to conversation history.
+    Filtered,
+    /// Single attributed entry.
+    One(String),
+    /// Two attributed entries, first then second (e.g. send_done header + inline content).
+    Two(String, String),
 }
 
-fn compact_event_log_content(content: &str) -> String {
-    if content.len() <= EVENT_LOG_TEXT_CAP {
-        return content.to_string();
-    }
-    let mut out = content.chars().take(EVENT_LOG_TEXT_CAP).collect::<String>();
-    out.push('…');
-    out
-}
+/// Callback that re-derives cat-n output from an archive entry.
+/// Arguments: `(archive_ref, grep_pattern, offset, limit)`.
+pub type ArchiveReader<'a> = &'a dyn Fn(&str, Option<&str>, usize, usize) -> Option<String>;
 
+/// Produce the `conversation_history` array for `ctx.tags`.
+///
+/// `archive_reader`: called for `SessionStep` items to re-derive cat-n output
+/// from the archive.
 pub fn project_prompt_context(
-    context_id: &str,
-    mut items: Vec<PromptProjectionItem>,
-    tool_registry: &ToolRegistry,
+    items: Vec<PromptProjectionItem>,
+    registry: &ToolRegistry,
+    archive_reader: Option<ArchiveReader<'_>>,
 ) -> Value {
-    for item in &mut items {
-        if item.source != "tool_result" {
-            continue;
-        }
-        let Some(tool_name) = item.content.get("tool_name").and_then(Value::as_str) else {
-            continue;
-        };
-        let Some(handler) = tool_registry.get_handler(tool_name) else {
-            continue;
-        };
-        handler.compact_result(&mut item.content);
-    }
-
-    let mut conversation_history = Vec::with_capacity(items.len());
-    let mut event_log = Vec::with_capacity(items.len());
-    let mut message_count = 0_u64;
-    let mut tool_call_count = 0_u64;
-    let mut tool_result_count = 0_u64;
-    let mut last_role: Option<String> = None;
-    let mut last_source: Option<String> = None;
-    let mut last_event_id: Option<String> = None;
-
+    let mut history = Vec::with_capacity(items.len());
     for item in items {
-        let content = match &item.content {
-            Value::String(s) => s.clone(),
-            other => content_to_string(other),
-        };
-        match item.source.as_str() {
-            "message" => message_count += 1,
-            "tool_call" => tool_call_count += 1,
-            "tool_result" => tool_result_count += 1,
-            _ => {}
+        match render_content(&item, registry, archive_reader) {
+            RenderedEntry::Filtered => {}
+            RenderedEntry::One(c) => {
+                history.push(json!({ "role": item.role, "content": c }));
+            }
+            RenderedEntry::Two(first, second) => {
+                history.push(json!({ "role": item.role, "content": first }));
+                history.push(json!({ "role": item.role, "content": second }));
+            }
         }
-        last_role = Some(item.role.clone());
-        last_source = Some(item.source.clone());
-        last_event_id = Some(item.event_id.clone());
-        conversation_history.push(json!({
-            "role": item.role,
-            "source": item.source,
-            "content": content,
-        }));
-        event_log.push(json!({
-            "event_id": item.event_id,
-            "timestamp_ms": item.timestamp_ms,
-            "role": item.role,
-            "source": item.source,
-            "content": compact_event_log_content(&content),
-        }));
     }
+    Value::Array(history)
+}
 
-    let session_state = json!({
-        "context_id": context_id,
-        "total_events": conversation_history.len(),
-        "message_count": message_count,
-        "tool_call_count": tool_call_count,
-        "tool_result_count": tool_result_count,
-        "last_role": last_role,
-        "last_source": last_source,
-        "last_event_id": last_event_id,
-    });
+fn render_content(
+    item: &PromptProjectionItem,
+    registry: &ToolRegistry,
+    archive_reader: Option<ArchiveReader<'_>>,
+) -> RenderedEntry {
+    match &item.content {
+        PromptProjectionContent::Message(text) => {
+            if text.trim().is_empty() {
+                RenderedEntry::Filtered
+            } else {
+                RenderedEntry::One(text.clone())
+            }
+        }
 
-    json!({
-        "conversation_history": conversation_history,
-        "event_log": event_log,
-        "session_state": session_state,
-    })
+        PromptProjectionContent::ToolCall { tool_name, args } => {
+            match registry.describe_invocation_with_hint(Some(tool_name.as_str()), args) {
+                Some(s) => RenderedEntry::One(s),
+                None => RenderedEntry::Filtered,
+            }
+        }
+
+        PromptProjectionContent::ToolResult { tool_name, result } => {
+            let rendered = crate::archive_read::render_to_lines(result);
+            let page = crate::archive_read::grep_paginate(
+                &rendered,
+                None,
+                crate::archive_read::LineOffset::default(),
+                crate::archive_read::PageLimit::new(40),
+            );
+            let formatted = crate::archive_read::format_cat_n(&page.lines);
+            if formatted.trim().is_empty() {
+                RenderedEntry::Filtered
+            } else {
+                RenderedEntry::One(format!("{tool_name}:\n{formatted}"))
+            }
+        }
+
+        PromptProjectionContent::ToolError { tool_name, error } => {
+            let rendered = crate::archive_read::render_to_lines(error);
+            let page = crate::archive_read::grep_paginate(
+                &rendered,
+                None,
+                crate::archive_read::LineOffset::default(),
+                crate::archive_read::PageLimit::new(10),
+            );
+            let formatted = crate::archive_read::format_cat_n(&page.lines);
+            if formatted.trim().is_empty() {
+                RenderedEntry::Filtered
+            } else {
+                RenderedEntry::One(format!("{tool_name} [error]:\n{formatted}"))
+            }
+        }
+
+        PromptProjectionContent::SessionStep { tool_name, op } => {
+            match op {
+                SessionStepProjection::Open => RenderedEntry::One(
+                    registry
+                        .describe_open_for(tool_name)
+                        .unwrap_or_else(|| format!("{tool_name} session opened")),
+                ),
+                SessionStepProjection::SendDone {
+                    archive_ref,
+                    header,
+                } => {
+                    // Two entries: header attributed to assistant, then the inline content
+                    // (CLI command + numbered output) also attributed to assistant.
+                    match archive_reader.and_then(|r| {
+                        r(
+                            archive_ref,
+                            None,
+                            0,
+                            crate::archive_read::PageLimit::DEFAULT,
+                        )
+                    }) {
+                        Some(content) => RenderedEntry::Two(header.clone(), content),
+                        None => RenderedEntry::One(header.clone()),
+                    }
+                }
+                SessionStepProjection::Read {
+                    archive_ref,
+                    grep,
+                    offset,
+                    limit,
+                } => {
+                    let cmd = match grep.as_deref().filter(|g| !g.is_empty()) {
+                        Some(pat) => format!("grep -n '{pat}' {archive_ref}"),
+                        None => format!("cat -n {archive_ref}"),
+                    };
+                    match archive_reader
+                        .and_then(|r| r(archive_ref, grep.as_deref(), *offset, *limit))
+                    {
+                        Some(output) => RenderedEntry::One(output),
+                        None => RenderedEntry::One(cmd),
+                    }
+                }
+            }
+        }
+    }
 }

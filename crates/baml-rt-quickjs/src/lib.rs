@@ -9,20 +9,24 @@ pub mod baml_execution;
 pub mod baml_pre_execution;
 pub mod context;
 pub mod execution_session_types;
+pub mod function_tool_manifest;
 pub mod js_value_converter;
 pub mod llm_client_registry;
 pub mod llm_resolver_adapter;
+pub mod planning;
 pub mod quickjs_bridge;
 pub mod runtime;
+pub mod step_executor_loop;
+pub(crate) mod tool_execution;
+pub mod tool_session_handle;
 pub mod traits;
 
 pub use a2a_stream::{
     A2aYieldSessionComplete, A2aYieldSessionReady, BridgeHandle, HandoverSender, StreamOutput,
     begin_a2a_yield_session, collect_into_channel_owned, invoke_handler_handover,
-    invoke_js_function_handover, invoke_optional_js_function_handover, invoke_tool_handover,
-    spawn_stream_handover,
+    invoke_tool_handover, spawn_stream_handover,
 };
-pub use baml::{BamlRuntimeManager, ToolSessionExecutionHandle};
+pub use baml::{BamlRuntimeManager, SessionPlanTypeName, ToolSessionExecutionHandle};
 pub use context::{BamlContext, ContextMetadata};
 pub use llm_client_registry::{
     LLM_SECRET_KEYS, LlmRegistryBuildResult, LlmSecretResolver, build_llm_client_registry,

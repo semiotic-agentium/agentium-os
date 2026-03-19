@@ -48,7 +48,6 @@ class AgentCandidate {
 function PlanCoordinatorWorkflow(
   user_message: string,
   available_agents: AgentCandidate[],
-  conversation_context: string?
 ) -> WorkflowPlan {
   client OpenRouterGPT
   prompt #"
@@ -80,9 +79,11 @@ function PlanCoordinatorWorkflow(
     {{ available_agents }}
     ---END AVAILABLE AGENTS---
 
-    {% if conversation_context %}
+    {% if ctx.tags.conversation_history %}
     ---CONVERSATION CONTEXT---
-    {{ conversation_context }}
+    {% for msg in ctx.tags.conversation_history %}
+    {{ msg.role }}: {{ msg.content }}
+    {% endfor %}
     ---END CONVERSATION CONTEXT---
     {% endif %}
 

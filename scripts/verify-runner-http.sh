@@ -3,7 +3,7 @@
 # then verify with curl: GET /agents, GET /openapi.json, POST /agents/.../a2a.
 # Usage: ./scripts/verify-runner-http.sh [--build]
 #   --build: rebuild fixture packages even if .tar.gz exist (default: use existing)
-# GET /agents works without provenance; full A2A uses GraphQLite (default provenance.db in cwd).
+# GET /agents works without provenance; full A2A uses SurrealDB (default provenance store in cwd).
 
 set -e
 cd "$(dirname "$0")/.."

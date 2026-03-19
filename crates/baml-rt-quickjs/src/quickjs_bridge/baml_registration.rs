@@ -719,15 +719,29 @@ pub(super) async fn register_await_helper(bridge: &QuickJSBridge) -> Result<()> 
     Ok(())
 }
 
-/// Resolve the `SessionPolicy` for a BAML step-executor function name.
+/// Resolve the `SessionPolicy` for the current step executor context.
 ///
-/// Delegates to `BamlRuntimeManager::resolve_session_policy_for_function`.
-/// Returns `Strict` (the safe default) when the manager lock cannot be
-/// acquired or the function is not in the session-plan-functions manifest.
+/// When `selected_tool` is provided (after Open), resolves directly from the tool's
+/// metadata — unified path for both single-tool and polymorphic functions.
+/// Falls back to function-level resolution when `selected_tool` is not yet known.
+/// Returns `Strict` (the safe default) when resolution fails.
 fn resolve_session_policy(
     manager: &crate::baml::BamlRuntimeManager,
     step_executor: Option<&str>,
+    selected_tool: Option<&str>,
 ) -> baml_rt_tools::SessionPolicy {
+    if let Some(tool_name_str) = selected_tool {
+        match baml_rt_tools::ToolName::parse(tool_name_str) {
+            Ok(tool_name) => return manager.resolve_session_policy_for_tool(&tool_name),
+            Err(e) => {
+                tracing::warn!(
+                    selected_tool = tool_name_str,
+                    error = %e,
+                    "resolve_session_policy: invalid selected_tool format, falling back to function-level"
+                );
+            }
+        }
+    }
     match step_executor {
         Some(f) => manager.resolve_session_policy_for_function(f),
         None => baml_rt_tools::SessionPolicy::default(),
@@ -762,9 +776,10 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
                     .unwrap_or(false);
                 let last_status = payload.get("last_status").and_then(Value::as_str);
                 let step_executor = payload.get("step_executor").and_then(Value::as_str);
+                let selected_tool = payload.get("selected_tool").and_then(Value::as_str);
                 let policy = manager_clone
                     .try_lock()
-                    .map(|guard| resolve_session_policy(&guard, step_executor))
+                    .map(|guard| resolve_session_policy(&guard, step_executor, selected_tool))
                     .unwrap_or_default();
                 let allowed = step_executor_allowed_ops(session_open, last_status, policy);
                 let json = serde_json::to_string(&allowed).map_err(|e| {
@@ -830,6 +845,118 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
         )
         .map_err(|e| BamlRtError::QuickJsWithSource {
             context: "Failed to register __step_executor_validate_transition helper".to_string(),
+            source: Box::new(e),
+        })?;
+
+    // Resolve tool_name → single-tool step executor for polymorphic auto-narrowing.
+    // Returns the executor function name (String) or null if not found.
+    let manager_clone3 = bridge.baml_manager().clone();
+    bridge
+        .runtime()
+        .set_function(
+            &[],
+            "__resolve_tool_step_executor",
+            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<
+                JsValueFacade,
+                quickjs_runtime::jsutils::JsError,
+            > {
+                if args.is_empty() || !args[0].is_string() {
+                    return Ok(JsValueFacade::Null);
+                }
+                let tool_name = args[0].get_str();
+                let result = manager_clone3
+                    .try_lock()
+                    .ok()
+                    .and_then(|guard| guard.resolve_tool_step_executor(tool_name));
+                match result {
+                    Some(executor) => Ok(JsValueFacade::new_string(executor)),
+                    None => Ok(JsValueFacade::Null),
+                }
+            },
+        )
+        .map_err(|e| BamlRtError::QuickJsWithSource {
+            context: "Failed to register __resolve_tool_step_executor helper".to_string(),
+            source: Box::new(e),
+        })?;
+
+    // __run_step_executor: Rust-hosted step executor loop.
+    // Takes (function_name, args_json, options_json?) from JS, runs the multi-hop
+    // FSM loop entirely in Rust, returns StepExecutorResult as JSON string.
+    let manager_clone4 = bridge.baml_manager().clone();
+    let registry_clone = bridge.invocation_context_registry().clone();
+    bridge
+        .runtime()
+        .set_function(
+            &[],
+            "__run_step_executor",
+            move |_realm: &QuickJsRealmAdapter,
+                  args: Vec<JsValueFacade>|
+                  -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
+                if args.len() < 2 || !args[0].is_string() || !args[1].is_string() {
+                    return Err(quickjs_runtime::jsutils::JsError::new_str(
+                        "__run_step_executor expects (function_name: string, args_json: string, options_json?: string)",
+                    ));
+                }
+                let function_name = args[0].get_str().to_string();
+                let args_json = args[1].get_str().to_string();
+                let options_json = args
+                    .get(2)
+                    .filter(|v| v.is_string())
+                    .map(|v| v.get_str().to_string());
+
+                let scope =
+                    crate::quickjs_bridge::scope::resolve_scope_from_active_context(
+                        &registry_clone,
+                    )?;
+
+                let manager = manager_clone4.clone();
+
+                Ok(JsValueFacade::new_promise::<JsValueFacade, _, ()>(
+                    async move {
+                        let base_args: Value =
+                            serde_json::from_str(&args_json).map_err(|e| {
+                                quickjs_runtime::jsutils::JsError::new_str(&format!(
+                                    "__run_step_executor: invalid args JSON: {e}"
+                                ))
+                            })?;
+
+                        let max_steps = options_json
+                            .as_deref()
+                            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                            .and_then(|v| v.get("max_steps").and_then(Value::as_u64))
+                            .map(|n| n as usize)
+                            .unwrap_or(8);
+
+                        let result =
+                            crate::step_executor_loop::run_step_executor_loop(
+                                &manager,
+                                &scope,
+                                &function_name,
+                                base_args,
+                                max_steps,
+                            )
+                            .await;
+
+                        match result {
+                            Ok(step_result) => {
+                                let json =
+                                    serde_json::to_string(&step_result).map_err(|e| {
+                                        quickjs_runtime::jsutils::JsError::new_str(&format!(
+                                            "__run_step_executor: serialize error: {e}"
+                                        ))
+                                    })?;
+                                Ok(JsValueFacade::new_string(json))
+                            }
+                            Err(e) => Err(quickjs_runtime::jsutils::JsError::new_str(
+                                &format!("__run_step_executor: {e}"),
+                            )),
+                        }
+                    },
+                ))
+            },
+        )
+        .map_err(|e| BamlRtError::QuickJsWithSource {
+            context: "Failed to register __run_step_executor helper".to_string(),
             source: Box::new(e),
         })?;
 

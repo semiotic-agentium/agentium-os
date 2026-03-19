@@ -6,6 +6,12 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
+export interface ArchiveReadInput { archive_ref: string | null;
+offset: number | null;
+limit: number | null;
+grep: string | null;
+ }
+
 export type BlockRenderMode = "Raw" | "Enriched";
 
 export interface NeedClarification { question: string;
@@ -66,10 +72,11 @@ export interface SupportNotionFinishStep { op: "Finish";
  }
 
 export interface SupportNotionOpenStep { op: "Open";
+tool_name: "support/notion";
  }
 
 export interface SupportNotionReadStep { op: "Read";
-input: NotionSearchPagesInput | NotionGetPageInput | NotionGetPageBlocksInput;
+input: ArchiveReadInput;
  }
 
 export interface SupportNotionSendStep { op: "Send";
@@ -83,13 +90,13 @@ export interface SupportNotionSessionPlan { step: SupportNotionOpenStep | Suppor
 
 declare global {
 
-declare function ChooseNotionAction(args: { goal: string; step_description: string; prior_results: string | null; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ReadOnlyResponse | SupportNotionSessionPlan>;
+declare function ChooseNotionAction(args: { goal: string; step_description: string } & { __baml_invocation_token?: string }): Promise<ReadOnlyResponse | SupportNotionSessionPlan>;
 
 declare function InferNotionIntent(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<NeedClarification | NotRelevant | NotionIntent>;
 
 declare function PlanNotionWork(args: { intent: string } & { __baml_invocation_token?: string }): Promise<NotionPlan>;
 
-declare function ReactToNotionResults(args: { goal: string; user_message: string; tool_results_json: string } & { __baml_invocation_token?: string }): Promise<string>;
+declare function ReactToNotionResults(args: { goal: string; user_message: string } & { __baml_invocation_token?: string }): Promise<string>;
 
 declare function SummarizeNotionContent(args: { user_message: string; page_title: string | null; page_url: string | null; blocks_text: string } & { __baml_invocation_token?: string }): Promise<NotionSummary>;
 
@@ -295,35 +302,12 @@ export interface RunContext {
   /** Emitter for working message, artifact, awaitInput; use when you need to stream or suspend. */
   emit: SessionEmitter;
 }
-/**
- * Host-to-agent dispatch request. Delivered by the host when an external event
- * matches this agent's subscriptions. Fields mirror the Rust AgentDispatchRequest.
- */
-export interface HostDispatchRequest {
-  routing_key: string;
-  message_type: string;
-  messages: JsonValue[];
-  context_id?: string;
-  task_id?: string;
-  message_id?: string;
-  /** Structured transport metadata (source, schema version, content type). Use `messages` for arbitrary event payloads. */
-  metadata?: JsonObject;
-}
-/**
- * Acknowledgement returned by an agent's onDispatch handler.
- */
-export interface HostDispatchAck {
-  accepted: boolean;
-  detail?: string;
-}
 /** Agent contract: register this; host invokes onChatMessage per message. */
 export interface BamlAgent {
   /** Optional: run(ctx) is the entrypoint; runtime wraps it into onChatMessage. Prefer this over onChatMessage. */
   run?(ctx: RunContext): Promise<SessionResult>;
   /** Optional: raw handler when run is not used. */
   onChatMessage?(message: ChatMessage): Promise<void>;
-  /** Optional: handle host-delivered events matched by this agent's subscriptions. */
-  onDispatch?(request: HostDispatchRequest): Promise<HostDispatchAck>;
   tools?: Record<string, (args: JsonObject) => Promise<JsonValue>>;
 }
 declare global {
@@ -351,11 +335,6 @@ declare global {
    */
   function session(message: ChatMessage | null | undefined): SessionBuilder;
   function __chat_register(agent: BamlAgent): void;
-  /**
-   * Extract all payloads from a host dispatch request.
-   * Batch-safe helper: returns a shallow copy of request.messages, or [] if absent.
-   */
-  function extractDispatchMessages(request: HostDispatchRequest | null | undefined): JsonValue[];
   /** Emit a stream chunk following A2A wire format. */
   function __chat_yield(chunk: YieldChunk): void;
   function openA2aTaskSession<I = Record<string, unknown>>(token: string): Promise<A2aSessionAwaitingInput<I>>;
@@ -410,6 +389,7 @@ export interface StepExecutorRunResult<R = unknown> {
     steps: R[];
     session_context: SessionContext;
     history_context: HistoryContext | null;
+    selected_tool: string | null;
 }
 
 export interface StepExecutorFunctionMap {

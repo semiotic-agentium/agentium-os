@@ -29,15 +29,6 @@ class StandardStructuredPlan {
   plan_steps StandardAgentPlanStep[]
 }
 
-class SessionContext {
-  contract_version string
-  session_open bool
-  allowed_ops string[]
-  scope_ref string?
-  output_ref string?
-  evidence_ref string?
-}
-
 class HistoryContext {
   hop int
   op string
@@ -108,57 +99,66 @@ class ToolDiscoveryRecordDto {
 class SystemDiscover_toolsOpenStep {
   op "Open"
   initial_input DiscoverToolsOpenInput? @description("Optional open payload.")
+  reason string? @description("Optional reason.")
 }
 
 class SystemDiscover_toolsSendStep {
   op "Send"
   input DiscoverToolsSendInput @description("Payload for this step.")
+  reason string? @description("Optional reason.")
 }
 
 class SystemDiscover_toolsReadStep {
   op "Read"
   input DiscoverToolsSendInput @description("Read payload for this step.")
+  reason string? @description("Optional reason.")
 }
 
 class SystemDiscover_toolsFinishStep {
   op "Finish"
+  reason string? @description("Optional reason.")
 }
 
 class SystemDiscover_toolsAbortStep {
   op "Abort"
+  reason string? @description("Optional reason.")
 }
 
 type SystemDiscover_toolsSessionStep = SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep
 
 class SystemDiscover_toolsSessionPlan {
-  step SystemDiscover_toolsSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. After Send, prefer Read before further Send/Finish so you consume tool output and status.")
+  step SystemDiscover_toolsSessionStep @description("Emit exactly one FSM step. Check conversation history: no session → Open; session open, no Send → Send; Send done → Finish or Read @N to inspect result.")
 }
 
 class SupportCalculateOpenStep {
   op "Open"
+  reason string? @description("Optional reason.")
 }
 
 class SupportCalculateSendStep {
   op "Send"
   input CalculatorInput @description("Payload for this step.")
+  reason string? @description("Optional reason.")
 }
 
 class SupportCalculateReadStep {
   op "Read"
   input CalculatorInput @description("Read payload for this step.")
+  reason string? @description("Optional reason.")
 }
 
 class SupportCalculateFinishStep {
   op "Finish"
+  reason string? @description("Optional reason.")
 }
 
 class SupportCalculateAbortStep {
   op "Abort"
+  reason string? @description("Optional reason.")
 }
 
 type SupportCalculateSessionStep = SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep
 
 class SupportCalculateSessionPlan {
-  step SupportCalculateSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. After Send, prefer Read before further Send/Finish so you consume tool output and status.")
+  step SupportCalculateSessionStep @description("Emit exactly one FSM step. Check conversation history: no session → Open; session open, no Send → Send; Send done → Finish or Read @N to inspect result.")
 }
-

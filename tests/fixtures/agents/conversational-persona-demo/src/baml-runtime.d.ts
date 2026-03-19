@@ -6,30 +6,10 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface AgentCardDto { name: string;
-version: string;
-agentPackage: string;
-agentInstanceId: string;
-tools: string[];
-description: string | null;
-capabilities: string[];
-subscriptions: AgentEventSubscriptionDto[] | null;
- }
-
-export interface AgentEventSubscriptionDto { schemaVersions: string[] | null;
-sourceKinds: string[] | null;
-sourceKeys: string[] | null;
-sourceKeyPrefixes: string[] | null;
- }
-
-export interface ConversationChunk { message: ConversationMessage | null;
-task: string | null;
-statusUpdate: string | null;
-artifactUpdate: string | null;
- }
-
-export interface ConversationMessage { role: string | null;
-parts: ConversationPart[];
+export interface ArchiveReadInput { archive_ref: string;
+offset: number | null;
+limit: number | null;
+grep: string | null;
  }
 
 export interface ConversationPart { text: string | null;
@@ -50,31 +30,18 @@ limit: number | null;
 offset: number | null;
  }
 
-export interface HistoryContextV1 { hop: number;
-op: string;
-status: string;
-truncated: boolean | null;
-cursor: string | null;
-payload: string | null;
+export interface InternalA2aOpenInput { target: InternalA2aTarget;
  }
 
-export type InternalA2aCompletion = "DONE" | "INPUTREQUIRED" | "FAILED";
+export interface InternalA2aSendInput { parts: ConversationPart[];
+ }
 
-export interface InternalA2aNextOutput { chunks: ConversationChunk[];
-completion: InternalA2aCompletion | null;
-historyContext: HistoryContextV1 | null;
+export interface InternalA2aTarget { agent_package: string;
+agent_instance_id: string;
  }
 
 export interface SelectedAgent { agent_package: string;
 agent_instance_id: string;
- }
-
-export interface SessionContext { contract_version: string;
-session_open: boolean;
-allowed_ops: string[];
-scope_ref: string | null;
-output_ref: string | null;
-evidence_ref: string | null;
  }
 
 export interface StandardAgentPlanStep { agent_package: string;
@@ -94,11 +61,12 @@ export interface SystemDiscover_agentsFinishStep { op: "Finish";
  }
 
 export interface SystemDiscover_agentsOpenStep { op: "Open";
+tool_name: "system/discover_agents";
 initial_input: DiscoverAgentsOpenInput | null;
  }
 
 export interface SystemDiscover_agentsReadStep { op: "Read";
-input: DiscoverAgentsSendInput;
+input: ArchiveReadInput;
  }
 
 export interface SystemDiscover_agentsSendStep { op: "Send";
@@ -108,25 +76,59 @@ input: DiscoverAgentsSendInput;
 export interface SystemDiscover_agentsSessionPlan { step: SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep;
  }
 
+export interface SystemInternal_a2aAbortStep { op: "Abort";
+ }
+
+export interface SystemInternal_a2aFinishStep { op: "Finish";
+ }
+
+export interface SystemInternal_a2aOpenStep { op: "Open";
+tool_name: "system/internal_a2a";
+initial_input: InternalA2aOpenInput;
+ }
+
+export interface SystemInternal_a2aReadStep { op: "Read";
+input: ArchiveReadInput;
+ }
+
+export interface SystemInternal_a2aSendStep { op: "Send";
+input: InternalA2aSendInput;
+ }
+
+export interface SystemInternal_a2aSessionPlan { step: SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aReadStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep;
+ }
+
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
 declare global {
 
-declare function DecideDelegationAction(args: { goal: string; agent: string; prior_response: string | null } & { __baml_invocation_token?: string }): Promise<string | null>;
+declare function DecideDelegationAction(args: { goal: string; agent: string } & { __baml_invocation_token?: string }): Promise<SystemInternal_a2aSessionPlan | string | null>;
 
-declare function FormatCapabilities(args: { user_message: string; agents: AgentCardDto[] } & { __baml_invocation_token?: string }): Promise<string>;
+declare function DecideDelegationAction__act__system_internal_a2a(args: { goal: string; agent: string } & { __baml_invocation_token?: string }): Promise<SystemInternal_a2aSendStep>;
 
-declare function GetDiscoverAgentsPlan(args: { inferred_intent: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSessionPlan>;
+declare function DecideDelegationAction__continue__system_internal_a2a(args: { goal: string; agent: string } & { __baml_invocation_token?: string }): Promise<SystemInternal_a2aSendStep | SystemInternal_a2aReadStep | SystemInternal_a2aFinishStep>;
+
+declare function DecideDelegationAction__select(args: { goal: string; agent: string } & { __baml_invocation_token?: string }): Promise<SystemInternal_a2aOpenStep>;
+
+declare function FormatCapabilities(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<string>;
+
+declare function GetDiscoverAgentsPlan(args: { inferred_intent: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSessionPlan>;
+
+declare function GetDiscoverAgentsPlan__act__system_discover_agents(args: { inferred_intent: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSendStep>;
+
+declare function GetDiscoverAgentsPlan__continue__system_discover_agents(args: { inferred_intent: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep>;
+
+declare function GetDiscoverAgentsPlan__select(args: { inferred_intent: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsOpenStep>;
 
 declare function InferDiscoveryIntent(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<string>;
 
-declare function MakeStructuredPlan(args: { user_message: string; agents: AgentCardDto[] } & { __baml_invocation_token?: string }): Promise<StandardStructuredPlan>;
+declare function MakeStructuredPlan(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<StandardStructuredPlan>;
 
 declare function PersonaChat(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<string>;
 
-declare function PersonaReact(args: { user_message: string; plan_objective: string; a2a_output: InternalA2aNextOutput } & { __baml_invocation_token?: string }): Promise<string>;
+declare function PersonaReact(args: { user_message: string; plan_objective: string } & { __baml_invocation_token?: string }): Promise<string>;
 
-declare function SelectAgentForMessage(args: { user_message: string; agents: AgentCardDto[] } & { __baml_invocation_token?: string }): Promise<SelectedAgent | null>;
+declare function SelectAgentForMessage(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SelectedAgent | null>;
 
 }
 
@@ -330,35 +332,12 @@ export interface RunContext {
   /** Emitter for working message, artifact, awaitInput; use when you need to stream or suspend. */
   emit: SessionEmitter;
 }
-/**
- * Host-to-agent dispatch request. Delivered by the host when an external event
- * matches this agent's subscriptions. Fields mirror the Rust AgentDispatchRequest.
- */
-export interface HostDispatchRequest {
-  routing_key: string;
-  message_type: string;
-  messages: JsonValue[];
-  context_id?: string;
-  task_id?: string;
-  message_id?: string;
-  /** Structured transport metadata (source, schema version, content type). Use `messages` for arbitrary event payloads. */
-  metadata?: JsonObject;
-}
-/**
- * Acknowledgement returned by an agent's onDispatch handler.
- */
-export interface HostDispatchAck {
-  accepted: boolean;
-  detail?: string;
-}
 /** Agent contract: register this; host invokes onChatMessage per message. */
 export interface BamlAgent {
   /** Optional: run(ctx) is the entrypoint; runtime wraps it into onChatMessage. Prefer this over onChatMessage. */
   run?(ctx: RunContext): Promise<SessionResult>;
   /** Optional: raw handler when run is not used. */
   onChatMessage?(message: ChatMessage): Promise<void>;
-  /** Optional: handle host-delivered events matched by this agent's subscriptions. */
-  onDispatch?(request: HostDispatchRequest): Promise<HostDispatchAck>;
   tools?: Record<string, (args: JsonObject) => Promise<JsonValue>>;
 }
 declare global {
@@ -386,11 +365,6 @@ declare global {
    */
   function session(message: ChatMessage | null | undefined): SessionBuilder;
   function __chat_register(agent: BamlAgent): void;
-  /**
-   * Extract all payloads from a host dispatch request.
-   * Batch-safe helper: returns a shallow copy of request.messages, or [] if absent.
-   */
-  function extractDispatchMessages(request: HostDispatchRequest | null | undefined): JsonValue[];
   /** Emit a stream chunk following A2A wire format. */
   function __chat_yield(chunk: YieldChunk): void;
   function openA2aTaskSession<I = Record<string, unknown>>(token: string): Promise<A2aSessionAwaitingInput<I>>;
@@ -411,7 +385,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "GetDiscoverAgentsPlan";
+export type StepExecutorFunctionName = "DecideDelegationAction" | "DecideDelegationAction__act__system_internal_a2a" | "DecideDelegationAction__continue__system_internal_a2a" | "DecideDelegationAction__select" | "GetDiscoverAgentsPlan" | "GetDiscoverAgentsPlan__act__system_discover_agents" | "GetDiscoverAgentsPlan__continue__system_discover_agents" | "GetDiscoverAgentsPlan__select";
 
 export interface SessionContext {
     contract_version: "session_context";
@@ -445,10 +419,18 @@ export interface StepExecutorRunResult<R = unknown> {
     steps: R[];
     session_context: SessionContext;
     history_context: HistoryContext | null;
+    selected_tool: string | null;
 }
 
 export interface StepExecutorFunctionMap {
+  DecideDelegationAction: { args: Parameters<typeof DecideDelegationAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof DecideDelegationAction>>; };
+  DecideDelegationAction__act__system_internal_a2a: { args: Parameters<typeof DecideDelegationAction__act__system_internal_a2a>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof DecideDelegationAction__act__system_internal_a2a>>; };
+  DecideDelegationAction__continue__system_internal_a2a: { args: Parameters<typeof DecideDelegationAction__continue__system_internal_a2a>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof DecideDelegationAction__continue__system_internal_a2a>>; };
+  DecideDelegationAction__select: { args: Parameters<typeof DecideDelegationAction__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof DecideDelegationAction__select>>; };
   GetDiscoverAgentsPlan: { args: Parameters<typeof GetDiscoverAgentsPlan>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan>>; };
+  GetDiscoverAgentsPlan__act__system_discover_agents: { args: Parameters<typeof GetDiscoverAgentsPlan__act__system_discover_agents>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__act__system_discover_agents>>; };
+  GetDiscoverAgentsPlan__continue__system_discover_agents: { args: Parameters<typeof GetDiscoverAgentsPlan__continue__system_discover_agents>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__continue__system_discover_agents>>; };
+  GetDiscoverAgentsPlan__select: { args: Parameters<typeof GetDiscoverAgentsPlan__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__select>>; };
 }
 
 declare global {

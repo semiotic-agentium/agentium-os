@@ -363,3 +363,80 @@ pub struct MemoryStatsNextOutput {
     pub file_path: String,
     pub done: bool,
 }
+
+// ---------------------------------------------------------------------------
+// DescribeAction impls
+// ---------------------------------------------------------------------------
+
+use baml_rt_tools::DescribeAction;
+
+impl DescribeAction for MemoryAddOpenInput {
+    fn describe(&self) -> String {
+        "storing memories".to_string()
+    }
+}
+impl DescribeAction for MemoryAddSendInput {
+    fn describe(&self) -> String {
+        format!("storing {} memory event(s)", self.events.len())
+    }
+}
+impl DescribeAction for MemorySearchOpenInput {
+    fn describe(&self) -> String {
+        "searching memory".to_string()
+    }
+}
+impl DescribeAction for MemorySearchSendInput {
+    fn describe(&self) -> String {
+        format!("searching memory for '{}'", self.query)
+    }
+}
+impl DescribeAction for MemoryTraverseOpenInput {
+    fn describe(&self) -> String {
+        "traversing memory graph".to_string()
+    }
+}
+impl DescribeAction for MemoryTraverseSendInput {
+    fn describe(&self) -> String {
+        "traversing memory graph connections".to_string()
+    }
+}
+impl DescribeAction for MemoryResolveOpenInput {
+    fn describe(&self) -> String {
+        "resolving memory node".to_string()
+    }
+}
+impl DescribeAction for MemoryResolveSendInput {
+    fn describe(&self) -> String {
+        "resolving memory node to current truth".to_string()
+    }
+}
+impl DescribeAction for MemoryImpactOpenInput {
+    fn describe(&self) -> String {
+        "analyzing memory impact".to_string()
+    }
+}
+impl DescribeAction for MemoryImpactSendInput {
+    fn describe(&self) -> String {
+        "analyzing downstream impact of memory node".to_string()
+    }
+}
+impl DescribeAction for MemoryLinkOpenInput {
+    fn describe(&self) -> String {
+        "linking memory nodes".to_string()
+    }
+}
+impl DescribeAction for MemoryLinkSendInput {
+    fn describe(&self) -> String {
+        format!("creating {} memory edge(s)", self.edges.len())
+    }
+}
+impl DescribeAction for MemoryStatsOpenInput {
+    fn describe(&self) -> String {
+        "retrieving memory statistics".to_string()
+    }
+}
+impl DescribeAction for MemoryStatsSendInput {
+    fn describe(&self) -> String {
+        "retrieving memory graph statistics".to_string()
+    }
+}

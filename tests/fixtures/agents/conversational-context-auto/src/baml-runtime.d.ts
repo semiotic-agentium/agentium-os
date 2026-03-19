@@ -6,6 +6,12 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
+export interface ArchiveReadInput { archive_ref: string;
+offset: number | null;
+limit: number | null;
+grep: string | null;
+ }
+
 export interface CalculatorInput { expression: Expression;
  }
 
@@ -23,10 +29,11 @@ export interface SupportCalculateFinishStep { op: "Finish";
  }
 
 export interface SupportCalculateOpenStep { op: "Open";
+tool_name: "support/calculate";
  }
 
 export interface SupportCalculateReadStep { op: "Read";
-input: CalculatorInput;
+input: ArchiveReadInput;
  }
 
 export interface SupportCalculateSendStep { op: "Send";
@@ -43,6 +50,12 @@ declare global {
 declare function ChatWithContext(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<string>;
 
 declare function ChooseCalcTool(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SupportCalculateSessionPlan>;
+
+declare function ChooseCalcTool__act__support_calculate(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SupportCalculateSendStep>;
+
+declare function ChooseCalcTool__continue__support_calculate(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep>;
+
+declare function ChooseCalcTool__select(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SupportCalculateOpenStep>;
 
 }
 
@@ -246,35 +259,12 @@ export interface RunContext {
   /** Emitter for working message, artifact, awaitInput; use when you need to stream or suspend. */
   emit: SessionEmitter;
 }
-/**
- * Host-to-agent dispatch request. Delivered by the host when an external event
- * matches this agent's subscriptions. Fields mirror the Rust AgentDispatchRequest.
- */
-export interface HostDispatchRequest {
-  routing_key: string;
-  message_type: string;
-  messages: JsonValue[];
-  context_id?: string;
-  task_id?: string;
-  message_id?: string;
-  /** Structured transport metadata (source, schema version, content type). Use `messages` for arbitrary event payloads. */
-  metadata?: JsonObject;
-}
-/**
- * Acknowledgement returned by an agent's onDispatch handler.
- */
-export interface HostDispatchAck {
-  accepted: boolean;
-  detail?: string;
-}
 /** Agent contract: register this; host invokes onChatMessage per message. */
 export interface BamlAgent {
   /** Optional: run(ctx) is the entrypoint; runtime wraps it into onChatMessage. Prefer this over onChatMessage. */
   run?(ctx: RunContext): Promise<SessionResult>;
   /** Optional: raw handler when run is not used. */
   onChatMessage?(message: ChatMessage): Promise<void>;
-  /** Optional: handle host-delivered events matched by this agent's subscriptions. */
-  onDispatch?(request: HostDispatchRequest): Promise<HostDispatchAck>;
   tools?: Record<string, (args: JsonObject) => Promise<JsonValue>>;
 }
 declare global {
@@ -302,11 +292,6 @@ declare global {
    */
   function session(message: ChatMessage | null | undefined): SessionBuilder;
   function __chat_register(agent: BamlAgent): void;
-  /**
-   * Extract all payloads from a host dispatch request.
-   * Batch-safe helper: returns a shallow copy of request.messages, or [] if absent.
-   */
-  function extractDispatchMessages(request: HostDispatchRequest | null | undefined): JsonValue[];
   /** Emit a stream chunk following A2A wire format. */
   function __chat_yield(chunk: YieldChunk): void;
   function openA2aTaskSession<I = Record<string, unknown>>(token: string): Promise<A2aSessionAwaitingInput<I>>;
@@ -327,7 +312,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseCalcTool";
+export type StepExecutorFunctionName = "ChooseCalcTool" | "ChooseCalcTool__act__support_calculate" | "ChooseCalcTool__continue__support_calculate" | "ChooseCalcTool__select";
 
 export interface SessionContext {
     contract_version: "session_context";
@@ -361,10 +346,14 @@ export interface StepExecutorRunResult<R = unknown> {
     steps: R[];
     session_context: SessionContext;
     history_context: HistoryContext | null;
+    selected_tool: string | null;
 }
 
 export interface StepExecutorFunctionMap {
   ChooseCalcTool: { args: Parameters<typeof ChooseCalcTool>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalcTool>>; };
+  ChooseCalcTool__act__support_calculate: { args: Parameters<typeof ChooseCalcTool__act__support_calculate>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalcTool__act__support_calculate>>; };
+  ChooseCalcTool__continue__support_calculate: { args: Parameters<typeof ChooseCalcTool__continue__support_calculate>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalcTool__continue__support_calculate>>; };
+  ChooseCalcTool__select: { args: Parameters<typeof ChooseCalcTool__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalcTool__select>>; };
 }
 
 declare global {

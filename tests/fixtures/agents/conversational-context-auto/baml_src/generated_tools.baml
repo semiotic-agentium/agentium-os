@@ -4,16 +4,15 @@
 // FSM (Finite State Machine) Tool Session Protocol:
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
-// 2. Send: Can occur AFTER Open, including multiple times across a session
-// 3. Read: Retrieves output/progress using explicit read input
+// 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
+// 3. Read: Deref a prior Send result. Requires archive_ref (e.g. '@1'). Supports grep/paginate.
 // 4. Finish: Closes the session gracefully
 // 5. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
-// - Open MUST come before any Send step
-// - Open may include 'initial_input' only when the step schema defines that field
-// - Send uses 'input' field (for subsequent inputs)
-// - Use Read to fetch pending output/chunks; Read may repeat between Send steps
+// - Open MUST come before Send
+// - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
+// - Read requires archive_ref from a prior Send. Use it to paginate or grep the output.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -29,15 +28,6 @@ class StandardStructuredPlan {
   plan_steps StandardAgentPlanStep[]
 }
 
-class SessionContext {
-  contract_version string
-  session_open bool
-  allowed_ops string[]
-  scope_ref string?
-  output_ref string?
-  evidence_ref string?
-}
-
 class HistoryContext {
   hop int
   op string
@@ -45,6 +35,15 @@ class HistoryContext {
   truncated bool
   cursor string?
   payload string?
+}
+
+/// Archive deref input for Read steps.
+/// archive_ref is required: use the @N ref from the Send result.
+class ArchiveReadInput {
+  archive_ref string @description("Required archive ref e.g. '@1'. Use the ref returned by the preceding Send step.")
+  offset int? @description("Line offset for pagination (0-based). Omit to start from the beginning.")
+  limit int? @description("Maximum lines to return. Omit for default page size.")
+  grep string? @description("Optional grep pattern e.g. 'deploy' or '-i deploy' for case-insensitive.")
 }
 
 // Domain types generated from #[derive(BamlType)]
@@ -71,8 +70,18 @@ class CalculatorOutput {
   formatted string
 }
 
+/// Tool card for support/calculate: metadata for polymorphic Open selection.
+class SupportCalculateToolCard {
+  tool_name "support/calculate"
+  description "Performs mathematical calculations. Can handle addition, subtraction, multiplication, and division."
+  session_policy "Strict"
+  input_summary "{ expression: any }"
+  tags string[] @description("Tool tags: support, calculate")
+}
+
 class SupportCalculateOpenStep {
   op "Open"
+  tool_name "support/calculate" @description("Tool to open")
 }
 
 class SupportCalculateSendStep {
@@ -82,7 +91,7 @@ class SupportCalculateSendStep {
 
 class SupportCalculateReadStep {
   op "Read"
-  input CalculatorInput @description("Read payload for this step.")
+  input ArchiveReadInput @description("Archive ref and optional pagination/grep params.")
 }
 
 class SupportCalculateFinishStep {
@@ -96,6 +105,6 @@ class SupportCalculateAbortStep {
 type SupportCalculateSessionStep = SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep
 
 class SupportCalculateSessionPlan {
-  step SupportCalculateSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. After Send, prefer Read before further Send/Finish so you consume tool output and status.")
+  step SupportCalculateSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again.")
 }
 

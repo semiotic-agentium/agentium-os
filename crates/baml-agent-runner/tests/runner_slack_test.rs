@@ -1,6 +1,5 @@
 #![cfg(feature = "slack")]
 
-#[allow(dead_code, unused_imports)]
 mod common;
 
 use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
@@ -11,10 +10,10 @@ use baml_rt_core::{
     ids::{AgentId, ContextId, UuidId},
 };
 use baml_rt_provenance::{
-    AgentType, GraphqliteProvenanceStore, GraphqliteStoreBuilder, ProvEvent,
-    ProvenanceContextReader, ProvenanceConversationContextItem, ProvenanceWriter,
+    AgentType, ProvEvent, ProvenanceContextReader, ProvenanceConversationContextItem,
+    ProvenanceWriter, SurrealProvenanceStore, SurrealStoreBuilder,
 };
-use baml_tool_links::baml_tools_slack::SlackTool;
+use baml_tools_slack::SlackTool;
 use common::{
     RunningHttpServer, TempDirCleanup, TempEnvVar, build_slack_agent_to_temp_async, contains_kv,
     e2e_serial_gate, post_a2a_sse_collect, start_http_server, start_runner_api_server,
@@ -127,7 +126,7 @@ async fn start_slack_mock_server() -> std::io::Result<(RunningHttpServer, MockSl
 }
 
 async fn setup_slack_agent_with_provenance()
--> (baml_rt::A2aAgent, Arc<GraphqliteProvenanceStore>, PathBuf) {
+-> (baml_rt::A2aAgent, Arc<SurrealProvenanceStore>, PathBuf) {
     let built = build_slack_agent_to_temp_async().await;
     let mut manager = BamlRuntimeManager::builder()
         .with_fnox_llm_resolver(workspace_fnox_path())
@@ -141,7 +140,7 @@ async fn setup_slack_agent_with_provenance()
         .await
         .expect("register slack tool");
 
-    let provenance = build_graphqlite_test_store();
+    let provenance = build_surreal_test_store().await;
     let agent_id = AgentId::from_uuid(UuidId::new(uuid::Uuid::new_v4()));
     provenance
         .add_event(ProvEvent::agent_booted(
@@ -157,7 +156,7 @@ async fn setup_slack_agent_with_provenance()
         fs::read_to_string(built.join("dist").join("index.js")).expect("slack-agent dist/index.js");
     let agent = baml_rt::A2aAgent::builder()
         .with_agent_id(agent_id)
-        .with_graphqlite_store(provenance.clone())
+        .with_surreal_store(provenance.clone())
         .with_runtime_manager(manager)
         .with_init_js(agent_code)
         .with_effect_emitter(Arc::new(BusWithEffects::new()))
@@ -167,15 +166,11 @@ async fn setup_slack_agent_with_provenance()
     (agent, provenance, built)
 }
 
-fn build_graphqlite_test_store() -> Arc<GraphqliteProvenanceStore> {
-    let path = std::env::temp_dir().join(format!(
-        "baml-rt-runner-slack-{pid}-{unique}.db",
-        pid = std::process::id(),
-        unique = uuid::Uuid::new_v4(),
-    ));
-    GraphqliteStoreBuilder::file(path)
+async fn build_surreal_test_store() -> Arc<SurrealProvenanceStore> {
+    SurrealStoreBuilder::in_memory_isolated()
         .build()
-        .expect("build isolated GraphQLite store")
+        .await
+        .expect("build isolated SurrealDB store")
 }
 
 #[tokio::test]

@@ -11,7 +11,7 @@ pub mod auto_status;
 pub mod error_classifier;
 pub mod error_mapping;
 pub mod events;
-pub mod graphqlite_task_subgraph_store;
+pub mod task_subgraph_store;
 pub mod handlers;
 pub(crate) mod live_stream;
 pub(crate) mod live_stream_working_relay;

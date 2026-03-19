@@ -50,6 +50,11 @@ struct ArithmeticInput {
     a: f64,
     b: f64,
 }
+impl baml_rt_tools::DescribeAction for ArithmeticInput {
+    fn describe(&self) -> String {
+        "ArithmeticInput".to_string()
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]
 #[ts(export)]
@@ -120,6 +125,11 @@ enum StringOp {
 struct StringManipulationInput {
     operation: StringOp,
     text: String,
+}
+impl baml_rt_tools::DescribeAction for StringManipulationInput {
+    fn describe(&self) -> String {
+        "StringManipulationInput".to_string()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS)]

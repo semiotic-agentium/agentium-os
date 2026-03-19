@@ -1,7 +1,7 @@
 # A2A Provenance Mapping (W3C PROV)
 
 This document defines how `ProvEvent` is normalized into W3C PROV structures
-and A2A-derived relations for storage in the provenance graph (GraphQLite).
+and A2A-derived relations for storage in the provenance graph (SurrealDB).
 
 ## Node Labels and Identity
 
@@ -122,6 +122,6 @@ semantics intact.
 
 ## Validation
 
-The provenance store is backed by GraphQLite (SQLite + Cypher). Use the store’s
-read API or execute Cypher via the GraphQLite connection to validate the
+The provenance store is backed by SurrealDB. Use the store’s
+read API or execute SurrealQL queries to validate the
 populated graph.

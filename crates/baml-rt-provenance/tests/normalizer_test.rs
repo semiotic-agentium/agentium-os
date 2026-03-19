@@ -41,6 +41,7 @@ fn normalize_intent_and_plan_revisions_emit_replaced_by_relations() {
             "v1".to_string(),
             vec![message_id.clone()],
             None,
+            None,
         ))
         .expect("intent v1");
     let intent_v2 = normalizer
@@ -50,6 +51,7 @@ fn normalize_intent_and_plan_revisions_emit_replaced_by_relations() {
             IntentId::from("intent-v2".to_string()),
             "v2".to_string(),
             vec![message_id.clone()],
+            None,
             None,
         ))
         .expect("intent v2");
@@ -103,6 +105,7 @@ fn normalize_intent_and_plan_revisions_emit_refined_by_relations() {
             "v1".to_string(),
             vec![message_id.clone()],
             None,
+            None,
         ))
         .expect("intent v1");
     let intent_v2 = normalizer
@@ -113,6 +116,7 @@ fn normalize_intent_and_plan_revisions_emit_refined_by_relations() {
             "v2".to_string(),
             vec![message_id.clone()],
             Some(PlanningSupersessionKind::RefinedBy),
+            None,
         ))
         .expect("intent v2");
     assert!(

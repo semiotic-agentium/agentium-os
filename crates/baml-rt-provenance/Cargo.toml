@@ -17,17 +17,17 @@ baml-rt-id = { path = "../baml-rt-id" }
 baml-rt-observability = { path = "../baml-rt-observability" }
 baml-rt-tools = { path = "../baml-rt-tools" }
 baml-rt-vocabulary = { path = "../baml-rt-vocabulary" }
+dashmap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-graphqlite = { workspace = true }
 uuid = { workspace = true }
 clap = { workspace = true, optional = true }
 anyhow = { workspace = true, optional = true }
-surrealdb = { workspace = true, optional = true }
+surrealdb = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true, features = ["json"] }
@@ -35,19 +35,13 @@ tempfile = { workspace = true }
 test-support = { path = "../test-support" }
 criterion = "0.5"
 paste = { workspace = true }
-# SurrealDB needed at dev time for parity tests even when surreal-backend feature is active
-surrealdb = { workspace = true }
 
 [features]
 default = []
 cli = ["dep:clap", "dep:anyhow"]
-surreal-backend = ["dep:surrealdb"]
 
 [[bin]]
 name = "graph_exporter"
 path = "src/bin/graph_exporter.rs"
 required-features = ["cli"]
 
-[[bin]]
-name = "pre_extract_graphqlite"
-path = "src/bin/pre_extract_graphqlite.rs"

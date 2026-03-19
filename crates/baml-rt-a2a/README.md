@@ -18,12 +18,12 @@ JavaScript agents use the A2A DSL provided by the runtime shim (`session`, `__ch
 
 ## Task store and provenance (graph-native single-store design)
 
-A2A task/state writes and provenance are backed by a **single concrete GraphQLite provenance store** in persistent mode. The transport composes narrow trait views over the same underlying store instance (DI), rather than maintaining a separate task-view authority.
+A2A task/state writes and provenance are backed by a **single concrete SurrealDB provenance store** in persistent mode. The transport composes narrow trait views over the same underlying store instance (DI), rather than maintaining a separate task-view authority.
 
-- **Single concrete store:** `GraphqliteProvenanceStore` is instantiated once and projected into trait interfaces consumed by A2A (`TaskStoreBackend`, `ProvenanceWriter`, context reader facets).
-- **Read path:** Conversation context is graph-backed and read from provenance for GraphQLite mode (message/tool/status history reconstructed from persisted graph events).
-- **Write path:** Task/message/status/artifact mutations flow through A2A store adapters that emit matching provenance events; GraphQLite persistence remains the system of record.
+- **Single concrete store:** `SurrealProvenanceStore` is instantiated once and projected into trait interfaces consumed by A2A (`TaskStoreBackend`, `ProvenanceWriter`, context reader facets).
+- **Read path:** Conversation context is graph-backed and read from provenance (message/tool/status history reconstructed from persisted graph events).
+- **Write path:** Task/message/status/artifact mutations flow through A2A store adapters that emit matching provenance events; SurrealDB persistence remains the system of record.
 - **Interface boundary:** A2A depends on trait contracts from shared vocabulary crates; graph labels/query shapes stay provenance-internal.
-- **No implicit in-memory production fallback:** persistent GraphQLite mode is explicit; unsupported default combinations are rejected by builder wiring.
+- **No implicit in-memory production fallback:** persistent SurrealDB mode is explicit; unsupported default combinations are rejected by builder wiring.
 
 This keeps one causality graph for runtime behavior and avoids split-brain task/provenance state across multiple concrete stores.

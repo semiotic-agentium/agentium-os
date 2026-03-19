@@ -94,7 +94,7 @@ pub fn simplify_graph(graph: &ExportedGraph) -> ExportedGraph {
     let kept_args_ids: HashSet<&str> = graph
         .edges
         .iter()
-        .filter(|e| e.relation == "WAS_USED_BY" && kept_tool_ids.contains(e.from.as_str()))
+        .filter(|e| e.relation == semantic_labels::WAS_USED_BY && kept_tool_ids.contains(e.from.as_str()))
         .map(|e| e.to.as_str())
         .collect();
 

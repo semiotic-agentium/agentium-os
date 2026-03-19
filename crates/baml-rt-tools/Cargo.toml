@@ -23,6 +23,7 @@ genco = { workspace = true }
 inventory = { workspace = true }
 opentelemetry = { workspace = true }
 dashmap = "6.1.0"
+regex = "1"
 
 [features]
 default = []

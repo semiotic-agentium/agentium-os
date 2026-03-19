@@ -198,6 +198,8 @@ export interface WorkflowProgressState {
   iteration?: number;
   nodes: WorkflowNodeStatus[];
   completedNodes: string[];
+  /** True once the coordinator pipeline has meaningfully started (discovery or planning seen). */
+  pipelineActive?: boolean;
 }
 
 /** State transition for task timeline */

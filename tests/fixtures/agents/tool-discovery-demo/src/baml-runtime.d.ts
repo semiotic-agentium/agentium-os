@@ -6,19 +6,17 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
+export interface ArchiveReadInput { archive_ref: string;
+offset: number | null;
+limit: number | null;
+grep: string | null;
+ }
+
 export interface DiscoverToolsOpenInput { reason: string | null;
  }
 
 export interface DiscoverToolsSendInput { query: string | null;
 limit: number | null;
- }
-
-export interface SessionContext { contract_version: string;
-session_open: boolean;
-allowed_ops: string[];
-scope_ref: string | null;
-output_ref: string | null;
-evidence_ref: string | null;
  }
 
 export interface SystemDiscover_toolsAbortStep { op: "Abort";
@@ -28,11 +26,12 @@ export interface SystemDiscover_toolsFinishStep { op: "Finish";
  }
 
 export interface SystemDiscover_toolsOpenStep { op: "Open";
+tool_name: "system/discover_tools";
 initial_input: DiscoverToolsOpenInput | null;
  }
 
 export interface SystemDiscover_toolsReadStep { op: "Read";
-input: DiscoverToolsSendInput;
+input: ArchiveReadInput;
  }
 
 export interface SystemDiscover_toolsSendStep { op: "Send";
@@ -46,7 +45,7 @@ export interface SystemDiscover_toolsSessionPlan { step: SystemDiscover_toolsOpe
 
 declare global {
 
-declare function ChooseDiscoverToolsQuery(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SystemDiscover_toolsSessionPlan>;
+declare function ChooseDiscoverToolsQuery(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_toolsSessionPlan>;
 
 }
 
@@ -250,35 +249,12 @@ export interface RunContext {
   /** Emitter for working message, artifact, awaitInput; use when you need to stream or suspend. */
   emit: SessionEmitter;
 }
-/**
- * Host-to-agent dispatch request. Delivered by the host when an external event
- * matches this agent's subscriptions. Fields mirror the Rust AgentDispatchRequest.
- */
-export interface HostDispatchRequest {
-  routing_key: string;
-  message_type: string;
-  messages: JsonValue[];
-  context_id?: string;
-  task_id?: string;
-  message_id?: string;
-  /** Structured transport metadata (source, schema version, content type). Use `messages` for arbitrary event payloads. */
-  metadata?: JsonObject;
-}
-/**
- * Acknowledgement returned by an agent's onDispatch handler.
- */
-export interface HostDispatchAck {
-  accepted: boolean;
-  detail?: string;
-}
 /** Agent contract: register this; host invokes onChatMessage per message. */
 export interface BamlAgent {
   /** Optional: run(ctx) is the entrypoint; runtime wraps it into onChatMessage. Prefer this over onChatMessage. */
   run?(ctx: RunContext): Promise<SessionResult>;
   /** Optional: raw handler when run is not used. */
   onChatMessage?(message: ChatMessage): Promise<void>;
-  /** Optional: handle host-delivered events matched by this agent's subscriptions. */
-  onDispatch?(request: HostDispatchRequest): Promise<HostDispatchAck>;
   tools?: Record<string, (args: JsonObject) => Promise<JsonValue>>;
 }
 declare global {
@@ -306,11 +282,6 @@ declare global {
    */
   function session(message: ChatMessage | null | undefined): SessionBuilder;
   function __chat_register(agent: BamlAgent): void;
-  /**
-   * Extract all payloads from a host dispatch request.
-   * Batch-safe helper: returns a shallow copy of request.messages, or [] if absent.
-   */
-  function extractDispatchMessages(request: HostDispatchRequest | null | undefined): JsonValue[];
   /** Emit a stream chunk following A2A wire format. */
   function __chat_yield(chunk: YieldChunk): void;
   function openA2aTaskSession<I = Record<string, unknown>>(token: string): Promise<A2aSessionAwaitingInput<I>>;
@@ -365,6 +336,7 @@ export interface StepExecutorRunResult<R = unknown> {
     steps: R[];
     session_context: SessionContext;
     history_context: HistoryContext | null;
+    selected_tool: string | null;
 }
 
 export interface StepExecutorFunctionMap {
