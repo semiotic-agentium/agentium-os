@@ -34,5 +34,14 @@ regex = { workspace = true }
 # Terminal output formatting
 console = "0.15"
 
+# Builder for run_bootstrap and regen functionality
+baml-rt-builder = { path = "../baml-rt-builder" }
+
+# Async runtime for bootstrap and regen
+tokio = { workspace = true }
+
+# Temp files for regen sync
+tempfile = { workspace = true }
+
 [dev-dependencies]
 tempfile = { workspace = true }

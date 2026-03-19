@@ -2,6 +2,17 @@
 
 The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, eliminating manual boilerplate while preserving the existing compile-time tool registration model.
 
+## Quick Reference
+
+| Command | Description |
+|---------|-------------|
+| `new-tool <name>` | Create a new tool crate with all necessary patches |
+| `new-agent <name>` | Create a new agent package with templates |
+| `list-tools` | List all registered tools from the inventory |
+| `list-agents` | List all agent packages |
+| `regen` | Regenerate type declarations for all agents |
+| `doctor` | Validate workspace integrity |
+
 ## Installation
 
 ### Option 1: Use without installation (recommended for development)
@@ -16,6 +27,7 @@ Examples:
 ```bash
 cargo run -p cargo-agent-platform -- list-tools
 cargo run -p cargo-agent-platform -- new-tool github --dry-run
+cargo run -p cargo-agent-platform -- new-agent my-agent --template planner
 cargo run -p cargo-agent-platform -- doctor
 ```
 
@@ -224,6 +236,180 @@ This exits with code 1 if any issues are found, suitable for CI pipelines.
 
 ---
 
+### `new-agent`
+
+Creates a new agent package with generated BAML prompts, TypeScript entry point, and type declarations.
+
+```bash
+cargo run -p cargo-agent-platform -- new-agent <name> [options]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<name>` | Agent name in kebab-case (e.g., `github-agent`, `task-manager`) |
+
+**Options:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--tools <tools>` | - | Comma-separated tool IDs (e.g., `support/github,system/internal_a2a`) |
+| `--template <template>` | `simple` | Agent template: `simple`, `basic-tools`, `planner`, `coordinator` |
+| `--description <desc>` | `""` | Human-readable description for agent discovery |
+| `--output <dir>` | `agents/<name>` | Target directory for the agent package |
+| `--dry-run` | - | Preview changes without writing any files |
+
+**Templates:**
+
+| Template | Description | Use Case |
+|----------|-------------|----------|
+| `simple` | Basic agent without tools | Q&A chatbots, summarizers |
+| `basic-tools` | Simple agent with tool support | Single-purpose tool agents |
+| `planner` | 3-phase architecture: Intent → Plan → Execute | Domain-specific agents (like clickup-agent) |
+| `coordinator` | Multi-agent delegator pattern | Routing to specialist agents |
+
+**Examples:**
+
+```bash
+# Preview what would be created
+cargo run -p cargo-agent-platform -- new-agent github-agent --dry-run
+
+# Create a simple agent (no tools)
+cargo run -p cargo-agent-platform -- new-agent qa-bot --description "Q&A assistant"
+
+# Create an agent with tools using the planner template
+cargo run -p cargo-agent-platform -- new-agent github-agent \
+  --tools support/github,system/internal_a2a \
+  --template planner \
+  --description "GitHub issue and PR assistant"
+
+# Create a coordinator agent (automatically includes system tools)
+cargo run -p cargo-agent-platform -- new-agent my-coordinator \
+  --template coordinator \
+  --description "Routes requests to specialist agents"
+```
+
+**What it creates:**
+
+```
+agents/<name>/
+  manifest.json           # Agent metadata (name, version, tools, discovery)
+  tsconfig.json           # TypeScript configuration
+  baml_src/
+    <name>_prompt.baml    # BAML prompt functions (template-specific)
+    generated_tools.baml  # Auto-generated tool type interfaces
+    planner.baml          # (coordinator template only) Workflow planning
+  src/
+    index.ts              # TypeScript entry point (template-specific)
+    baml-runtime.d.ts     # Auto-generated TypeScript declarations
+```
+
+**Template Details:**
+
+**`simple` / `basic-tools`:**
+- Wraps the existing `run_bootstrap` from baml-rt-builder
+- Generates a single BAML function and simple `index.ts`
+- `basic-tools` is automatically selected when tools are specified with `simple`
+
+**`planner` (3-phase architecture):**
+- Based on the clickup-agent pattern
+- Generates three BAML functions:
+  - `Infer{Name}Intent` - Classifies user intent, asks for clarification, or rejects
+  - `Plan{Name}Work` - Generates a step plan from validated intent
+  - `Choose{Name}Action` - Executes one step at a time via `runGeneratedStepExecutor`
+- TypeScript includes intent loop with `awaitInput` for clarification
+
+**`coordinator` (multi-agent delegator):**
+- Based on the coordinator-agent pattern
+- Automatically includes tools: `system/discover_agents`, `system/discover_tools`, `system/internal_a2a`
+- Generates workflow planning and synthesis BAML functions
+- TypeScript includes DAG-based workflow execution with parallel node execution
+
+**After creating an agent:**
+
+1. Edit `src/index.ts` to customize your agent logic
+2. Edit `baml_src/<name>_prompt.baml` to customize BAML prompts
+3. Run `cargo run -p baml-rt-builder --bin baml-agent-builder` to package the agent
+
+---
+
+### `list-agents`
+
+Lists all agent packages in `agents/` and `tests/fixtures/agents/` with their manifest metadata.
+
+```bash
+cargo run -p cargo-agent-platform -- list-agents
+```
+
+**Output includes:**
+- Agent name
+- Version
+- Source (production or fixture)
+- Description (truncated)
+
+**Example output:**
+```
+NAME                         VERSION  SOURCE      DESCRIPTION
+claude-session-demo          1.0.0    production  Development agent that turns natural-language requirement...
+clickup-agent                1.0.0    production  Agent that interacts with ClickUp tasks and spaces
+coordinator-agent            1.0.0    production  Coordinator agent that delegates to specialist sub-agents...
+
+argument-chapman             1.0.0    fixture     Fixture: Monty Python argument sketch agent (responder)
+conversational-context-auto  1.0.0    fixture     Fixture: provenance-backed automatic conversation context...
+
+Total: 19 agent(s)
+```
+
+---
+
+### `regen`
+
+Regenerates `generated_tools.baml` and `baml-runtime.d.ts` for all agents in both `agents/` and `tests/fixtures/agents/`.
+
+```bash
+cargo run -p cargo-agent-platform -- regen
+```
+
+**What it does:**
+
+1. Scans `agents/` and `tests/fixtures/agents/` for directories containing `baml_src/`
+2. For each agent:
+   - Writes canonical `tsconfig.json`
+   - Runs the `RuntimeTypeGenerator` to produce `src/baml-runtime.d.ts`
+   - Syncs `generated_*.baml` files to the agent's `baml_src/` directory
+   - Removes stale `generated_*.baml` files no longer emitted
+
+**Example output:**
+```
+[regen] Regenerating 7 agents in agents...
+  -> claude-session-demo... ok
+  -> clickup-agent... ok
+  -> coordinator-agent... ok
+  ...
+[regen] Regenerating 13 agents in fixtures...
+  -> argument-chapman... ok
+  -> conversational-context-auto... ok
+  ...
+
+Done! Regenerated 20 agent(s)
+```
+
+**When to run:**
+- After adding or modifying tools
+- After changing tool metadata (description, tags, etc.)
+- After modifying BAML schemas that affect type generation
+- Before committing changes that touch tool definitions
+
+**CI usage:**
+
+The `regen` command is equivalent to running:
+```bash
+cargo run -p baml-rt-builder --features http-tools,memory --bin regen_fixtures
+```
+
+---
+
 ## Generated Tool Template
 
 When you run `new-tool`, the generated `lib.rs` includes:
@@ -262,14 +448,170 @@ Ensure:
 
 Run `doctor` to diagnose missing linkage.
 
+### Agent not appearing in `list-agents`
+
+Ensure:
+1. The agent directory contains a `manifest.json` file
+2. The manifest is valid JSON with required fields (`name`, `version`, `entry_point`)
+3. The agent is in either `agents/` or `tests/fixtures/agents/`
+
+### `new-agent` fails with "Directory already exists"
+
+The target directory must be empty or non-existent. Either:
+- Choose a different name or output directory
+- Delete the existing directory if it was a failed attempt
+
+### `regen` fails for an agent
+
+Common causes:
+- Missing or invalid `baml_src/` directory
+- BAML syntax errors in prompt files
+- Missing `manifest.json`
+
+Check the error message for the specific agent and fix the underlying issue.
+
 ---
 
-## Future Commands (Phase 2)
+## Agent Templates in Detail
 
-The following commands are planned for Phase 2:
+### Planner Template Architecture
 
-- `new-agent <name>` - Create a new agent package with templates
-- `list-agents` - List all agent packages
-- `regen` - Regenerate `_baml_runtime.baml` and `baml-runtime.d.ts`
+The planner template implements a 3-phase architecture inspired by the clickup-agent:
 
-See `sdk_cli_plan.md` for the full implementation roadmap.
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    Phase 1: Intent                          │
+│  Infer{Name}Intent(user_message) →                         │
+│    NeedClarification | NotRelevant | {Name}Intent          │
+│                                                             │
+│  - Classifies user message                                  │
+│  - Asks clarifying questions via awaitInput                 │
+│  - Rejects irrelevant requests                              │
+│  - Distills clean intent statement                          │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                    Phase 2: Planning                        │
+│  Plan{Name}Work(intent, operation_kind) → {Name}Plan       │
+│                                                             │
+│  - Generates step plan from validated intent                │
+│  - Steps have kinds: navigate, execute, format              │
+│  - No data fetching or execution in this phase              │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                    Phase 3: Execution                       │
+│  Choose{Name}Action(goal, step_description, ...) →         │
+│    FinalResponse | {ToolName}SessionPlan                   │
+│                                                             │
+│  - Called via runGeneratedStepExecutor in a ReAct loop     │
+│  - Executes one step at a time                              │
+│  - Threads prior results forward to subsequent steps        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Coordinator Template Architecture
+
+The coordinator template implements a multi-agent delegation pattern:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    1. Discovery                             │
+│  discoverAgents(userText) via system/discover_agents        │
+│                                                             │
+│  - Finds all available specialist agents                    │
+│  - Filters out self (coordinator) and non-default instances │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                    2. Planning                              │
+│  PlanCoordinatorWorkflow(user_message, available_agents)   │
+│    → WorkflowPlan { goal, nodes[], final_node_id }         │
+│                                                             │
+│  Node kinds:                                                │
+│    - call_agent: Delegate to specialist via system/internal_a2a │
+│    - foreach: Fan-out over items from upstream              │
+│    - synthesize: Merge prior node outputs                   │
+│    - clarify: Ask user for clarification                    │
+│    - direct_answer: Respond without delegation              │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                    3. Execution                             │
+│  executeWorkflow(plan, artifacts)                           │
+│                                                             │
+│  - Topological sort for dependency ordering                 │
+│  - Parallel execution with concurrency limit                │
+│  - Clarify nodes suspend execution via awaitInput           │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│                    4. Synthesis                             │
+│  SynthesizeCoordinatorResponse(user_message, transcript)   │
+│    → CoordinatorAnswer { answer, goals, sources, ... }     │
+│                                                             │
+│  - Aggregates evidence from all workflow nodes              │
+│  - Produces structured response with confidence score       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## CI Integration
+
+### Recommended CI Steps
+
+```yaml
+# 1. Check generated files are up to date
+- name: Regenerate type declarations
+  run: cargo run -p cargo-agent-platform -- regen
+
+- name: Check for uncommitted changes
+  run: |
+    if ! git diff --quiet -- 'agents/' 'tests/fixtures/agents/'; then
+      echo "::error::Generated files are stale. Run 'cargo agent-platform regen' and commit."
+      exit 1
+    fi
+
+# 2. Validate workspace integrity
+- name: Workspace integrity check
+  run: cargo run -p cargo-agent-platform -- doctor --ci
+```
+
+### justfile Shortcuts
+
+```just
+# Canonical feature set for CI
+ci-tool-features := "http-tools,memory"
+
+# SDK CLI shortcuts
+new-tool name bundle='support':
+    cargo run -p cargo-agent-platform -- new-tool {{name}} --bundle {{bundle}}
+
+new-agent name *args:
+    cargo run -p cargo-agent-platform -- new-agent {{name}} {{args}}
+
+regen:
+    cargo run -p cargo-agent-platform -- regen
+
+doctor:
+    cargo run -p cargo-agent-platform -- doctor
+
+doctor-ci:
+    cargo run -p cargo-agent-platform -- doctor --ci
+
+list-tools:
+    cargo run -p cargo-agent-platform -- list-tools
+
+list-agents:
+    cargo run -p cargo-agent-platform -- list-agents
+```
+
+---
+
+## See Also
+
+- `sdk_cli_plan.md` - Full implementation roadmap and design decisions
+- `CLAUDE.md` - Agent platform architecture and conventions
+- `agents/clickup-agent/` - Reference implementation for planner template
+- `agents/coordinator-agent/` - Reference implementation for coordinator template

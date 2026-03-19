@@ -9,7 +9,10 @@
 //! # Subcommands
 //!
 //! - `new-tool <name>` — Create a new tool crate with all necessary patches
+//! - `new-agent <name>` — Create a new agent package
 //! - `list-tools` — List all registered tools from the inventory
+//! - `list-agents` — List all agent packages
+//! - `regen` — Regenerate type declarations for all agents
 //! - `doctor` — Validate workspace integrity
 
 mod commands;
@@ -55,8 +58,40 @@ enum Commands {
         dry_run: bool,
     },
 
+    /// Create a new agent package
+    NewAgent {
+        /// Agent name in kebab-case (e.g., github-agent, task-manager)
+        name: String,
+
+        /// Comma-separated tool IDs (e.g., support/github,system/internal_a2a)
+        #[arg(long)]
+        tools: Option<String>,
+
+        /// Agent template: simple, basic-tools, planner, coordinator
+        #[arg(long, default_value = "simple")]
+        template: String,
+
+        /// Human-readable description for discovery
+        #[arg(long, default_value = "")]
+        description: String,
+
+        /// Target directory (defaults to agents/<name>)
+        #[arg(long)]
+        output: Option<String>,
+
+        /// Print what would be created without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// List all registered tools from the inventory
     ListTools,
+
+    /// List all agent packages
+    ListAgents,
+
+    /// Regenerate generated_tools.baml and baml-runtime.d.ts for all agents
+    Regen,
 
     /// Validate workspace integrity
     Doctor {
@@ -92,7 +127,27 @@ fn main() -> anyhow::Result<()> {
             dry_run,
         } => commands::new_tool::run(&name, &bundle, &access, dry_run),
 
+        Commands::NewAgent {
+            name,
+            tools,
+            template,
+            description,
+            output,
+            dry_run,
+        } => commands::new_agent::run(
+            &name,
+            tools.as_deref(),
+            &template,
+            &description,
+            output.as_deref(),
+            dry_run,
+        ),
+
         Commands::ListTools => commands::list_tools::run(),
+
+        Commands::ListAgents => commands::list_agents::run(),
+
+        Commands::Regen => commands::regen::run(),
 
         Commands::Doctor {
             ci,

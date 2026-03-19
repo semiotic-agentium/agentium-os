@@ -2581,6 +2581,7 @@ name = "cargo-agent-platform"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "baml-rt-builder",
  "baml-rt-core",
  "baml-rt-tools",
  "baml-tool-links",
@@ -2591,6 +2592,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "toml_edit 0.22.27",
 ]
 

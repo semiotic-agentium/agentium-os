@@ -1,0 +1,423 @@
+/// <reference path="./baml-runtime.d.ts" />
+import type { ChatMessage, RunContext, SessionResult } from "./baml-runtime";
+
+// Constants
+const MAX_FANOUT_CONCURRENCY = 3;
+const MAX_TRANSCRIPT_CHARS = 12_000;
+const MAX_SINGLE_SEND_CONTINUE_STEPS = 16;
+const MAX_DELEGATION_CONTINUE_STEPS = 128;
+const MAX_WORKFLOW_NODES = 30;
+
+const INTERNAL_A2A_TOOL_NAME = "system/internal_a2a";
+const DISCOVER_AGENTS_TOOL_NAME = "system/discover_agents";
+
+// Type definitions
+type WorkflowNodeKind = "call_agent" | "foreach" | "synthesize" | "clarify" | "direct_answer";
+
+type RouteTarget = {
+  agent_package: string;
+  agent_instance_id: string;
+};
+
+type WorkflowNode = {
+  id: string;
+  kind: WorkflowNodeKind;
+  depends_on: string[];
+  target?: RouteTarget;
+  prompt_template?: string;
+  rationale?: string;
+};
+
+type WorkflowPlan = {
+  goal: string;
+  nodes: WorkflowNode[];
+  final_node_id?: string | null;
+};
+
+type DiscoveredAgent = {
+  name: string;
+  version: string;
+  agent_package: string;
+  agent_instance_id: string;
+  tools: string[];
+  description?: string;
+  capabilities?: string[];
+};
+
+type AgentCandidate = {
+  agent_package: string;
+  agent_instance_id: string;
+  name: string;
+  description: string | null;
+  capabilities: string[];
+  tools: string[];
+};
+
+type CoordinatorAnswer = {
+  answer: string;
+  actionable_goals: { goal: string; owner?: string | null; due_date?: string | null }[];
+  sources: string[];
+  confidence: number;
+  gaps: string[];
+  clarification_question?: string | null;
+};
+
+type ToolSessionHandle = {
+  send(args: Record<string, unknown>): Promise<unknown>;
+  continue(): Promise<unknown>;
+  finish(): Promise<unknown>;
+  abort(reason?: string): Promise<unknown>;
+};
+
+type NodeArtifact = {
+  node_id: string;
+  status: "pending" | "running" | "completed" | "failed" | "skipped";
+  output_text?: string;
+  error?: string;
+};
+
+// Utility helpers
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value != null && typeof value === "object";
+}
+
+// Tool session helpers
+async function drainToolSession(
+  sessionHandle: ToolSessionHandle,
+  maxSteps: number,
+): Promise<{ steps: unknown[]; hitStepLimit: boolean }> {
+  const steps: unknown[] = [];
+  for (let step = 0; step < maxSteps; step++) {
+    const result = await sessionHandle.continue();
+    steps.push(result);
+    if (isObject(result) && result.status !== "streaming") {
+      return { steps, hitStepLimit: false };
+    }
+  }
+  return { steps, hitStepLimit: true };
+}
+
+async function runSingleSendSession(
+  toolName: string,
+  openInput: Record<string, unknown>,
+  sendInput: Record<string, unknown>,
+): Promise<unknown> {
+  let sessionHandle: ToolSessionHandle | null = null;
+  try {
+    sessionHandle = await openToolSession(toolName, openInput);
+    await sessionHandle.send(sendInput);
+    const drained = await drainToolSession(sessionHandle, MAX_SINGLE_SEND_CONTINUE_STEPS);
+    const terminal = drained.steps[drained.steps.length - 1] || null;
+    await sessionHandle.finish();
+    sessionHandle = null;
+    return isObject(terminal) && "output" in terminal ? terminal.output : terminal;
+  } catch (err) {
+    if (sessionHandle) {
+      try { await sessionHandle.abort(String(err)); } catch {}
+    }
+    throw err;
+  }
+}
+
+// Agent discovery
+function parseDiscoveredAgent(value: unknown): DiscoveredAgent | null {
+  if (!isObject(value)) return null;
+  const name = typeof value.name === "string" ? value.name : null;
+  const version = typeof value.version === "string" ? value.version : null;
+  const agentPackage = typeof value.agent_package === "string" ? value.agent_package : null;
+  const agentInstanceId = typeof value.agent_instance_id === "string" ? value.agent_instance_id : null;
+  if (!name || !version || !agentPackage || !agentInstanceId) return null;
+  if (!Array.isArray(value.tools)) return null;
+  return {
+    name,
+    version,
+    agent_package: agentPackage,
+    agent_instance_id: agentInstanceId,
+    tools: value.tools.filter((t): t is string => typeof t === "string"),
+    description: typeof value.description === "string" ? value.description : undefined,
+    capabilities: Array.isArray(value.capabilities) 
+      ? value.capabilities.filter((c): c is string => typeof c === "string") 
+      : [],
+  };
+}
+
+async function discoverAgents(userText: string): Promise<DiscoveredAgent[]> {
+  const response = await runSingleSendSession(
+    DISCOVER_AGENTS_TOOL_NAME,
+    { reason: "Discover available specialist agents for coordinator routing" },
+    { query: userText, limit: 100, offset: 0 },
+  );
+  if (!isObject(response) || !Array.isArray(response.agents)) return [];
+  return response.agents
+    .map(parseDiscoveredAgent)
+    .filter((a): a is DiscoveredAgent => a != null);
+}
+
+// Agent delegation
+async function delegateToAgent(target: RouteTarget, prompt: string): Promise<string[]> {
+  let sessionHandle: ToolSessionHandle | null = null;
+  try {
+    sessionHandle = await openToolSession(INTERNAL_A2A_TOOL_NAME, { target });
+    await sessionHandle.send({ parts: [{ text: prompt }] });
+    const drained = await drainToolSession(sessionHandle, MAX_DELEGATION_CONTINUE_STEPS);
+    await sessionHandle.finish();
+    sessionHandle = null;
+    
+    // Extract text from chunks
+    const texts: string[] = [];
+    for (const step of drained.steps) {
+      if (isObject(step) && isObject(step.output)) {
+        const output = step.output;
+        if (isObject(output.message) && Array.isArray(output.message.parts)) {
+          for (const part of output.message.parts) {
+            if (isObject(part) && typeof part.text === "string" && part.text.trim()) {
+              texts.push(part.text.trim());
+            }
+          }
+        }
+      }
+    }
+    return texts;
+  } catch (err) {
+    if (sessionHandle) {
+      try { await sessionHandle.abort(String(err)); } catch {}
+    }
+    throw err;
+  }
+}
+
+// Workflow planning
+function buildAgentCandidates(agents: DiscoveredAgent[]): AgentCandidate[] {
+  return agents
+    .filter((a) => a.agent_package !== "{{AGENT_NAME}}") // Don't self-delegate
+    .filter((a) => a.agent_instance_id === "default")
+    .map((a) => ({
+      agent_package: a.agent_package,
+      agent_instance_id: a.agent_instance_id,
+      name: a.name,
+      description: a.description || null,
+      capabilities: a.capabilities || [],
+      tools: a.tools,
+    }));
+}
+
+function parseWorkflowPlan(value: unknown): WorkflowPlan | null {
+  if (!isObject(value) || !Array.isArray(value.nodes)) return null;
+  const nodes = value.nodes
+    .map((node) => {
+      if (!isObject(node) || typeof node.id !== "string" || typeof node.kind !== "string") return null;
+      return {
+        id: node.id,
+        kind: node.kind as WorkflowNodeKind,
+        depends_on: Array.isArray(node.depends_on) ? node.depends_on.filter((d): d is string => typeof d === "string") : [],
+        target: isObject(node.target) ? node.target as RouteTarget : undefined,
+        prompt_template: typeof node.prompt_template === "string" ? node.prompt_template : undefined,
+        rationale: typeof node.rationale === "string" ? node.rationale : undefined,
+      };
+    })
+    .filter((n): n is WorkflowNode => n != null);
+  
+  if (nodes.length === 0) return null;
+  return {
+    goal: typeof value.goal === "string" ? value.goal : "Coordinate user request",
+    nodes,
+    final_node_id: typeof value.final_node_id === "string" ? value.final_node_id : null,
+  };
+}
+
+async function planWorkflow(
+  userText: string,
+  agents: DiscoveredAgent[],
+  conversationSummary: string | null,
+): Promise<WorkflowPlan> {
+  const candidates = buildAgentCandidates(agents);
+  const rawPlan = await PlanCoordinatorWorkflow({
+    user_message: userText,
+    available_agents: candidates,
+    conversation_context: conversationSummary || null,
+  });
+  const parsed = parseWorkflowPlan(rawPlan);
+  if (!parsed) throw new Error("PlanCoordinatorWorkflow returned an unparsable plan.");
+  return parsed;
+}
+
+// Workflow execution
+async function executeWorkflow(
+  plan: WorkflowPlan,
+  artifacts: Map<string, NodeArtifact>,
+): Promise<void> {
+  const pending = new Set(plan.nodes.map((n) => n.id));
+  const completed = new Set<string>();
+  
+  while (pending.size > 0) {
+    const ready = plan.nodes.filter((n) => 
+      pending.has(n.id) && n.depends_on.every((dep) => completed.has(dep))
+    );
+    
+    if (ready.length === 0 && pending.size > 0) {
+      throw new Error("Workflow has unresolvable dependencies");
+    }
+    
+    const batch = ready.slice(0, MAX_FANOUT_CONCURRENCY);
+    await Promise.all(batch.map(async (node) => {
+      pending.delete(node.id);
+      try {
+        const artifact = await executeNode(node, artifacts);
+        artifacts.set(node.id, artifact);
+        completed.add(node.id);
+      } catch (err) {
+        artifacts.set(node.id, {
+          node_id: node.id,
+          status: "failed",
+          error: err instanceof Error ? err.message : String(err),
+        });
+        completed.add(node.id);
+      }
+    }));
+  }
+}
+
+async function executeNode(
+  node: WorkflowNode,
+  artifacts: Map<string, NodeArtifact>,
+): Promise<NodeArtifact> {
+  if (node.kind === "call_agent" && node.target && node.prompt_template) {
+    const texts = await delegateToAgent(node.target, node.prompt_template);
+    return { node_id: node.id, status: "completed", output_text: texts.join("\n") };
+  }
+  
+  if (node.kind === "direct_answer" && node.prompt_template) {
+    return { node_id: node.id, status: "completed", output_text: node.prompt_template };
+  }
+  
+  if (node.kind === "synthesize") {
+    const depTexts = node.depends_on
+      .map((dep) => artifacts.get(dep)?.output_text)
+      .filter((t): t is string => !!t);
+    return { node_id: node.id, status: "completed", output_text: depTexts.join("\n\n") };
+  }
+  
+  return { node_id: node.id, status: "skipped" };
+}
+
+// Synthesis
+function toCoordinatorAnswer(value: unknown): CoordinatorAnswer | null {
+  if (!isObject(value) || typeof value.answer !== "string") return null;
+  return {
+    answer: value.answer.trim(),
+    actionable_goals: Array.isArray(value.actionable_goals) 
+      ? value.actionable_goals.filter((g) => isObject(g) && typeof g.goal === "string")
+      : [],
+    sources: Array.isArray(value.sources) 
+      ? value.sources.filter((s): s is string => typeof s === "string")
+      : ["None"],
+    confidence: typeof value.confidence === "number" ? value.confidence : 0,
+    gaps: Array.isArray(value.gaps) 
+      ? value.gaps.filter((g): g is string => typeof g === "string")
+      : [],
+    clarification_question: typeof value.clarification_question === "string" 
+      ? value.clarification_question 
+      : null,
+  };
+}
+
+function renderCoordinatorAnswer(answer: CoordinatorAnswer): string {
+  const lines: string[] = [];
+  lines.push("Answer:");
+  lines.push(answer.answer);
+  lines.push("");
+  lines.push("Actionable Goals:");
+  for (const goal of answer.actionable_goals) {
+    const tags: string[] = [];
+    if (goal.owner) tags.push(`owner: ${goal.owner}`);
+    if (goal.due_date) tags.push(`due: ${goal.due_date}`);
+    lines.push(`- ${goal.goal}${tags.length > 0 ? ` (${tags.join("; ")})` : ""}`);
+  }
+  lines.push("");
+  lines.push(`Confidence: ${answer.confidence.toFixed(2)}`);
+  if (answer.clarification_question) {
+    lines.push("");
+    lines.push(`Clarification: ${answer.clarification_question}`);
+  }
+  return lines.join("\n");
+}
+
+async function synthesize(
+  userText: string,
+  transcript: string,
+  conversationSummary: string | null,
+): Promise<string> {
+  try {
+    const raw = await SynthesizeCoordinatorResponse({
+      user_message: userText,
+      delegated_transcript: transcript,
+      conversation_context: conversationSummary || null,
+    });
+    const answer = toCoordinatorAnswer(raw);
+    if (answer) return renderCoordinatorAnswer(answer);
+    return transcript || "No response generated.";
+  } catch {
+    return transcript || "Synthesis failed.";
+  }
+}
+
+function buildTranscript(plan: WorkflowPlan, artifacts: Map<string, NodeArtifact>): string {
+  const lines: string[] = [];
+  for (const node of plan.nodes) {
+    const artifact = artifacts.get(node.id);
+    if (!artifact || !artifact.output_text) continue;
+    lines.push(`[[${node.id}]] ${artifact.output_text.slice(0, MAX_TRANSCRIPT_CHARS / plan.nodes.length)}`);
+  }
+  return lines.join("\n\n").slice(0, MAX_TRANSCRIPT_CHARS);
+}
+
+// Main coordinator flow
+async function runWorkflowCoordinator(ctx: RunContext): Promise<SessionResult> {
+  const userText = typeof ctx.text === "string" && ctx.text.length > 0 ? ctx.text : "unknown";
+  
+  ctx.emit.message("Discovering available specialist agents...");
+  const agents = await discoverAgents(userText);
+  
+  if (agents.length === 0) {
+    return { message: "No specialist agents are currently available. Please try again later." };
+  }
+  
+  ctx.emit.message("Planning workflow...");
+  let plan: WorkflowPlan;
+  try {
+    plan = await planWorkflow(userText, agents, null);
+  } catch (err) {
+    return { error: `Workflow planning failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  
+  const clarifyNode = plan.nodes.find((n) => n.kind === "clarify");
+  if (clarifyNode && clarifyNode.prompt_template) {
+    const reply = await ctx.emit.awaitInput(clarifyNode.prompt_template);
+    const clarifiedText = messageText(reply).trim();
+    if (clarifiedText) {
+      plan = await planWorkflow(clarifiedText, agents, userText);
+    }
+  }
+  
+  const directNode = plan.nodes.find((n) => n.kind === "direct_answer");
+  if (directNode && directNode.prompt_template && plan.nodes.length === 1) {
+    return { message: directNode.prompt_template };
+  }
+  
+  ctx.emit.message("Executing workflow...");
+  const artifacts = new Map<string, NodeArtifact>();
+  try {
+    await executeWorkflow(plan, artifacts);
+  } catch (err) {
+    return { error: `Workflow execution failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  
+  const transcript = buildTranscript(plan, artifacts);
+  const response = await synthesize(userText, transcript, null);
+  
+  return { message: response };
+}
+
+__chat_register({
+  run: runWorkflowCoordinator,
+});
