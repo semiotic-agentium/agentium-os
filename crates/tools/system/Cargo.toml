@@ -11,6 +11,7 @@ baml-rt-core = { path = "../../baml-rt-core" }
 baml-rt-provenance = { path = "../../baml-rt-provenance" }
 baml-rt-tools = { path = "../../baml-rt-tools" }
 baml-derive = { path = "../../baml-derive" }
+baml-derive-core = { path = "../../baml-derive-core" }
 async-trait = { workspace = true }
 inventory = { workspace = true }
 serde = { workspace = true }
