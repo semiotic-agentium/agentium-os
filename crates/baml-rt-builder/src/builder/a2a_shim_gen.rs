@@ -301,6 +301,9 @@ pub fn render_a2a_shim() -> Result<String> {
     } else if (agent.onChatMessage != null) {
       globalThis.onChatMessage = agent.onChatMessage;
     }
+    if (agent.onDispatch != null && typeof agent.onDispatch === 'function') {
+      globalThis.onDispatch = agent.onDispatch;
+    }
     if (agent.tools != null && typeof agent.tools === 'object') {
       globalThis.__js_tools = globalThis.__js_tools || {};
       for (var name in agent.tools) {
@@ -311,6 +314,16 @@ pub fn render_a2a_shim() -> Result<String> {
     }
   }
   globalThis.__chat_register = __chat_register;
+
+  // extractDispatchMessages: return the messages array from a HostDispatchRequest.
+  // Declared in baml-runtime.d.ts; implemented here as a QuickJS global.
+  function extractDispatchMessages(request) {
+    if (request == null) return [];
+    var msgs = request.messages;
+    if (!Array.isArray(msgs)) return [];
+    return msgs;
+  }
+  globalThis.extractDispatchMessages = extractDispatchMessages;
 })();
 "#;
 

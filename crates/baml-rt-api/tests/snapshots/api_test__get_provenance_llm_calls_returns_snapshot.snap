@@ -33,7 +33,7 @@ expression: snapshot
         "a2a_usage_completion_tokens": 7,
         "a2a_usage_prompt_tokens": 10,
         "a2a_usage_total_tokens": 17,
-        "prov_endTime": 1774002339851,
+        "prov_endTime": 1774019566175,
         "prov_type": "a2a:LlmCall",
         "context_id": "ctx-100-1",
         "message_id": "msg-a",
