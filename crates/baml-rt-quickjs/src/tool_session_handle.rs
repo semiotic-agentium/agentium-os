@@ -884,7 +884,7 @@ impl ToolSessionExecutionHandle {
                     // loop removes the session state.
                     let summary = send_args_for_summary
                         .as_ref()
-                        .and_then(|args| {
+                        .map(|args| {
                             // Wrap in the canonical step shape expected by describe_invocation.
                             let wrapped = serde_json::json!({ "op": "Send", "input": args });
                             self.ctx

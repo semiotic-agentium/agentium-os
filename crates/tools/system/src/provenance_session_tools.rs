@@ -493,23 +493,27 @@ impl ToolHandler for ProvenanceQueryTool {
         Some("provenance query results".to_string())
     }
 
-    fn describe_invocation(&self, content: &Value) -> Option<String> {
-        let step = content.get("step")?;
-        let op = step.get("op")?.as_str()?;
+    fn describe_invocation(&self, content: &Value) -> String {
+        let step = content.get("step").unwrap_or(content);
+        let op = match step.get("op").and_then(Value::as_str) {
+            Some(op) => op,
+            None => return "provenance query: call".to_string(),
+        };
         match op {
-            "Open" => {
-                serde_json::from_value::<ProvenanceQueryOpenInput>(step.get("input")?.clone())
-                    .ok()?;
-                Some("querying provenance records".to_string())
-            }
+            "Open" => "querying provenance records".to_string(),
             "Send" => {
-                let input: ProvenanceQuerySendInput =
-                    serde_json::from_value(step.get("input")?.clone()).ok()?;
-                Some(format!("querying provenance {}", input.resource))
+                if let Some(input) = step.get("input").and_then(|v| {
+                    serde_json::from_value::<ProvenanceQuerySendInput>(v.clone()).ok()
+                }) {
+                    format!("querying provenance {}", input.resource)
+                } else {
+                    "querying provenance".to_string()
+                }
             }
-            // Read/Finish/Abort: no semantic intent for drift scoring.
-            "Read" | "Finish" | "Abort" => None,
-            _ => None,
+            "Read" => "reading provenance query output".to_string(),
+            "Finish" => "finished provenance query".to_string(),
+            "Abort" => "aborted provenance query".to_string(),
+            other => format!("provenance query: {other}"),
         }
     }
 

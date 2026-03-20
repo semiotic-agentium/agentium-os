@@ -256,15 +256,19 @@ pub trait BamlTool: Send + Sync + 'static {
     }
 
     /// Describe what engaging this tool means, returned for Open FSM steps.
-    /// Used for intent drift detection at session boundaries — the decision to
-    /// use a particular tool is security-relevant before any action is sent.
+    /// Used for intent drift detection at session boundaries.
     fn describe_open(&self) -> String {
         format!("using {}", Self::LOCAL_NAME)
     }
 
+    /// Describe the typed open-input for a richer Open step description.
+    /// Default ignores the input and delegates to `describe_open`.
+    fn describe_open_input(&self, _input: &Self::OpenInput) -> String {
+        self.describe_open()
+    }
+
     /// Describe a specific tool action as natural language prose (present
-    /// participle), returned for Send/Read FSM steps. Used for drift scoring
-    /// embeddings and context summarisation.
+    /// participle), for Send FSM steps.
     /// Default delegates to `DescribeAction::describe` on the Input type.
     fn describe_invocation(&self, input: &Self::Input) -> String {
         input.describe()
@@ -1237,9 +1241,14 @@ pub trait ToolHandler: Send + Sync {
     /// Produce a natural language description of a tool action from its
     /// BAML-parsed result payload (the session step JSON). Dispatches on the
     /// FSM `op` field and deserialises the typed input where applicable.
-    /// Returns `None` when the payload shape is unrecognised.
-    fn describe_invocation(&self, _content: &Value) -> Option<String> {
-        None
+    /// Every implementor must return a non-empty string; `Option` is intentionally
+    /// absent so silent history deletion cannot occur.
+    fn describe_invocation(&self, content: &Value) -> String {
+        // Default: extract op and tool name for a minimal but always-present description.
+        let tool_name = self.metadata().name.to_string();
+        let step = content.get("step").unwrap_or(content);
+        let op = step.get("op").and_then(Value::as_str).unwrap_or("call");
+        format!("{tool_name}: {op}")
     }
 
     /// Semantic description of what opening this tool session means.
@@ -1585,26 +1594,36 @@ impl<T: BamlTool> ToolHandler for ToolWrapper<T> {
         if desc.is_empty() { None } else { Some(desc) }
     }
 
-    fn describe_invocation(&self, content: &Value) -> Option<String> {
-        // The BAML result payload arrives in two shapes:
+    fn describe_invocation(&self, content: &Value) -> String {
+        // Single JSON parse point for the entire tool family.
+        // Payload arrives in two shapes:
         //   wrapped:   {"step": {"op": "Send", "input": {...}}}
         //   unwrapped: {"op": "Send", "input": {...}}
-        // Handle both so drift scoring always gets a semantic description.
+        // After op extraction, the typed inputs are passed to the concrete tool's
+        // ToolSession methods — no JSON parsing happens in those methods.
         let step = content
             .get("step")
             .and_then(|s| s.as_object())
             .map(|_| content.get("step").unwrap())
             .unwrap_or(content);
-        let op = step.get("op")?.as_str()?;
+        let op = match step.get("op").and_then(Value::as_str) {
+            Some(op) => op,
+            None => return format!("{}: call", self.metadata().name),
+        };
+        let input_val = step.get("input");
         match op {
-            "Send" | "Read" => {
-                let typed: T::Input = serde_json::from_value(step.get("input")?.clone()).ok()?;
-                Some(self.tool.describe_invocation(&typed))
-            }
-            "Open" => Some(self.tool.describe_open()),
-            // Terminal ops carry no semantic intent — exclude from drift scoring.
-            "Finish" | "Abort" => None,
-            _ => None,
+            "Open" => input_val
+                .and_then(|v| serde_json::from_value::<T::OpenInput>(v.clone()).ok())
+                .map(|typed| self.tool.describe_open_input(&typed))
+                .unwrap_or_else(|| self.tool.describe_open()),
+            "Send" => input_val
+                .and_then(|v| serde_json::from_value::<T::Input>(v.clone()).ok())
+                .map(|typed| self.tool.describe_invocation(&typed))
+                .unwrap_or_else(|| format!("{}: send", self.metadata().name)),
+            // Read shows up as a SessionStep with archive content; Finish/Abort are terminal.
+            // Neither adds semantic value as a ToolCall entry in the LLM's conversation history.
+            "Read" | "Finish" | "Abort" => String::new(),
+            other => format!("{}: {other}", self.metadata().name),
         }
     }
 
@@ -1918,7 +1937,7 @@ impl ToolRegistry {
         let parsed = ToolName::parse(tool_name).ok()?;
         let inner = self.inner.lock().unwrap();
         let (_, handler) = inner.tools.get(&parsed)?;
-        handler.describe_invocation(content)
+        Some(handler.describe_invocation(content))
     }
 
     /// Get a one-line description of what a tool result contains.
@@ -1949,15 +1968,24 @@ impl ToolRegistry {
 
     /// Describe an invocation by tool name from the LlmEffectMetadata,
     /// falling back to payload extraction if the tool name isn't provided.
+    /// Always returns a non-empty description. When the tool is registered the
+    /// handler provides the description; when it is not, the tool name + op are
+    /// used directly so the history entry is never silently dropped.
     pub fn describe_invocation_with_hint(
         &self,
         tool_name_hint: Option<&str>,
         content: &Value,
-    ) -> Option<String> {
-        if let Some(name) = tool_name_hint {
-            return self.describe_invocation_for(name, content);
-        }
-        self.describe_invocation(content)
+    ) -> String {
+        let from_hint = tool_name_hint.and_then(|n| self.describe_invocation_for(n, content));
+        let from_payload = || self.describe_invocation(content);
+        from_hint.or_else(from_payload).unwrap_or_else(|| {
+            // Tool not in registry: synthesise a description from name + op so the
+            // model still sees that the call happened.
+            let tool = tool_name_hint.unwrap_or("tool");
+            let step = content.get("step").unwrap_or(content);
+            let op = step.get("op").and_then(Value::as_str).unwrap_or("call");
+            format!("{tool}: {op}")
+        })
     }
 
     /// List all registered tool names
@@ -2462,28 +2490,28 @@ where
         &self.metadata
     }
 
-    fn describe_invocation(&self, content: &Value) -> Option<String> {
+    fn describe_invocation(&self, content: &Value) -> String {
         // Accept both wrapped { step: { op, input } } and unwrapped { op, input }.
         let step = content.get("step").unwrap_or(content);
-        let op = step.get("op")?.as_str()?;
         let tool_name = self.metadata.name.to_string();
+        let op = match step.get("op").and_then(Value::as_str) {
+            Some(op) => op,
+            None => return format!("{tool_name}: call"),
+        };
         match op {
-            "Open" => {
-                let desc = step
-                    .get("input")
-                    .and_then(|v| serde_json::from_value::<OI>(v.clone()).ok())
-                    .map(|oi| oi.describe())
-                    .filter(|s| !s.is_empty());
-                Some(desc.unwrap_or_else(|| format!("using {tool_name}")))
-            }
-            "Send" => {
-                let input_val = step.get("input")?;
-                let typed: I = serde_json::from_value(input_val.clone()).ok()?;
-                Some(typed.describe())
-            }
-            // Read/Finish/Abort carry no semantic intent for drift scoring.
-            "Read" | "Finish" | "Abort" => None,
-            _ => None,
+            "Open" => step
+                .get("input")
+                .and_then(|v| serde_json::from_value::<OI>(v.clone()).ok())
+                .map(|oi| oi.describe())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("using {tool_name}")),
+            "Send" => step
+                .get("input")
+                .and_then(|v| serde_json::from_value::<I>(v.clone()).ok())
+                .map(|typed| typed.describe())
+                .unwrap_or_else(|| format!("{tool_name}: send")),
+            "Read" | "Finish" | "Abort" => String::new(),
+            other => format!("{tool_name}: {other}"),
         }
     }
 

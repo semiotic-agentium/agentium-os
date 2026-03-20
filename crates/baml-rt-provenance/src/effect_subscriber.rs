@@ -530,7 +530,7 @@ impl TrackerPhase {
 /// payload. First argument is an optional tool name hint from the LLM effect
 /// metadata; second is the BAML-parsed result payload. Wired from the
 /// agent's `ToolRegistry` via `describe_invocation_with_hint`.
-pub type ActionDescriber = dyn Fn(Option<&str>, &serde_json::Value) -> Option<String> + Send + Sync;
+pub type ActionDescriber = dyn Fn(Option<&str>, &serde_json::Value) -> String + Send + Sync;
 
 pub struct ProvenanceEffectSubscriber {
     writer: Arc<dyn ProvenanceWriter>,
@@ -731,7 +731,8 @@ impl ProvenanceEffectSubscriber {
         let response_text = self
             .action_describer
             .as_ref()
-            .and_then(|d| d(tool_name, result_payload))
+            .map(|d| d(tool_name, result_payload))
+            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| {
                 baml_rt_embedding::extraction::extract_response_text(result_payload)
             });

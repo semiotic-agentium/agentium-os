@@ -527,31 +527,38 @@ impl ToolHandler for ClaudeSessionToolHandler {
         ToolCapability::Streaming
     }
 
-    fn describe_invocation(&self, content: &serde_json::Value) -> Option<String> {
-        let step = content.get("step")?;
-        let op = step.get("op")?.as_str()?;
+    fn describe_invocation(&self, content: &serde_json::Value) -> String {
+        let step = content.get("step").unwrap_or(content);
+        let op = match step.get("op").and_then(|v| v.as_str()) {
+            Some(op) => op,
+            None => return "claude dev session: call".to_string(),
+        };
         match op {
             "Open" => {
-                let open: ClaudeToolOpenInput =
-                    serde_json::from_value(step.get("input")?.clone()).ok()?;
-                match open.workspace.as_deref() {
-                    Some(ws) => Some(format!("opening Claude dev session in workspace '{ws}'")),
-                    None => Some("opening Claude dev session".to_string()),
+                let input: ClaudeToolOpenInput = step
+                    .get("input")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                match input.workspace.as_deref() {
+                    Some(ws) => format!("opening Claude dev session in workspace '{ws}'"),
+                    None => "opening Claude dev session".to_string(),
                 }
             }
             "Send" => {
-                let send: ClaudeToolSendInput =
-                    serde_json::from_value(step.get("input")?.clone()).ok()?;
-                match send.prompt.as_deref() {
-                    Some(p) if p.len() > 60 => Some(format!("prompting Claude: '{}...'", &p[..57])),
-                    Some(p) => Some(format!("prompting Claude: '{p}'")),
-                    None => Some("sending input to Claude dev session".to_string()),
+                let input: ClaudeToolSendInput = step
+                    .get("input")
+                    .and_then(|v| serde_json::from_value(v.clone()).ok())
+                    .unwrap_or_default();
+                match input.prompt.as_deref() {
+                    Some(p) if p.len() > 60 => format!("prompting Claude: '{}...'", &p[..57]),
+                    Some(p) => format!("prompting Claude: '{p}'"),
+                    None => "sending input to Claude dev session".to_string(),
                 }
             }
-            "Read" => Some("reading Claude dev session output".to_string()),
-            "Finish" => Some("completed Claude dev session".to_string()),
-            "Abort" => Some("aborted Claude dev session".to_string()),
-            _ => None,
+            "Read" => "reading Claude dev session output".to_string(),
+            "Finish" => "completed Claude dev session".to_string(),
+            "Abort" => "aborted Claude dev session".to_string(),
+            other => format!("claude dev session: {other}"),
         }
     }
 

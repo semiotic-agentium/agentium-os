@@ -37,12 +37,9 @@ pub enum SessionStepProjection {
 #[derive(Debug, Clone)]
 pub enum PromptProjectionContent {
     Message(String),
-    /// Tool invocation. `args` is the BAML step payload `{"op":"Send","input":{...}}`
-    /// forwarded directly to `ToolHandler::describe_invocation`.
-    ToolCall {
-        tool_name: String,
-        args: Value,
-    },
+    /// Tool invocation — description is resolved at projection build time (in `to_projection_item`)
+    /// so no Value reaches this level.
+    ToolCall(String),
     /// Tool result with actual data.
     ToolResult {
         tool_name: String,
@@ -125,10 +122,11 @@ fn render_content(
             }
         }
 
-        PromptProjectionContent::ToolCall { tool_name, args } => {
-            match registry.describe_invocation_with_hint(Some(tool_name.as_str()), args) {
-                Some(s) => RenderedEntry::One(s),
-                None => RenderedEntry::Filtered,
+        PromptProjectionContent::ToolCall(desc) => {
+            if desc.is_empty() {
+                RenderedEntry::Filtered
+            } else {
+                RenderedEntry::One(desc.clone())
             }
         }
 

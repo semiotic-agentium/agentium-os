@@ -351,9 +351,10 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
             return Ok(None);
         }
 
+        let registry = self.tool_registry.as_ref();
         let projection_items = items
             .into_iter()
-            .filter_map(to_projection_item)
+            .filter_map(|item| to_projection_item(item, registry))
             .collect::<Vec<_>>();
         if projection_items.is_empty() {
             return Ok(None);
@@ -418,17 +419,23 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
 }
 
 /// Convert a provenance conversation item to a projection item.
-/// Returns `None` for `StatusOnly` tool results — they carry no meaningful content
-/// and are discarded here rather than being filtered later at render time.
+/// The registry is used here — the single parse point — to resolve `ToolCall` descriptions
+/// from `Value` args into `String`. Nothing above this function sees `Value` for tool calls.
+/// Returns `None` for `StatusOnly` tool results and for ops that add no LLM value (Read/Finish/Abort).
 pub(crate) fn to_projection_item(
     item: ProvenanceConversationContextItem,
+    registry: &baml_rt_tools::ToolRegistry,
 ) -> Option<PromptProjectionItem> {
     let content = match item.content {
         ConversationItemContent::Message(text) => PromptProjectionContent::Message(text),
-        ConversationItemContent::ToolCall(tc) => PromptProjectionContent::ToolCall {
-            tool_name: tc.tool_name,
-            args: tc.args,
-        },
+        ConversationItemContent::ToolCall(tc) => {
+            let desc =
+                registry.describe_invocation_with_hint(Some(tc.tool_name.as_str()), &tc.args);
+            if desc.is_empty() {
+                return None;
+            }
+            PromptProjectionContent::ToolCall(desc)
+        }
         ConversationItemContent::ToolResult(tr) => match tr.outcome {
             ToolOutcome::Result(value) => PromptProjectionContent::ToolResult {
                 tool_name: tr.tool_name,
@@ -2506,12 +2513,11 @@ mod tests {
             .await
             .expect("conversation_context");
 
+        let registry = ToolRegistry::new();
         let projection_items: Vec<_> = raw_items
             .into_iter()
-            .filter_map(super::to_projection_item)
+            .filter_map(|item| super::to_projection_item(item, &registry))
             .collect();
-
-        let registry = ToolRegistry::new();
         // No archive reader in test context — Read step renders as fallback "Read @1".
         let history = project_prompt_context(projection_items, &registry, None);
         let items = history.as_array().expect("array");
