@@ -9,67 +9,59 @@
 //! - Only the **basename** `index.js` is treated as the entry; nested `index.js` files
 //!   use the same rule (consistent with prior behavior).
 
-use std::{ffi::OsStr, fs, path::Path};
+use std::{borrow::Cow, ffi::OsStr, fs, path::Path};
 
-use crate::builder::{
-    a2a_shim_gen::render_a2a_shim,
-    error::{BamlBuilderError, Result},
-};
+use crate::builder::{a2a_shim_gen::render_a2a_shim, error::Result};
 
 /// Strip trailing empty `export {}` / `export {};` that `tsc` may emit for module shape.
 ///
-/// If neither suffix matches, returns `content` unchanged (including internal newlines).
-pub fn strip_trailing_empty_export_for_quickjs(content: &str) -> String {
+/// Returns [`Cow::Borrowed`] when no change is needed (no allocation). Otherwise returns
+/// an owned string with trailing export removed.
+pub fn strip_trailing_empty_export_for_quickjs(content: &str) -> Cow<'_, str> {
     let trimmed = content.trim_end();
     if trimmed.ends_with("export {};") {
-        trimmed
-            .strip_suffix("export {};")
-            .unwrap_or(trimmed)
-            .trim_end()
-            .to_string()
+        Cow::Owned(
+            trimmed
+                .strip_suffix("export {};")
+                .unwrap_or(trimmed)
+                .trim_end()
+                .to_string(),
+        )
     } else if trimmed.ends_with("export {}") {
-        trimmed
-            .strip_suffix("export {}")
-            .unwrap_or(trimmed)
-            .trim_end()
-            .to_string()
+        Cow::Owned(
+            trimmed
+                .strip_suffix("export {}")
+                .unwrap_or(trimmed)
+                .trim_end()
+                .to_string(),
+        )
     } else {
-        content.to_string()
+        Cow::Borrowed(content)
     }
 }
 
-/// Apply QuickJS-oriented transforms: strip empty exports, then prepend A2A shim for entry JS.
-///
-/// When `is_index` is true, `index_shim` must be the shim source (typically from
-/// [`render_a2a_shim`]); tests pass a fixed string instead of calling the generator.
-pub fn post_process_js_for_quickjs(
-    content: &str,
-    is_index: bool,
-    index_shim: Option<&str>,
-) -> Result<String> {
-    let mut out = strip_trailing_empty_export_for_quickjs(content);
-    if is_index {
-        let shim = index_shim.ok_or_else(|| {
-            BamlBuilderError::InvalidArgument(
-                "internal: index.js post-process requires A2A shim".to_string(),
-            )
-        })?;
-        out = format!("{}\n{}", shim.trim_end(), out);
-    }
-    Ok(out)
+/// Post-process a non-entry JS chunk: strip trailing empty exports only.
+pub fn post_process_js_chunk_for_quickjs(content: &str) -> String {
+    strip_trailing_empty_export_for_quickjs(content).into_owned()
+}
+
+/// Post-process the bundle entry (`index.js`): strip exports, then prepend the A2A shim.
+pub fn post_process_js_index_for_quickjs(content: &str, index_shim: &str) -> String {
+    let stripped = strip_trailing_empty_export_for_quickjs(content);
+    format!("{}\n{}", index_shim.trim_end(), stripped.as_ref())
 }
 
 /// Walk `dist_dir`, rewrite each `.js` file in place for QuickJS + A2A shim on `index.js`.
-pub fn post_process_dist_dir(dist_dir: &Path) -> Result<()> {
+///
+/// Visible only within the `compiler` module tree (see [`crate::builder::compiler`]).
+pub(in crate::builder::compiler) fn post_process_dist_dir(dist_dir: &Path) -> Result<()> {
     for path in collect_js_files(dist_dir)? {
         let content = fs::read_to_string(&path)?;
-        let is_index = path.file_name() == Some(OsStr::new("index.js"));
-        let shim = if is_index {
-            Some(render_a2a_shim()?)
+        let out = if path.file_name() == Some(OsStr::new("index.js")) {
+            post_process_js_index_for_quickjs(&content, render_a2a_shim()?.as_str())
         } else {
-            None
+            post_process_js_chunk_for_quickjs(&content)
         };
-        let out = post_process_js_for_quickjs(&content, is_index, shim.as_deref())?;
         fs::write(&path, out)?;
     }
     Ok(())
@@ -100,13 +92,15 @@ fn collect_js_files_recursive(dir: &Path, files: &mut Vec<std::path::PathBuf>) -
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use super::*;
 
     #[test]
     fn strip_export_semicolon_and_whitespace() {
         let s = "console.log(1);\n\nexport {};\n\n";
         assert_eq!(
-            strip_trailing_empty_export_for_quickjs(s),
+            strip_trailing_empty_export_for_quickjs(s).as_ref(),
             "console.log(1);"
         );
     }
@@ -114,32 +108,28 @@ mod tests {
     #[test]
     fn strip_export_without_semicolon() {
         let s = "x\nexport {}";
-        assert_eq!(strip_trailing_empty_export_for_quickjs(s), "x");
+        assert_eq!(strip_trailing_empty_export_for_quickjs(s).as_ref(), "x");
     }
 
     #[test]
     fn no_strip_when_not_trailing_export() {
         let s = "export {}\nconsole.log(1)";
-        assert_eq!(strip_trailing_empty_export_for_quickjs(s), s);
+        let cow = strip_trailing_empty_export_for_quickjs(s);
+        assert!(matches!(cow, Cow::Borrowed(_)));
+        assert_eq!(cow.as_ref(), s);
     }
 
     #[test]
-    fn post_process_non_index_no_shim() {
+    fn post_process_chunk_no_shim() {
         let s = "a();\nexport {};\n";
-        let out = post_process_js_for_quickjs(s, false, None).unwrap();
+        let out = post_process_js_chunk_for_quickjs(s);
         assert_eq!(out, "a();");
     }
 
     #[test]
     fn post_process_index_prepends_shim() {
         let s = "run();\nexport {};\n";
-        let out = post_process_js_for_quickjs(s, true, Some("// shim")).unwrap();
+        let out = post_process_js_index_for_quickjs(s, "// shim");
         assert_eq!(out, "// shim\nrun();");
-    }
-
-    #[test]
-    fn post_process_index_requires_shim() {
-        let err = post_process_js_for_quickjs("x", true, None).unwrap_err();
-        assert!(matches!(err, BamlBuilderError::InvalidArgument(_)));
     }
 }

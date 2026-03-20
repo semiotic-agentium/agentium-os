@@ -16,7 +16,8 @@ mod runtime_type_gen;
 mod tsc;
 
 pub use quickjs_post_process::{
-    post_process_js_for_quickjs, strip_trailing_empty_export_for_quickjs,
+    post_process_js_chunk_for_quickjs, post_process_js_index_for_quickjs,
+    strip_trailing_empty_export_for_quickjs,
 };
 pub use runtime_type_gen::RuntimeTypeGenerator;
 pub use tsc::{TSCONFIG_JSON, TscCompiler, write_canonical_tsconfig};
