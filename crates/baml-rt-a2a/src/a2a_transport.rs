@@ -345,6 +345,7 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
         tracing::debug!(
             context_id = %context_id,
             item_count = items.len(),
+            sources = ?items.iter().map(|i| i.source_name()).collect::<Vec<_>>(),
             "conversation_history_json: store returned items"
         );
         if items.is_empty() {
@@ -410,11 +411,19 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
                 boxed
             });
 
-        Ok(Some(project_prompt_context(
+        let rendered = project_prompt_context(
             projection_items,
             self.tool_registry.as_ref(),
             reader.as_deref(),
-        )))
+        );
+        if tracing::enabled!(tracing::Level::TRACE) {
+            tracing::trace!(
+                context_id = %context_id,
+                history = %rendered,
+                "conversation_history_json: rendered history"
+            );
+        }
+        Ok(Some(rendered))
     }
 }
 

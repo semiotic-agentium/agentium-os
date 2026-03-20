@@ -194,11 +194,20 @@ pub enum ToolSessionPhase {
 }
 
 impl ToolSessionPhase {
-    /// True for any FSM session phase (Open/Send/Read/Next/Finish/Abort).
-    /// These tool calls are represented in history by `SessionStep` events — the
-    /// raw ToolCall/ToolResult entries are suppressed to enforce the universal Read interface.
+    /// True for session FSM ops whose raw ToolCall/ToolResult entries should be suppressed
+    /// from conversation_context.
+    ///
+    /// - Open/Finish/Abort/Next: control ops with no data payload; represented by SessionStep.
+    /// - Read: user-initiated reads appear via SessionStep(Read) with archive content;
+    ///   internal polling reads inside send_blocking are implementation noise.
+    ///
+    /// Send is NOT suppressed — it carries the actual query payload and result that the
+    /// LLM needs to see alongside the SessionStep(SendDone) archive summary.
     pub fn is_session_phase(&self) -> bool {
-        !matches!(self, Self::Execute | Self::Unknown(_))
+        matches!(
+            self,
+            Self::Open | Self::Read | Self::Finish | Self::Abort | Self::Next
+        )
     }
 
     pub fn from_metadata(metadata: &Value) -> Self {
