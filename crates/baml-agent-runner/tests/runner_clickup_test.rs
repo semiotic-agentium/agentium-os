@@ -340,7 +340,7 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
             let signature = serde_json::to_string(
                 &conversation_items
                     .iter()
-                    .map(|i| (&i.event_id, &i.source, &i.content))
+                    .map(|i| (&i.event_id, i.source_name(), &i.content))
                     .collect::<Vec<_>>(),
             )
             .unwrap_or_default();
@@ -367,7 +367,7 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
              Sources seen: {:?}. Assistant texts: {:?}",
             conversation_items
                 .iter()
-                .map(|i| i.source.as_str())
+                .map(|i| i.source_name())
                 .collect::<Vec<_>>(),
             turn_texts
         )
@@ -407,13 +407,7 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
     }
 
     let has_clickup_tool_call = conversation_items.iter().any(|item| {
-        item.source == "tool_call"
-            && item
-                .content
-                .get("tool_call")
-                .and_then(|tc| tc.get("name"))
-                .and_then(Value::as_str)
-                == Some("support/clickup")
+        matches!(&item.content, ConversationItemContent::ToolCall(tc) if tc.tool_name == "support/clickup")
     });
     assert!(
         has_clickup_tool_call,
@@ -421,13 +415,7 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
     );
 
     let team_id_call_seen = conversation_items.iter().any(|item| {
-        item.source == "tool_call"
-            && item
-                .content
-                .get("tool_call")
-                .and_then(|tc| tc.get("args"))
-                .map(|args| contains_kv(args, "team_id", "9013491519"))
-                .unwrap_or(false)
+        matches!(&item.content, ConversationItemContent::ToolCall(tc) if contains_kv(&tc.args, "team_id", "9013491519"))
     });
     assert!(
         team_id_call_seen,
@@ -435,13 +423,7 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
     );
 
     let space_id_call_seen = conversation_items.iter().any(|item| {
-        item.source == "tool_call"
-            && item
-                .content
-                .get("tool_call")
-                .and_then(|tc| tc.get("args"))
-                .map(|args| contains_kv(args, "space_id", "space-9001"))
-                .unwrap_or(false)
+        matches!(&item.content, ConversationItemContent::ToolCall(tc) if contains_kv(&tc.args, "space_id", "space-9001"))
     });
     assert!(
         space_id_call_seen,
@@ -449,13 +431,7 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
     );
 
     let list_id_call_seen = conversation_items.iter().any(|item| {
-        item.source == "tool_call"
-            && item
-                .content
-                .get("tool_call")
-                .and_then(|tc| tc.get("args"))
-                .map(|args| contains_kv(args, "list_id", "list-901325431486"))
-                .unwrap_or(false)
+        matches!(&item.content, ConversationItemContent::ToolCall(tc) if contains_kv(&tc.args, "list_id", "list-901325431486"))
     });
     assert!(
         list_id_call_seen,

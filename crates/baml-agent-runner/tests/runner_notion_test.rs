@@ -286,7 +286,7 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
                     if let baml_rt_provenance::store::ToolOutcome::Result(v) = &tr.outcome {
                         let blocks = v.get("blocks").and_then(Value::as_array)?;
                         if !blocks.is_empty() {
-                            return Some(item.content.clone());
+                            return Some(v.clone());
                         }
                     }
                 }
@@ -323,17 +323,10 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
                 .collect::<Vec<_>>()
         )
     });
-    let blocks = if let ConversationItemContent::ToolResult(tr) = &tool_result {
-        if let baml_rt_provenance::store::ToolOutcome::Result(v) = &tr.outcome {
-            v.get("blocks")
-                .and_then(Value::as_array)
-                .expect("tool_result.outcome.Result.blocks array")
-        } else {
-            panic!("tool_result outcome is not Result")
-        }
-    } else {
-        panic!("matched_tool_result is not ToolResult")
-    };
+    let blocks = tool_result
+        .get("blocks")
+        .and_then(Value::as_array)
+        .expect("tool_result.blocks array");
     assert!(
         !blocks.is_empty(),
         "Expected at least one block in tool result"
