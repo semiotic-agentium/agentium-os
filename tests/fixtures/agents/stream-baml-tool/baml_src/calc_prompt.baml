@@ -1,5 +1,5 @@
 // Fixture: BAML tool streaming. FSM phase instructions injected by codegen.
-function ChooseCalcTool(user_message: string) -> SupportCalculateSessionPlan {
+function ChooseCalcTool(user_message: string, session_context: SessionContext?) -> SupportCalculateSessionPlan {
   client DefaultClient
   prompt #"
     Evaluate this calculation: {{ user_message }}

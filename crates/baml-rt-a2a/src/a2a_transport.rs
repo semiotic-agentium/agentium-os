@@ -2532,12 +2532,12 @@ mod tests {
             "SendDone must start with archive ref, got: {send_content}"
         );
 
-        // [3] Read: "Read @1 grep='name description'"
+        // [3] Read: rendered as "grep -n 'pattern' @1" when archive_reader is None (fallback)
         assert_eq!(items[3]["role"], "assistant");
         let read_content = items[3]["content"].as_str().unwrap();
         assert!(
-            read_content.starts_with("Read @1"),
-            "Read must start with 'Read @1', got: {read_content}"
+            read_content.contains("@1"),
+            "Read content must reference archive '@1', got: {read_content}"
         );
         assert!(
             read_content.contains("name description"),

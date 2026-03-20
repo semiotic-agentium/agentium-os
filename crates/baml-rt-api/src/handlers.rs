@@ -1,4 +1,4 @@
-//! HTTP handlers: discovery and A2A forward (POST and SSE).
+//! HTTP handlers: discovery, A2A forward (POST and SSE), and deterministic dispatch.
 
 use std::{
     convert::Infallible,
@@ -16,8 +16,8 @@ use axum::{
     },
 };
 use baml_rt_core::{
-    A2aWireRequest, AgentInstanceId, AgentPackageName, AgentRouteKey, BamlRtError,
-    collect_a2a_stream,
+    A2aWireRequest, AgentDispatchRequest, AgentInstanceId, AgentPackageName, AgentRouteKey,
+    BamlRtError, collect_a2a_stream,
     ids::{AgentId, ContextId, TaskId},
 };
 use baml_rt_provenance::{
@@ -743,4 +743,63 @@ fn domain_to_problem(
         }
     };
     problem(status, title, detail)
+}
+
+/// Deterministic host-to-agent delivery: POST /agents/{agent_package}/{agent_instance_id}/dispatch
+#[utoipa::path(
+    post,
+    path = "/agents/{agent_package}/{agent_instance_id}/dispatch",
+    tag = "agents",
+    params(
+        ("agent_package" = String, Path, description = "Agent package name"),
+        ("agent_instance_id" = String, Path, description = "Agent instance ID"),
+    ),
+    request_body = crate::openapi::AgentDispatchRequestDto,
+    responses(
+        (status = 200, description = "Delivery accepted", body = crate::openapi::AgentDispatchAckDto),
+        (status = 400, description = "Bad request (validation failed)"),
+        (status = 404, description = "Agent not found"),
+    )
+)]
+pub async fn post_dispatch(
+    State(state): State<Arc<crate::router::ApiState>>,
+    axum::extract::Path((agent_package, agent_instance_id)): axum::extract::Path<(String, String)>,
+    Json(body): Json<crate::openapi::AgentDispatchRequestDto>,
+) -> impl IntoResponse {
+    let span = spans::post_dispatch(&agent_package, &agent_instance_id);
+    let _guard = span.enter();
+
+    let package_name = match AgentPackageName::parse(&agent_package) {
+        Some(n) => n,
+        None => {
+            return (
+                AxumStatus::BAD_REQUEST,
+                format!("invalid agent_package: {agent_package}"),
+            )
+                .into_response();
+        }
+    };
+    let instance_id = match AgentInstanceId::parse(&agent_instance_id) {
+        Some(i) => i,
+        None => {
+            return (
+                AxumStatus::BAD_REQUEST,
+                format!("invalid agent_instance_id: {agent_instance_id}"),
+            )
+                .into_response();
+        }
+    };
+    let key = AgentRouteKey::new(package_name, instance_id);
+    let request: AgentDispatchRequest = match body.try_into() {
+        Ok(r) => r,
+        Err(e) => return (AxumStatus::BAD_REQUEST, e.to_string()).into_response(),
+    };
+
+    match state.registry.handle_dispatch(&key, request).await {
+        Ok(ack) => {
+            let dto: crate::openapi::AgentDispatchAckDto = ack.into();
+            Json(dto).into_response()
+        }
+        Err(e) => domain_to_problem(&e, &agent_package, &agent_instance_id).into_response(),
+    }
 }

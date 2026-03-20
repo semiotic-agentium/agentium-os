@@ -535,6 +535,24 @@ impl AgentRunner {
     /// Uses scope derived from the request's context_id so coordinator and delegated flow
     /// share one context. Avoids synthetic_message which generates a fresh context_id and
     /// would cause the initial user message to land in a different context than the agent's.
+    pub(crate) async fn handle_dispatch_by_key(
+        &self,
+        key: &AgentRouteKey,
+        request: baml_rt_core::AgentDispatchRequest,
+    ) -> Result<baml_rt_core::AgentDispatchAck> {
+        let routed_agent = {
+            let routed_agents = self.routed_agents.read().expect("RwLock poison");
+            routed_agents.get(key).cloned().ok_or_else(|| {
+                BamlRtError::AgentNotFound(format!(
+                    "Agent {agent_package}/{agent_instance_id} not found",
+                    agent_package = key.agent_package.as_str(),
+                    agent_instance_id = key.agent_instance_id.as_str()
+                ))
+            })?
+        };
+        routed_agent.handle_dispatch(request).await
+    }
+
     pub(crate) async fn handle_a2a_by_key(
         &self,
         key: &AgentRouteKey,
@@ -765,12 +783,10 @@ impl AgentRegistry for RunnerRegistry {
 
     async fn handle_dispatch(
         &self,
-        _key: &AgentRouteKey,
-        _request: baml_rt_core::AgentDispatchRequest,
+        key: &AgentRouteKey,
+        request: baml_rt_core::AgentDispatchRequest,
     ) -> Result<baml_rt_core::AgentDispatchAck> {
-        Err(baml_rt_core::BamlRtError::InvalidArgument(
-            "dispatch not yet implemented for this runner".to_string(),
-        ))
+        self.0.handle_dispatch_by_key(key, request).await
     }
 }
 

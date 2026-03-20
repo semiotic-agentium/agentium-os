@@ -1,6 +1,5 @@
 ---
 source: crates/baml-rt-api/tests/api_test.rs
-assertion_line: 884
 expression: snapshot
 ---
 {
@@ -157,6 +156,63 @@ expression: snapshot
             },
             "500": {
               "description": "Internal error"
+            }
+          }
+        }
+      },
+      "/agents/{agent_package}/{agent_instance_id}/dispatch": {
+        "post": {
+          "tags": [
+            "agents"
+          ],
+          "summary": "Deterministic host-to-agent delivery: POST /agents/{agent_package}/{agent_instance_id}/dispatch",
+          "operationId": "post_dispatch",
+          "parameters": [
+            {
+              "name": "agent_package",
+              "in": "path",
+              "description": "Agent package name",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            },
+            {
+              "name": "agent_instance_id",
+              "in": "path",
+              "description": "Agent instance ID",
+              "required": true,
+              "schema": {
+                "type": "string"
+              }
+            }
+          ],
+          "requestBody": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDispatchRequestDto"
+                }
+              }
+            },
+            "required": true
+          },
+          "responses": {
+            "200": {
+              "description": "Delivery accepted",
+              "content": {
+                "application/json": {
+                  "schema": {
+                    "$ref": "#/components/schemas/AgentDispatchAckDto"
+                  }
+                }
+              }
+            },
+            "400": {
+              "description": "Bad request (validation failed)"
+            },
+            "404": {
+              "description": "Agent not found"
             }
           }
         }
@@ -564,7 +620,7 @@ expression: snapshot
             "mermaid"
           ],
           "summary": "Mermaid diagram by context",
-          "description": "Returns the provenance subgraph for the given A2A context ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with GraphQLite provenance.",
+          "description": "Returns the provenance subgraph for the given A2A context ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with SurrealDB provenance.",
           "operationId": "get_mermaid_context",
           "parameters": [
             {
@@ -602,7 +658,7 @@ expression: snapshot
             "provenance"
           ],
           "summary": "Context metrics by context_id",
-          "description": "Returns turn-level and session-level token/call/duration metrics for the given A2A context ID. Available when GraphQLite-backed provenance is configured.",
+          "description": "Returns turn-level and session-level token/call/duration metrics for the given A2A context ID. Available when SurrealDB-backed provenance is configured.",
           "operationId": "get_context_metrics",
           "parameters": [
             {
@@ -755,7 +811,7 @@ expression: snapshot
             "mermaid"
           ],
           "summary": "Mermaid diagram by task",
-          "description": "Returns the provenance subgraph for the given A2A task ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with GraphQLite provenance.",
+          "description": "Returns the provenance subgraph for the given A2A task ID as a Mermaid sequenceDiagram (text/plain). Available when the runner is started with SurrealDB provenance.",
           "operationId": "get_mermaid_task",
           "parameters": [
             {
@@ -874,6 +930,65 @@ expression: snapshot
             },
             "version": {
               "type": "string"
+            }
+          }
+        },
+        "AgentDispatchAckDto": {
+          "type": "object",
+          "required": [
+            "accepted"
+          ],
+          "properties": {
+            "accepted": {
+              "type": "boolean"
+            },
+            "detail": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "AgentDispatchRequestDto": {
+          "type": "object",
+          "required": [
+            "routing_key",
+            "message_type"
+          ],
+          "properties": {
+            "context_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "message_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "message_type": {
+              "type": "string"
+            },
+            "messages": {
+              "type": "array",
+              "items": {
+                "type": "object"
+              }
+            },
+            "metadata": {
+              "type": "object"
+            },
+            "routing_key": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           }
         },
@@ -1210,11 +1325,11 @@ expression: snapshot
     "tags": [
       {
         "name": "agents",
-        "description": "Agent discovery and A2A JSON-RPC"
+        "description": "Agent discovery, deterministic dispatch, and A2A JSON-RPC"
       },
       {
         "name": "mermaid",
-        "description": "Provenance graph as Mermaid sequence diagrams (when GraphQLite is enabled)"
+        "description": "Provenance graph as Mermaid sequence diagrams (when SurrealDB provenance is enabled)"
       },
       {
         "name": "provenance",

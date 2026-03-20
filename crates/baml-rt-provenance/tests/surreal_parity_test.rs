@@ -250,7 +250,7 @@ async fn tool_call_lifecycle(store: &dyn ParityStore) {
     let agent_id = test_agent_id();
     let agent_id_str = agent_id.as_str();
 
-    // Successful tool call
+    // Successful tool call (phase=execute so it appears in conversation_context as ToolCall/ToolResult)
     store
         .add_event(ProvEvent::tool_call_started_task(
             context_id.clone(),
@@ -258,7 +258,7 @@ async fn tool_call_lifecycle(store: &dyn ParityStore) {
             "calculator".to_string(),
             Some("add".to_string()),
             serde_json::json!({"a": 1, "b": 2}),
-            serde_json::json!({"phase": "send", "agent_id": agent_id_str, "task_id": task_id.as_str()}),
+            serde_json::json!({"phase": "execute", "agent_id": agent_id_str, "task_id": task_id.as_str()}),
             None,
         ))
         .await
@@ -271,7 +271,7 @@ async fn tool_call_lifecycle(store: &dyn ParityStore) {
             "calculator".to_string(),
             Some("add".to_string()),
             serde_json::json!({"a": 1, "b": 2}),
-            serde_json::json!({"phase": "send", "result": 3, "agent_id": agent_id_str, "task_id": task_id.as_str()}),
+            serde_json::json!({"phase": "execute", "result": 3, "agent_id": agent_id_str, "task_id": task_id.as_str()}),
             150,
             Outcome::Success,
             None,
@@ -279,7 +279,7 @@ async fn tool_call_lifecycle(store: &dyn ParityStore) {
         .await
         .expect("tool_call_completed success");
 
-    // Failed tool call
+    // Failed tool call (phase=execute so it appears in conversation_context)
     store
         .add_event(ProvEvent::tool_call_started_task(
             context_id.clone(),
@@ -287,7 +287,7 @@ async fn tool_call_lifecycle(store: &dyn ParityStore) {
             "web_search".to_string(),
             None,
             serde_json::json!({"query": "test"}),
-            serde_json::json!({"phase": "send", "agent_id": agent_id_str, "task_id": task_id.as_str()}),
+            serde_json::json!({"phase": "execute", "agent_id": agent_id_str, "task_id": task_id.as_str()}),
             None,
         ))
         .await
@@ -300,7 +300,7 @@ async fn tool_call_lifecycle(store: &dyn ParityStore) {
             "web_search".to_string(),
             None,
             serde_json::json!({"query": "test"}),
-            serde_json::json!({"phase": "send", "error": "rate limited", "agent_id": agent_id_str, "task_id": task_id.as_str()}),
+            serde_json::json!({"phase": "execute", "error": "rate limited", "agent_id": agent_id_str, "task_id": task_id.as_str()}),
             200,
             Outcome::Failure,
             None,
@@ -1877,7 +1877,7 @@ async fn conversation_context_tool_metadata_fallback(store: &dyn ParityStore) {
             Some("action".to_string()),
             serde_json::json!({"input": "test_value"}), // args
             serde_json::json!({
-                "phase": "send",
+                "phase": "execute",
                 "agent_id": agent_id.as_str(),
                 "task_id": task_id.as_str(),
                 // Metadata that could be used for fallback
@@ -1897,7 +1897,7 @@ async fn conversation_context_tool_metadata_fallback(store: &dyn ParityStore) {
             Some("action".to_string()),
             serde_json::json!({"input": "test_value"}),
             serde_json::json!({
-                "phase": "send",
+                "phase": "execute",
                 "result": {"output": "success"},
                 "agent_id": agent_id.as_str(),
                 "task_id": task_id.as_str(),
@@ -2030,7 +2030,7 @@ async fn conversation_context_contract_filtering(store: &dyn ParityStore) {
             Some("action".to_string()),
             serde_json::json!({"arg1": "value1"}),
             serde_json::json!({
-                "phase": "send",
+                "phase": "execute",
                 "agent_id": agent_id.as_str(),
                 "task_id": task_id.as_str()
             }),
@@ -2047,7 +2047,7 @@ async fn conversation_context_contract_filtering(store: &dyn ParityStore) {
             Some("action".to_string()),
             serde_json::json!({"arg1": "value1"}),
             serde_json::json!({
-                "phase": "send",
+                "phase": "execute",
                 "result": "done",
                 "agent_id": agent_id.as_str(),
                 "task_id": task_id.as_str()

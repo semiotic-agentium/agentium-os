@@ -106,6 +106,7 @@ pub fn api_router_with_services(
         .routes(utoipa_axum::routes!(handlers::list_agents))
         .routes(utoipa_axum::routes!(handlers::post_a2a))
         .routes(utoipa_axum::routes!(handlers::post_a2a_sse))
+        .routes(utoipa_axum::routes!(handlers::post_dispatch))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_context))
         .routes(utoipa_axum::routes!(handlers::get_mermaid_task))
         .routes(utoipa_axum::routes!(handlers::get_context_metrics))

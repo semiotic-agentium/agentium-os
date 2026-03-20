@@ -10,9 +10,28 @@ expression: snapshot
       "rows": [
         {
           "activity_id": "llm_call:ctx-100-1:msg-b:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:0",
-          "timestamp_ms": "[timestamp_ms]",
+          "a2a_activity_outcome": "Failed",
+          "a2a_agent_id": "[uuid]",
+          "a2a_client": "anthropic",
+          "a2a_context_id": "ctx-100-1",
+          "a2a_duration_ms": 650,
+          "a2a_event_id": "[prov_event_id]",
+          "a2a_failure_class": "failed_graph_incomplete",
+          "a2a_failure_evidence": "metadata",
+          "a2a_function_name": "DraftPrompt",
+          "llm_result": null,
+          "llm_call": {
+            "input": "world"
+          },
+          "a2a_message_id": "msg-b",
+          "a2a_model": "claude-3-7-sonnet",
+          "a2a_prompt_name": "DraftPrompt",
+          "a2a_usage_completion_tokens": 5,
+          "a2a_usage_prompt_tokens": 20,
+          "a2a_usage_total_tokens": 25,
+          "prov_endTime": 3,
+          "prov_type": "a2a:LlmCall",
           "context_id": "ctx-100-1",
-          "task_id": null,
           "message_id": "msg-b",
           "agent_id": "[uuid]",
           "provider": "anthropic",
@@ -22,22 +41,15 @@ expression: snapshot
           "prompt_tokens": 20,
           "completion_tokens": 5,
           "total_tokens": 25,
-          "cached_input_tokens": null,
+          "timestamp_ms": "[timestamp_ms]",
+          "activity_outcome": "Failed",
+          "activity_status": "Completed",
+          "activity_kind": "llm_call",
           "activity_ref": "prov:v1:activity:llm_call:ctx-100-1:msg-b:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:0",
           "llm_call_ref": "[prov_event_id]",
-          "llm_call": {
-            "input": "world"
-          },
           "llm_result_ref": "[prov_event_id]",
-          "llm_result": null,
-          "activity_outcome": "Failed",
-          "agent_package": "unknown",
-          "agent_version": "unknown",
-          "agent_display": "unknown/unknown",
-          "activity_status": "Completed",
           "failure_class": "baml_validation_error",
-          "failure_evidence": "BAML validation failed: invalid response schema",
-          "activity_kind": "llm_call"
+          "failure_evidence": "BAML validation failed: invalid response schema"
         }
       ],
       "summary": {
@@ -94,9 +106,28 @@ expression: snapshot
       "rows": [
         {
           "activity_id": "llm_call:ctx-100-1:msg-b:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:0",
-          "timestamp_ms": "[timestamp_ms]",
+          "a2a_activity_outcome": "Failed",
+          "a2a_agent_id": "[uuid]",
+          "a2a_client": "anthropic",
+          "a2a_context_id": "ctx-100-1",
+          "a2a_duration_ms": 650,
+          "a2a_event_id": "[prov_event_id]",
+          "a2a_failure_class": "failed_graph_incomplete",
+          "a2a_failure_evidence": "metadata",
+          "a2a_function_name": "DraftPrompt",
+          "llm_result": null,
+          "llm_call": {
+            "input": "world"
+          },
+          "a2a_message_id": "msg-b",
+          "a2a_model": "claude-3-7-sonnet",
+          "a2a_prompt_name": "DraftPrompt",
+          "a2a_usage_completion_tokens": 5,
+          "a2a_usage_prompt_tokens": 20,
+          "a2a_usage_total_tokens": 25,
+          "prov_endTime": 3,
+          "prov_type": "a2a:LlmCall",
           "context_id": "ctx-100-1",
-          "task_id": null,
           "message_id": "msg-b",
           "agent_id": "[uuid]",
           "provider": "anthropic",
@@ -106,22 +137,15 @@ expression: snapshot
           "prompt_tokens": 20,
           "completion_tokens": 5,
           "total_tokens": 25,
-          "cached_input_tokens": null,
+          "timestamp_ms": "[timestamp_ms]",
+          "activity_outcome": "Failed",
+          "activity_status": "Completed",
+          "activity_kind": "llm_call",
           "activity_ref": "prov:v1:activity:llm_call:ctx-100-1:msg-b:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb:0",
           "llm_call_ref": "[prov_event_id]",
-          "llm_call": {
-            "input": "world"
-          },
           "llm_result_ref": "[prov_event_id]",
-          "llm_result": null,
-          "activity_outcome": "Failed",
-          "agent_package": "unknown",
-          "agent_version": "unknown",
-          "agent_display": "unknown/unknown",
-          "activity_status": "Completed",
           "failure_class": "baml_validation_error",
-          "failure_evidence": "BAML validation failed: invalid response schema",
-          "activity_kind": "llm_call"
+          "failure_evidence": "BAML validation failed: invalid response schema"
         }
       ],
       "summary": {

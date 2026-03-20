@@ -66,6 +66,12 @@ __chat_register({ onChatMessage });
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
+export interface ArchiveReadInput { archive_ref: string;
+offset: number | null;
+limit: number | null;
+grep: string | null;
+ }
+
 export interface CalculatorInput { expression: Expression;
  }
 
@@ -83,10 +89,11 @@ export interface SupportCalculateFinishStep { op: "Finish";
  }
 
 export interface SupportCalculateOpenStep { op: "Open";
+tool_name: "support/calculate";
  }
 
 export interface SupportCalculateReadStep { op: "Read";
-input: CalculatorInput;
+input: ArchiveReadInput;
  }
 
 export interface SupportCalculateSendStep { op: "Send";
@@ -304,12 +311,38 @@ export interface RunContext {
   /** Emitter for working message, artifact, awaitInput; use when you need to stream or suspend. */
   emit: SessionEmitter;
 }
+/** Host-to-agent deterministic dispatch request (non-conversational workloads). */
+export interface HostDispatchRequest {
+  /** Stable route label for the receiving entrypoint (e.g. "slack:intake"). */
+  routing_key: string;
+  /** Message family / schema identifier for the payload batch. */
+  message_type: string;
+  /** Opaque payloads delivered to the agent. */
+  messages: JsonObject[];
+  /** Optional existing context to continue under. */
+  context_id?: string | null;
+  /** Optional existing task to continue under. */
+  task_id?: string | null;
+  /** Optional caller-supplied message id for provenance continuity. */
+  message_id?: string | null;
+  /** Optional transport metadata for the receiving agent. */
+  metadata?: JsonObject | null;
+}
+/** Buffered acknowledgement for deterministic host delivery. */
+export interface HostDispatchAck {
+  /** True when the receiving agent accepted the delivery. */
+  accepted: boolean;
+  /** Optional operator-facing detail string. */
+  detail?: string | null;
+}
 /** Agent contract: register this; host invokes onChatMessage per message. */
 export interface BamlAgent {
   /** Optional: run(ctx) is the entrypoint; runtime wraps it into onChatMessage. Prefer this over onChatMessage. */
   run?(ctx: RunContext): Promise<SessionResult>;
   /** Optional: raw handler when run is not used. */
   onChatMessage?(message: ChatMessage): Promise<void>;
+  /** Optional: handler for deterministic host dispatch (non-conversational). */
+  onDispatch?(request: HostDispatchRequest): Promise<HostDispatchAck>;
   tools?: Record<string, (args: JsonObject) => Promise<JsonValue>>;
 }
 declare global {
@@ -341,6 +374,11 @@ declare global {
   function __chat_yield(chunk: YieldChunk): void;
   function openA2aTaskSession<I = Record<string, unknown>>(token: string): Promise<A2aSessionAwaitingInput<I>>;
   function openA2aExecutionSession(token: string): Promise<A2aExecutionSessionAwaitIntent>;
+  /**
+   * Extract typed messages from a HostDispatchRequest.
+   * Returns the messages array cast to T[]; each element's schema matches message_type.
+   */
+  function extractDispatchMessages<T = JsonObject>(request: HostDispatchRequest): T[];
 }
 export type ToolFailureKind =
     | "InvalidInput"
@@ -357,7 +395,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseCalculatoragentTool";
+export type StepExecutorFunctionName = "ChooseCalculatoragentTool" | "ChooseCalculatoragentTool__act__support_calculate" | "ChooseCalculatoragentTool__continue__support_calculate" | "ChooseCalculatoragentTool__select";
 
 export interface SessionContext {
     contract_version: "session_context";
@@ -396,6 +434,9 @@ export interface StepExecutorRunResult<R = unknown> {
 
 export interface StepExecutorFunctionMap {
   ChooseCalculatoragentTool: { args: Parameters<typeof ChooseCalculatoragentTool>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalculatoragentTool>>; };
+  ChooseCalculatoragentTool__act__support_calculate: { args: Parameters<typeof ChooseCalculatoragentTool__act__support_calculate>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalculatoragentTool__act__support_calculate>>; };
+  ChooseCalculatoragentTool__continue__support_calculate: { args: Parameters<typeof ChooseCalculatoragentTool__continue__support_calculate>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalculatoragentTool__continue__support_calculate>>; };
+  ChooseCalculatoragentTool__select: { args: Parameters<typeof ChooseCalculatoragentTool__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalculatoragentTool__select>>; };
 }
 
 declare global {
@@ -432,16 +473,15 @@ declare global {
 // FSM (Finite State Machine) Tool Session Protocol:
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
-// 2. Send: Can occur AFTER Open, including multiple times across a session
-// 3. Read: Retrieves output/progress using explicit read input
+// 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
+// 3. Read: Deref a prior Send result. Requires archive_ref (e.g. '@1'). Supports grep/paginate.
 // 4. Finish: Closes the session gracefully
 // 5. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
-// - Open MUST come before any Send step
-// - Open may include 'initial_input' only when the step schema defines that field
-// - Send uses 'input' field (for subsequent inputs)
-// - Use Read to fetch pending output/chunks; Read may repeat between Send steps
+// - Open MUST come before Send
+// - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
+// - Read requires archive_ref from a prior Send. Use it to paginate or grep the output.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -457,6 +497,16 @@ class StandardStructuredPlan {
   plan_steps StandardAgentPlanStep[]
 }
 
+class HistoryContext {
+  hop int
+  op string
+  status string
+  truncated bool
+  cursor string?
+  payload string?
+}
+
+/// FSM session context injected by the host at each step.
 class SessionContext {
   contract_version string
   session_open bool
@@ -466,13 +516,13 @@ class SessionContext {
   evidence_ref string?
 }
 
-class HistoryContext {
-  hop int
-  op string
-  status string
-  truncated bool
-  cursor string?
-  payload string?
+/// Archive deref input for Read steps.
+/// archive_ref is required: use the @N ref from the Send result.
+class ArchiveReadInput {
+  archive_ref string @description("Required archive ref e.g. '@1'. Use the ref returned by the preceding Send step.")
+  offset int? @description("Line offset for pagination (0-based). Omit to start from the beginning.")
+  limit int? @description("Maximum lines to return. Omit for default page size.")
+  grep string? @description("Optional grep pattern e.g. 'deploy' or '-i deploy' for case-insensitive.")
 }
 
 // Domain types generated from #[derive(BamlType)]
@@ -510,6 +560,7 @@ class SupportCalculateToolCard {
 
 class SupportCalculateOpenStep {
   op "Open"
+  tool_name "support/calculate" @description("Tool to open")
 }
 
 class SupportCalculateSendStep {
@@ -519,7 +570,7 @@ class SupportCalculateSendStep {
 
 class SupportCalculateReadStep {
   op "Read"
-  input CalculatorInput @description("Read payload for this step.")
+  input ArchiveReadInput @description("Archive ref and optional pagination/grep params.")
 }
 
 class SupportCalculateFinishStep {
@@ -533,5 +584,5 @@ class SupportCalculateAbortStep {
 type SupportCalculateSessionStep = SupportCalculateOpenStep | SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep | SupportCalculateAbortStep
 
 class SupportCalculateSessionPlan {
-  step SupportCalculateSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. After Send, prefer Read before further Send/Finish so you consume tool output and status.")
+  step SupportCalculateSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again.")
 }

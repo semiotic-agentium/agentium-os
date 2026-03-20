@@ -9,9 +9,33 @@ expression: snapshot
     "rows": [
       {
         "activity_id": "llm_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
-        "timestamp_ms": "[timestamp_ms]",
+        "a2a_activity_outcome": "Success",
+        "a2a_agent_id": "[uuid]",
+        "a2a_client": "openai",
+        "a2a_context_id": "ctx-100-1",
+        "a2a_drift_block_min_score": 0.25,
+        "a2a_drift_mode": "audit",
+        "a2a_drift_score": 0.6179999709129333,
+        "a2a_drift_severity": "warn",
+        "a2a_drift_warn_min_score": 0.5,
+        "a2a_duration_ms": 181,
+        "a2a_event_id": "[prov_event_id]",
+        "a2a_function_name": "SummarizePrompt",
+        "a2a_intent_text_preview": "Create a task titled Research",
+        "llm_result": null,
+        "llm_call": {
+          "input": "hello with drift"
+        },
+        "a2a_message_id": "msg-a",
+        "a2a_model": "gpt-4o-mini",
+        "a2a_prompt_name": "SummarizePrompt",
+        "a2a_response_text_preview": "Create task in list 901325431486",
+        "a2a_usage_completion_tokens": 7,
+        "a2a_usage_prompt_tokens": 10,
+        "a2a_usage_total_tokens": 17,
+        "prov_endTime": 1773994713611,
+        "prov_type": "a2a:LlmCall",
         "context_id": "ctx-100-1",
-        "task_id": null,
         "message_id": "msg-a",
         "agent_id": "[uuid]",
         "provider": "openai",
@@ -21,29 +45,22 @@ expression: snapshot
         "prompt_tokens": 10,
         "completion_tokens": 7,
         "total_tokens": 17,
-        "cached_input_tokens": null,
+        "timestamp_ms": "[timestamp_ms]",
+        "activity_outcome": "Success",
+        "activity_status": "Completed",
+        "activity_kind": "llm_call",
         "activity_ref": "prov:v1:activity:llm_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
         "llm_call_ref": "[prov_event_id]",
-        "llm_call": {
-          "input": "hello with drift"
-        },
         "llm_result_ref": "[prov_event_id]",
-        "llm_result": null,
-        "activity_outcome": "Success",
         "drift": {
-          "score": 0.6179999709,
+          "score": 0.6179999709129333,
           "severity": "warn",
           "mode": "audit",
           "warnMinScore": 0.5,
           "blockMinScore": 0.25,
           "intentTextPreview": "Create a task titled Research",
           "responseTextPreview": "Create task in list 901325431486"
-        },
-        "agent_package": "unknown",
-        "agent_version": "unknown",
-        "agent_display": "unknown/unknown",
-        "activity_status": "Completed",
-        "activity_kind": "llm_call"
+        }
       }
     ],
     "summary": {

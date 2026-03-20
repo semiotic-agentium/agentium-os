@@ -9,15 +9,18 @@ expression: snapshot
     "rows": [
       {
         "activity_id": "tool_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
-        "timestamp_ms": "[timestamp_ms]",
-        "context_id": "ctx-100-1",
-        "task_id": null,
-        "message_id": "msg-a",
-        "agent_id": "[uuid]",
-        "tool_name": "support/calculate",
-        "baml_prompt": "CalcPrompt",
-        "duration_ms": 420,
-        "activity_outcome": "Failed",
+        "a2a_activity_outcome": "Failed",
+        "a2a_agent_id": "[uuid]",
+        "a2a_context_id": "ctx-100-1",
+        "a2a_duration_ms": 420,
+        "tool_result": {
+          "error": "timeout while calling tool"
+        },
+        "a2a_event_id": "[prov_event_id]",
+        "a2a_failure_class": "timeout",
+        "a2a_failure_evidence": "metadata",
+        "a2a_function_name": "CalcPrompt",
+        "a2a_message_id": "msg-a",
         "tool_call": {
           "name": "support/calculate",
           "args": {
@@ -25,19 +28,24 @@ expression: snapshot
           },
           "phase": null
         },
+        "a2a_tool_name": "support/calculate",
         "tool_result_ref": "[prov_event_id]",
-        "tool_call_ref": "[prov_event_id]",
-        "tool_result": {
-          "error": "timeout while calling tool"
-        },
-        "activity_ref": "prov:v1:activity:tool_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
-        "agent_package": "unknown",
-        "agent_version": "unknown",
-        "agent_display": "unknown/unknown",
+        "prov_endTime": 1773994713699,
+        "prov_type": "a2a:ToolCall",
+        "context_id": "ctx-100-1",
+        "message_id": "msg-a",
+        "agent_id": "[uuid]",
+        "tool_name": "support/calculate",
+        "baml_prompt": "CalcPrompt",
+        "duration_ms": 420,
+        "timestamp_ms": "[timestamp_ms]",
+        "activity_outcome": "Failed",
         "activity_status": "Completed",
+        "activity_kind": "tool_call",
+        "activity_ref": "prov:v1:activity:tool_call:ctx-100-1:msg-a:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:0",
+        "tool_call_ref": "[prov_event_id]",
         "failure_class": "timeout",
-        "failure_evidence": "metadata",
-        "activity_kind": "tool_call"
+        "failure_evidence": "metadata"
       }
     ],
     "summary": {
