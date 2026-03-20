@@ -12,6 +12,7 @@ use baml_rt_core::{
 use baml_rt_provenance::{
     AgentType, ProvEvent, ProvenanceContextReader, ProvenanceConversationContextItem,
     ProvenanceWriter, SurrealProvenanceStore, SurrealStoreBuilder,
+    store::{ConversationItemContent, ToolOutcome},
 };
 use baml_tools_clickup::ClickUpTool;
 use common::{
@@ -321,18 +322,17 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
             conversation_items = items.clone();
             matched_tool_result = items
                 .iter()
-                .filter(|item| item.source == "tool_result")
+                .filter(|item| item.source_name() == "tool_result")
                 .find_map(|item| {
-                    let tasks = item
-                        .content
-                        .get("result")
-                        .and_then(|result| result.get("tasks"))
-                        .and_then(Value::as_array)?;
-                    if tasks.len() == 2 {
-                        Some(item.content.clone())
-                    } else {
-                        None
+                    if let ConversationItemContent::ToolResult(tr) = &item.content {
+                        if let ToolOutcome::Result(v) = &tr.outcome {
+                            let tasks = v.get("tasks").and_then(Value::as_array)?;
+                            if tasks.len() == 2 {
+                                return Some(v.clone());
+                            }
+                        }
                     }
+                    None
                 });
             if matched_tool_result.is_some() {
                 break;
@@ -373,10 +373,9 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
         )
     });
     let tasks = tool_result
-        .get("result")
-        .and_then(|r| r.get("tasks"))
+        .get("tasks")
         .and_then(Value::as_array)
-        .expect("tool_result.result.tasks array");
+        .expect("tool_result.tasks array");
     assert_eq!(tasks.len(), 2, "mock should always return exactly 2 tasks");
     for task in tasks {
         let status = maybe_task_status(task.get("status").unwrap_or(&Value::Null))
@@ -586,25 +585,24 @@ async fn test_e2e_clickup_get_task_description_fast() {
         conversation_items = items.clone();
         matched_tool_result = items
             .iter()
-            .filter(|item| item.source == "tool_result")
+            .filter(|item| item.source_name() == "tool_result")
             .find_map(|item| {
-                let tasks = item
-                    .content
-                    .get("result")
-                    .and_then(|result| result.get("tasks"))
-                    .and_then(Value::as_array)?;
-                if tasks.len() == 1
-                    && tasks[0].get("id").and_then(Value::as_str) == Some("task-901")
-                    && tasks[0]
-                        .get("description")
-                        .and_then(Value::as_str)
-                        .map(|d| !d.trim().is_empty())
-                        .unwrap_or(false)
-                {
-                    Some(item.content.clone())
-                } else {
-                    None
+                if let ConversationItemContent::ToolResult(tr) = &item.content {
+                    if let ToolOutcome::Result(v) = &tr.outcome {
+                        let tasks = v.get("tasks").and_then(Value::as_array)?;
+                        if tasks.len() == 1
+                            && tasks[0].get("id").and_then(Value::as_str) == Some("task-901")
+                            && tasks[0]
+                                .get("description")
+                                .and_then(Value::as_str)
+                                .map(|d: &str| !d.trim().is_empty())
+                                .unwrap_or(false)
+                        {
+                            return Some(v.clone());
+                        }
+                    }
                 }
+                None
             });
         if matched_tool_result.is_some() {
             break;
@@ -612,7 +610,7 @@ async fn test_e2e_clickup_get_task_description_fast() {
         let signature = serde_json::to_string(
             &conversation_items
                 .iter()
-                .map(|i| (&i.event_id, &i.source, &i.content))
+                .map(|i| (&i.event_id, i.source_name(), &i.content))
                 .collect::<Vec<_>>(),
         )
         .unwrap_or_default();
@@ -633,16 +631,15 @@ async fn test_e2e_clickup_get_task_description_fast() {
             "Expected a tool_result for task-901 with description. Sources seen: {:?}",
             conversation_items
                 .iter()
-                .map(|i| i.source.as_str())
+                .map(|i| i.source_name())
                 .collect::<Vec<_>>()
         )
     });
     let task = tool_result
-        .get("result")
-        .and_then(|r| r.get("tasks"))
+        .get("tasks")
         .and_then(Value::as_array)
         .and_then(|tasks| tasks.first())
-        .expect("tool_result.result.tasks[0]");
+        .expect("tool_result.tasks[0]");
     assert_eq!(
         task.get("id").and_then(Value::as_str),
         Some("task-901"),
@@ -658,13 +655,7 @@ async fn test_e2e_clickup_get_task_description_fast() {
     );
 
     let task_id_call_seen = conversation_items.iter().any(|item| {
-        item.source == "tool_call"
-            && item
-                .content
-                .get("tool_call")
-                .and_then(|tc| tc.get("args"))
-                .map(|args| contains_kv(args, "task_id", "task-901"))
-                .unwrap_or(false)
+        matches!(&item.content, ConversationItemContent::ToolCall(tc) if contains_kv(&tc.args, "task_id", "task-901"))
     });
     assert!(
         task_id_call_seen,

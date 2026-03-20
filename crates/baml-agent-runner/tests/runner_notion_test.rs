@@ -11,7 +11,7 @@ use baml_rt_core::{
 };
 use baml_rt_provenance::{
     AgentType, ProvEvent, ProvenanceContextReader, ProvenanceConversationContextItem,
-    ProvenanceWriter, SurrealProvenanceStore, SurrealStoreBuilder,
+    ProvenanceWriter, SurrealProvenanceStore, SurrealStoreBuilder, store::ConversationItemContent,
 };
 use baml_tools_notion::NotionTool;
 use common::{
@@ -280,18 +280,17 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
         conversation_items = items.clone();
         matched_tool_result = items
             .iter()
-            .filter(|item| item.source == "tool_result")
+            .filter(|item| item.source_name() == "tool_result")
             .find_map(|item| {
-                let blocks = item
-                    .content
-                    .get("result")
-                    .and_then(|result| result.get("blocks"))
-                    .and_then(Value::as_array)?;
-                if !blocks.is_empty() {
-                    Some(item.content.clone())
-                } else {
-                    None
+                if let ConversationItemContent::ToolResult(tr) = &item.content {
+                    if let baml_rt_provenance::store::ToolOutcome::Result(v) = &tr.outcome {
+                        let blocks = v.get("blocks").and_then(Value::as_array)?;
+                        if !blocks.is_empty() {
+                            return Some(item.content.clone());
+                        }
+                    }
                 }
+                None
             });
         if matched_tool_result.is_some() {
             break;
@@ -299,7 +298,7 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
         let signature = serde_json::to_string(
             &conversation_items
                 .iter()
-                .map(|i| (&i.event_id, &i.source, &i.content))
+                .map(|i| (&i.event_id, i.source_name(), &i.content))
                 .collect::<Vec<_>>(),
         )
         .unwrap_or_default();
@@ -320,28 +319,32 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
             "Expected notion tool_result with non-empty blocks. Sources seen: {:?}",
             conversation_items
                 .iter()
-                .map(|i| i.source.as_str())
+                .map(|i| i.source_name())
                 .collect::<Vec<_>>()
         )
     });
-    let blocks = tool_result
-        .get("result")
-        .and_then(|r| r.get("blocks"))
-        .and_then(Value::as_array)
-        .expect("tool_result.result.blocks array");
+    let blocks = if let ConversationItemContent::ToolResult(tr) = &tool_result {
+        if let baml_rt_provenance::store::ToolOutcome::Result(v) = &tr.outcome {
+            v.get("blocks")
+                .and_then(Value::as_array)
+                .expect("tool_result.outcome.Result.blocks array")
+        } else {
+            panic!("tool_result outcome is not Result")
+        }
+    } else {
+        panic!("matched_tool_result is not ToolResult")
+    };
     assert!(
         !blocks.is_empty(),
         "Expected at least one block in tool result"
     );
 
     let has_notion_tool_call = conversation_items.iter().any(|item| {
-        item.source == "tool_call"
-            && item
-                .content
-                .get("tool_call")
-                .and_then(|tc| tc.get("name"))
-                .and_then(Value::as_str)
-                == Some("support/notion")
+        if let ConversationItemContent::ToolCall(tc) = &item.content {
+            tc.tool_name.as_str() == "support/notion"
+        } else {
+            false
+        }
     });
     assert!(
         has_notion_tool_call,
@@ -349,13 +352,11 @@ async fn test_e2e_notion_direct_id_path_with_mock_server_and_mermaid_http() {
     );
 
     let block_id_call_seen = conversation_items.iter().any(|item| {
-        item.source == "tool_call"
-            && item
-                .content
-                .get("tool_call")
-                .and_then(|tc| tc.get("args"))
-                .map(|args| contains_kv(args, "block_id", RAW_BLOCK_ID))
-                .unwrap_or(false)
+        if let ConversationItemContent::ToolCall(tc) = &item.content {
+            contains_kv(&tc.args, "block_id", RAW_BLOCK_ID)
+        } else {
+            false
+        }
     });
     assert!(
         block_id_call_seen,
@@ -515,14 +516,16 @@ async fn test_e2e_notion_real_model_search_with_mock_server() {
             .unwrap_or_default();
         conversation_items = items.clone();
         let saw_search_result = items.iter().any(|item| {
-            item.source == "tool_result"
-                && item
-                    .content
-                    .get("result")
-                    .and_then(|r| r.get("pages"))
-                    .and_then(Value::as_array)
-                    .map(|pages| !pages.is_empty())
-                    .unwrap_or(false)
+            if let ConversationItemContent::ToolResult(tr) = &item.content {
+                if let baml_rt_provenance::store::ToolOutcome::Result(v) = &tr.outcome {
+                    return v
+                        .get("pages")
+                        .and_then(Value::as_array)
+                        .map(|pages| !pages.is_empty())
+                        .unwrap_or(false);
+                }
+            }
+            false
         });
         if saw_search_result {
             break;
@@ -530,7 +533,7 @@ async fn test_e2e_notion_real_model_search_with_mock_server() {
         let signature = serde_json::to_string(
             &conversation_items
                 .iter()
-                .map(|i| (&i.event_id, &i.source, &i.content))
+                .map(|i| (&i.event_id, i.source_name(), &i.content))
                 .collect::<Vec<_>>(),
         )
         .unwrap_or_default();
@@ -547,13 +550,11 @@ async fn test_e2e_notion_real_model_search_with_mock_server() {
     }
 
     let search_call_seen = conversation_items.iter().any(|item| {
-        item.source == "tool_call"
-            && item
-                .content
-                .get("tool_call")
-                .and_then(|tc| tc.get("name"))
-                .and_then(Value::as_str)
-                == Some("support/notion")
+        if let ConversationItemContent::ToolCall(tc) = &item.content {
+            tc.tool_name.as_str() == "support/notion"
+        } else {
+            false
+        }
     });
     assert!(
         search_call_seen,
