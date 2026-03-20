@@ -614,6 +614,15 @@ pub async fn execute_calc_session_strict(
 ) -> baml_rt_core::Result<f64> {
     use baml_rt_core::BamlRtError;
     let initial_status = tool_choice.get("status").and_then(|v| v.as_str());
+    // invoke_function auto-executes session plans when session_plan_functions.json is present.
+    // If it already ran the full session and returned a done result, extract the value directly.
+    if initial_status == Some("done") {
+        if let Some(result) = tool_choice.get("result") {
+            if let Some(v) = result.get("result").and_then(|v| v.as_f64()) {
+                return Ok(v);
+            }
+        }
+    }
     if initial_status != Some("sent") {
         let has_step = tool_choice
             .get("step")

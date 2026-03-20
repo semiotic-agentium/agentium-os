@@ -408,33 +408,9 @@ impl ToolSessionExecutionHandle {
 
             let result = self.ctx.tool_registry.session_send(session_id, input).await;
 
-            // Complete the effect token on Send success so provenance records a
-            // non-null tool_result. Without this, a Send-only plan fragment (no
-            // subsequent Read in this invocation) leaves the ToolStarted token
-            // pending forever, producing null in provenance.
-            if result.is_ok() {
-                let duration_ms = start.elapsed().as_millis() as u64;
-                if let Some((_, token)) = self.tool_session_effect_tokens.remove(session_id)
-                    && let Some(emitter) = self.ctx.effect_emitter.as_ref()
-                {
-                    let sent_result = serde_json::json!({ "status": "sent" });
-                    if let Err(e) = token
-                        .complete(
-                            emitter.as_ref(),
-                            duration_ms,
-                            Outcome::Success,
-                            Some(sent_result),
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            session_id = %session_id,
-                            error = ?e,
-                            "effect token completion failed on send success"
-                        );
-                    }
-                }
-            }
+            // Token is intentionally NOT completed here. send_blocking completes it
+            // with the real Done output when the tool finishes, so provenance records
+            // the actual result rather than a meaningless "{status: sent}" stub.
 
             if result.is_err() {
                 let state = self.tool_session_states.remove(session_id).map(|(_, v)| v);
@@ -875,6 +851,26 @@ impl ToolSessionExecutionHandle {
                 }
                 ToolStep::Done { output } => {
                     let output_value = output.unwrap_or(Value::Null);
+                    // Complete the Send token with the actual result now that we have it.
+                    // This is the correct completion point — the ToolResult in provenance
+                    // carries real data, not a "{status: sent}" stub.
+                    if let Some((_, token)) = self.tool_session_effect_tokens.remove(session_id) {
+                        if let Some(emitter) = self.ctx.effect_emitter.as_ref() {
+                            let duration_ms = self
+                                .tool_session_states
+                                .get(session_id)
+                                .map(|s| s.start.elapsed().as_millis() as u64)
+                                .unwrap_or(0);
+                            let _ = token
+                                .complete(
+                                    emitter.as_ref(),
+                                    duration_ms,
+                                    Outcome::Success,
+                                    Some(output_value.clone()),
+                                )
+                                .await;
+                        }
+                    }
                     let rendered = archive_read::render_to_lines(&output_value);
                     let tool_name = self
                         .tool_session_scopes

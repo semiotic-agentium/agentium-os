@@ -627,7 +627,7 @@ impl SurrealProvenanceStore {
     /// Map raw PROV-DM edge types to semantic labels for graph export/rendering parity.
     /// The normalization layer performs this mapping at write time.
     fn semantic_used_label(from_label: &str, role: Option<&str>) -> &'static str {
-        use crate::vocabulary::a2a_roles;
+        use crate::vocabulary::{a2a_roles, prov_roles};
         match role {
             Some(r) if r == a2a_roles::INPUT_MESSAGE => match from_label {
                 l if l == GraphNodeLabel::TaskExecution.as_str() => semantic_labels::WAS_SPAWNED_BY,
@@ -1183,7 +1183,7 @@ impl SurrealProvenanceStore {
 
     async fn read_payload_by_id(&self, payload_id: &str) -> Result<Option<PayloadRecord>> {
         let query = format!(
-            "SELECT payload_id, event_id, activity_id, payload_kind, payload_json OMIT id FROM {TBL_PAYLOAD} WHERE payload_id = $payload_id LIMIT 1"
+            "SELECT payload_id, event_id, activity_id, payload_kind, payload_json FROM {TBL_PAYLOAD} WHERE payload_id = $payload_id LIMIT 1"
         );
         let mut response = self
             .db
@@ -1204,7 +1204,7 @@ impl SurrealProvenanceStore {
         payload_kind: &str,
     ) -> Result<Option<PayloadRecord>> {
         let query = format!(
-            "SELECT payload_id, event_id, activity_id, payload_kind, payload_json OMIT id FROM {TBL_PAYLOAD} WHERE event_id = $event_id AND payload_kind = $payload_kind LIMIT 1"
+            "SELECT payload_id, event_id, activity_id, payload_kind, payload_json FROM {TBL_PAYLOAD} WHERE event_id = $event_id AND payload_kind = $payload_kind LIMIT 1"
         );
         let mut response = self
             .db
@@ -1222,7 +1222,7 @@ impl SurrealProvenanceStore {
 
     async fn read_payloads_by_activity(&self, activity_id: &str) -> Result<Vec<PayloadRecord>> {
         let query = format!(
-            "SELECT payload_id, event_id, activity_id, payload_kind, payload_json OMIT id FROM {TBL_PAYLOAD} WHERE activity_id = $activity_id ORDER BY payload_kind"
+            "SELECT payload_id, event_id, activity_id, payload_kind, payload_json FROM {TBL_PAYLOAD} WHERE activity_id = $activity_id ORDER BY payload_kind"
         );
         let mut response = self
             .db
@@ -1247,7 +1247,7 @@ impl SurrealProvenanceStore {
         }
 
         let query = format!(
-            "SELECT DISTINCT activity_id OMIT id FROM {TBL_PAYLOAD} WHERE payload_json @@ $query_text AND activity_id IS NOT NONE"
+            "SELECT DISTINCT activity_id FROM {TBL_PAYLOAD} WHERE payload_json @@ $query_text AND activity_id IS NOT NONE"
         );
         let mut response = self
             .db
@@ -1338,7 +1338,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
     ) -> Result<Vec<ProvenanceContextMessage>> {
         let ctx = context_id.as_str();
         let query = format!(
-            "SELECT props OMIT id FROM {TBL_NODE} WHERE label = 'Message' AND props.a2a_context_id = $ctx"
+            "SELECT props FROM {TBL_NODE} WHERE label = 'Message' AND props.a2a_context_id = $ctx"
         );
         let mut response = self
             .db
@@ -1406,7 +1406,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
 
         // Fetch message items
         let msg_query = format!(
-            "SELECT props OMIT id FROM {TBL_NODE} WHERE label = 'Message' AND props.a2a_context_id = $ctx"
+            "SELECT props FROM {TBL_NODE} WHERE label = 'Message' AND props.a2a_context_id = $ctx"
         );
         let mut msg_response = self
             .db
@@ -1422,7 +1422,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
         //
         // Step 1: Find ToolCall nodes with completed outcomes
         let tool_query = format!(
-            "SELECT node_id, props OMIT id FROM {TBL_NODE} WHERE label = 'ToolCall' AND props.a2a_context_id = $ctx AND props.a2a_activity_outcome IN ['Success', 'Failed']"
+            "SELECT node_id, props FROM {TBL_NODE} WHERE label = 'ToolCall' AND props.a2a_context_id = $ctx AND props.a2a_activity_outcome IN ['Success', 'Failed']"
         );
         let mut tool_response = self
             .db
@@ -1447,8 +1447,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
         let edge_rows: Vec<Value> = edge_response.take(0).map_err(map_surreal_error)?;
 
         // Step 3: Find ToolArgs nodes to verify target type
-        let args_query =
-            format!("SELECT node_id, props OMIT id FROM {TBL_NODE} WHERE label = 'ToolArgs'");
+        let args_query = format!("SELECT node_id, props FROM {TBL_NODE} WHERE label = 'ToolArgs'");
         let mut args_response = self
             .db
             .query(&args_query)
@@ -1631,9 +1630,8 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
             };
 
             let has_outcome = has_meaningful_result(&result) || error.is_some();
-            // Include raw ToolCall/ToolResult for all phases (including session phases).
-            // SessionStep items handle the LLM-facing projection separately.
-            let include_call = !is_empty_object(&args) || has_outcome;
+            let include_call =
+                !phase.is_session_phase() && (!is_empty_object(&args) || has_outcome);
 
             if include_call {
                 items.push(ProvenanceConversationContextItem {
@@ -1671,7 +1669,7 @@ impl ProvenanceContextReader for SurrealProvenanceStore {
 
         // Process SessionStep nodes (Open/SendDone/Read within in-progress sessions).
         let step_query = format!(
-            "SELECT props OMIT id FROM {TBL_NODE} WHERE label = 'SessionStep' AND props.a2a_context_id = $ctx"
+            "SELECT props FROM {TBL_NODE} WHERE label = 'SessionStep' AND props.a2a_context_id = $ctx"
         );
         let step_rows: Vec<Value> = match self
             .db
@@ -1826,7 +1824,7 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
     ) -> Result<Vec<PlanningIntentRecord>> {
         let limit_val = limit.unwrap_or(100).max(1);
         let query = format!(
-            "SELECT props OMIT id FROM {TBL_NODE} WHERE label = 'Intent' AND props.a2a_task_id = $task_id"
+            "SELECT props FROM {TBL_NODE} WHERE label = 'Intent' AND props.a2a_task_id = $task_id"
         );
         let mut response = self
             .db
@@ -1882,7 +1880,7 @@ impl ProvenancePlanningQuery for SurrealProvenanceStore {
     ) -> Result<Vec<PlanningPlanRecord>> {
         let limit_val = limit.unwrap_or(100).max(1);
         let query = format!(
-            "SELECT props OMIT id FROM {TBL_NODE} WHERE label = 'Plan' AND props.a2a_task_id = $task_id"
+            "SELECT props FROM {TBL_NODE} WHERE label = 'Plan' AND props.a2a_task_id = $task_id"
         );
         let mut response = self
             .db
@@ -1942,7 +1940,7 @@ impl SurrealProvenanceStore {
 
     async fn resolve_call_activity_id_for_event(&self, event_id: &str) -> Result<Option<String>> {
         let query = format!(
-            "SELECT node_id OMIT id FROM {TBL_NODE} WHERE (label = 'LlmCall' OR label = 'ToolCall') AND props.a2a_event_id = $event_id LIMIT 1"
+            "SELECT node_id FROM {TBL_NODE} WHERE (label = 'LlmCall' OR label = 'ToolCall') AND props.a2a_event_id = $event_id LIMIT 1"
         );
         let mut response = self
             .db
@@ -2005,7 +2003,7 @@ impl SurrealProvenanceStore {
         if !is_step_completed_status(new_status) {
             return Ok(());
         }
-        let _context_id = event.context_id().as_str().to_string();
+        let context_id = event.context_id().as_str().to_string();
         let deps = self
             .fetch_step_dependencies(task_id.as_str(), plan_id.as_str(), step_id.as_str())
             .await?;
@@ -2022,8 +2020,22 @@ impl SurrealProvenanceStore {
                 });
             }
         }
-        // Evidence check intentionally omitted: some steps are deterministic (no LLM/tool calls).
-        // Dependency ordering is sufficient to ensure provenance integrity.
+        let has_evidence = self
+            .has_terminal_step_evidence(
+                &context_id,
+                task_id.as_str(),
+                plan_id.as_str(),
+                step_id.as_str(),
+            )
+            .await?;
+        if !has_evidence {
+            return Err(ProvenanceError::InvalidEvent {
+                event_id: event.id().as_str().to_string(),
+                reason: format!(
+                    "step completion rejected: no terminal LLM/tool evidence linked to step (plan_id={plan_id}, step_id={step_id})"
+                ),
+            });
+        }
         Ok(())
     }
 
@@ -2034,7 +2046,7 @@ impl SurrealProvenanceStore {
         step_id: &str,
     ) -> Result<Vec<String>> {
         let query = format!(
-            "SELECT props OMIT id FROM {TBL_NODE} WHERE label = 'PlanStep' AND props.a2a_task_id = $task_id AND props.a2a_plan_id = $plan_id AND props.a2a_step_id = $step_id LIMIT 1"
+            "SELECT props.a2a_depends_on AS deps FROM {TBL_NODE} WHERE label = 'PlanStep' AND props.a2a_task_id = $task_id AND props.a2a_plan_id = $plan_id AND props.a2a_step_id = $step_id LIMIT 1"
         );
         let mut response = self
             .db
@@ -2048,17 +2060,13 @@ impl SurrealProvenanceStore {
         let Some(row) = rows.first() else {
             return Ok(Vec::new());
         };
-        let deps_raw = row
-            .get("props")
-            .and_then(|p| p.get("a2a_depends_on"))
-            .and_then(Value::as_str)
-            .map(String::from);
+        let deps_raw = row.get("deps").and_then(Value::as_str).map(String::from);
         Ok(decode_depends_on(deps_raw))
     }
 
     async fn is_step_completed(&self, task_id: &str, plan_id: &str, step_id: &str) -> Result<bool> {
         let query = format!(
-            "SELECT props.a2a_status AS status OMIT id FROM {TBL_NODE} WHERE label = 'PlanStep' AND props.a2a_task_id = $task_id AND props.a2a_plan_id = $plan_id AND props.a2a_step_id = $step_id LIMIT 1"
+            "SELECT props.a2a_status AS status FROM {TBL_NODE} WHERE label = 'PlanStep' AND props.a2a_task_id = $task_id AND props.a2a_plan_id = $plan_id AND props.a2a_step_id = $step_id LIMIT 1"
         );
         let mut response = self
             .db
@@ -2087,7 +2095,7 @@ impl SurrealProvenanceStore {
         step_id: &str,
     ) -> Result<bool> {
         let query = format!(
-            "SELECT node_id OMIT id FROM {TBL_NODE} WHERE (label = 'LlmCall' OR label = 'ToolCall') AND props.a2a_context_id = $context_id AND props.a2a_task_id = $task_id AND props.a2a_plan_id = $plan_id AND props.a2a_step_id = $step_id AND props.a2a_activity_outcome = 'Success' LIMIT 1"
+            "SELECT node_id FROM {TBL_NODE} WHERE (label = 'LlmCall' OR label = 'ToolCall') AND props.a2a_context_id = $context_id AND props.a2a_task_id = $task_id AND props.a2a_plan_id = $plan_id AND props.a2a_step_id = $step_id AND props.a2a_activity_outcome = 'Success' LIMIT 1"
         );
         let mut response = self
             .db
@@ -2112,7 +2120,7 @@ impl SurrealProvenanceStore {
         plan_id: &str,
     ) -> Result<Vec<PlanningPlanStepRecord>> {
         let query = format!(
-            "SELECT props, props.a2a_step_order AS step_order OMIT id FROM {TBL_NODE} WHERE label = 'PlanStep' AND props.a2a_task_id = $task_id AND props.a2a_plan_id = $plan_id ORDER BY props.a2a_step_order ASC"
+            "SELECT props, props.a2a_step_order AS step_order FROM {TBL_NODE} WHERE label = 'PlanStep' AND props.a2a_task_id = $task_id AND props.a2a_plan_id = $plan_id ORDER BY props.a2a_step_order ASC"
         );
         let mut response = self
             .db
@@ -2207,10 +2215,10 @@ impl SurrealProvenanceStore {
     ) -> Result<Vec<(String, String)>> {
         // Find edges between nodes of `node_label` where both endpoints are scoped to the task.
         let query = format!(
-            "SELECT from_id, to_id OMIT id FROM {TBL_EDGE} \
+            "SELECT from_id, to_id FROM {TBL_EDGE} \
              WHERE rel_type = $rel_type AND from_label = $label AND to_label = $label \
-               AND from_id IN (SELECT VALUE node_id OMIT id FROM {TBL_NODE} WHERE label = $label AND props.a2a_task_id = $task_id) \
-               AND to_id IN (SELECT VALUE node_id OMIT id FROM {TBL_NODE} WHERE label = $label AND props.a2a_task_id = $task_id)"
+               AND from_id IN (SELECT VALUE node_id FROM {TBL_NODE} WHERE label = $label AND props.a2a_task_id = $task_id) \
+               AND to_id IN (SELECT VALUE node_id FROM {TBL_NODE} WHERE label = $label AND props.a2a_task_id = $task_id)"
         );
         let mut response = self
             .db
@@ -2282,7 +2290,7 @@ impl SurrealProvenanceStore {
     async fn load_agent_identity_map(&self) -> Result<HashMap<String, (String, String)>> {
         let query = format!(
             "SELECT node_id, props.a2a_agent_type AS agent_package, props.a2a_agent_version AS agent_version \
-             OMIT id FROM {TBL_NODE} WHERE label = 'AgentRuntimeInstance'"
+             FROM {TBL_NODE} WHERE label = 'AgentRuntimeInstance'"
         );
         let mut response = self.db.query(&query).await.map_err(map_surreal_error)?;
         let rows: Vec<Value> = response.take(0).map_err(map_surreal_error)?;
@@ -2314,7 +2322,7 @@ impl SurrealProvenanceStore {
         // Step 1: Get all FailureClassification node_ids with their class/evidence
         let fc_query = format!(
             "SELECT node_id, props.a2a_failure_class AS failure_class, props.a2a_failure_evidence AS failure_evidence \
-             OMIT id FROM {TBL_NODE} WHERE label = 'FailureClassification'"
+             FROM {TBL_NODE} WHERE label = 'FailureClassification'"
         );
         let mut fc_response = self.db.query(&fc_query).await.map_err(map_surreal_error)?;
         let fc_rows: Vec<Value> = fc_response.take(0).map_err(map_surreal_error)?;
@@ -2346,9 +2354,8 @@ impl SurrealProvenanceStore {
         }
 
         // Step 2: Get all LlmCall and ToolCall node_ids (the only valid sources for FC edges)
-        let call_query = format!(
-            "SELECT node_id OMIT id FROM {TBL_NODE} WHERE label = 'LlmCall' OR label = 'ToolCall'"
-        );
+        let call_query =
+            format!("SELECT node_id FROM {TBL_NODE} WHERE label = 'LlmCall' OR label = 'ToolCall'");
         let mut call_response = self
             .db
             .query(&call_query)
@@ -2428,7 +2435,7 @@ impl SurrealProvenanceStore {
         // Then aggregate duration_ms by message_id
         let query = format!(
             "SELECT props.a2a_message_id AS message_id, props.a2a_duration_ms AS duration_ms \
-             OMIT id FROM {TBL_NODE} WHERE label = 'LlmCall' AND props.a2a_context_id = $context_id \
+             FROM {TBL_NODE} WHERE label = 'LlmCall' AND props.a2a_context_id = $context_id \
              AND props.a2a_duration_ms IS NOT NULL"
         );
         let mut response = self
@@ -2465,7 +2472,7 @@ impl SurrealProvenanceStore {
         // Find ToolCall nodes with duration_ms for the context, aggregate by message_id
         let query = format!(
             "SELECT props.a2a_message_id AS message_id, props.a2a_duration_ms AS duration_ms \
-             OMIT id FROM {TBL_NODE} WHERE label = 'ToolCall' AND props.a2a_context_id = $context_id \
+             FROM {TBL_NODE} WHERE label = 'ToolCall' AND props.a2a_context_id = $context_id \
              AND props.a2a_duration_ms IS NOT NULL"
         );
         let mut response = self
@@ -2957,7 +2964,7 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
         }
 
         let query = format!(
-            "SELECT node_id, props OMIT id FROM {TBL_NODE} WHERE {}",
+            "SELECT node_id, props FROM {TBL_NODE} WHERE {}",
             where_clauses.join(" AND ")
         );
         let mut q = self.db.query(&query);
@@ -3717,7 +3724,7 @@ impl ProvenanceOpsQuery for SurrealProvenanceStore {
 #[async_trait]
 impl A2aGraphStore for SurrealProvenanceStore {
     async fn max_task_ord(&self) -> A2aGraphStoreResult<i64> {
-        let query = format!("SELECT ord OMIT id FROM {TBL_A2A_TASK} ORDER BY ord DESC LIMIT 1");
+        let query = format!("SELECT ord FROM {TBL_A2A_TASK} ORDER BY ord DESC LIMIT 1");
         let mut response = self.db.query(&query).await.map_err(|e| e.to_string())?;
         let rows: Vec<Value> = response.take(0).map_err(|e| e.to_string())?;
         Ok(rows
@@ -3728,7 +3735,7 @@ impl A2aGraphStore for SurrealProvenanceStore {
 
     async fn max_message_seq(&self, task_id: &str) -> A2aGraphStoreResult<i64> {
         let query = format!(
-            "SELECT seq OMIT id FROM {TBL_A2A_MESSAGE} WHERE task_id = $task_id ORDER BY seq DESC LIMIT 1"
+            "SELECT seq FROM {TBL_A2A_MESSAGE} WHERE task_id = $task_id ORDER BY seq DESC LIMIT 1"
         );
         let mut response = self
             .db
@@ -3745,7 +3752,7 @@ impl A2aGraphStore for SurrealProvenanceStore {
 
     async fn max_update_seq(&self, task_id: &str) -> A2aGraphStoreResult<i64> {
         let query = format!(
-            "SELECT seq OMIT id FROM {TBL_A2A_UPDATE} WHERE task_id = $task_id ORDER BY seq DESC LIMIT 1"
+            "SELECT seq FROM {TBL_A2A_UPDATE} WHERE task_id = $task_id ORDER BY seq DESC LIMIT 1"
         );
         let mut response = self
             .db
@@ -3940,7 +3947,7 @@ impl A2aGraphStore for SurrealProvenanceStore {
 
     async fn list_message_json(&self, task_id: &str) -> A2aGraphStoreResult<Vec<String>> {
         let query = format!(
-            "SELECT message_json, seq OMIT id FROM {TBL_A2A_MESSAGE} WHERE task_id = $task_id ORDER BY seq"
+            "SELECT message_json, seq FROM {TBL_A2A_MESSAGE} WHERE task_id = $task_id ORDER BY seq"
         );
         let mut response = self
             .db
@@ -4000,7 +4007,7 @@ impl A2aGraphStore for SurrealProvenanceStore {
         task_id: &str,
     ) -> A2aGraphStoreResult<Vec<TaskSubgraphUpdateNode>> {
         let query = format!(
-            "SELECT update_id, kind, payload_json, seq OMIT id FROM {TBL_A2A_UPDATE} WHERE task_id = $task_id ORDER BY seq"
+            "SELECT update_id, kind, payload_json, seq FROM {TBL_A2A_UPDATE} WHERE task_id = $task_id ORDER BY seq"
         );
         let mut response = self
             .db
