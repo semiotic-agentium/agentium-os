@@ -194,17 +194,19 @@ pub enum ToolSessionPhase {
 }
 
 impl ToolSessionPhase {
-    /// True for control ops (Open/Finish/Abort/Next) that carry no data payload.
-    /// Their raw ToolCall/ToolResult entries are suppressed from conversation_context;
-    /// they are already represented by SessionStep events.
+    /// True for all session FSM phases. Raw ToolCall/ToolResult entries for these are
+    /// suppressed from conversation_context; session tool calls are represented canonically
+    /// by SessionStep events (Open, SendDone @N, Read @N).
     ///
-    /// Send and Read are NOT suppressed:
-    /// - Send: carries the query payload + result — the LLM needs to see what was queried.
-    /// - Read: the uniform grep/paginate interface for accessing archived results. Read is
-    ///   the canonical way the LLM fetches tool output; it must always appear in context
-    ///   so the model can reference what it retrieved via `Read @N`.
+    /// - Send: represented by SessionStep(SendDone @N) with the archive header and inline
+    ///   content. A raw ToolResult would duplicate the pages/blocks data already visible
+    ///   via the SendDone entry.
+    /// - Read: LLM-initiated reads appear via SessionStep(Read @N) with grep/cat output
+    ///   from the archive. Internal polling reads in send_blocking are pure implementation
+    ///   and never reach this path (they bypass tool_session_read).
+    /// - Open/Finish/Abort/Next: control ops with no meaningful data payload.
     pub fn is_session_phase(&self) -> bool {
-        matches!(self, Self::Open | Self::Finish | Self::Abort | Self::Next)
+        !matches!(self, Self::Execute | Self::Unknown(_))
     }
 
     pub fn from_metadata(metadata: &Value) -> Self {
