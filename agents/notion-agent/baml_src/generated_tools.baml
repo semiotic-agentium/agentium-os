@@ -62,7 +62,7 @@ class ArchiveReadInput {
 class NotionSearchPagesInput {
   query string? @description("Search keyword. Omit to list all pages.")
   start_cursor string? @description("Pagination cursor from a previous search result.")
-  page_size int?
+  page_size int? @description("Max pages to return per call (default 100). Use start_cursor to paginate.")
 }
 
 /// Fetch page METADATA only: title, URL, last-edited timestamp.
@@ -84,6 +84,9 @@ class NotionGetPageBlocksInput {
   max_depth int? @description("Max child block depth to expand (omit to expand all children).")
 }
 
+/// Controls how Notion blocks are rendered in the output.
+/// Enriched (default): adds Notable Lines summaries and Missing Info hints for tables.
+/// Raw: returns blocks verbatim without post-processing or hints.
 enum BlockRenderMode {
   Raw
   Enriched

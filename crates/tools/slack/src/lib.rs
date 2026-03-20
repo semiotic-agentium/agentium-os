@@ -67,6 +67,9 @@ fn backoff_delay(retries: usize) -> std::time::Duration {
 // Input types
 // ---------------------------------------------------------------------------
 
+/// Which Slack API token to use.
+/// Auto selects bot for most calls, user token for search (required in most orgs).
+/// Bot forces the bot token (xoxb-...). User forces the user token (xoxp-...).
 #[derive(
     Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS, BamlType,
 )]
@@ -79,13 +82,17 @@ pub enum SlackAuthPreference {
     User,
 }
 
+/// Slack conversation type.
+/// Im = direct message (1:1 DM). Mpim = multi-person DM (group DM).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum SlackConversationKind {
     PublicChannel,
     PrivateChannel,
+    #[baml(description = "Direct message (1:1 DM).")]
     Im,
+    #[baml(description = "Multi-person direct message (group DM).")]
     Mpim,
 }
 
@@ -100,6 +107,7 @@ impl SlackConversationKind {
     }
 }
 
+/// Message sort order. LatestFirst is the default (newest messages first).
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
@@ -109,6 +117,9 @@ pub enum SlackHistoryOrder {
     OldestFirst,
 }
 
+/// Controls whether Slack user IDs in results are resolved to display names.
+/// ResolveUsers (default) fetches profiles for each unique user_id found.
+/// None skips resolution — user_id only, no display name lookup.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
@@ -118,6 +129,7 @@ pub enum SlackUserResolutionMode {
     ResolveUsers,
 }
 
+/// Sort field for search results. Score ranks by relevance; Timestamp by time.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
@@ -127,6 +139,7 @@ pub enum SlackSearchSort {
     Timestamp,
 }
 
+/// Sort direction for search results.
 #[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
@@ -136,79 +149,125 @@ pub enum SlackSearchDirection {
     Desc,
 }
 
-/// List conversations available to the authorized token.
+/// List channels and DMs available to the token.
+/// Returns channel_id values to use in GetConversationHistory and GetThreadReplies.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct ListConversationsInput {
-    /// Slack conversation kinds to include.
+    #[baml(description = "Conversation types to include. Pass empty list to include all types.")]
     pub kinds: Vec<SlackConversationKind>,
+    #[baml(description = "Pagination cursor from a previous response's next_cursor.")]
     pub cursor: Option<String>,
+    #[baml(description = "Max conversations to return (1–1000, default 100).")]
     pub limit: Option<u16>,
+    #[baml(description = "Exclude archived conversations (default true).")]
     pub exclude_archived: Option<bool>,
+    #[baml(description = "Include member count in results.")]
     pub include_num_members: Option<bool>,
     pub auth: Option<SlackAuthPreference>,
 }
 
-/// Retrieve messages from a channel conversation history.
+/// Retrieve messages from a channel's history.
+/// Use ListConversations to find the channel_id.
+/// Timestamps use Slack's float format: '1609459200.000001' (Unix seconds with microseconds).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct GetConversationHistoryInput {
+    #[baml(description = "Slack channel ID (e.g. C01234ABCDE) — obtain from ListConversations.")]
     pub channel_id: String,
+    #[baml(description = "Pagination cursor from a previous call's next_cursor.")]
     pub cursor: Option<String>,
+    #[baml(description = "Max messages to return (1–1000, default 100).")]
     pub limit: Option<u16>,
+    #[baml(
+        description = "Return messages after this timestamp (Slack format: '1609459200.000001')."
+    )]
     pub oldest: Option<String>,
+    #[baml(
+        description = "Return messages before this timestamp (Slack format: '1609459200.000001')."
+    )]
     pub latest: Option<String>,
+    #[baml(description = "Include messages exactly at oldest/latest boundaries.")]
     pub inclusive: Option<bool>,
     pub order: Option<SlackHistoryOrder>,
     pub resolve_users: Option<SlackUserResolutionMode>,
     pub auth: Option<SlackAuthPreference>,
 }
 
-/// Retrieve replies in a thread.
+/// Retrieve all replies in a thread.
+/// thread_ts is the timestamp of the root message (found in message.thread_ts or message.ts).
+/// Timestamps use Slack's float format: '1609459200.000001' (Unix seconds with microseconds).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct GetThreadRepliesInput {
+    #[baml(
+        description = "Slack channel ID containing the thread — obtain from ListConversations."
+    )]
     pub channel_id: String,
+    #[baml(
+        description = "Timestamp of the root message of the thread (Slack format: '1609459200.000001'). Use message.thread_ts or message.ts from a history/search result."
+    )]
     pub thread_ts: String,
+    #[baml(description = "Pagination cursor from a previous call's next_cursor.")]
     pub cursor: Option<String>,
+    #[baml(description = "Max replies to return (1–1000, default 100).")]
     pub limit: Option<u16>,
+    #[baml(
+        description = "Return replies after this timestamp (Slack format: '1609459200.000001')."
+    )]
     pub oldest: Option<String>,
+    #[baml(
+        description = "Return replies before this timestamp (Slack format: '1609459200.000001')."
+    )]
     pub latest: Option<String>,
+    #[baml(description = "Include messages exactly at oldest/latest boundaries.")]
     pub inclusive: Option<bool>,
     pub order: Option<SlackHistoryOrder>,
     pub resolve_users: Option<SlackUserResolutionMode>,
     pub auth: Option<SlackAuthPreference>,
 }
 
-/// Resolve specific Slack user IDs to display data.
+/// Resolve a list of Slack user IDs to display names and profile data.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct ResolveUsersInput {
+    #[baml(description = "List of Slack user IDs to resolve (e.g. ['U01234ABCDE']).")]
     pub user_ids: Vec<String>,
     pub auth: Option<SlackAuthPreference>,
 }
 
-/// Search Slack messages.
-///
-/// Requires a user token (`SLACK_USER_TOKEN`) in most Slack orgs.
+/// Search Slack messages across all conversations.
+/// Requires a user token (SLACK_USER_TOKEN) in most orgs — use auth: User.
+/// Supports Slack search modifiers: in:#channel, from:@user, before:YYYY-MM-DD, after:YYYY-MM-DD.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct SearchMessagesInput {
+    #[baml(
+        description = "Search query. Supports modifiers: in:#channel, from:@user, before:YYYY-MM-DD, after:YYYY-MM-DD. Example: 'deploy in:#eng-releases after:2026-01-01'."
+    )]
     pub query: String,
+    #[baml(description = "Results per page (1–100, default 20).")]
     pub count: Option<u16>,
+    #[baml(description = "Page number (1-based).")]
     pub page: Option<u16>,
     pub sort: Option<SlackSearchSort>,
     pub direction: Option<SlackSearchDirection>,
     pub resolve_users: Option<SlackUserResolutionMode>,
+    #[baml(description = "Token preference — most orgs require User for search.")]
     pub auth: Option<SlackAuthPreference>,
 }
 
-/// Typed action union for `support/slack`.
+/// Slack tool — five operations for reading workspace conversations.
+/// ListConversations → find channel_ids.
+/// GetConversationHistory → read channel messages.
+/// GetThreadReplies → read a thread (requires thread_ts from a message).
+/// SearchMessages → full-text search (requires user token in most orgs).
+/// ResolveUsers → look up user display names from IDs.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[baml(union)]
 #[serde(untagged)]

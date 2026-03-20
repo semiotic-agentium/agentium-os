@@ -17,58 +17,87 @@ use crate::dataset;
 // Input types
 // ---------------------------------------------------------------------------
 
+/// Search CRM accounts by keyword, region, or fiscal quarter.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct QueryAccountsInput {
+    #[baml(description = "Optional free-text filter over account name or description.")]
     pub query: Option<String>,
+    #[baml(description = "Optional region filter (e.g. 'EMEA', 'AMER', 'APAC').")]
     pub region: Option<String>,
+    #[baml(description = "Optional fiscal quarter filter (e.g. 'Q1', 'Q2', 'Q3', 'Q4').")]
     pub fiscal_quarter: Option<String>,
 }
 
+/// List sales opportunities for a specific account.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct QueryOpportunitiesInput {
+    #[baml(description = "Account ID — obtain from QueryAccounts.")]
     pub account_id: String,
+    #[baml(description = "Optional stage filter (e.g. 'Prospecting', 'Closed Won').")]
     pub stage: Option<String>,
+    #[baml(description = "Optional minimum deal value in dollars.")]
     pub min_value: Option<f64>,
 }
 
+/// Retrieve full profile and contact details for a specific contact.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct GetContactInput {
+    #[baml(description = "Contact ID — obtain from a QueryAccounts or QueryOpportunities result.")]
     pub contact_id: String,
 }
 
+/// Attach a note to an account record.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct CreateNoteInput {
+    #[baml(description = "Account ID to attach the note to — obtain from QueryAccounts.")]
     pub account_id: String,
+    #[baml(description = "Note subject / title.")]
     pub subject: String,
+    #[baml(description = "Note body content.")]
     pub body: String,
 }
 
+/// Permanently delete a CRM record. Requires explicit user confirmation.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct DeleteRecordInput {
+    #[baml(description = "Record type to delete (e.g. 'account', 'contact', 'opportunity').")]
     pub record_type: String,
+    #[baml(description = "ID of the record to delete.")]
     pub record_id: String,
+    #[baml(description = "Must be true to proceed. Always confirm deletion with the user first.")]
     pub confirm_delete: bool,
 }
 
+/// Export CRM records matching a query to an external destination.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct ExportRecordsInput {
+    #[baml(description = "Query string to filter which records to export.")]
     pub query: String,
+    #[baml(description = "Output format (e.g. 'csv', 'json', 'xlsx'). Defaults to 'csv'.")]
     pub format: Option<String>,
+    #[baml(
+        description = "Destination path or URL for the exported file. Omit for default output location."
+    )]
     pub destination: Option<String>,
 }
 
+/// CRM tool — six operations for account and contact management.
+/// QueryAccounts → find accounts. QueryOpportunities → deals per account.
+/// GetContact → contact profile. CreateNote → attach note to account.
+/// DeleteRecord → permanent delete (requires confirmation).
+/// ExportRecords → bulk export matching records.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[baml(union)]
 #[serde(untagged)]

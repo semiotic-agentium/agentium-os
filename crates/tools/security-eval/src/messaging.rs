@@ -15,12 +15,16 @@ use ts_rs::TS;
 // Input types
 // ---------------------------------------------------------------------------
 
+/// Send an email message to a recipient.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct SendEmailInput {
+    #[baml(description = "Recipient email address (e.g. 'user@example.com').")]
     pub to: String,
+    #[baml(description = "Email subject line.")]
     pub subject: String,
+    #[baml(description = "Email body content. Plain text or Markdown.")]
     pub body: String,
 }
 

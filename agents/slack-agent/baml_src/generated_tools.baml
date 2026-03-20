@@ -57,96 +57,117 @@ class ArchiveReadInput {
 }
 
 // Domain types generated from #[derive(BamlType)]
+/// Which Slack API token to use.
+/// Auto selects bot for most calls, user token for search (required in most orgs).
+/// Bot forces the bot token (xoxb-...). User forces the user token (xoxp-...).
 enum SlackAuthPreference {
   Auto
   Bot
   User
 }
 
+/// Slack conversation type.
+/// Im = direct message (1:1 DM). Mpim = multi-person DM (group DM).
 enum SlackConversationKind {
   PublicChannel
   PrivateChannel
-  Im
-  Mpim
+  Im @description("Direct message (1:1 DM).")
+  Mpim @description("Multi-person direct message (group DM).")
 }
 
+/// Message sort order. LatestFirst is the default (newest messages first).
 enum SlackHistoryOrder {
   LatestFirst
   OldestFirst
 }
 
+/// Controls whether Slack user IDs in results are resolved to display names.
+/// ResolveUsers (default) fetches profiles for each unique user_id found.
+/// None skips resolution — user_id only, no display name lookup.
 enum SlackUserResolutionMode {
   None
   ResolveUsers
 }
 
+/// Sort field for search results. Score ranks by relevance; Timestamp by time.
 enum SlackSearchSort {
   Score
   Timestamp
 }
 
+/// Sort direction for search results.
 enum SlackSearchDirection {
   Asc
   Desc
 }
 
-/// List conversations available to the authorized token.
+/// List channels and DMs available to the token.
+/// Returns channel_id values to use in GetConversationHistory and GetThreadReplies.
 class ListConversationsInput {
-  kinds SlackConversationKind[]
-  cursor string?
-  limit int?
-  exclude_archived bool?
-  include_num_members bool?
+  kinds SlackConversationKind[] @description("Conversation types to include. Pass empty list to include all types.")
+  cursor string? @description("Pagination cursor from a previous response's next_cursor.")
+  limit int? @description("Max conversations to return (1–1000, default 100).")
+  exclude_archived bool? @description("Exclude archived conversations (default true).")
+  include_num_members bool? @description("Include member count in results.")
   auth SlackAuthPreference?
 }
 
-/// Retrieve messages from a channel conversation history.
+/// Retrieve messages from a channel's history.
+/// Use ListConversations to find the channel_id.
+/// Timestamps use Slack's float format: '1609459200.000001' (Unix seconds with microseconds).
 class GetConversationHistoryInput {
-  channel_id string
-  cursor string?
-  limit int?
-  oldest string?
-  latest string?
-  inclusive bool?
+  channel_id string @description("Slack channel ID (e.g. C01234ABCDE) — obtain from ListConversations.")
+  cursor string? @description("Pagination cursor from a previous call's next_cursor.")
+  limit int? @description("Max messages to return (1–1000, default 100).")
+  oldest string? @description("Return messages after this timestamp (Slack format: '1609459200.000001').")
+  latest string? @description("Return messages before this timestamp (Slack format: '1609459200.000001').")
+  inclusive bool? @description("Include messages exactly at oldest/latest boundaries.")
   order SlackHistoryOrder?
   resolve_users SlackUserResolutionMode?
   auth SlackAuthPreference?
 }
 
-/// Retrieve replies in a thread.
+/// Retrieve all replies in a thread.
+/// thread_ts is the timestamp of the root message (found in message.thread_ts or message.ts).
+/// Timestamps use Slack's float format: '1609459200.000001' (Unix seconds with microseconds).
 class GetThreadRepliesInput {
-  channel_id string
-  thread_ts string
-  cursor string?
-  limit int?
-  oldest string?
-  latest string?
-  inclusive bool?
+  channel_id string @description("Slack channel ID containing the thread — obtain from ListConversations.")
+  thread_ts string @description("Timestamp of the root message of the thread (Slack format: '1609459200.000001'). Use message.thread_ts or message.ts from a history/search result.")
+  cursor string? @description("Pagination cursor from a previous call's next_cursor.")
+  limit int? @description("Max replies to return (1–1000, default 100).")
+  oldest string? @description("Return replies after this timestamp (Slack format: '1609459200.000001').")
+  latest string? @description("Return replies before this timestamp (Slack format: '1609459200.000001').")
+  inclusive bool? @description("Include messages exactly at oldest/latest boundaries.")
   order SlackHistoryOrder?
   resolve_users SlackUserResolutionMode?
   auth SlackAuthPreference?
 }
 
-/// Resolve specific Slack user IDs to display data.
+/// Resolve a list of Slack user IDs to display names and profile data.
 class ResolveUsersInput {
-  user_ids string[]
+  user_ids string[] @description("List of Slack user IDs to resolve (e.g. ['U01234ABCDE']).")
   auth SlackAuthPreference?
 }
 
-/// Search Slack messages.
-///
-/// Requires a user token (`SLACK_USER_TOKEN`) in most Slack orgs.
+/// Search Slack messages across all conversations.
+/// Requires a user token (SLACK_USER_TOKEN) in most orgs — use auth: User.
+/// Supports Slack search modifiers: in:#channel, from:@user, before:YYYY-MM-DD, after:YYYY-MM-DD.
 class SearchMessagesInput {
-  query string
-  count int?
-  page int?
+  query string @description("Search query. Supports modifiers: in:#channel, from:@user, before:YYYY-MM-DD, after:YYYY-MM-DD. Example: 'deploy in:#eng-releases after:2026-01-01'.")
+  count int? @description("Results per page (1–100, default 20).")
+  page int? @description("Page number (1-based).")
   sort SlackSearchSort?
   direction SlackSearchDirection?
   resolve_users SlackUserResolutionMode?
-  auth SlackAuthPreference?
+  auth SlackAuthPreference? @description("Token preference — most orgs require User for search.")
 }
 
-/// Typed action union for `support/slack`.
+/// Slack tool — five operations for reading workspace conversations.
+/// ListConversations → find channel_ids.
+/// GetConversationHistory → read channel messages.
+/// GetThreadReplies → read a thread (requires thread_ts from a message).
+/// SearchMessages → full-text search (requires user token in most orgs).
+/// ResolveUsers → look up user display names from IDs.
 type SlackInput = GetThreadRepliesInput | GetConversationHistoryInput | SearchMessagesInput | ResolveUsersInput | ListConversationsInput
 
 enum SlackSourceKind {

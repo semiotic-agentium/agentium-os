@@ -119,6 +119,9 @@ pub struct NotionSearchPagesInput {
     pub query: Option<String>,
     #[baml(description = "Pagination cursor from a previous search result.")]
     pub start_cursor: Option<String>,
+    #[baml(
+        description = "Max pages to return per call (default 100). Use start_cursor to paginate."
+    )]
     pub page_size: Option<u32>,
 }
 
@@ -263,6 +266,9 @@ pub struct NotionOutput {
     pub operation: Option<NotionOperation>,
 }
 
+/// Controls how Notion blocks are rendered in the output.
+/// Enriched (default): adds Notable Lines summaries and Missing Info hints for tables.
+/// Raw: returns blocks verbatim without post-processing or hints.
 #[derive(Debug, Default, Clone, Copy, Serialize, JsonSchema, TS, BamlType)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]

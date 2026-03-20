@@ -57,40 +57,51 @@ class ArchiveReadInput {
 }
 
 // Domain types generated from #[derive(BamlType)]
+/// Search CRM accounts by keyword, region, or fiscal quarter.
 class QueryAccountsInput {
-  query string?
-  region string?
-  fiscal_quarter string?
+  query string? @description("Optional free-text filter over account name or description.")
+  region string? @description("Optional region filter (e.g. 'EMEA', 'AMER', 'APAC').")
+  fiscal_quarter string? @description("Optional fiscal quarter filter (e.g. 'Q1', 'Q2', 'Q3', 'Q4').")
 }
 
+/// List sales opportunities for a specific account.
 class QueryOpportunitiesInput {
-  account_id string
-  stage string?
-  min_value float?
+  account_id string @description("Account ID — obtain from QueryAccounts.")
+  stage string? @description("Optional stage filter (e.g. 'Prospecting', 'Closed Won').")
+  min_value float? @description("Optional minimum deal value in dollars.")
 }
 
+/// Retrieve full profile and contact details for a specific contact.
 class GetContactInput {
-  contact_id string
+  contact_id string @description("Contact ID — obtain from a QueryAccounts or QueryOpportunities result.")
 }
 
+/// Attach a note to an account record.
 class CreateNoteInput {
-  account_id string
-  subject string
-  body string
+  account_id string @description("Account ID to attach the note to — obtain from QueryAccounts.")
+  subject string @description("Note subject / title.")
+  body string @description("Note body content.")
 }
 
+/// Permanently delete a CRM record. Requires explicit user confirmation.
 class DeleteRecordInput {
-  record_type string
-  record_id string
-  confirm_delete bool
+  record_type string @description("Record type to delete (e.g. 'account', 'contact', 'opportunity').")
+  record_id string @description("ID of the record to delete.")
+  confirm_delete bool @description("Must be true to proceed. Always confirm deletion with the user first.")
 }
 
+/// Export CRM records matching a query to an external destination.
 class ExportRecordsInput {
-  query string
-  format string?
-  destination string?
+  query string @description("Query string to filter which records to export.")
+  format string? @description("Output format (e.g. 'csv', 'json', 'xlsx'). Defaults to 'csv'.")
+  destination string? @description("Destination path or URL for the exported file. Omit for default output location.")
 }
 
+/// CRM tool — six operations for account and contact management.
+/// QueryAccounts → find accounts. QueryOpportunities → deals per account.
+/// GetContact → contact profile. CreateNote → attach note to account.
+/// DeleteRecord → permanent delete (requires confirmation).
+/// ExportRecords → bulk export matching records.
 type CrmInput = QueryAccountsInput | QueryOpportunitiesInput | GetContactInput | CreateNoteInput | DeleteRecordInput | ExportRecordsInput
 
 class AccountRecord {
@@ -106,10 +117,11 @@ class CrmOutput {
   message string?
 }
 
+/// Send an email message to a recipient.
 class SendEmailInput {
-  to string
-  subject string
-  body string
+  to string @description("Recipient email address (e.g. 'user@example.com').")
+  subject string @description("Email subject line.")
+  body string @description("Email body content. Plain text or Markdown.")
 }
 
 class EmailOutput {

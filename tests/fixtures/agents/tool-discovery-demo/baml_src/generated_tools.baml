@@ -57,12 +57,16 @@ class ArchiveReadInput {
 }
 
 // Domain types generated from #[derive(BamlType)]
+/// A binary arithmetic expression: left OP right.
+/// Provide integer operands and choose one of the four arithmetic operations.
 class Expression {
-  left int
-  operation MathOperation
-  right int
+  left int @description("Left-hand integer operand.")
+  operation MathOperation @description("Arithmetic operation to apply.")
+  right int @description("Right-hand integer operand. Must not be 0 when operation is Divide.")
 }
 
+/// Arithmetic operation for a binary expression.
+/// Accepted as the variant name (e.g. 'Add') or its symbolic alias ('+', '-', '*', '/').
 enum MathOperation {
   Add @alias("+")
   Subtract @alias("-")
@@ -70,8 +74,9 @@ enum MathOperation {
   Divide @alias("/")
 }
 
+/// Input to the calculator tool. Construct an Expression and submit it to evaluate.
 class CalculatorInput {
-  expression Expression
+  expression Expression @description("The binary expression to evaluate.")
 }
 
 class CalculatorOutput {

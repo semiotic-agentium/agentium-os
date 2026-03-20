@@ -61,60 +61,51 @@ class ArchiveReadInput {
 class ListTeamsInput {
 }
 
-/// List spaces in a team.
+/// List spaces in a team. Call ListTeams first to get the team_id.
 class ListSpacesInput {
-  team_id string
+  team_id string @description("ClickUp team (workspace) ID — obtain from ListTeams.")
 }
 
-/// List task-lists in a space.
+/// List task-lists in a space. Call ListSpaces first to get the space_id.
 class ListListsInput {
-  space_id string
+  space_id string @description("ClickUp space ID — obtain from ListSpaces.")
 }
 
-/// List tasks in a list.
+/// List tasks in a list. Call ListLists first to get the list_id.
 class ListTasksInput {
-  list_id string
+  list_id string @description("ClickUp list ID — obtain from ListLists.")
 }
 
-/// Get details of a specific task.
+/// Get full details of a specific task (description, status, priority, assignees).
 class GetTaskInput {
-  task_id string
+  task_id string @description("ClickUp task ID — obtain from ListTasks.")
 }
 
 /// Create a new task in a list.
 class CreateTaskInput {
-  list_id string
-  name string
-  description string?
+  list_id string @description("ClickUp list ID where the task will be created — obtain from ListLists.")
+  name string @description("Task title / name.")
+  description string? @description("Optional long-form task description (Markdown supported).")
   priority int? @description("ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")
 }
 
 /// Update an existing task's status, description, or priority.
 class UpdateTaskInput {
-  task_id string
-  status string? @description("Task status string (e.g. in progress).")
-  description string?
+  task_id string @description("ClickUp task ID to update — obtain from ListTasks or GetTask.")
+  status string? @description("New task status string (e.g. 'in progress', 'complete').")
+  description string? @description("Updated task description (Markdown supported).")
   priority int? @description("ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")
 }
 
-/// Delete a task from the workspace.
+/// Permanently delete a task. Confirm with the user before proceeding.
 class DeleteTaskInput {
-  task_id string
-  confirm_delete bool
+  task_id string @description("ClickUp task ID to delete — obtain from ListTasks.")
+  confirm_delete bool @description("Must be true to proceed. Always confirm deletion with the user first.")
 }
 
-/// Union of all ClickUp action inputs.
-///
-/// The LLM picks the appropriate variant based on the desired action.
-/// In generated BAML this becomes:
-/// `type ClickUpInput = ListTeamsInput | ListSpacesInput | … | DeleteTaskInput`
-///
-/// **Variant order matters**: `serde(untagged)` tries variants top-down and
-/// takes the first successful match. Ordering invariants:
-/// - `GetTask` must precede `UpdateTask` so that `{ "task_id": "..." }`
-/// (without optional update fields) resolves to `GetTask`, not `UpdateTask`.
-/// - `DeleteTask` has `confirm_delete: bool` which disambiguates it from
-/// `GetTask`, so its position is flexible.
+/// ClickUp tool — navigate teams → spaces → lists → tasks.
+/// ListTeams → ListSpaces → ListLists → ListTasks → GetTask/CreateTask/UpdateTask/DeleteTask.
+/// IDs must come from prior navigation results, not invented.
 type ClickUpInput = ListTeamsInput | ListSpacesInput | ListListsInput | ListTasksInput | GetTaskInput | CreateTaskInput | UpdateTaskInput | DeleteTaskInput
 
 /// Summary of a single ClickUp task, projected from the API response.

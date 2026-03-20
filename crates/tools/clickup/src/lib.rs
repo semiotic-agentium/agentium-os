@@ -59,35 +59,39 @@ fn normalize_optional_description(desc: &mut Option<String>, max_chars: usize) {
 #[ts(export)]
 pub struct ListTeamsInput {}
 
-/// List spaces in a team.
+/// List spaces in a team. Call ListTeams first to get the team_id.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct ListSpacesInput {
+    #[baml(description = "ClickUp team (workspace) ID — obtain from ListTeams.")]
     pub team_id: String,
 }
 
-/// List task-lists in a space.
+/// List task-lists in a space. Call ListSpaces first to get the space_id.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct ListListsInput {
+    #[baml(description = "ClickUp space ID — obtain from ListSpaces.")]
     pub space_id: String,
 }
 
-/// List tasks in a list.
+/// List tasks in a list. Call ListLists first to get the list_id.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct ListTasksInput {
+    #[baml(description = "ClickUp list ID — obtain from ListLists.")]
     pub list_id: String,
 }
 
-/// Get details of a specific task.
+/// Get full details of a specific task (description, status, priority, assignees).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct GetTaskInput {
+    #[baml(description = "ClickUp task ID — obtain from ListTasks.")]
     pub task_id: String,
 }
 
@@ -96,11 +100,14 @@ pub struct GetTaskInput {
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct CreateTaskInput {
+    #[baml(
+        description = "ClickUp list ID where the task will be created — obtain from ListLists."
+    )]
     pub list_id: String,
+    #[baml(description = "Task title / name.")]
     pub name: String,
-    /// The task description.
+    #[baml(description = "Optional long-form task description (Markdown supported).")]
     pub description: Option<String>,
-    /// ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
     #[baml(description = "ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")]
     pub priority: Option<u8>,
 }
@@ -110,40 +117,30 @@ pub struct CreateTaskInput {
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct UpdateTaskInput {
+    #[baml(description = "ClickUp task ID to update — obtain from ListTasks or GetTask.")]
     pub task_id: String,
-    /// Task status string (e.g. "in progress").
-    #[baml(description = "Task status string (e.g. in progress).")]
+    #[baml(description = "New task status string (e.g. 'in progress', 'complete').")]
     pub status: Option<String>,
-    /// The task description.
+    #[baml(description = "Updated task description (Markdown supported).")]
     pub description: Option<String>,
-    /// ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.
     #[baml(description = "ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")]
     pub priority: Option<u8>,
 }
 
-/// Delete a task from the workspace.
+/// Permanently delete a task. Confirm with the user before proceeding.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct DeleteTaskInput {
+    #[baml(description = "ClickUp task ID to delete — obtain from ListTasks.")]
     pub task_id: String,
-    /// Must be `true` for the deletion to proceed. The LLM should first
-    /// confirm with the user before setting this to `true`.
+    #[baml(description = "Must be true to proceed. Always confirm deletion with the user first.")]
     pub confirm_delete: bool,
 }
 
-/// Union of all ClickUp action inputs.
-///
-/// The LLM picks the appropriate variant based on the desired action.
-/// In generated BAML this becomes:
-/// `type ClickUpInput = ListTeamsInput | ListSpacesInput | … | DeleteTaskInput`
-///
-/// **Variant order matters**: `serde(untagged)` tries variants top-down and
-/// takes the first successful match. Ordering invariants:
-/// - `GetTask` must precede `UpdateTask` so that `{ "task_id": "..." }`
-///   (without optional update fields) resolves to `GetTask`, not `UpdateTask`.
-/// - `DeleteTask` has `confirm_delete: bool` which disambiguates it from
-///   `GetTask`, so its position is flexible.
+/// ClickUp tool — navigate teams → spaces → lists → tasks.
+/// ListTeams → ListSpaces → ListLists → ListTasks → GetTask/CreateTask/UpdateTask/DeleteTask.
+/// IDs must come from prior navigation results, not invented.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[baml(union)]
 #[serde(untagged)]
