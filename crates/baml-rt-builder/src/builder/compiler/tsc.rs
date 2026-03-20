@@ -136,19 +136,27 @@ fn run_tsc(project_dir: &Path, extra_args: &[&str]) -> Result<()> {
     })?;
 
     if !output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let diagnostics = if !stdout.is_empty() {
-            stdout.to_string()
-        } else {
-            stderr.to_string()
-        };
         return Err(BamlBuilderError::TypeScriptCompilation {
-            diagnostics: diagnostics.trim().to_string(),
+            diagnostics: format_tsc_failure_diagnostics(&output.stdout, &output.stderr),
         });
     }
 
     Ok(())
+}
+
+/// Combine `tsc` stdout and stderr so failures are debuggable when both streams carry output.
+fn format_tsc_failure_diagnostics(stdout: &[u8], stderr: &[u8]) -> String {
+    let stdout = String::from_utf8_lossy(stdout);
+    let stderr = String::from_utf8_lossy(stderr);
+    let stdout = stdout.trim_end();
+    let stderr = stderr.trim_end();
+
+    match (stdout.is_empty(), stderr.is_empty()) {
+        (true, true) => "(tsc produced no stdout or stderr)".to_string(),
+        (false, true) => stdout.to_string(),
+        (true, false) => stderr.to_string(),
+        (false, false) => format!("{stdout}\n--- stderr ---\n{stderr}"),
+    }
 }
 
 /// Find a working `tsc` command. Returns `(program, extra_args)`.
@@ -162,14 +170,21 @@ fn find_tsc(start_dir: &Path) -> Result<(String, Vec<String>)> {
 
     if let Ok(start_dir) = start_dir.canonicalize() {
         for root in start_dir.ancestors() {
+            // Walk toward the filesystem root and try local installs: repo root
+            // `node_modules/.bin`, and `web/node_modules/.bin` for workspaces that keep a
+            // frontend package under `web/`. On Windows, npm exposes `tsc.cmd` (not `tsc`);
+            // probe both names.
             for candidate in [
                 root.join("node_modules").join(".bin").join("tsc"),
-                // Workspace convention: frontend deps are installed once under
-                // repo-root/web/node_modules, even when the builder runs from a crate dir.
+                root.join("node_modules").join(".bin").join("tsc.cmd"),
                 root.join("web")
                     .join("node_modules")
                     .join(".bin")
                     .join("tsc"),
+                root.join("web")
+                    .join("node_modules")
+                    .join(".bin")
+                    .join("tsc.cmd"),
             ] {
                 if !candidate.is_file() {
                     continue;
@@ -201,4 +216,39 @@ fn find_tsc(start_dir: &Path) -> Result<(String, Vec<String>)> {
     Err(BamlBuilderError::InvalidArgument(
         "TypeScript compiler (tsc) not found. Install with: npm install -g typescript".to_string(),
     ))
+}
+
+#[cfg(test)]
+mod format_tsc_failure_tests {
+    use super::format_tsc_failure_diagnostics;
+
+    #[test]
+    fn empty_streams_placeholder() {
+        assert_eq!(
+            format_tsc_failure_diagnostics(b"", b""),
+            "(tsc produced no stdout or stderr)"
+        );
+    }
+
+    #[test]
+    fn stdout_only() {
+        assert_eq!(
+            format_tsc_failure_diagnostics(b"error TS1005: ", b""),
+            "error TS1005:"
+        );
+    }
+
+    #[test]
+    fn stderr_only() {
+        assert_eq!(
+            format_tsc_failure_diagnostics(b"", b"npm notice\n"),
+            "npm notice"
+        );
+    }
+
+    #[test]
+    fn combines_stdout_and_stderr() {
+        let out = format_tsc_failure_diagnostics(b"a.ts(1,1): error\n", b"extra\n");
+        assert_eq!(out, "a.ts(1,1): error\n--- stderr ---\nextra");
+    }
 }
