@@ -78,6 +78,13 @@ pub enum BamlBuilderError {
         source: anyhow::Error,
     },
 
+    /// A blocking task panicked or was cancelled before completion.
+    #[error("Blocking task join failed")]
+    BlockingTaskJoin {
+        #[source]
+        source: tokio::task::JoinError,
+    },
+
     // ── Pass-through for runtime library errors ────────────────────────
     /// Any `BamlRtError` that propagates through builder code via `?`.
     #[error(transparent)]

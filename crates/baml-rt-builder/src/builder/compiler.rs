@@ -11,6 +11,7 @@
 use std::{ffi::OsStr, fs, path::Path, process::Command};
 
 use baml_rt_tools::get_session_coordination_baml_for_tools;
+use tokio::task;
 
 use crate::builder::{
     a2a_shim_gen::render_a2a_shim,
@@ -59,15 +60,20 @@ impl TscCompiler {
 
     /// Type-check only (no output). Runs `tsc --noEmit` against the agent's tsconfig.
     pub async fn typecheck(&self, agent_dir: &AgentDir) -> Result<()> {
-        ensure_tsconfig(agent_dir)?;
-        run_tsc(agent_dir.as_path(), &["--noEmit"])
+        let agent_dir = agent_dir.clone();
+        task::spawn_blocking(move || {
+            ensure_tsconfig(&agent_dir)?;
+            run_tsc(agent_dir.as_path(), &["--noEmit"])
+        })
+        .await
+        .map_err(|e| BamlBuilderError::BlockingTaskJoin { source: e })?
     }
 
     /// Post-process compiled JS files for QuickJS compatibility.
     ///
     /// - Strips trailing `export {}` / `export {};` (QuickJS evaluates scripts, not modules)
     /// - Prepends the A2A runtime shim to `index.js`
-    fn post_process(&self, dist_dir: &Path) -> Result<()> {
+    fn post_process(dist_dir: &Path) -> Result<()> {
         for path in collect_js_files(dist_dir)? {
             let mut content = fs::read_to_string(&path)?;
 
@@ -107,17 +113,22 @@ impl Default for TscCompiler {
 #[async_trait::async_trait]
 impl TypeScriptCompiler for TscCompiler {
     async fn compile(&self, agent_dir: &AgentDir, dist_dir: &Path) -> Result<()> {
-        fs::create_dir_all(dist_dir)?;
-        ensure_tsconfig(agent_dir)?;
+        let agent_dir = agent_dir.clone();
+        let dist_dir = dist_dir.to_path_buf();
 
-        // --outDir overrides anything in tsconfig; lets us target the build dir.
-        run_tsc(
-            agent_dir.as_path(),
-            &["--outDir", &dist_dir.display().to_string()],
-        )?;
+        task::spawn_blocking(move || {
+            fs::create_dir_all(&dist_dir)?;
+            ensure_tsconfig(&agent_dir)?;
 
-        self.post_process(dist_dir)?;
-        Ok(())
+            // --outDir overrides anything in tsconfig; lets us target the build dir.
+            let out_dir_arg = dist_dir.display().to_string();
+            run_tsc(agent_dir.as_path(), &["--outDir", out_dir_arg.as_str()])?;
+
+            TscCompiler::post_process(&dist_dir)?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| BamlBuilderError::BlockingTaskJoin { source: e })?
     }
 }
 
@@ -266,70 +277,77 @@ impl Default for RuntimeTypeGenerator {
 #[async_trait::async_trait]
 impl TypeGenerator for RuntimeTypeGenerator {
     async fn generate(&self, agent_dir: &AgentDir, build_dir: &BuildDir) -> Result<()> {
-        use std::collections::HashMap;
+        let agent_dir = agent_dir.clone();
+        let build_dir = build_dir.clone();
 
-        use baml_runtime::BamlRuntime;
+        task::spawn_blocking(move || {
+            use std::collections::HashMap;
 
-        let baml_src = agent_dir.baml_src();
+            use baml_runtime::BamlRuntime;
 
-        // Generate BAML tool interfaces into build_dir/baml_src so the packaged baml_src
-        // contains them (packager adds build_dir/baml_src to the tar).
-        // When build_dir/baml_src does not exist (e.g. bootstrap), copy source baml_src so the runtime can load it.
-        let baml_src_build = build_dir.join("baml_src");
-        if !baml_src_build.exists() {
-            copy_dir_all_impl(&baml_src, &baml_src_build)?;
-        }
-        let tool_names = load_manifest_tools(&baml_src)?;
-        if !tool_names.is_empty() {
-            let baml_interfaces = render_baml_tool_interfaces(&tool_names)?;
-            let baml_output_path = baml_src_build.join("generated_tools.baml");
-            if let Some(parent) = baml_output_path.parent() {
-                fs::create_dir_all(parent).map_err(BamlBuilderError::Io)?;
+            let baml_src = agent_dir.baml_src();
+
+            // Generate BAML tool interfaces into build_dir/baml_src so the packaged baml_src
+            // contains them (packager adds build_dir/baml_src to the tar).
+            // When build_dir/baml_src does not exist (e.g. bootstrap), copy source baml_src so the runtime can load it.
+            let baml_src_build = build_dir.join("baml_src");
+            if !baml_src_build.exists() {
+                copy_dir_all_impl(&baml_src, &baml_src_build)?;
             }
-            atomic_write(&baml_output_path, baml_interfaces.as_bytes())?;
+            let tool_names = load_manifest_tools(&baml_src)?;
+            if !tool_names.is_empty() {
+                let baml_interfaces = render_baml_tool_interfaces(&tool_names)?;
+                let baml_output_path = baml_src_build.join("generated_tools.baml");
+                if let Some(parent) = baml_output_path.parent() {
+                    fs::create_dir_all(parent).map_err(BamlBuilderError::Io)?;
+                }
+                atomic_write(&baml_output_path, baml_interfaces.as_bytes())?;
 
-            // Emit session coordination BAML from tool crates that registered a provider (e.g. claude/dev).
-            if let Some(coord_baml) = get_session_coordination_baml_for_tools(&tool_names)? {
-                let coord_path = baml_src_build.join("generated_session_coordination.baml");
-                atomic_write(&coord_path, coord_baml.as_bytes())?;
+                // Emit session coordination BAML from tool crates that registered a provider (e.g. claude/dev).
+                if let Some(coord_baml) = get_session_coordination_baml_for_tools(&tool_names)? {
+                    let coord_path = baml_src_build.join("generated_session_coordination.baml");
+                    atomic_write(&coord_path, coord_baml.as_bytes())?;
+                }
             }
-        }
 
-        // Load BAML runtime from build_dir/baml_src to discover functions
-        let env_vars: HashMap<String, String> = HashMap::new();
-        let feature_flags = internal_baml_core::feature_flags::FeatureFlags::default();
+            // Load BAML runtime from build_dir/baml_src to discover functions
+            let env_vars: HashMap<String, String> = HashMap::new();
+            let feature_flags = internal_baml_core::feature_flags::FeatureFlags::default();
 
-        let runtime = BamlRuntime::from_directory(&baml_src_build, env_vars, feature_flags)
-            .map_err(|e| BamlBuilderError::RuntimeLoadFailed { source: e })?;
+            let runtime = BamlRuntime::from_directory(&baml_src_build, env_vars, feature_flags)
+                .map_err(|e| BamlBuilderError::RuntimeLoadFailed { source: e })?;
 
-        let ir_signature = extract_baml_signatures(&runtime)?;
-        let session_plan_map = session_plan_functions_map(&ir_signature);
-        let declarations = render_ts_declarations(&ir_signature, &session_plan_map)?;
+            let ir_signature = extract_baml_signatures(&runtime)?;
+            let session_plan_map = session_plan_functions_map(&ir_signature);
+            let declarations = render_ts_declarations(&ir_signature, &session_plan_map)?;
 
-        // Write baml-runtime.d.ts into agent's src/ so tsc resolves it directly.
-        let src_dts = agent_dir.src().join("baml-runtime.d.ts");
-        if let Some(parent) = src_dts.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        atomic_write(&src_dts, declarations.as_bytes())?;
+            // Write baml-runtime.d.ts into agent's src/ so tsc resolves it directly.
+            let src_dts = agent_dir.src().join("baml-runtime.d.ts");
+            if let Some(parent) = src_dts.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            atomic_write(&src_dts, declarations.as_bytes())?;
 
-        // Also write to build_dir/dist/ for packaging (the .d.ts is included in the tar).
-        let dist_dts = build_dir.join("dist").join("baml-runtime.d.ts");
-        if let Some(parent) = dist_dts.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        atomic_write(&dist_dts, declarations.as_bytes())?;
+            // Also write to build_dir/dist/ for packaging (the .d.ts is included in the tar).
+            let dist_dts = build_dir.join("dist").join("baml-runtime.d.ts");
+            if let Some(parent) = dist_dts.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            atomic_write(&dist_dts, declarations.as_bytes())?;
 
-        // Emit session-plan function map so the runtime can resolve tool from the invoking
-        // function name (no reliance on __type in prompt output).
-        if !session_plan_map.is_empty() {
-            let manifest_path = build_dir.join("session_plan_functions.json");
-            let json =
-                serde_json::to_string_pretty(&session_plan_map).map_err(BamlBuilderError::Json)?;
-            atomic_write(&manifest_path, json.as_bytes())?;
-        }
+            // Emit session-plan function map so the runtime can resolve tool from the invoking
+            // function name (no reliance on __type in prompt output).
+            if !session_plan_map.is_empty() {
+                let manifest_path = build_dir.join("session_plan_functions.json");
+                let json = serde_json::to_string_pretty(&session_plan_map)
+                    .map_err(BamlBuilderError::Json)?;
+                atomic_write(&manifest_path, json.as_bytes())?;
+            }
 
-        Ok(())
+            Ok(())
+        })
+        .await
+        .map_err(|e| BamlBuilderError::BlockingTaskJoin { source: e })?
     }
 }
 
