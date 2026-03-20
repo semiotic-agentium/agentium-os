@@ -154,7 +154,7 @@ impl ConfigWriter for SurrealConfigStore {
         // Atomic version increment via BEGIN/COMMIT transaction.
         // All three statements execute as one atomic batch — concurrent callers
         // cannot interleave between the SELECT and the writes.
-        let mut resp = self.db
+        let _resp = self.db
             .query("\
                 BEGIN; \
                 LET $cur = (SELECT version FROM config_current WHERE bundle_name = $name LIMIT 1); \

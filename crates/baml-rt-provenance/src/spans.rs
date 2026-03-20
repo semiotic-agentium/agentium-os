@@ -4,7 +4,6 @@
 //! Caller should enter the span and then emit a debug log with query_text and
 //! params as separate fields so params are never interpolated into the query string.
 
-use serde_json::Value;
 use tracing::Span;
 
 /// Create span for a single SurrealQL execution (read or write).

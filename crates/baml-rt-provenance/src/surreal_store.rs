@@ -627,7 +627,7 @@ impl SurrealProvenanceStore {
     /// Map raw PROV-DM edge types to semantic labels for graph export/rendering parity.
     /// The normalization layer performs this mapping at write time.
     fn semantic_used_label(from_label: &str, role: Option<&str>) -> &'static str {
-        use crate::vocabulary::{a2a_roles, prov_roles};
+        use crate::vocabulary::a2a_roles;
         match role {
             Some(r) if r == a2a_roles::INPUT_MESSAGE => match from_label {
                 l if l == GraphNodeLabel::TaskExecution.as_str() => semantic_labels::WAS_SPAWNED_BY,

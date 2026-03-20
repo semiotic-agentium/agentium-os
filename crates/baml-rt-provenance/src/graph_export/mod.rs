@@ -939,6 +939,7 @@ pub fn build_graph_from_json_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vocabulary::semantic_labels;
 
     #[allow(clippy::too_many_arguments)]
     fn make_row(

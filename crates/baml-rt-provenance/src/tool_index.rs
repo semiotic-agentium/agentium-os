@@ -4,7 +4,6 @@
 //! discovery, capability matching, and schema lookup.
 
 use baml_rt_tools::ToolFunctionMetadataExport;
-use serde_json::Value;
 
 use crate::{error::Result, surreal_store::SurrealProvenanceStore};
 

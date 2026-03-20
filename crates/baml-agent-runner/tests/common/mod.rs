@@ -363,7 +363,7 @@ pub async fn start_runner_api_server(
     ));
     let mermaid: Option<Arc<dyn baml_rt_api::MermaidService>> =
         Some(Arc::new(TestMermaidService::new(provenance)));
-    let app = baml_rt_api::api_router(registry, mermaid, None);
+    let app = baml_rt_api::api_router(registry, mermaid, None).await;
     start_http_server(app).await
 }
 

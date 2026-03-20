@@ -250,16 +250,14 @@ async fn test_e2e_slack_todo_extraction_with_mock_server_and_mermaid_http() {
             .unwrap_or_default();
         conversation_items = items.clone();
         saw_tool_result = items.iter().any(|item| {
-            if let ConversationItemContent::ToolResult(tr) = &item.content {
-                if let ToolOutcome::Result(v) = &tr.outcome {
-                    return v
-                        .get("messages")
-                        .and_then(Value::as_array)
-                        .map(|m| !m.is_empty())
-                        .unwrap_or(false);
-                }
-            }
-            false
+            item.source == "tool_result"
+                && item
+                    .content
+                    .get("result")
+                    .and_then(|result| result.get("messages"))
+                    .and_then(Value::as_array)
+                    .map(|messages| !messages.is_empty())
+                    .unwrap_or(false)
         });
         if saw_tool_result {
             break;
@@ -267,7 +265,7 @@ async fn test_e2e_slack_todo_extraction_with_mock_server_and_mermaid_http() {
         let signature = serde_json::to_string(
             &conversation_items
                 .iter()
-                .map(|i| (&i.event_id, i.source_name(), &i.content))
+                .map(|i| (&i.event_id, &i.source, &i.content))
                 .collect::<Vec<_>>(),
         )
         .unwrap_or_default();
@@ -288,7 +286,13 @@ async fn test_e2e_slack_todo_extraction_with_mock_server_and_mermaid_http() {
     );
 
     let has_slack_tool_call = conversation_items.iter().any(|item| {
-        matches!(&item.content, ConversationItemContent::ToolCall(tc) if tc.tool_name == "support/slack")
+        item.source == "tool_call"
+            && item
+                .content
+                .get("tool_call")
+                .and_then(|tool_call| tool_call.get("name"))
+                .and_then(Value::as_str)
+                == Some("support/slack")
     });
     assert!(
         has_slack_tool_call,
@@ -296,7 +300,13 @@ async fn test_e2e_slack_todo_extraction_with_mock_server_and_mermaid_http() {
     );
 
     let saw_channel_id = conversation_items.iter().any(|item| {
-        matches!(&item.content, ConversationItemContent::ToolCall(tc) if contains_kv(&tc.args, "channel_id", "C12345678"))
+        item.source == "tool_call"
+            && item
+                .content
+                .get("tool_call")
+                .and_then(|tool_call| tool_call.get("args"))
+                .map(|args| contains_kv(args, "channel_id", "C12345678"))
+                .unwrap_or(false)
     });
     assert!(
         saw_channel_id,
@@ -304,7 +314,13 @@ async fn test_e2e_slack_todo_extraction_with_mock_server_and_mermaid_http() {
     );
 
     let saw_thread_ts = conversation_items.iter().any(|item| {
-        matches!(&item.content, ConversationItemContent::ToolCall(tc) if contains_kv(&tc.args, "thread_ts", "1735689600.000000"))
+        item.source == "tool_call"
+            && item
+                .content
+                .get("tool_call")
+                .and_then(|tool_call| tool_call.get("args"))
+                .map(|args| contains_kv(args, "thread_ts", "1735689600.000000"))
+                .unwrap_or(false)
     });
     assert!(
         saw_thread_ts,
