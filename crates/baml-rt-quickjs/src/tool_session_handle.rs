@@ -835,10 +835,14 @@ impl ToolSessionExecutionHandle {
         let send_args_for_summary = Some(input);
 
         // Poll until Done, emitting streaming chunks with an edge timeout between each.
+        // Use the registry directly rather than tool_session_read: these are internal
+        // implementation polls, not LLM-initiated Read operations, so they must NOT emit
+        // ToolCall/ToolResult provenance events. The LLM-initiated Read path (in
+        // execute_tool_session_plan) is what creates SessionStep(Read) entries.
         let mut streaming_outputs: Vec<Value> = Vec::new();
         loop {
             let read_input = Value::Object(serde_json::Map::new());
-            let step_future = self.tool_session_read(session_id, read_input);
+            let step_future = self.ctx.tool_registry.session_read(session_id, read_input);
             let step_result = tokio::time::timeout(chunk_timeout, step_future)
                 .await
                 .map_err(|_| {
