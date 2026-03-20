@@ -1,6 +1,6 @@
 # Adding a Host Tool (Rust)
 
-This guide describes how to add a new host tool to the agent platform. Host tools are executed in Rust, are session-based, and are allowlisted by agent manifests.
+This guide describes how to add a new host tool to Agentium OS. Host tools are executed in Rust, are session-based, and are allowlisted by agent manifests.
 
 ## 1) Implement the tool
 

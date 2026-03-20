@@ -1,6 +1,6 @@
 # baml-rt
 
-Facade crate for the BAML Runtime workspace. This crate re-exports the
+Facade crate for the Agentium OS workspace. This crate re-exports the
 workspace sub-crates behind feature flags so downstream users can depend on a
 single crate and opt into specific capabilities.
 

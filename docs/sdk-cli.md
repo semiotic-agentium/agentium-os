@@ -1,4 +1,4 @@
-# Agent Platform SDK CLI
+# Agentium OS SDK CLI
 
 The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, eliminating manual boilerplate while preserving the existing compile-time tool registration model.
 

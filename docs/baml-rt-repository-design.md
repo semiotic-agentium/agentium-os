@@ -1,6 +1,6 @@
 # baml-rt-hash & baml-rt-repository — Design Document
 
-Two new crates that give the agent platform a **content-addressable package repository** with lineage tracking, versioning, and search.
+Two new crates that give Agentium OS a **content-addressable package repository** with lineage tracking, versioning, and search.
 
 - **`baml-rt-hash`** — standalone canonical hashing (SHA-256, length-delimited sections, deterministic JSON key ordering)
 - **`baml-rt-repository`** — hybrid FS + SQLite repository: publish, fork, search, lineage DAG, fitness scoring, tagging, and an Axum HTTP API

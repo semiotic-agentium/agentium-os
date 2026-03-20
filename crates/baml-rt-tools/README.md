@@ -1,6 +1,6 @@
 # baml-rt-tools
 
-Tool system primitives for the BAML Runtime workspace.
+Tool system primitives for the Agentium OS workspace.
 
 ## Responsibilities
 

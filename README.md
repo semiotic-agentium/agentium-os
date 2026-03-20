@@ -1,6 +1,6 @@
-# BAML Runtime
+# Agentium OS
 
-BAML Runtime is a Rust workspace that hosts BAML execution, QuickJS agent
+Agentium OS is a Rust workspace that hosts BAML execution, QuickJS agent
 integration, tool systems, and A2A protocol handling. The public entry point is
 the `baml-rt` facade crate, which re-exports feature-gated subcrates.
 

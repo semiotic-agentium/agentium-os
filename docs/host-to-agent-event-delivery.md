@@ -2,7 +2,7 @@
 
 ## Overview
 
-The agent platform separates **event intake** from **event meaning**. The host owns intake, provenance, subscription matching, and delivery. Agents own meaning and downstream decisions.
+Agentium OS separates **event intake** from **event meaning**. The host owns intake, provenance, subscription matching, and delivery. Agents own meaning and downstream decisions.
 
 Every tool is a potential event source. A tool declares what event kinds it can produce via `event_sources` metadata. Agent subscriptions filter by schema version and source kind. The host multiplexes event-producing tools and dispatches to matching agents.
 
