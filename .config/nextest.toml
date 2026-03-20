@@ -6,8 +6,10 @@ experimental = ["setup-scripts"]
 # Regenerate fixture TypeScript type declarations once before tests start.
 # Runs for both default and ci profiles (ci inherits from default).
 [scripts.setup.regen-fixtures]
+# Binary is pre-built in CI (see rust-ci.yml "Build regen_fixtures binary" step).
+# cargo run re-uses the cached build — no recompile needed.
 command = 'cargo run -p baml-rt-builder --features http-tools,memory --bin regen_fixtures'
-slow-timeout = { period = "120s", terminate-after = 2 }
+slow-timeout = { period = "300s", terminate-after = 2 }
 
 [[profile.default.scripts]]
 filter = 'all()'
