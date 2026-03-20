@@ -9,11 +9,10 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 | `new-tool <name>` | Create a new tool crate with all necessary patches |
 | `new-agent <name>` | Create a new agent package with templates |
 | `build [name]` | Package an agent into a distributable tar.gz |
-| `run <packages>...` | Run one or more agent packages |
 | `list-tools` | List all registered tools from the inventory |
 | `list-agents` | List all agent packages |
 | `list-event-sources` | List event source kinds declared by tools and known schema versions |
-| `regen` | Regenerate type declarations for all agents |
+| `regen [names]...` | Regenerate type declarations for agents (all if no names given) |
 | `doctor` | Validate workspace integrity |
 
 ## Installation
@@ -606,9 +605,6 @@ cargo run -p cargo-agent-platform -- build github-agent -o /tmp/my-agent.tar.gz
 Agent packaged successfully!
 
   Package: /path/to/github-agent-1.0.0.tar.gz
-
-To run the agent:
-  cargo run -p baml-agent-runner -- --package /path/to/github-agent-1.0.0.tar.gz
 ```
 
 **What it does:**
@@ -624,23 +620,30 @@ To run the agent:
 
 By default, the output file is named `<agent-name>-<version>.tar.gz` and placed in the current working directory. Use `-o` to specify a different path.
 
----
+**Running the packaged agent:**
 
-### `run`
-
-Runs one or more agent packages. This is a thin wrapper around `baml-agent-runner` that validates packages exist and provides helpful error messages.
+After building, run the agent using `baml-agent-runner` directly. The runner must be built with appropriate features for the tools your agent uses:
 
 ```bash
-cargo run -p cargo-agent-platform -- run <packages>... [runner-options]
+# Build the runner with required features (do this once)
+cargo build -p baml-agent-runner --features http-tools,memory --release
+
+# Run the agent
+./target/release/baml-agent-runner \
+  clickup-agent-1.0.0.tar.gz \
+  --serve-http 127.0.0.1:8080 \
+  --provenance-db provenance.db
 ```
 
-**Arguments:**
+**Feature flags for baml-agent-runner:**
 
-| Argument | Description |
-|----------|-------------|
-| `<packages>...` | One or more `.tar.gz` package files |
+| Feature | Required for |
+|---------|--------------|
+| `http-tools` | ClickUp, Notion, Slack tools (`support/clickup`, `support/notion`, `support/slack`) |
+| `memory` | Memory tools (`memory/add`, `memory/query`, etc.) |
+| `llm-tests` | LLM-dependent tests (not needed for running agents) |
 
-**Runner options (passed through to baml-agent-runner):**
+**Runner options:**
 
 | Option | Description |
 |--------|-------------|
@@ -648,70 +651,62 @@ cargo run -p cargo-agent-platform -- run <packages>... [runner-options]
 | `--a2a-stdio` | Run A2A JSON-RPC loop over stdio |
 | `--provenance-db <PATH>` | SQLite database path for provenance (default: `:memory:`) |
 | `--web-dir <DIR>` | Directory with web UI assets to serve at root path |
-| `--invoke <AGENT> <FUNCTION> <JSON_ARGS>` | Invoke a JS function once and exit |
-
-**Examples:**
-
-```bash
-# Run a single agent with HTTP API
-cargo run -p cargo-agent-platform -- run clickup-agent-1.0.0.tar.gz --serve-http 127.0.0.1:8080
-
-# Run multiple agents together
-cargo run -p cargo-agent-platform -- run \
-  coordinator-agent.tar.gz \
-  clickup-agent.tar.gz \
-  notion-agent.tar.gz \
-  --serve-http 127.0.0.1:8080 \
-  --provenance-db provenance.db
-
-# Run with A2A stdio (for integration with other tools)
-cargo run -p cargo-agent-platform -- run agent.tar.gz --a2a-stdio
-```
-
-**Error handling:**
-
-If any package file doesn't exist, the command shows a helpful error:
-
-```
-Package(s) not found:
-  - missing-agent-1.0.0.tar.gz
-
-To build the missing package(s):
-  cargo agent-platform build missing-agent
-
-Make sure the .tar.gz files exist in the specified path.
-```
 
 **Typical workflow:**
 
 ```bash
-# 1. Build the agent
+# 1. Build the runner with features (once)
+cargo build -p baml-agent-runner --features http-tools,memory --release
+
+# 2. Build the agent
 cargo agent-platform build clickup-agent
 
-# 2. Run the agent
-cargo agent-platform run clickup-agent-1.0.0.tar.gz --serve-http 127.0.0.1:8080
+# 3. Run the agent
+./target/release/baml-agent-runner \
+  clickup-agent-1.0.0.tar.gz \
+  --serve-http 127.0.0.1:8080
 ```
 
 ---
 
 ### `regen`
 
-Regenerates `generated_tools.baml` and `baml-runtime.d.ts` for all agents in both `agents/` and `tests/fixtures/agents/`.
+Regenerates `generated_tools.baml` and `baml-runtime.d.ts` for agents in both `agents/` and `tests/fixtures/agents/`.
 
 ```bash
+cargo run -p cargo-agent-platform -- regen [names]...
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `[names]...` | Agent names to regenerate (omit for all agents) |
+
+**Examples:**
+
+```bash
+# Regenerate all agents
 cargo run -p cargo-agent-platform -- regen
+
+# Regenerate a single agent
+cargo run -p cargo-agent-platform -- regen clickup-agent
+
+# Regenerate multiple specific agents
+cargo run -p cargo-agent-platform -- regen clickup-agent notion-agent argument-chapman
 ```
 
 **What it does:**
 
 1. Scans `agents/` and `tests/fixtures/agents/` for directories containing `baml_src/`
-2. For each agent:
+2. If agent names are provided, filters to only those agents
+3. For each agent:
    - Writes canonical `tsconfig.json`
    - Runs the `RuntimeTypeGenerator` to produce `src/baml-runtime.d.ts`
    - Syncs `generated_*.baml` files to the agent's `baml_src/` directory
    - Removes stale `generated_*.baml` files no longer emitted
 
-**Example output:**
+**Example output (all agents):**
 ```
 [regen] Regenerating 7 agents in agents...
   -> claude-session-demo... ok
@@ -724,6 +719,14 @@ cargo run -p cargo-agent-platform -- regen
   ...
 
 Done! Regenerated 20 agent(s)
+```
+
+**Example output (specific agent):**
+```
+[regen] Regenerating 1 agent(s) in agents...
+  -> clickup-agent... ok
+
+Done! Regenerated 1 agent(s)
 ```
 
 **When to run:**
@@ -943,8 +946,9 @@ list-event-sources:
 build name:
     cargo run -p cargo-agent-platform -- build {{name}}
 
-run *args:
-    cargo run -p cargo-agent-platform -- run {{args}}
+# Run agents directly with baml-agent-runner (requires building with features)
+run-agent *args:
+    ./target/release/baml-agent-runner {{args}}
 ```
 
 ---

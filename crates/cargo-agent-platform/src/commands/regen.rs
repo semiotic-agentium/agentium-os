@@ -10,8 +10,14 @@ use anyhow::{Context, Result, bail};
 use console::style;
 
 /// Run the `regen` command.
-pub fn run() -> Result<()> {
+///
+/// If `names` is empty, regenerates all agents.
+/// If `names` is provided, only regenerates the specified agents.
+pub fn run(names: &[String]) -> Result<()> {
     let workspace_root = find_workspace_root()?;
+
+    let filter: HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
+    let filter_active = !filter.is_empty();
 
     let roots = vec![
         ("agents", workspace_root.join("agents")),
@@ -22,34 +28,48 @@ pub fn run() -> Result<()> {
     ];
 
     let mut total_count = 0;
+    let mut not_found: HashSet<&str> = filter.clone();
 
     for (label, dir) in roots {
         if !dir.exists() {
-            println!(
-                "{} Skipping {} (directory does not exist)",
-                style("Note:").yellow(),
-                style(dir.display()).dim()
-            );
+            if !filter_active {
+                println!(
+                    "{} Skipping {} (directory does not exist)",
+                    style("Note:").yellow(),
+                    style(dir.display()).dim()
+                );
+            }
             continue;
         }
 
         let mut entries: Vec<_> = std::fs::read_dir(&dir)?
             .filter_map(|e| e.ok())
             .filter(|e| e.path().join("baml_src").is_dir())
+            .filter(|e| {
+                if filter_active {
+                    let name = e.file_name();
+                    let name_str = name.to_string_lossy();
+                    filter.contains(name_str.as_ref())
+                } else {
+                    true
+                }
+            })
             .collect();
         entries.sort_by_key(|e| e.file_name());
 
         if entries.is_empty() {
-            println!(
-                "{} No agents found in {}",
-                style("Note:").yellow(),
-                style(dir.display()).dim()
-            );
+            if !filter_active {
+                println!(
+                    "{} No agents found in {}",
+                    style("Note:").yellow(),
+                    style(dir.display()).dim()
+                );
+            }
             continue;
         }
 
         println!(
-            "{} Regenerating {} agents in {}...",
+            "{} Regenerating {} agent(s) in {}...",
             style("[regen]").bold().dim(),
             entries.len(),
             style(label).cyan()
@@ -58,6 +78,9 @@ pub fn run() -> Result<()> {
         for entry in &entries {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
+
+            // Track that we found this agent
+            not_found.remove(name_str.as_ref());
 
             print!("  {} {}... ", style("->").dim(), name_str);
             std::io::stdout().flush().ok();
@@ -73,6 +96,20 @@ pub fn run() -> Result<()> {
                 }
             }
         }
+    }
+
+    // Warn about agents that weren't found
+    if !not_found.is_empty() {
+        println!();
+        println!("{} Agent(s) not found:", style("Warning:").yellow().bold());
+        for name in &not_found {
+            println!("  - {}", style(name).red());
+        }
+        println!();
+        println!(
+            "Available agents can be listed with: {}",
+            style("cargo agent-platform list-agents").cyan()
+        );
     }
 
     println!();
