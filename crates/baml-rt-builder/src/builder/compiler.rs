@@ -66,7 +66,7 @@ impl TscCompiler {
             run_tsc(agent_dir.as_path(), &["--noEmit"])
         })
         .await
-        .map_err(|e| BamlBuilderError::InvalidArgument(format!("spawn_blocking join error: {e}")))?
+        .map_err(|e| BamlBuilderError::BlockingTaskJoin { source: e })?
     }
 
     /// Post-process compiled JS files for QuickJS compatibility.
@@ -128,7 +128,7 @@ impl TypeScriptCompiler for TscCompiler {
             Ok(())
         })
         .await
-        .map_err(|e| BamlBuilderError::InvalidArgument(format!("spawn_blocking join error: {e}")))?
+        .map_err(|e| BamlBuilderError::BlockingTaskJoin { source: e })?
     }
 }
 
@@ -347,7 +347,7 @@ impl TypeGenerator for RuntimeTypeGenerator {
             Ok(())
         })
         .await
-        .map_err(|e| BamlBuilderError::InvalidArgument(format!("spawn_blocking join error: {e}")))?
+        .map_err(|e| BamlBuilderError::BlockingTaskJoin { source: e })?
     }
 }
 
