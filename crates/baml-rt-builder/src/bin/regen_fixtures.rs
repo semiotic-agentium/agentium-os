@@ -9,6 +9,8 @@ use baml_rt_builder::builder::{
     AgentDir, BuildDir, RuntimeTypeGenerator, TypeGenerator, compiler::write_canonical_tsconfig,
 };
 use baml_rt_tools_claude as _; // Force link so claude tool metadata is in inventory
+#[cfg(feature = "security-eval")]
+use baml_tools_security_eval as _; // Force link so security-eval tool metadata is in inventory
 #[cfg(feature = "slack")]
 use baml_tools_slack as _; // Force link so slack tool metadata is in inventory
 use baml_tools_system as _; // Force link so system tool metadata is in inventory

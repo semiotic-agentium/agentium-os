@@ -6,6 +6,12 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
+export interface ArchiveReadInput { archive_ref: string;
+offset: number | null;
+limit: number | null;
+grep: string | null;
+ }
+
 export interface ClickUpIntent { intent: string;
 operation_kind: "read" | "write" | "delete";
  }
@@ -14,8 +20,37 @@ export interface ClickUpPlan { goal: string;
 steps: ClickUpPlanStep[];
  }
 
+export interface ClickUpPlanStep { id: string;
+description: string;
+kind: "navigate" | "execute" | "format";
+ }
+
+export interface CreateTaskInput { list_id: string;
+name: string;
+description: string | null;
+priority: number | null;
+ }
+
+export interface DeleteTaskInput { task_id: string;
+confirm_delete: boolean;
+ }
+
 export interface FinalResponse { message: string;
  }
+
+export interface GetTaskInput { task_id: string;
+ }
+
+export interface ListListsInput { space_id: string;
+ }
+
+export interface ListSpacesInput { team_id: string;
+ }
+
+export interface ListTasksInput { list_id: string;
+ }
+
+export interface ListTeamsInput { }
 
 export interface NeedClarification { question: string;
  }
@@ -31,7 +66,31 @@ output_ref: string | null;
 evidence_ref: string | null;
  }
 
+export interface SupportClickupAbortStep { op: "Abort";
+ }
+
+export interface SupportClickupFinishStep { op: "Finish";
+ }
+
+export interface SupportClickupOpenStep { op: "Open";
+tool_name: "support/clickup";
+ }
+
+export interface SupportClickupReadStep { op: "Read";
+input: ArchiveReadInput;
+ }
+
+export interface SupportClickupSendStep { op: "Send";
+input: ListTeamsInput | ListSpacesInput | ListListsInput | ListTasksInput | GetTaskInput | CreateTaskInput | UpdateTaskInput | DeleteTaskInput;
+ }
+
 export interface SupportClickupSessionPlan { step: SupportClickupOpenStep | SupportClickupSendStep | SupportClickupReadStep | SupportClickupFinishStep | SupportClickupAbortStep;
+ }
+
+export interface UpdateTaskInput { task_id: string;
+status: string | null;
+description: string | null;
+priority: number | null;
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
@@ -39,6 +98,12 @@ export interface SupportClickupSessionPlan { step: SupportClickupOpenStep | Supp
 declare global {
 
 declare function ChooseClickUpAction(args: { goal: string; step_description: string; operation_kind: string; prior_results: string | null; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<FinalResponse | SupportClickupSessionPlan>;
+
+declare function ChooseClickUpAction__act__support_clickup(args: { goal: string; step_description: string; operation_kind: string; prior_results: string | null; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SupportClickupSendStep>;
+
+declare function ChooseClickUpAction__continue__support_clickup(args: { goal: string; step_description: string; operation_kind: string; prior_results: string | null; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SupportClickupSendStep | SupportClickupReadStep | SupportClickupFinishStep>;
+
+declare function ChooseClickUpAction__select(args: { goal: string; step_description: string; operation_kind: string; prior_results: string | null; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<FinalResponse | SupportClickupOpenStep>;
 
 declare function InferClickUpIntent(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<NeedClarification | NotRelevant | ClickUpIntent>;
 
@@ -299,7 +364,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseClickUpAction";
+export type StepExecutorFunctionName = "ChooseClickUpAction" | "ChooseClickUpAction__act__support_clickup" | "ChooseClickUpAction__continue__support_clickup" | "ChooseClickUpAction__select";
 
 export interface SessionContext {
     contract_version: "session_context";
@@ -333,10 +398,14 @@ export interface StepExecutorRunResult<R = unknown> {
     steps: R[];
     session_context: SessionContext;
     history_context: HistoryContext | null;
+    selected_tool: string | null;
 }
 
 export interface StepExecutorFunctionMap {
   ChooseClickUpAction: { args: Parameters<typeof ChooseClickUpAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClickUpAction>>; };
+  ChooseClickUpAction__act__support_clickup: { args: Parameters<typeof ChooseClickUpAction__act__support_clickup>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClickUpAction__act__support_clickup>>; };
+  ChooseClickUpAction__continue__support_clickup: { args: Parameters<typeof ChooseClickUpAction__continue__support_clickup>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClickUpAction__continue__support_clickup>>; };
+  ChooseClickUpAction__select: { args: Parameters<typeof ChooseClickUpAction__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClickUpAction__select>>; };
 }
 
 declare global {

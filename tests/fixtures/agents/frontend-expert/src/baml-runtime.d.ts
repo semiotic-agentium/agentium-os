@@ -6,160 +6,98 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface AgentCardDto { name: string;
-version: string;
-agentPackage: string;
-agentInstanceId: string;
-tools: string[];
-description: string | null;
-capabilities: string[];
-subscriptions: AgentEventSubscriptionDto[] | null;
- }
-
-export interface AgentEventSubscriptionDto { schemaVersions: string[] | null;
-sourceKinds: string[] | null;
-sourceKeys: string[] | null;
-sourceKeyPrefixes: string[] | null;
- }
-
 export interface ArchiveReadInput { archive_ref: string;
 offset: number | null;
 limit: number | null;
 grep: string | null;
  }
 
-export interface DiscoverAgentsOpenInput { reason: string | null;
+export interface ClaudeDevAbortStep { op: "Abort";
  }
 
-export interface DiscoverAgentsSendInput { query: string | null;
-requiredCapabilities: string[] | null;
-requiredSchemaVersions: string[] | null;
-requiredSourceKinds: string[] | null;
-limit: number | null;
-offset: number | null;
+export interface ClaudeDevAskUser { action: string;
+prompt: string;
  }
 
-export interface NeedClarification { question: string;
+export interface ClaudeDevFinishStep { op: "Finish";
  }
 
-export interface ProvenanceQueryOpenInput { reason: string | null;
+export interface ClaudeDevOpenStep { op: "Open";
+tool_name: "claude/dev";
+initial_input: ClaudeToolOpenInput | null;
  }
 
-export interface ProvenanceQuerySendInput { read: SessionReadEnvelope | null;
-resource: string;
-contextId: string | null;
-taskId: string | null;
-agentId: string | null;
-provider: string | null;
-model: string | null;
-toolName: string | null;
-bamlPrompt: string | null;
-payloadText: string | null;
-groupBy: string[] | null;
-sortBy: string | null;
-sortDir: string | null;
-outcome: string | null;
-pageSize: number | null;
-cursor: string | null;
-topK: number | null;
- }
-
-export interface QueryIntent { resource: QueryResource;
-outcome: QueryOutcome;
-priority_sort: string;
-page_size: number;
-top_k: number;
-reason: string;
- }
-
-export type QueryOutcome = "Both" | "Failed_only" | "Successful_only";
-
-export type QueryResource = "Auto" | "Llm_calls" | "Tool_calls" | "Messages";
-
-export interface SelectedAgent { agent_package: string;
-agent_instance_id: string;
-name: string;
-description: string | null;
-capabilities: string[];
- }
-
-export interface SessionReadEnvelope { mode: SessionReadMode | null;
-refId: string;
-projection: string | null;
-budgetHint: number | null;
- }
-
-export type SessionReadMode = "RetrieveRef";
-
-export interface SystemDiscover_agentsAbortStep { op: "Abort";
- }
-
-export interface SystemDiscover_agentsFinishStep { op: "Finish";
- }
-
-export interface SystemDiscover_agentsOpenStep { op: "Open";
-tool_name: "system/discover_agents";
-initial_input: DiscoverAgentsOpenInput | null;
- }
-
-export interface SystemDiscover_agentsReadStep { op: "Read";
+export interface ClaudeDevReadStep { op: "Read";
 input: ArchiveReadInput;
  }
 
-export interface SystemDiscover_agentsSendStep { op: "Send";
-input: DiscoverAgentsSendInput;
+export interface ClaudeDevReport { action: string;
+message: string;
  }
 
-export interface SystemDiscover_agentsSessionPlan { step: SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep;
+export interface ClaudeDevSendStep { op: "Send";
+input: ClaudeToolSendInput;
  }
 
-export interface SystemExtrospectionAbortStep { op: "Abort";
+export interface ClaudeDevSessionPlan { step: ClaudeDevOpenStep | ClaudeDevSendStep | ClaudeDevReadStep | ClaudeDevFinishStep | ClaudeDevAbortStep;
  }
 
-export interface SystemExtrospectionFinishStep { op: "Finish";
+export interface ClaudeToolOpenInput { workspace: string | null;
  }
 
-export interface SystemExtrospectionOpenStep { op: "Open";
-tool_name: "system/extrospection";
-initial_input: ProvenanceQueryOpenInput | null;
+export interface ClaudeToolSendInput { prompt: string | null;
+content: ClaudeUserContentBlockDtoVariant1 | ClaudeUserContentBlockDtoVariant2 | ClaudeUserContentBlockDtoVariant3[] | null;
  }
 
-export interface SystemExtrospectionReadStep { op: "Read";
-input: ArchiveReadInput;
+export interface ClaudeUserContentBlockDtoVariant1 { text: string;
+kind: string;
  }
 
-export interface SystemExtrospectionSendStep { op: "Send";
-input: ProvenanceQuerySendInput;
+export interface ClaudeUserContentBlockDtoVariant2 { url: string;
+kind: string;
  }
 
-export interface SystemExtrospectionSessionPlan { step: SystemExtrospectionOpenStep | SystemExtrospectionSendStep | SystemExtrospectionReadStep | SystemExtrospectionFinishStep | SystemExtrospectionAbortStep;
+export interface ClaudeUserContentBlockDtoVariant3 { media_type: string;
+data: string;
+kind: string;
+ }
+
+export interface CodeProposal { file_path: string;
+change_type: string;
+description: string;
+code_snippet: string;
+rationale: string;
+ }
+
+export interface FrontendProposal { summary: string;
+proposals: CodeProposal[];
+impact_assessment: string;
+accessibility_notes: string | null;
+ }
+
+export interface SessionContext { contract_version: string;
+session_open: boolean;
+allowed_ops: string[];
+scope_ref: string | null;
+output_ref: string | null;
+evidence_ref: string | null;
  }
 
 /** BAML functions: call these from your agent (e.g. await MyFunction(args)). Declared in global scope so they are visible when this file is used as a module. */
 
 declare global {
 
-declare function BuildExtrospectionPlan(args: { intent: QueryIntent; selected_agent: SelectedAgent | null } & { __baml_invocation_token?: string }): Promise<SystemExtrospectionSessionPlan>;
+declare function AnalyzeFrontend(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<FrontendProposal>;
 
-declare function BuildExtrospectionPlan__act__system_extrospection(args: { intent: QueryIntent; selected_agent: SelectedAgent | null } & { __baml_invocation_token?: string }): Promise<SystemExtrospectionSendStep>;
+declare function ChooseClaudeDevAction(args: { spec_text: string; validation_criteria_json: string; last_tool_output: string; user_approval_intent: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ClaudeDevReport | ClaudeDevAskUser | ClaudeDevSessionPlan>;
 
-declare function BuildExtrospectionPlan__continue__system_extrospection(args: { intent: QueryIntent; selected_agent: SelectedAgent | null } & { __baml_invocation_token?: string }): Promise<SystemExtrospectionSendStep | SystemExtrospectionReadStep | SystemExtrospectionFinishStep>;
+declare function ChooseClaudeDevAction__act__claude_dev(args: { spec_text: string; validation_criteria_json: string; last_tool_output: string; user_approval_intent: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ClaudeDevSendStep>;
 
-declare function BuildExtrospectionPlan__select(args: { intent: QueryIntent; selected_agent: SelectedAgent | null } & { __baml_invocation_token?: string }): Promise<SystemExtrospectionOpenStep>;
+declare function ChooseClaudeDevAction__continue__claude_dev(args: { spec_text: string; validation_criteria_json: string; last_tool_output: string; user_approval_intent: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ClaudeDevSendStep | ClaudeDevReadStep | ClaudeDevFinishStep>;
 
-declare function DetermineExtrospectionIntent(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<NeedClarification | QueryIntent>;
+declare function ChooseClaudeDevAction__select(args: { spec_text: string; validation_criteria_json: string; last_tool_output: string; user_approval_intent: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ClaudeDevReport | ClaudeDevAskUser | ClaudeDevOpenStep>;
 
-declare function GetDiscoverAgentsPlan(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSessionPlan>;
-
-declare function GetDiscoverAgentsPlan__act__system_discover_agents(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSendStep>;
-
-declare function GetDiscoverAgentsPlan__continue__system_discover_agents(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep>;
-
-declare function GetDiscoverAgentsPlan__select(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_agentsOpenStep>;
-
-declare function SelectAgentFocus(args: { user_message: string; agents: AgentCardDto[] } & { __baml_invocation_token?: string }): Promise<SelectedAgent | null>;
-
-declare function SummarizeExtrospectionReport(args: { user_message: string; intent: QueryIntent; selected_agent: SelectedAgent | null; agents: AgentCardDto[]; primary_payload_json: string; secondary_payload_json: string } & { __baml_invocation_token?: string }): Promise<string>;
+declare function FormatProposal(args: { user_message: string; proposal: FrontendProposal } & { __baml_invocation_token?: string }): Promise<string>;
 
 }
 
@@ -416,7 +354,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "BuildExtrospectionPlan" | "BuildExtrospectionPlan__act__system_extrospection" | "BuildExtrospectionPlan__continue__system_extrospection" | "BuildExtrospectionPlan__select" | "GetDiscoverAgentsPlan" | "GetDiscoverAgentsPlan__act__system_discover_agents" | "GetDiscoverAgentsPlan__continue__system_discover_agents" | "GetDiscoverAgentsPlan__select";
+export type StepExecutorFunctionName = "ChooseClaudeDevAction" | "ChooseClaudeDevAction__act__claude_dev" | "ChooseClaudeDevAction__continue__claude_dev" | "ChooseClaudeDevAction__select";
 
 export interface SessionContext {
     contract_version: "session_context";
@@ -454,14 +392,10 @@ export interface StepExecutorRunResult<R = unknown> {
 }
 
 export interface StepExecutorFunctionMap {
-  BuildExtrospectionPlan: { args: Parameters<typeof BuildExtrospectionPlan>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan>>; };
-  BuildExtrospectionPlan__act__system_extrospection: { args: Parameters<typeof BuildExtrospectionPlan__act__system_extrospection>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan__act__system_extrospection>>; };
-  BuildExtrospectionPlan__continue__system_extrospection: { args: Parameters<typeof BuildExtrospectionPlan__continue__system_extrospection>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan__continue__system_extrospection>>; };
-  BuildExtrospectionPlan__select: { args: Parameters<typeof BuildExtrospectionPlan__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof BuildExtrospectionPlan__select>>; };
-  GetDiscoverAgentsPlan: { args: Parameters<typeof GetDiscoverAgentsPlan>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan>>; };
-  GetDiscoverAgentsPlan__act__system_discover_agents: { args: Parameters<typeof GetDiscoverAgentsPlan__act__system_discover_agents>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__act__system_discover_agents>>; };
-  GetDiscoverAgentsPlan__continue__system_discover_agents: { args: Parameters<typeof GetDiscoverAgentsPlan__continue__system_discover_agents>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__continue__system_discover_agents>>; };
-  GetDiscoverAgentsPlan__select: { args: Parameters<typeof GetDiscoverAgentsPlan__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof GetDiscoverAgentsPlan__select>>; };
+  ChooseClaudeDevAction: { args: Parameters<typeof ChooseClaudeDevAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction>>; };
+  ChooseClaudeDevAction__act__claude_dev: { args: Parameters<typeof ChooseClaudeDevAction__act__claude_dev>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction__act__claude_dev>>; };
+  ChooseClaudeDevAction__continue__claude_dev: { args: Parameters<typeof ChooseClaudeDevAction__continue__claude_dev>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction__continue__claude_dev>>; };
+  ChooseClaudeDevAction__select: { args: Parameters<typeof ChooseClaudeDevAction__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction__select>>; };
 }
 
 declare global {

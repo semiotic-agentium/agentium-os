@@ -4,16 +4,15 @@
 // FSM (Finite State Machine) Tool Session Protocol:
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
-// 2. Send: Can occur AFTER Open, including multiple times across a session
-// 3. Read: Retrieves output/progress using explicit read input
+// 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
+// 3. Read: Deref a prior Send result. Requires archive_ref (e.g. '@1'). Supports grep/paginate.
 // 4. Finish: Closes the session gracefully
 // 5. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
-// - Open MUST come before any Send step
-// - Open may include 'initial_input' only when the step schema defines that field
-// - Send uses 'input' field (for subsequent inputs)
-// - Use Read to fetch pending output/chunks; Read may repeat between Send steps
+// - Open MUST come before Send
+// - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
+// - Read requires archive_ref from a prior Send. Use it to paginate or grep the output.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -29,6 +28,16 @@ class StandardStructuredPlan {
   plan_steps StandardAgentPlanStep[]
 }
 
+class HistoryContext {
+  hop int
+  op string
+  status string
+  truncated bool
+  cursor string?
+  payload string?
+}
+
+/// FSM session context injected by the host at each step.
 class SessionContext {
   contract_version string
   session_open bool
@@ -38,13 +47,13 @@ class SessionContext {
   evidence_ref string?
 }
 
-class HistoryContext {
-  hop int
-  op string
-  status string
-  truncated bool
-  cursor string?
-  payload string?
+/// Archive deref input for Read steps.
+/// archive_ref is required: use the @N ref from the Send result.
+class ArchiveReadInput {
+  archive_ref string @description("Required archive ref e.g. '@1'. Use the ref returned by the preceding Send step.")
+  offset int? @description("Line offset for pagination (0-based). Omit to start from the beginning.")
+  limit int? @description("Maximum lines to return. Omit for default page size.")
+  grep string? @description("Optional grep pattern e.g. 'deploy' or '-i deploy' for case-insensitive.")
 }
 
 // Domain types generated from JSON schemas
@@ -164,8 +173,18 @@ class ToolDiscoveryRecordDto {
 }
 
 
+/// Tool card for system/discover_agents: metadata for polymorphic Open selection.
+class SystemDiscover_agentsToolCard {
+  tool_name "system/discover_agents"
+  description "Browse available agents. You can optionally filter by query, requiredCapabilities, or matching event subscriptions. Omit filters to list all agents."
+  session_policy "Strict"
+  input_summary "{ limit?: any, offset?: any, query?: any, requiredCapabilities?: any, requiredSchemaVersions?: any, requiredSourceKinds?: any }"
+  tags string[] @description("Tool tags: system, discovery")
+}
+
 class SystemDiscover_agentsOpenStep {
   op "Open"
+  tool_name "system/discover_agents" @description("Tool to open")
   initial_input DiscoverAgentsOpenInput? @description("Optional open payload.")
 }
 
@@ -176,7 +195,7 @@ class SystemDiscover_agentsSendStep {
 
 class SystemDiscover_agentsReadStep {
   op "Read"
-  input DiscoverAgentsSendInput @description("Read payload for this step.")
+  input ArchiveReadInput @description("Archive ref and optional pagination/grep params.")
 }
 
 class SystemDiscover_agentsFinishStep {
@@ -190,11 +209,21 @@ class SystemDiscover_agentsAbortStep {
 type SystemDiscover_agentsSessionStep = SystemDiscover_agentsOpenStep | SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep | SystemDiscover_agentsAbortStep
 
 class SystemDiscover_agentsSessionPlan {
-  step SystemDiscover_agentsSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. After Send, prefer Read before further Send/Finish so you consume tool output and status.")
+  step SystemDiscover_agentsSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again.")
+}
+
+/// Tool card for system/discover_tools: metadata for polymorphic Open selection.
+class SystemDiscover_toolsToolCard {
+  tool_name "system/discover_tools"
+  description "Searches registered tools by lexical rank. Open session, then send query/limit; read() returns results. Send can be called multiple times."
+  session_policy "Strict"
+  input_summary "{ limit?: any, query?: any }"
+  tags string[] @description("Tool tags: system, discovery")
 }
 
 class SystemDiscover_toolsOpenStep {
   op "Open"
+  tool_name "system/discover_tools" @description("Tool to open")
   initial_input DiscoverToolsOpenInput? @description("Optional open payload.")
 }
 
@@ -205,7 +234,7 @@ class SystemDiscover_toolsSendStep {
 
 class SystemDiscover_toolsReadStep {
   op "Read"
-  input DiscoverToolsSendInput @description("Read payload for this step.")
+  input ArchiveReadInput @description("Archive ref and optional pagination/grep params.")
 }
 
 class SystemDiscover_toolsFinishStep {
@@ -219,11 +248,21 @@ class SystemDiscover_toolsAbortStep {
 type SystemDiscover_toolsSessionStep = SystemDiscover_toolsOpenStep | SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep | SystemDiscover_toolsFinishStep | SystemDiscover_toolsAbortStep
 
 class SystemDiscover_toolsSessionPlan {
-  step SystemDiscover_toolsSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. After Send, prefer Read before further Send/Finish so you consume tool output and status.")
+  step SystemDiscover_toolsSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again.")
+}
+
+/// Tool card for system/internal_a2a: metadata for polymorphic Open selection.
+class SystemInternal_a2aToolCard {
+  tool_name "system/internal_a2a"
+  description "Opens a conversational session to another agent. Send a message (text or parts), Read the response, then Send follow-ups or Finish. Multiple Send/Read rounds are allowed within one session — use this for multi-turn conversations with the delegated agent."
+  session_policy "MultiSend"
+  input_summary "{ parts: array }"
+  tags string[] @description("Tool tags: system, a2a")
 }
 
 class SystemInternal_a2aOpenStep {
   op "Open"
+  tool_name "system/internal_a2a" @description("Tool to open")
   initial_input InternalA2aOpenInput @description("Required open payload.")
 }
 
@@ -234,7 +273,7 @@ class SystemInternal_a2aSendStep {
 
 class SystemInternal_a2aReadStep {
   op "Read"
-  input InternalA2aSendInput @description("Read payload for this step.")
+  input ArchiveReadInput @description("Archive ref and optional pagination/grep params.")
 }
 
 class SystemInternal_a2aFinishStep {
@@ -248,6 +287,6 @@ class SystemInternal_a2aAbortStep {
 type SystemInternal_a2aSessionStep = SystemInternal_a2aOpenStep | SystemInternal_a2aSendStep | SystemInternal_a2aReadStep | SystemInternal_a2aFinishStep | SystemInternal_a2aAbortStep
 
 class SystemInternal_a2aSessionPlan {
-  step SystemInternal_a2aSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. For Send, input.text MUST be a non-empty string message — never null. After Send, use Read to receive the response before sending again or finishing.")
+  step SystemInternal_a2aSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send (input.text MUST be non-empty); Send done → Finish or Read @N.")
 }
 

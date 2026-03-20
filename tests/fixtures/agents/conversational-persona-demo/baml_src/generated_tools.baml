@@ -37,6 +37,16 @@ class HistoryContext {
   payload string?
 }
 
+/// FSM session context injected by the host at each step.
+class SessionContext {
+  contract_version string
+  session_open bool
+  allowed_ops string[]
+  scope_ref string?
+  output_ref string?
+  evidence_ref string?
+}
+
 /// Archive deref input for Read steps.
 /// archive_ref is required: use the @N ref from the Send result.
 class ArchiveReadInput {

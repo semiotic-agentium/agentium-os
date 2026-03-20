@@ -51,6 +51,12 @@ declare function ChooseCalcTool(args: { user_message: string } & { __baml_invoca
 
 declare function ChooseCalcToolStream(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<string>;
 
+declare function ChooseCalcTool__act__support_calculate(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SupportCalculateSendStep>;
+
+declare function ChooseCalcTool__continue__support_calculate(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep>;
+
+declare function ChooseCalcTool__select(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SupportCalculateOpenStep>;
+
 }
 
 /** Runtime interaction API: A2A task FSM (message-first, typestate rails). */
@@ -306,7 +312,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseCalcTool";
+export type StepExecutorFunctionName = "ChooseCalcTool" | "ChooseCalcTool__act__support_calculate" | "ChooseCalcTool__continue__support_calculate" | "ChooseCalcTool__select";
 
 export interface SessionContext {
     contract_version: "session_context";
@@ -345,6 +351,9 @@ export interface StepExecutorRunResult<R = unknown> {
 
 export interface StepExecutorFunctionMap {
   ChooseCalcTool: { args: Parameters<typeof ChooseCalcTool>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalcTool>>; };
+  ChooseCalcTool__act__support_calculate: { args: Parameters<typeof ChooseCalcTool__act__support_calculate>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalcTool__act__support_calculate>>; };
+  ChooseCalcTool__continue__support_calculate: { args: Parameters<typeof ChooseCalcTool__continue__support_calculate>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalcTool__continue__support_calculate>>; };
+  ChooseCalcTool__select: { args: Parameters<typeof ChooseCalcTool__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseCalcTool__select>>; };
 }
 
 declare global {

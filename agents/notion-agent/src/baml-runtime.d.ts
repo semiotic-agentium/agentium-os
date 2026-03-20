@@ -6,7 +6,7 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface ArchiveReadInput { archive_ref: string | null;
+export interface ArchiveReadInput { archive_ref: string;
 offset: number | null;
 limit: number | null;
 grep: string | null;
@@ -57,14 +57,6 @@ export interface ReadOnlyResponse { message: string;
 next_step: string | null;
  }
 
-export interface SessionContext { contract_version: string;
-session_open: boolean;
-allowed_ops: string[];
-scope_ref: string | null;
-output_ref: string | null;
-evidence_ref: string | null;
- }
-
 export interface SupportNotionAbortStep { op: "Abort";
  }
 
@@ -91,6 +83,12 @@ export interface SupportNotionSessionPlan { step: SupportNotionOpenStep | Suppor
 declare global {
 
 declare function ChooseNotionAction(args: { goal: string; step_description: string } & { __baml_invocation_token?: string }): Promise<ReadOnlyResponse | SupportNotionSessionPlan>;
+
+declare function ChooseNotionAction__act__support_notion(args: { goal: string; step_description: string } & { __baml_invocation_token?: string }): Promise<SupportNotionSendStep>;
+
+declare function ChooseNotionAction__continue__support_notion(args: { goal: string; step_description: string } & { __baml_invocation_token?: string }): Promise<SupportNotionSendStep | SupportNotionReadStep | SupportNotionFinishStep>;
+
+declare function ChooseNotionAction__select(args: { goal: string; step_description: string } & { __baml_invocation_token?: string }): Promise<ReadOnlyResponse | SupportNotionOpenStep>;
 
 declare function InferNotionIntent(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<NeedClarification | NotRelevant | NotionIntent>;
 
@@ -355,7 +353,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseNotionAction";
+export type StepExecutorFunctionName = "ChooseNotionAction" | "ChooseNotionAction__act__support_notion" | "ChooseNotionAction__continue__support_notion" | "ChooseNotionAction__select";
 
 export interface SessionContext {
     contract_version: "session_context";
@@ -394,6 +392,9 @@ export interface StepExecutorRunResult<R = unknown> {
 
 export interface StepExecutorFunctionMap {
   ChooseNotionAction: { args: Parameters<typeof ChooseNotionAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseNotionAction>>; };
+  ChooseNotionAction__act__support_notion: { args: Parameters<typeof ChooseNotionAction__act__support_notion>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseNotionAction__act__support_notion>>; };
+  ChooseNotionAction__continue__support_notion: { args: Parameters<typeof ChooseNotionAction__continue__support_notion>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseNotionAction__continue__support_notion>>; };
+  ChooseNotionAction__select: { args: Parameters<typeof ChooseNotionAction__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseNotionAction__select>>; };
 }
 
 declare global {

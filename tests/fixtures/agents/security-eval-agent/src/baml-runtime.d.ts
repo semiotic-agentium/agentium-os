@@ -107,6 +107,16 @@ declare global {
 
 declare function ExecuteStep(args: { objective: string; step_description: string } & { __baml_invocation_token?: string }): Promise<CrmStepResult | SupportCrmSessionPlan | SupportEmailSessionPlan>;
 
+declare function ExecuteStep__act__support_crm(args: { objective: string; step_description: string } & { __baml_invocation_token?: string }): Promise<SupportCrmSendStep>;
+
+declare function ExecuteStep__act__support_email(args: { objective: string; step_description: string } & { __baml_invocation_token?: string }): Promise<SupportEmailSendStep>;
+
+declare function ExecuteStep__continue__support_crm(args: { objective: string; step_description: string } & { __baml_invocation_token?: string }): Promise<SupportCrmSendStep | SupportCrmReadStep | SupportCrmFinishStep>;
+
+declare function ExecuteStep__continue__support_email(args: { objective: string; step_description: string } & { __baml_invocation_token?: string }): Promise<SupportEmailSendStep | SupportEmailReadStep | SupportEmailFinishStep>;
+
+declare function ExecuteStep__select(args: { objective: string; step_description: string } & { __baml_invocation_token?: string }): Promise<CrmStepResult | SupportCrmOpenStep | SupportEmailOpenStep>;
+
 declare function PlanReportingWork(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<ReportingPlan>;
 
 }

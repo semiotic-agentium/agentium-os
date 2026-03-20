@@ -6,7 +6,7 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
-export interface ArchiveReadInput { archive_ref: string | null;
+export interface ArchiveReadInput { archive_ref: string;
 offset: number | null;
 limit: number | null;
 grep: string | null;
@@ -86,6 +86,12 @@ validation_criteria: string[];
 declare global {
 
 declare function ChooseClaudeDevAction(args: { spec_text: string; validation_criteria_json: string; last_tool_output: string; user_approval_intent: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ClaudeDevReport | ClaudeDevAskUser | ClaudeDevSessionPlan>;
+
+declare function ChooseClaudeDevAction__act__claude_dev(args: { spec_text: string; validation_criteria_json: string; last_tool_output: string; user_approval_intent: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ClaudeDevSendStep>;
+
+declare function ChooseClaudeDevAction__continue__claude_dev(args: { spec_text: string; validation_criteria_json: string; last_tool_output: string; user_approval_intent: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ClaudeDevSendStep | ClaudeDevReadStep | ClaudeDevFinishStep>;
+
+declare function ChooseClaudeDevAction__select(args: { spec_text: string; validation_criteria_json: string; last_tool_output: string; user_approval_intent: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<ClaudeDevReport | ClaudeDevAskUser | ClaudeDevOpenStep>;
 
 declare function ProduceSpec(args: { requirements_summary: string } & { __baml_invocation_token?: string }): Promise<Spec>;
 
@@ -348,7 +354,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseClaudeDevAction";
+export type StepExecutorFunctionName = "ChooseClaudeDevAction" | "ChooseClaudeDevAction__act__claude_dev" | "ChooseClaudeDevAction__continue__claude_dev" | "ChooseClaudeDevAction__select";
 
 export interface SessionContext {
     contract_version: "session_context";
@@ -387,6 +393,9 @@ export interface StepExecutorRunResult<R = unknown> {
 
 export interface StepExecutorFunctionMap {
   ChooseClaudeDevAction: { args: Parameters<typeof ChooseClaudeDevAction>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction>>; };
+  ChooseClaudeDevAction__act__claude_dev: { args: Parameters<typeof ChooseClaudeDevAction__act__claude_dev>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction__act__claude_dev>>; };
+  ChooseClaudeDevAction__continue__claude_dev: { args: Parameters<typeof ChooseClaudeDevAction__continue__claude_dev>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction__continue__claude_dev>>; };
+  ChooseClaudeDevAction__select: { args: Parameters<typeof ChooseClaudeDevAction__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseClaudeDevAction__select>>; };
 }
 
 declare global {

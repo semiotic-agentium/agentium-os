@@ -8,7 +8,7 @@ experimental = ["setup-scripts"]
 [scripts.setup.regen-fixtures]
 # Binary is pre-built in CI (see rust-ci.yml "Build regen_fixtures binary" step).
 # cargo run re-uses the cached build — no recompile needed.
-command = 'cargo run -p baml-rt-builder --features http-tools,memory --bin regen_fixtures'
+command = 'cargo run -p baml-rt-builder --features http-tools,memory,security-eval --bin regen_fixtures'
 slow-timeout = { period = "300s", terminate-after = 2 }
 
 [[profile.default.scripts]]

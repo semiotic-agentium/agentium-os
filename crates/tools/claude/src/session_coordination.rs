@@ -17,6 +17,7 @@ pub fn render_claude_dev_session_coordination() -> Result<String> {
     out.push_str("// Coordinates the claude/dev session tool (Open/Send/Next/Finish/Abort).\n");
     out.push_str("// ClaudeDevSessionPlan is defined in generated_tools.baml.\n\n");
 
+    // SessionContext is defined in generated_tools.baml (shared FSM host type).
     out.push_str("class ClaudeDevAskUser {\n");
     out.push_str("  action string @description(\"Always 'AskUser'.\")\n");
     out.push_str("  prompt string @description(\"When you need the end user to supply information you do not have, state clearly what to provide; the user's reply will be sent to the Claude session as the next Send prompt.\")\n");

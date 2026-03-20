@@ -101,6 +101,19 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     write_line(&mut output, "  payload string?")?;
     write_line(&mut output, "}")?;
     write_line(&mut output, "")?;
+    write_line(
+        &mut output,
+        "/// FSM session context injected by the host at each step.",
+    )?;
+    write_line(&mut output, "class SessionContext {")?;
+    write_line(&mut output, "  contract_version string")?;
+    write_line(&mut output, "  session_open bool")?;
+    write_line(&mut output, "  allowed_ops string[]")?;
+    write_line(&mut output, "  scope_ref string?")?;
+    write_line(&mut output, "  output_ref string?")?;
+    write_line(&mut output, "  evidence_ref string?")?;
+    write_line(&mut output, "}")?;
+    write_line(&mut output, "")?;
     write_line(&mut output, "/// Archive deref input for Read steps.")?;
     write_line(
         &mut output,

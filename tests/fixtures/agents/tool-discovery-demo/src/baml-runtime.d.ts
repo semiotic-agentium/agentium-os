@@ -47,6 +47,12 @@ declare global {
 
 declare function ChooseDiscoverToolsQuery(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_toolsSessionPlan>;
 
+declare function ChooseDiscoverToolsQuery__act__system_discover_tools(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_toolsSendStep>;
+
+declare function ChooseDiscoverToolsQuery__continue__system_discover_tools(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_toolsSendStep | SystemDiscover_toolsReadStep | SystemDiscover_toolsFinishStep>;
+
+declare function ChooseDiscoverToolsQuery__select(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SystemDiscover_toolsOpenStep>;
+
 }
 
 /** Runtime interaction API: A2A task FSM (message-first, typestate rails). */
@@ -302,7 +308,7 @@ export interface ToolFailure {
 
 /** Generated Step Executor bindings (function -> typed step-executor args/result). */
 
-export type StepExecutorFunctionName = "ChooseDiscoverToolsQuery";
+export type StepExecutorFunctionName = "ChooseDiscoverToolsQuery" | "ChooseDiscoverToolsQuery__act__system_discover_tools" | "ChooseDiscoverToolsQuery__continue__system_discover_tools" | "ChooseDiscoverToolsQuery__select";
 
 export interface SessionContext {
     contract_version: "session_context";
@@ -341,6 +347,9 @@ export interface StepExecutorRunResult<R = unknown> {
 
 export interface StepExecutorFunctionMap {
   ChooseDiscoverToolsQuery: { args: Parameters<typeof ChooseDiscoverToolsQuery>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDiscoverToolsQuery>>; };
+  ChooseDiscoverToolsQuery__act__system_discover_tools: { args: Parameters<typeof ChooseDiscoverToolsQuery__act__system_discover_tools>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDiscoverToolsQuery__act__system_discover_tools>>; };
+  ChooseDiscoverToolsQuery__continue__system_discover_tools: { args: Parameters<typeof ChooseDiscoverToolsQuery__continue__system_discover_tools>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDiscoverToolsQuery__continue__system_discover_tools>>; };
+  ChooseDiscoverToolsQuery__select: { args: Parameters<typeof ChooseDiscoverToolsQuery__select>[0] & StepExecutorStateInput; result: Awaited<ReturnType<typeof ChooseDiscoverToolsQuery__select>>; };
 }
 
 declare global {
