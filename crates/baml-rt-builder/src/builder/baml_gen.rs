@@ -395,11 +395,13 @@ pub fn render_generated_session_baml_from_ir(
                 .collect()
         };
 
-        // Phase-specific preamble is injected before the user's goal description.
-        // The schema already enforces which ops are legal — the preamble only
-        // provides the minimal FSM context needed for the LLM to act correctly.
-        let make_body = |preamble: &str| -> String {
-            format!("\n  client {client_name}\n  prompt #\"{preamble}{prompt_template}\"#\n")
+        // All phases share the same prompt body (the hand-authored prompt_template)
+        // so the LLM provider's KV cache prefix is maximally reused across hops.
+        // The only thing that differs between phases is ctx.output_format (controlled
+        // by BAML from the return type). No [OPEN]/[SEND]/[CONTINUE] tags — the
+        // schema constrains which ops are legal; the prompt just provides context.
+        let make_fn = || -> String {
+            format!("\n  client {client_name}\n  prompt #\"{prompt_template}\"#\n")
         };
 
         // Phase 1: __select — Open steps from all tools + non-plan return types
@@ -411,13 +413,6 @@ pub fn render_generated_session_baml_from_ir(
         select_return.extend(open_types);
         let select_name = SessionTypeNames::select(func_name);
 
-        let tool_list = candidates
-            .iter()
-            .map(|t| t.name.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let select_preamble = format!("[OPEN] Open a session with: {tool_list}.\\n\\n");
-
         write_line(&mut phase_out, "/// Phase: select — open a tool session.")?;
         write_line(
             &mut phase_out,
@@ -426,7 +421,7 @@ pub fn render_generated_session_baml_from_ir(
                 select_return.join(" | ")
             ),
         )?;
-        write_line(&mut phase_out, &make_body(&select_preamble))?;
+        write_line(&mut phase_out, &make_fn())?;
         write_line(&mut phase_out, "}")?;
         write_line(&mut phase_out, "")?;
 
@@ -439,9 +434,6 @@ pub fn render_generated_session_baml_from_ir(
             let finish_type = format!("{}FinishStep", tool.class_name);
 
             // __act__: session open, must Send. Schema enforces Send-only output.
-            let act_preamble = format!(
-                "[SEND] A {tool_name_str} session is open. Emit Send with your query.\\n\\n"
-            );
             let act_name = SessionTypeNames::act(func_name, &slug);
             write_line(
                 &mut phase_out,
@@ -451,19 +443,11 @@ pub fn render_generated_session_baml_from_ir(
                 &mut phase_out,
                 &format!("function {act_name}{args_block} -> {send_type} {{"),
             )?;
-            write_line(&mut phase_out, &make_body(&act_preamble))?;
+            write_line(&mut phase_out, &make_fn())?;
             write_line(&mut phase_out, "}")?;
             write_line(&mut phase_out, "")?;
 
-            // __continue__: Send completed, result archived. LLM reads or finishes.
-            // The archive ref appears in session history as "@N {tool_name_str} ...".
-            let continue_preamble = format!(
-                "[CONTINUE] {tool_name_str} result is archived.\\n\
-                 Check session history:\\n\
-                 - See \\\"@N {tool_name_str}\\\" followed by numbered lines → content is inline; emit Finish\\n\
-                 - See \\\"@N {tool_name_str}\\\" with \\\"more lines\\\" indicator → emit Read to paginate\\n\
-                 - See \\\"@N {tool_name_str}\\\" with no content yet → emit Read archive_ref=\\\"@N\\\"\\n\\n"
-            );
+            // __continue__: Send completed, result archived. Read, send again, or finish.
             let continue_name = SessionTypeNames::r#continue(func_name, &slug);
             write_line(
                 &mut phase_out,
@@ -475,7 +459,7 @@ pub fn render_generated_session_baml_from_ir(
                     "function {continue_name}{args_block} -> {send_type} | {read_type} | {finish_type} {{"
                 ),
             )?;
-            write_line(&mut phase_out, &make_body(&continue_preamble))?;
+            write_line(&mut phase_out, &make_fn())?;
             write_line(&mut phase_out, "}")?;
             write_line(&mut phase_out, "")?;
         }

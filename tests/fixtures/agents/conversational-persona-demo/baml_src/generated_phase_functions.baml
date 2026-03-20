@@ -8,7 +8,7 @@ function DecideDelegationAction__select(
 ) -> SystemInternal_a2aOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: system/internal_a2a.\n\nCoordinate a conversation with agent {{ agent }} to achieve this goal: {{ goal }}
+  prompt #"Coordinate a conversation with agent {{ agent }} to achieve this goal: {{ goal }}
 
 For Open: set initial_input.target to { agent_package: "{{ agent }}", agent_instance_id: "default" }.
 For Send: write the message that will achieve the goal.
@@ -32,7 +32,7 @@ function DecideDelegationAction__act__system_internal_a2a(
 ) -> SystemInternal_a2aSendStep {
 
   client DefaultClient
-  prompt #"[SEND] A system/internal_a2a session is open. Emit Send with your query.\n\nCoordinate a conversation with agent {{ agent }} to achieve this goal: {{ goal }}
+  prompt #"Coordinate a conversation with agent {{ agent }} to achieve this goal: {{ goal }}
 
 For Open: set initial_input.target to { agent_package: "{{ agent }}", agent_instance_id: "default" }.
 For Send: write the message that will achieve the goal.
@@ -56,7 +56,7 @@ function DecideDelegationAction__continue__system_internal_a2a(
 ) -> SystemInternal_a2aSendStep | SystemInternal_a2aReadStep | SystemInternal_a2aFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/internal_a2a result is archived.\nCheck session history:\n- See \"@N system/internal_a2a\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/internal_a2a\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/internal_a2a\" with no content yet → emit Read archive_ref=\"@N\"\n\nCoordinate a conversation with agent {{ agent }} to achieve this goal: {{ goal }}
+  prompt #"Coordinate a conversation with agent {{ agent }} to achieve this goal: {{ goal }}
 
 For Open: set initial_input.target to { agent_package: "{{ agent }}", agent_instance_id: "default" }.
 For Send: write the message that will achieve the goal.
@@ -79,7 +79,7 @@ function GetDiscoverAgentsPlan__select(
 ) -> SystemDiscover_agentsOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: system/discover_agents.\n\nDiscover available agents to match the user's intent.
+  prompt #"Discover available agents to match the user's intent.
 Inferred intent: {{ inferred_intent }}
 
 {% if ctx.tags.conversation_history %}
@@ -99,7 +99,7 @@ function GetDiscoverAgentsPlan__act__system_discover_agents(
 ) -> SystemDiscover_agentsSendStep {
 
   client DefaultClient
-  prompt #"[SEND] A system/discover_agents session is open. Emit Send with your query.\n\nDiscover available agents to match the user's intent.
+  prompt #"Discover available agents to match the user's intent.
 Inferred intent: {{ inferred_intent }}
 
 {% if ctx.tags.conversation_history %}
@@ -119,7 +119,7 @@ function GetDiscoverAgentsPlan__continue__system_discover_agents(
 ) -> SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/discover_agents result is archived.\nCheck session history:\n- See \"@N system/discover_agents\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_agents\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/discover_agents\" with no content yet → emit Read archive_ref=\"@N\"\n\nDiscover available agents to match the user's intent.
+  prompt #"Discover available agents to match the user's intent.
 Inferred intent: {{ inferred_intent }}
 
 {% if ctx.tags.conversation_history %}

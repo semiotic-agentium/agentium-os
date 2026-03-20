@@ -11,7 +11,7 @@ function ChooseClaudeDevAction__select(
 ) -> ClaudeDevReport | ClaudeDevAskUser | ClaudeDevOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: claude/dev.\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
+  prompt #"You control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
 0. CRITICAL: Emit exactly one step object per reply (field name: step). Never return a steps array.
@@ -72,7 +72,7 @@ function ChooseClaudeDevAction__act__claude_dev(
 ) -> ClaudeDevSendStep {
 
   client DefaultClient
-  prompt #"[SEND] A claude/dev session is open. Emit Send with your query.\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
+  prompt #"You control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
 0. CRITICAL: Emit exactly one step object per reply (field name: step). Never return a steps array.
@@ -133,7 +133,7 @@ function ChooseClaudeDevAction__continue__claude_dev(
 ) -> ClaudeDevSendStep | ClaudeDevReadStep | ClaudeDevFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] claude/dev result is archived.\nCheck session history:\n- See \"@N claude/dev\" followed by numbered lines → content is inline; emit Finish\n- See \"@N claude/dev\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N claude/dev\" with no content yet → emit Read archive_ref=\"@N\"\n\nYou control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
+  prompt #"You control a claude cli tool session that implements a spec and then runs validation. Return either a final report, a request for user input, or a session plan (steps) — same pattern as other session tools.
 
 RULES:
 0. CRITICAL: Emit exactly one step object per reply (field name: step). Never return a steps array.

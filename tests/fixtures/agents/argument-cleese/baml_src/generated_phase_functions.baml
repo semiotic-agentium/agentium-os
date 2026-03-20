@@ -7,7 +7,7 @@ function CleeseSendToChapman__select(
 ) -> SystemInternal_a2aOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: system/internal_a2a.\n\nCoordinate the argument sketch with agent argument-chapman.
+  prompt #"Coordinate the argument sketch with agent argument-chapman.
 For Open: set initial_input.target to { agent_package: "argument-chapman", agent_instance_id: "default" }.
 For Send: set input.parts to [{ "text": "{{ first_line }}" }].
 
@@ -28,7 +28,7 @@ function CleeseSendToChapman__act__system_internal_a2a(
 ) -> SystemInternal_a2aSendStep {
 
   client DefaultClient
-  prompt #"[SEND] A system/internal_a2a session is open. Emit Send with your query.\n\nCoordinate the argument sketch with agent argument-chapman.
+  prompt #"Coordinate the argument sketch with agent argument-chapman.
 For Open: set initial_input.target to { agent_package: "argument-chapman", agent_instance_id: "default" }.
 For Send: set input.parts to [{ "text": "{{ first_line }}" }].
 
@@ -49,7 +49,7 @@ function CleeseSendToChapman__continue__system_internal_a2a(
 ) -> SystemInternal_a2aSendStep | SystemInternal_a2aReadStep | SystemInternal_a2aFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/internal_a2a result is archived.\nCheck session history:\n- See \"@N system/internal_a2a\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/internal_a2a\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/internal_a2a\" with no content yet → emit Read archive_ref=\"@N\"\n\nCoordinate the argument sketch with agent argument-chapman.
+  prompt #"Coordinate the argument sketch with agent argument-chapman.
 For Open: set initial_input.target to { agent_package: "argument-chapman", agent_instance_id: "default" }.
 For Send: set input.parts to [{ "text": "{{ first_line }}" }].
 

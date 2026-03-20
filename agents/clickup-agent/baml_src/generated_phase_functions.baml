@@ -11,7 +11,7 @@ function ChooseClickUpAction__select(
 ) -> FinalResponse | SupportClickupOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: support/clickup.\n\nYou are executing one step of a ClickUp workspace plan.
+  prompt #"You are executing one step of a ClickUp workspace plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 Operation kind: {{ operation_kind }}
@@ -87,7 +87,7 @@ function ChooseClickUpAction__act__support_clickup(
 ) -> SupportClickupSendStep {
 
   client DefaultClient
-  prompt #"[SEND] A support/clickup session is open. Emit Send with your query.\n\nYou are executing one step of a ClickUp workspace plan.
+  prompt #"You are executing one step of a ClickUp workspace plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 Operation kind: {{ operation_kind }}
@@ -163,7 +163,7 @@ function ChooseClickUpAction__continue__support_clickup(
 ) -> SupportClickupSendStep | SupportClickupReadStep | SupportClickupFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] support/clickup result is archived.\nCheck session history:\n- See \"@N support/clickup\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/clickup\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/clickup\" with no content yet → emit Read archive_ref=\"@N\"\n\nYou are executing one step of a ClickUp workspace plan.
+  prompt #"You are executing one step of a ClickUp workspace plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 Operation kind: {{ operation_kind }}

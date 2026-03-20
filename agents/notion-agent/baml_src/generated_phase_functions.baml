@@ -8,7 +8,7 @@ function ChooseNotionAction__select(
 ) -> ReadOnlyResponse | SupportNotionOpenStep {
 
   client OpenRouterGPT
-  prompt #"[OPEN] Open a session with: support/notion.\n\nYou are executing one step of a read-only Notion retrieval plan.
+  prompt #"You are executing one step of a read-only Notion retrieval plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
@@ -50,7 +50,7 @@ function ChooseNotionAction__act__support_notion(
 ) -> SupportNotionSendStep {
 
   client OpenRouterGPT
-  prompt #"[SEND] A support/notion session is open. Emit Send with your query.\n\nYou are executing one step of a read-only Notion retrieval plan.
+  prompt #"You are executing one step of a read-only Notion retrieval plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 
@@ -92,7 +92,7 @@ function ChooseNotionAction__continue__support_notion(
 ) -> SupportNotionSendStep | SupportNotionReadStep | SupportNotionFinishStep {
 
   client OpenRouterGPT
-  prompt #"[CONTINUE] support/notion result is archived.\nCheck session history:\n- See \"@N support/notion\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/notion\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/notion\" with no content yet → emit Read archive_ref=\"@N\"\n\nYou are executing one step of a read-only Notion retrieval plan.
+  prompt #"You are executing one step of a read-only Notion retrieval plan.
 Overall goal: {{ goal }}
 This step: {{ step_description }}
 

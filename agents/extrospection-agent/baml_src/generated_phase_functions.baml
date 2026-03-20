@@ -8,7 +8,7 @@ function BuildExtrospectionPlan__select(
 ) -> SystemExtrospectionOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: system/extrospection.\n\nQuery provenance data matching the intent. For Send, populate input fields:
+  prompt #"Query provenance data matching the intent. For Send, populate input fields:
 - resource: llm_calls | tool_calls | messages
   (if Auto: use llm_calls for token queries, messages for message-focused)
 - outcome: both | failed_only | successful_only
@@ -38,7 +38,7 @@ function BuildExtrospectionPlan__act__system_extrospection(
 ) -> SystemExtrospectionSendStep {
 
   client DefaultClient
-  prompt #"[SEND] A system/extrospection session is open. Emit Send with your query.\n\nQuery provenance data matching the intent. For Send, populate input fields:
+  prompt #"Query provenance data matching the intent. For Send, populate input fields:
 - resource: llm_calls | tool_calls | messages
   (if Auto: use llm_calls for token queries, messages for message-focused)
 - outcome: both | failed_only | successful_only
@@ -68,7 +68,7 @@ function BuildExtrospectionPlan__continue__system_extrospection(
 ) -> SystemExtrospectionSendStep | SystemExtrospectionReadStep | SystemExtrospectionFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/extrospection result is archived.\nCheck session history:\n- See \"@N system/extrospection\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/extrospection\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/extrospection\" with no content yet → emit Read archive_ref=\"@N\"\n\nQuery provenance data matching the intent. For Send, populate input fields:
+  prompt #"Query provenance data matching the intent. For Send, populate input fields:
 - resource: llm_calls | tool_calls | messages
   (if Auto: use llm_calls for token queries, messages for message-focused)
 - outcome: both | failed_only | successful_only
@@ -97,7 +97,7 @@ function GetDiscoverAgentsPlan__select(
 ) -> SystemDiscover_agentsOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: system/discover_agents.\n\nDiscover available agents relevant to the user's request.
+  prompt #"Discover available agents relevant to the user's request.
 For Send: use empty input {} to list all agents.
 
 Context: {{ user_message }}
@@ -119,7 +119,7 @@ function GetDiscoverAgentsPlan__act__system_discover_agents(
 ) -> SystemDiscover_agentsSendStep {
 
   client DefaultClient
-  prompt #"[SEND] A system/discover_agents session is open. Emit Send with your query.\n\nDiscover available agents relevant to the user's request.
+  prompt #"Discover available agents relevant to the user's request.
 For Send: use empty input {} to list all agents.
 
 Context: {{ user_message }}
@@ -141,7 +141,7 @@ function GetDiscoverAgentsPlan__continue__system_discover_agents(
 ) -> SystemDiscover_agentsSendStep | SystemDiscover_agentsReadStep | SystemDiscover_agentsFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] system/discover_agents result is archived.\nCheck session history:\n- See \"@N system/discover_agents\" followed by numbered lines → content is inline; emit Finish\n- See \"@N system/discover_agents\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N system/discover_agents\" with no content yet → emit Read archive_ref=\"@N\"\n\nDiscover available agents relevant to the user's request.
+  prompt #"Discover available agents relevant to the user's request.
 For Send: use empty input {} to list all agents.
 
 Context: {{ user_message }}

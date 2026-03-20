@@ -7,7 +7,7 @@ function ChooseCalcTool__select(
 ) -> SupportCalculateOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: support/calculate.\n\nThe user says: {{ user_message }}
+  prompt #"The user says: {{ user_message }}
 Extract the mathematical calculation. If they mention numbers, use those; otherwise use 2 + 3.
 IMPORTANT: Return a top-level JSON object with a `step` field (and optional `reason`), never a bare JSON array.
 Respond with a single JSON object matching the schema below. Output only the JSON object, no markdown or explanation.
@@ -23,7 +23,7 @@ function ChooseCalcTool__act__support_calculate(
 ) -> SupportCalculateSendStep {
 
   client DefaultClient
-  prompt #"[SEND] A support/calculate session is open. Emit Send with your query.\n\nThe user says: {{ user_message }}
+  prompt #"The user says: {{ user_message }}
 Extract the mathematical calculation. If they mention numbers, use those; otherwise use 2 + 3.
 IMPORTANT: Return a top-level JSON object with a `step` field (and optional `reason`), never a bare JSON array.
 Respond with a single JSON object matching the schema below. Output only the JSON object, no markdown or explanation.
@@ -39,7 +39,7 @@ function ChooseCalcTool__continue__support_calculate(
 ) -> SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] support/calculate result is archived.\nCheck session history:\n- See \"@N support/calculate\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/calculate\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/calculate\" with no content yet → emit Read archive_ref=\"@N\"\n\nThe user says: {{ user_message }}
+  prompt #"The user says: {{ user_message }}
 Extract the mathematical calculation. If they mention numbers, use those; otherwise use 2 + 3.
 IMPORTANT: Return a top-level JSON object with a `step` field (and optional `reason`), never a bare JSON array.
 Respond with a single JSON object matching the schema below. Output only the JSON object, no markdown or explanation.

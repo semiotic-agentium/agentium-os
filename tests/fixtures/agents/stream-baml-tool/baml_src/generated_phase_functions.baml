@@ -8,7 +8,7 @@ function ChooseCalcTool__select(
 ) -> SupportCalculateOpenStep {
 
   client DefaultClient
-  prompt #"[OPEN] Open a session with: support/calculate.\n\nEvaluate this calculation: {{ user_message }}
+  prompt #"Evaluate this calculation: {{ user_message }}
 For Send: set input.expression to the mathematical expression extracted from the message. If unclear, use 2 + 3.
 
 {% if ctx.tags.conversation_history %}
@@ -29,7 +29,7 @@ function ChooseCalcTool__act__support_calculate(
 ) -> SupportCalculateSendStep {
 
   client DefaultClient
-  prompt #"[SEND] A support/calculate session is open. Emit Send with your query.\n\nEvaluate this calculation: {{ user_message }}
+  prompt #"Evaluate this calculation: {{ user_message }}
 For Send: set input.expression to the mathematical expression extracted from the message. If unclear, use 2 + 3.
 
 {% if ctx.tags.conversation_history %}
@@ -50,7 +50,7 @@ function ChooseCalcTool__continue__support_calculate(
 ) -> SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep {
 
   client DefaultClient
-  prompt #"[CONTINUE] support/calculate result is archived.\nCheck session history:\n- See \"@N support/calculate\" followed by numbered lines → content is inline; emit Finish\n- See \"@N support/calculate\" with \"more lines\" indicator → emit Read to paginate\n- See \"@N support/calculate\" with no content yet → emit Read archive_ref=\"@N\"\n\nEvaluate this calculation: {{ user_message }}
+  prompt #"Evaluate this calculation: {{ user_message }}
 For Send: set input.expression to the mathematical expression extracted from the message. If unclear, use 2 + 3.
 
 {% if ctx.tags.conversation_history %}
