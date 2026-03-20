@@ -3,6 +3,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use baml_rt_core::{EventSchemaVersion, EventSourceKind, EventSubscription};
 use console::style;
 
 use crate::templates::{agent_coordinator, agent_planner, agent_simple};
@@ -42,11 +43,13 @@ impl AgentTemplate {
 }
 
 /// Run the `new-agent` command.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     name: &str,
     tools: Option<&str>,
     template: &str,
     description: &str,
+    subscriptions: Option<&str>,
     output: Option<&str>,
     dry_run: bool,
     interactive: bool,
@@ -64,6 +67,12 @@ pub fn run(
         _ => Vec::new(),
     };
 
+    // Parse subscriptions
+    let subscriptions = match subscriptions {
+        Some(s) => parse_subscriptions(s)?,
+        None => Vec::new(),
+    };
+
     // Determine template
     let template = determine_template(template, &tool_ids)?;
 
@@ -76,7 +85,14 @@ pub fn run(
 
     // Show summary for interactive or dry-run mode
     if interactive || dry_run {
-        print_summary(&slug, &tool_ids, template, description, &output_dir);
+        print_summary(
+            &slug,
+            &tool_ids,
+            template,
+            description,
+            &subscriptions,
+            &output_dir,
+        );
     }
 
     if dry_run {
@@ -116,13 +132,13 @@ pub fn run(
 
     match template {
         AgentTemplate::Simple | AgentTemplate::BasicTools => {
-            create_basic_agent(&output_dir, &slug, description, &tool_ids)?;
+            create_basic_agent(&output_dir, &slug, description, &tool_ids, &subscriptions)?;
         }
         AgentTemplate::Planner => {
-            create_planner_agent(&output_dir, &slug, description, &tool_ids)?;
+            create_planner_agent(&output_dir, &slug, description, &tool_ids, &subscriptions)?;
         }
         AgentTemplate::Coordinator => {
-            create_coordinator_agent(&output_dir, &slug, description)?;
+            create_coordinator_agent(&output_dir, &slug, description, &subscriptions)?;
         }
     }
 
@@ -135,6 +151,12 @@ pub fn run(
     println!("{}", style("Agent created successfully!").green().bold());
     println!();
     println!("  Location: {}", style(output_dir.display()).cyan());
+    if !subscriptions.is_empty() {
+        println!(
+            "  {}",
+            style("Event subscriptions configured in manifest.json").dim()
+        );
+    }
     println!();
     println!("{}", style("Next steps:").bold());
     println!(
@@ -151,6 +173,85 @@ pub fn run(
     );
 
     Ok(())
+}
+
+/// Parse subscriptions from CLI format: "schema=<version>,sources=<kind1,kind2>"
+///
+/// Examples:
+/// - "schema=task-daemon.interpretation.v1,sources=slack,clickup"
+/// - "schema=task-daemon.interpretation.v1,sources=slack"
+fn parse_subscriptions(input: &str) -> Result<Vec<EventSubscription>> {
+    let mut schema_versions = Vec::new();
+    let mut source_kinds = Vec::new();
+
+    // Split by comma, but handle "sources=a,b,c" specially
+    let mut remaining = input.trim();
+
+    while !remaining.is_empty() {
+        if let Some(rest) = remaining.strip_prefix("schema=") {
+            // Find the end of the schema value (next key= or end of string)
+            let end_pos = rest
+                .find(",sources=")
+                .or_else(|| rest.find(",schema="))
+                .unwrap_or(rest.len());
+            let schema_value = &rest[..end_pos];
+
+            // Schema value might contain multiple schemas separated by commas within brackets
+            // For simplicity, treat it as a single schema for now
+            if let Some(sv) = EventSchemaVersion::parse(schema_value.trim()) {
+                schema_versions.push(sv);
+            }
+
+            remaining = if end_pos < rest.len() {
+                rest[end_pos..].trim_start_matches(',')
+            } else {
+                ""
+            };
+        } else if let Some(rest) = remaining.strip_prefix("sources=") {
+            // Find the end of sources value
+            let end_pos = rest.find(",schema=").unwrap_or(rest.len());
+            let sources_value = &rest[..end_pos];
+
+            // Parse comma-separated source kinds
+            for source in sources_value.split(',') {
+                let source = source.trim();
+                if !source.is_empty()
+                    && !source.starts_with("schema=")
+                    && let Some(sk) = EventSourceKind::parse(source)
+                {
+                    source_kinds.push(sk);
+                }
+            }
+
+            remaining = if end_pos < rest.len() {
+                rest[end_pos..].trim_start_matches(',')
+            } else {
+                ""
+            };
+        } else {
+            // Unknown key, skip to next comma
+            let next_comma = remaining.find(',').unwrap_or(remaining.len());
+            remaining = if next_comma < remaining.len() {
+                &remaining[next_comma + 1..]
+            } else {
+                ""
+            };
+        }
+    }
+
+    if schema_versions.is_empty() && source_kinds.is_empty() {
+        bail!(
+            "Invalid subscription format. Expected: schema=<version>,sources=<kind1,kind2>\n\
+             Example: --subscriptions \"schema=task-daemon.interpretation.v1,sources=slack,clickup\""
+        );
+    }
+
+    Ok(vec![EventSubscription {
+        schema_versions,
+        source_kinds,
+        source_keys: Vec::new(),
+        source_key_prefixes: Vec::new(),
+    }])
 }
 
 /// Validate agent name and return the slug.
@@ -235,6 +336,7 @@ fn print_summary(
     tool_ids: &[String],
     template: AgentTemplate,
     description: &str,
+    subscriptions: &[EventSubscription],
     output_dir: &Path,
 ) {
     println!();
@@ -257,6 +359,24 @@ fn print_summary(
             tool_ids.join(", ")
         }
     );
+
+    // Display subscriptions
+    if subscriptions.is_empty() {
+        println!("  Subscriptions: (none)");
+    } else {
+        println!("  Subscriptions:");
+        for sub in subscriptions {
+            if !sub.schema_versions.is_empty() {
+                let schemas: Vec<_> = sub.schema_versions.iter().map(|s| s.as_str()).collect();
+                println!("    Schemas: {}", schemas.join(", "));
+            }
+            if !sub.source_kinds.is_empty() {
+                let sources: Vec<_> = sub.source_kinds.iter().map(|s| s.as_str()).collect();
+                println!("    Sources: {}", sources.join(", "));
+            }
+        }
+    }
+
     println!("  Output:      {}", style(output_dir.display()).cyan());
     println!();
     println!("{}", style("Files to be created:").bold());
@@ -277,6 +397,7 @@ fn create_basic_agent(
     name: &str,
     description: &str,
     tool_ids: &[String],
+    subscriptions: &[EventSubscription],
 ) -> Result<()> {
     // Use tokio runtime to run async bootstrap
     let rt = tokio::runtime::Runtime::new()?;
@@ -284,7 +405,39 @@ fn create_basic_agent(
         baml_rt_builder::builder::bootstrap::run_bootstrap(output_dir, name, description, tool_ids)
             .await
             .map_err(|e| anyhow::anyhow!("Bootstrap failed: {}", e))
-    })
+    })?;
+
+    // If subscriptions are provided, update the manifest.json
+    if !subscriptions.is_empty() {
+        update_manifest_subscriptions(output_dir, subscriptions)?;
+    }
+
+    Ok(())
+}
+
+/// Update manifest.json to include subscriptions.
+fn update_manifest_subscriptions(
+    output_dir: &Path,
+    subscriptions: &[EventSubscription],
+) -> Result<()> {
+    use baml_rt_core::AgentManifest;
+
+    let manifest_path = output_dir.join("manifest.json");
+    let content = std::fs::read_to_string(&manifest_path)
+        .context("Failed to read manifest.json for subscription update")?;
+
+    let mut manifest: AgentManifest =
+        serde_json::from_str(&content).context("Failed to parse manifest.json")?;
+
+    // Ensure discovery exists and update subscriptions
+    let discovery = manifest.discovery.get_or_insert_with(Default::default);
+    discovery.subscriptions = subscriptions.to_vec();
+
+    let updated =
+        serde_json::to_string_pretty(&manifest).context("Failed to serialize manifest")?;
+    std::fs::write(&manifest_path, updated).context("Failed to write updated manifest.json")?;
+
+    Ok(())
 }
 
 /// Create a planner-style agent (3-phase: Intent -> Plan -> Execute).
@@ -293,6 +446,7 @@ fn create_planner_agent(
     name: &str,
     description: &str,
     tool_ids: &[String],
+    subscriptions: &[EventSubscription],
 ) -> Result<()> {
     let slug = name.to_string();
     let prompt_name = slug.replace('-', "_");
@@ -301,8 +455,8 @@ fn create_planner_agent(
     std::fs::create_dir_all(output_dir.join("baml_src"))?;
     std::fs::create_dir_all(output_dir.join("src"))?;
 
-    // Generate manifest.json
-    let manifest = agent_planner::generate_manifest(&slug, description, tool_ids);
+    // Generate manifest.json (with subscriptions)
+    let manifest = agent_planner::generate_manifest(&slug, description, tool_ids, subscriptions);
     std::fs::write(output_dir.join("manifest.json"), manifest)?;
 
     // Generate BAML prompt file
@@ -326,7 +480,12 @@ fn create_planner_agent(
 }
 
 /// Create a coordinator-style agent (multi-agent delegator).
-fn create_coordinator_agent(output_dir: &Path, name: &str, description: &str) -> Result<()> {
+fn create_coordinator_agent(
+    output_dir: &Path,
+    name: &str,
+    description: &str,
+    subscriptions: &[EventSubscription],
+) -> Result<()> {
     let slug = name.to_string();
     let prompt_name = slug.replace('-', "_");
 
@@ -341,8 +500,9 @@ fn create_coordinator_agent(output_dir: &Path, name: &str, description: &str) ->
     std::fs::create_dir_all(output_dir.join("baml_src"))?;
     std::fs::create_dir_all(output_dir.join("src"))?;
 
-    // Generate manifest.json
-    let manifest = agent_coordinator::generate_manifest(&slug, description, &tool_ids);
+    // Generate manifest.json (with subscriptions)
+    let manifest =
+        agent_coordinator::generate_manifest(&slug, description, &tool_ids, subscriptions);
     std::fs::write(output_dir.join("manifest.json"), manifest)?;
 
     // Generate planner.baml

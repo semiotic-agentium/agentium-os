@@ -5,7 +5,7 @@
 //! 2. Planning: Generate step plan from validated intent
 //! 3. Execution: Execute plan steps via tool sessions
 
-use baml_rt_core::{AgentManifest, package::ManifestDiscovery};
+use baml_rt_core::{AgentManifest, EventSubscription, package::ManifestDiscovery};
 
 /// Convert a string to PascalCase.
 fn to_pascal_case(s: &str) -> String {
@@ -22,14 +22,24 @@ fn to_pascal_case(s: &str) -> String {
 }
 
 /// Generate manifest.json content.
-pub fn generate_manifest(name: &str, description: &str, tool_ids: &[String]) -> String {
-    let discovery = if description.is_empty() {
+pub fn generate_manifest(
+    name: &str,
+    description: &str,
+    tool_ids: &[String],
+    subscriptions: &[EventSubscription],
+) -> String {
+    // Create discovery if we have description or subscriptions
+    let discovery = if description.is_empty() && subscriptions.is_empty() {
         None
     } else {
         Some(ManifestDiscovery {
-            description: Some(description.to_string()),
+            description: if description.is_empty() {
+                None
+            } else {
+                Some(description.to_string())
+            },
             capabilities: Vec::new(),
-            subscriptions: Vec::new(),
+            subscriptions: subscriptions.to_vec(),
         })
     };
 

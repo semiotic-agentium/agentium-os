@@ -10,6 +10,7 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 | `new-agent <name>` | Create a new agent package with templates |
 | `list-tools` | List all registered tools from the inventory |
 | `list-agents` | List all agent packages |
+| `list-event-sources` | List event source kinds declared by tools and known schema versions |
 | `regen` | Regenerate type declarations for all agents |
 | `doctor` | Validate workspace integrity |
 
@@ -96,6 +97,45 @@ system/internal_a2a            Opens a conversational session to another age... 
 
 Total: 20 tool(s) registered
 ```
+
+---
+
+### `list-event-sources`
+
+Lists event source kinds declared by tools and known schema versions for event delivery.
+
+```bash
+cargo run -p cargo-agent-platform -- list-event-sources
+```
+
+**Output includes:**
+- Event source kinds declared by tools via `#[baml_tool(..., event_sources = ["kind"])]`
+- Known schema versions that agents can subscribe to (currently hardcoded)
+
+**Example output:**
+```
+Event Source Kinds (declared by tools):
+
+  SOURCE KIND          TOOL                                DESCRIPTION
+  weather              internal-dev/get_weather            Test weather tool
+
+Known Schema Versions:
+
+  SCHEMA VERSION                           DESCRIPTION
+  task-daemon.interpretation.v1            Task daemon event interpretation (Slack, ClickUp, GitHub Issues)
+
+Note: Schema versions are conventions defined by event producers (e.g., task-daemon).
+      Use these in agent manifest subscriptions to receive matching events.
+
+Total: 1 event source kind(s), 1 known schema version(s)
+```
+
+**Use cases:**
+- Discover which tools can produce events when polled
+- Find available schema versions for agent subscriptions
+- Understand the event delivery model before creating agents that need to receive events
+
+**Note:** The known schema versions are hardcoded. When new event producers are added, update the `KNOWN_SCHEMA_VERSIONS` constant in `list_event_sources.rs`.
 
 ---
 
@@ -301,28 +341,38 @@ cargo run -p cargo-agent-platform -- new-agent
 When no name is provided, interactive mode guides you through the process:
 
 ```
-? Agent name: github-agent
-? Description (optional): GitHub issue and PR assistant
+? Agent name: intake-agent
+? Description (optional): Processes events from external sources
 ? Template: planner - 3-phase: Intent -> Plan -> Execute
 ? Select tools (Space to select, Enter to confirm):
-  [x] support/github
-  [ ] support/clickup
   [x] system/internal_a2a
   [ ] system/discover_agents
+  [ ] support/clickup
+
+? Does this agent need to receive events? Yes
+? Select schema versions to subscribe to:
+  [x] task-daemon.interpretation.v1
+? Select source kinds to subscribe to:
+  [x] slack                (common)
+  [x] clickup              (common)
+  [ ] github_issues        (common)
 
 Summary:
-  Name:        github-agent
+  Name:        intake-agent
   Template:    planner
-  Description: GitHub issue and PR assistant
-  Tools:       support/github, system/internal_a2a
-  Output:      /path/to/agents/github-agent
+  Description: Processes events from external sources
+  Tools:       system/internal_a2a
+  Subscriptions:
+    Schemas: task-daemon.interpretation.v1
+    Sources: slack, clickup
+  Output:      /path/to/agents/intake-agent
 
 Files to be created:
-  agents/github-agent/
+  agents/intake-agent/
     manifest.json
     tsconfig.json
     baml_src/
-      github_agent_prompt.baml
+      intake_agent_prompt.baml
       generated_tools.baml (after type generation)
     src/
       index.ts
@@ -350,6 +400,7 @@ cargo run -p cargo-agent-platform -- new-agent <name> [options]
 | `--tools <tools>` | - | Comma-separated tool IDs (e.g., `support/github,system/internal_a2a`) |
 | `--template <template>` | `simple` | Agent template: `simple`, `basic-tools`, `planner`, `coordinator` |
 | `--description <desc>` | `""` | Human-readable description for agent discovery |
+| `--subscriptions <sub>` | - | Event subscriptions (see Event Subscriptions below) |
 | `--output <dir>` | `agents/<name>` | Target directory for the agent package |
 | `--dry-run` | - | Preview changes without writing any files (non-interactive only) |
 
@@ -361,6 +412,38 @@ cargo run -p cargo-agent-platform -- new-agent <name> [options]
 | `basic-tools` | Simple agent with tool support | Single-purpose tool agents |
 | `planner` | 3-phase architecture: Intent → Plan → Execute | Domain-specific agents (like clickup-agent) |
 | `coordinator` | Multi-agent delegator pattern | Routing to specialist agents |
+
+**Event Subscriptions:**
+
+Agents can subscribe to events dispatched by the host (e.g., from task-daemon polling Slack, ClickUp, etc.).
+
+Format: `--subscriptions "schema=<version>,sources=<kind1,kind2>"`
+
+Example:
+```bash
+--subscriptions "schema=task-daemon.interpretation.v1,sources=slack,clickup"
+```
+
+This writes subscriptions to `manifest.json`:
+```json
+{
+  "discovery": {
+    "subscriptions": [
+      {
+        "schema_versions": ["task-daemon.interpretation.v1"],
+        "source_kinds": ["slack", "clickup"]
+      }
+    ]
+  }
+}
+```
+
+**Interactive mode:** When using interactive mode, the CLI prompts:
+1. "Does this agent need to receive events?" (Y/n)
+2. If yes, select schema versions from known options
+3. Select source kinds (auto-suggested from tools + common sources like slack, clickup, github_issues)
+
+Use `list-event-sources` to see available source kinds and schema versions.
 
 **Examples:**
 
@@ -384,6 +467,13 @@ cargo run -p cargo-agent-platform -- new-agent github-agent \
 cargo run -p cargo-agent-platform -- new-agent my-coordinator \
   --template coordinator \
   --description "Routes requests to specialist agents"
+
+# Create an agent that receives events from Slack and ClickUp
+cargo run -p cargo-agent-platform -- new-agent intake-agent \
+  --tools system/internal_a2a \
+  --template planner \
+  --subscriptions "schema=task-daemon.interpretation.v1,sources=slack,clickup" \
+  --description "Processes events from Slack and ClickUp"
 ```
 
 **What it creates:**
@@ -701,13 +791,18 @@ list-tools:
 
 list-agents:
     cargo run -p cargo-agent-platform -- list-agents
+
+list-event-sources:
+    cargo run -p cargo-agent-platform -- list-event-sources
 ```
 
 ---
 
 ## See Also
 
-- `sdk_cli_plan.md` - Full implementation roadmap and design decisions
+- `sdk_plan.md` - Full implementation roadmap and design decisions
+- `docs/host-to-agent-event-delivery.md` - Event delivery model and subscriptions
 - `CLAUDE.md` - Agent platform architecture and conventions
 - `agents/clickup-agent/` - Reference implementation for planner template
 - `agents/coordinator-agent/` - Reference implementation for coordinator template
+- `agents/workflow-intake-agent/` - Reference implementation for event-consuming agent

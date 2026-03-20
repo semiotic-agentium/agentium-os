@@ -1,0 +1,132 @@
+//! `list-event-sources` subcommand implementation.
+//!
+//! Lists all event source kinds declared by tools in the inventory,
+//! plus known schema versions.
+
+use std::collections::BTreeMap;
+
+use baml_rt_tools::{InventoryCatalog, ToolCatalog};
+use console::style;
+
+/// Known schema versions for event delivery.
+///
+/// NOTE: Hardcoded for now. The task-daemon is currently the only event producer,
+/// so `task-daemon.interpretation.v1` is the only known schema version.
+/// In the future, this could be read from a registry or discovered from
+/// daemon/tool configuration. When adding new event producers, add their
+/// schema versions here.
+const KNOWN_SCHEMA_VERSIONS: &[(&str, &str)] = &[(
+    "task-daemon.interpretation.v1",
+    "Task daemon event interpretation (Slack, ClickUp, GitHub Issues)",
+)];
+
+pub fn run() -> anyhow::Result<()> {
+    let catalog = InventoryCatalog::new();
+
+    // Collect event sources from all tools
+    // Map: source_kind -> Vec<(tool_name, tool_description)>
+    let mut source_kinds: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+
+    for tool in catalog.iter() {
+        for source in &tool.event_sources {
+            source_kinds
+                .entry(source.as_str().to_string())
+                .or_default()
+                .push((tool.name.to_string(), tool.description.clone()));
+        }
+    }
+
+    // Print event source kinds
+    println!();
+    println!(
+        "{}",
+        style("Event Source Kinds (declared by tools):")
+            .bold()
+            .underlined()
+    );
+    println!();
+
+    if source_kinds.is_empty() {
+        println!(
+            "  {}",
+            style("No tools currently declare event_sources.").dim()
+        );
+        println!();
+        println!(
+            "  {}",
+            style("Hint: Tools declare event sources via #[baml_tool(..., event_sources = [\"kind\"])]").dim()
+        );
+    } else {
+        println!(
+            "  {:<20} {:<35} {}",
+            style("SOURCE KIND").bold(),
+            style("TOOL").bold(),
+            style("DESCRIPTION").bold()
+        );
+
+        for (source_kind, tools) in &source_kinds {
+            for (i, (tool_name, tool_desc)) in tools.iter().enumerate() {
+                let kind_display = if i == 0 {
+                    source_kind.clone()
+                } else {
+                    String::new()
+                };
+                println!(
+                    "  {:<20} {:<35} {}",
+                    style(&kind_display).green(),
+                    tool_name,
+                    truncate(tool_desc, 40)
+                );
+            }
+        }
+    }
+
+    // Print known schema versions
+    println!();
+    println!("{}", style("Known Schema Versions:").bold().underlined());
+    println!();
+    println!(
+        "  {:<40} {}",
+        style("SCHEMA VERSION").bold(),
+        style("DESCRIPTION").bold()
+    );
+
+    for (schema, desc) in KNOWN_SCHEMA_VERSIONS {
+        println!("  {:<40} {}", style(*schema).cyan(), desc);
+    }
+
+    println!();
+    println!(
+        "{}",
+        style(
+            "Note: Schema versions are conventions defined by event producers (e.g., task-daemon)."
+        )
+        .dim()
+    );
+    println!(
+        "{}",
+        style("      Use these in agent manifest subscriptions to receive matching events.").dim()
+    );
+    println!();
+
+    // Print summary
+    let total_sources = source_kinds.len();
+    let total_schemas = KNOWN_SCHEMA_VERSIONS.len();
+    println!(
+        "{} {} event source kind(s), {} known schema version(s)",
+        style("Total:").bold(),
+        total_sources,
+        total_schemas
+    );
+
+    Ok(())
+}
+
+/// Truncate a string to a maximum length, appending "..." if truncated.
+fn truncate(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s.to_string()
+    } else {
+        format!("{}...", &s[..max_len - 3])
+    }
+}

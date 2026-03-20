@@ -6,10 +6,15 @@
 //! 3. Execute workflow by delegating to specialists
 //! 4. Synthesize results into coherent response
 
-use baml_rt_core::{AgentManifest, package::ManifestDiscovery};
+use baml_rt_core::{AgentManifest, EventSubscription, package::ManifestDiscovery};
 
 /// Generate manifest.json content for a coordinator agent.
-pub fn generate_manifest(name: &str, description: &str, tool_ids: &[String]) -> String {
+pub fn generate_manifest(
+    name: &str,
+    description: &str,
+    tool_ids: &[String],
+    subscriptions: &[EventSubscription],
+) -> String {
     let desc = if description.is_empty() {
         "Coordinator agent that delegates to specialist sub-agents and synthesises their results"
             .to_string()
@@ -23,7 +28,7 @@ pub fn generate_manifest(name: &str, description: &str, tool_ids: &[String]) -> 
             "coordination:routing".to_string(),
             "coordination:synthesis".to_string(),
         ],
-        subscriptions: Vec::new(),
+        subscriptions: subscriptions.to_vec(),
     });
 
     let manifest = AgentManifest {

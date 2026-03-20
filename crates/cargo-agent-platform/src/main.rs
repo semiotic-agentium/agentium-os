@@ -9,9 +9,10 @@
 //! # Subcommands
 //!
 //! - `new-tool <name>` — Create a new tool crate with all necessary patches
-//! - `new-agent <name>` — Create a new agent package
+//! - `new-agent <name>` — Create a new agent package (supports `--subscriptions` for event delivery)
 //! - `list-tools` — List all registered tools from the inventory
 //! - `list-agents` — List all agent packages
+//! - `list-event-sources` — List event source kinds declared by tools and known schema versions
 //! - `regen` — Regenerate type declarations for all agents
 //! - `doctor` — Validate workspace integrity
 
@@ -76,6 +77,12 @@ enum Commands {
         #[arg(long)]
         description: Option<String>,
 
+        /// Event subscriptions for receiving dispatched events.
+        /// Format: "schema=<version>,sources=<kind1,kind2>"
+        /// Example: --subscriptions "schema=task-daemon.interpretation.v1,sources=slack,clickup"
+        #[arg(long)]
+        subscriptions: Option<String>,
+
         /// Target directory (defaults to agents/<name>)
         #[arg(long)]
         output: Option<String>,
@@ -90,6 +97,9 @@ enum Commands {
 
     /// List all agent packages
     ListAgents,
+
+    /// List event source kinds declared by tools and known schema versions
+    ListEventSources,
 
     /// Regenerate generated_tools.baml and baml-runtime.d.ts for all agents
     Regen,
@@ -158,6 +168,7 @@ fn main() -> anyhow::Result<()> {
             tools,
             template,
             description,
+            subscriptions,
             output,
             dry_run,
         } => {
@@ -190,6 +201,24 @@ fn main() -> anyhow::Result<()> {
                 None => None,
             };
 
+            // Parse tool IDs for subscription prompting
+            let tool_ids: Vec<String> = tools
+                .as_ref()
+                .map(|t| {
+                    t.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            // Handle subscriptions: from CLI flag or interactive prompt
+            let subscriptions = match subscriptions {
+                Some(s) => Some(s),
+                None if interactive => interactive::prompt_subscriptions(&tool_ids)?,
+                None => None,
+            };
+
             // In interactive mode, ignore --dry-run (confirmation prompt replaces it)
             let dry_run = if interactive { false } else { dry_run };
 
@@ -198,6 +227,7 @@ fn main() -> anyhow::Result<()> {
                 tools.as_deref(),
                 &template,
                 &description,
+                subscriptions.as_deref(),
                 output.as_deref(),
                 dry_run,
                 interactive,
@@ -207,6 +237,8 @@ fn main() -> anyhow::Result<()> {
         Commands::ListTools => commands::list_tools::run(),
 
         Commands::ListAgents => commands::list_agents::run(),
+
+        Commands::ListEventSources => commands::list_event_sources::run(),
 
         Commands::Regen => commands::regen::run(),
 

@@ -4,7 +4,18 @@
 
 use anyhow::{Result, bail};
 use baml_rt_tools::{InventoryCatalog, ToolCatalog};
-use inquire::{MultiSelect, Select, Text};
+use inquire::{Confirm, MultiSelect, Select, Text};
+
+/// Known schema versions for event delivery.
+///
+/// NOTE: Hardcoded for now. The task-daemon is currently the only event producer,
+/// so `task-daemon.interpretation.v1` is the only known schema version.
+/// When adding new event producers, add their schema versions here.
+pub const KNOWN_SCHEMA_VERSIONS: &[&str] = &["task-daemon.interpretation.v1"];
+
+/// Common source kinds that agents typically subscribe to.
+/// These are suggested even if no tools currently declare them as event_sources.
+const COMMON_SOURCE_KINDS: &[&str] = &["slack", "clickup", "github_issues"];
 
 /// Bundle type options for new-tool.
 #[derive(Debug, Clone)]
@@ -209,15 +220,150 @@ fn truncate(s: &str, max_len: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Subscription prompts
+// ---------------------------------------------------------------------------
+
+/// Schema version option for selection.
+#[derive(Debug, Clone)]
+pub struct SchemaOption {
+    pub value: String,
+}
+
+impl std::fmt::Display for SchemaOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.value)
+    }
+}
+
+/// Source kind option for selection.
+#[derive(Debug, Clone)]
+pub struct SourceKindOption {
+    pub value: String,
+    pub from_tool: Option<String>,
+}
+
+impl std::fmt::Display for SourceKindOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.from_tool {
+            Some(tool) => write!(f, "{:<20} (from {})", self.value, tool),
+            None => write!(f, "{:<20} (common)", self.value),
+        }
+    }
+}
+
+/// Prompt for event subscriptions.
+///
+/// Returns the subscription string in CLI format if the user wants subscriptions,
+/// or None if they don't want to receive events.
+pub fn prompt_subscriptions(selected_tools: &[String]) -> Result<Option<String>> {
+    // Ask if they want to receive events
+    let wants_events = Confirm::new("Does this agent need to receive events?")
+        .with_default(false)
+        .with_help_message(
+            "Event subscriptions allow the agent to receive dispatched events from sources like Slack, ClickUp",
+        )
+        .prompt()?;
+
+    if !wants_events {
+        return Ok(None);
+    }
+
+    // Select schema versions
+    let schema_options: Vec<SchemaOption> = KNOWN_SCHEMA_VERSIONS
+        .iter()
+        .map(|s| SchemaOption {
+            value: s.to_string(),
+        })
+        .collect();
+
+    let selected_schemas = MultiSelect::new(
+        "Select schema versions to subscribe to:",
+        schema_options,
+    )
+    .with_help_message(
+        "Schema versions define the event payload format. Space to select, Enter to confirm.",
+    )
+    .prompt()?;
+
+    if selected_schemas.is_empty() {
+        println!("No schemas selected, skipping subscriptions.");
+        return Ok(None);
+    }
+
+    // Collect available source kinds from selected tools + catalog
+    let catalog = InventoryCatalog::new();
+    let mut source_options: Vec<SourceKindOption> = Vec::new();
+    let mut seen_sources: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    // First, add sources from tools that declare event_sources
+    for tool in catalog.iter() {
+        // Check if this tool is selected or if it declares event sources
+        let is_selected = selected_tools.iter().any(|t| t == &tool.name.to_string());
+        if is_selected || !tool.event_sources.is_empty() {
+            for source in &tool.event_sources {
+                let source_str = source.as_str().to_string();
+                if !seen_sources.contains(&source_str) {
+                    seen_sources.insert(source_str.clone());
+                    source_options.push(SourceKindOption {
+                        value: source_str,
+                        from_tool: Some(tool.name.to_string()),
+                    });
+                }
+            }
+        }
+    }
+
+    // Add common source kinds that might not be in tools yet
+    for common in COMMON_SOURCE_KINDS {
+        if !seen_sources.contains(*common) {
+            seen_sources.insert(common.to_string());
+            source_options.push(SourceKindOption {
+                value: common.to_string(),
+                from_tool: None,
+            });
+        }
+    }
+
+    // Sort by value for consistent display
+    source_options.sort_by(|a, b| a.value.cmp(&b.value));
+
+    let selected_sources = MultiSelect::new("Select source kinds to subscribe to:", source_options)
+        .with_help_message(
+            "Source kinds filter which event producers this agent receives from. Space to select, Enter to confirm.",
+        )
+        .prompt()?;
+
+    if selected_sources.is_empty() {
+        println!("No sources selected, skipping subscriptions.");
+        return Ok(None);
+    }
+
+    // Build subscription string in CLI format: "schema=<version>,sources=<kind1,kind2>"
+    let schema_str = selected_schemas
+        .iter()
+        .map(|s| s.value.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sources_str = selected_sources
+        .iter()
+        .map(|s| s.value.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    Ok(Some(format!(
+        "schema={},sources={}",
+        schema_str, sources_str
+    )))
+}
+
+// ---------------------------------------------------------------------------
 // Confirmation prompts
 // ---------------------------------------------------------------------------
 
 /// Prompt for confirmation before proceeding.
 /// Returns true if user confirms, false otherwise.
 pub fn confirm_proceed() -> Result<bool> {
-    let confirmed = inquire::Confirm::new("Proceed?")
-        .with_default(true)
-        .prompt()?;
+    let confirmed = Confirm::new("Proceed?").with_default(true).prompt()?;
 
     Ok(confirmed)
 }
