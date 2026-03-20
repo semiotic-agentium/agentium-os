@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use baml_rt_core::{EventSchemaVersion, EventSourceKind, EventSubscription};
 use console::style;
 
@@ -83,6 +83,9 @@ pub fn run(
         None => workspace_root.join("agents").join(&slug),
     };
 
+    // Validate output directory state (existing non-empty directory is always an error).
+    validate_output_dir(&output_dir)?;
+
     // Show summary for interactive or dry-run mode
     if interactive || dry_run {
         print_summary(
@@ -97,7 +100,10 @@ pub fn run(
 
     if dry_run {
         println!();
-        println!("{}", style("Dry run - no changes made.").yellow());
+        println!(
+            "{}",
+            style("Dry run successful - validation passed, no changes made.").yellow()
+        );
         return Ok(());
     }
 
@@ -107,17 +113,6 @@ pub fn run(
         if !crate::interactive::confirm_proceed()? {
             println!("{}", style("Aborted - no changes made.").yellow());
             return Ok(());
-        }
-    }
-
-    // Check if directory already exists
-    if output_dir.exists() {
-        let entries: Vec<_> = std::fs::read_dir(&output_dir)?.collect();
-        if !entries.is_empty() {
-            bail!(
-                "Directory already exists and is non-empty: {}",
-                output_dir.display()
-            );
         }
     }
 
@@ -132,20 +127,43 @@ pub fn run(
 
     match template {
         AgentTemplate::Simple | AgentTemplate::BasicTools => {
-            create_basic_agent(&output_dir, &slug, description, &tool_ids, &subscriptions)?;
+            create_basic_agent(&output_dir, &slug, description, &tool_ids, &subscriptions)
+                .map_err(|e| {
+                    anyhow!(
+                        "Error: failed to scaffold agent files.\nCause: {e}\nHint: check the output directory and workspace configuration, then retry with `--dry-run`."
+                    )
+                })?;
         }
         AgentTemplate::Planner => {
-            create_planner_agent(&output_dir, &slug, description, &tool_ids, &subscriptions)?;
+            create_planner_agent(&output_dir, &slug, description, &tool_ids, &subscriptions)
+                .map_err(|e| {
+                    anyhow!(
+                        "Error: failed to scaffold planner template files.\nCause: {e}\nHint: verify write permissions for `{}`.",
+                        output_dir.display()
+                    )
+                })?;
         }
         AgentTemplate::Coordinator => {
-            create_coordinator_agent(&output_dir, &slug, description, &subscriptions)?;
+            create_coordinator_agent(&output_dir, &slug, description, &subscriptions).map_err(
+                |e| {
+                    anyhow!(
+                        "Error: failed to scaffold coordinator template files.\nCause: {e}\nHint: verify write permissions for `{}`.",
+                        output_dir.display()
+                    )
+                },
+            )?;
         }
     }
 
     println!("{} Running type generation...", style("[2/2]").bold().dim());
 
     // Run type generation
-    run_type_generation(&output_dir)?;
+    run_type_generation(&output_dir).map_err(|e| {
+        anyhow!(
+            "Error: type generation failed for agent at {}.\nCause: {e}\nHint: run with `--dry-run` first to validate inputs, then inspect BAML/template files for errors.",
+            output_dir.display()
+        )
+    })?;
 
     println!();
     println!("{}", style("Agent created successfully!").green().bold());
@@ -172,6 +190,20 @@ pub fn run(
         style("cargo run -p baml-rt-builder --bin baml-agent-builder").dim()
     );
 
+    Ok(())
+}
+
+/// Validate output directory can be used for agent creation.
+fn validate_output_dir(output_dir: &Path) -> Result<()> {
+    if output_dir.exists() {
+        let entries: Vec<_> = std::fs::read_dir(output_dir)?.collect();
+        if !entries.is_empty() {
+            bail!(
+                "Error: output directory already exists and is non-empty: {}\nHint: pass `--output <new-dir>` or clean the directory before retrying.",
+                output_dir.display()
+            );
+        }
+    }
     Ok(())
 }
 
@@ -241,8 +273,7 @@ fn parse_subscriptions(input: &str) -> Result<Vec<EventSubscription>> {
 
     if schema_versions.is_empty() && source_kinds.is_empty() {
         bail!(
-            "Invalid subscription format. Expected: schema=<version>,sources=<kind1,kind2>\n\
-             Example: --subscriptions \"schema=task-daemon.interpretation.v1,sources=slack,clickup\""
+            "Error: invalid subscription format.\nHint: expected `schema=<version>,sources=<kind1,kind2>`.\nExample: --subscriptions \"schema=task-daemon.interpretation.v1,sources=slack,clickup\""
         );
     }
 
@@ -268,14 +299,17 @@ fn validate_agent_name(name: &str) -> Result<String> {
         .join("-");
 
     if slug.is_empty() {
-        bail!("Agent name must contain at least one alphanumeric character");
+        bail!(
+            "Error: agent name must contain at least one alphanumeric character.\nHint: use names like `github-agent` or `intake-agent`."
+        );
     }
 
     // Check for reserved names
     let reserved = ["test", "lib", "bin", "build", "dev", "src", "agents"];
     if reserved.contains(&slug.as_str()) {
         bail!(
-            "'{}' is a reserved name and cannot be used as an agent name",
+            "Error: '{}' is a reserved name and cannot be used as an agent name.\nHint: choose a different slug, for example `my-{}-agent`.",
+            slug,
             slug
         );
     }
@@ -308,7 +342,7 @@ fn determine_template(template_str: &str, tool_ids: &[String]) -> Result<AgentTe
 
     // Invalid template name
     bail!(
-        "Unknown template '{}'. Valid templates: simple, basic-tools, planner, coordinator",
+        "Error: unknown template '{}'.\nHint: valid templates are: simple, basic-tools, planner, coordinator.",
         template_str
     );
 }
@@ -325,7 +359,9 @@ fn find_workspace_root() -> Result<PathBuf> {
             }
         }
         if !current.pop() {
-            bail!("Could not find workspace root (Cargo.toml with [workspace] section)");
+            bail!(
+                "Error: could not find workspace root (Cargo.toml with [workspace] section).\nHint: run this command from the repository root or a subdirectory inside it."
+            );
         }
     }
 }
@@ -614,4 +650,31 @@ fn sync_generated_baml_files(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_output_dir;
+
+    #[test]
+    fn validate_output_dir_allows_missing_or_empty_dir() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+
+        let missing = temp.path().join("missing");
+        assert!(validate_output_dir(&missing).is_ok());
+
+        let empty = temp.path().join("empty");
+        std::fs::create_dir_all(&empty).expect("create empty dir");
+        assert!(validate_output_dir(&empty).is_ok());
+    }
+
+    #[test]
+    fn validate_output_dir_rejects_non_empty_dir() {
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let dir = temp.path().join("non-empty");
+        std::fs::create_dir_all(&dir).expect("create dir");
+        std::fs::write(dir.join("marker.txt"), "x").expect("write marker");
+
+        assert!(validate_output_dir(&dir).is_err());
+    }
 }
