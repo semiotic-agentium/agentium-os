@@ -91,3 +91,10 @@ slow-timeout = { period = "60s", terminate-after = 2 }
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-a2a) and test(prop_input_required_resume_positive_and_no_auto_final)'
 slow-timeout = { period = "300s", terminate-after = 1 }
+
+# Multi-context interleaving property test: worst-case 7 ops × 6s × CI-scale-3 = 162s.
+# No retries: retrying a timed-out property test never shrinks the case.
+[[profile.ci.overrides]]
+filter = 'package(baml-rt-a2a) and test(prop_interleaved_a2a_tool_llm_multi_context_isolation)'
+slow-timeout = { period = "300s", terminate-after = 1 }
+retries = 0

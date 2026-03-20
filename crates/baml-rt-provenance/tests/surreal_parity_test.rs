@@ -1877,7 +1877,7 @@ async fn conversation_context_tool_metadata_fallback(store: &dyn ParityStore) {
             Some("action".to_string()),
             serde_json::json!({"input": "test_value"}), // args
             serde_json::json!({
-                "phase": "execute",
+                "phase": "send",
                 "agent_id": agent_id.as_str(),
                 "task_id": task_id.as_str(),
                 // Metadata that could be used for fallback
@@ -1897,7 +1897,7 @@ async fn conversation_context_tool_metadata_fallback(store: &dyn ParityStore) {
             Some("action".to_string()),
             serde_json::json!({"input": "test_value"}),
             serde_json::json!({
-                "phase": "execute",
+                "phase": "send",
                 "result": {"output": "success"},
                 "agent_id": agent_id.as_str(),
                 "task_id": task_id.as_str(),
@@ -2030,7 +2030,7 @@ async fn conversation_context_contract_filtering(store: &dyn ParityStore) {
             Some("action".to_string()),
             serde_json::json!({"arg1": "value1"}),
             serde_json::json!({
-                "phase": "execute",
+                "phase": "send",
                 "agent_id": agent_id.as_str(),
                 "task_id": task_id.as_str()
             }),
@@ -2047,7 +2047,7 @@ async fn conversation_context_contract_filtering(store: &dyn ParityStore) {
             Some("action".to_string()),
             serde_json::json!({"arg1": "value1"}),
             serde_json::json!({
-                "phase": "execute",
+                "phase": "send",
                 "result": "done",
                 "agent_id": agent_id.as_str(),
                 "task_id": task_id.as_str()
