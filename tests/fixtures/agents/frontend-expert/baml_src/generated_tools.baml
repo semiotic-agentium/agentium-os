@@ -47,13 +47,13 @@ class SessionContext {
   evidence_ref string?
 }
 
-/// Archive deref input for Read steps.
-/// archive_ref is required: use the @N ref from the Send result.
+/// Read dereferences a prior Send result by archive ref.
+/// Think of it as grep -n / cat -n over the archived output. Standard grep flags apply.
 class ArchiveReadInput {
-  archive_ref string @description("Required archive ref e.g. '@1'. Use the ref returned by the preceding Send step.")
-  offset int? @description("Line offset for pagination (0-based). Omit to start from the beginning.")
-  limit int? @description("Maximum lines to return. Omit for default page size.")
-  grep string? @description("Optional grep pattern e.g. 'deploy' or '-i deploy' for case-insensitive.")
+  archive_ref string @description("Archive ref from the preceding Send, e.g. '@1'.")
+  offset int? @description("Line offset for pagination (0-based).")
+  limit int? @description("Maximum lines to return.")
+  grep string? @description("grep pattern with optional CLI flags: -i (case-insensitive), -E (extended regex). Examples: 'title', '-i agentium', \"-iE 'agent|platform'\"")
 }
 
 // Domain types generated from JSON schemas

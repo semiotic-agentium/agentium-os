@@ -114,28 +114,31 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     write_line(&mut output, "  evidence_ref string?")?;
     write_line(&mut output, "}")?;
     write_line(&mut output, "")?;
-    write_line(&mut output, "/// Archive deref input for Read steps.")?;
     write_line(
         &mut output,
-        "/// archive_ref is required: use the @N ref from the Send result.",
+        "/// Read dereferences a prior Send result by archive ref.",
+    )?;
+    write_line(
+        &mut output,
+        "/// Think of it as grep -n / cat -n over the archived output. Standard grep flags apply.",
     )?;
     write_line(&mut output, "class ArchiveReadInput {")?;
     write_line(
         &mut output,
-        "  archive_ref string @description(\"Required archive ref e.g. '@1'. Use the ref returned by the preceding Send step.\")",
-    )?;
+        "  archive_ref string @description(\"Archive ref from the preceding Send, e.g. '@1'.\")",
+    );
     write_line(
         &mut output,
-        "  offset int? @description(\"Line offset for pagination (0-based). Omit to start from the beginning.\")",
-    )?;
+        "  offset int? @description(\"Line offset for pagination (0-based).\")",
+    );
     write_line(
         &mut output,
-        "  limit int? @description(\"Maximum lines to return. Omit for default page size.\")",
-    )?;
+        "  limit int? @description(\"Maximum lines to return.\")",
+    );
     write_line(
         &mut output,
-        "  grep string? @description(\"Optional grep pattern e.g. 'deploy' or '-i deploy' for case-insensitive.\")",
-    )?;
+        "  grep string? @description(\"grep pattern with optional CLI flags: -i (case-insensitive), -E (extended regex). Examples: 'title', '-i agentium', \\\"-iE 'agent|platform'\\\"\")",
+    );
     write_line(&mut output, "}")?;
     write_line(&mut output, "")?;
     // --- Domain type generation ---
