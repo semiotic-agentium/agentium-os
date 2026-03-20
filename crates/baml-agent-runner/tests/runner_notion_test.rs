@@ -498,7 +498,7 @@ async fn test_e2e_notion_real_model_search_with_mock_server() {
         runner_api.base_url
     );
     let responses: Vec<Value> = timeout(
-        Duration::from_secs(180),
+        Duration::from_secs(300),
         post_a2a_sse_collect(&http_client, &a2a_url, &request_body),
     )
     .await
