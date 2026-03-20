@@ -925,7 +925,7 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
                             .and_then(|s| serde_json::from_str::<Value>(s).ok())
                             .and_then(|v| v.get("max_steps").and_then(Value::as_u64))
                             .map(|n| n as usize)
-                            .unwrap_or(8);
+                            .unwrap_or(16);
 
                         let result =
                             crate::step_executor_loop::run_step_executor_loop(

@@ -109,40 +109,57 @@ fn backoff_delay(retries: usize) -> std::time::Duration {
 // Input types
 // ---------------------------------------------------------------------------
 
+/// Search Notion pages by keyword. Returns a list of page titles and IDs.
+/// Does NOT return page content — use GetPageBlocks to read actual content.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct NotionSearchPagesInput {
+    #[baml(description = "Search keyword. Omit to list all pages.")]
     pub query: Option<String>,
+    #[baml(description = "Pagination cursor from a previous search result.")]
     pub start_cursor: Option<String>,
     pub page_size: Option<u32>,
 }
 
+/// Fetch page METADATA only: title, URL, last-edited timestamp.
+/// Returns NO page content (text, headings, bullets, etc.).
+/// To read the actual content of a page, use GetPageBlocks with the same ID.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct NotionGetPageInput {
+    #[baml(
+        description = "Notion page UUID from a SearchPages result, e.g. '238cff78-8181-80c8-8273-cc5fbdd8c7da'."
+    )]
     pub page_id: String,
 }
 
+/// Fetch the actual TEXT CONTENT of a Notion page as structured blocks
+/// (headings, paragraphs, bullet lists, etc.).
+/// block_id is the same UUID as the page id returned by SearchPages.
+/// Use this — not GetPage — when you need to read what a page says.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct NotionGetPageBlocksInput {
+    #[baml(
+        description = "Page UUID to read blocks from — same value as the page id from SearchPages."
+    )]
     pub block_id: String,
+    #[baml(description = "Pagination cursor for large pages.")]
     pub start_cursor: Option<String>,
     pub page_size: Option<u32>,
-    /// Render mode for blocks (raw skips Notable lines / Missing info hints).
+    #[baml(description = "Block render mode (omit for default enriched rendering).")]
     pub raw_blocks: Option<BlockRenderMode>,
-    /// Max child block depth to expand (0 = no child expansion).
+    #[baml(description = "Max child block depth to expand (omit to expand all children).")]
     pub max_depth: Option<u32>,
 }
 
-/// Input for the Notion tool as per-action typed variants.
-///
-/// `deny_unknown_fields` on each variant ensures untagged routing rejects
-/// mismatched fields. An empty object `{}` resolves to `SearchPages` (all
-/// fields optional), which is intentional: a bare search is a safe default.
+/// Notion tool input — three mutually exclusive operations:
+/// SearchPages: find pages by keyword (returns titles+IDs, no content).
+/// GetPage: fetch page metadata only (title, URL, timestamps — NOT content).
+/// GetPageBlocks: read the actual text content of a page. Use this to understand what a page says.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, TS, BamlType)]
 #[baml(union)]
 #[serde(untagged)]

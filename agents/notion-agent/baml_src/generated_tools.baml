@@ -57,22 +57,31 @@ class ArchiveReadInput {
 }
 
 // Domain types generated from #[derive(BamlType)]
+/// Search Notion pages by keyword. Returns a list of page titles and IDs.
+/// Does NOT return page content — use GetPageBlocks to read actual content.
 class NotionSearchPagesInput {
-  query string?
-  start_cursor string?
+  query string? @description("Search keyword. Omit to list all pages.")
+  start_cursor string? @description("Pagination cursor from a previous search result.")
   page_size int?
 }
 
+/// Fetch page METADATA only: title, URL, last-edited timestamp.
+/// Returns NO page content (text, headings, bullets, etc.).
+/// To read the actual content of a page, use GetPageBlocks with the same ID.
 class NotionGetPageInput {
-  page_id string
+  page_id string @description("Notion page UUID from a SearchPages result, e.g. '238cff78-8181-80c8-8273-cc5fbdd8c7da'.")
 }
 
+/// Fetch the actual TEXT CONTENT of a Notion page as structured blocks
+/// (headings, paragraphs, bullet lists, etc.).
+/// block_id is the same UUID as the page id returned by SearchPages.
+/// Use this — not GetPage — when you need to read what a page says.
 class NotionGetPageBlocksInput {
-  block_id string
-  start_cursor string?
+  block_id string @description("Page UUID to read blocks from — same value as the page id from SearchPages.")
+  start_cursor string? @description("Pagination cursor for large pages.")
   page_size int?
-  raw_blocks BlockRenderMode?
-  max_depth int?
+  raw_blocks BlockRenderMode? @description("Block render mode (omit for default enriched rendering).")
+  max_depth int? @description("Max child block depth to expand (omit to expand all children).")
 }
 
 enum BlockRenderMode {
@@ -80,11 +89,10 @@ enum BlockRenderMode {
   Enriched
 }
 
-/// Input for the Notion tool as per-action typed variants.
-///
-/// `deny_unknown_fields` on each variant ensures untagged routing rejects
-/// mismatched fields. An empty object `{}` resolves to `SearchPages` (all
-/// fields optional), which is intentional: a bare search is a safe default.
+/// Notion tool input — three mutually exclusive operations:
+/// SearchPages: find pages by keyword (returns titles+IDs, no content).
+/// GetPage: fetch page metadata only (title, URL, timestamps — NOT content).
+/// GetPageBlocks: read the actual text content of a page. Use this to understand what a page says.
 type NotionInput = NotionSearchPagesInput | NotionGetPageInput | NotionGetPageBlocksInput
 
 class NotionPageSummary {
