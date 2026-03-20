@@ -880,7 +880,13 @@ impl BamlRuntimeManager {
             .and_then(|m| m.get(func_name))
         {
             Some(c) => c,
-            None => return baml_rt_tools::SessionPolicy::default(),
+            None => {
+                tracing::debug!(
+                    func = func_name,
+                    "session policy: no candidates in session_plan_functions"
+                );
+                return baml_rt_tools::SessionPolicy::default();
+            }
         };
         if candidates.len() == 1 {
             let tool_name = match tool_extraction::resolve_tool_name_from_plan_type_with_registry(
@@ -888,10 +894,20 @@ impl BamlRuntimeManager {
                 candidates[0].as_str(),
             ) {
                 Ok(name) => name,
-                Err(_) => return baml_rt_tools::SessionPolicy::default(),
+                Err(e) => {
+                    tracing::debug!(func = func_name, plan_type = candidates[0].as_str(), error = %e, "session policy: tool resolution failed");
+                    return baml_rt_tools::SessionPolicy::default();
+                }
             };
-            self.resolve_session_policy_for_tool(&tool_name)
+            let policy = self.resolve_session_policy_for_tool(&tool_name);
+            tracing::debug!(func = func_name, tool = %tool_name, policy = ?policy, "session policy: resolved from tool");
+            policy
         } else {
+            tracing::debug!(
+                func = func_name,
+                count = candidates.len(),
+                "session policy: polymorphic, defaulting to Strict"
+            );
             baml_rt_tools::SessionPolicy::default()
         }
     }

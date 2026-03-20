@@ -201,6 +201,7 @@ pub(crate) fn expand_impl(attrs: &ToolAttrs, impl_block: &ItemImpl) -> syn::Resu
                 class_name,
                 ::std::string::String::from(#description),
             )
+            .with_session_policy(<#self_ty as ::baml_rt_tools::tools::BamlTool>::SESSION_POLICY)
             #baml_decl
             #extra_ts
             #tags

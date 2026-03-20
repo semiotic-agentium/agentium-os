@@ -259,7 +259,9 @@ pub async fn run_step_executor_loop(
 
     let policy = {
         let guard = manager.lock().await;
-        guard.resolve_session_policy_for_function(function_name)
+        let p = guard.resolve_session_policy_for_function(function_name);
+        tracing::info!(function = function_name, policy = ?p, "step_executor_loop: resolved session policy");
+        p
     };
 
     for hop_idx in 0..max_steps {
