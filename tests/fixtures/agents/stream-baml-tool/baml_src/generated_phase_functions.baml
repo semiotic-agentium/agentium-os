@@ -3,7 +3,8 @@
 
 /// Phase: select — open a tool session.
 function ChooseCalcTool__select(
-  user_message: string
+  user_message: string,
+  session_context: SessionContext?
 ) -> SupportCalculateOpenStep {
 
   client DefaultClient
@@ -23,7 +24,8 @@ Session history:
 
 /// Phase: act — send query to support/calculate.
 function ChooseCalcTool__act__support_calculate(
-  user_message: string
+  user_message: string,
+  session_context: SessionContext?
 ) -> SupportCalculateSendStep {
 
   client DefaultClient
@@ -43,7 +45,8 @@ Session history:
 
 /// Phase: continue — read, send again, or finish support/calculate.
 function ChooseCalcTool__continue__support_calculate(
-  user_message: string
+  user_message: string,
+  session_context: SessionContext?
 ) -> SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep {
 
   client DefaultClient

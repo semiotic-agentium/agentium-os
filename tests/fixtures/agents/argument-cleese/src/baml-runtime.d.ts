@@ -267,12 +267,38 @@ export interface RunContext {
   /** Emitter for working message, artifact, awaitInput; use when you need to stream or suspend. */
   emit: SessionEmitter;
 }
+/** Host-to-agent deterministic dispatch request (non-conversational workloads). */
+export interface HostDispatchRequest {
+  /** Stable route label for the receiving entrypoint (e.g. "slack:intake"). */
+  routing_key: string;
+  /** Message family / schema identifier for the payload batch. */
+  message_type: string;
+  /** Opaque payloads delivered to the agent. */
+  messages: JsonObject[];
+  /** Optional existing context to continue under. */
+  context_id?: string | null;
+  /** Optional existing task to continue under. */
+  task_id?: string | null;
+  /** Optional caller-supplied message id for provenance continuity. */
+  message_id?: string | null;
+  /** Optional transport metadata for the receiving agent. */
+  metadata?: JsonObject | null;
+}
+/** Buffered acknowledgement for deterministic host delivery. */
+export interface HostDispatchAck {
+  /** True when the receiving agent accepted the delivery. */
+  accepted: boolean;
+  /** Optional operator-facing detail string. */
+  detail?: string | null;
+}
 /** Agent contract: register this; host invokes onChatMessage per message. */
 export interface BamlAgent {
   /** Optional: run(ctx) is the entrypoint; runtime wraps it into onChatMessage. Prefer this over onChatMessage. */
   run?(ctx: RunContext): Promise<SessionResult>;
   /** Optional: raw handler when run is not used. */
   onChatMessage?(message: ChatMessage): Promise<void>;
+  /** Optional: handler for deterministic host dispatch (non-conversational). */
+  onDispatch?(request: HostDispatchRequest): Promise<HostDispatchAck>;
   tools?: Record<string, (args: JsonObject) => Promise<JsonValue>>;
 }
 declare global {
@@ -304,6 +330,11 @@ declare global {
   function __chat_yield(chunk: YieldChunk): void;
   function openA2aTaskSession<I = Record<string, unknown>>(token: string): Promise<A2aSessionAwaitingInput<I>>;
   function openA2aExecutionSession(token: string): Promise<A2aExecutionSessionAwaitIntent>;
+  /**
+   * Extract typed messages from a HostDispatchRequest.
+   * Returns the messages array cast to T[]; each element's schema matches message_type.
+   */
+  function extractDispatchMessages<T = JsonObject>(request: HostDispatchRequest): T[];
 }
 export type ToolFailureKind =
     | "InvalidInput"

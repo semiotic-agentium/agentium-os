@@ -505,7 +505,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
         .await
         .expect("MessageReceived");
 
-    // Successful tool call
+    // Successful tool call (phase=execute so it appears in conversation_context)
     store
         .add_event(ProvEvent::tool_call_started_task(
             context_id.clone(),
@@ -514,7 +514,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
             Some("add".to_string()),
             serde_json::json!({"a": 2, "b": 3}),
             serde_json::json!({
-                "phase": "send",
+                "phase": "execute",
                 "agent_id": agent_id.as_str(),
                 "task_id": task_id.as_str()
             }),
@@ -531,7 +531,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
             Some("add".to_string()),
             serde_json::json!({"a": 2, "b": 3}),
             serde_json::json!({
-                "phase": "send",
+                "phase": "execute",
                 "result": 5,
                 "agent_id": agent_id.as_str(),
                 "task_id": task_id.as_str()
@@ -543,7 +543,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
         .await
         .expect("tool_call_completed");
 
-    // Failed tool call
+    // Failed tool call (phase=execute so it appears in conversation_context)
     store
         .add_event(ProvEvent::tool_call_started_task(
             context_id.clone(),
@@ -552,7 +552,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
             None,
             serde_json::json!({"a": 10, "b": 0}),
             serde_json::json!({
-                "phase": "send",
+                "phase": "execute",
                 "agent_id": agent_id.as_str(),
                 "task_id": task_id.as_str()
             }),
@@ -569,7 +569,7 @@ async fn setup_conversation_with_tools(store: &dyn SnapshotStore) {
             None,
             serde_json::json!({"a": 10, "b": 0}),
             serde_json::json!({
-                "phase": "send",
+                "phase": "execute",
                 "error": "division by zero",
                 "agent_id": agent_id.as_str(),
                 "task_id": task_id.as_str()

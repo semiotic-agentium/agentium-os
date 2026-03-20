@@ -59,11 +59,11 @@ declare function ChooseCalcTool(args: { user_message: string; session_context: S
 
 declare function ChooseCalcToolStream(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<string>;
 
-declare function ChooseCalcTool__act__support_calculate(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SupportCalculateSendStep>;
+declare function ChooseCalcTool__act__support_calculate(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SupportCalculateSendStep>;
 
-declare function ChooseCalcTool__continue__support_calculate(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep>;
+declare function ChooseCalcTool__continue__support_calculate(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SupportCalculateSendStep | SupportCalculateReadStep | SupportCalculateFinishStep>;
 
-declare function ChooseCalcTool__select(args: { user_message: string } & { __baml_invocation_token?: string }): Promise<SupportCalculateOpenStep>;
+declare function ChooseCalcTool__select(args: { user_message: string; session_context: SessionContext | null } & { __baml_invocation_token?: string }): Promise<SupportCalculateOpenStep>;
 
 }
 
