@@ -50,7 +50,7 @@ API keys for tests are resolved through `fnox.toml` via `FnoxFileSecretResolver`
 
 ## Architecture
 
-This is a Rust workspace (edition 2024, nightly pinned via `rust-toolchain.toml`) for the BAML agent runtime — executing BAML functions, running JavaScript agents via QuickJS, tool orchestration, and serving A2A (agent-to-agent) protocol requests.
+Agentium OS is a Rust workspace (edition 2024, nightly pinned via `rust-toolchain.toml`) for executing BAML functions, running JavaScript agents via QuickJS, tool orchestration, and serving A2A (agent-to-agent) protocol requests.
 
 ### Crate Map
 

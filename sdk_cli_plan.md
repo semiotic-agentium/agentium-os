@@ -1,4 +1,4 @@
-# Agent Platform SDK CLI — Implementation Plan
+# Agentium OS SDK CLI — Implementation Plan
 
 ## 1. Executive Summary
 
