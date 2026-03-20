@@ -1043,6 +1043,7 @@ fn compact_notion_payload(content: &mut serde_json::Value) {
 impl BamlTool for NotionTool {
     type Bundle = Support;
     const LOCAL_NAME: &'static str = "notion";
+    const SESSION_POLICY: baml_rt_tools::SessionPolicy = baml_rt_tools::SessionPolicy::MultiSend;
     type OpenInput = ();
     type Input = NotionInput;
     type Output = NotionOutput;

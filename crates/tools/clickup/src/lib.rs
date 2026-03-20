@@ -701,6 +701,7 @@ impl ClickUpTool {
 impl BamlTool for ClickUpTool {
     type Bundle = Support;
     const LOCAL_NAME: &'static str = "clickup";
+    const SESSION_POLICY: baml_rt_tools::SessionPolicy = baml_rt_tools::SessionPolicy::MultiSend;
     type OpenInput = ();
     type Input = ClickUpInput;
     type Output = ClickUpOutput;

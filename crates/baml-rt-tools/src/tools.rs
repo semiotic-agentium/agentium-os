@@ -187,6 +187,11 @@ pub trait BamlTool: Send + Sync + 'static {
     /// The full tool name will be derived as "{Bundle::NAME}/{LOCAL_NAME}"
     const LOCAL_NAME: &'static str;
 
+    /// Session policy: Strict (one Send per session) or MultiSend (multiple Sends).
+    /// Override to MultiSend for tools where a typical workflow requires multiple
+    /// different queries in one session (e.g. search pages then read blocks).
+    const SESSION_POLICY: SessionPolicy = SessionPolicy::Strict;
+
     /// Typed input for opening the session (initial_input in Open step).
     /// Use `()` for tools that don't need args when opening.
     type OpenInput: ToolType + Serialize + for<'de> Deserialize<'de> + DescribeAction;
@@ -1244,11 +1249,11 @@ pub trait ToolHandler: Send + Sync {
     /// Every implementor must return a non-empty string; `Option` is intentionally
     /// absent so silent history deletion cannot occur.
     fn describe_invocation(&self, content: &Value) -> String {
-        // Default: extract op and tool name for a minimal but always-present description.
-        let tool_name = self.metadata().name.to_string();
         let step = content.get("step").unwrap_or(content);
-        let op = step.get("op").and_then(Value::as_str).unwrap_or("call");
-        format!("{tool_name}: {op}")
+        match step.get("op").and_then(Value::as_str) {
+            Some(op) => format!("{}: {op}", self.metadata().name),
+            None => String::new(),
+        }
     }
 
     /// Semantic description of what opening this tool session means.
@@ -1573,6 +1578,7 @@ pub fn create_tool_handler<T: BamlTool>(
         T::class_name(),
         description_str.clone(),
     )
+    .with_session_policy(T::SESSION_POLICY)
     .build_metadata();
     let handler: Arc<dyn ToolHandler> = Arc::new(ToolWrapper {
         tool: Arc::new(tool),
@@ -1968,9 +1974,11 @@ impl ToolRegistry {
 
     /// Describe an invocation by tool name from the LlmEffectMetadata,
     /// falling back to payload extraction if the tool name isn't provided.
-    /// Always returns a non-empty description. When the tool is registered the
-    /// handler provides the description; when it is not, the tool name + op are
-    /// used directly so the history entry is never silently dropped.
+    /// Returns the handler's description when a matching tool is registered.
+    /// Returns empty string when no tool matches — callers that need a non-empty
+    /// value must provide their own fallback. Empty string is explicitly preferred
+    /// over a synthetic "{tool}: call" fallback because that leaks meaningless text
+    /// into provenance, drift scoring, and UI.
     pub fn describe_invocation_with_hint(
         &self,
         tool_name_hint: Option<&str>,
@@ -1978,14 +1986,7 @@ impl ToolRegistry {
     ) -> String {
         let from_hint = tool_name_hint.and_then(|n| self.describe_invocation_for(n, content));
         let from_payload = || self.describe_invocation(content);
-        from_hint.or_else(from_payload).unwrap_or_else(|| {
-            // Tool not in registry: synthesise a description from name + op so the
-            // model still sees that the call happened.
-            let tool = tool_name_hint.unwrap_or("tool");
-            let step = content.get("step").unwrap_or(content);
-            let op = step.get("op").and_then(Value::as_str).unwrap_or("call");
-            format!("{tool}: {op}")
-        })
+        from_hint.or_else(from_payload).unwrap_or_default()
     }
 
     /// List all registered tool names
