@@ -8,6 +8,8 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 |---------|-------------|
 | `new-tool <name>` | Create a new tool crate with all necessary patches |
 | `new-agent <name>` | Create a new agent package with templates |
+| `build [name]` | Package an agent into a distributable tar.gz |
+| `run <packages>...` | Run one or more agent packages |
 | `list-tools` | List all registered tools from the inventory |
 | `list-agents` | List all agent packages |
 | `list-event-sources` | List event source kinds declared by tools and known schema versions |
@@ -549,6 +551,149 @@ Total: 19 agent(s)
 
 ---
 
+### `build`
+
+Packages an agent into a distributable tar.gz file. This wraps the `baml-agent-builder package` functionality with a more ergonomic CLI.
+
+```bash
+cargo run -p cargo-agent-platform -- build [name] [options]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `[name]` | Agent name (looks in `agents/` directory). Omit to build current directory. |
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--path <path>` | Explicit path to agent directory (overrides name lookup) |
+| `-o, --output <file>` | Output file path (default: `<name>-<version>.tar.gz` in current directory) |
+
+**Examples:**
+
+```bash
+# Build by agent name (looks in agents/)
+cargo run -p cargo-agent-platform -- build github-agent
+
+# Build with explicit path
+cargo run -p cargo-agent-platform -- build --path agents/clickup-agent
+
+# Build from current directory (when inside an agent directory)
+cd agents/my-agent && cargo run -p cargo-agent-platform -- build
+
+# Build with custom output path
+cargo run -p cargo-agent-platform -- build github-agent -o /tmp/my-agent.tar.gz
+```
+
+**Example output:**
+```
+[1/4] Building agent 'github-agent'...
+      Source: /path/to/agents/github-agent
+      Output: /path/to/github-agent-1.0.0.tar.gz
+[2/4] Copying BAML sources...
+[3/4] Generating types and compiling TypeScript...
+
+📝 Generating runtime type declarations...
+
+⚙️  Compiling TypeScript...
+
+📦 Packaging agent...
+[4/4] Packaging complete.
+
+Agent packaged successfully!
+
+  Package: /path/to/github-agent-1.0.0.tar.gz
+
+To run the agent:
+  cargo run -p baml-agent-runner -- --package /path/to/github-agent-1.0.0.tar.gz
+```
+
+**What it does:**
+
+1. Resolves the agent directory (by name, path, or current directory)
+2. Reads `manifest.json` to get agent name and version
+3. Copies BAML sources to build directory
+4. Generates runtime type declarations (`baml-runtime.d.ts`)
+5. Compiles TypeScript with type checking
+6. Packages everything into a tar.gz archive
+
+**Output naming:**
+
+By default, the output file is named `<agent-name>-<version>.tar.gz` and placed in the current working directory. Use `-o` to specify a different path.
+
+---
+
+### `run`
+
+Runs one or more agent packages. This is a thin wrapper around `baml-agent-runner` that validates packages exist and provides helpful error messages.
+
+```bash
+cargo run -p cargo-agent-platform -- run <packages>... [runner-options]
+```
+
+**Arguments:**
+
+| Argument | Description |
+|----------|-------------|
+| `<packages>...` | One or more `.tar.gz` package files |
+
+**Runner options (passed through to baml-agent-runner):**
+
+| Option | Description |
+|--------|-------------|
+| `--serve-http <ADDR>` | Bind HTTP API on the given address (e.g., `127.0.0.1:8080`) |
+| `--a2a-stdio` | Run A2A JSON-RPC loop over stdio |
+| `--provenance-db <PATH>` | SQLite database path for provenance (default: `:memory:`) |
+| `--web-dir <DIR>` | Directory with web UI assets to serve at root path |
+| `--invoke <AGENT> <FUNCTION> <JSON_ARGS>` | Invoke a JS function once and exit |
+
+**Examples:**
+
+```bash
+# Run a single agent with HTTP API
+cargo run -p cargo-agent-platform -- run clickup-agent-1.0.0.tar.gz --serve-http 127.0.0.1:8080
+
+# Run multiple agents together
+cargo run -p cargo-agent-platform -- run \
+  coordinator-agent.tar.gz \
+  clickup-agent.tar.gz \
+  notion-agent.tar.gz \
+  --serve-http 127.0.0.1:8080 \
+  --provenance-db provenance.db
+
+# Run with A2A stdio (for integration with other tools)
+cargo run -p cargo-agent-platform -- run agent.tar.gz --a2a-stdio
+```
+
+**Error handling:**
+
+If any package file doesn't exist, the command shows a helpful error:
+
+```
+Package(s) not found:
+  - missing-agent-1.0.0.tar.gz
+
+To build the missing package(s):
+  cargo agent-platform build missing-agent
+
+Make sure the .tar.gz files exist in the specified path.
+```
+
+**Typical workflow:**
+
+```bash
+# 1. Build the agent
+cargo agent-platform build clickup-agent
+
+# 2. Run the agent
+cargo agent-platform run clickup-agent-1.0.0.tar.gz --serve-http 127.0.0.1:8080
+```
+
+---
+
 ### `regen`
 
 Regenerates `generated_tools.baml` and `baml-runtime.d.ts` for all agents in both `agents/` and `tests/fixtures/agents/`.
@@ -794,6 +939,12 @@ list-agents:
 
 list-event-sources:
     cargo run -p cargo-agent-platform -- list-event-sources
+
+build name:
+    cargo run -p cargo-agent-platform -- build {{name}}
+
+run *args:
+    cargo run -p cargo-agent-platform -- run {{args}}
 ```
 
 ---

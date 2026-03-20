@@ -10,6 +10,8 @@
 //!
 //! - `new-tool <name>` — Create a new tool crate with all necessary patches
 //! - `new-agent <name>` — Create a new agent package (supports `--subscriptions` for event delivery)
+//! - `build [name]` — Package an agent into a distributable tar.gz
+//! - `run <packages>...` — Run one or more agent packages
 //! - `list-tools` — List all registered tools from the inventory
 //! - `list-agents` — List all agent packages
 //! - `list-event-sources` — List event source kinds declared by tools and known schema versions
@@ -100,6 +102,30 @@ enum Commands {
 
     /// List event source kinds declared by tools and known schema versions
     ListEventSources,
+
+    /// Package an agent into a distributable tar.gz file
+    Build {
+        /// Agent name (looks in agents/ directory). Omit to build current directory.
+        name: Option<String>,
+
+        /// Explicit path to agent directory (overrides name lookup)
+        #[arg(long)]
+        path: Option<String>,
+
+        /// Output file path (default: <name>-<version>.tar.gz in current directory)
+        #[arg(short, long)]
+        output: Option<String>,
+    },
+
+    /// Run one or more agent packages (wraps baml-agent-runner)
+    #[command(trailing_var_arg = true)]
+    Run {
+        /// Agent package tar.gz files and runner options.
+        /// Packages must end in .tar.gz, other args are passed to baml-agent-runner.
+        /// Example: run agent.tar.gz --serve-http 127.0.0.1:8080 --provenance-db my.db
+        #[arg(required = true, num_args = 1..)]
+        args: Vec<String>,
+    },
 
     /// Regenerate generated_tools.baml and baml-runtime.d.ts for all agents
     Regen,
@@ -239,6 +265,17 @@ fn main() -> anyhow::Result<()> {
         Commands::ListAgents => commands::list_agents::run(),
 
         Commands::ListEventSources => commands::list_event_sources::run(),
+
+        Commands::Build { name, path, output } => {
+            commands::build::run(name.as_deref(), path.as_deref(), output.as_deref())
+        }
+
+        Commands::Run { args } => {
+            // Split args into packages (.tar.gz files) and extra args (options)
+            let (packages, extra_args): (Vec<_>, Vec<_>) =
+                args.into_iter().partition(|arg| arg.ends_with(".tar.gz"));
+            commands::run::run(&packages, &extra_args)
+        }
 
         Commands::Regen => commands::regen::run(),
 
