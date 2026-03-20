@@ -56,7 +56,7 @@ enum Commands {
         #[arg(long)]
         access: Option<String>,
 
-        /// Print what would be created/modified without writing (non-interactive only)
+        /// Validate and print planned changes without writing files; exits non-zero on validation failures (non-interactive only)
         #[arg(long)]
         dry_run: bool,
     },
@@ -88,7 +88,7 @@ enum Commands {
         #[arg(long)]
         output: Option<String>,
 
-        /// Print what would be created without writing (non-interactive only)
+        /// Validate and print planned changes without writing files; exits non-zero on validation failures (non-interactive only)
         #[arg(long)]
         dry_run: bool,
     },
@@ -102,16 +102,17 @@ enum Commands {
     /// List event source kinds declared by tools and known schema versions
     ListEventSources,
 
-    /// Package an agent into a distributable tar.gz file
+    /// Package agents into distributable tar.gz files
     Build {
-        /// Agent name (looks in agents/ directory). Omit to build current directory.
-        name: Option<String>,
+        /// Agent names (looks in agents/ directory). Omit to build current directory.
+        #[arg()]
+        names: Vec<String>,
 
-        /// Explicit path to agent directory (overrides name lookup)
+        /// Explicit path to agent directory (overrides name lookup, only valid with single agent)
         #[arg(long)]
         path: Option<String>,
 
-        /// Output file path (default: <name>-<version>.tar.gz in current directory)
+        /// Output directory for tar.gz files (default: current directory)
         #[arg(short, long)]
         output: Option<String>,
     },
@@ -259,9 +260,11 @@ fn main() -> anyhow::Result<()> {
 
         Commands::ListEventSources => commands::list_event_sources::run(),
 
-        Commands::Build { name, path, output } => {
-            commands::build::run(name.as_deref(), path.as_deref(), output.as_deref())
-        }
+        Commands::Build {
+            names,
+            path,
+            output,
+        } => commands::build::run(&names, path.as_deref(), output.as_deref()),
 
         Commands::Regen { names } => commands::regen::run(&names),
 

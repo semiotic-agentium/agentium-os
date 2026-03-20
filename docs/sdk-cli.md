@@ -8,7 +8,7 @@ The `cargo-agent-platform` CLI automates scaffolding of new tools and agents, el
 |---------|-------------|
 | `new-tool <name>` | Create a new tool crate with all necessary patches |
 | `new-agent <name>` | Create a new agent package with templates |
-| `build [name]` | Package an agent into a distributable tar.gz |
+| `build [names]...` | Package agents into distributable tar.gz files |
 | `list-tools` | List all registered tools from the inventory |
 | `list-agents` | List all agent packages |
 | `list-event-sources` | List event source kinds declared by tools and known schema versions |
@@ -202,7 +202,7 @@ cargo run -p cargo-agent-platform -- new-tool <name> [options]
 |--------|---------|-------------|
 | `--bundle <type>` | `support` | Bundle type. Currently only `support` is supported. |
 | `--access <level>` | `read` | Access level: `read` (query-only) or `write` (can mutate) |
-| `--dry-run` | - | Preview changes without writing any files (non-interactive only) |
+| `--dry-run` | - | Validate and preview changes without writing files (non-interactive only). Returns non-zero if validation fails. |
 
 **Access Levels:**
 
@@ -403,7 +403,7 @@ cargo run -p cargo-agent-platform -- new-agent <name> [options]
 | `--description <desc>` | `""` | Human-readable description for agent discovery |
 | `--subscriptions <sub>` | - | Event subscriptions (see Event Subscriptions below) |
 | `--output <dir>` | `agents/<name>` | Target directory for the agent package |
-| `--dry-run` | - | Preview changes without writing any files (non-interactive only) |
+| `--dry-run` | - | Validate and preview changes without writing files (non-interactive only). Returns non-zero if validation fails. |
 
 **Templates:**
 
@@ -552,39 +552,45 @@ Total: 19 agent(s)
 
 ### `build`
 
-Packages an agent into a distributable tar.gz file. This wraps the `baml-agent-builder package` functionality with a more ergonomic CLI.
+Packages one or more agents into distributable tar.gz files. This wraps the `baml-agent-builder package` functionality with a more ergonomic CLI.
 
 ```bash
-cargo run -p cargo-agent-platform -- build [name] [options]
+cargo run -p cargo-agent-platform -- build [names]... [options]
 ```
 
 **Arguments:**
 
 | Argument | Description |
 |----------|-------------|
-| `[name]` | Agent name (looks in `agents/` directory). Omit to build current directory. |
+| `[names]...` | Agent names (looks in `agents/` directory). Omit to build current directory. |
 
 **Options:**
 
 | Option | Description |
 |--------|-------------|
-| `--path <path>` | Explicit path to agent directory (overrides name lookup) |
-| `-o, --output <file>` | Output file path (default: `<name>-<version>.tar.gz` in current directory) |
+| `--path <path>` | Explicit path to agent directory (overrides name lookup, only valid with single agent) |
+| `-o, --output <dir>` | Output directory for tar.gz files (default: current directory) |
 
 **Examples:**
 
 ```bash
-# Build by agent name (looks in agents/)
+# Build a single agent by name (looks in agents/)
 cargo run -p cargo-agent-platform -- build github-agent
 
-# Build with explicit path
+# Build multiple agents at once
+cargo run -p cargo-agent-platform -- build clickup-agent notion-agent github-agent
+
+# Build with explicit path (single agent only)
 cargo run -p cargo-agent-platform -- build --path agents/clickup-agent
 
 # Build from current directory (when inside an agent directory)
 cd agents/my-agent && cargo run -p cargo-agent-platform -- build
 
-# Build with custom output path
-cargo run -p cargo-agent-platform -- build github-agent -o /tmp/my-agent.tar.gz
+# Build with custom output directory
+cargo run -p cargo-agent-platform -- build github-agent -o /tmp/
+
+# Build multiple agents to a specific directory
+cargo run -p cargo-agent-platform -- build clickup-agent notion-agent -o ./dist/
 ```
 
 **Example output:**
@@ -618,7 +624,7 @@ Agent packaged successfully!
 
 **Output naming:**
 
-By default, the output file is named `<agent-name>-<version>.tar.gz` and placed in the current working directory. Use `-o` to specify a different path.
+Each output file is named `<agent-name>-<version>.tar.gz`. By default, files are placed in the current working directory. Use `-o` to specify a different output directory.
 
 **Running the packaged agent:**
 
@@ -943,8 +949,8 @@ list-agents:
 list-event-sources:
     cargo run -p cargo-agent-platform -- list-event-sources
 
-build name:
-    cargo run -p cargo-agent-platform -- build {{name}}
+build +names:
+    cargo run -p cargo-agent-platform -- build {{names}}
 
 # Run agents directly with baml-agent-runner (requires building with features)
 run-agent *args:

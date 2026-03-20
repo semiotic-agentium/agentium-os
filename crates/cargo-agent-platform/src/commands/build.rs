@@ -16,46 +16,68 @@ use console::style;
 /// Run the `build` command.
 ///
 /// Resolves the agent directory from:
-/// 1. `--path <path>` if provided
-/// 2. `<name>` looks in `agents/<name>/`
+/// 1. `--path <path>` if provided (only valid when names is empty or single)
+/// 2. `<names>` looks in `agents/<name>/` for each
 /// 3. Current directory if neither provided
-pub fn run(name: Option<&str>, path: Option<&str>, output: Option<&str>) -> Result<()> {
-    let agent_dir = resolve_agent_dir(name, path)?;
-    let manifest = read_manifest(&agent_dir)?;
+pub fn run(names: &[String], path: Option<&str>, output: Option<&str>) -> Result<()> {
+    // If --path is used with multiple names, that's an error
+    if path.is_some() && names.len() > 1 {
+        bail!("--path cannot be used with multiple agent names");
+    }
 
-    // Determine output path
-    let output_path = match output {
-        Some(p) => PathBuf::from(p),
-        None => {
-            // Default: <name>-<version>.tar.gz in current directory
-            let filename = format!("{}-{}.tar.gz", manifest.name, manifest.version);
-            std::env::current_dir()?.join(filename)
-        }
+    // Collect agents to build
+    let agents: Vec<PathBuf> = if names.is_empty() {
+        vec![resolve_agent_dir(None, path)?]
+    } else {
+        names
+            .iter()
+            .map(|n| resolve_agent_dir(Some(n), if names.len() == 1 { path } else { None }))
+            .collect::<Result<Vec<_>>>()?
     };
 
-    println!();
-    println!(
-        "{} Building agent '{}'...",
-        style("[1/4]").bold().dim(),
-        style(&manifest.name).cyan()
-    );
-    println!("      Source: {}", style(agent_dir.display()).dim());
-    println!("      Output: {}", style(output_path.display()).dim());
-
-    // Run the build pipeline
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async { build_agent(&agent_dir, &output_path).await })?;
 
-    println!();
-    println!("{}", style("Agent packaged successfully!").green().bold());
-    println!();
-    println!("  Package: {}", style(output_path.display()).cyan());
-    println!();
-    println!("{}", style("To run the agent:").bold());
-    println!(
-        "  cargo run -p baml-agent-runner -- --package {}",
-        output_path.display()
-    );
+    for agent_dir in &agents {
+        let manifest = read_manifest(agent_dir)?;
+
+        // Determine output path
+        let output_path = match output {
+            Some(p) => {
+                let dir = PathBuf::from(p);
+                let filename = format!("{}-{}.tar.gz", manifest.name, manifest.version);
+                dir.join(filename)
+            }
+            None => {
+                let filename = format!("{}-{}.tar.gz", manifest.name, manifest.version);
+                std::env::current_dir()?.join(filename)
+            }
+        };
+
+        println!();
+        println!(
+            "{} Building agent '{}'...",
+            style("[1/4]").bold().dim(),
+            style(&manifest.name).cyan()
+        );
+        println!("      Source: {}", style(agent_dir.display()).dim());
+        println!("      Output: {}", style(output_path.display()).dim());
+
+        rt.block_on(async { build_agent(agent_dir, &output_path).await })?;
+
+        println!();
+        println!("{}", style("Agent packaged successfully!").green().bold());
+        println!("  Package: {}", style(output_path.display()).cyan());
+    }
+
+    if agents.len() > 1 {
+        println!();
+        println!(
+            "{}",
+            style(format!("Built {} agents successfully!", agents.len()))
+                .green()
+                .bold()
+        );
+    }
 
     Ok(())
 }
