@@ -24,7 +24,10 @@ store-failure-output = true
 # Rate-limit provenance tests (max 1 at a time) to avoid SurrealDB embedded
 # resource contention. LLM e2e tests cap concurrency for API rate limits.
 [test-groups]
-llm = { max-threads = 2 }
+# I/O-bound: each test blocks on HTTP calls to the LLM API, not CPU/memory.
+# 6 concurrent tests → 6 simultaneous in-flight requests, well within OpenRouter
+# rate limits (~60 RPM) while avoiding 8× unnecessary serialisation overhead.
+llm = { max-threads = 6 }
 provenance = { max-threads = 1 }
 
 [[profile.ci.overrides]]
