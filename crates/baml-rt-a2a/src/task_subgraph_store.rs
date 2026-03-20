@@ -12,16 +12,14 @@ use baml_rt_core::{
     ids::{ContextId, ExternalId, TaskId},
 };
 use baml_rt_provenance::{
-    A2aGraphStore, ArtifactUpdateContext, ProvenanceContextReader,
-    ProvenanceConversationContextItem, StatusUpdateContext, TaskSubgraphNode,
+    A2aGraphStore, ArtifactUpdateContext, StatusUpdateContext, TaskSubgraphNode,
     record_artifact_update as prov_record_artifact_update,
     record_status_update as prov_record_status_update,
 };
 
 use crate::{
     a2a_store::{
-        ConversationContextSource, TaskChunkApplier, TaskEventRecorder, TaskRepository,
-        TaskUpdateEvent, TaskUpdateQueue,
+        TaskChunkApplier, TaskEventRecorder, TaskRepository, TaskUpdateEvent, TaskUpdateQueue,
     },
     a2a_types::{
         Artifact, ListTasksRequest, ListTasksResponse, Message, Task, TaskArtifactUpdateEvent,
@@ -169,18 +167,11 @@ impl TryFrom<&Message> for MessageTaskIdForProv {
 
 pub struct TaskSubgraphStore {
     graph: Arc<dyn A2aGraphStore>,
-    context_reader: Arc<dyn ProvenanceContextReader>,
 }
 
 impl TaskSubgraphStore {
-    pub fn new(
-        graph: Arc<dyn A2aGraphStore>,
-        context_reader: Arc<dyn ProvenanceContextReader>,
-    ) -> Self {
-        Self {
-            graph,
-            context_reader,
-        }
+    pub fn new(graph: Arc<dyn A2aGraphStore>) -> Self {
+        Self { graph }
     }
 }
 
@@ -588,21 +579,5 @@ impl TaskChunkApplier for TaskSubgraphStore {
             out.push(ev);
         }
         Ok(out)
-    }
-}
-
-#[async_trait]
-impl ConversationContextSource for TaskSubgraphStore {
-    async fn conversation_context(
-        &self,
-        context_id: &ContextId,
-        limit: Option<usize>,
-    ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.context_reader
-            .conversation_context(context_id, limit)
-            .await
-            .map_err(|e| BamlRtError::ProvenanceContextRead {
-                source: Box::new(e),
-            })
     }
 }

@@ -101,12 +101,8 @@ impl SurrealRuntimeStore {
         agent_id: baml_rt_core::ids::AgentId,
     ) -> Arc<Self> {
         let graph: Arc<dyn A2aGraphStore> = provenance.clone();
-        let context_reader: Arc<dyn ProvenanceContextReader> = provenance.clone();
         Arc::new(Self {
-            task_store: Arc::new(crate::task_subgraph_store::TaskSubgraphStore::new(
-                graph,
-                context_reader,
-            )),
+            task_store: Arc::new(crate::task_subgraph_store::TaskSubgraphStore::new(graph)),
             provenance,
             agent_id,
         })
@@ -268,9 +264,12 @@ impl ConversationContextSource for SurrealRuntimeStore {
         context_id: &baml_rt_core::ids::ContextId,
         limit: Option<usize>,
     ) -> Result<Vec<ProvenanceConversationContextItem>> {
-        self.task_store
+        self.provenance
             .conversation_context(context_id, limit)
             .await
+            .map_err(|e| BamlRtError::ProvenanceContextRead {
+                source: Box::new(e),
+            })
     }
 }
 
@@ -1094,8 +1093,12 @@ impl A2aAgentBuilderWithEffectEmitter {
             (TaskStoreConfig::Provided(task_store), ProvenanceWriterConfig::Provided(writer)) => {
                 (task_store, Some(writer))
             }
-            (TaskStoreConfig::Provided(task_store), ProvenanceWriterConfig::Default) => {
-                (task_store, None)
+            (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Default) => {
+                return Err(BamlRtError::InvalidArgument(
+                    "A2aAgentBuilder: a custom task-store backend requires an explicit provenance \
+                     writer. Call .with_provenance_writer(...) or .with_surreal_store(...) alongside \
+                     .with_task_store_backend(...).".to_string(),
+                ));
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Provided(writer)) => {
                 let store: Arc<dyn TaskStoreBackend> = Arc::new(ProvenanceTaskStore::new(
@@ -1105,9 +1108,24 @@ impl A2aAgentBuilderWithEffectEmitter {
                 (store, Some(writer))
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Default) => {
-                let store: Arc<dyn TaskStoreBackend> =
-                    Arc::new(ProvenanceTaskStore::new(None, agent_id.clone()));
-                (store, None)
+                // No explicit store provided: spin up an isolated in-memory SurrealDB graph so
+                // every agent has full provenance capabilities (evidence gating, step tracking,
+                // conversation context queries) even without explicit configuration.
+                let isolated = baml_rt_provenance::SurrealStoreBuilder::in_memory_isolated()
+                    .build()
+                    .await
+                    .map_err(|e| BamlRtError::InvalidArgument(format!(
+                        "A2aAgentBuilder: failed to create default isolated provenance store: {e}"
+                    )))?;
+                let runtime_store = SurrealRuntimeStore::new(isolated, agent_id.clone());
+                let provenance_writer: Arc<dyn ProvenanceWriter> = runtime_store.clone();
+                let task_store: Arc<dyn TaskStoreBackend> =
+                    Arc::new(ProvenanceTaskStore::with_backend(
+                        runtime_store,
+                        Some(provenance_writer.clone()),
+                        agent_id.clone(),
+                    ));
+                (task_store, Some(provenance_writer))
             }
             (TaskStoreConfig::Default, ProvenanceWriterConfig::Surreal(store))
             | (TaskStoreConfig::Provided(_), ProvenanceWriterConfig::Surreal(store)) => {
