@@ -400,10 +400,14 @@ impl ClickUpTool {
             .collect();
 
         let count = items.len();
+        let next_hint = items
+            .first()
+            .map(|t| format!(" Next: ListSpacesInput with team_id: {}", t.id))
+            .unwrap_or_default();
         Ok(ClickUpOutput {
             tasks: vec![],
             items,
-            message: format!("Found {count} team(s)"),
+            message: format!("Found {count} team(s).{next_hint}"),
             operation: Some(ClickUpOperation::ListTeams),
         })
     }
@@ -431,10 +435,14 @@ impl ClickUpTool {
             .collect();
 
         let count = items.len();
+        let next_hint = items
+            .first()
+            .map(|s| format!(" Next: ListListsInput with space_id: {}", s.id))
+            .unwrap_or_default();
         Ok(ClickUpOutput {
             tasks: vec![],
             items,
-            message: format!("Found {count} space(s) in team {team_id}"),
+            message: format!("Found {count} space(s) in team {team_id}.{next_hint}"),
             operation: Some(ClickUpOperation::ListSpaces),
         })
     }
@@ -463,10 +471,14 @@ impl ClickUpTool {
             .collect();
 
         let count = items.len();
+        let next_hint = items
+            .first()
+            .map(|l| format!(" Next: ListTasksInput with list_id: {}", l.id))
+            .unwrap_or_default();
         Ok(ClickUpOutput {
             tasks: vec![],
             items,
-            message: format!("Found {count} list(s) in space {space_id}"),
+            message: format!("Found {count} list(s) in space {space_id}.{next_hint}"),
             operation: Some(ClickUpOperation::ListLists),
         })
     }

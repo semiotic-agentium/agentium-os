@@ -1,5 +1,7 @@
 function PlanSyntheticSessionStep(
   objective: string,
+  session_context: SessionContext?,
+  session_state: SyntheticPlannerSendInput?,
 ) -> SyntheticPlannerPlan {
   client DefaultClient
   prompt #"
@@ -10,15 +12,18 @@ function PlanSyntheticSessionStep(
     2) minimize wasted reads and payload
     3) use projection progression: summary -> identity -> detail before Finish
 
-    Look at the session history to determine the current state and what to do next:
-    - No prior session step in history → emit Open (optional reason only)
-    - Session opened, no Send → emit Send to set/refresh scope defaults
-    - Send completed, no Read yet → emit Read with input.read.refId = "root" and projection "summary"
-    - Prior Read results available → inspect them to decide:
-      - If candidates present: Read with max severity ref_id
-      - If refs present but no candidates: Read with refs[0]
-      - If goal_id = "non_trivial_scope_cache_goal" and summary+identity+detail all used → emit Finish
-      - Otherwise continue reading with next projection in the sequence
+    Current session state:
+    - session_open: {{ session_context.session_open }}
+    - allowed_ops: {{ session_context.allowed_ops }}
+    - session_state: {{ session_state }}
+
+    Decision rules based on current state:
+    - session_open = false → emit Open
+    - session_open = true, session_state = null → emit Send to set scope defaults
+    - session_state present, no Read results yet → emit Read with refId="root" and projection="summary"
+    - Read results present → inspect to decide next Read or Finish:
+      - If goal_id = "non_trivial_scope_cache_goal" seen and summary+identity+detail all used → emit Finish
+      - Otherwise read next projection in the sequence (summary → identity → detail)
 
     Current objective: {{ objective }}
 

@@ -6,6 +6,12 @@
 
 /** Types for BAML function arguments and return values (classes, enums, aliases). */
 
+export interface SessionContext { contract_version: string;
+session_open: boolean;
+allowed_ops: string[];
+last_status: string | null;
+ }
+
 export interface SessionReadEnvelopeLite { refId: string;
 budgetHint: number | null;
  }
@@ -37,7 +43,7 @@ export type SyntheticProjectionMode = "SUMMARY" | "IDENTITY" | "DETAIL";
 
 declare global {
 
-declare function PlanSyntheticSessionStep(args: { objective: string } & { __baml_invocation_token?: string }): Promise<SyntheticPlannerPlan>;
+declare function PlanSyntheticSessionStep(args: { objective: string; session_context: SessionContext | null; session_state: SyntheticPlannerSendInput | null } & { __baml_invocation_token?: string }): Promise<SyntheticPlannerPlan>;
 
 }
 
