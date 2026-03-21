@@ -14,7 +14,7 @@ use baml_rt_core::{
 };
 use baml_rt_interceptor::{InterceptorRegistry, ToolCallContext};
 use baml_rt_observability::metrics;
-use baml_rt_tools::ToolRegistry as ConcreteToolRegistry;
+use baml_rt_tools::{ToolRegistry as ConcreteToolRegistry, archive_refs::ContextRefTables};
 use dashmap::DashMap;
 use serde_json::Value;
 use tokio::sync::Mutex as TokioMutex;
@@ -94,6 +94,7 @@ pub(crate) struct ToolExecutionContext {
     pub interceptor_registry: Arc<TokioMutex<InterceptorRegistry>>,
     pub effect_emitter: Option<Arc<dyn EffectEmitter>>,
     pub execution_sessions: Arc<DashMap<String, crate::quickjs_bridge::ExecutionSession>>,
+    pub archive_ref_tables: Arc<ContextRefTables>,
 }
 
 impl ToolExecutionContext {

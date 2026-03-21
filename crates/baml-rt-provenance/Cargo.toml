@@ -44,4 +44,3 @@ cli = ["dep:clap", "dep:anyhow"]
 name = "graph_exporter"
 path = "src/bin/graph_exporter.rs"
 required-features = ["cli"]
-

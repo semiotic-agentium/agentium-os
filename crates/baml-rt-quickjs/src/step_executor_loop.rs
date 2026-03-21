@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use baml_rt_core::{BamlFunctionId, BamlPromptName, BamlRtError, Result, VariantPhase, context};
-use baml_rt_tools::{SessionPolicy, ToolName, ToolSlug};
+use baml_rt_tools::{ToolName, ToolSlug};
 use serde_json::Value;
 use tokio::sync::Mutex;
 
@@ -84,7 +84,6 @@ enum TerminalReason {
     Finished,
     Aborted,
     MaxStepsExhausted,
-    NoLegalOps,
     MissingStatus,
 }
 
@@ -131,33 +130,12 @@ impl Phase {
     }
 }
 
-/// Compute legal ops from phase + policy. Pure function, no I/O.
-fn allowed_ops(phase: &Phase, policy: SessionPolicy) -> Vec<&'static str> {
-    match phase {
-        Phase::AwaitingOpen => vec!["Open"],
-        Phase::Terminal(_) => vec![],
-        Phase::Bound { status, .. } => match policy {
-            SessionPolicy::Strict => match status {
-                // Pre-Send: only Send is allowed.
-                OpenStatus::JustOpened => vec!["Send"],
-                // Post-Send (Done): LLM may Read (paginate/grep archive) or Finish.
-                OpenStatus::Done => vec!["Read", "Finish"],
-            },
-            SessionPolicy::MultiSend => match status {
-                OpenStatus::JustOpened => vec!["Send"],
-                // Post-Send: LLM may Read, Send again, or Finish.
-                OpenStatus::Done => vec!["Read", "Send", "Finish"],
-            },
-        },
-    }
-}
-
 /// Build the session_context JSON injected into BAML function args.
-fn build_session_context(phase: &Phase, ops: &[&str]) -> Value {
+/// Which step fragment to emit is determined only by the per-phase BAML function (narrow return type).
+fn build_session_context(phase: &Phase) -> Value {
     let mut ctx = serde_json::json!({
         "contract_version": "session_context",
         "session_open": phase.is_session_open(),
-        "allowed_ops": ops,
     });
     if let Some(tool) = phase.selected_tool() {
         ctx["selected_tool"] = Value::String(tool.to_string());
@@ -257,19 +235,18 @@ pub async fn run_step_executor_loop(
     let mut steps: Vec<Value> = Vec::new();
     let mut last = Value::Null;
 
-    let policy = {
+    {
         let guard = manager.lock().await;
         let p = guard.resolve_session_policy_for_function(function_name);
-        tracing::info!(function = function_name, policy = ?p, "step_executor_loop: resolved session policy");
-        p
-    };
+        tracing::info!(
+            function = function_name,
+            policy = ?p,
+            "step_executor_loop: resolved session policy"
+        );
+    }
 
     for hop_idx in 0..max_steps {
-        let ops = allowed_ops(&phase, policy);
-        if ops.is_empty() {
-            if !matches!(phase, Phase::Terminal(_)) {
-                phase = Phase::Terminal(TerminalReason::NoLegalOps);
-            }
+        if matches!(phase, Phase::Terminal(_)) {
             break;
         }
 
@@ -284,14 +261,14 @@ pub async fn run_step_executor_loop(
             let guard = manager.lock().await;
             if guard.get_function_signature(&candidate).is_none() {
                 return Err(BamlRtError::InvalidArgument(format!(
-                    "step executor: phase function '{candidate}' not found in agent schema \
-                     (allowed_ops={ops:?}). Rebuild the agent package to regenerate phase functions.",
+                    "step executor: phase function '{candidate}' not found in agent schema. \
+                     Rebuild the agent package to regenerate phase functions.",
                 )));
             }
         }
         let current_function = candidate.clone();
 
-        let session_context = build_session_context(&phase, &ops);
+        let session_context = build_session_context(&phase);
 
         let mut args = match base_args.as_object() {
             Some(obj) => Value::Object(obj.clone()),
@@ -305,7 +282,7 @@ pub async fn run_step_executor_loop(
             hop = hop_idx,
             prompt = %function_id.prompt_name(),
             function = %current_function,
-            allowed_ops = ?ops,
+            phase = ?phase,
             "step_executor_loop: starting hop"
         );
 
@@ -383,8 +360,7 @@ pub async fn run_step_executor_loop(
         phase = Phase::Terminal(TerminalReason::MaxStepsExhausted);
     }
 
-    let final_ops = allowed_ops(&phase, policy);
-    let session_context = build_session_context(&phase, &final_ops);
+    let session_context = build_session_context(&phase);
     let selected_tool = phase.selected_tool().cloned();
 
     Ok(StepExecutorResult {

@@ -12,7 +12,7 @@ use baml_rt_core::{
 use baml_rt_provenance::{
     AgentType, ProvEvent, ProvenanceContextReader, ProvenanceConversationContextItem,
     ProvenanceWriter, SurrealProvenanceStore, SurrealStoreBuilder,
-    store::{ConversationItemContent, ToolOutcome},
+    store::{ConversationItemContent, SessionStepOp, ToolOutcome},
 };
 use baml_tools_slack::SlackTool;
 use common::{
@@ -244,22 +244,36 @@ async fn test_e2e_slack_todo_extraction_with_mock_server_and_mermaid_http() {
     let mut last_signature = String::new();
     let mut stagnant_polls = 0u32;
     for _ in 0..80 {
+        // `conversation_context` returns the last N items by time; long streamed turns can drop
+        // older SessionStep rows if the cap is too small.
         let items = provenance_reader
-            .conversation_context(&context_id, Some(120))
+            .conversation_context(&context_id, Some(200))
             .await
             .unwrap_or_default();
         conversation_items = items.clone();
         saw_tool_result = items.iter().any(|item| {
-            if let ConversationItemContent::ToolResult(tr) = &item.content {
-                if let ToolOutcome::Result(v) = &tr.outcome {
-                    return v
-                        .get("messages")
-                        .and_then(Value::as_array)
-                        .map(|m| !m.is_empty())
-                        .unwrap_or(false);
+            match &item.content {
+                // Non-session tools: flat tool_result with payload.
+                ConversationItemContent::ToolResult(tr) if tr.tool_name == "support/slack" => {
+                    if let ToolOutcome::Result(v) = &tr.outcome {
+                        v.get("messages")
+                            .and_then(Value::as_array)
+                            .map(|m| !m.is_empty())
+                            .unwrap_or(false)
+                    } else {
+                        false
+                    }
                 }
+                // Session FSM: conversation_context uses SessionStep (SendDone), not ToolResult.
+                ConversationItemContent::SessionStep(ss) if ss.tool_name == "support/slack" => {
+                    matches!(
+                        &ss.op,
+                        SessionStepOp::SendDone { header, .. }
+                            if header.contains("C12345678")
+                    )
+                }
+                _ => false,
             }
-            false
         });
         if saw_tool_result {
             break;
@@ -284,31 +298,66 @@ async fn test_e2e_slack_todo_extraction_with_mock_server_and_mermaid_http() {
     }
     assert!(
         saw_tool_result,
-        "Expected non-empty support/slack tool_result in provenance context"
+        "Expected support/slack evidence in provenance context (ToolResult.messages or SessionStep SendDone)"
     );
 
     let has_slack_tool_call = conversation_items.iter().any(|item| {
-        matches!(&item.content, ConversationItemContent::ToolCall(tc) if tc.tool_name == "support/slack")
+        matches!(
+            &item.content,
+            ConversationItemContent::ToolCall(tc) if tc.tool_name == "support/slack"
+        ) || matches!(
+            &item.content,
+            ConversationItemContent::SessionStep(ss)
+                if ss.tool_name == "support/slack"
+                    && matches!(ss.op, SessionStepOp::Open)
+        )
     });
     assert!(
         has_slack_tool_call,
-        "Expected at least one support/slack tool_call item in provenance context"
+        "Expected support/slack tool_call or session Open in provenance context"
     );
 
     let saw_channel_id = conversation_items.iter().any(|item| {
-        matches!(&item.content, ConversationItemContent::ToolCall(tc) if contains_kv(&tc.args, "channel_id", "C12345678"))
+        matches!(
+            &item.content,
+            ConversationItemContent::ToolCall(tc)
+                if tc.tool_name == "support/slack"
+                    && contains_kv(&tc.args, "channel_id", "C12345678")
+        ) || matches!(
+            &item.content,
+            ConversationItemContent::SessionStep(ss)
+                if ss.tool_name == "support/slack"
+                    && matches!(
+                        &ss.op,
+                        SessionStepOp::SendDone { header, .. } if header.contains("C12345678")
+                    )
+        )
     });
     assert!(
         saw_channel_id,
-        "Expected Slack tool call args to include channel_id=C12345678"
+        "Expected Slack channel_id=C12345678 in tool args or session SendDone header"
     );
 
     let saw_thread_ts = conversation_items.iter().any(|item| {
-        matches!(&item.content, ConversationItemContent::ToolCall(tc) if contains_kv(&tc.args, "thread_ts", "1735689600.000000"))
+        matches!(
+            &item.content,
+            ConversationItemContent::ToolCall(tc)
+                if tc.tool_name == "support/slack"
+                    && contains_kv(&tc.args, "thread_ts", "1735689600.000000")
+        ) || matches!(
+            &item.content,
+            ConversationItemContent::SessionStep(ss)
+                if ss.tool_name == "support/slack"
+                    && matches!(
+                        &ss.op,
+                        SessionStepOp::SendDone { header, .. }
+                            if header.contains("1735689600.000000")
+                    )
+        )
     });
     assert!(
         saw_thread_ts,
-        "Expected Slack tool call args to include thread_ts=1735689600.000000"
+        "Expected Slack thread_ts in tool args or session SendDone header"
     );
 
     let mock_hits = mock_state.snapshot().await;

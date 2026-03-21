@@ -48,4 +48,3 @@ Respond with a single JSON object matching the schema below. Output only the JSO
 {{ user_message }}"#
 
 }
-

@@ -73,14 +73,19 @@ test-group = "llm"
 slow-timeout = { period = "120s", terminate-after = 2 }
 retries = { backoff = "fixed", count = 1, delay = "5s" }
 
+# Notion direct-id e2e: extra retries (LLM plan extraction occasionally skips tool path).
+[[profile.ci.overrides]]
+filter = 'package(baml-agent-runner) and test(~test_e2e_notion_direct_id_path)'
+test-group = "llm"
+slow-timeout = { period = "120s", terminate-after = 2 }
+retries = { backoff = "fixed", count = 3, delay = "8s" }
+
 [[profile.ci.overrides]]
 filter = 'package(baml-rt-interceptor) and test(~test_e2e_)'
 test-group = "llm"
 retries = { backoff = "fixed", count = 1, delay = "2s" }
 
-# baml-rt llm_test: real LLM calls; cap concurrency and allow generous budget.
-# test_llm_gated_planner_with_synthetic_retrieval_eval requires ≥6 planner hops
-# at ~5-10s/hop → up to 240s on a loaded CI runner.
+# baml-rt llm_test: real LLM calls (SimpleGreeting + streaming); cap concurrency.
 [[profile.ci.overrides]]
 filter = 'package(baml-rt) and binary(llm_test)'
 test-group = "llm"

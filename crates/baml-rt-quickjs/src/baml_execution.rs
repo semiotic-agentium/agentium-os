@@ -39,22 +39,13 @@ fn planner_state_telemetry(args: &Value) -> Option<(usize, bool, usize, Option<S
         .get("status_token")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let allowed_ops_len = context
-        .get("allowed_ops")
-        .and_then(Value::as_array)
-        .map_or(0usize, std::vec::Vec::len);
     let payload_bytes = serde_json::to_vec(context).map_or(0, |v| v.len());
     let token = if status_token.is_empty() {
         None
     } else {
         Some(status_token.to_string())
     };
-    Some((
-        args_bytes,
-        session_open,
-        payload_bytes.saturating_add(allowed_ops_len),
-        token,
-    ))
+    Some((args_bytes, session_open, payload_bytes, token))
 }
 
 fn derive_base_url(url: &str) -> Option<String> {

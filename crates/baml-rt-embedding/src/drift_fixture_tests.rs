@@ -21,7 +21,6 @@ mod tests {
             PlanDriftAssessment, PlanDriftConfig, PlanDriftInputs, score_plan_drift,
         },
         provider::{EmbeddingProvider, FastEmbedProvider},
-        similarity::cosine_similarity,
         trajectory::TaskDriftTracker,
     };
 
@@ -31,6 +30,7 @@ mod tests {
     }
 
     #[derive(Debug, Deserialize)]
+    #[allow(dead_code)] // TOML fields kept for fixture documentation / forward use
     struct Scenario {
         name: String,
         category: String,
@@ -55,6 +55,7 @@ mod tests {
     }
 
     #[derive(Debug, Deserialize)]
+    #[allow(dead_code)]
     struct PlanSpec {
         objective: String,
         #[serde(default)]
@@ -210,21 +211,21 @@ mod tests {
 
             let mut errors = Vec::new();
 
-            if let Some(min) = scenario.expected.intent_alignment_min {
-                if result.intent_alignment() < min {
-                    errors.push(format!(
-                        "intent_alignment {:.3} < min {min}",
-                        result.intent_alignment()
-                    ));
-                }
+            if let Some(min) = scenario.expected.intent_alignment_min
+                && result.intent_alignment() < min
+            {
+                errors.push(format!(
+                    "intent_alignment {:.3} < min {min}",
+                    result.intent_alignment()
+                ));
             }
-            if let Some(max) = scenario.expected.intent_alignment_max {
-                if result.intent_alignment() > max {
-                    errors.push(format!(
-                        "intent_alignment {:.3} > max {max}",
-                        result.intent_alignment()
-                    ));
-                }
+            if let Some(max) = scenario.expected.intent_alignment_max
+                && result.intent_alignment() > max
+            {
+                errors.push(format!(
+                    "intent_alignment {:.3} > max {max}",
+                    result.intent_alignment()
+                ));
             }
             if let Some(min) = scenario.expected.step_alignment_min {
                 match result.step_alignment() {
@@ -243,18 +244,18 @@ mod tests {
                     _ => {}
                 }
             }
-            if scenario.expected.step_alignment.as_deref() == Some("absent") {
-                if result.step_alignment().is_some() {
-                    errors.push("step_alignment should be absent".to_string());
-                }
+            if scenario.expected.step_alignment.as_deref() == Some("absent")
+                && result.step_alignment().is_some()
+            {
+                errors.push("step_alignment should be absent".to_string());
             }
-            if let Some(min) = scenario.expected.trajectory_drift_min {
-                if result.trajectory_drift() < min {
-                    errors.push(format!(
-                        "trajectory_drift {:.3} < min {min}",
-                        result.trajectory_drift()
-                    ));
-                }
+            if let Some(min) = scenario.expected.trajectory_drift_min
+                && result.trajectory_drift() < min
+            {
+                errors.push(format!(
+                    "trajectory_drift {:.3} < min {min}",
+                    result.trajectory_drift()
+                ));
             }
             if let Some(ref expected_sev) = scenario.expected.composite_severity {
                 let expected = parse_severity(expected_sev);

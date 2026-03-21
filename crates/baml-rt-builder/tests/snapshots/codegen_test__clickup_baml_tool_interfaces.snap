@@ -8,16 +8,15 @@ expression: baml_output
 // FSM (Finite State Machine) Tool Session Protocol:
 // All host tools use a session-based FSM with strict state transitions:
 // 1. Open: Must be the FIRST step - opens a tool session
-// 2. Send: Can occur AFTER Open, including multiple times across a session
-// 3. Read: Retrieves output/progress using explicit read input
+// 2. Send: Give input to the tool. BLOCKS until Done. Returns archive ref @N + summary.
+// 3. Read: Deref a prior Send result. Requires archive_ref (e.g. '@1'). Supports grep/paginate.
 // 4. Finish: Closes the session gracefully
 // 5. Abort: Closes the session with an error
 //
 // CRITICAL FSM RULES:
-// - Open MUST come before any Send step
-// - Open may include 'initial_input' only when the step schema defines that field
-// - Send uses 'input' field (for subsequent inputs)
-// - Use Read to fetch pending output/chunks; Read may repeat between Send steps
+// - Open MUST come before Send
+// - Send blocks until Done. The result includes 'archive_ref' (e.g. '@1') and a summary.
+// - Read requires archive_ref from a prior Send. Use it to paginate or grep the output.
 // - Always Finish or Abort to close the session
 
 // Shared standard planning types
@@ -33,15 +32,6 @@ class StandardStructuredPlan {
   plan_steps StandardAgentPlanStep[]
 }
 
-class SessionContext {
-  contract_version string
-  session_open bool
-  allowed_ops string[]
-  scope_ref string?
-  output_ref string?
-  evidence_ref string?
-}
-
 class HistoryContext {
   hop int
   op string
@@ -51,65 +41,76 @@ class HistoryContext {
   payload string?
 }
 
+/// FSM session context injected by the host at each step.
+class SessionContext {
+  contract_version string
+  session_open bool
+  scope_ref string?
+  output_ref string?
+  evidence_ref string?
+}
+
+/// Read dereferences a prior Send result by archive ref.
+/// grep -n / cat -n interface over archived output. Standard grep CLI flags apply.
+/// IMPORTANT: always supply a grep pattern for archives larger than ~50 lines.
+/// Bare cat on a large archive wastes context — grep to find relevant sections first.
+class ArchiveReadInput {
+  archive_ref string @description("Archive ref from the preceding Send, e.g. '@1'.")
+  offset int? @description("Start line for pagination (0-based). To read the next page, use the offset value shown in the trailing footer of the previous read. Do NOT re-read from offset 0 with a larger limit.")
+  limit int? @description("Maximum lines to return (default 40). Increase explicitly if you need more — e.g. limit=100 for large result sets.")
+  grep string? @description("grep pattern with optional CLI flags: -i (case-insensitive), -E (extended regex). Examples: 'title', '-i agentium', \"-iE 'agent|platform'\". Use this instead of bare cat on large archives.")
+}
+
 // Domain types generated from #[derive(BamlType)]
 /// List all teams/workspaces — no parameters needed.
 class ListTeamsInput {
 }
 
-/// List spaces in a team.
+/// List spaces in a team. Call ListTeams first to get the team_id.
 class ListSpacesInput {
-  team_id string
+  team_id string @description("ClickUp team (workspace) ID — obtain from ListTeams.")
 }
 
-/// List task-lists in a space.
+/// List task-lists in a space. Call ListSpaces first to get the space_id.
 class ListListsInput {
-  space_id string
+  space_id string @description("ClickUp space ID — obtain from ListSpaces.")
 }
 
-/// List tasks in a list.
+/// List tasks in a list. Call ListLists first to get the list_id.
 class ListTasksInput {
-  list_id string
+  list_id string @description("ClickUp list ID — obtain from ListLists.")
 }
 
-/// Get details of a specific task.
+/// Get full details of a specific task (description, status, priority, assignees).
 class GetTaskInput {
-  task_id string
+  task_id string @description("ClickUp task ID — obtain from ListTasks.")
 }
 
 /// Create a new task in a list.
 class CreateTaskInput {
-  list_id string
-  name string
-  description string?
+  list_id string @description("ClickUp list ID where the task will be created — obtain from ListLists.")
+  name string @description("Task title / name.")
+  description string? @description("Optional long-form task description (Markdown supported).")
   priority int? @description("ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")
 }
 
 /// Update an existing task's status, description, or priority.
 class UpdateTaskInput {
-  task_id string
-  status string? @description("Task status string (e.g. in progress).")
-  description string?
+  task_id string @description("ClickUp task ID to update — obtain from ListTasks or GetTask.")
+  status string? @description("New task status string (e.g. 'in progress', 'complete').")
+  description string? @description("Updated task description (Markdown supported).")
   priority int? @description("ClickUp priority: 1 = urgent, 2 = high, 3 = normal, 4 = low.")
 }
 
-/// Delete a task from the workspace.
+/// Permanently delete a task. Confirm with the user before proceeding.
 class DeleteTaskInput {
-  task_id string
-  confirm_delete bool
+  task_id string @description("ClickUp task ID to delete — obtain from ListTasks.")
+  confirm_delete bool @description("Must be true to proceed. Always confirm deletion with the user first.")
 }
 
-/// Union of all ClickUp action inputs.
-///
-/// The LLM picks the appropriate variant based on the desired action.
-/// In generated BAML this becomes:
-/// `type ClickUpInput = ListTeamsInput | ListSpacesInput | … | DeleteTaskInput`
-///
-/// **Variant order matters**: `serde(untagged)` tries variants top-down and
-/// takes the first successful match. Ordering invariants:
-/// - `GetTask` must precede `UpdateTask` so that `{ "task_id": "..." }`
-/// (without optional update fields) resolves to `GetTask`, not `UpdateTask`.
-/// - `DeleteTask` has `confirm_delete: bool` which disambiguates it from
-/// `GetTask`, so its position is flexible.
+/// ClickUp tool — navigate teams → spaces → lists → tasks.
+/// ListTeams → ListSpaces → ListLists → ListTasks → GetTask/CreateTask/UpdateTask/DeleteTask.
+/// IDs must come from prior navigation results, not invented.
 type ClickUpInput = ListTeamsInput | ListSpacesInput | ListListsInput | ListTasksInput | GetTaskInput | CreateTaskInput | UpdateTaskInput | DeleteTaskInput
 
 /// Summary of a single ClickUp task, projected from the API response.
@@ -140,8 +141,18 @@ class ClickUpOutput {
   message string
 }
 
+/// Tool card for support/clickup: metadata for polymorphic Open selection.
+class SupportClickupToolCard {
+  tool_name "support/clickup"
+  description "Interact with ClickUp: navigate workspaces (teams, spaces, lists) and manage tasks."
+  session_policy "MultiSend"
+  input_summary "{}"
+  tags string[] @description("Tool tags: support, clickup")
+}
+
 class SupportClickupOpenStep {
   op "Open"
+  tool_name "support/clickup" @description("Tool to open")
 }
 
 class SupportClickupSendStep {
@@ -151,7 +162,7 @@ class SupportClickupSendStep {
 
 class SupportClickupReadStep {
   op "Read"
-  input ClickUpInput @description("Read payload for this step.")
+  input ArchiveReadInput @description("Archive ref and optional pagination/grep params.")
 }
 
 class SupportClickupFinishStep {
@@ -165,5 +176,5 @@ class SupportClickupAbortStep {
 type SupportClickupSessionStep = SupportClickupOpenStep | SupportClickupSendStep | SupportClickupReadStep | SupportClickupFinishStep | SupportClickupAbortStep
 
 class SupportClickupSessionPlan {
-  step SupportClickupSessionStep @description("Emit exactly one FSM step. Choose op from allowed_ops. After Send, prefer Read before further Send/Finish so you consume tool output and status.")
+  step SupportClickupSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again.")
 }

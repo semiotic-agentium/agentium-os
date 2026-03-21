@@ -1784,9 +1784,7 @@ async fn conversation_context_required_fields_skip(store: &dyn ParityStore) {
     );
 
     // All items should have non-empty event_id and appropriate source
-    use baml_rt_provenance::store::{
-        ConversationItemContent as CIC, ToolCallContent as TCC, ToolResultContent as TRC,
-    };
+    use baml_rt_provenance::store::ConversationItemContent as CIC;
     for item in &items {
         assert!(
             !item.event_id.as_str().is_empty(),

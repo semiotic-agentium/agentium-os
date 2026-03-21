@@ -2,6 +2,8 @@
 //!
 //! Run: `cargo test -p baml-agent-runner --features security-eval -- drift_integration --ignored --nocapture`
 
+#![allow(dead_code, unused_imports)] // Stubs for manual / ignored drift runs; imports kept for copy-paste workflows.
+
 #[allow(dead_code, unused_imports)]
 mod common;
 
@@ -14,7 +16,6 @@ use std::{
     },
 };
 
-use async_trait::async_trait;
 use baml_rt::{
     A2aAgent,
     baml::BamlRuntimeManager,
@@ -98,7 +99,7 @@ impl CountingInterceptor {
     }
 }
 
-#[async_trait]
+#[::async_trait::async_trait]
 impl LLMInterceptor for CountingInterceptor {
     async fn intercept_llm_call(
         &self,

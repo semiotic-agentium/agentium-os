@@ -71,7 +71,6 @@ requirements: string[];
 
 export interface SessionContext { contract_version: string;
 session_open: boolean;
-allowed_ops: string[];
 scope_ref: string | null;
 output_ref: string | null;
 evidence_ref: string | null;
@@ -390,7 +389,6 @@ export type StepExecutorFunctionName = "ChooseClaudeDevAction" | "ChooseClaudeDe
 export interface SessionContext {
     contract_version: "session_context";
     session_open: boolean;
-    allowed_ops: ("Open" | "Send" | "Read" | "Finish" | "Abort")[];
     scope_ref: string | null;
     output_ref: string | null;
     evidence_ref: string | null;

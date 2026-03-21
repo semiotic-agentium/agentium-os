@@ -41,7 +41,6 @@ class HistoryContext {
 class SessionContext {
   contract_version string
   session_open bool
-  allowed_ops string[]
   scope_ref string?
   output_ref string?
   evidence_ref string?
@@ -409,4 +408,3 @@ type SystemInternal_a2aSessionStep = SystemInternal_a2aOpenStep | SystemInternal
 class SystemInternal_a2aSessionPlan {
   step SystemInternal_a2aSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send (input.text MUST be non-empty); Send done → Finish or Read @N.")
 }
-

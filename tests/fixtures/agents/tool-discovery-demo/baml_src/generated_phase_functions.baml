@@ -60,4 +60,3 @@ Session history:
 {{ ctx.output_format }}"#
 
 }
-

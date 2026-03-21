@@ -39,8 +39,8 @@ pub async fn session_totals_by_context(
         .query(query)
         .bind(("context_id", context_id.to_string()))
         .await
-        .map_err(|e| surreal_err(e))?;
-    let rows: Vec<Value> = resp.take(0).map_err(|e| surreal_err(e))?;
+        .map_err(surreal_err)?;
+    let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
     Ok(rows
         .into_iter()
         .filter_map(|v| {
@@ -60,12 +60,8 @@ pub async fn turn_totals_by_context(
         WHERE rel_type = 'WAS_INVOKED_BY' \
           AND from_label = 'A2AMessageProcessing' \
           AND to_label = 'LlmCall'";
-    let mut edge_resp = store
-        .db()
-        .query(edge_query)
-        .await
-        .map_err(|e| surreal_err(e))?;
-    let edge_rows: Vec<Value> = edge_resp.take(0).map_err(|e| surreal_err(e))?;
+    let mut edge_resp = store.db().query(edge_query).await.map_err(surreal_err)?;
+    let edge_rows: Vec<Value> = edge_resp.take(0).map_err(surreal_err)?;
 
     let msg_ids: Vec<String> = edge_rows
         .iter()
@@ -85,8 +81,8 @@ pub async fn turn_totals_by_context(
         let mut resp = store.db()
             .query("SELECT node_id, props.a2a_message_id AS message_id, props.a2a_context_id AS ctx OMIT id FROM prov_node WHERE node_id = $nid LIMIT 1")
             .bind(("nid", nid.clone()))
-            .await.map_err(|e| surreal_err(e))?;
-        let rows: Vec<Value> = resp.take(0).map_err(|e| surreal_err(e))?;
+            .await.map_err(surreal_err)?;
+        let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
         msg_rows.extend(rows);
     }
     let msg_map: HashMap<String, String> = msg_rows
@@ -108,8 +104,8 @@ pub async fn turn_totals_by_context(
             .query("SELECT node_id, props OMIT id FROM prov_node WHERE node_id = $nid AND props.a2a_context_id = $context_id AND props.a2a_usage_total_tokens IS NOT NULL LIMIT 1")
             .bind(("nid", nid.clone()))
             .bind(("context_id", context_id.to_string()))
-            .await.map_err(|e| surreal_err(e))?;
-        let rows: Vec<Value> = resp.take(0).map_err(|e| surreal_err(e))?;
+            .await.map_err(surreal_err)?;
+        let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
         llm_rows.extend(rows);
     }
     let llm_map: HashMap<String, Value> = llm_rows
@@ -206,8 +202,8 @@ pub async fn user_prompts_by_context(
         .query(query)
         .bind(("context_id", context_id.to_string()))
         .await
-        .map_err(|e| surreal_err(e))?;
-    let rows: Vec<Value> = resp.take(0).map_err(|e| surreal_err(e))?;
+        .map_err(surreal_err)?;
+    let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
     Ok(rows
         .into_iter()
         .filter_map(|v| {

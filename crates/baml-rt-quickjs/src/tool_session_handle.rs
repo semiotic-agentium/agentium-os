@@ -8,7 +8,10 @@ use std::{sync::Arc, time::Instant};
 
 use baml_rt_core::{
     BamlRtError, Outcome, Result, SessionLifecycleError,
-    bus::{EffectStartToken, ToolEffectMetadata, ToolKind},
+    bus::{
+        EffectEvent, EffectStartToken, SessionStepOp as BusSessionStepOp, ToolEffectMetadata,
+        ToolKind,
+    },
     context,
 };
 use baml_rt_interceptor::ToolCallContext;
@@ -149,6 +152,16 @@ impl ToolSessionExecutionHandle {
                 session_id,
                 self.tool_session_scopes.len()
             ));
+        }
+        if let Some(emitter) = self.ctx.effect_emitter.as_ref() {
+            let _ = emitter
+                .emit(EffectEvent::ToolSessionStep {
+                    context_id: context_id.clone(),
+                    tool_name: tool_name.to_string(),
+                    session_id: session_id.to_string(),
+                    op: BusSessionStepOp::Open,
+                })
+                .await;
         }
         Ok(session_id)
     }
@@ -574,6 +587,55 @@ impl ToolSessionExecutionHandle {
                         );
                     }
                 }
+                // Mirror `execute_tool_session_plan` / `tool_session_send_blocking`: surface SendDone
+                // in conversation_context. JS `openToolSession` uses this path; without this,
+                // session-phase ToolCall rows are suppressed and no SessionStep exists.
+                if let Ok(ref output_value) = completion_result {
+                    let scope_snapshot = self
+                        .tool_session_scopes
+                        .get(session_id)
+                        .map(|e| (e.scope.context_id().clone(), e.tool_name.clone()));
+                    if let (Some(emitter), Some((ctx_id, tool_name))) =
+                        (self.ctx.effect_emitter.as_ref(), scope_snapshot)
+                    {
+                        use baml_rt_tools::{archive_read, archive_refs};
+                        let rendered = archive_read::render_to_lines(output_value);
+                        let send_args = state.context.args.clone();
+                        let wrapped = serde_json::json!({ "op": "Send", "input": send_args });
+                        let from_send = self
+                            .ctx
+                            .tool_registry
+                            .describe_invocation_with_hint(Some(tool_name.as_str()), &wrapped);
+                        let summary = if !from_send.trim().is_empty() {
+                            from_send
+                        } else {
+                            self.ctx
+                                .tool_registry
+                                .describe_result_for(&tool_name, output_value)
+                                .unwrap_or_else(|| "tool result".to_string())
+                        };
+                        let entry =
+                            archive_refs::ArchiveEntry::new(rendered, tool_name.clone(), summary);
+                        let cid = ctx_id.as_str().to_string();
+                        let ref_table = archive_refs::get_or_create_ref_table(
+                            &self.ctx.archive_ref_tables,
+                            &cid,
+                        );
+                        let archive_ref = ref_table.insert(entry.clone());
+                        let header = entry.display_header(archive_ref);
+                        let _ = emitter
+                            .emit(EffectEvent::ToolSessionStep {
+                                context_id: ctx_id,
+                                tool_name,
+                                session_id: session_id.to_string(),
+                                op: BusSessionStepOp::SendDone {
+                                    archive_ref: archive_ref.to_string(),
+                                    header,
+                                },
+                            })
+                            .await;
+                    }
+                }
                 let interceptor_registry = self.ctx.interceptor_registry.lock().await;
                 interceptor_registry
                     .notify_tool_call_complete(&state.context, &completion_result, duration_ms)
@@ -854,22 +916,22 @@ impl ToolSessionExecutionHandle {
                     // Complete the Send token with the actual result now that we have it.
                     // This is the correct completion point — the ToolResult in provenance
                     // carries real data, not a "{status: sent}" stub.
-                    if let Some((_, token)) = self.tool_session_effect_tokens.remove(session_id) {
-                        if let Some(emitter) = self.ctx.effect_emitter.as_ref() {
-                            let duration_ms = self
-                                .tool_session_states
-                                .get(session_id)
-                                .map(|s| s.start.elapsed().as_millis() as u64)
-                                .unwrap_or(0);
-                            let _ = token
-                                .complete(
-                                    emitter.as_ref(),
-                                    duration_ms,
-                                    Outcome::Success,
-                                    Some(output_value.clone()),
-                                )
-                                .await;
-                        }
+                    if let Some((_, token)) = self.tool_session_effect_tokens.remove(session_id)
+                        && let Some(emitter) = self.ctx.effect_emitter.as_ref()
+                    {
+                        let duration_ms = self
+                            .tool_session_states
+                            .get(session_id)
+                            .map(|s| s.start.elapsed().as_millis() as u64)
+                            .unwrap_or(0);
+                        let _ = token
+                            .complete(
+                                emitter.as_ref(),
+                                duration_ms,
+                                Outcome::Success,
+                                Some(output_value.clone()),
+                            )
+                            .await;
                     }
                     let rendered = archive_read::render_to_lines(&output_value);
                     let tool_name = self

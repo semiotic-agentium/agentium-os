@@ -41,7 +41,6 @@ class HistoryContext {
 class SessionContext {
   contract_version string
   session_open bool
-  allowed_ops string[]
   scope_ref string?
   output_ref string?
   evidence_ref string?
@@ -124,4 +123,3 @@ type SupportCalculateSessionStep = SupportCalculateOpenStep | SupportCalculateSe
 class SupportCalculateSessionPlan {
   step SupportCalculateSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again.")
 }
-

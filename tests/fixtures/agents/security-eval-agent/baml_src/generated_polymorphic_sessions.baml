@@ -9,4 +9,3 @@ class ExecuteStepOpenStep {
 class ExecuteStepSessionPlan {
   step ExecuteStepOpenStep @description("Select a tool and emit Open. After this, the session auto-narrows to the selected tool's step executor.")
 }
-

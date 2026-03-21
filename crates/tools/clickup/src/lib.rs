@@ -18,37 +18,6 @@ fn option_is_empty(opt: &Option<String>) -> bool {
     opt.as_ref().is_none_or(|s| s.is_empty())
 }
 
-const GET_TASK_DESCRIPTION_MAX_CHARS: usize = 120;
-const SINGLE_TASK_DESCRIPTION_MAX_CHARS: usize = 1200;
-
-fn truncate_chars_with_ellipsis(input: &str, max_chars: usize) -> String {
-    let mut out = String::with_capacity(input.len().min(max_chars) + 3);
-    for (i, ch) in input.chars().enumerate() {
-        if i >= max_chars {
-            out.push_str("...");
-            return out;
-        }
-        out.push(ch);
-    }
-    out
-}
-
-fn normalize_optional_description(desc: &mut Option<String>, max_chars: usize) {
-    let Some(current) = desc.as_ref() else {
-        return;
-    };
-    let trimmed = current.trim();
-    if trimmed.is_empty() {
-        *desc = None;
-        return;
-    }
-    if trimmed.chars().count() > max_chars {
-        *desc = Some(truncate_chars_with_ellipsis(trimmed, max_chars));
-    } else if trimmed.len() != current.len() {
-        *desc = Some(trimmed.to_string());
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Per-action input types
 // ---------------------------------------------------------------------------
@@ -646,51 +615,6 @@ impl ClickUpTool {
             operation: Some(ClickUpOperation::DeleteTask),
         })
     }
-
-    fn compact_clickup_output(output: &mut ClickUpOutput) {
-        match output.operation {
-            Some(ClickUpOperation::ListTasks) => {
-                for task in &mut output.tasks {
-                    task.description = None;
-                }
-            }
-            Some(ClickUpOperation::GetTask) => {
-                for task in &mut output.tasks {
-                    normalize_optional_description(
-                        &mut task.description,
-                        GET_TASK_DESCRIPTION_MAX_CHARS,
-                    );
-                }
-            }
-            Some(ClickUpOperation::CreateTask) | Some(ClickUpOperation::UpdateTask) => {
-                for task in &mut output.tasks {
-                    task.description = None;
-                }
-            }
-            _ => {
-                for task in &mut output.tasks {
-                    normalize_optional_description(
-                        &mut task.description,
-                        SINGLE_TASK_DESCRIPTION_MAX_CHARS,
-                    );
-                }
-            }
-        }
-
-        // Internal host metadata is useful in raw provenance but unnecessary in
-        // prompt-projection context.
-        output.operation = None;
-    }
-
-    fn compact_tool_result_payload(content: &mut serde_json::Value) {
-        let Ok(mut output) = serde_json::from_value::<ClickUpOutput>(content.clone()) else {
-            return;
-        };
-        Self::compact_clickup_output(&mut output);
-        if let Ok(compacted) = serde_json::to_value(output) {
-            *content = compacted;
-        }
-    }
 }
 
 #[baml_tool(
@@ -734,7 +658,7 @@ impl BamlTool for ClickUpTool {
         tracing::Span::current().record("action", action);
 
         let api_key = Self::api_key()?;
-        match args {
+        let mut output = match args {
             ClickUpInput::ListTeams(_) => self.list_teams(&api_key).await,
             ClickUpInput::ListSpaces(input) => self.list_spaces(&api_key, &input.team_id).await,
             ClickUpInput::ListLists(input) => self.list_lists(&api_key, &input.space_id).await,
@@ -775,7 +699,9 @@ impl BamlTool for ClickUpTool {
                     self.delete_task(&api_key, &input.task_id).await
                 }
             }
-        }
+        }?;
+        output.operation = None;
+        Ok(output)
     }
 
     fn describe_result(&self, output: &Self::Output) -> String {

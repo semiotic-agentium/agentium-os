@@ -41,7 +41,6 @@ class HistoryContext {
 class SessionContext {
   contract_version string
   session_open bool
-  allowed_ops string[]
   scope_ref string?
   output_ref string?
   evidence_ref string?
@@ -298,4 +297,3 @@ type SystemDiscover_agentsSessionStep = SystemDiscover_agentsOpenStep | SystemDi
 class SystemDiscover_agentsSessionPlan {
   step SystemDiscover_agentsSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send; Send done (result @N archived) → Finish, or Read @N to paginate/grep, or Send again.")
 }
-

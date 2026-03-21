@@ -1048,7 +1048,7 @@ async fn test_step_executor_loop_drives_full_session_with_interceptor() {
                 1 => {
                     json!({ "step": { "op": "Send", "input": { "expression": { "left": 2, "operation": "Add", "right": 3 } } } })
                 }
-                // Send now blocks until Done; FSM advances to __continue__ (Read/Finish allowed).
+                // Send now blocks until Done; FSM advances to __continue__ (Read/Finish phase).
                 2 => json!({ "step": { "op": "Finish" } }),
                 _ => json!({ "message": "done" }),
             };

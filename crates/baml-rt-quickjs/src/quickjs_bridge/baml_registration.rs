@@ -467,39 +467,6 @@ fn ensure_execution_session_scope_matches(
     Ok(())
 }
 
-/// Compute the set of legal step-executor ops for the current FSM position.
-///
-/// Policy is resolved from tool metadata (not from function names). Both known
-/// policies produce identical sequences for `sent` → `Read`; they differ only
-/// in whether `done` allows re-sends (`MultiSend`) or gates to `Finish` only
-/// (`Strict`).  `Strict` is the safe default and correct for every tool
-/// currently in the system.
-fn step_executor_allowed_ops(
-    session_open: bool,
-    last_status: Option<&str>,
-    policy: baml_rt_tools::SessionPolicy,
-) -> Vec<&'static str> {
-    if !session_open {
-        return vec!["Open"];
-    }
-    match policy {
-        baml_rt_tools::SessionPolicy::Strict => match last_status {
-            Some("open") => vec!["Send"],
-            Some("sent") | Some("streaming") | Some("suspended") => vec!["Read"],
-            Some("done") => vec!["Finish", "Read"],
-            Some("aborted") => vec!["Abort"],
-            _ => vec!["Read"],
-        },
-        baml_rt_tools::SessionPolicy::MultiSend => match last_status {
-            Some("open") => vec!["Send"],
-            Some("sent") | Some("streaming") | Some("suspended") => vec!["Read"],
-            Some("done") => vec!["Read", "Send", "Finish"],
-            Some("aborted") => vec!["Abort"],
-            _ => vec!["Read"],
-        },
-    }
-}
-
 fn validate_step_executor_transition(
     session_open_before_hop: bool,
     last_status_before_hop: Option<&str>,
@@ -719,82 +686,8 @@ pub(super) async fn register_await_helper(bridge: &QuickJSBridge) -> Result<()> 
     Ok(())
 }
 
-/// Resolve the `SessionPolicy` for the current step executor context.
-///
-/// When `selected_tool` is provided (after Open), resolves directly from the tool's
-/// metadata — unified path for both single-tool and polymorphic functions.
-/// Falls back to function-level resolution when `selected_tool` is not yet known.
-/// Returns `Strict` (the safe default) when resolution fails.
-fn resolve_session_policy(
-    manager: &crate::baml::BamlRuntimeManager,
-    step_executor: Option<&str>,
-    selected_tool: Option<&str>,
-) -> baml_rt_tools::SessionPolicy {
-    if let Some(tool_name_str) = selected_tool {
-        match baml_rt_tools::ToolName::parse(tool_name_str) {
-            Ok(tool_name) => return manager.resolve_session_policy_for_tool(&tool_name),
-            Err(e) => {
-                tracing::warn!(
-                    selected_tool = tool_name_str,
-                    error = %e,
-                    "resolve_session_policy: invalid selected_tool format, falling back to function-level"
-                );
-            }
-        }
-    }
-    match step_executor {
-        Some(f) => manager.resolve_session_policy_for_function(f),
-        None => baml_rt_tools::SessionPolicy::default(),
-    }
-}
-
 /// Register Step Executor runtime helpers so shim JS stays coordination-only.
 pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridge) -> Result<()> {
-    let manager_clone = bridge.baml_manager().clone();
-    bridge
-        .runtime()
-        .set_function(
-            &[],
-            "__step_executor_allowed_ops",
-            move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<
-                JsValueFacade,
-                quickjs_runtime::jsutils::JsError,
-            > {
-                if args.is_empty() || !args[0].is_string() {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str(
-                        "Expected step-executor context JSON string",
-                    ));
-                }
-                let payload: Value = serde_json::from_str(args[0].get_str()).map_err(|e| {
-                    quickjs_runtime::jsutils::JsError::new_str(&format!(
-                        "Failed to parse step-executor context JSON: {e}"
-                    ))
-                })?;
-                let session_open = payload
-                    .get("session_open")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                let last_status = payload.get("last_status").and_then(Value::as_str);
-                let step_executor = payload.get("step_executor").and_then(Value::as_str);
-                let selected_tool = payload.get("selected_tool").and_then(Value::as_str);
-                let policy = manager_clone
-                    .try_lock()
-                    .map(|guard| resolve_session_policy(&guard, step_executor, selected_tool))
-                    .unwrap_or_default();
-                let allowed = step_executor_allowed_ops(session_open, last_status, policy);
-                let json = serde_json::to_string(&allowed).map_err(|e| {
-                    quickjs_runtime::jsutils::JsError::new_str(&format!(
-                        "Failed to encode allowed ops JSON: {e}"
-                    ))
-                })?;
-                Ok(JsValueFacade::new_string(json))
-            },
-        )
-        .map_err(|e| BamlRtError::QuickJsWithSource {
-            context: "Failed to register __step_executor_allowed_ops helper".to_string(),
-            source: Box::new(e),
-        })?;
-
     bridge
         .runtime()
         .set_function(

@@ -190,18 +190,6 @@ pub enum ToolSessionOp {
     },
 }
 
-impl ToolSessionOp {
-    pub fn op_name(&self) -> &'static str {
-        match self {
-            Self::Open { .. } => "Open",
-            Self::Send { .. } => "Send",
-            Self::Read { .. } => "Read",
-            Self::Finish { .. } => "Finish",
-            Self::Abort { .. } => "Abort",
-        }
-    }
-}
-
 /// Plan-level result of extracting a single tool session fragment plus optional plan reason.
 #[derive(Debug, Clone)]
 pub(crate) struct ToolSessionPlan {

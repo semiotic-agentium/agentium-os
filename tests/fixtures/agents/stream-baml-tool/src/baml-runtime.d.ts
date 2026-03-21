@@ -24,7 +24,6 @@ export type MathOperation = "Add" | "Subtract" | "Multiply" | "Divide";
 
 export interface SessionContext { contract_version: string;
 session_open: boolean;
-allowed_ops: string[];
 scope_ref: string | null;
 output_ref: string | null;
 evidence_ref: string | null;
@@ -356,7 +355,6 @@ export type StepExecutorFunctionName = "ChooseCalcTool" | "ChooseCalcTool__act__
 export interface SessionContext {
     contract_version: "session_context";
     session_open: boolean;
-    allowed_ops: ("Open" | "Send" | "Read" | "Finish" | "Abort")[];
     scope_ref: string | null;
     output_ref: string | null;
     evidence_ref: string | null;

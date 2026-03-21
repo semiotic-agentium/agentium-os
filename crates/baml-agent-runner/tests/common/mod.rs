@@ -1,9 +1,12 @@
-use std::{
-    path::PathBuf,
-    sync::{Arc, OnceLock},
-};
+#[cfg(any(
+    feature = "clickup",
+    feature = "notion",
+    feature = "slack",
+    feature = "llm-tests"
+))]
+use std::sync::Arc;
+use std::{path::PathBuf, sync::OnceLock};
 
-use async_trait::async_trait;
 #[cfg(any(
     feature = "clickup",
     feature = "notion",
@@ -28,7 +31,6 @@ use baml_rt_core::{
     A2aStreamChunk, A2aWireRequest, AgentCard, AgentDiscoveryEntry, AgentDispatchAck,
     AgentDispatchRequest, AgentLister, AgentRouteKey,
 };
-use baml_rt_provenance::SurrealProvenanceStore;
 #[cfg(any(
     feature = "clickup",
     feature = "notion",
@@ -36,7 +38,7 @@ use baml_rt_provenance::SurrealProvenanceStore;
     feature = "llm-tests"
 ))]
 use baml_rt_provenance::{
-    GraphExporter,
+    GraphExporter, SurrealProvenanceStore,
     graph_export::{sequence::render_sequence_diagram, simplify::simplify_graph},
 };
 #[cfg(any(
@@ -114,7 +116,7 @@ impl SingleAgentRegistry {
     feature = "slack",
     feature = "llm-tests"
 ))]
-#[async_trait]
+#[::async_trait::async_trait]
 impl AgentLister for SingleAgentRegistry {
     fn list_agents(&self) -> Vec<AgentDiscoveryEntry> {
         let agent_card = AgentCard {
@@ -144,7 +146,7 @@ impl AgentLister for SingleAgentRegistry {
     feature = "slack",
     feature = "llm-tests"
 ))]
-#[async_trait]
+#[::async_trait::async_trait]
 impl AgentRegistry for SingleAgentRegistry {
     async fn handle_a2a_stream(
         &self,
@@ -211,7 +213,7 @@ impl TestMermaidService {
     feature = "slack",
     feature = "llm-tests"
 ))]
-#[async_trait]
+#[::async_trait::async_trait]
 impl baml_rt_api::MermaidService for TestMermaidService {
     async fn mermaid_for_context(
         &self,
@@ -384,6 +386,7 @@ pub fn contains_kv(value: &Value, key: &str, expected: &str) -> bool {
 }
 
 /// Builds an agent at the given path using the builder crate (in-process, no cargo subprocess).
+#[allow(dead_code)] // Used only by optional http-tools integration tests (slack/clickup/notion).
 pub async fn build_agent_dir_to_temp_async(agent_dir: PathBuf, package_label: &str) -> PathBuf {
     test_support::common::build_agent_package_to_temp(agent_dir, package_label).await
 }

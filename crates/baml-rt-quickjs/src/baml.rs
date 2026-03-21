@@ -16,7 +16,10 @@ use std::{
 use async_trait::async_trait;
 use baml_rt_core::{
     BamlRtError, Outcome, Result, SessionLifecycleError,
-    bus::{EffectEmitter, EffectEvent, EffectStartToken, PlanningSupersessionKind, ToolKind},
+    bus::{
+        EffectEmitter, EffectEvent, EffectStartToken, PlanningSupersessionKind, ToolEffectMetadata,
+        ToolKind,
+    },
     context,
     correlation::current_correlation_id,
     ids::{ExternalId, TaskId},
@@ -54,6 +57,15 @@ use crate::{
 /// open_input when none is provided.
 fn empty_open_input() -> Value {
     serde_json::Value::Object(serde_json::Map::new())
+}
+
+/// Matches provenance store step completion statuses for terminal steps.
+fn is_planning_step_terminal_completed_status(status: &str) -> bool {
+    let normalized = status.trim().to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "completed" | "done" | "step_completed" | "finished"
+    )
 }
 
 fn schema_allows_empty_open_input(schema: &Value) -> bool {
@@ -420,6 +432,7 @@ impl BamlRuntimeManager {
             interceptor_registry: self.interceptor_registry.clone(),
             effect_emitter: self.effect_emitter.clone(),
             execution_sessions: self.execution_sessions.clone(),
+            archive_ref_tables: self.archive_ref_tables.clone(),
         }
     }
 
@@ -564,6 +577,65 @@ impl BamlRuntimeManager {
                 },
             )
             .await?;
+        // Provenance requires a successful LlmCall or ToolCall attributed to this plan step
+        // before `PlanStepStatusChanged` may enter a terminal completed state. Coordinator-only
+        // steps (scope parsing, formatting, etc.) have no real tool/LLM hop — synthesize a
+        // bounded internal tool effect so the step gate and conversation_context stay consistent.
+        if is_planning_step_terminal_completed_status(&canonical.new_status) {
+            let context_id = scope.context_id().clone();
+            let mut metadata_map = serde_json::Map::new();
+            if let Some(correlation_id) = current_correlation_id() {
+                metadata_map.insert(
+                    "correlation_id".to_string(),
+                    Value::String(correlation_id.to_string()),
+                );
+            }
+            metadata_map.insert(
+                "message_id".to_string(),
+                Value::String(scope.message_id().as_str().to_owned()),
+            );
+            metadata_map.insert(
+                "task_id".to_string(),
+                Value::String(task_id.as_str().to_owned()),
+            );
+            metadata_map.insert(
+                "agent_id".to_string(),
+                Value::String(scope.agent_id().as_str().to_owned()),
+            );
+            metadata_map.insert(
+                "plan_id".to_string(),
+                Value::String(canonical.plan_id.as_str().to_string()),
+            );
+            metadata_map.insert(
+                "step_id".to_string(),
+                Value::String(canonical.step_id.as_str().to_string()),
+            );
+            metadata_map.insert(
+                "phase".to_string(),
+                Value::String("execution_session_complete".to_string()),
+            );
+            let tool_meta = ToolEffectMetadata {
+                tool_name: "a2a/execution_session_step".to_string(),
+                function_name: None,
+                args: serde_json::json!({
+                    "plan_id": canonical.plan_id.as_str(),
+                    "step_id": canonical.step_id.as_str(),
+                }),
+                metadata: Value::Object(metadata_map),
+                delegation_target: None,
+            };
+            let token = emitter.start_tool(context_id, tool_meta).await?;
+            token
+                .complete(
+                    emitter.as_ref(),
+                    0,
+                    Outcome::Success,
+                    Some(serde_json::json!({
+                        "evidence_text": canonical.evidence_text,
+                    })),
+                )
+                .await?;
+        }
         let event = EffectEvent::PlanStepStatusChanged {
             context_id: scope.context_id().clone(),
             task_id: TaskId::from_external(ExternalId::new(task_id.as_str().to_string())),
@@ -1354,71 +1426,12 @@ impl BamlRuntimeManager {
         scope: &context::RuntimeScope,
         tool_name: baml_rt_tools::ToolName,
         plan: ToolSessionPlan,
-        source_baml_function: Option<&str>,
-        invocation_args: Option<&Value>,
+        _source_baml_function: Option<&str>,
+        _invocation_args: Option<&Value>,
     ) -> Result<Value> {
         let tool_name_str = tool_name.to_string();
-        /// Coerce a step to a single allowed op.
-        /// Open/Finish/Abort can be synthesised when the LLM skips the required preamble.
-        /// Send and Read require LLM-supplied values and cannot be coerced.
-        fn coerce_step_to_allowed(step: ToolSessionOp, allowed_op: &str) -> Option<ToolSessionOp> {
-            let _ = step; // coercion synthesises; never inspects step content
-            match allowed_op {
-                // Coerce to Open when LLM skips the session preamble (emits Send before Open).
-                "Open" => Some(ToolSessionOp::Open {
-                    initial_input: None,
-                    reason: Some("runtime coerced step to required Open".to_string()),
-                }),
-                "Finish" => Some(ToolSessionOp::Finish {
-                    reason: Some("runtime coerced step to allowed Finish".to_string()),
-                }),
-                "Abort" => Some(ToolSessionOp::Abort {
-                    reason: Some("runtime coerced step to allowed Abort".to_string()),
-                }),
-                _ => None,
-            }
-        }
-        fn allowed_ops_from_args(args: Option<&Value>) -> Option<Vec<String>> {
-            let args_obj = args?.as_object()?;
-            let session_context = args_obj.get("session_context")?.as_object()?;
-            let allowed = session_context.get("allowed_ops")?.as_array()?;
-            let mut out = Vec::with_capacity(allowed.len());
-            for value in allowed {
-                if let Some(op) = value.as_str() {
-                    out.push(op.to_string());
-                }
-            }
-            Some(out)
-        }
 
-        let mut first_step = plan.step;
-        if let Some(allowed_ops) = allowed_ops_from_args(invocation_args) {
-            let emitted_op = first_step.op_name().to_string();
-            if !allowed_ops.is_empty() && !allowed_ops.iter().any(|op| op == &emitted_op) {
-                // Try coercing to the first allowed op that produces a valid step.
-                let coerced = allowed_ops
-                    .iter()
-                    .find_map(|op| coerce_step_to_allowed(first_step.clone(), op));
-                if let Some(coerced_step) = coerced {
-                    let coerced_op = coerced_step.op_name();
-                    tracing::warn!(
-                        function = source_baml_function.unwrap_or("unknown_step_executor"),
-                        emitted_op = %emitted_op,
-                        coerced_op = %coerced_op,
-                        allowed_ops = ?allowed_ops,
-                        "Runtime coerced invalid step-executor op to first viable allowed op"
-                    );
-                    first_step = coerced_step;
-                } else {
-                    return Err(BamlRtError::InvalidArgument(format!(
-                        "runtime step executor contract violation ({}): expected op in [{}], got '{}'",
-                        source_baml_function.unwrap_or("unknown_step_executor"),
-                        allowed_ops.join(","),
-                        emitted_op
-                    )));
-                }
-            }
-        }
+        let first_step = plan.step;
 
         let plan_scope = scope.clone();
         let mut steps = vec![first_step];

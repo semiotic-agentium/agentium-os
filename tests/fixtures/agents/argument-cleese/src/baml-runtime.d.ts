@@ -356,7 +356,6 @@ export type StepExecutorFunctionName = "CleeseSendToChapman" | "CleeseSendToChap
 export interface SessionContext {
     contract_version: "session_context";
     session_open: boolean;
-    allowed_ops: ("Open" | "Send" | "Read" | "Finish" | "Abort")[];
     scope_ref: string | null;
     output_ref: string | null;
     evidence_ref: string | null;

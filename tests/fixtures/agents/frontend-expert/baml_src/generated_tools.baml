@@ -41,7 +41,6 @@ class HistoryContext {
 class SessionContext {
   contract_version string
   session_open bool
-  allowed_ops string[]
   scope_ref string?
   output_ref string?
   evidence_ref string?
@@ -195,4 +194,3 @@ type ClaudeDevSessionStep = ClaudeDevOpenStep | ClaudeDevSendStep | ClaudeDevRea
 class ClaudeDevSessionPlan {
   step ClaudeDevSessionStep @description("Emit exactly one FSM step. Check conversation history to determine current state: no session → Open; session open, no Send → Send (input.text MUST be non-empty); Send done → Finish or Read @N. Access: write.")
 }
-

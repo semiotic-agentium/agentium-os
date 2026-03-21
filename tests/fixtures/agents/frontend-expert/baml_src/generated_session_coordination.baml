@@ -25,11 +25,11 @@ function ChooseClaudeDevAction(
 
     RULES:
     0. CRITICAL: Emit exactly one step object per reply (field name: step). Never return a steps array.
-    1. CRITICAL: Select step.op from allowed_ops (authoritative in output schema). If allowed_ops has one value, emit that op exactly.
+    1. CRITICAL: This hop calls a phase-specific BAML function — its return type is narrowed to one fragment shape. Emit exactly that shape.
     2. spec_text is the development objective. validation_criteria_json lists pass/fail checks.
     3. Initialization is two-hop under host FSM:
-       - If allowed_ops is [Open], emit Open (initial_input may be null/default).
-       - Next hop, when Send is allowed and last_tool_output is empty, emit Send with:
+       - On the select/Open phase, emit Open (initial_input may be null/default).
+       - Next hop, on the Send phase and last_tool_output is empty, emit Send with:
          prompt = spec_text + "\n\nImplement this specification. Ask for clarification only when necessary. Keep code and technical output precise."
     4. user_approval_intent:
        - approved -> Send userInput { kind: "toolApproval", approved: true } (optional short prompt allowed)
@@ -39,7 +39,7 @@ function ChooseClaudeDevAction(
        - otherwise return Report with concise requirements/build/validation summary
     6. For active non-terminal sessions, prefer Read to consume tool output before additional Send/Finish.
     7. AskUser is only for genuine missing operator input. Keep prompt neutral and short.
-    8. Never emit Open when Open is not present in allowed_ops.
+    8. Never emit Open except on the Open/select phase (session not yet open).
     9. Never emit tool_call objects.
 
     SESSION PLAN FORMAT: one-step session fragment only (`step`). Keep reason short when present.
@@ -68,6 +68,6 @@ function ChooseClaudeDevAction(
     user_approval_intent (approved | rejected | empty):
     {{ user_approval_intent }}
 
-    Allowed ops: {{ session_context.allowed_ops }}
+    Session open (host FSM): {{ session_context.session_open }}
   "#
 }

@@ -29,7 +29,7 @@ use crate::{
     graph_export::activity_outcome::NodeActivityOutcome,
     graph_model::GraphNodeLabel,
     surreal_store::SurrealProvenanceStore,
-    vocabulary::{a2a, context_scope, message_directions, prov, semantic_labels, storage_safe},
+    vocabulary::{a2a, context_scope, message_directions, prov, storage_safe},
 };
 
 fn surreal_err(e: surrealdb::Error) -> ProvenanceError {
@@ -134,8 +134,8 @@ impl GraphExporter {
             .db()
             .query(&node_query)
             .await
-            .map_err(|e| surreal_err(e))?;
-        let node_rows: Vec<Value> = node_response.take(0).map_err(|e| surreal_err(e))?;
+            .map_err(surreal_err)?;
+        let node_rows: Vec<Value> = node_response.take(0).map_err(surreal_err)?;
 
         if node_rows.is_empty() {
             tracing::debug!(context_id = %context_id, "no scoped nodes found");
@@ -161,8 +161,8 @@ impl GraphExporter {
             .db()
             .query(&edge_query)
             .await
-            .map_err(|e| surreal_err(e))?;
-        let edge_rows: Vec<Value> = edge_response.take(0).map_err(|e| surreal_err(e))?;
+            .map_err(surreal_err)?;
+        let edge_rows: Vec<Value> = edge_response.take(0).map_err(surreal_err)?;
 
         // Collect target node IDs not in the scoped set (e.g. AgentRuntimeInstance)
         let extra_ids: HashSet<String> = edge_rows
@@ -179,8 +179,8 @@ impl GraphExporter {
                     .query("SELECT node_id, label, props OMIT id FROM prov_node WHERE node_id = $nid LIMIT 1")
                     .bind(("nid", extra_id.clone()))
                     .await
-                    .map_err(|e| surreal_err(e))?;
-                let rows: Vec<Value> = resp.take(0).map_err(|e| surreal_err(e))?;
+                    .map_err(surreal_err)?;
+                let rows: Vec<Value> = resp.take(0).map_err(surreal_err)?;
                 extra_node_rows.extend(rows);
             }
         }
@@ -229,15 +229,15 @@ impl GraphExporter {
     /// List all distinct context IDs in the provenance graph.
     pub async fn list_contexts(&self) -> Result<Vec<String>> {
         let ctx_label = context_scope::LABEL;
-        let query = format!("SELECT node_id OMIT id FROM prov_node WHERE label = $label");
+        let query = "SELECT node_id OMIT id FROM prov_node WHERE label = $label".to_string();
         let mut response = self
             .store
             .db()
             .query(&query)
             .bind(("label", ctx_label))
             .await
-            .map_err(|e| surreal_err(e))?;
-        let rows: Vec<Value> = response.take(0).map_err(|e| surreal_err(e))?;
+            .map_err(surreal_err)?;
+        let rows: Vec<Value> = response.take(0).map_err(surreal_err)?;
         let mut ids: Vec<String> = rows
             .iter()
             .filter_map(|r| r.get("node_id").and_then(Value::as_str).map(String::from))
@@ -245,13 +245,8 @@ impl GraphExporter {
             .collect();
         if ids.is_empty() {
             let fallback = "SELECT DISTINCT props.a2a_context_id AS ctx_id OMIT id FROM prov_node WHERE props.a2a_context_id IS NOT NULL";
-            let mut fb_response = self
-                .store
-                .db()
-                .query(fallback)
-                .await
-                .map_err(|e| surreal_err(e))?;
-            let fb_rows: Vec<Value> = fb_response.take(0).map_err(|e| surreal_err(e))?;
+            let mut fb_response = self.store.db().query(fallback).await.map_err(surreal_err)?;
+            let fb_rows: Vec<Value> = fb_response.take(0).map_err(surreal_err)?;
             ids = fb_rows
                 .iter()
                 .filter_map(|r| r.get("ctx_id").and_then(Value::as_str).map(String::from))
@@ -272,8 +267,8 @@ impl GraphExporter {
             .query(query)
             .bind(("task_id", task_id.to_string()))
             .await
-            .map_err(|e| surreal_err(e))?;
-        let rows: Vec<Value> = response.take(0).map_err(|e| surreal_err(e))?;
+            .map_err(surreal_err)?;
+        let rows: Vec<Value> = response.take(0).map_err(surreal_err)?;
         let ctx_id = rows
             .first()
             .and_then(|r| r.get("ctx_id"))
