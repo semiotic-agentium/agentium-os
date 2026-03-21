@@ -136,7 +136,7 @@ fn render_content(
                 &rendered,
                 None,
                 crate::archive_read::LineOffset::default(),
-                crate::archive_read::PageLimit::new(40),
+                crate::archive_read::PageLimit::default(),
             );
             let formatted = crate::archive_read::format_cat_n(&page.lines);
             if formatted.trim().is_empty() {

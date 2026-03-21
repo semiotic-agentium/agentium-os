@@ -390,23 +390,22 @@ impl ConversationContextProvider for TaskStoreConversationContextProvider {
                             None      => format!("cat -n {archive_ref_str}"),
                         };
                         if page.lines.is_empty() {
-                            return Some(format!("{cmd}\n# no matches"));
+                            return Some(format!("{cmd}\n(no matches)"));
                         }
                         let first = page.lines.first().map(|l| l.original_line_number).unwrap_or(1);
                         let last  = page.lines.last().map(|l| l.original_line_number).unwrap_or(1);
-                        let range_comment = if page.has_more {
+                        let footer = if page.has_more {
+                            let n_more = page.total_matched.saturating_sub(page.next_offset);
                             format!(
-                                "  # lines {first}-{last} of {} ({} more — offset={} for next page)",
-                                page.total_matched,
-                                page.total_matched - page.next_offset,
+                                "\n({n_more} more lines — Read {archive_ref_str} offset={} to continue)",
                                 page.next_offset,
                             )
-                        } else if first == 1 && last == page.total_matched {
-                            String::new()
+                        } else if first > 1 {
+                            format!("\n(end — lines {first}-{last} of {})", page.total_matched)
                         } else {
-                            format!("  # lines {first}-{last} of {}", page.total_matched)
+                            String::new()
                         };
-                        Some(format!("{cmd}{range_comment}\n{formatted}"))
+                        Some(format!("{cmd}\n{formatted}{footer}"))
                     });
                 boxed
             });

@@ -53,7 +53,7 @@ class SessionContext {
 /// Bare cat on a large archive wastes context — grep to find relevant sections first.
 class ArchiveReadInput {
   archive_ref string @description("Archive ref from the preceding Send, e.g. '@1'.")
-  offset int? @description("Line offset for pagination (0-based). Use after a grep to read surrounding context.")
+  offset int? @description("Start line for pagination (0-based). To read the next page, use the offset value shown in the trailing footer of the previous read. Do NOT re-read from offset 0 with a larger limit.")
   limit int? @description("Maximum lines to return (default 40). Increase explicitly if you need more — e.g. limit=100 for large result sets.")
   grep string? @description("grep pattern with optional CLI flags: -i (case-insensitive), -E (extended regex). Examples: 'title', '-i agentium', \"-iE 'agent|platform'\". Use this instead of bare cat on large archives.")
 }

@@ -224,7 +224,7 @@ mod tests {
     fn page_limit_clamps() {
         assert_eq!(PageLimit::new(1000).get(), 500);
         assert_eq!(PageLimit::new(50).get(), 50);
-        assert_eq!(PageLimit::default().get(), 200);
+        assert_eq!(PageLimit::default().get(), PageLimit::DEFAULT);
     }
 
     #[test]

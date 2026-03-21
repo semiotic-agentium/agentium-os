@@ -85,6 +85,8 @@ impl BamlTool for EmailTool {
             status: format!("queued for {}", args.to),
             message_id: Some(format!(
                 "msg-{:016x}",
+                // duration_since(UNIX_EPOCH) errors only if the system clock is set before 1970,
+                // which cannot occur on any supported target.
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()

@@ -134,19 +134,19 @@ pub fn render_baml_tool_interfaces(tool_names: &[String]) -> Result<String> {
     write_line(
         &mut output,
         "  archive_ref string @description(\"Archive ref from the preceding Send, e.g. '@1'.\")",
-    );
+    )?;
     write_line(
         &mut output,
-        "  offset int? @description(\"Line offset for pagination (0-based). Use after a grep to read surrounding context.\")",
-    );
+        "  offset int? @description(\"Start line for pagination (0-based). To read the next page, use the offset value shown in the trailing footer of the previous read. Do NOT re-read from offset 0 with a larger limit.\")",
+    )?;
     write_line(
         &mut output,
         "  limit int? @description(\"Maximum lines to return (default 40). Increase explicitly if you need more — e.g. limit=100 for large result sets.\")",
-    );
+    )?;
     write_line(
         &mut output,
         "  grep string? @description(\"grep pattern with optional CLI flags: -i (case-insensitive), -E (extended regex). Examples: 'title', '-i agentium', \\\"-iE 'agent|platform'\\\". Use this instead of bare cat on large archives.\")",
-    );
+    )?;
     write_line(&mut output, "}")?;
     write_line(&mut output, "")?;
     // --- Domain type generation ---
