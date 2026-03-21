@@ -4,6 +4,8 @@ import { useTheme } from "../composables/useTheme";
 import { useMermaidRenderer } from "../composables/useMermaidRenderer";
 import { useProvenanceOps } from "../composables/useProvenanceOps";
 import type {
+  CitationDetail,
+  CitationSimilarityOnRow,
   ContextPlanningResponse,
   ContextPlanningTaskSnapshot,
   ProvenanceOutcome,
@@ -405,6 +407,32 @@ function formatDriftScore(score: number | null | undefined): string {
 
 function taskHasDrift(task: ContextPlanningTaskSnapshot): boolean {
   return task.drift != null && task.drift.compositeSeverity != null;
+}
+
+function citationRefLabel(c: CitationDetail | CitationSimilarityOnRow): string {
+  const raw = "raw" in c && c.raw ? c.raw : (c.isHistory ? `#${c.n}` : `@${c.n}`);
+  return raw;
+}
+
+function citationSimClass(sim: number, negated: boolean): string {
+  if (negated) return "cite-sim-counter";
+  if (sim >= 0.65) return "cite-sim-high";
+  if (sim >= 0.40) return "cite-sim-mid";
+  return "cite-sim-low";
+}
+
+function citationSimLabel(sim: number, negated: boolean): string {
+  if (negated) return "counter";
+  if (sim >= 0.65) return "strong";
+  if (sim >= 0.40) return "moderate";
+  return "weak";
+}
+
+function rowCitationDrift(row: ProvenanceRowBase): { perCitation: CitationSimilarityOnRow[]; meanSimilarity: number } | null {
+  const drift = row.drift as Record<string, unknown> | undefined;
+  const cit = drift?.citation as { perCitation?: CitationSimilarityOnRow[]; meanSimilarity?: number } | undefined;
+  if (!cit?.perCitation?.length) return null;
+  return { perCitation: cit.perCitation, meanSimilarity: cit.meanSimilarity ?? 1.0 };
 }
 
 function drillToDriftCalls(taskId: string) {
@@ -1325,6 +1353,32 @@ onUnmounted(() => {
                     <span v-if="call.crossEncoderStepScore != null">XE={{ call.crossEncoderStepScore.toFixed(1) }}</span>
                     <button class="drift-count-link" @click="drillToDriftCalls(task.taskId)">View in Explore</button>
                   </div>
+
+                  <!-- Inline citation evidence for this call -->
+                  <div v-if="call.citations && call.citations.length > 0" class="drift-cite-section">
+                    <div class="drift-cite-header">
+                      Citations ({{ call.citations.length }})
+                    </div>
+                    <div class="cite-list cite-list-compact">
+                      <div
+                        v-for="(c, ci) in call.citations"
+                        :key="`dcite-${ci}`"
+                        class="cite-entry"
+                        :class="{ 'cite-entry-negated': c.negated }"
+                      >
+                        <div class="cite-header">
+                          <span class="cite-ref-tag" :class="c.isHistory ? 'cite-ref-history' : 'cite-ref-archive'">
+                            {{ c.raw }}
+                          </span>
+                          <span v-if="c.negated" class="cite-negated-badge">counter</span>
+                          <span class="cite-sim-pill" :class="citationSimClass(c.similarity, c.negated)">
+                            {{ c.similarity.toFixed(2) }}
+                          </span>
+                        </div>
+                        <div class="cite-content cite-content-compact">{{ c.contentPreview || '—' }}</div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1533,6 +1587,41 @@ onUnmounted(() => {
                     class="row-inspector-json"
                   >{{ entry.display }}</pre>
                   <div v-else class="row-inspector-value">{{ entry.display }}</div>
+                </div>
+              </section>
+
+              <!-- Citation Evidence — actual text the LLM cited -->
+              <section
+                v-if="selectedRow && rowCitationDrift(selectedRow)"
+                class="row-inspector-section"
+              >
+                <div class="row-inspector-section-title">
+                  Citation Evidence
+                  <span class="cite-mean-badge" :class="citationSimClass(rowCitationDrift(selectedRow)!.meanSimilarity, false)">
+                    mean {{ rowCitationDrift(selectedRow)!.meanSimilarity.toFixed(2) }}
+                  </span>
+                </div>
+                <div class="cite-list">
+                  <div
+                    v-for="(c, i) in rowCitationDrift(selectedRow)!.perCitation"
+                    :key="`cite-${i}`"
+                    class="cite-entry"
+                    :class="{ 'cite-entry-negated': c.negated }"
+                  >
+                    <div class="cite-header">
+                      <span class="cite-ref-tag" :class="c.isHistory ? 'cite-ref-history' : 'cite-ref-archive'">
+                        {{ citationRefLabel(c) }}
+                      </span>
+                      <span v-if="c.negated" class="cite-negated-badge">counter-evidence</span>
+                      <span class="cite-sim-pill" :class="citationSimClass(c.similarity, c.negated)">
+                        {{ c.similarity.toFixed(2) }} · {{ citationSimLabel(c.similarity, c.negated) }}
+                      </span>
+                      <span v-if="c.isHistory" class="cite-kind-label">history</span>
+                      <span v-else class="cite-kind-label">archive</span>
+                    </div>
+                    <pre v-if="c.contentPreview" class="cite-content">{{ c.contentPreview }}</pre>
+                    <div v-else class="cite-content-empty">content not resolved</div>
+                  </div>
                 </div>
               </section>
 

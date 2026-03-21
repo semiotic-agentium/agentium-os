@@ -101,6 +101,43 @@ export interface PlanningStepSummary {
 
 export type DriftSeverity = "acceptable" | "warn" | "block";
 
+/** One resolved citation: the raw ref the LLM emitted plus the actual evidence text. */
+export interface CitationDetail {
+  /** Exact string the LLM emitted, e.g. `"#1"`, `"@2:3-5"`, `"!@1"`. */
+  raw: string;
+  n: number;
+  /** `true` = history ref (`#N`), `false` = archive ref (`@N`). */
+  isHistory: boolean;
+  /** Counter-evidence (`!` prefix) — LLM marked this as contradicting evidence. */
+  negated: boolean;
+  /** Cosine similarity between the decision text and this citation's content. */
+  similarity: number;
+  /** Stable provenance event ID for graph lookup. */
+  activityAnchor: string;
+  /** The actual evidence text the LLM was citing (up to 400 chars). */
+  contentPreview: string;
+}
+
+/** Per-citation similarity entry on each row's `drift.citation.perCitation` array. */
+export interface CitationSimilarityOnRow {
+  n: number;
+  isHistory: boolean;
+  negated: boolean;
+  similarity: number;
+  raw?: string;
+  activityAnchor?: string;
+  contentPreview?: string;
+}
+
+/** Citation-grounded drift block on an LLM call row. */
+export interface CitationDriftOnRow {
+  perCitation: CitationSimilarityOnRow[];
+  meanSimilarity: number;
+  coverage: number;
+  totalDecisions: number;
+  citedDecisions: number;
+}
+
 export interface DriftedCallDetail {
   functionName: string;
   severity: string;
@@ -110,6 +147,8 @@ export interface DriftedCallDetail {
   intentTextPreview: string;
   responseTextPreview: string;
   stepTextPreview?: string;
+  /** Resolved citations with full evidence text. Empty when no citations were scored. */
+  citations?: CitationDetail[];
 }
 
 export interface TaskPlanDriftSummary {
@@ -144,6 +183,8 @@ export interface DriftOnRow {
   intentTextPreview?: string;
   responseTextPreview?: string;
   plan?: PlanDriftOnRow;
+  /** Citation-grounded drift block. Present when the LLM emitted citations and scoring succeeded. */
+  citation?: CitationDriftOnRow;
 }
 
 export interface ContextPlanningTaskSnapshot {

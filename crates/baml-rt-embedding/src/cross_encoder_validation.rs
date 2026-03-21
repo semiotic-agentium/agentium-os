@@ -33,11 +33,11 @@
 //! - Multi-step trajectory sequences (3 aligned + 3 injected)
 //!
 //! Run with:
-//!   cargo test -p baml-rt-embedding --lib -- cross_encoder_validation::suite::
+//!   cargo test -p baml-rt-embedding --lib -- cross_encoder_validation::
 //!       --ignored --nocapture
 
 #[cfg(test)]
-mod suite {
+mod cross_encoder_validation {
     use std::time::Instant;
 
     use fastembed::{
@@ -64,7 +64,7 @@ mod suite {
     }
 
     // ── Vector EMA centroid ───────────────────────────────────────────────
-    fn centroid_update(centroid: &mut [f32], new_emb: &[f32]) {
+    fn centroid_update(centroid: &mut Vec<f32>, new_emb: &[f32]) {
         for (c, n) in centroid.iter_mut().zip(new_emb) {
             *c = ALPHA * n + (1.0 - ALPHA) * *c;
         }

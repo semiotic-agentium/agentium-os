@@ -1,0 +1,250 @@
+# Citation-Grounded Drift — fixture scenarios.
+#
+# Each scenario includes a `citations` array of resolved citation objects and
+# a `citation_expected` block with assertions on `CitationDriftAssessment`.
+#
+# Ref semantics recap:
+#   #N  — session history line (user / assistant / tool-call description)
+#   @N  — archived Send/tool output blob
+#   !#N / !@N — counter-evidence prefix; excluded from mean_similarity
+#
+# Run with:
+#   cargo test -p baml-rt-embedding -- drift_fixture_10 --ignored
+
+# ---------------------------------------------------------------------------
+# 1. Aligned — citation closely matches the decision
+# ---------------------------------------------------------------------------
+
+[[scenario]]
+name = "citation-aligned-history"
+category = "citation"
+phase = "plan_committed"
+description = """
+The LLM decides to query accounts with status=at-risk. The user's original
+message asked for at-risk account analysis. The LLM cites the user message
+(#1). The cited content and the response should be highly similar.
+"""
+
+[scenario.intent]
+description = "Query CRM accounts with status at-risk and generate a risk report"
+
+[scenario.plan]
+objective = "Generate at-risk account report from CRM data"
+is_revised = false
+
+[scenario.step]
+step_id = "step-query-crm"
+description = "Query CRM for accounts with status=at-risk"
+order = 0
+
+[scenario.response]
+value = '{"step": "Send", "input": "Query accounts where status=at-risk"}'
+
+[[scenario.citations]]
+n = 1
+is_history = true
+negated = false
+content = "Can you pull all accounts with at-risk status from the CRM and show me the revenue exposure?"
+
+[scenario.expected]
+step_alignment_min = 0.6
+composite_severity = "acceptable"
+
+[scenario.citation_expected]
+mean_similarity_min = 0.5
+has_negated = false
+
+
+# ---------------------------------------------------------------------------
+# 2. Aligned — archive citation (whole blob)
+# ---------------------------------------------------------------------------
+
+[[scenario]]
+name = "citation-aligned-archive"
+category = "citation"
+phase = "plan_committed"
+description = """
+The LLM synthesises a summary after reading archived CRM results. It cites @1
+(the entire archived blob). The decision text closely mirrors the archive
+content — high citation similarity expected.
+"""
+
+[scenario.intent]
+description = "Summarise Q3 revenue exposure from retrieved CRM data"
+
+[scenario.plan]
+objective = "Deliver risk summary from archived CRM results"
+is_revised = false
+
+[scenario.step]
+step_id = "step-synthesise"
+description = "Summarise the at-risk accounts and their revenue exposure"
+order = 1
+
+[scenario.response]
+value = '{"message": "Total at-risk revenue: $1.2M across 8 accounts. Top risk: Acme Corp ($400k overdue)."}'
+
+[[scenario.citations]]
+n = 1
+is_history = false
+negated = false
+content = "accounts: [{name: Acme Corp, status: at-risk, arr: 400000}, {name: Globex, status: at-risk, arr: 220000}]"
+
+[scenario.expected]
+step_alignment_min = 0.4
+composite_severity = "acceptable"
+
+[scenario.citation_expected]
+mean_similarity_min = 0.4
+
+
+# ---------------------------------------------------------------------------
+# 3. Granularity mismatch — archive cited as a blob but only one line relevant
+# ---------------------------------------------------------------------------
+
+[[scenario]]
+name = "citation-granularity-mismatch"
+category = "citation"
+phase = "plan_committed"
+description = """
+The LLM synthesises a conclusion about account 'Acme Corp' but cites the
+entire 50-record archive blob rather than the specific line. The blob contains
+many unrelated records — citation similarity is diluted, expected to be lower
+than the aligned archive case but still positive.
+"""
+
+[scenario.intent]
+description = "Identify the single largest at-risk account"
+
+[scenario.plan]
+objective = "Name the account with the highest at-risk revenue"
+is_revised = false
+
+[scenario.step]
+step_id = "step-identify-top"
+description = "Find the account with the highest at-risk revenue value"
+order = 0
+
+[scenario.response]
+value = '{"message": "The largest at-risk account is Acme Corp with $400k ARR overdue."}'
+
+[[scenario.citations]]
+n = 1
+is_history = false
+negated = false
+content = """acct:001 Acme Corp at-risk $400k
+acct:002 Globex normal $220k
+acct:003 Initech normal $110k
+acct:004 Umbrella at-risk $95k
+acct:005 Pied Piper normal $60k
+acct:006 Vandelay at-risk $40k
+acct:007 Dunder Mifflin normal $30k
+acct:008 Hooli normal $25k"""
+
+[scenario.expected]
+step_alignment_min = 0.4
+composite_severity = "acceptable"
+
+[scenario.citation_expected]
+# Full-blob citation is noisier; similarity lower than line-targeted cite
+mean_similarity_min = 0.2
+mean_similarity_max = 0.85
+
+
+# ---------------------------------------------------------------------------
+# 4. Over-citation / noise — many irrelevant refs cited
+# ---------------------------------------------------------------------------
+
+[[scenario]]
+name = "citation-noise-irrelevant-refs"
+category = "citation"
+phase = "plan_committed"
+description = """
+The LLM emits a decision to send an email, but cites a history line (#1) about
+CRM queries that is completely unrelated to email sending. Mean similarity
+should be low, indicating the citation does not support the decision.
+"""
+
+[scenario.intent]
+description = "Send the risk summary report by email to the sales team"
+
+[scenario.plan]
+objective = "Email the at-risk account report to the sales team"
+is_revised = false
+
+[scenario.step]
+step_id = "step-send-email"
+description = "Send risk report email to sales team distribution list"
+order = 2
+
+[scenario.response]
+value = '{"step": "Send", "input": "Send email to sales-team@corp.com with subject Risk Report"}'
+
+[[scenario.citations]]
+n = 1
+is_history = true
+negated = false
+content = "SELECT accounts WHERE status='at-risk' ORDER BY arr DESC LIMIT 50"
+
+[scenario.expected]
+step_alignment_min = 0.4
+composite_severity = "acceptable"
+
+[scenario.citation_expected]
+# CRM query text has low semantic overlap with email-sending decision
+mean_similarity_max = 0.75
+
+
+# ---------------------------------------------------------------------------
+# 5. Counter-evidence / negated citation
+# ---------------------------------------------------------------------------
+
+[[scenario]]
+name = "citation-negated-counter-evidence"
+category = "citation"
+phase = "plan_committed"
+description = """
+The LLM is executing a plan step to query revenue data. It encounters a prior
+assistant message claiming 'the report has already been sent' (contradicting
+evidence). It correctly marks this with !#1 and also cites the user request
+#2 as positive grounding. The negated citation must be excluded from the mean;
+only the positive citation contributes to mean_similarity.
+"""
+
+[scenario.intent]
+description = "Generate and send the Q4 revenue report to the finance team"
+
+[scenario.plan]
+objective = "Query revenue data, format report, deliver to finance"
+is_revised = false
+
+[scenario.step]
+step_id = "step-query-revenue"
+description = "Query CRM for Q4 revenue figures across all regions"
+order = 0
+
+[scenario.response]
+value = '{"step": "Send", "input": "Query revenue by region for Q4"}'
+
+# Positive grounding: user asked for Q4 revenue report
+[[scenario.citations]]
+n = 2
+is_history = true
+negated = false
+content = "Please generate the Q4 revenue report broken down by region and send it to finance."
+
+# Counter-evidence: prior assistant message incorrectly claimed report was done
+[[scenario.citations]]
+n = 1
+is_history = true
+negated = true
+content = "The Q4 revenue report has already been sent to finance. No further action needed."
+
+[scenario.expected]
+step_alignment_min = 0.4
+composite_severity = "acceptable"
+
+[scenario.citation_expected]
+# Mean should reflect only the positive citation (#2), which is closely aligned
+mean_similarity_min = 0.45
+has_negated = true

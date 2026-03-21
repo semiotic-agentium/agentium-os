@@ -5,7 +5,8 @@ use serde_json::Value;
 
 use crate::{
     EventSchemaVersion,
-    ids::{ContextId, TaskId},
+    context::{InvocationScope, RuntimeScope},
+    ids::{AgentId, ContextId, MessageId, TaskId},
 };
 
 /// Strongly-typed route label for deterministic host-to-agent dispatch.
@@ -73,6 +74,36 @@ pub struct AgentDispatchAck {
     /// Optional operator-facing detail string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+}
+
+/// Build the invocation scope for a host [`AgentDispatchRequest`].
+///
+/// When both `context_id` and `message_id` are present, scope matches the request (task-scoped if
+/// `task_id` is set). Otherwise uses a synthetic message scope (same family as ad-hoc tests/CLI).
+pub fn invocation_scope_for_agent_dispatch(
+    agent_id: AgentId,
+    request: &AgentDispatchRequest,
+) -> InvocationScope {
+    match (&request.context_id, &request.message_id) {
+        (Some(context_id), Some(message_id)) => {
+            let message_id = MessageId::from(message_id.as_str());
+            if let Some(task_id) = &request.task_id {
+                InvocationScope::new(RuntimeScope::task_scope(
+                    context_id.clone(),
+                    agent_id,
+                    message_id,
+                    task_id.clone(),
+                ))
+            } else {
+                InvocationScope::new(RuntimeScope::message_scope(
+                    context_id.clone(),
+                    agent_id,
+                    message_id,
+                ))
+            }
+        }
+        _ => InvocationScope::synthetic_message(agent_id),
+    }
 }
 
 #[cfg(test)]
