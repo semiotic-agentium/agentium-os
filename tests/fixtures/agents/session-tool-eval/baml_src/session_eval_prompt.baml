@@ -1,31 +1,19 @@
 function PlanSyntheticSessionStep(
   objective: string,
-  session_context: SessionContext?,
-  session_state: SyntheticPlannerSendInput?,
 ) -> SyntheticPlannerPlan {
   client DefaultClient
   prompt #"
     Output ONLY one JSON object with exactly one session `decision`. No prose. No markdown.
 
-    Objective:
-    1) reach goal_id = non_trivial_scope_cache_goal
-    2) minimize wasted reads and payload
-    3) use projection progression: summary -> identity -> detail before Finish
+    Objective: {{ objective }}
 
-    Current session state:
-    - session_open: {{ session_context.session_open }}
-    - allowed_ops: {{ session_context.allowed_ops }}
-    - session_state: {{ session_state }}
+    Strategy:
+    - Reach goal_id = non_trivial_scope_cache_goal via explicit session reads.
+    - Use projection progression: summary → identity → detail before Finish.
+    - Minimise wasted reads: once you have data at one projection level, advance to the next.
 
-    Decision rules based on current state:
-    - session_open = false → emit Open
-    - session_open = true, session_state = null → emit Send to set scope defaults
-    - session_state present, no Read results yet → emit Read with refId="root" and projection="summary"
-    - Read results present → inspect to decide next Read or Finish:
-      - If goal_id = "non_trivial_scope_cache_goal" seen and summary+identity+detail all used → emit Finish
-      - Otherwise read next projection in the sequence (summary → identity → detail)
-
-    Current objective: {{ objective }}
+    The allowed ops and current session state are in the session history below.
+    Read the history to determine what has already been done, then emit the single next step.
 
     {% if ctx.tags.conversation_history %}
     Session history:
