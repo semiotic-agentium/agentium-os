@@ -552,13 +552,21 @@ impl NotionClient {
             .map(|p| p.title.clone())
             .unwrap_or_else(|| "Untitled".to_string());
 
+        let page_id_for_blocks = pages
+            .first()
+            .map(|p| p.id.clone())
+            .unwrap_or_else(|| normalized.to_string());
         Ok(NotionOutput {
             pages,
             blocks: Vec::new(),
             next_cursor: None,
             has_more: false,
             sources,
-            message: format!("Page: {title}"),
+            message: format!(
+                "Page metadata only: title and URL for '{title}'. \
+                 This result contains NO page content. \
+                 To read the actual page text, use GetPageBlocks with block_id: {page_id_for_blocks}"
+            ),
             operation: Some(NotionOperation::GetPage),
         })
     }
