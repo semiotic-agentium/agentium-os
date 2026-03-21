@@ -1614,7 +1614,7 @@ impl<T: BamlTool> ToolHandler for ToolWrapper<T> {
             .unwrap_or(content);
         let op = match step.get("op").and_then(Value::as_str) {
             Some(op) => op,
-            None => return format!("{}: call", self.metadata().name),
+            None => return self.tool.describe_open(),
         };
         let input_val = step.get("input");
         match op {
@@ -2497,7 +2497,7 @@ where
         let tool_name = self.metadata.name.to_string();
         let op = match step.get("op").and_then(Value::as_str) {
             Some(op) => op,
-            None => return format!("{tool_name}: call"),
+            None => return format!("using {tool_name}"),
         };
         match op {
             "Open" => step
