@@ -54,9 +54,9 @@ pub struct LineOffset(pub usize);
 pub struct PageLimit(usize);
 
 impl PageLimit {
-    /// Default when the LLM omits limit — large enough to fit typical tool results
-    /// without forcing pagination, but bounded to keep prompts manageable.
-    pub const DEFAULT: usize = 200;
+    /// Default when the LLM omits limit. Low enough to discourage blind cat-n on
+    /// large archives — the model should grep first, then paginate if needed.
+    pub const DEFAULT: usize = 40;
     pub const MAX: usize = 500;
 
     pub fn new(n: usize) -> Self {

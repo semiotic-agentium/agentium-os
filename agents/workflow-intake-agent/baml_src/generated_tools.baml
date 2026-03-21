@@ -48,12 +48,14 @@ class SessionContext {
 }
 
 /// Read dereferences a prior Send result by archive ref.
-/// Think of it as grep -n / cat -n over the archived output. Standard grep flags apply.
+/// grep -n / cat -n interface over archived output. Standard grep CLI flags apply.
+/// IMPORTANT: always supply a grep pattern for archives larger than ~50 lines.
+/// Bare cat on a large archive wastes context — grep to find relevant sections first.
 class ArchiveReadInput {
   archive_ref string @description("Archive ref from the preceding Send, e.g. '@1'.")
-  offset int? @description("Line offset for pagination (0-based).")
-  limit int? @description("Maximum lines to return.")
-  grep string? @description("grep pattern with optional CLI flags: -i (case-insensitive), -E (extended regex). Examples: 'title', '-i agentium', \"-iE 'agent|platform'\"")
+  offset int? @description("Line offset for pagination (0-based). Use after a grep to read surrounding context.")
+  limit int? @description("Maximum lines to return (default 40). Increase explicitly if you need more — e.g. limit=100 for large result sets.")
+  grep string? @description("grep pattern with optional CLI flags: -i (case-insensitive), -E (extended regex). Examples: 'title', '-i agentium', \"-iE 'agent|platform'\". Use this instead of bare cat on large archives.")
 }
 
 // Domain types generated from JSON schemas
