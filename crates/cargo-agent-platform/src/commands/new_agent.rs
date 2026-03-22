@@ -200,7 +200,8 @@ pub fn run(
 /// Validate output directory can be used for agent creation.
 fn validate_output_dir(output_dir: &Path) -> Result<()> {
     if output_dir.exists() {
-        let entries: Vec<_> = std::fs::read_dir(output_dir)?.collect();
+        let entries: Vec<std::fs::DirEntry> =
+            std::fs::read_dir(output_dir)?.collect::<Result<_, _>>()?;
         if !entries.is_empty() {
             bail!(
                 "Error: output directory already exists and is non-empty: {}\nHint: pass `--output <new-dir>` or clean the directory before retrying.",
@@ -211,20 +212,25 @@ fn validate_output_dir(output_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Parse subscriptions from CLI format: "schema=<version>,sources=<kind1,kind2>"
+/// Parse subscriptions from CLI format:
+/// "schema=<version1,version2>,sources=<kind1,kind2>"
 ///
 /// Examples:
 /// - "schema=task-daemon.interpretation.v1,sources=slack,clickup"
-/// - "schema=task-daemon.interpretation.v1,sources=slack"
+/// - "schema=task-daemon.interpretation.v1,custom.schema.v2,sources=slack"
 fn parse_subscriptions(input: &str) -> Result<Vec<EventSubscription>> {
     let mut schema_versions = Vec::new();
     let mut source_kinds = Vec::new();
+    let mut saw_schema_key = false;
+    let mut saw_sources_key = false;
 
-    // Split by comma, but handle "sources=a,b,c" specially
+    // Top-level key/value list where values themselves can also contain commas.
+    // We find key boundaries first, then split each value list.
     let mut remaining = input.trim();
 
     while !remaining.is_empty() {
         if let Some(rest) = remaining.strip_prefix("schema=") {
+            saw_schema_key = true;
             // Find the end of the schema value (next key= or end of string)
             let end_pos = rest
                 .find(",sources=")
@@ -232,10 +238,14 @@ fn parse_subscriptions(input: &str) -> Result<Vec<EventSubscription>> {
                 .unwrap_or(rest.len());
             let schema_value = &rest[..end_pos];
 
-            // Schema value might contain multiple schemas separated by commas within brackets
-            // For simplicity, treat it as a single schema for now
-            if let Some(sv) = EventSchemaVersion::parse(schema_value.trim()) {
-                schema_versions.push(sv);
+            // Parse comma-separated schema versions.
+            for schema in schema_value.split(',') {
+                let schema = schema.trim();
+                if !schema.is_empty()
+                    && let Some(sv) = EventSchemaVersion::parse(schema)
+                {
+                    schema_versions.push(sv);
+                }
             }
 
             remaining = if end_pos < rest.len() {
@@ -244,6 +254,7 @@ fn parse_subscriptions(input: &str) -> Result<Vec<EventSubscription>> {
                 ""
             };
         } else if let Some(rest) = remaining.strip_prefix("sources=") {
+            saw_sources_key = true;
             // Find the end of sources value
             let end_pos = rest.find(",schema=").unwrap_or(rest.len());
             let sources_value = &rest[..end_pos];
@@ -273,6 +284,18 @@ fn parse_subscriptions(input: &str) -> Result<Vec<EventSubscription>> {
                 ""
             };
         }
+    }
+
+    if saw_schema_key && schema_versions.is_empty() {
+        bail!(
+            "Error: `schema=` was provided but no schema versions were parsed.\nHint: use `schema=<version>` or `schema=<version1,version2>`."
+        );
+    }
+
+    if saw_sources_key && source_kinds.is_empty() {
+        bail!(
+            "Error: `sources=` was provided but no source kinds were parsed.\nHint: use `sources=<kind1,kind2>`."
+        );
     }
 
     if schema_versions.is_empty() && source_kinds.is_empty() {
@@ -581,7 +604,7 @@ fn run_type_generation(output_dir: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_output_dir;
+    use super::{parse_subscriptions, validate_output_dir};
 
     #[test]
     fn validate_output_dir_allows_missing_or_empty_dir() {
@@ -603,5 +626,75 @@ mod tests {
         std::fs::write(dir.join("marker.txt"), "x").expect("write marker");
 
         assert!(validate_output_dir(&dir).is_err());
+    }
+
+    #[test]
+    fn parse_subscriptions_single_schema_and_sources() {
+        let parsed = parse_subscriptions("schema=task-daemon.interpretation.v1,sources=slack")
+            .expect("should parse");
+
+        assert_eq!(parsed.len(), 1);
+        let sub = &parsed[0];
+        assert_eq!(
+            sub.schema_versions
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>(),
+            vec!["task-daemon.interpretation.v1"]
+        );
+        assert_eq!(
+            sub.source_kinds
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>(),
+            vec!["slack"]
+        );
+    }
+
+    #[test]
+    fn parse_subscriptions_supports_multiple_schema_versions() {
+        let parsed = parse_subscriptions(
+            "schema=task-daemon.interpretation.v1,task-daemon.interpretation.v2,sources=slack,clickup",
+        )
+        .expect("should parse");
+
+        assert_eq!(parsed.len(), 1);
+        let sub = &parsed[0];
+        assert_eq!(
+            sub.schema_versions
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "task-daemon.interpretation.v1",
+                "task-daemon.interpretation.v2"
+            ]
+        );
+        assert_eq!(
+            sub.source_kinds
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>(),
+            vec!["slack", "clickup"]
+        );
+    }
+
+    #[test]
+    fn parse_subscriptions_rejects_empty_schema_value_when_schema_key_present() {
+        let err = parse_subscriptions("schema=,sources=slack").expect_err("should fail");
+        assert!(
+            err.to_string().contains("`schema=` was provided"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_subscriptions_rejects_empty_sources_value_when_sources_key_present() {
+        let err = parse_subscriptions("schema=task-daemon.interpretation.v1,sources=")
+            .expect_err("should fail");
+        assert!(
+            err.to_string().contains("`sources=` was provided"),
+            "unexpected error: {err}"
+        );
     }
 }
