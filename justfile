@@ -182,10 +182,11 @@ clippy:
 
 ci_features := "baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests"
 
-# CI parity: run the full nextest suite (mirrors rust-ci.yml "nextest" job).
+# CI parity: run nextest in CI order (LLM suite first, then non-LLM suite).
 # Requires: cargo-nextest and OPENROUTER_API_KEY for LLM tests.
 test:
-    cargo nextest run --workspace --features {{ci_features}}
+    cargo nextest run --workspace --locked --profile ci-llm --no-fail-fast -j 2 --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt/llm-tests,baml-agent-runner/llm-tests,baml-rt-provenance/surreal-backend
+    THREADS=$(( $(nproc) / 2 )); [ "$THREADS" -lt 2 ] && THREADS=2; cargo nextest run --workspace --locked --profile ci-non-llm --no-fail-fast -j "$THREADS" --features baml-rt-tools/http-tools,baml-rt-builder/http-tools,baml-agent-runner/http-tools,baml-agent-runner/memory,baml-rt-provenance/surreal-backend
 
 # Same as `test` but only compile — useful for a quick pre-push check.
 test-build:
