@@ -2,9 +2,11 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use baml_rt_core::AgentManifest;
 use console::style;
+
+use crate::{text::truncate_for_display, workspace::find_workspace_root};
 
 /// Agent entry for display.
 struct AgentEntry {
@@ -119,11 +121,7 @@ pub fn run() -> Result<()> {
         }
         current_source = agent.source;
 
-        let description = if agent.description.len() > 60 {
-            format!("{}...", &agent.description[..57])
-        } else {
-            agent.description.clone()
-        };
+        let description = truncate_for_display(&agent.description, 60);
 
         let source_styled = match agent.source {
             "agents" => style("production").green(),
@@ -148,23 +146,6 @@ pub fn run() -> Result<()> {
     // Optional: show tools for each agent with -v flag (could add later)
 
     Ok(())
-}
-
-/// Find the workspace root by looking for Cargo.toml with [workspace].
-fn find_workspace_root() -> Result<PathBuf> {
-    let mut current = std::env::current_dir()?;
-    loop {
-        let cargo_toml = current.join("Cargo.toml");
-        if cargo_toml.exists() {
-            let content = std::fs::read_to_string(&cargo_toml)?;
-            if content.contains("[workspace]") {
-                return Ok(current);
-            }
-        }
-        if !current.pop() {
-            bail!("Could not find workspace root (Cargo.toml with [workspace] section)");
-        }
-    }
 }
 
 /// Load an agent manifest from a file.

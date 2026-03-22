@@ -5,6 +5,8 @@
 use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use console::style;
 
+use crate::text::truncate_for_display;
+
 pub fn run() -> anyhow::Result<()> {
     let catalog = InventoryCatalog::new();
     let mut tools: Vec<_> = catalog.iter().collect();
@@ -29,7 +31,7 @@ pub fn run() -> anyhow::Result<()> {
     // Print each tool
     for tool in tools {
         let name = tool.name.to_string();
-        let description = truncate(&tool.description, 48);
+        let description = truncate_for_display(&tool.description, 48);
         let tags = format!("[{}]", tool.tags.join(", "));
         let access = tool
             .access
@@ -48,13 +50,4 @@ pub fn run() -> anyhow::Result<()> {
     );
 
     Ok(())
-}
-
-/// Truncate a string to a maximum length, appending "..." if truncated.
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len - 3])
-    }
 }

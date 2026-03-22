@@ -2,10 +2,7 @@
 //!
 //! Creates a new tool crate and patches all necessary files.
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::Path};
 
 use anyhow::{Context, Result, anyhow, bail};
 use console::style;
@@ -18,6 +15,7 @@ use crate::{
     },
     templates::{tool_cargo_toml, tool_lib_rs},
     transaction::TransactionalWriter,
+    workspace::find_workspace_root,
 };
 
 /// Run the new-tool command.
@@ -283,27 +281,6 @@ fn validate_access(access: &str) -> Result<()> {
             "Error: unsupported access level '{}'.\nHint: valid values are `read` (default) or `write`.",
             access
         ),
-    }
-}
-
-/// Find the workspace root by looking for Cargo.toml with [workspace].
-fn find_workspace_root() -> Result<PathBuf> {
-    let mut dir = std::env::current_dir()?;
-
-    loop {
-        let cargo_toml = dir.join("Cargo.toml");
-        if cargo_toml.exists() {
-            let content = fs::read_to_string(&cargo_toml)?;
-            if content.contains("[workspace]") {
-                return Ok(dir);
-            }
-        }
-
-        if !dir.pop() {
-            bail!(
-                "Error: could not find workspace root (no Cargo.toml with [workspace] found).\nHint: run this command from the repository root or a subdirectory inside it."
-            );
-        }
     }
 }
 

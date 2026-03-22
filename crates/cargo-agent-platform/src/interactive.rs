@@ -6,6 +6,8 @@ use anyhow::{Result, bail};
 use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use inquire::{Confirm, MultiSelect, Select, Text};
 
+use crate::text::truncate_for_display;
+
 /// Known schema versions for event delivery.
 ///
 /// NOTE: Hardcoded for now. The task-daemon is currently the only event producer,
@@ -194,7 +196,7 @@ pub fn prompt_tools() -> Result<Option<String>> {
         .iter()
         .map(|t| ToolOption {
             id: t.name.to_string(),
-            description: truncate(&t.description, 45),
+            description: truncate_for_display(&t.description, 45),
         })
         .collect();
 
@@ -207,15 +209,6 @@ pub fn prompt_tools() -> Result<Option<String>> {
     } else {
         let ids: Vec<String> = selected.into_iter().map(|t| t.id).collect();
         Ok(Some(ids.join(",")))
-    }
-}
-
-/// Truncate a string to a maximum length.
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len - 3])
     }
 }
 

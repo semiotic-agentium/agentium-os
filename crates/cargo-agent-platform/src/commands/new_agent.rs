@@ -6,7 +6,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use baml_rt_core::{EventSchemaVersion, EventSourceKind, EventSubscription};
 use console::style;
 
-use crate::templates::{agent_coordinator, agent_planner, agent_simple};
+use crate::{
+    generated_baml::sync_generated_baml_files,
+    templates::{agent_coordinator, agent_planner, agent_simple},
+    workspace::find_workspace_root,
+};
 
 /// Agent template type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,25 +351,6 @@ fn determine_template(template_str: &str, tool_ids: &[String]) -> Result<AgentTe
     );
 }
 
-/// Find the workspace root by looking for Cargo.toml with [workspace].
-fn find_workspace_root() -> Result<PathBuf> {
-    let mut current = std::env::current_dir()?;
-    loop {
-        let cargo_toml = current.join("Cargo.toml");
-        if cargo_toml.exists() {
-            let content = std::fs::read_to_string(&cargo_toml)?;
-            if content.contains("[workspace]") {
-                return Ok(current);
-            }
-        }
-        if !current.pop() {
-            bail!(
-                "Error: could not find workspace root (Cargo.toml with [workspace] section).\nHint: run this command from the repository root or a subdirectory inside it."
-            );
-        }
-    }
-}
-
 /// Print summary of what will be created.
 fn print_summary(
     slug: &str,
@@ -592,64 +577,6 @@ fn run_type_generation(output_dir: &Path) -> Result<()> {
         // Sync generated BAML files
         sync_generated_baml_files(&build_dir, &agent_dir.baml_src())
     })
-}
-
-/// Sync generated_*.baml files from build_dir to agent's baml_src.
-fn sync_generated_baml_files(
-    build_dir: &baml_rt_builder::builder::BuildDir,
-    dest_baml_src: &Path,
-) -> Result<()> {
-    use std::io::Write;
-
-    let generated_src_dir = build_dir.join("baml_src");
-    if !generated_src_dir.is_dir() {
-        // No generated files to sync
-        return Ok(());
-    }
-
-    std::fs::create_dir_all(dest_baml_src)?;
-
-    let mut generated_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for entry in std::fs::read_dir(&generated_src_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if !file_name.starts_with("generated_") || !file_name.ends_with(".baml") {
-            continue;
-        }
-
-        generated_names.insert(file_name.to_string());
-        let data = std::fs::read(&path)?;
-        let mut tmp = tempfile::NamedTempFile::new_in(dest_baml_src)?;
-        tmp.write_all(&data)?;
-        let dest_path = dest_baml_src.join(file_name);
-        tmp.persist(&dest_path).map_err(|e| e.error)?;
-    }
-
-    // Remove stale generated_*.baml files
-    for entry in std::fs::read_dir(dest_baml_src)? {
-        let entry = entry?;
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if file_name.starts_with("generated_")
-            && file_name.ends_with(".baml")
-            && !generated_names.contains(file_name)
-        {
-            std::fs::remove_file(path)?;
-        }
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

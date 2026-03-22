@@ -8,6 +8,8 @@ use std::collections::BTreeMap;
 use baml_rt_tools::{InventoryCatalog, ToolCatalog};
 use console::style;
 
+use crate::text::truncate_for_display;
+
 /// Known schema versions for event delivery.
 ///
 /// NOTE: Hardcoded for now. The task-daemon is currently the only event producer,
@@ -75,7 +77,7 @@ pub fn run() -> anyhow::Result<()> {
                     "  {:<20} {:<35} {}",
                     style(&kind_display).green(),
                     tool_name,
-                    truncate(tool_desc, 40)
+                    truncate_for_display(tool_desc, 40)
                 );
             }
         }
@@ -120,13 +122,4 @@ pub fn run() -> anyhow::Result<()> {
     );
 
     Ok(())
-}
-
-/// Truncate a string to a maximum length, appending "..." if truncated.
-fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len - 3])
-    }
 }

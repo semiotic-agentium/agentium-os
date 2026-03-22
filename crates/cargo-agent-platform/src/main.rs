@@ -18,10 +18,13 @@
 //! - `doctor` — Validate workspace integrity
 
 mod commands;
+mod generated_baml;
 mod interactive;
 mod patchers;
 mod templates;
+mod text;
 mod transaction;
+mod workspace;
 
 use clap::{Parser, Subcommand};
 
