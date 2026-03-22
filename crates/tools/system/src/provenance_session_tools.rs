@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err)] // `ToolSessionError` is large by design; matches session tool patterns.
+
 use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;

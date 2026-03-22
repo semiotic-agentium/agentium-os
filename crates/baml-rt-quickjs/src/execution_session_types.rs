@@ -1,6 +1,10 @@
 //! Typed execution-session command and response models for the JS↔Rust boundary.
 //!
 //! Replaces ad-hoc JSON parsing with serde-tagged enums for strict contract enforcement.
+//!
+//! **Wire vs planning:** `*Wire` types are JSON DTOs for `__execution_session_invoke`. After host
+//! bookkeeping, map into [`crate::planning`] (`IntentSubmission`, `PlanSubmission`, …) for
+//! [`crate::planning::PlanningResolver`].
 
 use baml_rt_core::ids::{ExecutionSessionId, IntentId, PlanId, PlanStepId};
 use serde::{Deserialize, Serialize};
@@ -12,11 +16,11 @@ pub enum ExecutionSessionCommand {
     Open,
     SubmitIntent {
         session_id: ExecutionSessionId,
-        intent: IntentSubmission,
+        intent: IntentSubmissionWire,
     },
     SubmitPlan {
         session_id: ExecutionSessionId,
-        plan: PlanSubmission,
+        plan: PlanSubmissionWire,
     },
     StartStep {
         session_id: ExecutionSessionId,
@@ -37,20 +41,27 @@ pub enum ExecutionSessionCommand {
     },
 }
 
+/// Wire JSON body for `submit_intent` (`camelCase` keys). Map to [`crate::planning::IntentSubmission`]
+/// after host lineage and supersession parsing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct IntentSubmission {
+pub struct IntentSubmissionWire {
     pub intent_id: IntentId,
     pub description: String,
+    /// Provenance lineage; when omitted (e.g. BAML omitted the field), the host fills from the
+    /// active invocation scope's message id in `__execution_session_invoke` (`submit_intent`).
+    #[serde(default)]
     pub derived_from_message_ids: Vec<String>,
     /// "replaced"|"replaced_by"|"replacedBy" -> ReplacedBy, "refined"|"refined_by"|"refinedBy" -> RefinedBy
     #[serde(default)]
     pub supersession: Option<String>,
 }
 
+/// Wire JSON body for `submit_plan`. Steps stay as typed rows here; the host builds a JSON array
+/// for [`crate::planning::PlanSubmission::steps`] before calling the resolver.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PlanSubmission {
+pub struct PlanSubmissionWire {
     pub intent_id: IntentId,
     pub plan_id: PlanId,
     pub steps: Vec<PlanStepSubmission>,
@@ -119,7 +130,7 @@ mod tests {
     fn snapshot_submit_intent() {
         let cmd = ExecutionSessionCommand::SubmitIntent {
             session_id: session_id(),
-            intent: IntentSubmission {
+            intent: IntentSubmissionWire {
                 intent_id: intent_id(),
                 description: "Investigate the anomaly".to_string(),
                 derived_from_message_ids: vec!["msg-1".to_string(), "msg-2".to_string()],
@@ -136,7 +147,7 @@ mod tests {
     fn snapshot_submit_intent_with_supersession() {
         let cmd = ExecutionSessionCommand::SubmitIntent {
             session_id: session_id(),
-            intent: IntentSubmission {
+            intent: IntentSubmissionWire {
                 intent_id: intent_id(),
                 description: "Refined intent".to_string(),
                 derived_from_message_ids: vec!["msg-3".to_string()],
@@ -153,7 +164,7 @@ mod tests {
     fn snapshot_submit_plan() {
         let cmd = ExecutionSessionCommand::SubmitPlan {
             session_id: session_id(),
-            plan: PlanSubmission {
+            plan: PlanSubmissionWire {
                 intent_id: intent_id(),
                 plan_id: plan_id(),
                 steps: vec![
@@ -236,6 +247,10 @@ mod tests {
             (
                 "submit_intent",
                 r#"{"action":"submit_intent","session_id":"s","intent":{"intentId":"i","description":"d","derivedFromMessageIds":[]}}"#,
+            ),
+            (
+                "submit_intent_omits_derived_from_message_ids",
+                r#"{"action":"submit_intent","session_id":"s","intent":{"intentId":"i","description":"d"}}"#,
             ),
             (
                 "submit_plan",

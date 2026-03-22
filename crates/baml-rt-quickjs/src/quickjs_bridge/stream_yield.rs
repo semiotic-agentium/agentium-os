@@ -1,6 +1,12 @@
 //! Task-local stream-yield sender so tool-session streaming outputs can be pushed
 //! into the same channel as __baml_stream results (see docs/argument-sketch-stream-trace.md).
+//!
+//! Also hosts [`emit_stream_chunk_static`]: decorate chunk, push to QuickJS stream path, and emit
+//! `ToolStreamChunk` for provenance (lives here with `decorate_tool_chunk` / `send_tool_stream_chunk`).
 
+use std::sync::Arc;
+
+use baml_rt_core::{bus::EffectEvent, ids::ContextId};
 use serde_json::{Map, Value};
 use tokio::sync::mpsc;
 
@@ -55,6 +61,36 @@ pub(crate) fn send_tool_stream_chunk(value: &Value) {
             let _ = sender.try_send(value.clone());
         }
     });
+}
+
+/// Emit one streaming chunk: decorate, send on task-local stream channel, and mirror to the effect bus.
+pub(crate) async fn emit_stream_chunk_static(
+    effect_emitter: Option<&Arc<dyn baml_rt_core::bus::EffectEmitter>>,
+    context_id: &ContextId,
+    output: &Value,
+    streaming_outputs: &mut Vec<Value>,
+) {
+    let tool_name = output
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let decorated = decorate_tool_chunk(tool_name, output);
+    send_tool_stream_chunk(&decorated);
+    if let Some(emitter) = effect_emitter
+        && let Err(e) = emitter
+            .emit(EffectEvent::ToolStreamChunk {
+                context_id: context_id.clone(),
+                chunk: decorated,
+            })
+            .await
+    {
+        tracing::warn!(
+            context_id = %context_id,
+            error = ?e,
+            "tool stream chunk emit failed; chunk lost from provenance"
+        );
+    }
+    streaming_outputs.push(output.clone());
 }
 
 #[cfg(test)]

@@ -11,8 +11,8 @@ use std::{
 
 use async_trait::async_trait;
 use baml_rt_core::{
-    A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentDispatchAck, AgentDispatchRequest,
-    BamlRtError, Result,
+    A2aJsChatHost, A2aRequestHandler, A2aStreamChunk, A2aWireRequest, AgentDispatchAck,
+    AgentDispatchRequest, BamlRtError, Result,
     bus::{BusStream, EffectEmitter},
     context::{self, InvocationScope, OutcomeInvocationContext, RequestScope},
     correlation,
@@ -1456,6 +1456,8 @@ impl A2aRequestHandler for A2aAgent {
         }))
     }
 }
+
+impl A2aJsChatHost for A2aAgent {}
 
 impl A2aAgent {
     async fn handle_live_message_stream(

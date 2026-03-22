@@ -27,6 +27,22 @@ use crate::{
     llm_client_registry::{LlmSecretResolver, build_llm_client_registry},
 };
 
+/// Logs a terminal BAML `call_function` failure at ERROR severity (single source for tests).
+pub(crate) fn log_baml_call_function_terminal_error(
+    function_name: &str,
+    err: &impl std::fmt::Display,
+    hop_elapsed_ms: u64,
+    elapsed_ms: u64,
+) {
+    tracing::error!(
+        function = function_name,
+        error = %err,
+        hop_elapsed_ms,
+        elapsed_ms,
+        "BAML call_function: terminal execution error (not parse-retry)"
+    );
+}
+
 fn planner_state_telemetry(args: &Value) -> Option<(usize, bool, usize, Option<String>)> {
     let obj = args.as_object()?;
     let context = obj.get("session_context").and_then(Value::as_object)?;
@@ -449,12 +465,11 @@ impl BamlExecutor {
                 .await;
 
             if let Err(ref e) = result {
-                tracing::warn!(
-                    function = function_name,
-                    error = ?e,
-                    hop_elapsed_ms = attempt_start.elapsed().as_millis() as u64,
-                    elapsed_ms = start_time.elapsed().as_millis() as u64,
-                    "BAML call_function: error"
+                log_baml_call_function_terminal_error(
+                    function_name,
+                    e,
+                    attempt_start.elapsed().as_millis() as u64,
+                    start_time.elapsed().as_millis() as u64,
                 );
                 // Complete effect and return immediately; execution errors are not retried
                 if let Some(ref collector) = collector {
@@ -702,5 +717,42 @@ impl BamlExecutor {
             }
             Value::Null => Ok(BamlValue::Null),
         }
+    }
+}
+
+#[cfg(test)]
+mod terminal_error_log_tests {
+    use std::sync::{Arc, Mutex};
+
+    use tracing::Level;
+    use tracing_subscriber::{Layer, layer::SubscriberExt, util::SubscriberInitExt};
+
+    use super::log_baml_call_function_terminal_error;
+
+    #[test]
+    fn baml_call_function_terminal_error_emits_error_level() {
+        let seen: Arc<Mutex<Vec<Level>>> = Arc::new(Mutex::new(Vec::new()));
+        struct Capture(Arc<Mutex<Vec<Level>>>);
+        impl<S: tracing::Subscriber> Layer<S> for Capture {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                self.0.lock().expect("lock").push(*event.metadata().level());
+            }
+        }
+
+        let _g = tracing_subscriber::registry()
+            .with(Capture(Arc::clone(&seen)))
+            .set_default();
+
+        log_baml_call_function_terminal_error("TestFn", &"simulated failure", 1, 2);
+
+        let levels = seen.lock().expect("lock");
+        assert!(
+            levels.contains(&Level::ERROR),
+            "expected ERROR event, got {levels:?}"
+        );
     }
 }

@@ -121,12 +121,16 @@ export interface A2aSessionClosed {
  * 1) submitIntent(...)
  * 2) submitPlan(...)
  * 3) execute and complete steps with strict evidence references
+ *
+ * Wire shape matches `IntentSubmissionWire` (baml-rt-quickjs `execution_session_types`).
+ * `derivedFromMessageIds` may be omitted; the host/shim merge the active message id before planning.
+ * `supersession` accepts replaced|refined and snake_case/camelCase aliases (see host parser).
  */
 export interface IntentSubmission {
     intentId: string;
     description: string;
-    derivedFromMessageIds: string[];
-    supersession?: "replaced" | "refined";
+    derivedFromMessageIds?: string[];
+    supersession?: string;
 }
 
 export interface PlanStepSubmission {
@@ -136,11 +140,12 @@ export interface PlanStepSubmission {
     dependsOn?: string[];
 }
 
+/** Wire shape for submitPlan (`PlanSubmissionWire` in baml-rt-quickjs `execution_session_types`). */
 export interface PlanSubmission {
     intentId: string;
     planId: string;
     steps: PlanStepSubmission[];
-    supersession?: "replaced" | "refined";
+    supersession?: string;
 }
 
 export interface A2aExecutionSessionAwaitIntent {
@@ -328,6 +333,11 @@ declare global {
             kind: ToolFailureKind;
             message: string;
             retryable: boolean;
+            // Host-retriable vs LLM-correctable vs terminal-for-call (snake_case on wire).
+            disposition?: string;
+            code?: string;
+            hint?: string;
+            retry_after_ms?: number;
         }
     );
     tokens.line();

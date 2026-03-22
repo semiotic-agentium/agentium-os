@@ -39,6 +39,7 @@ testing = []
 [dev-dependencies]
 test-support = { path = "../test-support" }
 baml-rt = { path = "../baml-rt" }
+tracing-subscriber = { workspace = true }
 schemars = { workspace = true }
 ts-rs = { workspace = true }
 proptest = "1.5"

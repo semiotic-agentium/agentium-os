@@ -18,7 +18,9 @@ pub mod semantics;
 pub mod stream_completion;
 pub mod types;
 
-pub use a2a_handler::{A2aRequestHandler, collect_a2a_stream, collect_a2a_stream_until};
+pub use a2a_handler::{
+    A2aJsChatHost, A2aRequestHandler, collect_a2a_stream, collect_a2a_stream_until,
+};
 pub use a2a_wire::{A2aStreamChunk, A2aWireRequest};
 pub use agent_routing::{
     AgentCard, AgentDiscoveryEntry, AgentInstanceId, AgentListCatalogueHolder, AgentLister,
@@ -36,7 +38,9 @@ pub use context::{
 };
 pub use deferred::DeferredHolder;
 pub use dispatch::{AgentDispatchAck, AgentDispatchRequest, AgentDispatchRoutingKey};
-pub use error::{BamlRtError, Result, SessionLifecycleError};
+pub use error::{
+    BamlRtError, Result, SessionLifecycleError, baml_error_disposition, retryability_for_a2a,
+};
 pub use event_subscription::{
     EventSchemaVersion, EventSourceKind, EventSubscription, EventSubscriptionFilter,
     subscriptions_match_filter,
@@ -48,5 +52,5 @@ pub use ids::{
 };
 pub use json::to_json_value;
 pub use package::AgentManifest;
-pub use semantics::{ActivityOutcome, InvocationKind, Outcome, Retryability};
+pub use semantics::{ActivityOutcome, ErrorDisposition, InvocationKind, Outcome, Retryability};
 pub use stream_completion::{StreamCompletion, StreamResult};

@@ -11,6 +11,7 @@ This directory contains test fixtures used by the test suite.
   - `slack-smoke-tool` — Minimal fixture that declares `support/slack`; used to verify Slack tool metadata/typegen/package wiring in fixture build flows.
   - `conversational-context-auto` — Multi-turn chat with BAML functions and tool routing
   - `conversational-persona-demo` — Persona-based chat
+  - `security-eval-agent` — Declares `support/crm` + `support/email` (security-eval tools); included in `just persona-claude-extrospection*` / `just persona-claude-extrospection-clickup` alongside the main dev agents.
   - **`tool-discovery-demo`** — Uses `system/discover_tools` + BAML prompt to find tools by query (e.g. "Notion", "calculate"). Ad hoc verification: `./scripts/verify-tool-discovery.sh --build`.
   - `emit-plan-then-block` — Fixture that emits plan chunks then blocks the event loop (no yield) before returning; used in A2A stream tests for relay flush timing.
 

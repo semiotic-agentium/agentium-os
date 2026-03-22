@@ -307,7 +307,6 @@ impl TypeGenerator for RuntimeTypeGenerator {
                 }
             }
 
-
             // Resolve tool metadata once — used by both polymorphic type generation
             // and per-phase function generation.
             let tool_metadata = if !tool_names.is_empty() {
@@ -389,7 +388,6 @@ impl TypeGenerator for RuntimeTypeGenerator {
             let declarations =
                 render_ts_declarations(&ir_signature, &tool_names, &session_plan_map)?;
 
-
             // Write baml-runtime.d.ts into agent's src/ so tsc resolves it directly.
             let src_dts = agent_dir.src().join("baml-runtime.d.ts");
             if let Some(parent) = src_dts.parent() {
@@ -428,7 +426,6 @@ impl TypeGenerator for RuntimeTypeGenerator {
         })
         .await
         .map_err(|e| BamlBuilderError::BlockingTaskJoin { source: e })?
-
     }
 }
 

@@ -7,8 +7,8 @@ use std::sync::{Arc, Mutex as StdMutex};
 use async_trait::async_trait;
 use baml_rt::{
     baml::{
-        BamlRuntimeManager, CanonicalIntentSubmission, CanonicalPlanStepStatusChange,
-        CanonicalPlanSubmission, PlanningCanonicalResolver, PlanningDynamicContext,
+        BamlRuntimeManager, IntentSubmission, PlanStepStatusChange, PlanSubmission,
+        PlanningDynamicContext, PlanningResolver,
     },
     quickjs_bridge::QuickJSBridge,
 };
@@ -524,12 +524,12 @@ struct CanonicalizingResolver {
 }
 
 #[async_trait]
-impl PlanningCanonicalResolver for CanonicalizingResolver {
+impl PlanningResolver for CanonicalizingResolver {
     async fn resolve_intent(
         &self,
         context: &PlanningDynamicContext,
-        mut submission: CanonicalIntentSubmission,
-    ) -> baml_rt_core::Result<CanonicalIntentSubmission> {
+        mut submission: IntentSubmission,
+    ) -> baml_rt_core::Result<IntentSubmission> {
         let mut state = self.observation.lock().expect("resolver observation lock");
         state.intent_saw_scope_echo = context
             .available_tools
@@ -549,8 +549,8 @@ impl PlanningCanonicalResolver for CanonicalizingResolver {
     async fn resolve_plan(
         &self,
         context: &PlanningDynamicContext,
-        mut submission: CanonicalPlanSubmission,
-    ) -> baml_rt_core::Result<CanonicalPlanSubmission> {
+        mut submission: PlanSubmission,
+    ) -> baml_rt_core::Result<PlanSubmission> {
         let mut state = self.observation.lock().expect("resolver observation lock");
         state.plan_saw_scope_echo = context
             .available_tools
@@ -572,8 +572,8 @@ impl PlanningCanonicalResolver for CanonicalizingResolver {
     async fn resolve_step_status(
         &self,
         context: &PlanningDynamicContext,
-        mut submission: CanonicalPlanStepStatusChange,
-    ) -> baml_rt_core::Result<CanonicalPlanStepStatusChange> {
+        mut submission: PlanStepStatusChange,
+    ) -> baml_rt_core::Result<PlanStepStatusChange> {
         let mut state = self.observation.lock().expect("resolver observation lock");
         state.step_saw_scope_echo = context
             .available_tools
@@ -1164,10 +1164,12 @@ async fn test_runtime_canonical_planning_uses_custom_resolver_and_dynamic_contex
     manager
         .emit_planning_intent_resolved(
             &scope,
-            "intent-raw".to_string(),
-            "raw description".to_string(),
-            vec![message_id.as_str().to_string()],
-            None,
+            IntentSubmission {
+                intent_id: IntentId::from("intent-raw"),
+                description: "raw description".to_string(),
+                derived_from_message_ids: vec![message_id.as_str().to_string()],
+                supersession: None,
+            },
             None,
         )
         .await

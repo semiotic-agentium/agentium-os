@@ -29,7 +29,7 @@ expression: snapshot
           "a2a_usage_completion_tokens": 5,
           "a2a_usage_prompt_tokens": 20,
           "a2a_usage_total_tokens": 25,
-          "prov_endTime": 3,
+          "prov_endTime": "[timestamp_ms]",
           "prov_type": "a2a:LlmCall",
           "context_id": "ctx-100-1",
           "message_id": "msg-b",
@@ -118,7 +118,7 @@ expression: snapshot
             },
             "phase": null
           },
-          "prov_endTime": 1774019566542,
+          "prov_endTime": "[timestamp_ms]",
           "prov_type": "a2a:ToolCall",
           "context_id": "ctx-100-1",
           "message_id": "msg-c",

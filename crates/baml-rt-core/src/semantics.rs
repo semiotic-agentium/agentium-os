@@ -83,6 +83,23 @@ impl<'de> Deserialize<'de> for Outcome {
     }
 }
 
+/// How a failure should be handled by the host runtime vs the LLM.
+///
+/// Distinct from [`Retryability`]: JSON-RPC / client retry hints are derived from this
+/// (e.g. [`ErrorDisposition::HostRetriable`] maps to retryable for transport-level retries).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ErrorDisposition {
+    /// Transient infrastructure / rate limits — host may retry without a new LLM turn.
+    HostRetriable,
+    /// Bad args or schema — return structured error to the model; no blind host retry.
+    LlmCorrectable,
+    /// Definitive failure for this call (auth, not found) — inform the model; session/turn may continue.
+    InformAndContinue,
+    /// Unrecoverable for the current execution path (abort as today).
+    Fatal,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Retryability {
     Retryable,

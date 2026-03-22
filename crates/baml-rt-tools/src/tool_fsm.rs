@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::tool_error_classify::{ClassifiedToolError, ToolExecutionClassifier};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ToolSessionId(Uuid);
 
@@ -69,6 +71,8 @@ pub struct ToolFailure {
     pub kind: ToolFailureKind,
     pub message: String,
     pub retryability: Retryability,
+    /// Structured classification for LLM-visible payloads and host retry policy.
+    pub classified: ClassifiedToolError,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -90,37 +94,77 @@ impl SessionPhase {
 
 impl ToolFailure {
     pub fn invalid_input(message: impl Into<String>) -> Self {
+        let message = message.into();
+        let classified = ClassifiedToolError {
+            code: "invalid_input".to_string(),
+            disposition: baml_rt_core::semantics::ErrorDisposition::LlmCorrectable,
+            message: message.clone(),
+            hint: None,
+            retry_after_ms: None,
+        };
+        let retryability = classified.host_retryability();
         Self {
             kind: ToolFailureKind::InvalidInput,
-            message: message.into(),
-            retryability: Retryability::Permanent,
+            message,
+            retryability,
+            classified,
         }
     }
 
     pub fn execution_failed(message: impl Into<String>) -> Self {
+        let message = message.into();
+        let classified = ClassifiedToolError {
+            code: "execution_failed".to_string(),
+            disposition: baml_rt_core::semantics::ErrorDisposition::Fatal,
+            message: message.clone(),
+            hint: None,
+            retry_after_ms: None,
+        };
+        let retryability = classified.host_retryability();
         Self {
             kind: ToolFailureKind::ExecutionFailed,
-            message: message.into(),
-            retryability: Retryability::Permanent,
+            message,
+            retryability,
+            classified,
         }
     }
 
     pub fn from_error(error: &BamlRtError) -> Self {
-        let kind = match error {
-            BamlRtError::InvalidArgument(_) | BamlRtError::InvalidArgumentWithSource { .. } => {
-                ToolFailureKind::InvalidInput
-            }
-            BamlRtError::QuickJs(_) | BamlRtError::QuickJsWithSource { .. } => {
-                ToolFailureKind::ExecutionFailed
-            }
-            BamlRtError::ToolExecution(_) => ToolFailureKind::ExecutionFailed,
-            _ => ToolFailureKind::Unknown,
-        };
+        Self::from_classified(ClassifiedToolError::from_baml_error(error), error)
+    }
+
+    /// Classify using optional per-tool logic from session context.
+    pub fn from_error_in_session(
+        classifier: &Option<ToolExecutionClassifier>,
+        error: &BamlRtError,
+    ) -> Self {
+        let classified = crate::tool_error_classify::classify_for_session(classifier, error);
+        Self::from_classified(classified, error)
+    }
+
+    fn from_classified(classified: ClassifiedToolError, error: &BamlRtError) -> Self {
+        let kind = tool_failure_kind_from(error);
+        let message = classified.message.clone();
+        let retryability = classified.host_retryability();
         Self {
             kind,
-            message: error.to_string(),
-            retryability: Retryability::Permanent,
+            message,
+            retryability,
+            classified,
         }
+    }
+}
+
+fn tool_failure_kind_from(error: &BamlRtError) -> ToolFailureKind {
+    match error {
+        BamlRtError::InvalidArgument(_) | BamlRtError::InvalidArgumentWithSource { .. } => {
+            ToolFailureKind::InvalidInput
+        }
+        BamlRtError::QuickJs(_) | BamlRtError::QuickJsWithSource { .. } => {
+            ToolFailureKind::ExecutionFailed
+        }
+        BamlRtError::ToolExecution(_) => ToolFailureKind::ExecutionFailed,
+        _ => ToolFailureKind::Unknown,
     }
 }
 

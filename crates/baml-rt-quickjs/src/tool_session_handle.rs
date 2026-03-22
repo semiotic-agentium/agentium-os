@@ -16,7 +16,7 @@ use baml_rt_core::{
 };
 use baml_rt_interceptor::ToolCallContext;
 use baml_rt_observability::metrics;
-use baml_rt_tools::{ToolSessionId, ToolStep};
+use baml_rt_tools::{ToolName, ToolSessionId, ToolStep};
 use dashmap::DashMap;
 use serde_json::Value;
 
@@ -25,6 +25,7 @@ use crate::{
         completion_error_from, extract_delegation_target_from_open_input, tool_session_trace,
         tool_session_trace_enabled,
     },
+    quickjs_bridge::stream_yield::emit_stream_chunk_static,
     tool_execution::{ToolExecutionContext, build_metadata_map_with_phase, resolve_planning_step},
 };
 
@@ -116,10 +117,10 @@ impl ToolSessionExecutionHandle {
         drop(interceptor_registry);
 
         if let Err(ref e) = result {
-            tracing::warn!(
+            tracing::error!(
                 tool_name = tool_name,
                 context_id = %context_id,
-                error = ?e,
+                error = %e,
                 "Tool session open: error"
             );
         }
@@ -275,6 +276,17 @@ impl ToolSessionExecutionHandle {
             }
         }
         None
+    }
+
+    /// Tool name from an already-open session for this exact [`context::RuntimeScope`], if any.
+    ///
+    /// Polymorphic BAML session plans omit `selected_tool` on Send/Read after Open; the runtime
+    /// recovers the bound tool from the live session row (first scope match).
+    pub fn tool_name_for_scope(&self, scope: &context::RuntimeScope) -> Option<ToolName> {
+        self.tool_session_scopes
+            .iter()
+            .find(|entry| entry.value().scope == *scope)
+            .and_then(|entry| ToolName::parse(&entry.value().tool_name).ok())
     }
 
     /// Collect all session IDs whose scope matches this context_id (for teardown).
@@ -469,11 +481,11 @@ impl ToolSessionExecutionHandle {
 
         let result = run().await;
         if let Err(ref e) = result {
-            tracing::warn!(
+            tracing::error!(
                 session_id = %session_id,
                 tool_name = %session_scope.tool_name,
                 context_id = %session_scope.scope.context_id(),
-                error = ?e,
+                error = %e,
                 "Tool session send: error"
             );
         } else {
@@ -684,7 +696,7 @@ impl ToolSessionExecutionHandle {
                 "Tool session read: ok"
             );
         } else if let Err(ref e) = result {
-            tracing::warn!(session_id = %session_id, error = ?e, "Tool session read: error");
+            tracing::error!(session_id = %session_id, error = %e, "Tool session read: error");
         }
         result
     }
@@ -767,7 +779,7 @@ impl ToolSessionExecutionHandle {
             .scope;
         let result = run().await;
         if let Err(ref e) = result {
-            tracing::warn!(session_id = %session_id, error = ?e, "Tool session finish: error");
+            tracing::error!(session_id = %session_id, error = %e, "Tool session finish: error");
         } else {
             tracing::info!(session_id = %session_id, "Tool session finish: ok");
         }
@@ -844,7 +856,7 @@ impl ToolSessionExecutionHandle {
             .scope;
         let result = run().await;
         if let Err(ref e) = result {
-            tracing::warn!(session_id = %session_id, error = ?e, "Tool session abort: error");
+            tracing::error!(session_id = %session_id, error = %e, "Tool session abort: error");
         } else {
             tracing::info!(session_id = %session_id, "Tool session abort: ok");
         }
@@ -892,7 +904,7 @@ impl ToolSessionExecutionHandle {
 
             match step_result {
                 ToolStep::Streaming { output } => {
-                    crate::baml::emit_stream_chunk_static(
+                    emit_stream_chunk_static(
                         self.ctx.effect_emitter.as_ref(),
                         plan_scope.context_id(),
                         &output,
@@ -902,7 +914,7 @@ impl ToolSessionExecutionHandle {
                 }
                 ToolStep::Suspended { output } => {
                     // A2A task paused (input required or still running). Continue polling.
-                    crate::baml::emit_stream_chunk_static(
+                    emit_stream_chunk_static(
                         self.ctx.effect_emitter.as_ref(),
                         plan_scope.context_id(),
                         &output,

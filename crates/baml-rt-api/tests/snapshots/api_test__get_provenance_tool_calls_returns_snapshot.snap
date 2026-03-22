@@ -27,7 +27,7 @@ expression: snapshot
           },
           "phase": null
         },
-        "prov_endTime": 1774019566679,
+        "prov_endTime": "[timestamp_ms]",
         "prov_type": "a2a:ToolCall",
         "context_id": "ctx-100-1",
         "message_id": "msg-c",
@@ -68,7 +68,7 @@ expression: snapshot
         },
         "a2a_tool_name": "support/calculate",
         "tool_result_ref": "[prov_event_id]",
-        "prov_endTime": 1774019566245,
+        "prov_endTime": "[timestamp_ms]",
         "prov_type": "a2a:ToolCall",
         "context_id": "ctx-100-1",
         "message_id": "msg-a",

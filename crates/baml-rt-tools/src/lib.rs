@@ -12,6 +12,7 @@ pub mod session_coordination;
 mod spans;
 pub mod tool_catalog;
 pub mod tool_discovery;
+pub mod tool_error_classify;
 pub mod tool_fsm;
 pub mod tool_schema;
 pub mod tools;
@@ -27,6 +28,10 @@ pub use host_registration::register_manifest_tools;
 pub use session_coordination::get_session_coordination_baml_for_tools;
 pub use tool_catalog::{InventoryCatalog, ManifestToolNames, ToolCatalog};
 pub use tool_discovery::search_tools;
+pub use tool_error_classify::{
+    ClassifiedToolError, ToolExecutionClassifier, a2a_retryability, classify_for_session,
+    should_host_retry, should_host_retry_baml_error,
+};
 pub use tool_fsm::{
     SessionPhase, ToolFailure, ToolFailureKind, ToolSession, ToolSessionError, ToolSessionId,
     ToolStep,

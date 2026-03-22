@@ -214,10 +214,29 @@ pub fn render_a2a_shim() -> Result<String> {
     var api = {
       sessionId: sessionId,
       submitIntent: async function(intent) {
+        // Planning rails require provenance; BAML/LLM outputs may omit derivedFromMessageIds.
+        // Normalize here (chat run sets __a2a_current_message_id) so the host JSON always
+        // carries lineage when we have a message id; Rust still backfills if both are empty.
+        if (intent == null || typeof intent !== "object") {
+          throw new Error("submitIntent: intent must be an object");
+        }
+        var normalized = {};
+        for (var key in intent) {
+          if (Object.prototype.hasOwnProperty.call(intent, key)) {
+            normalized[key] = intent[key];
+          }
+        }
+        var lineage = normalized.derivedFromMessageIds;
+        if (!Array.isArray(lineage) || lineage.length === 0) {
+          var mid = globalThis.__a2a_current_message_id;
+          if (typeof mid === "string" && mid.trim().length > 0) {
+            normalized.derivedFromMessageIds = [mid];
+          }
+        }
         await invokeExecutionSession({
           action: "submit_intent",
           session_id: sessionId,
-          intent: intent
+          intent: normalized
         });
         return this;
       },
@@ -284,7 +303,18 @@ pub fn render_a2a_shim() -> Result<String> {
           if (tasks.length === 0) return Promise.resolve();
           return Promise.all(tasks).then(function() {});
         };
+        var prevMessageId = globalThis.__a2a_current_message_id;
         try {
+          if (message != null && typeof message === "object") {
+            var mid = message.message_id != null ? message.message_id : message.messageId;
+            if (mid != null && String(mid).trim().length > 0) {
+              globalThis.__a2a_current_message_id = String(mid);
+            } else {
+              delete globalThis.__a2a_current_message_id;
+            }
+          } else {
+            delete globalThis.__a2a_current_message_id;
+          }
           s.onFailed(function(err) {
             var reason = (typeof err === "string" && err.trim().length > 0) ? err : "chat run failed";
             return abortExecutionSessions("runtime enforced abort: " + reason);
@@ -293,6 +323,11 @@ pub fn render_a2a_shim() -> Result<String> {
             return agent.run({ text: s.text() || '', message: message, emit: emit });
           });
         } finally {
+          if (typeof prevMessageId === "undefined") {
+            delete globalThis.__a2a_current_message_id;
+          } else {
+            globalThis.__a2a_current_message_id = prevMessageId;
+          }
           if (globalThis.__a2a_current_execution_sessions === executionSessions) {
             delete globalThis.__a2a_current_execution_sessions;
           }

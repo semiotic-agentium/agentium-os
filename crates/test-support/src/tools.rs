@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use baml_rt::{Result, tools::BamlTool};
+use baml_rt_core::A2aJsChatHost;
 use baml_rt_tools_internal_dev::{
     A2aRelayInput, A2aRelayOutput, CalculatorInput, CalculatorOutput, DelayedInput, DelayedOutput,
     InternalDev, MathOperation, UppercaseInput, UppercaseOutput, WeatherInput, WeatherOutput,
@@ -135,6 +136,12 @@ pub struct A2aInMemoryClient {
 
 impl A2aInMemoryClient {
     pub fn new(target: Arc<dyn baml_rt::A2aRequestHandler>) -> Self {
+        Self { target }
+    }
+
+    /// Same contract as `support::a2a::A2aInMemoryClient::new_for_chat_parity`.
+    pub fn new_for_chat_parity(host: Arc<dyn A2aJsChatHost>) -> Self {
+        let target: Arc<dyn baml_rt::A2aRequestHandler> = host;
         Self { target }
     }
 

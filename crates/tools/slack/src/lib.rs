@@ -12,8 +12,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use async_trait::async_trait;
 use baml_derive::BamlType;
-use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::{baml_tool, bundles::Support, tools::BamlTool};
+use baml_rt_core::{BamlRtError, Result, semantics::ErrorDisposition};
+use baml_rt_tools::{ClassifiedToolError, baml_tool, bundles::Support, tools::BamlTool};
 use integrations_slack_read::{self as slack_read, SlackReadClient, SlackReadError};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -1494,6 +1494,24 @@ impl BamlTool for SlackTool {
 
     fn describe_open(&self) -> String {
         "using Slack for conversation retrieval and analysis".to_string()
+    }
+
+    fn classify_execution_error(err: &BamlRtError) -> ClassifiedToolError {
+        let mut c = ClassifiedToolError::from_baml_error(err);
+        if let BamlRtError::ToolExecution(msg) = err {
+            let m = msg.as_str();
+            if m.contains("rate_limited") || m.to_ascii_lowercase().contains("ratelimited") {
+                c.code = "slack_rate_limited".to_string();
+                c.disposition = ErrorDisposition::HostRetriable;
+            } else if m.contains("not_in_channel") || m.contains("channel_not_found") {
+                c.disposition = ErrorDisposition::LlmCorrectable;
+                c.hint = Some(
+                    "Check channel membership or invite the app; the token may lack access."
+                        .to_string(),
+                );
+            }
+        }
+        c
     }
 }
 

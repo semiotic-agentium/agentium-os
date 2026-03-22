@@ -136,6 +136,19 @@ the short timeout (warm-up window). To isolate locally, run with
 `RUST_LOG=baml_rt_quickjs=trace` and check for “LlmStarted emitting” vs
 “poll_promise: effect-gated timeout sample” timing (see `crates/baml-rt/tests/llm_test.rs`).
 
+### Tracing defaults (`RUST_LOG`)
+
+Binaries that call `baml_rt_observability::init_tracing()` merge defaults such as
+`baml_rt=info`, **`baml_rt_quickjs=info`**, and `baml_agent_runner=info` with
+`RUST_LOG` from the environment.
+
+- **`RUST_LOG=error`** — only `ERROR` events; `WARN` diagnostics (e.g. some
+  pre-change paths) are hidden. Use **`error` or explicit crate targets** when
+  debugging “silent” tool/BAML failures.
+- **`RUST_LOG=baml_rt_quickjs=error,baml_rt=info`** — ERROR+ from the QuickJS/BAML
+  bridge while keeping other `baml_rt*` namespaces at info.
+- **`RUST_LOG=baml_rt_quickjs=trace`** — verbose bridge tracing (high volume).
+
 ## Conversation Handling (A2A DSL)
 
 The **best reference** for multi-turn conversation and task lifecycle is the

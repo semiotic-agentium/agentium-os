@@ -1,5 +1,8 @@
 //! claude/dev tool: host-owned Claude session orchestration.
 
+// `ToolSessionError` carries rich context; `-D clippy::result_large_err` is not worth API churn here.
+#![allow(clippy::result_large_err)]
+
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     path::PathBuf,

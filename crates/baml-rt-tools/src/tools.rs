@@ -27,6 +27,7 @@ use crate::{
     bundles::BundleType,
     config_resolver::ConfigResolver,
     tool_catalog::{InventoryCatalog, ToolCatalog},
+    tool_error_classify::{ClassifiedToolError, ToolExecutionClassifier},
     tool_fsm::{SessionPhase, ToolFailure, ToolSession, ToolSessionError, ToolSessionId, ToolStep},
     tool_schema::{DescribeAction, ToolType, json_schema_value},
     ts_gen::render_tool_typescript,
@@ -277,6 +278,11 @@ pub trait BamlTool: Send + Sync + 'static {
     /// Default delegates to `DescribeAction::describe` on the Input type.
     fn describe_invocation(&self, input: &Self::Input) -> String {
         input.describe()
+    }
+
+    /// Classify execution failures for host retry policy and LLM-visible `tool_error` payloads.
+    fn classify_execution_error(err: &BamlRtError) -> ClassifiedToolError {
+        ClassifiedToolError::from_baml_error(err)
     }
 }
 
@@ -1186,6 +1192,8 @@ pub struct ToolSessionContext {
     pub config_version: Option<u64>,
     /// Invocation scope task_id when available.
     pub task_id: Option<TaskId>,
+    /// Optional per-tool classifier for execution errors (set when opening via [`ToolWrapper`]).
+    pub execution_classifier: Option<ToolExecutionClassifier>,
 }
 
 /// Generic explicit read request envelope for Send steps.
@@ -1311,10 +1319,14 @@ fn extract_tool_name_from_payload(content: &Value) -> Option<String> {
 fn map_session_error(error: ToolSessionError) -> BamlRtError {
     match error {
         ToolSessionError::Transport(err) => err,
-        ToolSessionError::Tool(failure) => BamlRtError::InvalidArgument(format!(
-            "Tool failure ({:?}): {}",
-            failure.kind, failure.message
-        )),
+        ToolSessionError::Tool(failure) => {
+            let payload = serde_json::json!({
+                "tool_error": failure.classified.to_tool_error_json(),
+                "failure_kind": format!("{:?}", failure.kind),
+                "summary": failure.message,
+            });
+            BamlRtError::ToolExecution(payload.to_string())
+        }
     }
 }
 
@@ -1639,11 +1651,13 @@ impl<T: BamlTool> ToolHandler for ToolWrapper<T> {
 
     async fn open_session(
         &self,
-        ctx: ToolSessionContext,
+        mut ctx: ToolSessionContext,
         open_input: Value,
     ) -> Result<Box<dyn ToolSession>> {
         // Parse and validate open_input if needed
         validate_open_input::<T::OpenInput>(open_input)?;
+
+        ctx.execution_classifier = Some(Arc::new(|err| T::classify_execution_error(err)));
 
         let tool = self.tool.clone();
         let executor: Box<dyn ToolExecutor> = Box::new(ExecutorAdapter::new(move |input| {
@@ -1698,7 +1712,12 @@ impl ToolSession for MultiSendSession {
         }
         let output = match self.executor.execute(merged).await {
             Ok(value) => value,
-            Err(err) => return Err(ToolSessionError::Tool(ToolFailure::from_error(&err))),
+            Err(err) => {
+                return Err(ToolSessionError::Tool(ToolFailure::from_error_in_session(
+                    &self.ctx.execution_classifier,
+                    &err,
+                )));
+            }
         };
         Ok(ToolStep::Done {
             output: Some(output),
@@ -2165,6 +2184,7 @@ impl ToolRegistry {
             config,
             config_version,
             task_id: task_id.cloned(),
+            execution_classifier: None,
         };
         let session = handler.open_session(ctx, open_input).await?;
         self.sessions
@@ -2588,7 +2608,7 @@ impl ToolSession for OneShotSession {
             Ok(value) => value,
             Err(err) => {
                 return Ok(ToolStep::Error {
-                    error: ToolFailure::from_error(&err),
+                    error: ToolFailure::from_error_in_session(&self.ctx.execution_classifier, &err),
                 });
             }
         };

@@ -5,8 +5,8 @@
 
 use async_trait::async_trait;
 use baml_derive::BamlType;
-use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::{baml_tool, bundles::Support, tools::BamlTool};
+use baml_rt_core::{BamlRtError, Result, semantics::ErrorDisposition};
+use baml_rt_tools::{ClassifiedToolError, baml_tool, bundles::Support, tools::BamlTool};
 /// ClickUp v2 REST API base URL.
 pub use integrations_clickup_client::BASE_URL;
 use integrations_clickup_client::{ClickUpClient, ClickUpClientError};
@@ -718,5 +718,24 @@ impl BamlTool for ClickUpTool {
 
     fn describe_open(&self) -> String {
         "using ClickUp for workspace navigation and task management".to_string()
+    }
+
+    fn classify_execution_error(err: &BamlRtError) -> ClassifiedToolError {
+        let mut c = ClassifiedToolError::from_baml_error(err);
+        if let BamlRtError::ToolExecution(msg) = err {
+            let lower = msg.to_ascii_lowercase();
+            if lower.contains("404") || lower.contains("not found") {
+                c.disposition = ErrorDisposition::InformAndContinue;
+                c.code = "clickup_not_found".to_string();
+                c.hint = Some(
+                    "Verify team_id, space_id, list_id, or task_id exist in the workspace."
+                        .to_string(),
+                );
+            } else if lower.contains("429") {
+                c.disposition = ErrorDisposition::HostRetriable;
+                c.code = "clickup_rate_limited".to_string();
+            }
+        }
+        c
     }
 }

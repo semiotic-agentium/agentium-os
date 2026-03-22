@@ -141,7 +141,7 @@ Other fixtures (stream-js-tool, stream-baml-tool, conversational-context-auto, e
 ### Test-Gating Feature Flags
 
 - `llm-tests` — LLM-dependent tests requiring API keys (on baml-rt, baml-agent-runner, task-daemon)
-- `http-tools` — HTTP-dependent tools (ClickUp, Notion, Slack; on baml-rt-tools, baml-rt-builder, baml-agent-runner)
+- `http-tools` — HTTP-dependent tools (ClickUp, Notion, Slack) plus **security-eval** mock tools (`support/crm`, `support/email`) on `baml-rt-builder` and `baml-agent-runner` (so `security-eval-agent` loads with `--features http-tools` alone)
 
 ## CI Structure
 

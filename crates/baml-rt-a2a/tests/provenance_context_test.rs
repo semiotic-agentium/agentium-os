@@ -74,7 +74,7 @@ async fn test_context_id_propagates_across_agents() {
         .expect("a2a handle");
     let context_id = expect_context_id(responses);
 
-    let client = A2aInMemoryClient::new(Arc::new(agent2));
+    let client = A2aInMemoryClient::new_for_chat_parity(Arc::new(agent2));
     let request = send_stream_request(
         "msg-2",
         "forward",

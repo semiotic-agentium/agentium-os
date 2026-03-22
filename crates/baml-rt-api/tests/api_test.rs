@@ -81,6 +81,8 @@ fn redact_variant_parts(v: Value) -> Value {
                     "type_url" => V::String("[type_url]".to_string()),
                     "event_id" => V::String("[prov_event_id]".to_string()),
                     "timestamp_ms" => V::String("[timestamp_ms]".to_string()),
+                    // Wall-clock ms from Surreal / store; varies every run.
+                    "prov_endTime" | "prov_startTime" => V::String("[timestamp_ms]".to_string()),
                     "type" => match &val {
                         V::String(s) if s.starts_with("http://") || s.starts_with("https://") => {
                             V::String("[type_url]".to_string())
@@ -157,7 +159,20 @@ async fn prov_test_router(
 }
 
 /// Snapshot-friendly representation of finished spans: name + attributes (variant values redacted).
-const SPAN_REDACT_KEYS: &[&str] = &["thread.id", "thread.name", "busy_ns", "idle_ns"];
+const SPAN_REDACT_KEYS: &[&str] = &[
+    "thread.id",
+    "thread.name",
+    "busy_ns",
+    "idle_ns",
+    // Surreal / registry paths and line numbers change with crate versions and machines.
+    "code.filepath",
+    "code.lineno",
+    "code.namespace",
+    // SurrealKV internal span attributes include instance-specific keys/vals per run.
+    "key",
+    "val",
+    "rng",
+];
 
 #[allow(dead_code)]
 fn spans_snapshot(spans: &[opentelemetry_sdk::export::trace::SpanData]) -> Value {

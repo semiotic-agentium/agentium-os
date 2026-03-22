@@ -9,8 +9,8 @@ use std::{collections::VecDeque, fmt};
 
 use async_trait::async_trait;
 use baml_derive::BamlType;
-use baml_rt_core::{BamlRtError, Result};
-use baml_rt_tools::{baml_tool, bundles::Support, tools::BamlTool};
+use baml_rt_core::{BamlRtError, Result, semantics::ErrorDisposition};
+use baml_rt_tools::{ClassifiedToolError, baml_tool, bundles::Support, tools::BamlTool};
 use integrations_notion_read::{
     self as notion_read, NotionReadClient, NotionReadError, RetryAfter,
 };
@@ -1080,6 +1080,28 @@ impl BamlTool for NotionTool {
 
     fn describe_open(&self) -> String {
         "using Notion for read-only page retrieval".to_string()
+    }
+
+    fn classify_execution_error(err: &BamlRtError) -> ClassifiedToolError {
+        let mut c = ClassifiedToolError::from_baml_error(err);
+        if let BamlRtError::ToolExecution(msg) = err {
+            let lower = msg.to_ascii_lowercase();
+            if lower.contains("object_not_found") || lower.contains("could not find") {
+                c.disposition = ErrorDisposition::InformAndContinue;
+                c.code = "notion_not_found".to_string();
+                c.hint = Some(
+                    "Confirm page_id / block_id and that the integration has access to the page."
+                        .to_string(),
+                );
+            } else if lower.contains("rate_limited")
+                || lower.contains("too many requests")
+                || lower.contains("429")
+            {
+                c.disposition = ErrorDisposition::HostRetriable;
+                c.code = "notion_rate_limited".to_string();
+            }
+        }
+        c
     }
 }
 

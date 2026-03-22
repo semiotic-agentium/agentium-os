@@ -68,7 +68,8 @@ use super::{
     wrappers,
 };
 use crate::{
-    execution_session_types::ExecutionSessionCommand, js_value_converter::value_to_js_value_facade,
+    a2a_chat_surface as chat, execution_session_types::ExecutionSessionCommand,
+    js_value_converter::value_to_js_value_facade, planning::IntentSubmission,
 };
 
 /// Base scope owned by every execution session variant.
@@ -537,7 +538,7 @@ pub(super) async fn register_baml_invoke_helper(bridge: &QuickJSBridge) -> Resul
 
     bridge.runtime().set_function(
         &[],
-        "__baml_invoke",
+        chat::BAML_INVOKE,
         move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
             let scope = resolve_scope_from_active_context(&registry)?;
             if args.len() < 2 {
@@ -615,22 +616,26 @@ pub(super) async fn register_baml_invoke_helper(bridge: &QuickJSBridge) -> Resul
 
 /// Register __awaitAndStringify and __set_eval_result.
 pub(super) async fn register_await_helper(bridge: &QuickJSBridge) -> Result<()> {
-    let js_code = r#"
-            globalThis.__awaitAndStringify = async function(promise) {
-                try {
+    let js_code = format!(
+        r#"
+            globalThis.{await_fn} = async function(promise) {{
+                try {{
                     const result = await promise;
                     return JSON.stringify(result);
-                } catch (e) {
-                    return JSON.stringify({ error: e.toString() });
-                }
-            };
+                }} catch (e) {{
+                    return JSON.stringify({{ error: e.toString() }});
+                }}
+            }};
 
-            globalThis.__isPromise = function(value) {
+            globalThis.{is_promise_fn} = function(value) {{
                 return value && typeof value.then === 'function';
-            };
-        "#;
+            }};
+        "#,
+        await_fn = chat::AWAIT_AND_STRINGIFY,
+        is_promise_fn = chat::IS_PROMISE,
+    );
 
-    let script = Script::new("await_helper.js", js_code);
+    let script = Script::new("await_helper.js", &js_code);
     bridge
         .runtime()
         .eval(None, script)
@@ -644,7 +649,7 @@ pub(super) async fn register_await_helper(bridge: &QuickJSBridge) -> Result<()> 
     let eval_notify_by_token = bridge.eval_notify_by_token().clone();
     bridge.runtime().set_function(
         &[],
-        "__set_eval_result",
+        chat::SET_EVAL_RESULT,
         move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
             if args.len() < 2 {
                 return Err(quickjs_runtime::jsutils::JsError::new_str("Expected (token, json_string)"));
@@ -692,7 +697,7 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
         .runtime()
         .set_function(
             &[],
-            "__step_executor_validate_transition",
+            chat::STEP_EXECUTOR_VALIDATE_TRANSITION,
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<
                 JsValueFacade,
                 quickjs_runtime::jsutils::JsError,
@@ -748,7 +753,7 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
         .runtime()
         .set_function(
             &[],
-            "__resolve_tool_step_executor",
+            chat::RESOLVE_TOOL_STEP_EXECUTOR,
             move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<
                 JsValueFacade,
                 quickjs_runtime::jsutils::JsError,
@@ -781,14 +786,15 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
         .runtime()
         .set_function(
             &[],
-            "__run_step_executor",
+            chat::RUN_STEP_EXECUTOR,
             move |_realm: &QuickJsRealmAdapter,
                   args: Vec<JsValueFacade>|
                   -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
                 if args.len() < 2 || !args[0].is_string() || !args[1].is_string() {
-                    return Err(quickjs_runtime::jsutils::JsError::new_str(
-                        "__run_step_executor expects (function_name: string, args_json: string, options_json?: string)",
-                    ));
+                    return Err(quickjs_runtime::jsutils::JsError::new_str(&format!(
+                        "{} expects (function_name: string, args_json: string, options_json?: string)",
+                        chat::RUN_STEP_EXECUTOR
+                    )));
                 }
                 let function_name = args[0].get_str().to_string();
                 let args_json = args[1].get_str().to_string();
@@ -809,7 +815,8 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
                         let base_args: Value =
                             serde_json::from_str(&args_json).map_err(|e| {
                                 quickjs_runtime::jsutils::JsError::new_str(&format!(
-                                    "__run_step_executor: invalid args JSON: {e}"
+                                    "{}: invalid args JSON: {e}",
+                                    chat::RUN_STEP_EXECUTOR
                                 ))
                             })?;
 
@@ -835,13 +842,23 @@ pub(super) async fn register_step_executor_runtime_helpers(bridge: &QuickJSBridg
                                 let json =
                                     serde_json::to_string(&step_result).map_err(|e| {
                                         quickjs_runtime::jsutils::JsError::new_str(&format!(
-                                            "__run_step_executor: serialize error: {e}"
+                                            "{}: serialize error: {e}",
+                                            chat::RUN_STEP_EXECUTOR
                                         ))
                                     })?;
                                 Ok(JsValueFacade::new_string(json))
                             }
                             Err(e) => Err(quickjs_runtime::jsutils::JsError::new_str(
-                                &format!("__run_step_executor: {e}"),
+                                // ExecutionFailed's Display is only "Function execution failed" — surface the
+                                // wrapped anyhow chain so coordinator discovery and other callers see the root cause.
+                                &match &e {
+                                    BamlRtError::ExecutionFailed { source } => format!(
+                                        "{}: function execution failed: {:#}",
+                                        chat::RUN_STEP_EXECUTOR,
+                                        source
+                                    ),
+                                    _ => format!("{}: {e}", chat::RUN_STEP_EXECUTOR),
+                                },
                             )),
                         }
                     },
@@ -867,7 +884,7 @@ pub(super) async fn register_execution_session_helper(bridge: &QuickJSBridge) ->
 
     bridge.runtime().set_function(
         &[],
-        "__execution_session_invoke",
+        chat::EXECUTION_SESSION_INVOKE,
         move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
             if args.is_empty() || !args[0].is_string() {
                 return Err(quickjs_runtime::jsutils::JsError::new_str(
@@ -1009,14 +1026,24 @@ pub(super) async fn register_execution_session_helper(bridge: &QuickJSBridge) ->
                                     (scope, epoch)
                                 };
 
+                                let mut derived_from_message_ids =
+                                    intent.derived_from_message_ids.clone();
+                                if derived_from_message_ids.is_empty() {
+                                    derived_from_message_ids.push(
+                                        scope_for_run.message_id().as_str().to_string(),
+                                    );
+                                }
+
                                 let manager = manager_for_promise.lock().await;
                                 manager
                                     .emit_planning_intent_resolved(
                                         &emit_scope,
-                                        intent.intent_id.as_str().to_string(),
-                                        intent.description.clone(),
-                                        intent.derived_from_message_ids.clone(),
-                                        supersession,
+                                        IntentSubmission {
+                                            intent_id: intent.intent_id.clone(),
+                                            description: intent.description.clone(),
+                                            derived_from_message_ids,
+                                            supersession,
+                                        },
                                         Some(epoch),
                                     )
                                     .await
@@ -1389,7 +1416,8 @@ pub(super) async fn register_single_function(
     let js_code = wrappers::build_token_args_wrapper(
         function_name,
         &format!(
-            "__baml_invoke(\"{}\", JSON.stringify(argObj))",
+            "{}(\"{}\", JSON.stringify(argObj))",
+            chat::BAML_INVOKE,
             function_name.replace('\\', "\\\\").replace('"', "\\\"")
         ),
     );
@@ -1417,7 +1445,8 @@ pub(super) async fn register_single_stream_function(
     let js_code = wrappers::build_token_args_wrapper(
         &stream_function_name,
         &format!(
-            "__baml_stream(\"{}\", JSON.stringify(argObj))",
+            "{}(\"{}\", JSON.stringify(argObj))",
+            chat::BAML_STREAM,
             function_name.replace('\\', "\\\\").replace('"', "\\\"")
         ),
     );
@@ -1449,7 +1478,7 @@ pub(super) async fn register_baml_stream_helper(bridge: &QuickJSBridge) -> Resul
 
     bridge.runtime().set_function(
         &[],
-        "__baml_stream",
+        chat::BAML_STREAM,
         move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
             let scope = resolve_scope_from_active_context(&registry)?;
             if args.len() < 2 {
@@ -1593,7 +1622,7 @@ pub(super) async fn register_baml_invoke_session_helper(bridge: &QuickJSBridge) 
 
     bridge.runtime().set_function(
         &[],
-        "__baml_invoke_session",
+        chat::BAML_INVOKE_SESSION,
         move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
             let session_id = tools::parse_session_id_arg(&args)?;
             let (scope, session) = match resolve_scope_from_session(&stream_sessions, session_id) {
@@ -1685,7 +1714,7 @@ pub(super) async fn register_baml_stream_session_helper(bridge: &QuickJSBridge) 
 
     bridge.runtime().set_function(
         &[],
-        "__baml_stream_session",
+        chat::BAML_STREAM_SESSION,
         move |_realm: &QuickJsRealmAdapter, args: Vec<JsValueFacade>| -> std::result::Result<JsValueFacade, quickjs_runtime::jsutils::JsError> {
             let session_id = tools::parse_session_id_arg(&args)?;
             let (scope, session) = match resolve_scope_from_session(&stream_sessions, session_id) {

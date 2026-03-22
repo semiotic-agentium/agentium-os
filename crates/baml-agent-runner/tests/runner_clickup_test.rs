@@ -198,6 +198,24 @@ fn maybe_task_status(status: &Value) -> Option<String> {
     })
 }
 
+/// True when this tool JSON matches the mock list-task payload (both in-progress tasks present).
+/// Provenance may attach extra wrapper fields or the model may surface a superset array; we key off IDs.
+fn mock_clickup_in_progress_pair_result(v: &Value) -> bool {
+    let Some(tasks) = v.get("tasks").and_then(Value::as_array) else {
+        return false;
+    };
+    let mut saw_901 = false;
+    let mut saw_902 = false;
+    for t in tasks {
+        match t.get("id").and_then(Value::as_str) {
+            Some("task-901") => saw_901 = true,
+            Some("task-902") => saw_902 = true,
+            _ => {}
+        }
+    }
+    saw_901 && saw_902
+}
+
 async fn fetch_mermaid_context(base_url: &str, context_id: &ContextId) -> String {
     let http_client = reqwest::Client::new();
     let mermaid_url = format!("{base_url}/contexts/{}/mermaid", context_id.as_str());
@@ -326,8 +344,7 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
                 .find_map(|item| {
                     if let ConversationItemContent::ToolResult(tr) = &item.content {
                         if let ToolOutcome::Result(v) = &tr.outcome {
-                            let tasks = v.get("tasks").and_then(Value::as_array)?;
-                            if tasks.len() == 2 {
+                            if mock_clickup_in_progress_pair_result(v) {
                                 return Some(v.clone());
                             }
                         }
@@ -363,7 +380,7 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
 
     let tool_result = matched_tool_result.unwrap_or_else(|| {
         panic!(
-            "Expected a tool_result with exactly 2 tasks in provenance context after follow-up turns. \
+            "Expected a tool_result whose tasks include task-901 and task-902 (mock list payload). \
              Sources seen: {:?}. Assistant texts: {:?}",
             conversation_items
                 .iter()
@@ -372,11 +389,24 @@ async fn test_e2e_clickup_real_model_with_plan_discovery() {
             turn_texts
         )
     });
-    let tasks = tool_result
+    let tasks_all = tool_result
         .get("tasks")
         .and_then(Value::as_array)
         .expect("tool_result.tasks array");
-    assert_eq!(tasks.len(), 2, "mock should always return exactly 2 tasks");
+    let tasks: Vec<&Value> = tasks_all
+        .iter()
+        .filter(|t| {
+            matches!(
+                t.get("id").and_then(Value::as_str),
+                Some("task-901" | "task-902")
+            )
+        })
+        .collect();
+    assert_eq!(
+        tasks.len(),
+        2,
+        "mock list should surface task-901 and task-902; got tasks_all={tasks_all:?}"
+    );
     for task in tasks {
         let status = maybe_task_status(task.get("status").unwrap_or(&Value::Null))
             .unwrap_or_default()

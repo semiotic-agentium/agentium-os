@@ -212,7 +212,11 @@ pub(crate) fn tool_step_to_value(step: ToolStep) -> Value {
             "error": {
                 "kind": format!("{:?}", error.kind),
                 "message": error.message,
-                "retryable": bool::from(error.retryability)
+                "retryable": bool::from(error.retryability),
+                "disposition": error.classified.disposition,
+                "code": error.classified.code,
+                "hint": error.classified.hint,
+                "retry_after_ms": error.classified.retry_after_ms,
             }
         }),
     }
